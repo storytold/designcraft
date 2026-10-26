@@ -4,18 +4,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Preserve a present nullable override; a missing field still uses the sparse default.
+fn deserialize_explicit_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 macro_rules! attr_set {
     (
         $(#[$m:meta])*
         $attrs:ident / $props:ident {
-            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr ),* $(,)?
+            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr $(=> $deserialize:literal)? ),* $(,)?
         }
     ) => {
         $(#[$m])*
         #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
         #[serde(default, rename_all = "camelCase")]
         pub struct $attrs {
-            $( $(#[$fm])* #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
+            $( $(#[$fm])* $(#[serde(deserialize_with = $deserialize)])? #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
         }
 
         /// Fully resolved values.
@@ -43,6 +52,10 @@ macro_rules! attr_set {
             pub fn count(&self) -> usize {
                 0 $( + self.$field.is_some() as usize )*
             }
+            /// Remove local values already supplied by the applied style, keeping real differences.
+            pub fn retain_differences(&mut self, base: &$props) {
+                $( if self.$field.as_ref() == Some(&base.$field) { self.$field = None; } )*
+            }
             /// Field names that are set (camelCase).
             pub fn keys(&self) -> Vec<&'static str> {
                 let mut v = Vec::new();
@@ -62,7 +75,7 @@ macro_rules! attr_set {
                         return Ok(());
                     }
                 )*
-                Err(format!("unknown attribute `{key}`"))
+                Err(unknown_attribute(key, &[ $( stringify!($field), )* ]))
             }
             /// Fields where `self` differs from `base`'s resolved value (used for "clear overrides").
             pub fn diff_from(&self, base: &$props) -> $attrs {
@@ -102,6 +115,57 @@ macro_rules! attr_set {
 
 fn attr_key(snake: &'static str) -> &'static str {
     snake
+}
+
+/// `snake_case` → `camelCase`, as commands name attributes.
+fn camel(snake: &str) -> String {
+    let mut out = String::with_capacity(snake.len());
+    let mut up = false;
+    for c in snake.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Edits (insert, delete, replace) that turn `a` into `b`, ignoring case and underscores.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let norm = |s: &str| s.chars().filter(|c| *c != '_').map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>();
+    let (a, b) = (norm(a), norm(b));
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let d = (prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(row[j] + 1);
+            row.push(d);
+        }
+        prev = row;
+    }
+    prev.last().copied().unwrap_or(0)
+}
+
+/// The error for an attribute `key` that isn't one of `fields` (snake_case): the nearest one
+/// (a typo, or a name it starts or ends: `font` → `fontFamily`), or else all of them.
+fn unknown_attribute(key: &str, fields: &[&str]) -> String {
+    let k = key.to_ascii_lowercase().replace('_', "");
+    let flat = |f: &str| f.replace('_', "");
+    let near = fields
+        .iter()
+        .map(|f| (edit_distance(key, f), *f))
+        .filter(|(d, _)| *d <= (k.len() / 3).max(1))
+        .min()
+        .map(|(_, f)| f)
+        .or_else(|| fields.iter().copied().find(|f| k.len() >= 3 && (flat(f).starts_with(&k) || flat(f).ends_with(&k))));
+    match near {
+        Some(f) => format!("unknown attribute `{key}`; did you mean `{}`?", camel(f)),
+        None => format!("unknown attribute `{key}`; the attributes are: {}", fields.iter().map(|f| camel(f)).collect::<Vec<_>>().join(", ")),
+    }
 }
 
 // ---------- value types ----------
@@ -190,6 +254,13 @@ impl Digits {
     }
 }
 
+/// Does `c` belong to a script that capitalizes the first letter of sentences, words and headings?
+/// Georgian doesn't: Unicode maps Mkhedruli to Mtavruli capitals, but those are only for all-caps
+/// text, never for a sentence's, a title's or an index heading's first letter.
+pub fn capitalizes(c: char) -> bool {
+    !matches!(c, '\u{10A0}'..='\u{10FF}' | '\u{1C90}'..='\u{1CBF}' | '\u{2D00}'..='\u{2D2F}')
+}
+
 /// The BCP 47 tag of a language name as InDesign and IDML write it ("English: USA", "Chinese:
 /// Simplified", or a locale code such as "de_DE_2006"), for the shaper's localized forms (`locl`)
 /// and everything that depends on the language (quotes, hyphenation and spelling, line breaking,
@@ -272,6 +343,7 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "persian" | "farsi" => "fa",
         "urdu" => "ur",
         "hebrew" => "he",
+        "georgian" => "ka",
         _ => return None,
     })
 }
@@ -299,7 +371,7 @@ fn locale_code(words: &[&str]) -> Option<String> {
 /// from documents, so at most [`MAX_TAGS`] are kept; past that a new tag is unknown (`None`).
 fn intern_tag(tag: String) -> Option<&'static str> {
     const MAX_TAGS: usize = 512;
-    static TAGS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    static TAGS: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
     let mut tags = TAGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(t) = tags.iter().find(|t| **t == tag) {
         return Some(t);
@@ -415,6 +487,25 @@ pub enum Composer {
     Paragraph,
     /// Greedy, line by line.
     SingleLine,
+    /// The Japanese paragraph composer: total fit, with the CJK leading model and character
+    /// alignment.
+    Japanese,
+    /// The Japanese single-line composer.
+    JapaneseSingleLine,
+}
+
+impl Composer {
+    /// Breaks lines greedily, one at a time.
+    pub fn single_line(self) -> bool {
+        matches!(self, Composer::SingleLine | Composer::JapaneseSingleLine)
+    }
+
+    /// A Japanese composer: lines follow the leading model ([`crate::cjk::LeadingModel`]) and
+    /// characters their [`crate::cjk::CharacterAlignment`]. The others set lines baseline to
+    /// baseline with every character on the Roman baseline.
+    pub fn japanese(self) -> bool {
+        matches!(self, Composer::Japanese | Composer::JapaneseSingleLine)
+    }
 }
 
 /// What a nested style runs to (Drop Caps and Nested Styles).
@@ -535,6 +626,9 @@ pub enum TabAlign {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabStop {
+    /// A file that held a non-finite position (written as `null`) reads it back as NaN, which
+    /// [`TabStop::sanitized_list`] drops.
+    #[serde(deserialize_with = "position_or_nan")]
     pub position: f64,
     #[serde(default)]
     pub align: TabAlign,
@@ -546,6 +640,155 @@ pub struct TabStop {
 
 /// The colour of a paragraph rule that follows the paragraph's text colour.
 pub const TEXT_COLOR: &str = "Text Color";
+
+/// Most stops a paragraph holds.
+pub const MAX_TAB_STOPS: usize = 100;
+/// Furthest stop position: 216 in, the largest page.
+pub const MAX_TAB_POSITION: f64 = 15_552.0;
+/// Longest leader, in characters.
+pub const MAX_TAB_LEADER: usize = 8;
+/// Stops closer than this share a position.
+pub const SAME_TAB_POSITION: f64 = 0.01;
+
+/// Smallest type size the engine accepts, in points.
+pub const MIN_TYPE_SIZE: f64 = 0.1;
+/// Largest type size the engine accepts, in points, as InDesign's own field allows.
+pub const MAX_TYPE_SIZE: f64 = 1296.0;
+/// Largest measure an imported indent, spacing or offset can carry, in points: the furthest tab
+/// stop, which is the widest page.
+pub const MAX_MEASURE: f64 = MAX_TAB_POSITION;
+
+/// A type size read from a file, or `None` when it is not a size the engine can mean.
+///
+/// A file can hold any number, including `NaN`, `inf`, `0`, a negative or `1e300`. Every importer
+/// had its own spelling of this test, or only checked that the value was finite -- so tagged text
+/// took `<cSize:1e300>` and set a 1e300 pt size on the text (#1593). A size outside the range is
+/// dropped rather than clamped, so the text keeps the size its style gives it.
+pub fn imported_type_size(pt: f64) -> Option<f64> {
+    (pt.is_finite() && (MIN_TYPE_SIZE..=MAX_TYPE_SIZE).contains(&pt)).then_some(pt)
+}
+
+/// An indent, spacing or offset read from a file, clamped to ±[`MAX_MEASURE`]; `None` when the
+/// value is not finite.
+///
+/// Unlike a type size this is clamped rather than dropped: a file that says "indent everything"
+/// still indents to the widest page the engine has, where dropping the value would quietly
+/// restore the style's own indent and hide what the file asked for (#1593).
+pub fn imported_measure(pt: f64) -> Option<f64> {
+    pt.is_finite().then(|| pt.clamp(-MAX_MEASURE, MAX_MEASURE))
+}
+
+impl TabStop {
+    /// A finite position clamped to `0..=MAX_TAB_POSITION`.
+    pub fn clamp_position(v: f64) -> Result<f64, String> {
+        if v.is_finite() { Ok(v.clamp(0.0, MAX_TAB_POSITION)) } else { Err("position must be a finite number".into()) }
+    }
+
+    /// A leader: up to [`MAX_TAB_LEADER`] characters, no control characters.
+    pub fn check_leader(v: &str) -> Result<(), String> {
+        if v.chars().count() > MAX_TAB_LEADER || v.chars().any(char::is_control) {
+            return Err(format!("`leader`: at most {MAX_TAB_LEADER} printable characters"));
+        }
+        Ok(())
+    }
+
+    /// An align-on character: one printable character or none (a decimal point).
+    pub fn check_align_on(v: &str) -> Result<(), String> {
+        if v.chars().count() > 1 || v.chars().any(char::is_control) {
+            return Err("`alignOn`: one printable character".into());
+        }
+        Ok(())
+    }
+
+    /// A tab-stop list as the Tabs commands keep it: at most [`MAX_TAB_STOPS`] stops, positions
+    /// clamped, leaders and align-on characters checked, a char stop aligning on `.` unless it
+    /// names a character, sorted by position, and one stop per position (the later one wins).
+    pub fn checked_list(mut tabs: Vec<TabStop>) -> Result<Vec<TabStop>, String> {
+        if tabs.len() > MAX_TAB_STOPS {
+            return Err(format!("a paragraph holds at most {MAX_TAB_STOPS} tab stops"));
+        }
+        for t in &mut tabs {
+            t.position = Self::clamp_position(t.position)?;
+            Self::check_leader(&t.leader)?;
+            Self::check_align_on(&t.align_on)?;
+        }
+        Ok(Self::normalized(tabs))
+    }
+
+    /// A tab-stop list read from a file, repaired to what [`checked_list`](Self::checked_list)
+    /// accepts: stops with a non-finite position dropped, positions clamped, control characters
+    /// removed from leaders and align-on characters and both cut to their limits, sorted, one stop
+    /// per position (the later one wins), and the first [`MAX_TAB_STOPS`] by position kept.
+    pub fn sanitized_list(tabs: Vec<TabStop>) -> Vec<TabStop> {
+        let tabs = tabs
+            .into_iter()
+            .filter_map(|mut t| {
+                t.position = Self::clamp_position(t.position).ok()?;
+                if Self::check_leader(&t.leader).is_err() {
+                    t.leader = t.leader.chars().filter(|c| !c.is_control()).take(MAX_TAB_LEADER).collect();
+                }
+                if Self::check_align_on(&t.align_on).is_err() {
+                    t.align_on = t.align_on.chars().filter(|c| !c.is_control()).take(1).collect();
+                }
+                Some(t)
+            })
+            .collect();
+        let mut out = Self::normalized(tabs);
+        out.truncate(MAX_TAB_STOPS);
+        out
+    }
+
+    /// Finite, clamped stops sorted by position, one per position: of stops closer than
+    /// [`SAME_TAB_POSITION`], the later one in `tabs` wins. A char stop with no character aligns
+    /// on `.`.
+    fn normalized(tabs: Vec<TabStop>) -> Vec<TabStop> {
+        let mut stops: Vec<(usize, TabStop)> = tabs.into_iter().enumerate().collect();
+        stops.sort_by(|a, b| a.1.position.total_cmp(&b.1.position));
+        let mut out: Vec<(usize, TabStop)> = Vec::with_capacity(stops.len());
+        for (i, mut t) in stops {
+            if t.align == TabAlign::Char && t.align_on.is_empty() {
+                t.align_on = ".".into();
+            }
+            match out.last_mut() {
+                Some(last) if t.position - last.1.position < SAME_TAB_POSITION => {
+                    if i > last.0 {
+                        *last = (i, t);
+                    }
+                }
+                _ => out.push((i, t)),
+            }
+        }
+        out.into_iter().map(|(_, t)| t).collect()
+    }
+}
+
+/// A stop's position; `null` (how JSON writes a non-finite number) reads as NaN.
+fn position_or_nan<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
+}
+
+/// A paragraph's tab-stop list in either attribute form, as read from a file.
+trait FileTabs: Sized {
+    fn sanitized(self) -> Self;
+}
+
+impl FileTabs for Vec<TabStop> {
+    fn sanitized(self) -> Self {
+        TabStop::sanitized_list(self)
+    }
+}
+
+impl FileTabs for Option<Vec<TabStop>> {
+    fn sanitized(self) -> Self {
+        self.map(TabStop::sanitized_list)
+    }
+}
+
+/// Deserializes a `tabs` field through [`TabStop::sanitized_list`]: a saved document's tab lists
+/// get the limits the Tabs commands keep.
+fn sanitized_tabs<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + FileTabs>(d: D) -> Result<T, D::Error> {
+    T::deserialize(d).map(FileTabs::sanitized)
+}
 
 /// A paragraph rule (Rule Above / Rule Below).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -567,6 +810,52 @@ impl Default for Rule {
     fn default() -> Self {
         Rule { on: false, weight: 1.0, color: TEXT_COLOR.into(), tint: 1.0, column_width: true, offset: 0.0, left_indent: 0.0, right_indent: 0.0 }
     }
+}
+
+/// How wide a paragraph border or shading box is: the column, or the text's longest line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxWidth {
+    #[default]
+    Column,
+    Text,
+}
+
+/// Where a paragraph border or shading box starts above the first line (before its top offset).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxTop {
+    /// The tallest ascent on the line.
+    #[default]
+    Ascent,
+    Baseline,
+    /// The top of the em box.
+    EmBox,
+    /// The top of the line's leading.
+    Leading,
+}
+
+/// Where a paragraph border or shading box ends below the last line (before its bottom offset).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoxBottom {
+    /// The deepest descent on the line.
+    #[default]
+    Descent,
+    Baseline,
+    /// The bottom of the em box.
+    EmBox,
+}
+
+/// Where a bullet or number sits against the first line's start (the left and first-line
+/// indents): it starts there, is centred on it, or ends there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -595,6 +884,8 @@ pub enum NumberStyle {
     ArabicFourDigits,
     /// *, †, ‡, §, ¶, ‖, then doubled (**, ††, …): footnotes.
     Symbols,
+    /// 一, 二, 三, …: Chinese numerals written digit by digit, so 10 is 一〇 and 38 is 三八.
+    Kanji,
 }
 
 /// Numbers past this are written in Arabic digits by the styles that repeat characters (roman
@@ -625,6 +916,7 @@ impl NumberStyle {
                 let n = n.max(1) as usize - 1;
                 std::iter::repeat_n(SYM[n % SYM.len()], n / SYM.len() + 1).collect()
             }
+            NumberStyle::Kanji => kanji_digits(n),
         }
     }
 }
@@ -633,6 +925,12 @@ impl NumberStyle {
 /// putting `number` in for `^#`. Level placeholders (`^1`…`^9`) and metacharacters with no
 /// meaning in a label are dropped; a label never holds a paragraph break.
 pub fn expand_list_text(s: &str, number: &str) -> String {
+    expand_list_levels(s, number, &[])
+}
+
+/// [`expand_list_text`] with `levels[k]` in for `^1`…`^9` (level k + 1's current number; a level
+/// past the end is dropped).
+pub fn expand_list_levels(s: &str, number: &str, levels: &[String]) -> String {
     let mut out = String::with_capacity(s.len() + number.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -649,6 +947,13 @@ pub fn expand_list_text(s: &str, number: &str) -> String {
         let r = match m {
             '#' => {
                 out.push_str(number);
+                continue;
+            }
+            d @ '1'..='9' => {
+                let k = d as usize - '1' as usize;
+                if let Some(l) = levels.get(k) {
+                    out.push_str(l);
+                }
                 continue;
             }
             '^' => '^',
@@ -679,6 +984,11 @@ pub fn expand_list_text(s: &str, number: &str) -> String {
         out.push(r);
     }
     out
+}
+
+fn kanji_digits(n: u32) -> String {
+    const DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+    n.to_string().chars().map(|c| c.to_digit(10).and_then(|d| DIGITS.get(d as usize)).copied().unwrap_or(c)).collect()
 }
 
 fn roman(mut n: u32) -> String {
@@ -732,15 +1042,16 @@ attr_set! {
         /// Tracking in 1/1000 em.
         tracking: f64 = 0.0,
         /// Explicit CJK aki, in em; None restores automatic spacing.
-        leading_aki: Option<f64> = None,
-        trailing_aki: Option<f64> = None,
+        leading_aki: Option<f64> = None => "deserialize_explicit_value",
+        trailing_aki: Option<f64> = None => "deserialize_explicit_value",
         /// Proportional character compression, 0..1.
         tsume: f64 = 0.0,
         /// Target em cells for the contiguous formatted group (0 disables jidori).
         jidori: u32 = 0,
         character_alignment: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
         leading_model: crate::cjk::LeadingModel = crate::cjk::LeadingModel::Roman,
-        /// Explicit emphasis character; empty uses the traditional sesame dot.
+        /// The kenten mark's text: a custom mark, or the preset of `kenten_kind` (see
+        /// [`crate::cjk_settings::kenten_mark`]); empty is the sesame dot.
         kenten_character: String = String::new(),
         /// Horizontal / vertical scale, 1.0 = 100%.
         h_scale: f64 = 1.0,
@@ -753,19 +1064,22 @@ attr_set! {
         stroke: String = "[None]".into(),
         stroke_tint: f32 = 1.0,
         stroke_weight: f64 = 1.0,
+        /// Stroke behind fill: the stroke is painted under the fill and lies wholly outside the
+        /// letters at its full weight, so the letters keep their shape. Off, it straddles the outline.
+        stroke_behind_fill: bool = false,
         capitalization: Capitalization = Capitalization::Normal,
         position: Position = Position::Normal,
         underline: bool = false,
         strikethrough: bool = false,
         /// Underline Options: weight and offset below the baseline (`None` = from the size),
         /// colour (empty = the text colour) and tint.
-        underline_weight: Option<f64> = None,
-        underline_offset: Option<f64> = None,
+        underline_weight: Option<f64> = None => "deserialize_explicit_value",
+        underline_offset: Option<f64> = None => "deserialize_explicit_value",
         underline_color: String = String::new(),
         underline_tint: f32 = 1.0,
         /// Strikethrough Options: offset above the baseline.
-        strikethrough_weight: Option<f64> = None,
-        strikethrough_offset: Option<f64> = None,
+        strikethrough_weight: Option<f64> = None => "deserialize_explicit_value",
+        strikethrough_offset: Option<f64> = None => "deserialize_explicit_value",
         strikethrough_color: String = String::new(),
         strikethrough_tint: f32 = 1.0,
         glyph_form: String = String::new(),
@@ -775,8 +1089,9 @@ attr_set! {
         tate_chu_yoko: bool = false,
         tate_chu_yoko_x_offset: f64 = 0.0,
         tate_chu_yoko_y_offset: f64 = 0.0,
-        /// Ruby: the reading set small above the text (to its right in vertical text), one group
-        /// over each run that has it.
+        /// Ruby: the reading set small above the text (to its right in vertical text). Group ruby
+        /// sets it over the whole run; per-character ruby holds one reading per character,
+        /// separated by U+3000. Its other settings are the `ruby_*` fields below.
         ruby: String = String::new(),
         /// Kenten: an emphasis dot above each character.
         kenten: bool = false,
@@ -792,6 +1107,80 @@ attr_set! {
         /// Minimum characters on a warichu line before a break, and on the line after it.
         warichu_chars_before_break: u32 = 1,
         warichu_chars_after_break: u32 = 1,
+        // Kenten Settings / Kenten Color (`kenten` switches the marks on).
+        /// The mark; [`crate::cjk_settings::KentenKind::Custom`] draws `kenten_character`.
+        kenten_kind: crate::cjk_settings::KentenKind = crate::cjk_settings::KentenKind::SesameDot,
+        /// Font of a custom mark (empty = the text's font) and its style.
+        kenten_font: String = String::new(),
+        kenten_font_style: String = String::new(),
+        /// Mark size in points; `None` is half the text size.
+        kenten_size: Option<f64> = None,
+        /// Horizontal / vertical scale of the mark, 1.0 = 100%.
+        kenten_x_scale: f64 = 1.0,
+        kenten_y_scale: f64 = 1.0,
+        /// Points between the text's em box and the mark's.
+        kenten_distance: f64 = 0.0,
+        kenten_position: crate::cjk_settings::KentenPosition = crate::cjk_settings::KentenPosition::AboveRight,
+        kenten_alignment: crate::cjk_settings::KentenAlignment = crate::cjk_settings::KentenAlignment::Center,
+        /// How a custom mark was entered (IDML `KentenCharacterSet`), kept for interchange.
+        kenten_character_set: String = String::new(),
+        /// Mark fill and stroke swatches (empty = the text's), tints and stroke weight (`None` =
+        /// the text's).
+        kenten_fill: String = String::new(),
+        kenten_fill_tint: Option<f32> = None,
+        kenten_stroke: String = String::new(),
+        kenten_stroke_tint: Option<f32> = None,
+        kenten_stroke_weight: Option<f64> = None,
+        kenten_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        kenten_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        // Shatai (斜体): the character is compressed across the direction at `shatai_angle`.
+        /// Compression in percent of the em (0 = off).
+        shatai_magnification: f64 = 0.0,
+        /// Degrees from the line direction, counter-clockwise.
+        shatai_angle: f64 = 45.0,
+        /// Turn the compressed character back so its edge along the line stays along the line.
+        shatai_adjust_rotation: bool = false,
+        /// Fit the advance to the compressed em box.
+        shatai_adjust_tsume: bool = true,
+        // Ruby settings (see [`crate::ruby`]). Defaults are the IDML text defaults.
+        ruby_type: crate::ruby::RubyType = crate::ruby::RubyType::Group,
+        /// How a ruby shorter than its parent is spread over it.
+        ruby_alignment: crate::ruby::RubyAlignment = crate::ruby::RubyAlignment::Jis,
+        ruby_position: crate::ruby::RubyPosition = crate::ruby::RubyPosition::AboveRight,
+        /// Points along the line, and away from the parent text across it.
+        ruby_x_offset: f64 = 0.0,
+        ruby_y_offset: f64 = 0.0,
+        /// Empty: the parent's font and style.
+        ruby_font: String = String::new(),
+        ruby_font_style: String = String::new(),
+        /// Points; `None` is half the parent size.
+        ruby_font_size: Option<f64> = None,
+        /// 1.0 = 100%.
+        ruby_x_scale: f64 = 1.0,
+        ruby_y_scale: f64 = 1.0,
+        /// Use the font's ruby glyphs (OpenType `ruby`).
+        ruby_open_type_pro: bool = true,
+        /// Tate-chu-yoko in vertical ruby for runs of up to this many digits (0 = off).
+        ruby_auto_tcy_digits: u32 = 0,
+        ruby_auto_tcy_include_roman: bool = false,
+        ruby_auto_tcy_auto_scale: bool = true,
+        /// IDML `RubyOverhang`, kept for round trips; `ruby_overhang_amount` sets the overhang.
+        ruby_overhang: bool = false,
+        ruby_overhang_amount: crate::ruby::RubyOverhang = crate::ruby::RubyOverhang::OneRuby,
+        ruby_parent_spacing: crate::ruby::RubyParentSpacing = crate::ruby::RubyParentSpacing::Aki121,
+        /// A longer ruby at a line's start or end is set flush with the line edge.
+        ruby_auto_align: bool = true,
+        /// A longer ruby is narrowed first, down to `ruby_scaling_min` (1.0 = 100%).
+        ruby_auto_scaling: bool = false,
+        ruby_scaling_min: f64 = 0.66,
+        /// Ruby colour: empty is the text's colour; `None` tint and weight follow the text.
+        ruby_fill: String = String::new(),
+        ruby_fill_tint: Option<f32> = None,
+        ruby_stroke: String = String::new(),
+        ruby_stroke_tint: Option<f32> = None,
+        ruby_stroke_weight: Option<f64> = None,
+        ruby_overprint_fill: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
+        ruby_overprint_stroke: crate::cjk_settings::AdornmentOverprint = crate::cjk_settings::AdornmentOverprint::Auto,
         /// Digits (World-Ready): how 0–9 are drawn.
         digits: Digits = Digits::Default,
         character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,
@@ -827,6 +1216,8 @@ attr_set! {
         last_line_indent: f64 = 0.0,
         space_before: f64 = 0.0,
         space_after: f64 = 0.0,
+        /// Space between consecutive paragraphs of the same style; replaces space after/before there (None = ignore).
+        same_para_style_spacing: Option<f64> = None => "deserialize_explicit_value",
         /// Drop cap: the paragraph's first `drop_cap_chars` characters (code points, never
         /// splitting a base from its combining marks) set `drop_cap_lines` lines tall, in the
         /// character style `drop_cap_style` ("" or `[None]`: the text's own formatting).
@@ -875,7 +1266,7 @@ attr_set! {
         kashidas: bool = true,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
-        paragraph_kashida_width: Option<f64> = None,
+        paragraph_kashida_width: Option<f64> = None => "deserialize_explicit_value",
         /// Korean text breaks between any two syllables (character-based breaking); otherwise
         /// it breaks at spaces, word by word.
         korean_char_breaks: bool = false,
@@ -893,12 +1284,13 @@ attr_set! {
         split_outside_gutter: f64 = 0.0,
         rule_above: Rule = Rule::default(),
         rule_below: Rule = Rule::default(),
+        #[serde(deserialize_with = "sanitized_tabs")]
         tabs: Vec<TabStop> = Vec::new(),
         list_type: ListType = ListType::None,
         /// Named list (Define Lists) the numbers belong to ("" = the story's own list).
         list_name: String = String::new(),
         /// Start At: restart the numbering at this number.
-        start_at: Option<u32> = None,
+        start_at: Option<u32> = None => "deserialize_explicit_value",
         bullet_char: String = "\u{2022}".into(),
         number_style: NumberStyle = NumberStyle::Arabic,
         /// A numbered paragraph's label: `^#` is the number, other metacharacters expand as in
@@ -906,10 +1298,19 @@ attr_set! {
         number_expression: String = "^#.^t".into(),
         /// Text after the bullet (metacharacters expand as in [`expand_list_text`]).
         list_separator: String = "\t".into(),
+        /// The hanging indent was set by the Bulleted or Numbered List button, which takes it away
+        /// again with the list (an indent the paragraph had before stays).
+        list_hang: bool = false,
         balance_ragged: bool = false,
+        /// Hang punctuation outside the measure in this paragraph, at each character's own size
+        /// (DesignCraft's own per-paragraph switch; a story with Optical Margin Alignment on
+        /// overrides it with the story's size).
         optical_margin: bool = false,
+        /// Ignore Optical Margin: no hang in this paragraph, whatever the story or
+        /// `optical_margin` say.
+        ignore_optical_margin: bool = false,
         /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.
-        kinsoku: Option<crate::cjk::Kinsoku> = None,
+        kinsoku: Option<crate::cjk::Kinsoku> = None => "deserialize_explicit_value",
         /// Preserved spacing-table reference; compatibility audit reports unsupported composition.
         mojikumi: String = String::new(),
         /// Preserved priority policy; the current breaker does not implement these priorities.
@@ -918,6 +1319,24 @@ attr_set! {
         bunri_kinshi: bool = false,
         rensuuji: bool = true,
         treat_ideographic_space_as_space: bool = false,
+        // Auto Tate-chu-yoko, Japanese Composition and Grid Settings.
+        /// Auto tate-chu-yoko: in vertical text, runs of up to this many half-width digits are set
+        /// across one em (0 = off).
+        auto_tcy: u32 = 0,
+        /// Auto tate-chu-yoko also takes runs of half-width roman letters.
+        auto_tcy_include_roman: bool = false,
+        /// Rotate Roman Characters in Vertical Text (縦組み中の欧文回転): half-width characters
+        /// stand upright one by one instead of lying along the line.
+        rotate_roman: bool = false,
+        /// Roman word break (欧文泣き別れ): roman words may break between any two letters,
+        /// without a hyphen.
+        roman_word_break: bool = false,
+        /// The point of a line that sits on the grid while `grid_align` is on.
+        grid_reference: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
+        /// Gyoudori (行取り): grid lines each line takes (0 = as many as its leading needs).
+        grid_gyoudori: u32 = 0,
+        /// Paragraph gyoudori: the paragraph as a whole, not each line, takes `grid_gyoudori` lines.
+        paragraph_gyoudori: bool = false,
         /// Paragraph shading, and how far it reaches past the text: top, left, bottom, right.
         shading_on: bool = false,
         shading_color: String = "[Black]".into(),
@@ -930,17 +1349,74 @@ attr_set! {
         border_color: String = "[Black]".into(),
         border_tint: f32 = 1.0,
         border_offsets: [f64; 4] = [0.0; 4],
+        /// The border's stroke type (a document stroke style by name, or a built-in type), cap and
+        /// join.
+        border_type: crate::item::StrokeType = crate::item::StrokeType::Solid,
+        border_cap: crate::item::Cap = crate::item::Cap::Butt,
+        border_join: crate::item::Join = crate::item::Join::Miter,
+        /// Corner shape and size: top left, top right, bottom right, bottom left.
+        border_corners: [designcraft_geom::corners::Corner; 4] = [designcraft_geom::corners::Corner::default(); 4],
+        border_width: BoxWidth = BoxWidth::Column,
+        border_top: BoxTop = BoxTop::Ascent,
+        border_bottom: BoxBottom = BoxBottom::Descent,
+        /// A paragraph split across frames or columns gets a closed box in each part (otherwise the
+        /// box is open where it splits).
+        border_display_if_splits: bool = false,
+        /// Consecutive paragraphs with the same border and shading share one box.
+        border_merge: bool = true,
+        /// The colour between the dashes, dots or stripes of a border that isn't solid.
+        border_gap_color: String = "[None]".into(),
+        border_gap_tint: f32 = 1.0,
+        /// Shading corners: top left, top right, bottom right, bottom left.
+        shading_corners: [designcraft_geom::corners::Corner; 4] = [designcraft_geom::corners::Corner::default(); 4],
+        shading_width: BoxWidth = BoxWidth::Column,
+        shading_top: BoxTop = BoxTop::Ascent,
+        shading_bottom: BoxBottom = BoxBottom::Descent,
+        /// The shading stops at the edges of the text frame.
+        shading_clip: bool = false,
+        /// The shading shows on screen only: not printed or exported.
+        shading_nonprinting: bool = false,
+        /// Least space between a spanning or split paragraph and the column text above and below it.
+        span_space_before: f64 = 0.0,
+        span_space_after: f64 = 0.0,
+        /// List level (1–9): each level numbers on its own, and `^1`…`^9` in a number's text are the
+        /// current numbers of those levels.
+        list_level: u32 = 1,
+        /// Character styles of the bullet and of the number.
+        bullet_char_style: String = crate::story::NO_CHAR_STYLE.into(),
+        number_char_style: String = crate::story::NO_CHAR_STYLE.into(),
+        bullet_align: ListAlign = ListAlign::Left,
+        number_align: ListAlign = ListAlign::Left,
+        /// A tab stop for the text after the bullet or number, from the column's left edge.
+        list_tab: Option<f64> = None,
+        /// Restart Numbers at This Level After: a paragraph at a higher level (0 = any; otherwise
+        /// that level) starts this level's numbering again.
+        restart_numbers: bool = true,
+        restart_after_level: u32 = 0,
+        /// The bullet's font family and style ("" = the paragraph's).
+        bullet_font: String = String::new(),
+        bullet_font_style: String = String::new(),
     }
 }
 
 impl ParaAttrs {
     /// [`set_json`](Self::set_json), except that a `ruleAbove` / `ruleBelow` object names only the
     /// rule fields to change; the others keep their values in `current` (the resolved attributes
-    /// of the paragraph or style being edited).
+    /// of the paragraph or style being edited). A `tabs` list is checked and sorted as
+    /// [`TabStop::checked_list`] does.
     pub fn set_json_over(&mut self, key: &str, value: &serde_json::Value, current: &ParaProps) -> Result<(), String> {
         let rule = match key.chars().filter(|c| *c != '_').collect::<String>().to_ascii_lowercase().as_str() {
             "ruleabove" => &current.rule_above,
             "rulebelow" => &current.rule_below,
+            "tabs" if !value.is_null() => {
+                // Count before deserializing: the list may be arbitrarily long.
+                if value.as_array().is_some_and(|a| a.len() > MAX_TAB_STOPS) {
+                    return Err(format!("{key}: a paragraph holds at most {MAX_TAB_STOPS} tab stops"));
+                }
+                let tabs: Vec<TabStop> = serde_json::from_value(value.clone()).map_err(|e| format!("{key}: {e}"))?;
+                self.tabs = Some(TabStop::checked_list(tabs).map_err(|e| format!("{key}: {e}"))?);
+                return Ok(());
+            }
             _ => return self.set_json(key, value),
         };
         let serde_json::Value::Object(patch) = value else { return self.set_json(key, value) };
@@ -962,6 +1438,13 @@ impl ParaProps {
         expand_list_text(&self.number_expression, &self.number_style.format(n))
     }
 
+    /// The label of a numbered paragraph that `list` has just numbered ([`ListCounter::advance`]).
+    pub fn number_label_in(&self, list: &ListCounter) -> String {
+        let level = list_level_index(self.list_level);
+        let number = list.labels.get(level).map_or("", String::as_str);
+        expand_list_levels(&self.number_expression, number, &list.labels)
+    }
+
     /// The label of a bulleted paragraph.
     pub fn bullet_label(&self) -> String {
         let mut s: String = self.bullet_char.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -970,9 +1453,86 @@ impl ParaProps {
     }
 }
 
+/// Levels a list can have.
+pub const LIST_LEVELS: usize = 9;
+
+/// Index (0-based) of list level `level` (1-based, clamped to 1–[`LIST_LEVELS`]).
+fn list_level_index(level: u32) -> usize {
+    (level.clamp(1, LIST_LEVELS as u32) - 1) as usize
+}
+
+/// The numbering of one list as it goes: each level's last number and its text, and when each
+/// level last numbered a paragraph (for Restart Numbers at This Level After).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ListCounter {
+    numbers: [u32; LIST_LEVELS],
+    labels: [String; LIST_LEVELS],
+    seen: [u64; LIST_LEVELS],
+    tick: u64,
+}
+
+impl ListCounter {
+    /// Number the next paragraph of `pp` (a numbered paragraph with text) and return its number.
+    pub fn advance(&mut self, pp: &ParaProps) -> u32 {
+        let l = list_level_index(pp.list_level);
+        self.tick = self.tick.saturating_add(1);
+        let since = self.seen[l];
+        let restart = pp.restart_numbers
+            && match pp.restart_after_level {
+                0 => self.seen[..l].iter().any(|&t| t > since),
+                m => (m as usize) <= l && self.seen.get(m as usize - 1).is_some_and(|&t| t > since),
+            };
+        let n = match pp.start_at {
+            Some(s) => s.max(1),
+            None if restart => 1,
+            None => self.numbers[l].saturating_add(1),
+        };
+        self.numbers[l] = n;
+        self.labels[l] = pp.number_style.format(n);
+        self.seen[l] = self.tick;
+        n
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #777: an unknown attribute names the nearest one, or lists them all.
+    #[test]
+    fn unknown_attributes_suggest_the_right_name() {
+        let mut c = CharAttrs::default();
+        assert_eq!(c.set_json("font", &serde_json::json!("X")).unwrap_err(), "unknown attribute `font`; did you mean `fontFamily`?");
+        assert_eq!(c.set_json("fontFamly", &serde_json::json!("X")).unwrap_err(), "unknown attribute `fontFamly`; did you mean `fontFamily`?");
+        let all = c.set_json("zzzzzz", &serde_json::json!(1)).unwrap_err();
+        assert!(
+            all.starts_with("unknown attribute `zzzzzz`; the attributes are: ") && all.contains("fontFamily") && all.contains("fontStyle"),
+            "{all}"
+        );
+        assert!(c.set_json("font_family", &serde_json::json!("X")).is_ok() && c.set_json("fontFamily", &serde_json::json!("X")).is_ok());
+        let mut p = ParaAttrs::default();
+        assert_eq!(p.set_json("spaceBefor", &serde_json::json!(3)).unwrap_err(), "unknown attribute `spaceBefor`; did you mean `spaceBefore`?");
+        assert_eq!(camel("first_line_indent"), "firstLineIndent");
+    }
+
+    #[test]
+    fn levels_number_on_their_own_and_restart_after_a_higher_level() {
+        let at =
+            |level: u32| ParaProps { list_type: ListType::Numbers, list_level: level, number_expression: "^1.^#".into(), ..ParaProps::default() };
+        let mut c = ListCounter::default();
+        let mut labels = vec![];
+        for level in [1, 2, 2, 1, 2] {
+            let pp = at(level);
+            c.advance(&pp);
+            labels.push(pp.number_label_in(&c));
+        }
+        assert_eq!(labels, ["1.1", "1.1", "1.2", "2.2", "2.1"]);
+        // Without the restart, level 2 carries on.
+        let mut c = ListCounter::default();
+        let keep = |level: u32| ParaProps { restart_numbers: false, ..at(level) };
+        let n: Vec<u32> = [1, 2, 1, 2].into_iter().map(|l| c.advance(&keep(l))).collect();
+        assert_eq!(n, [1, 1, 2, 2]);
+    }
 
     #[test]
     fn a_partial_rule_keeps_the_other_fields() {
@@ -990,6 +1550,20 @@ mod tests {
     }
 
     #[test]
+    fn stroke_behind_fill_is_saved_only_when_set() {
+        assert!(!CharProps::default().stroke_behind_fill);
+        assert_eq!(serde_json::to_value(CharAttrs::default()).unwrap(), serde_json::json!({}));
+        let mut a = CharAttrs::default();
+        a.set_json("strokeBehindFill", &serde_json::json!(true)).unwrap();
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v, serde_json::json!({"strokeBehindFill": true}));
+        assert_eq!(serde_json::from_value::<CharAttrs>(v).unwrap(), a);
+        let mut p = CharProps::default();
+        p.apply(&a);
+        assert!(p.stroke_behind_fill);
+    }
+
+    #[test]
     fn digits_map_to_their_script() {
         assert_eq!(Digits::Default.map('7', "Arabic"), '7');
         assert_eq!(Digits::Hindi.map('3', ""), '\u{0663}');
@@ -1004,6 +1578,7 @@ mod tests {
         assert_eq!(language_tag("English: USA"), Some("en-US"));
         assert_eq!(language_tag("English: Australian"), Some("en"));
         assert_eq!(language_tag("Turkish"), Some("tr"));
+        assert_eq!(language_tag("Georgian"), Some("ka"));
         assert_eq!(language_tag("Japanese"), Some("ja"));
         assert_eq!(language_tag("Korean"), Some("ko"));
         assert_eq!(language_tag("Chinese"), Some("zh"));
@@ -1111,6 +1686,46 @@ mod tests {
     }
 
     #[test]
+    fn tab_lists_are_checked() {
+        let stop = |position: f64| TabStop { position, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+        assert!(TabStop::checked_list(vec![stop(f64::NAN)]).is_err());
+        assert!(TabStop::checked_list(vec![stop(f64::INFINITY)]).is_err());
+        assert!(TabStop::checked_list((0..=MAX_TAB_STOPS).map(|i| stop(i as f64)).collect()).is_err());
+        let list = TabStop::checked_list(vec![stop(50.0), TabStop { leader: ".".into(), ..stop(10.0) }, stop(50.001)]).unwrap();
+        assert_eq!(list.iter().map(|t| t.position).collect::<Vec<_>>(), [10.0, 50.001], "sorted, one stop per position");
+    }
+
+    /// A file's tab list is repaired, never refused; a list the commands accept comes through
+    /// unchanged.
+    #[test]
+    fn tab_lists_from_files_are_sanitized() {
+        let stop = |position: f64| TabStop { position, align: TabAlign::Left, leader: String::new(), align_on: String::new() };
+        let mut tabs: Vec<TabStop> = (0..500).rev().map(|i| stop(i as f64 * 10.0)).collect();
+        tabs.push(stop(f64::NAN));
+        tabs.push(stop(f64::NEG_INFINITY));
+        tabs.push(TabStop { leader: "\u{7}0123456789".into(), align: TabAlign::Char, align_on: "\n,;".into(), ..stop(-3.0) });
+        let list = TabStop::sanitized_list(tabs);
+        assert_eq!(list.len(), MAX_TAB_STOPS);
+        assert!(list.windows(2).all(|w| w[1].position - w[0].position >= SAME_TAB_POSITION), "sorted, one stop per position");
+        let first = &list[0];
+        assert_eq!((first.position, first.leader.as_str(), first.align_on.as_str()), (0.0, "01234567", ","), "the later stop at 0 wins");
+        assert_eq!(list.last().map(|t| t.position), Some(990.0), "the first stops by position are kept");
+
+        let ok = TabStop::checked_list(vec![stop(72.0), TabStop { align: TabAlign::Char, ..stop(10.0) }]).unwrap();
+        assert_eq!(TabStop::sanitized_list(ok.clone()), ok);
+
+        // `null` is how JSON writes a non-finite position; that stop is dropped, the others kept.
+        let json = r#"{"tabs":[{"position":null},{"position":20000,"leader":"0123456789"},{"position":5}]}"#;
+        let a: ParaAttrs = serde_json::from_str(json).unwrap();
+        let tabs = a.tabs.unwrap();
+        assert_eq!(tabs.iter().map(|t| t.position).collect::<Vec<_>>(), [5.0, MAX_TAB_POSITION]);
+        assert_eq!(tabs[1].leader, "01234567");
+        let p: ParaProps = serde_json::from_str(json).unwrap();
+        assert_eq!(p.tabs, tabs);
+        assert!(serde_json::from_str::<TabStop>("{}").is_err(), "a stop names its position");
+    }
+
+    #[test]
     fn set_json_by_name() {
         let mut a = ParaAttrs::default();
         a.set_json("spaceBefore", &serde_json::json!(6.0)).unwrap();
@@ -1146,6 +1761,15 @@ mod tests {
     }
 
     #[test]
+    fn same_para_style_spacing_ignore_survives_serde() {
+        for v in [None, Some(None), Some(Some(0.0))] {
+            let a = ParaAttrs { same_para_style_spacing: v, ..Default::default() };
+            let back: ParaAttrs = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+            assert_eq!(back.same_para_style_spacing, v);
+        }
+    }
+
+    #[test]
     fn numbering_styles() {
         assert_eq!(NumberStyle::UpperRoman.format(14), "XIV");
         assert_eq!(NumberStyle::LowerRoman.format(9), "ix");
@@ -1159,6 +1783,27 @@ mod tests {
         assert_eq!(NumberStyle::UpperRoman.format(u32::MAX), u32::MAX.to_string());
         assert_eq!(NumberStyle::LowerLetters.format(u32::MAX), u32::MAX.to_string());
         assert_eq!(NumberStyle::Symbols.format(u32::MAX), u32::MAX.to_string());
+    }
+
+    #[test]
+    fn kanji_numbers_are_written_digit_by_digit() {
+        for (n, s) in [
+            (0, "〇"),
+            (1, "一"),
+            (5, "五"),
+            (10, "一〇"),
+            (11, "一一"),
+            (20, "二〇"),
+            (38, "三八"),
+            (99, "九九"),
+            (100, "一〇〇"),
+            (105, "一〇五"),
+            (1000, "一〇〇〇"),
+            (2026, "二〇二六"),
+            (u32::MAX, "四二九四九六七二九五"),
+        ] {
+            assert_eq!(NumberStyle::Kanji.format(n), s, "{n}");
+        }
     }
 
     #[test]

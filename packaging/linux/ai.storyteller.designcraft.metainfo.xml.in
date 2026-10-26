@@ -35,8 +35,8 @@
   </keywords>
   <screenshots>
     <screenshot type="default">
-      <caption>Editing The Great Wave off Kanagawa with type layers and adjustment layers</caption>
-      <image>https://raw.githubusercontent.com/storytold/designcraft/main/docs/images/designcraft-demo.jpg</image>
+      <caption>Magazine spread with threaded text frames and layout properties</caption>
+      <image type="source" width="1600" height="1000">https://raw.githubusercontent.com/storytold/designcraft/main/docs/images/ui-spread.png</image>
     </screenshot>
   </screenshots>
   <branding>

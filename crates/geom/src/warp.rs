@@ -25,7 +25,7 @@ impl PathWarp {
     /// Point and tangent angle (radians) at arc length `s` (clamped to the path).
     pub fn at(&self, s: f64) -> Option<(Point, f64)> {
         let s = if self.flip { self.total - s } else { s };
-        let mut s = s.clamp(0.0, self.total);
+        let mut s = s.max(0.0).min(self.total);
         let n = self.segs.len();
         for (i, (seg, len)) in self.segs.iter().enumerate() {
             if s <= *len || i + 1 == n {

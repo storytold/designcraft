@@ -8,7 +8,7 @@ use designcraft_doc::{
     CharAttrs, CharFormat, ColumnsKind, Content, Document, Item, ListType, PageSide, ParaAttrs, ParaFormat, Rule, Shape, SpanColumns, Spread, Story,
     TextFrameOptions, story as st,
 };
-use designcraft_geom::{Affine, PathData, Rect};
+use designcraft_geom::{Affine, PathData};
 
 use crate::names::{self, CHAR_BUILTINS, OBJECT_BUILTINS, PARA_BUILTINS, escape_id, num, pt};
 use crate::xml::{El, Node, document, document_with_pi};
@@ -16,7 +16,18 @@ use crate::{DOM_VERSION, MIMETYPE, base64_encode};
 
 const PKG_NS: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
 const NO_PARA_ID: &str = "ParagraphStyle/$ID/[No paragraph style]";
+const TOC_STYLE_ID: &str = "TOCStyle/Table of Contents";
+const TOC_STYLE_NAME: &str = "Table of Contents";
 const NO_CHAR_ID: &str = "CharacterStyle/$ID/[No character style]";
+
+// Retained IDML attributes have unprefixed ASCII names. Native JSON can be
+// edited independently: never let its map keys become XML syntax or Self IDs.
+fn graphic_layer_attribute_name(key: &str) -> bool {
+    !key.is_empty()
+        && key != "Self"
+        && key != "xmlns"
+        && key.bytes().enumerate().all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || (i > 0 && (b.is_ascii_digit() || matches!(b, b'.' | b'-'))))
+}
 
 /// Export options.
 #[derive(Clone, Debug)]
@@ -175,7 +186,7 @@ impl<'a> Ex<'a> {
     }
 
     fn assign_swatch_ids(&mut self) {
-        let mut used: HashSet<String> = ["Swatch/None", "Color/Paper", "Color/Black", "Color/Registration"].iter().map(|s| s.to_string()).collect();
+        let mut used: HashSet<String> = ["Swatch/None", "Color/Paper", "Color/Black", "Color/Registration"].iter().map(ToString::to_string).collect();
         self.swatch_ids.insert(swatch::NONE.into(), "Swatch/None".into());
         self.swatch_ids.insert(swatch::PAPER.into(), "Color/Paper".into());
         self.swatch_ids.insert(swatch::BLACK.into(), "Color/Black".into());
@@ -235,6 +246,7 @@ impl<'a> Ex<'a> {
         let designmap = self.designmap(&masters, &spreads, &story_parts);
 
         parts.push(("META-INF/container.xml".to_string(), CONTAINER.as_bytes().to_vec()));
+        parts.push(("META-INF/metadata.xml".to_string(), metadata_xmp(d).into_bytes()));
         parts.push(("designmap.xml".to_string(), designmap));
         parts.push(("Resources/Graphic.xml".to_string(), graphic));
         parts.push(("Resources/Fonts.xml".to_string(), fonts));
@@ -257,7 +269,10 @@ impl<'a> Ex<'a> {
             .attr("Self", "d")
             .attr("StoryList", story_list.join(" "))
             .attr("Name", format!("{}.indd", d.title))
-            .attr("ZeroPoint", "0 0")
+            .attr("ZeroPoint", {
+                let [x, y] = d.zero_point();
+                format!("{} {}", num(x), num(y))
+            })
             .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
         root.push(
             El::new("Language")
@@ -303,28 +318,7 @@ impl<'a> Ex<'a> {
             );
         }
         for t in &d.styles.mojikumi_tables {
-            let mut e = El::new("MojikumiTable").attr("Self", format!("MojikumiTable/{}", escape_id(&t.name))).attr("Name", &t.name);
-            if !t.based_on.is_empty() {
-                e.set("BasedOnMojikumiSet", &t.based_on);
-            }
-            if !t.overrides.is_empty() {
-                let mut list = El::new("OverrideMojikumiAkiList");
-                for r in &t.overrides {
-                    list.push(
-                        El::new("OverrideMojikumiAkiType")
-                            .attr("TargetMojikumiClass", r.target_class)
-                            .attr("SideMojikumiClass", r.side_class)
-                            .attr("SideIsAfterTarget", bool_s(r.after))
-                            .attr("Minimum", num(r.minimum))
-                            .attr("Desired", num(r.desired))
-                            .attr("Maximum", num(r.maximum))
-                            .attr("CompressionPriority", r.priority)
-                            .attr("AkiDoesNotFloat", bool_s(r.does_not_float)),
-                    );
-                }
-                e.push(El::new("Properties").child(list));
-            }
-            root.push(e);
+            root.push(mojikumi_table_el(t));
         }
         root.push(El::new("idPkg:Graphic").attr("src", "Resources/Graphic.xml"));
         root.push(El::new("idPkg:Fonts").attr("src", "Resources/Fonts.xml"));
@@ -353,30 +347,12 @@ impl<'a> Ex<'a> {
             let n = format!("<?AID 001b?>TV {name}");
             root.push(El::new("TextVariable").attr("Self", format!("dTextVariablen{n}")).attr("Name", &n).attr("VariableType", ty));
         }
+        for v in &d.text_variables {
+            root.push(text_variable_el(v));
+        }
         // IDML lists layers back to front.
         for l in d.layers.iter().rev() {
-            let color = match names::layer_color_out(l.color) {
-                Some(n) => p("LayerColor", "enumeration", n),
-                None => {
-                    let mut e = El::new("LayerColor").attr("type", "list");
-                    for c in l.color {
-                        e.push(p("ListItem", "double", num(c as f64)));
-                    }
-                    e
-                }
-            };
-            let el = El::new("Layer")
-                .attr("Self", uid(l.id.0))
-                .attr("Name", &l.name)
-                .attr("Visible", bool_s(l.visible))
-                .attr("Locked", bool_s(l.locked))
-                .attr("IgnoreWrap", bool_s(l.suppress_wrap_when_hidden))
-                .attr("ShowGuides", bool_s(l.show_guides))
-                .attr("LockGuides", "false")
-                .attr("UI", "true")
-                .attr("Expendable", "true")
-                .attr("Printable", bool_s(l.printable));
-            root.push(with_props(el, vec![color]));
+            root.push(layer_el(l));
         }
         for (name, _) in masters {
             root.push(El::new("idPkg:MasterSpread").attr("src", name));
@@ -464,6 +440,51 @@ impl<'a> Ex<'a> {
         )
     }
 
+    /// A `Gradient` element; stop colours missing from the swatches become anonymous colours.
+    fn gradient_el(
+        &mut self,
+        s: &designcraft_color::Swatch,
+        gradient: &designcraft_color::Gradient,
+        colors: &mut Vec<El>,
+        by_value: &mut Vec<(Color, String)>,
+    ) -> El {
+        let id = self.sw(&s.name);
+        let mut g = El::new("Gradient")
+            .attr("Self", &id)
+            .attr("Type", if gradient.kind == GradientKind::Radial { "Radial" } else { "Linear" })
+            .attr("Name", &s.name)
+            .attr("ColorEditable", "true")
+            .attr("ColorRemovable", "true")
+            .attr("Visible", "true")
+            .attr("SwatchCreatorID", "7937");
+        let d = self.d;
+        for (i, stop) in gradient.stops.iter().enumerate() {
+            // A stop on a swatch names it; a plain color names an equal color swatch or
+            // an unnamed color.
+            let named =
+                stop.swatch.as_deref().filter(|n| d.swatch(n).is_some_and(|w| !matches!(w.value, SwatchValue::Gradient { .. } | SwatchValue::None)));
+            let cid = match (named, by_value.iter().find(|(c, _)| *c == stop.color)) {
+                (Some(n), _) => self.sw(n),
+                (None, Some((_, id))) => id.clone(),
+                (None, None) => {
+                    let cid = format!("Color/{}", self.fresh());
+                    colors.push(color_el(&cid, "$ID/", "Process", &stop.color, "Normal", (true, true, false)));
+                    by_value.push((stop.color, cid.clone()));
+                    cid
+                }
+            };
+            let mut e = El::new("GradientStop")
+                .attr("Self", format!("{}GradientStop{i}", id.replace(['/', ' '], "_")))
+                .attr("StopColor", cid)
+                .attr("Location", pct(stop.offset as f64));
+            if i > 0 {
+                e.set("Midpoint", pct(gradient.stops[i - 1].midpoint as f64));
+            }
+            g.push(e);
+        }
+        g
+    }
+
     // ---------- Graphic.xml ----------
 
     fn graphic_part(&mut self) -> Vec<u8> {
@@ -473,39 +494,21 @@ impl<'a> Ex<'a> {
         let mut tints: Vec<El> = Vec::new();
         let mut gradients: Vec<El> = Vec::new();
         let mut inks: Vec<El> = Vec::new();
-        let color_el = |self_id: &str, name: &str, model: &str, c: &Color, over: &str, editable: bool, removable: bool, visible: bool| {
-            let (space, val) = color_value(c);
-            El::new("Color")
-                .attr("Self", self_id)
-                .attr("Model", model)
-                .attr("Space", space)
-                .attr("ColorValue", val)
-                .attr("ColorOverride", over)
-                .attr("AlternateSpace", "NoAlternateColor")
-                .attr("AlternateColorValue", "")
-                .attr("Name", name)
-                .attr("ColorEditable", bool_s(editable))
-                .attr("ColorRemovable", bool_s(removable))
-                .attr("Visible", bool_s(visible))
-                .attr("SwatchCreatorID", "7937")
-        };
         // Specials (always present).
-        colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", false, false, true));
+        colors.push(color_el("Color/Black", "Black", "Process", &Color::cmyk(0.0, 0.0, 0.0, 1.0), "Specialblack", (false, false, true)));
         let paper = match d.swatch(swatch::PAPER).map(|s| &s.value) {
             Some(SwatchValue::Paper { color }) => *color,
             _ => Color::cmyk(0.0, 0.0, 0.0, 0.0),
         };
         let paper = if paper == Color::WHITE { Color::cmyk(0.0, 0.0, 0.0, 0.0) } else { paper };
-        colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", true, false, true));
+        colors.push(color_el("Color/Paper", "Paper", "Process", &paper, "Specialpaper", (true, false, true)));
         colors.push(color_el(
             "Color/Registration",
             "Registration",
             "Registration",
             &Color::cmyk(1.0, 1.0, 1.0, 1.0),
             "Specialregistration",
-            false,
-            false,
-            true,
+            (false, false, true),
         ));
         for (i, ink) in
             [("Process Cyan", 75, 0.61), ("Process Magenta", 15, 0.76), ("Process Yellow", 0, 0.16), ("Process Black", 45, 1.7)].iter().enumerate()
@@ -533,7 +536,7 @@ impl<'a> Ex<'a> {
             match &s.value {
                 SwatchValue::Color { color, color_type } => {
                     let model = if *color_type == ColorType::Spot { "Spot" } else { "Process" };
-                    colors.push(color_el(&id, &s.name, model, color, "Normal", true, true, true));
+                    colors.push(color_el(&id, &s.name, model, color, "Normal", (true, true, true)));
                     by_value.push((*color, id.clone()));
                     if *color_type == ColorType::Spot {
                         let mut ink = El::new("Ink");
@@ -575,35 +578,7 @@ impl<'a> Ex<'a> {
         }
         for s in &d.swatches {
             let SwatchValue::Gradient { gradient } = &s.value else { continue };
-            let id = self.sw(&s.name);
-            let mut g = El::new("Gradient")
-                .attr("Self", &id)
-                .attr("Type", if gradient.kind == GradientKind::Radial { "Radial" } else { "Linear" })
-                .attr("Name", &s.name)
-                .attr("ColorEditable", "true")
-                .attr("ColorRemovable", "true")
-                .attr("Visible", "true")
-                .attr("SwatchCreatorID", "7937");
-            for (i, stop) in gradient.stops.iter().enumerate() {
-                let cid = match by_value.iter().find(|(c, _)| *c == stop.color) {
-                    Some((_, id)) => id.clone(),
-                    None => {
-                        let cid = format!("Color/{}", self.fresh());
-                        colors.push(color_el(&cid, "$ID/", "Process", &stop.color, "Normal", true, true, false));
-                        by_value.push((stop.color, cid.clone()));
-                        cid
-                    }
-                };
-                let mut e = El::new("GradientStop")
-                    .attr("Self", format!("{}GradientStop{i}", id.replace(['/', ' '], "_")))
-                    .attr("StopColor", cid)
-                    .attr("Location", pct(stop.offset as f64));
-                if i > 0 {
-                    e.set("Midpoint", pct(gradient.stops[i - 1].midpoint as f64));
-                }
-                g.push(e);
-            }
-            gradients.push(g);
+            gradients.push(self.gradient_el(s, gradient, &mut colors, &mut by_value));
         }
         for c in colors {
             root.push(c);
@@ -760,7 +735,7 @@ impl<'a> Ex<'a> {
                     },
                 )
                 .attr("CreatePrimaryTextFrame", bool_s(s.primary_text_frame))
-                .attr("ColumnGuideLocked", "true")
+                .attr("ColumnGuideLocked", bool_s(s.column_guides_locked))
                 .attr("MasterTextFrame", bool_s(s.primary_text_frame))
                 .attr("SnippetImportUsesOriginalLocation", "false"),
         );
@@ -772,7 +747,14 @@ impl<'a> Ex<'a> {
             El::new("ViewPreference")
                 .attr("HorizontalMeasurementUnits", names::unit_out(s.horizontal_units))
                 .attr("VerticalMeasurementUnits", names::unit_out(s.vertical_units))
-                .attr("RulerOrigin", "SpreadOrigin")
+                .attr(
+                    "RulerOrigin",
+                    match s.ruler_origin {
+                        designcraft_doc::RulerOrigin::Spread => "SpreadOrigin",
+                        designcraft_doc::RulerOrigin::Page => "PageOrigin",
+                        designcraft_doc::RulerOrigin::Spine => "SpineOrigin",
+                    },
+                )
                 .attr("CursorKeyIncrement", num(s.keyboard_increment))
                 .attr("PointsPerInch", "72"),
         );
@@ -804,6 +786,15 @@ impl<'a> Ex<'a> {
                 designcraft_doc::BlendSpace::Rgb => "RGB",
             },
         ));
+        // Split Document: the style is a reference, a built-in one by its `$ID/` name; an empty
+        // one splits on the styles' export tags.
+        let (break_doc, split_style) = match &s.epub_split {
+            designcraft_doc::EpubSplit::Off => (false, names::style_name_out(PARA_BUILTINS, st::BASIC_PARAGRAPH)),
+            designcraft_doc::EpubSplit::ExportTags => (true, String::new()),
+            designcraft_doc::EpubSplit::Style(n) if PARA_BUILTINS.iter().any(|(o, _)| o == n) => (true, names::style_name_out(PARA_BUILTINS, n)),
+            designcraft_doc::EpubSplit::Style(n) => (true, names::style_self("ParagraphStyle", PARA_BUILTINS, n)),
+        };
+        root.push(El::new("EPubExportPreference").attr("BreakDocument", bool_s(break_doc)).attr("ParagraphStyleName", split_style));
         let a = &s.advanced_type;
         root.push(
             El::new("TextPreference")
@@ -867,8 +858,16 @@ impl<'a> Ex<'a> {
                 (ps.para.clone(), ps.chars.clone())
             };
             let parent = (ps.name != designcraft_doc::NO_PARA_STYLE).then(|| ps.based_on.as_deref().unwrap_or(designcraft_doc::NO_PARA_STYLE));
+            let parent_props = match ps.based_on.as_deref() {
+                Some(b) if ps.name != designcraft_doc::NO_PARA_STYLE => styles.resolve_para_style(b).0,
+                _ => designcraft_doc::ParaProps::default(),
+            };
+            let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent_props));
             self.para_attrs(&mut el, &mut props, &pa, parent);
             self.char_attrs(&mut el, &mut props, &ca);
+            if styles.export_tag(&ps.name, false).is_some_and(|t| t.split) {
+                el.set("SplitDocument", "true");
+            }
             pg.insert(&ps.name, with_props(el, props));
         }
         let mut rp = El::new("RootParagraphStyleGroup").attr("Self", self.fresh());
@@ -901,6 +900,12 @@ impl<'a> Ex<'a> {
             }
             if let Some(vj) = cs.vj {
                 el.set("VerticalJustification", names::vj_out(vj));
+            }
+            if let Some(fb) = cs.first_baseline {
+                el.set("FirstBaselineOffset", names::first_baseline_out(fb));
+            }
+            if let Some(min) = cs.first_baseline_min {
+                el.set("MinimumFirstBaselineOffset", num(min));
             }
             if let Some(st) = &cs.stroke {
                 for side in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"] {
@@ -1042,15 +1047,77 @@ impl<'a> Ex<'a> {
                 el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
             }
             let mut el = with_props(el, props);
+            if let Some(e) = &os.effects {
+                let mut t = El::new("TransparencySetting");
+                for c in self.effect_els(e, true) {
+                    t.push(c);
+                }
+                el.push(t);
+            }
             if let Some(tf) = &os.text_frame {
                 el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
             }
+            // Effects: a style with effects sets the drop shadow and feather, never blending.
+            let on = bool_s(os.effects.is_some());
+            el.push(
+                El::new("ObjectStyleObjectEffectsCategorySettings")
+                    .attr("EnableTransparency", "false")
+                    .attr("EnableDropShadow", on)
+                    .attr("EnableFeather", on)
+                    .attr("EnableInnerShadow", "false")
+                    .attr("EnableOuterGlow", "false")
+                    .attr("EnableInnerGlow", "false")
+                    .attr("EnableBevelEmboss", "false")
+                    .attr("EnableSatin", "false")
+                    .attr("EnableDirectionalFeather", "false")
+                    .attr("EnableGradientFeather", "false"),
+            );
             og.insert(&os.name, el);
         }
         let mut ro = El::new("RootObjectStyleGroup").attr("Self", self.fresh());
         og.emit(&mut ro, "ObjectStyleGroup", "");
         root.push(ro);
+        if let Some(toc) = d.toc.as_ref().filter(|t| d.story(t.story).is_some()) {
+            root.push(self.toc_style_el(toc));
+        }
         document(&root)
+    }
+
+    /// The document's table of contents as a TOC style; its story names it in `AppliedTOCStyle`.
+    fn toc_style_el(&mut self, toc: &designcraft_doc::Toc) -> El {
+        let para = |n: &str| names::style_self("ParagraphStyle", PARA_BUILTINS, n);
+        let chars = |n: Option<&str>| names::style_self("CharacterStyle", CHAR_BUILTINS, n.unwrap_or(designcraft_doc::NO_CHAR_STYLE));
+        let mut el = El::new("TOCStyle")
+            .attr("Self", TOC_STYLE_ID)
+            .attr("Name", TOC_STYLE_NAME)
+            .attr("Title", &toc.title)
+            .attr("TitleStyle", para(toc.title_style.as_deref().unwrap_or("TOC Title")))
+            .attr("RunIn", "false")
+            .attr("IncludeHidden", "false")
+            .attr("IncludeBookDocuments", "false")
+            .attr("CreatePdfBookmarks", "false");
+        for e in &toc.entries {
+            let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
+            let position = match e.page_number {
+                _ if !toc.page_numbers => "NoPageNumber",
+                designcraft_doc::TocPageNumber::After => "AfterEntry",
+                designcraft_doc::TocPageNumber::Before => "BeforeEntry",
+                designcraft_doc::TocPageNumber::None => "NoPageNumber",
+            };
+            el.push(
+                El::new("TOCStyleEntry")
+                    .attr("Self", self.fresh())
+                    .attr("Name", names::style_name_out(PARA_BUILTINS, &e.style))
+                    .attr("FormatStyle", para(&format))
+                    .attr("Level", e.level)
+                    .attr("PageNumberPosition", position)
+                    .attr("Separator", names::toc_separator_out(e.separator.as_deref().unwrap_or("\t")))
+                    .attr("PageNumberStyle", chars(e.page_number_style.as_deref()))
+                    .attr("SeparatorStyle", chars(e.separator_style.as_deref()))
+                    .attr("Sort", if e.sort { "true" } else { "false" }),
+            );
+        }
+        el
     }
 
     fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
@@ -1073,9 +1140,13 @@ impl<'a> Ex<'a> {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
         if let Some(f) = &a.font_family {
-            props.push(p("AppliedFont", "string", f.clone()));
-            let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
-            self.note_font(f, &style);
+            if let Some(composite) = self.d.styles.composite_font(f) {
+                props.push(p("AppliedFont", "object", format!("CompositeFont/{}", escape_id(&composite.name))));
+            } else {
+                props.push(p("AppliedFont", "string", f.clone()));
+                let style = a.font_style.clone().unwrap_or_else(|| "Regular".into());
+                self.note_font(f, &style);
+            }
         }
         if let Some(v) = &a.font_style {
             el.set("FontStyle", v);
@@ -1124,6 +1195,9 @@ impl<'a> Ex<'a> {
         }
         if let Some(v) = a.stroke_weight {
             el.set("StrokeWeight", num(v));
+        }
+        if let Some(v) = a.stroke_behind_fill {
+            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
         }
         if let Some(v) = a.capitalization {
             el.set("Capitalization", names::caps_out(v));
@@ -1195,8 +1269,11 @@ impl<'a> Ex<'a> {
             el.set("PositionalForm", v);
         }
         if let Some(r) = a.ruby.as_ref() {
-            el.set("RubyFlag", bool_s(!r.is_empty()));
+            el.set("RubyFlag", if r.is_empty() { "0" } else { "1" });
             el.set("RubyString", r.as_str());
+        }
+        if let Some((family, style)) = crate::ruby::write(el, props, a, |n| self.sw(n)) {
+            self.note_font(&family, &style);
         }
         if let Some(k) = a.kenten {
             el.set("KentenKind", if k { "KentenSesameDot" } else { "None" });
@@ -1237,6 +1314,7 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.warichu_chars_after_break {
             el.set("WarichuCharsAfterBreak", v);
         }
+        self.cjk_settings_chars(el, props, a);
         if let Some(list) = &a.conditions {
             el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
         }
@@ -1273,6 +1351,7 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.treat_ideographic_space_as_space {
             el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
         }
+        cjk_settings_para(el, a);
         if let Some(Some(k)) = &a.kinsoku {
             props.push(p(
                 "KinsokuSet",
@@ -1401,6 +1480,12 @@ impl<'a> Ex<'a> {
         n!(last_line_indent, "LastLineIndent");
         n!(space_before, "SpaceBefore");
         n!(space_after, "SpaceAfter");
+        match a.same_para_style_spacing {
+            Some(Some(v)) => el.set("SameParaStyleSpacing", num(v)),
+            // Explicit Ignore: must be written so it still overrides a based-on style's value.
+            Some(None) => el.set("SameParaStyleSpacing", "Nothing"),
+            None => {}
+        }
         n!(drop_cap_lines, "DropCapLines");
         n!(drop_cap_chars, "DropCapCharacters");
         if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
@@ -1410,14 +1495,17 @@ impl<'a> Ex<'a> {
             el.set("DropcapDetail", bits);
         }
         if let Some(g) = a.grid_align {
+            // IDML has one attribute for on/off and the reference: a reference set without
+            // `grid_align` isn't written.
+            let reference = crate::cjk::grid_reference_out(a.grid_reference.unwrap_or_default());
             match g {
                 designcraft_doc::GridAlign::None => el.set("GridAlignment", "None"),
                 designcraft_doc::GridAlign::AllLines => {
-                    el.set("GridAlignment", "AlignToBaseline");
+                    el.set("GridAlignment", reference);
                     el.set("GridAlignFirstLineOnly", "false");
                 }
                 designcraft_doc::GridAlign::FirstLineOnly => {
-                    el.set("GridAlignment", "AlignToBaseline");
+                    el.set("GridAlignment", reference);
                     el.set("GridAlignFirstLineOnly", "true");
                 }
             }
@@ -1428,6 +1516,8 @@ impl<'a> Ex<'a> {
                 match c {
                     designcraft_doc::Composer::Paragraph => "HL Composer",
                     designcraft_doc::Composer::SingleLine => "HL Single",
+                    designcraft_doc::Composer::Japanese => "HL Composer J",
+                    designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
                 },
             );
         }
@@ -1458,6 +1548,7 @@ impl<'a> Ex<'a> {
         }
         n!(keep_with_next, "KeepWithNext");
         b!(keep_lines_together, "KeepLinesTogether");
+        b!(ignore_optical_margin, "IgnoreEdgeAlignment");
         b!(keep_all_lines, "KeepAllLinesTogether");
         n!(keep_first, "KeepFirstLines");
         n!(keep_last, "KeepLastLines");
@@ -1550,6 +1641,80 @@ impl<'a> Ex<'a> {
                 el.set(&format!("ParagraphBorder{side}Offset"), num(o[i]));
             }
         }
+        if let Some(t) = &a.border_type {
+            props.push(p("ParagraphBorderType", "object", names::stroke_type_out(t)));
+        }
+        if let Some(c) = a.border_cap {
+            el.set("ParagraphBorderStrokeEndCap", names::cap_out(c));
+        }
+        if let Some(j) = a.border_join {
+            el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
+        }
+        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
+            if let Some(cs) = corners {
+                for (c, k) in cs.iter().zip(CORNERS) {
+                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
+                }
+            }
+        }
+        if let Some(w) = a.border_width {
+            el.set("ParagraphBorderWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.border_top {
+            el.set("ParagraphBorderTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.border_bottom {
+            el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(border_display_if_splits, "ParagraphBorderDisplayIfSplits");
+        b!(border_merge, "MergeConsecutiveParaBorders");
+        if let Some(c) = &a.border_gap_color {
+            props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
+        }
+        n!(border_gap_tint, "ParagraphBorderGapTint", pct);
+        if let Some(w) = a.shading_width {
+            el.set("ParagraphShadingWidth", names::box_width_out(w));
+        }
+        if let Some(t) = a.shading_top {
+            el.set("ParagraphShadingTopOrigin", names::box_top_out(t));
+        }
+        if let Some(b) = a.shading_bottom {
+            el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
+        }
+        b!(shading_clip, "ParagraphShadingClipToFrame");
+        b!(shading_nonprinting, "ParagraphShadingSuppressPrinting");
+        n!(span_space_before, "SpanColumnMinSpaceBefore");
+        n!(span_space_after, "SpanColumnMinSpaceAfter");
+        n!(list_level, "NumberingLevel");
+        for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
+            if let Some(st) = style {
+                props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
+            }
+        }
+        if let Some(v) = a.bullet_align {
+            el.set("BulletsAlignment", names::list_align_out(v));
+        }
+        if let Some(v) = a.number_align {
+            el.set("NumberingAlignment", names::list_align_out(v));
+        }
+        b!(restart_numbers, "NumberingApplyRestartPolicy");
+        if let Some(level) = a.restart_after_level {
+            let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
+            props.push(
+                El::new("NumberingRestartPolicies")
+                    .attr("RestartPolicy", policy)
+                    .attr("LowerLevel", level.to_string())
+                    .attr("UpperLevel", level.to_string()),
+            );
+        }
+        if let Some(f) = &a.bullet_font {
+            props.push(p("BulletsFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
+        }
+        if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
+            props.push(p("BulletsFontStyle", "string", f.clone()));
+        }
     }
 
     fn rule(&mut self, el: &mut El, props: &mut Vec<El>, k: &str, r: &Rule) {
@@ -1615,19 +1780,34 @@ impl<'a> Ex<'a> {
             el.set("BindingLocation", sp.pages.iter().filter(|p| p.side == PageSide::Left).count());
             el.set("AllowPageShuffle", bool_s(sp.allow_shuffle));
         }
-        el.set("ItemTransform", "1 0 0 1 0 0");
+        // View › Rotate Spread is the rotation part of the spread's transform; pages and items stay in
+        // unrotated spread coordinates.
+        let rotation = if master { 0 } else { sp.pages.first().map_or(0, |p| p.view_rotation) };
+        el.set(
+            "ItemTransform",
+            match rotation {
+                1 => "0 1 -1 0 0 0",
+                2 => "-1 0 0 -1 0 0",
+                3 => "0 -1 1 0 0 0",
+                _ => "1 0 0 1 0 0",
+            },
+        );
         let based_on = sp.parent.as_ref().and_then(|i| i.based_on);
         for (i, pg) in sp.pages.iter().enumerate() {
             let name = if master { sp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default() } else { d.page_name(first_page + i) };
             let applied = if master { based_on } else { pg.parent };
+            let overrides: Vec<String> = pg.overridden.iter().map(|i| uid(i.0)).collect();
             let pe = El::new("Page")
                 .attr("Self", uid(pg.id.0))
                 .attr("Name", name)
                 .attr("AppliedMaster", applied.map(|s| uid(s.0)).unwrap_or_else(|| "n".into()))
-                .attr("OverrideList", "")
+                .attr("LayoutRule", names::liquid_rule_out(pg.liquid))
+                .attr("OverrideList", overrides.join(" "))
                 .attr("GeometricBounds", format!("0 0 {} {}", num(pg.height), num(pg.width)))
                 .attr("ItemTransform", format!("1 0 0 1 {} {}", num(pg.x - ox), num(-oy)))
                 .child(margin_el(pg));
+            let mut pe = pe;
+            push_page_guides(d, sp, pg, &mut pe, first_page + i);
             el.push(pe);
         }
         let origin = Affine::translate((-ox, -oy));
@@ -1656,6 +1836,9 @@ impl<'a> Ex<'a> {
             _ => "Rectangle",
         };
         let mut el = El::new(tag).attr("Self", uid(it.id.0));
+        if let Some(o) = it.overrides {
+            el.set("OverriddenPageItem", uid(o.0));
+        }
         if let Content::Text(t) = &it.content
             && let Some(pt) = &t.options.path
         {
@@ -1709,6 +1892,14 @@ impl<'a> Ex<'a> {
         } else if let Some(a) = it.fill.gradient_angle {
             el.set("GradientFillAngle", num(a));
         }
+        // The same on the stroke.
+        if let Some([x0, y0, x1, y1]) = it.stroke.gradient_vector {
+            el.set("GradientStrokeStart", format!("{} {}", num(x0), num(y0)));
+            el.set("GradientStrokeLength", num((x1 - x0).hypot(y1 - y0)));
+            el.set("GradientStrokeAngle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+        } else if let Some(a) = it.stroke.gradient_angle {
+            el.set("GradientStrokeAngle", num(a));
+        }
         self.stroke_attrs(&mut el, &it.stroke);
         // Corner options: map path-order corners to the named corners by geometry.
         if !it.corners.is_none() {
@@ -1725,54 +1916,74 @@ impl<'a> Ex<'a> {
         }
         let mut el = with_props(el, props);
         // Transparency.
+        // An item whose style sets effects writes the effects it has turned off too, so that on
+        // import it doesn't take the style's.
+        let styled = self.d.styles.object_effects(os).is_some();
         let ds = &it.effects.drop_shadow;
-        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 {
+        let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
+        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
             let mut t = El::new("TransparencySetting");
             t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
-            if ds.on {
-                let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
+            for c in self.effect_els(&it.effects, styled) {
+                t.push(c);
+            }
+            if df.on {
+                let [top, left, bottom, right] = df.widths;
                 t.push(
-                    El::new("DropShadowSetting")
-                        .attr("Mode", "Drop")
-                        .attr("XOffset", num(-ds.distance * a.cos()))
-                        .attr("YOffset", num(ds.distance * a.sin()))
-                        .attr("Size", num(ds.size))
-                        .attr("Spread", num(ds.spread))
-                        .attr("Opacity", pct(ds.opacity as f64))
-                        .attr("EffectColor", self.sw(&ds.color)),
+                    El::new("DirectionalFeatherSetting")
+                        .attr("Applied", "true")
+                        .attr("LeftWidth", num(left))
+                        .attr("RightWidth", num(right))
+                        .attr("TopWidth", num(top))
+                        .attr("BottomWidth", num(bottom)),
                 );
             }
-            if it.effects.feather > 0.0 {
-                t.push(El::new("FeatherSetting").attr("Mode", "Standard").attr("Width", num(it.effects.feather)));
+            if gf.on {
+                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
+                if let Some([x0, y0, x1, y1]) = gf.vector {
+                    // Gradient Feather tool vector: start, length and angle in the item's space.
+                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
+                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
+                } else {
+                    g.set("Angle", num(gf.angle));
+                }
+                let id = uid(it.id.0);
+                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
+                    let mut s = El::new("OpacityGradientStop")
+                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
+                        .attr("Opacity", pct(opacity as f64))
+                        .attr("Location", num(location));
+                    if i > 0 {
+                        s.set("Midpoint", "50");
+                    }
+                    g.push(s);
+                }
+                t.push(g);
             }
             el.push(t);
         }
         if let Content::Text(t) = &it.content {
             el.push(text_frame_pref(&t.options, &self.sw(&t.options.column_rule_color)));
-            if let Some((start, inc)) = t.options.baseline_grid {
+            if let Some(g) = t.options.baseline_grid {
                 el.push(
                     El::new("BaselineFrameGridOption")
                         .attr("UseCustomBaselineFrameGrid", "true")
-                        .attr("StartingOffsetForBaselineFrameGrid", num(start))
-                        .attr("BaselineFrameGridIncrement", num(inc)),
+                        .attr("StartingOffsetForBaselineFrameGrid", num(g.start))
+                        .attr(
+                            "BaselineFrameGridRelativeOption",
+                            match g.relative_to {
+                                designcraft_doc::FrameGridRelative::TopOfPage => "TopOfPageOfBaselineFrameGridRelativeOption",
+                                designcraft_doc::FrameGridRelative::TopMargin => "TopOfMarginOfBaselineFrameGridRelativeOption",
+                                designcraft_doc::FrameGridRelative::TopOfFrame => "TopOfFrameOfBaselineFrameGridRelativeOption",
+                                designcraft_doc::FrameGridRelative::TopInset => "TopOfInsetOfBaselineFrameGridRelativeOption",
+                            },
+                        )
+                        .attr("BaselineFrameGridIncrement", num(g.increment)),
                 );
             }
         }
-        let w = &it.wrap;
-        el.push(with_props(
-            El::new("TextWrapPreference")
-                .attr("Inverse", bool_s(w.invert))
-                .attr("ApplyToMasterPageOnly", "false")
-                .attr("TextWrapSide", names::wrap_side_out(w.side))
-                .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
-            vec![
-                El::new("TextWrapOffset")
-                    .attr("Top", num(w.offsets[0]))
-                    .attr("Left", num(w.offsets[1]))
-                    .attr("Bottom", num(w.offsets[2]))
-                    .attr("Right", num(w.offsets[3])),
-            ],
-        ));
+        el.push(text_wrap_pref(&it.wrap));
         match &it.content {
             Content::Group { items } => {
                 for c in items {
@@ -1803,16 +2014,68 @@ impl<'a> Ex<'a> {
         el
     }
 
+    /// The `TransparencySetting` children for `e`'s drop shadow and feather; `all` also writes the
+    /// effects that are off (`Mode="None"`), as an object style that sets effects does.
+    fn effect_els(&self, e: &designcraft_doc::Effects, all: bool) -> Vec<El> {
+        let mut out = Vec::new();
+        let ds = &e.drop_shadow;
+        if ds.on || all {
+            let a = self.d.light_angle(ds.angle, ds.global_light).to_radians();
+            out.push(
+                El::new("DropShadowSetting")
+                    .attr("Mode", if ds.on { "Drop" } else { "None" })
+                    .attr("XOffset", num(-ds.distance * a.cos()))
+                    .attr("YOffset", num(ds.distance * a.sin()))
+                    .attr("Size", num(ds.size))
+                    .attr("Spread", num(ds.spread))
+                    .attr("Opacity", pct(ds.opacity as f64))
+                    .attr("EffectColor", self.sw(&ds.color)),
+            );
+        }
+        if e.feather > 0.0 || all {
+            let corners = match e.feather_options.corners {
+                designcraft_doc::FeatherCorners::Sharp => "Sharp",
+                designcraft_doc::FeatherCorners::Rounded => "Rounded",
+                designcraft_doc::FeatherCorners::Diffused => "Diffusion",
+            };
+            out.push(
+                El::new("FeatherSetting")
+                    .attr("Mode", if e.feather > 0.0 { "Standard" } else { "None" })
+                    .attr("Width", num(e.feather))
+                    .attr("ChokeAmount", num(e.feather_options.choke))
+                    .attr("CornerType", corners),
+            );
+        }
+        out
+    }
+
     fn image_el(&mut self, asset: &designcraft_doc::Asset, g: &designcraft_doc::Graphic) -> El {
         let is_pdf = asset.mime == "application/pdf";
-        let mut el = El::new(if is_pdf { "PDF" } else { "Image" }).attr("Self", self.fresh());
-        if let Some((pw, ph)) = asset.pixels
+        let is_eps = asset.mime == "application/postscript" || designcraft_images::is_eps(&asset.data);
+        let mut el = El::new(if is_eps {
+            "EPS"
+        } else if is_pdf {
+            "PDF"
+        } else {
+            "Image"
+        })
+        .attr("Self", self.fresh());
+        // A PDF is vector: its page size in `pixels` isn't a resolution, and a cropped graphic
+        // spans less than the page. An EPS's `pixels` is its preview raster, so it still counts.
+        if let Some((pw, ph)) = asset.pixels.filter(|_| !is_pdf)
             && g.size.0 > 0.0
             && g.size.1 > 0.0
         {
             el.set("ActualPpi", pt(pw as f64 * 72.0 / g.size.0, ph as f64 * 72.0 / g.size.1));
         }
         el.set("ItemTransform", affine_s(g.xf));
+        // The swatch that colours a greyscale or bitmap image; written only when it exists.
+        if !g.fill.is_none()
+            && let Some(id) = self.swatch_ids.get(&g.fill.swatch)
+        {
+            el.set("FillColor", id.clone());
+            el.set("FillTint", pct(g.fill.tint as f64));
+        }
         let embed = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
         let mut props = Vec::new();
         if embed {
@@ -1822,6 +2085,15 @@ impl<'a> Ex<'a> {
         }
         props.push(El::new("GraphicBounds").attr("Left", "0").attr("Top", "0").attr("Right", num(g.size.0)).attr("Bottom", num(g.size.1)));
         let mut el = with_props(el, props);
+        if !g.wrap.is_default() {
+            el.push(text_wrap_pref(&g.wrap));
+        }
+        if let Some(c) = &g.clip {
+            el.push(clipping_settings(c));
+        }
+        if let Some(options) = &g.layer_options {
+            el.push(self.layer_option_el(options));
+        }
         let uri = match &asset.link {
             Some(l) => path_to_uri(l),
             None => format!("file:{}", asset.name),
@@ -1832,7 +2104,7 @@ impl<'a> Ex<'a> {
                 .attr("AssetURL", "$ID/")
                 .attr("AssetID", "$ID/")
                 .attr("LinkResourceURI", uri)
-                .attr("LinkResourceFormat", format!("$ID/{}", format_name(&asset.mime)))
+                .attr("LinkResourceFormat", format!("$ID/{}", format_name(if is_eps { "application/postscript" } else { &asset.mime })))
                 .attr("StoredState", if embed { "Embedded" } else { "Normal" })
                 .attr("LinkClassID", "35906")
                 .attr("LinkClientID", "257")
@@ -1845,7 +2117,67 @@ impl<'a> Ex<'a> {
                 .attr("ImportPolicy", "NoAutoImport")
                 .attr("ExportPolicy", "NoAutoExport"),
         );
+        if is_pdf {
+            // `GraphicBounds` span the chosen box, as graphic space does. Without `PDFAttribute`
+            // the page would be cropped to its visible content, which changes the graphic's size
+            // and so its scale and position.
+            el.push(
+                El::new("PDFAttribute")
+                    .attr("PageNumber", asset.page.saturating_add(1))
+                    .attr("PDFCrop", names::pdf_crop_out(asset.pdf_crop))
+                    .attr("TransparentBackground", "true"),
+            );
+        }
         el
+    }
+
+    /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and the nested layer tree.
+    fn layer_option_el(&mut self, options: &designcraft_doc::GraphicLayerOptions) -> El {
+        let mut option = El::new("GraphicLayerOption");
+        for (key, value) in &options.attributes {
+            if graphic_layer_attribute_name(key) {
+                option.set(key, value);
+            }
+        }
+        // Only an ancestor whose subtree is still open can parent the next layer.
+        // Reopening a closed subtree would reorder native-edited lists on roundtrip.
+        let mut open = Vec::new();
+        let mut parents = Vec::with_capacity(options.layers.len());
+        for i in 0..options.layers.len() {
+            let parent = options.parents.get(i).copied().flatten();
+            if let Some(at) = parent.and_then(|p| open.iter().position(|id| *id == p)).filter(|at| *at < 239) {
+                open.truncate(at + 1);
+                parents.push(parent);
+            } else {
+                open.clear();
+                parents.push(None);
+            }
+            open.push(i);
+        }
+        let mut children: Vec<Vec<El>> = vec![Vec::new(); options.layers.len()];
+        let mut roots = Vec::new();
+        for (i, attributes) in options.layers.iter().enumerate().rev() {
+            let mut layer = El::new("GraphicLayer").attr("Self", self.fresh());
+            for (key, value) in attributes {
+                if graphic_layer_attribute_name(key) {
+                    layer.set(key, value);
+                }
+            }
+            if let Some(nested) = children.get_mut(i) {
+                for child in std::mem::take(nested).into_iter().rev() {
+                    layer.push(child);
+                }
+            }
+            if let Some(nested) = parents.get(i).copied().flatten().and_then(|parent| children.get_mut(parent)) {
+                nested.push(layer);
+            } else {
+                roots.push(layer);
+            }
+        }
+        for layer in roots.into_iter().rev() {
+            option.push(layer);
+        }
+        option
     }
 
     /// `<Index>`: nested topics with their See / See also cross-references.
@@ -1918,7 +2250,7 @@ impl<'a> Ex<'a> {
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
         let mut props = El::new("Properties");
-        props.push(enumv("FootnoteNumberingStyle", names::note_style_out(o.style)));
+        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(o.style)));
         props.push(enumv("RestartNumbering", restart));
         props.push(enumv("ShowPrefixSuffix", affix));
         props.push(enumv("MarkerPositioning", names::note_marker_out(o.ref_position)));
@@ -1959,11 +2291,19 @@ impl<'a> Ex<'a> {
     // ---------- stories ----------
 
     fn story_el(&mut self, s: &Story) -> El {
-        let mut el = El::new("Story").attr("Self", uid(s.id.0)).attr("AppliedTOCStyle", "n").attr("TrackChanges", "false").attr("StoryTitle", "$ID/");
+        let toc = self.d.toc.as_ref().is_some_and(|t| t.story == s.id);
+        let mut el = El::new("Story")
+            .attr("Self", uid(s.id.0))
+            .attr("AppliedTOCStyle", if toc { TOC_STYLE_ID } else { "n" })
+            .attr("TrackChanges", "false")
+            .attr("StoryTitle", "$ID/");
         el.push(
             El::new("StoryPreference")
-                .attr("OpticalMarginAlignment", "false")
-                .attr("OpticalMarginSize", "12")
+                .attr("OpticalMarginAlignment", bool_s(s.optical_margin.on))
+                .attr(
+                    "OpticalMarginSize",
+                    num(designcraft_doc::OpticalMargin::clamp_size(s.optical_margin.size).unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE)),
+                )
                 .attr("FrameType", "TextFrameType")
                 .attr("StoryOrientation", if s.vertical { "Vertical" } else { "Horizontal" })
                 .attr(
@@ -2091,6 +2431,7 @@ impl<'a> Ex<'a> {
                                     object_point,
                                     ref_point,
                                     keep_within_column,
+                                    spine_relative,
                                 } => El::new("AnchoredObjectSetting")
                                     .attr("AnchoredPosition", "Anchored")
                                     .attr("AnchorPoint", names::anchor_out(*object_point))
@@ -2098,9 +2439,11 @@ impl<'a> Ex<'a> {
                                     .attr("VerticalReferencePoint", names::anchor_rel_out(*y_relative, true))
                                     .attr("HorizontalAlignment", ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize])
                                     .attr("VerticalAlignment", ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize])
-                                    .attr("AnchorXoffset", num(*x_offset))
+                                    // IDML measures a left-aligned object's X offset leftwards.
+                                    .attr("AnchorXoffset", num(if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset }))
                                     .attr("AnchorYoffset", num(*y_offset))
-                                    .attr("PinPosition", bool_s(*keep_within_column)),
+                                    .attr("PinPosition", bool_s(*keep_within_column))
+                                    .attr("SpineRelative", bool_s(*spine_relative)),
                             };
                             e.push(setting);
                             out.push(Node::El(e));
@@ -2172,6 +2515,19 @@ impl<'a> Ex<'a> {
                             csrs.push(src);
                             self.xref_sources.push((me, x.target));
                         }
+                    } else if let Some(vi) = designcraft_doc::vars::var_index(ch) {
+                        flush_text(&mut cur, &mut pending);
+                        flush_content(&mut pending, &mut out);
+                        if let Some(v) = self.d.text_variables.get(vi) {
+                            let result = self.d.variable_value(vi, None).unwrap_or_else(|| format!("{}{}", v.before, v.after));
+                            out.push(Node::El(
+                                El::new("TextVariableInstance")
+                                    .attr("Self", self.fresh())
+                                    .attr("Name", &v.name)
+                                    .attr("ResultText", result)
+                                    .attr("AssociatedTextVariable", format!("dTextVariablen{}", v.name)),
+                            ));
+                        }
                     } else if ch == designcraft_doc::NOTE_MARK {
                         // Editorial notes aren't written to IDML yet.
                     } else if ch == designcraft_doc::ENDNOTE_REF {
@@ -2215,13 +2571,33 @@ impl<'a> Ex<'a> {
                 flush_content(&mut pending, &mut out);
                 let is_last_seg = k + 1 == nseg;
                 // A break character that ends the paragraph was written as its `Br`.
-                if is_last_seg && !last && !ends_with_break {
-                    out.push(Node::El(El::new("Br")));
-                }
-                if !out.is_empty() || csrs.is_empty() {
+                let para_br = is_last_seg && !last && !ends_with_break;
+                if !out.is_empty() || csrs.is_empty() || para_br {
                     let mut c = self.csr_el(&f);
                     c.children.extend(out);
                     csrs.push(c);
+                }
+                // Tracked changes wrap the text they mark.
+                if let Some(kind) = change_type(f.over.change) {
+                    for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
+                        let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
+                        ch.children = std::mem::take(&mut c.children);
+                        c.push(ch);
+                    }
+                }
+                if para_br && let Some(c) = csrs.last_mut() {
+                    let nl = s.runs().find(|(rr, _)| rr.contains(&r.end)).and_then(|(_, nf)| change_type(nf.over.change));
+                    match nl {
+                        None => c.push(El::new("Br")),
+                        Some(kind) => match c.children.last_mut() {
+                            Some(Node::El(ch)) if ch.name == "Change" && ch.get("ChangeType") == Some(kind) => ch.push(El::new("Br")),
+                            _ => {
+                                let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
+                                ch.push(El::new("Br"));
+                                c.push(ch);
+                            }
+                        },
+                    }
                 }
                 for c in csrs {
                     psr.push(c);
@@ -2237,6 +2613,10 @@ impl<'a> Ex<'a> {
         el.set(&format!("{prefix}StrokeColor"), self.sw(&s.color));
         el.set(&format!("{prefix}StrokeTint"), pct(s.tint as f64));
         el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(&s.kind));
+        if s.gap_color != designcraft_color::swatch::NONE || s.gap_tint != 1.0 {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(&s.gap_color));
+            el.set(&format!("{prefix}StrokeGapTint"), pct(s.gap_tint as f64));
+        }
     }
 
     fn partial_cell_stroke_attrs(&self, el: &mut El, prefix: &str, attrs: &designcraft_doc::CellStrokeAttrs) {
@@ -2251,6 +2631,12 @@ impl<'a> Ex<'a> {
         }
         if let Some(value) = &attrs.kind {
             el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(value));
+        }
+        if let Some(value) = &attrs.gap_color {
+            el.set(&format!("{prefix}StrokeGapColor"), self.sw(value));
+        }
+        if let Some(value) = attrs.gap_tint {
+            el.set(&format!("{prefix}StrokeGapTint"), pct(value as f64));
         }
     }
 
@@ -2409,6 +2795,8 @@ impl<'a> Ex<'a> {
                     .attr("BottomInset", num(cell.insets[2]))
                     .attr("RightInset", num(cell.insets[3]))
                     .attr("VerticalJustification", vj)
+                    .attr("FirstBaselineOffset", names::first_baseline_out(cell.first_baseline))
+                    .attr("MinimumFirstBaselineOffset", num(cell.first_baseline_min))
                     .attr("RotationAngle", num(cell.rotation));
                 for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
                     // Do not turn absent native defaults into explicit shared-edge candidates.
@@ -2428,7 +2816,25 @@ impl<'a> Ex<'a> {
                         ce.set(&format!("{side}StrokePriority"), priority);
                     }
                 }
-                for psr in self.story_paras(&cell.text) {
+                let mut paras = self.story_paras(&cell.text);
+                // A graphic cell holds its image as an inline object in the cell's first paragraph.
+                if let Some(g) = &cell.graphic
+                    && let Some(object) = self.cell_graphic_el(g)
+                {
+                    // The cell clips its graphic on screen and in PDF; IDML does so only when asked.
+                    ce.set("ClipContentToCell", bool_s(true));
+                    let mut range = self.csr_el(&CharFormat::default());
+                    range.push(object);
+                    match paras.first_mut() {
+                        Some(first) => first.push(range),
+                        None => {
+                            let mut psr = self.psr_el(&ParaFormat::default());
+                            psr.push(range);
+                            paras.push(psr);
+                        }
+                    }
+                }
+                for psr in paras {
                     ce.push(psr);
                 }
                 el.push(ce);
@@ -2437,10 +2843,26 @@ impl<'a> Ex<'a> {
         el
     }
 
+    /// The frame of a table cell's graphic: an inline `Rectangle` around the shown image, or `None`
+    /// when the graphic's asset is missing.
+    fn cell_graphic_el(&mut self, g: &designcraft_doc::Graphic) -> Option<El> {
+        self.d.assets.get(&g.asset)?;
+        let shown = g.xf.transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        let layer = self.d.layers.first().map(|l| l.id).unwrap_or(designcraft_doc::ids::LayerId(0));
+        let mut item = Item::new(designcraft_doc::ids::ItemId(0), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(shown));
+        item.content = Content::Graphic(g.clone());
+        let mut el = self.item_el(&item, Affine::IDENTITY);
+        el.set("Self", self.fresh());
+        el.push(El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", "0"));
+        Some(el)
+    }
+
     fn psr_el(&mut self, pf: &ParaFormat) -> El {
         let mut el = El::new("ParagraphStyleRange").attr("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, &pf.style));
         let mut props = Vec::new();
-        self.para_attrs(&mut el, &mut props, &pf.para, Some(&pf.style));
+        let styles = &self.d.styles;
+        let pa = with_list_tab(pf.para.clone(), || (styles.resolve_para(pf).0, styles.resolve_para_style(&pf.style).0));
+        self.para_attrs(&mut el, &mut props, &pa, Some(&pf.style));
         self.char_attrs(&mut el, &mut props, &pf.chars);
         with_props(el, props)
     }
@@ -2456,6 +2878,37 @@ impl<'a> Ex<'a> {
         self.char_attrs(&mut el, &mut props, &f.over);
         with_props(el, props)
     }
+}
+
+/// The left stop the composer adds for a list's Tab Position, if it adds one.
+fn list_tab_stop(pp: &designcraft_doc::ParaProps) -> Option<f64> {
+    if !matches!(pp.list_type, ListType::Bullets | ListType::Numbers) {
+        return None;
+    }
+    pp.list_tab.filter(|t| t.is_finite() && *t >= 0.0 && !pp.tabs.iter().any(|s| (s.position - t).abs() < 1e-6))
+}
+
+/// IDML has no attribute for the bullets-and-numbering Tab Position, so it is written as the left
+/// stop the composer adds for it, in the TabList of each level (style or paragraph) that sets the
+/// list type, the tab position or the tabs. `resolved` gives this level's resolved attributes and
+/// those it inherits; the stop comes back on import as an ordinary tab stop.
+fn with_list_tab(mut a: ParaAttrs, resolved: impl FnOnce() -> (designcraft_doc::ParaProps, designcraft_doc::ParaProps)) -> ParaAttrs {
+    if a.list_tab.is_none() && a.tabs.is_none() && a.list_type.is_none() {
+        return a;
+    }
+    let (here, parent) = resolved();
+    let stop = list_tab_stop(&here);
+    // An inherited TabList holds the parent's stop; a level that ends the list writes its tabs without it.
+    if stop.is_none() && list_tab_stop(&parent).is_none() {
+        return a;
+    }
+    let mut tabs = here.tabs;
+    if let Some(t) = stop {
+        tabs.push(designcraft_doc::TabStop { position: t, align: designcraft_doc::TabAlign::Left, leader: String::new(), align_on: String::new() });
+        tabs.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    a.tabs = Some(tabs);
+    a
 }
 
 /// Style folder tree (names `A/B/C` → groups A, B).
@@ -2499,8 +2952,9 @@ impl Group {
 
 fn margin_el(pg: &designcraft_doc::Page) -> El {
     let m = pg.margin_rect();
-    let cols = designcraft_doc::column_rects(Rect::new(0.0, 0.0, m.width(), m.height()), pg.columns.count.max(1), pg.columns.gutter);
-    let pos: Vec<String> = cols.iter().flat_map(|c| [num(c.x0), num(c.x1)]).collect();
+    // Dragged column guides that still fit the margin box are written as they stand, so they
+    // survive the round trip; otherwise the even split, which InDesign writes for unmoved columns.
+    let pos: Vec<String> = pg.columns.edges(m.width()).into_iter().map(num).collect();
     El::new("MarginPreference")
         .attr("ColumnCount", pg.columns.count.max(1))
         .attr("ColumnGutter", num(pg.columns.gutter))
@@ -2513,6 +2967,28 @@ fn margin_el(pg: &designcraft_doc::Page) -> El {
 }
 
 /// `rule_color` is the IDML reference of the column rule's swatch.
+/// `TextWrapPreference` of a page item or a placed graphic.
+fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
+    with_props(
+        El::new("TextWrapPreference")
+            .attr("Inverse", bool_s(w.invert))
+            .attr("ApplyToMasterPageOnly", "false")
+            .attr("TextWrapSide", names::wrap_side_out(w.side))
+            .attr("TextWrapMode", names::wrap_mode_out(w.mode)),
+        w.path
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(path_geometry)
+            .chain([El::new("TextWrapOffset")
+                .attr("Top", num(w.offsets[0]))
+                .attr("Left", num(w.offsets[1]))
+                .attr("Bottom", num(w.offsets[2]))
+                .attr("Right", num(w.offsets[3]))])
+            .collect(),
+    )
+    .child(El::new("ContourOption").attr("ContourType", names::contour_type_out(w.contour)).attr("IncludeInsideEdges", "false"))
+}
+
 fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
     let mut inset = El::new("InsetSpacing").attr("type", "list");
     for v in o.inset {
@@ -2530,29 +3006,43 @@ fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
         .attr("VerticalThreshold", num(o.vj_paragraph_spacing_limit))
         .attr("IgnoreWrap", bool_s(o.ignore_wrap))
         .attr("AutoSizingType", names::auto_size_out(o.auto_size))
-        .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)]);
+        .attr("AutoSizingReferencePoint", names::REF_POINTS[(o.auto_size_ref as usize).min(8)])
+        .attr("UseMinimumHeightForAutoSizing", bool_s(o.auto_size_use_min_height))
+        .attr("MinimumHeightForAutoSizing", num(o.auto_size_min_height))
+        .attr("UseMinimumWidthForAutoSizing", bool_s(o.auto_size_use_min_width))
+        .attr("MinimumWidthForAutoSizing", num(o.auto_size_min_width))
+        .attr("UseNoLineBreaksForAutoSizing", bool_s(o.auto_size_no_line_breaks));
     let el = if o.column_width > 0.0 { el.attr("TextColumnFixedWidth", num(o.column_width)) } else { el };
-    let d = TextFrameOptions::default();
-    let rule_set = o.column_rule
-        || o.column_rule_weight != d.column_rule_weight
-        || o.column_rule_color != d.column_rule_color
-        || o.column_rule_tint != d.column_rule_tint
-        || o.column_rule_offset != d.column_rule_offset
-        || o.column_rule_top_inset != d.column_rule_top_inset
-        || o.column_rule_bottom_inset != d.column_rule_bottom_inset;
-    let el = if rule_set {
-        el.attr("ColumnRuleOverride", bool_s(o.column_rule))
-            .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
-            .attr("ColumnRuleStrokeColor", rule_color)
-            .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
-            .attr("ColumnRuleOffset", num(o.column_rule_offset))
-            .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
-            .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
-            .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset))
-    } else {
-        el
-    };
+    // Written on every frame: on import a frame takes any value it lacks from its object style.
+    let el = el
+        .attr("ColumnRuleOverride", bool_s(o.column_rule))
+        .attr("ColumnRuleStrokeWidth", num(o.column_rule_weight))
+        .attr("ColumnRuleStrokeColor", rule_color)
+        .attr("ColumnRuleStrokeTint", num(f64::from(o.column_rule_tint) * 100.0))
+        .attr("ColumnRuleOffset", num(o.column_rule_offset))
+        .attr("ColumnRuleTopInset", num(o.column_rule_top_inset))
+        .attr("ColumnRuleBottomInset", num(o.column_rule_bottom_inset))
+        .attr("ColumnRuleInsetChainOverride", bool_s(o.column_rule_top_inset == o.column_rule_bottom_inset));
     with_props(el, vec![inset])
+}
+
+/// `<ClippingPathSettings>` with the outline (graphic space is the image's inner space, whose
+/// `GraphicBounds` start at 0,0).
+fn clipping_settings(c: &designcraft_doc::ClippingPath) -> El {
+    let mut geometry = path_geometry(&c.path);
+    geometry.name = "ClippingPathGeometry".into();
+    let el = El::new("ClippingPathSettings")
+        .attr("ClippingType", names::clipping_kind_out(c.kind))
+        .attr("InvertPath", bool_s(c.invert))
+        .attr("IncludeInsideEdges", bool_s(c.include_inside_edges))
+        .attr("RestrictToFrame", bool_s(c.restrict_to_frame))
+        .attr("UseHighResolutionImage", bool_s(c.use_high_resolution))
+        .attr("Threshold", num(c.threshold))
+        .attr("Tolerance", num(c.tolerance))
+        .attr("InsetFrame", num(c.inset))
+        .attr("AppliedPathName", if c.source_name.is_empty() { "$ID/" } else { c.source_name.as_str() })
+        .attr("Index", c.source_index.to_string());
+    with_props(el, vec![geometry])
 }
 
 fn path_geometry(path: &PathData) -> El {
@@ -2605,6 +3095,7 @@ fn format_name(mime: &str) -> &'static str {
         "image/gif" => "GIF",
         "image/tiff" => "TIFF",
         "application/pdf" => "Adobe Portable Document Format (PDF)",
+        "application/postscript" => "Encapsulated PostScript (EPS)",
         _ => "Portable Network Graphics (PNG)",
     }
 }
@@ -2709,4 +3200,287 @@ fn topic_self(path: &[String]) -> String {
         s.push_str(&escape_id(n));
     }
     s
+}
+
+/// Package metadata: the creation and modification times that date variables show.
+fn metadata_xmp(d: &Document) -> String {
+    use designcraft_doc::vars::format_date;
+    let iso = |t: i64| format!("{}:{:02}Z", format_date(t, "yyyy-MM-ddTHH:mm"), t.rem_euclid(60));
+    let modified = if d.modified > 0 { d.modified } else { d.created };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n   <xmp:CreateDate>{}</xmp:CreateDate>\n   <xmp:ModifyDate>{}</xmp:ModifyDate>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n",
+        iso(d.created),
+        iso(modified)
+    )
+}
+
+/// The page's ruler guides, measured from the ruler origin written in the preferences.
+fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &mut El, page_index: usize) {
+    let facing = d.settings.facing_pages;
+    // Ruler guides, measured from the ruler origin written in the preferences: the
+    // spread's top left, the page's, or the spine (the import reads them the same way).
+    let left = sp.pages.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    let left = if left.is_finite() { left } else { 0.0 };
+    let spine = sp.pages.iter().map(|p| p.x - left).filter(|x| *x > 1e-6).fold(f64::INFINITY, f64::min);
+    let spine = if spine.is_finite() && facing { spine } else { 0.0 };
+    let origin_x = match d.settings.ruler_origin {
+        designcraft_doc::RulerOrigin::Spread => left,
+        designcraft_doc::RulerOrigin::Page => pg.x,
+        designcraft_doc::RulerOrigin::Spine => left + spine,
+    };
+    for g in &pg.guides {
+        let vertical = g.orientation == designcraft_doc::Orientation::Vertical;
+        let mut ge = El::new("Guide")
+            .attr("Self", format!("{}g{}", uid(pg.id.0), pe.elements().count()))
+            .attr("Orientation", if vertical { "Vertical" } else { "Horizontal" })
+            .attr("Location", num(if vertical { g.position - origin_x } else { g.position }))
+            .attr("FitToPage", bool_s(!g.spread))
+            .attr("ViewThreshold", "5")
+            .attr("Locked", bool_s(g.locked))
+            .attr("PageIndex", page_index.to_string())
+            .attr("GuideType", if g.liquid { "Liquid" } else { "Ruler" });
+        if let Some(l) = g.layer {
+            ge.set("ItemLayer", uid(l.0));
+        }
+        pe.push(ge);
+    }
+}
+
+/// A `MojikumiTable` element with its spacing overrides.
+fn mojikumi_table_el(t: &designcraft_doc::cjk::MojikumiTable) -> El {
+    let mut e = El::new("MojikumiTable").attr("Self", format!("MojikumiTable/{}", escape_id(&t.name))).attr("Name", &t.name);
+    if !t.based_on.is_empty() {
+        e.set("BasedOnMojikumiSet", &t.based_on);
+    }
+    if !t.overrides.is_empty() {
+        let mut list = El::new("OverrideMojikumiAkiList");
+        for r in &t.overrides {
+            list.push(
+                El::new("OverrideMojikumiAkiType")
+                    .attr("TargetMojikumiClass", r.target_class)
+                    .attr("SideMojikumiClass", r.side_class)
+                    .attr("SideIsAfterTarget", bool_s(r.after))
+                    .attr("Minimum", num(r.minimum))
+                    .attr("Desired", num(r.desired))
+                    .attr("Maximum", num(r.maximum))
+                    .attr("CompressionPriority", r.priority)
+                    .attr("AkiDoesNotFloat", bool_s(r.does_not_float)),
+            );
+        }
+        e.push(El::new("Properties").child(list));
+    }
+    e
+}
+
+/// A `Layer` element with its colour property.
+fn layer_el(l: &designcraft_doc::Layer) -> El {
+    let color = match names::layer_color_out(l.color) {
+        Some(n) => p("LayerColor", "enumeration", n),
+        None => {
+            let mut e = El::new("LayerColor").attr("type", "list");
+            for c in l.color {
+                e.push(p("ListItem", "double", num(c as f64)));
+            }
+            e
+        }
+    };
+    let el = El::new("Layer")
+        .attr("Self", uid(l.id.0))
+        .attr("Name", &l.name)
+        .attr("Visible", bool_s(l.visible))
+        .attr("Locked", bool_s(l.locked))
+        .attr("IgnoreWrap", bool_s(l.suppress_wrap_when_hidden))
+        .attr("ShowGuides", bool_s(l.show_guides))
+        .attr("LockGuides", "false")
+        .attr("UI", "true")
+        .attr("Expendable", "true")
+        .attr("Printable", bool_s(l.printable));
+    with_props(el, vec![color])
+}
+
+/// A `Color` element. `flags` is (editable, removable, visible).
+fn color_el(self_id: &str, name: &str, model: &str, c: &Color, over: &str, (editable, removable, visible): (bool, bool, bool)) -> El {
+    let (space, val) = color_value(c);
+    El::new("Color")
+        .attr("Self", self_id)
+        .attr("Model", model)
+        .attr("Space", space)
+        .attr("ColorValue", val)
+        .attr("ColorOverride", over)
+        .attr("AlternateSpace", "NoAlternateColor")
+        .attr("AlternateColorValue", "")
+        .attr("Name", name)
+        .attr("ColorEditable", bool_s(editable))
+        .attr("ColorRemovable", bool_s(removable))
+        .attr("Visible", bool_s(visible))
+        .attr("SwatchCreatorID", "7937")
+}
+
+/// A text variable definition with its type's settings element.
+fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
+    use designcraft_doc::vars::{Use, VarKind};
+    let pref = |name: &str| El::new(name).attr("TextBefore", &v.before);
+    let (ty, settings) = match &v.kind {
+        VarKind::Custom { text } => ("CustomTextType", Some(pref("CustomTextVariablePreference").attr("Contents", text))),
+        VarKind::LastPageNumber { section } => (
+            "LastPageNumberType",
+            Some(
+                pref("PageNumberVariablePreference").attr("Format", "Current").attr("Scope", if *section { "SectionScope" } else { "DocumentScope" }),
+            ),
+        ),
+        VarKind::ChapterNumber => ("ChapterNumberType", Some(pref("ChapterNumberVariablePreference").attr("Format", "Current"))),
+        VarKind::FileName { extension } => {
+            ("FileNameType", Some(pref("FileNameVariablePreference").attr("IncludePath", "false").attr("IncludeExtension", bool_s(*extension))))
+        }
+        VarKind::CreationDate { format } => ("CreationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::ModificationDate { format } => ("ModificationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::OutputDate { format } => ("OutputDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+        VarKind::RunningHeader { style, use_, character } => {
+            let (ty, el, key, style_ref) = if *character {
+                (
+                    "MatchCharacterStyleType",
+                    "MatchCharacterStylePreference",
+                    "AppliedCharacterStyle",
+                    names::style_self("CharacterStyle", CHAR_BUILTINS, style),
+                )
+            } else {
+                (
+                    "MatchParagraphStyleType",
+                    "MatchParagraphStylePreference",
+                    "AppliedParagraphStyle",
+                    names::style_self("ParagraphStyle", PARA_BUILTINS, style),
+                )
+            };
+            let strategy = if *use_ == Use::LastOnPage { "LastOnPage" } else { "FirstOnPage" };
+            (
+                ty,
+                Some(pref(el).attr(key, style_ref).attr("SearchStrategy", strategy).attr("ChangeCase", "None").attr("DeleteEndPunctuation", "false")),
+            )
+        }
+        VarKind::Imported { variable_type, settings_element, settings, .. } => {
+            let el = (!settings_element.is_empty()).then(|| El { name: settings_element.clone(), attrs: settings.clone(), children: vec![] });
+            (variable_type.as_str(), el)
+        }
+    };
+    let mut e = El::new("TextVariable").attr("Self", format!("dTextVariablen{}", v.name)).attr("Name", &v.name).attr("VariableType", ty);
+    if let Some(mut s) = settings {
+        if !matches!(v.kind, VarKind::Imported { .. }) {
+            s.set("TextAfter", &v.after);
+        }
+        e.push(s);
+    }
+    e
+}
+
+/// Auto tate-chu-yoko, Japanese composition and grid settings of a paragraph range or style.
+fn cjk_settings_para(el: &mut El, a: &ParaAttrs) {
+    if let Some(v) = a.auto_tcy {
+        el.set("AutoTcy", v);
+    }
+    if let Some(v) = a.auto_tcy_include_roman {
+        el.set("AutoTcyIncludeRoman", bool_s(v));
+    }
+    if let Some(v) = a.rotate_roman {
+        el.set("RotateSingleByteCharacters", bool_s(v));
+    }
+    if let Some(v) = a.roman_word_break {
+        el.set("AllowArbitraryHyphenation", bool_s(v));
+    }
+    if let Some(v) = a.grid_gyoudori {
+        el.set("GridGyoudori", v);
+    }
+    if let Some(v) = a.paragraph_gyoudori {
+        el.set("ParagraphGyoudori", bool_s(v));
+    }
+}
+
+impl Ex<'_> {
+    /// Kenten Settings, Kenten Color and Shatai of a character range or style.
+    fn cjk_settings_chars(&self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
+        use designcraft_doc::cjk_settings::KentenKind;
+        if let Some(k) = a.kenten_kind
+            && a.kenten != Some(false)
+        {
+            el.set("KentenKind", crate::cjk::kenten_kind_out(k));
+            if k != KentenKind::Custom {
+                el.attrs.retain(|(n, _)| n != "KentenCustomCharacter");
+            } else if let Some(c) = &a.kenten_character {
+                el.set("KentenCustomCharacter", c);
+            }
+        }
+        if let Some(f) = &a.kenten_font {
+            props.push(p("KentenFont", "string", if f.is_empty() { "$ID/".to_string() } else { f.clone() }));
+        }
+        if let Some(st) = &a.kenten_font_style {
+            props.push(if st.is_empty() { p("KentenFontStyle", "enumeration", "Nothing") } else { p("KentenFontStyle", "string", st.clone()) });
+        }
+        if let Some(Some(v)) = a.kenten_size {
+            el.set("KentenFontSize", num(v));
+        }
+        if let Some(v) = a.kenten_x_scale {
+            el.set("KentenXScale", num(v * 100.0));
+        }
+        if let Some(v) = a.kenten_y_scale {
+            el.set("KentenYScale", num(v * 100.0));
+        }
+        if let Some(v) = a.kenten_distance {
+            el.set("KentenPlacement", num(v));
+        }
+        if let Some(v) = a.kenten_position {
+            el.set("KentenPosition", crate::cjk::kenten_position_out(v));
+        }
+        if let Some(v) = a.kenten_alignment {
+            el.set("KentenAlignment", crate::cjk::kenten_alignment_out(v));
+        }
+        if let Some(v) = &a.kenten_character_set {
+            el.set("KentenCharacterSet", v);
+        }
+        // The text's own colour is the string "Text Color" (a property); a swatch is a reference.
+        for (key, color) in [("KentenFillColor", &a.kenten_fill), ("KentenStrokeColor", &a.kenten_stroke)] {
+            match color {
+                Some(c) if c.is_empty() => props.push(p(key, "string", "Text Color")),
+                Some(c) => el.set(key, self.sw(c)),
+                None => {}
+            }
+        }
+        for (key, tint) in [("KentenTint", a.kenten_fill_tint), ("KentenStrokeTint", a.kenten_stroke_tint)] {
+            if let Some(t) = tint {
+                el.set(key, t.map_or_else(|| "-1".to_string(), |t| num(f64::from(t) * 100.0)));
+            }
+        }
+        if let Some(w) = a.kenten_stroke_weight {
+            el.set("KentenWeight", w.map_or_else(|| "-1".to_string(), num));
+        }
+        if let Some(v) = a.kenten_overprint_fill {
+            el.set("KentenOverprintFill", crate::cjk::overprint_out(v));
+        }
+        if let Some(v) = a.kenten_overprint_stroke {
+            el.set("KentenOverprintStroke", crate::cjk::overprint_out(v));
+        }
+        self.shatai_chars(el, a);
+    }
+
+    fn shatai_chars(&self, el: &mut El, a: &CharAttrs) {
+        if let Some(v) = a.shatai_magnification {
+            el.set("ShataiMagnification", num(v));
+        }
+        if let Some(v) = a.shatai_angle {
+            el.set("ShataiDegreeAngle", num(v * crate::cjk::SHATAI_ANGLE_UNITS));
+        }
+        if let Some(v) = a.shatai_adjust_rotation {
+            el.set("ShataiAdjustRotation", bool_s(v));
+        }
+        if let Some(v) = a.shatai_adjust_tsume {
+            el.set("ShataiAdjustTsume", bool_s(v));
+        }
+    }
+}
+
+/// The IDML `ChangeType` of a tracked change.
+fn change_type(mark: Option<designcraft_doc::ChangeMark>) -> Option<&'static str> {
+    match mark {
+        Some(designcraft_doc::ChangeMark::Deleted) => Some("DeletedText"),
+        Some(designcraft_doc::ChangeMark::Inserted) => Some("InsertedText"),
+        _ => None,
+    }
 }

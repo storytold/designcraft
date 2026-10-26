@@ -61,6 +61,76 @@ impl Document {
         }
     }
 
+    /// Where the rulers of spread `r` start before the zero point moves them, for something at
+    /// spread x `x` (a page origin is the page there, or the nearest page): spread coordinates.
+    pub fn ruler_base(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let sp = self.spread(r)?;
+        let b = sp.bounds();
+        Some(match self.settings.ruler_origin {
+            crate::RulerOrigin::Spread => Point::new(b.x0, b.y0),
+            crate::RulerOrigin::Spine => Point::new(sp.spine_x(), b.y0),
+            crate::RulerOrigin::Page => {
+                let pg = sp.pages.get(sp.page_at_x(x)?)?;
+                Point::new(pg.x, b.y0)
+            }
+        })
+    }
+
+    /// Where the rulers and X/Y fields of spread `r` measure from, for something at spread x
+    /// `x`: the ruler origin moved by the document's zero point.
+    pub fn ruler_origin(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let o = self.ruler_base(r, x)?;
+        let [zx, zy] = self.zero_point();
+        Some(Point::new(o.x + zx, o.y + zy))
+    }
+
+    /// The horizontal ruler of spread `r` in pieces `(from x, to x, base)`, spread coordinates,
+    /// covering every x: one piece, or one per page for a page origin.
+    pub fn ruler_pieces(&self, r: SpreadRef) -> Vec<(f64, f64, Point)> {
+        let Some(sp) = self.spread(r) else {
+            return Vec::new();
+        };
+        if self.settings.ruler_origin != crate::RulerOrigin::Page || sp.pages.len() < 2 {
+            return self.ruler_base(r, 0.0).map(|o| (f64::NEG_INFINITY, f64::INFINITY, o)).into_iter().collect();
+        }
+        let mut pages: Vec<&crate::Page> = sp.pages.iter().collect();
+        pages.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let y = sp.bounds().y0;
+        pages
+            .iter()
+            .enumerate()
+            .map(|(i, pg)| {
+                let from = if i == 0 { f64::NEG_INFINITY } else { pg.x };
+                let to = pages.get(i + 1).map_or(f64::INFINITY, |next| next.x);
+                (from, to, Point::new(pg.x, y))
+            })
+            .collect()
+    }
+
+    /// The document's zero point, kept on the pasteboard (a file may hold any numbers).
+    pub fn zero_point(&self) -> [f64; 2] {
+        self.clamp_zero_point(self.settings.zero_point).unwrap_or([0.0, 0.0])
+    }
+
+    /// `p` (a zero point) kept on the pasteboard around the largest spread, the area the canvas
+    /// shows; `None` when it isn't a finite point.
+    pub fn clamp_zero_point(&self, [x, y]: [f64; 2]) -> Option<[f64; 2]> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let (w, h) = self
+            .spreads
+            .iter()
+            .chain(&self.parents)
+            .map(|sp| sp.bounds())
+            .fold((0.0_f64, 0.0_f64), |(w, h), b| (w.max(b.width()), h.max(b.height())));
+        let finite = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let (px, py) = (finite(self.settings.pasteboard.0), finite(self.settings.pasteboard.1));
+        // From any ruler origin (a spine or a page can be at the spread's right edge).
+        let side = px.max(w);
+        Some([x.clamp(-(w + side), w + side), y.clamp(-py, h + py)])
+    }
+
     /// All spread refs: document spreads then parents.
     pub fn spread_refs(&self) -> impl Iterator<Item = SpreadRef> {
         (0..self.spreads.len()).map(SpreadRef::Doc).chain((0..self.parents.len()).map(SpreadRef::Parent))
@@ -87,6 +157,28 @@ impl Document {
 
     pub fn item(&self, id: ItemId) -> Option<&Item> {
         self.item_at(&self.find(id)?)
+    }
+
+    /// Items embedded in stories (including footnotes and table cells), with their
+    /// owning top-level story. Does not follow text-frame references between stories.
+    pub fn anchored_items(&self) -> Vec<(StoryId, &Item)> {
+        let mut out = Vec::new();
+        let mut stories: Vec<_> = self.stories.iter().map(|(id, story)| (*id, story.as_ref())).collect();
+        while let Some((owner, story)) = stories.pop() {
+            stories.extend(story.notes.iter().chain(&story.endnotes).map(|n| (owner, &n.text)));
+            stories.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| (owner, &c.text))));
+            let mut items: Vec<&Item> = story.objects.iter().map(|o| &o.item).collect();
+            while let Some(item) = items.pop() {
+                out.push((owner, item));
+                items.extend(item.children().iter().map(AsRef::as_ref));
+            }
+        }
+        out
+    }
+
+    /// An embedded item is not a spread selection location (`find`).
+    pub fn anchored_item(&self, id: ItemId) -> Option<&Item> {
+        self.anchored_items().into_iter().find_map(|(_, item)| (item.id == id).then_some(item))
     }
 
     pub fn item_mut_at(&mut self, loc: &ItemLoc) -> Option<&mut Item> {
@@ -187,13 +279,9 @@ impl Document {
         self.stories.insert(sid, Arc::new(story));
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
         item.object_style = self.styles.default_text_frame.clone();
-        if let Some(os) = self.styles.object_style(&self.styles.default_text_frame).cloned() {
-            if let Some(f) = os.fill {
-                item.fill = f;
-            }
-            if let Some(s) = os.stroke {
-                item.stroke = s;
-            }
+        // Applied before the content exists, so the frame keeps default text frame options.
+        if let Some(os) = self.styles.object_style(&self.styles.default_text_frame) {
+            os.apply_to(&mut item);
         }
         item.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
         self.insert_item(r, item, None)?;
@@ -222,7 +310,7 @@ impl Document {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             st.frames.insert(at, to);
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
             let it = self.item_mut(to).ok_or(DocError::NoItem(to))?;
             it.content = Content::Text(TextFrame { story: fs, options: TextFrameOptions::default() });
             return Ok(());
@@ -232,20 +320,21 @@ impl Document {
         let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
         let after = other.frames.split_off(pos_to);
         let before = std::mem::take(&mut other.frames);
-        let (vertical, direction) = (other.vertical, other.direction);
+        let (vertical, direction, optical_margin) = (other.vertical, other.direction, other.optical_margin);
         let offset;
         {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             offset = if st.text.is_empty() { 0 } else { st.text.len().saturating_add(1) };
-            // The story keeps its own direction, even when it was empty and takes the other's text.
-            let own = (st.vertical, st.direction);
+            // The story keeps its own direction and options, even when it was empty and takes the
+            // other's text.
+            let own = (st.vertical, st.direction, st.optical_margin);
             st.append_story(other);
-            (st.vertical, st.direction) = own;
+            (st.vertical, st.direction, st.optical_margin) = own;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             for (k, f) in after.iter().enumerate() {
                 st.frames.insert(at + k, *f);
             }
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
         self.remap_thread_story_refs(ts, fs, offset);
         for f in &after {
@@ -259,6 +348,7 @@ impl Document {
             ns.frames = before.clone();
             ns.vertical = vertical;
             ns.direction = direction;
+            ns.optical_margin = optical_margin;
             for f in &before {
                 if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
                     t.story = nid;
@@ -277,7 +367,9 @@ impl Document {
         let from_empty = fs.is_none_or(|fs| self.story(fs).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
         let ts = self.frame_story(to)?;
         let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
-        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else { return self.thread(from, to) };
+        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else {
+            return self.thread(from, to);
+        };
         self.check_thread_links(from, to, true)?;
         if let Some(fs) = fs {
             self.stories.remove(&fs);
@@ -285,7 +377,7 @@ impl Document {
         }
         let st = self.story_mut(ts).ok_or(DocError::NoStory(ts))?;
         st.frames.insert(0, from);
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         let it = self.item_mut(from).ok_or(DocError::NoItem(from))?;
         match it.text_frame_mut() {
             Some(t) => t.story = ts,
@@ -345,7 +437,20 @@ impl Document {
                         && second.is_some_and(|incoming| !incoming.text.is_empty() || st.link.is_some_and(|(parent, _)| parent == incoming.id))
                 })
         };
-        if incompatible {
+        // Removing any ancestor of the survivor would redirect a link back into its own chain.
+        let (removed, survivor) = if keep_to { (fs, second) } else { (ts, first) };
+        let mut parent = survivor.and_then(|st| st.link);
+        let mut absorbs_ancestor = false;
+        // Bound the walk even when an existing document already contains a link cycle.
+        for _ in 0..self.stories.len() {
+            let Some((id, _)) = parent else { break };
+            if Some(id) == removed {
+                absorbs_ancestor = true;
+                break;
+            }
+            parent = self.story(id).and_then(|st| st.link);
+        }
+        if incompatible || absorbs_ancestor {
             return Err(DocError::Invalid("unlink the linked story before merging its text".into()));
         }
         Ok(())
@@ -367,7 +472,9 @@ impl Document {
                 return Err(DocError::Invalid(format!("{id} is locked or on a locked layer")));
             }
         }
-        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else { return Err(DocError::NoItem(to)) };
+        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else {
+            return Err(DocError::NoItem(to));
+        };
         let same_place = match (fl.spread, tl.spread) {
             (SpreadRef::Doc(_), SpreadRef::Doc(_)) => true,
             (a, b) => a == b,
@@ -427,12 +534,12 @@ impl Document {
     /// stays with the first part and may become overset).
     pub fn unthread_after(&mut self, frame: ItemId) -> Result<()> {
         let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
-        let (tail, vertical, direction) = {
+        let (tail, vertical, direction, optical_margin) = {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             let p = st.frames.iter().position(|f| *f == frame).ok_or(DocError::NoItem(frame))?;
             let tail = st.frames.split_off(p + 1);
-            st.rev += 1;
-            (tail, st.vertical, st.direction)
+            st.rev = st.rev.wrapping_add(1);
+            (tail, st.vertical, st.direction, st.optical_margin)
         };
         if tail.is_empty() {
             return Ok(());
@@ -442,6 +549,7 @@ impl Document {
         ns.frames = tail.clone();
         ns.vertical = vertical;
         ns.direction = direction;
+        ns.optical_margin = optical_margin;
         self.stories.insert(nid, Arc::new(ns));
         for f in tail {
             if let Some(t) = self.item_mut(f).and_then(Item::text_frame_mut) {
@@ -455,20 +563,21 @@ impl Document {
     /// `frame` stays on the page with a new empty story.
     pub fn remove_from_thread(&mut self, frame: ItemId) -> Result<()> {
         let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
-        let (vertical, direction) = {
+        let (vertical, direction, optical_margin) = {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             if st.frames.len() < 2 {
                 return Err(DocError::Invalid(format!("frame {frame} is not threaded to another frame")));
             }
             st.frames.retain(|f| *f != frame);
-            st.rev += 1;
-            (st.vertical, st.direction)
+            st.rev = st.rev.wrapping_add(1);
+            (st.vertical, st.direction, st.optical_margin)
         };
         let nid = StoryId(self.alloc());
         let mut ns = Story::new(nid);
         ns.frames = vec![frame];
         ns.vertical = vertical;
         ns.direction = direction;
+        ns.optical_margin = optical_margin;
         self.stories.insert(nid, Arc::new(ns));
         let t = self.item_mut(frame).and_then(Item::text_frame_mut).ok_or(DocError::NoItem(frame))?;
         t.story = nid;
@@ -523,6 +632,61 @@ impl Document {
         None
     }
 
+    /// The first item on a document or parent spread whose geometry isn't finite
+    /// ([`Item::geometry_is_finite`]).
+    pub fn non_finite_item(&self) -> Option<ItemId> {
+        let mut found = None;
+        for sp in self.spreads.iter().chain(&self.parents) {
+            for it in &sp.items {
+                it.walk(&mut |i| {
+                    if found.is_none() && !i.geometry_is_finite() {
+                        found = Some(i.id);
+                    }
+                });
+            }
+        }
+        found
+    }
+
+    /// Every item on document and parent spreads, in groups, and among the objects anchored in
+    /// stories, including the stories in table cells and in notes: walks that must cover every
+    /// placement use this, not [`Document::all_items`].
+    pub fn placed_items(&self) -> Vec<&Item> {
+        let mut v = Vec::new();
+        for sp in self.spreads.iter().chain(&self.parents) {
+            for it in &sp.items {
+                placed_item(it, 0, &mut v);
+            }
+        }
+        for st in self.stories.values() {
+            placed_story_items(st, 0, &mut v);
+        }
+        v
+    }
+
+    /// Applies `f` to every placed item `hit` selects, wherever it sits: on document or parent
+    /// spreads, in groups, and anchored in a story (also inside table cells and notes).
+    /// Returns how many items `f` saw.
+    pub fn update_placed_items(&mut self, hit: impl Fn(&Item) -> bool, mut f: impl FnMut(&mut Item)) -> usize {
+        let mut n = 0;
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            if !sp.items.iter().any(|it| has_hit(it, &hit)) {
+                continue;
+            }
+            for it in Arc::make_mut(sp).items.iter_mut() {
+                if has_hit(it, &hit) {
+                    update_placed_item(Arc::make_mut(it), 0, &hit, &mut f, &mut n);
+                }
+            }
+        }
+        for st in self.stories.values_mut() {
+            if story_has_hit(st, 0, &hit) {
+                update_story_items(Arc::make_mut(st), 0, &hit, &mut f, &mut n);
+            }
+        }
+        n
+    }
+
     /// Every item id (pre-order) on document spreads.
     pub fn all_items(&self) -> Vec<ItemId> {
         let mut v = Vec::new();
@@ -532,6 +696,50 @@ impl Document {
             }
         }
         v
+    }
+
+    /// Calls `f` on every item `hit` selects: on document and parent spreads, inside groups and
+    /// among anchored objects. Only the branches holding a hit are copied (copy-on-write). Returns
+    /// how many items `f` saw.
+    pub fn update_items(&mut self, hit: impl Fn(&Item) -> bool, mut f: impl FnMut(&mut Item)) -> usize {
+        const MAX_GROUP_DEPTH: usize = 64;
+        fn any(it: &Item, hit: &impl Fn(&Item) -> bool) -> bool {
+            let mut found = false;
+            it.walk(&mut |i| found |= hit(i));
+            found
+        }
+        fn update(it: &mut Item, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize, depth: usize) {
+            if hit(it) {
+                f(it);
+                *n += 1;
+            }
+            if depth >= MAX_GROUP_DEPTH {
+                return;
+            }
+            if let Some(children) = it.children_mut() {
+                for c in children.iter_mut().filter(|c| any(c, hit)) {
+                    update(Arc::make_mut(c), hit, f, n, depth + 1);
+                }
+            }
+        }
+        let mut n = 0;
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            if !sp.items.iter().any(|i| any(i, &hit)) {
+                continue;
+            }
+            for it in Arc::make_mut(sp).items.iter_mut().filter(|i| any(i, &hit)) {
+                update(Arc::make_mut(it), &hit, &mut f, &mut n, 0);
+            }
+        }
+        for st in self.stories.values_mut() {
+            if !st.objects.iter().any(|o| any(&o.item, &hit)) {
+                continue;
+            }
+            for o in Arc::make_mut(st).objects.iter_mut().filter(|o| any(&o.item, &hit)) {
+                update(&mut Arc::make_mut(o).item, &hit, &mut f, &mut n, 0);
+            }
+        }
+        n
     }
 
     /// Plain story text with frame/story stats (for agents).
@@ -560,14 +768,102 @@ impl Document {
         st.tables.clear();
         st.notes.clear();
         st.fix_notes();
+        st.endnotes.clear();
+        st.fix_endnotes();
         st.anchors.clear();
         st.xrefs.clear();
         st.index_refs.clear();
         st.objects.clear();
+        st.editorial.clear();
         st.fix_marks();
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         Ok(())
     }
+}
+
+/// How deep nested stories (a cell's text, a footnote's text, an endnote's text) are followed
+/// when every placement is visited. A document nested deeper is left alone.
+const MAX_PLACEMENT_DEPTH: usize = 64;
+
+/// The items anchored in `st`, and in the stories nested in its cells and notes, pre-order.
+fn placed_story_items<'a>(st: &'a Story, depth: usize, v: &mut Vec<&'a Item>) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in &st.objects {
+        placed_item(&o.item, 0, v);
+    }
+    for c in st.tables.values().flat_map(|t| &t.cells) {
+        placed_story_items(&c.text, depth + 1, v);
+    }
+    for n in st.notes.iter().chain(&st.endnotes) {
+        placed_story_items(&n.text, depth + 1, v);
+    }
+}
+
+/// Whether `it` or anything in it is selected by `hit`.
+fn has_hit(it: &Item, hit: &impl Fn(&Item) -> bool) -> bool {
+    fn check(it: &Item, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+        hit(it) || (depth < MAX_PLACEMENT_DEPTH && it.children().iter().any(|child| check(child, depth + 1, hit)))
+    }
+    check(it, 0, hit)
+}
+
+/// [`Document::update_placed_items`] for one item: only the branches holding a hit are copied.
+fn update_placed_item(it: &mut Item, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if hit(it) {
+        f(it);
+        *n += 1;
+    }
+    if depth >= MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    if let Some(children) = it.children_mut() {
+        for c in children.iter_mut().filter(|c| has_hit(c, hit)) {
+            update_placed_item(Arc::make_mut(c), depth + 1, hit, f, n);
+        }
+    }
+}
+
+/// [`Document::update_placed_items`] for the placements of one story, and of the stories nested
+/// in its cells and notes.
+fn update_story_items(st: &mut Story, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in st.objects.iter_mut() {
+        if has_hit(&o.item, hit) {
+            update_placed_item(&mut Arc::make_mut(o).item, 0, hit, f, n);
+        }
+    }
+    for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| story_has_hit(&c.text, depth + 1, hit))) {
+        for c in &mut Arc::make_mut(t).cells {
+            if story_has_hit(&c.text, depth + 1, hit) {
+                update_story_items(&mut c.text, depth + 1, hit, f, n);
+            }
+        }
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if story_has_hit(&note.text, depth + 1, hit) {
+            update_story_items(&mut Arc::make_mut(note).text, depth + 1, hit, f, n);
+        }
+    }
+}
+
+fn placed_item<'a>(it: &'a Item, depth: usize, v: &mut Vec<&'a Item>) {
+    v.push(it);
+    if depth < MAX_PLACEMENT_DEPTH {
+        for child in it.children() {
+            placed_item(child, depth + 1, v);
+        }
+    }
+}
+
+fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+    depth <= MAX_PLACEMENT_DEPTH
+        && (st.objects.iter().any(|o| has_hit(&o.item, hit))
+            || st.tables.values().flat_map(|t| &t.cells).any(|c| story_has_hit(&c.text, depth + 1, hit))
+            || st.notes.iter().chain(&st.endnotes).any(|n| story_has_hit(&n.text, depth + 1, hit)))
 }
 
 /// Does `p` (in the item's parent space) hit `it`?
@@ -587,6 +883,98 @@ pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
     designcraft_geom::hit::stroke_contains(&bp, it.stroke.weight.max(1.0), tol + reach, inner)
 }
 
+/// The frontmost descendant of `it` under `p` that `want` accepts, looking inside nested groups;
+/// `it` itself when nothing inside it matches and `want` accepts it. `p` is in the space `it`
+/// sits in, as [`item_hit`] takes it.
+///
+/// Children are tried front to back and a hidden one is skipped, so of several that `want`
+/// accepts the answer is the one in front. Objects `want` rejects do not hide the ones behind
+/// them: a text frame under a rectangle in the same group is still found.
+pub fn hit_descendant(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool) -> Option<ItemId> {
+    if !item_hit(it, p, tol) {
+        return None;
+    }
+    let inner = it.xf.inverse() * p;
+    let children: Vec<&Arc<Item>> = it.shown_children().collect();
+    for c in children.into_iter().rev() {
+        if c.hidden {
+            continue;
+        }
+        if let Some(id) = hit_descendant(c, inner, tol, want) {
+            return Some(id);
+        }
+    }
+    want(it).then_some(it.id)
+}
+
 /// How far from its path type on a path is hit (points): about a cap height of 12–18 pt type,
 /// either side (the type may sit on or under the path).
 const PATH_TYPE_REACH: f64 = 12.0;
+#[cfg(test)]
+mod placed_item_tests {
+    use super::*;
+
+    #[test]
+    fn exhaustive_placements_keep_unselected_branches_shared() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
+        let id = ItemId(d.alloc());
+        let mut item = Item::new(id, layer, Shape::Rectangle, Default::default());
+        item.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default()))] };
+        let child = item.children()[0].id;
+        let mut table = crate::Table::new(1, 1, 1, 0, 0, 20.0);
+        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default() });
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        let untouched = StoryId(d.alloc());
+        d.stories.insert(untouched, Arc::new(Story::new(untouched)));
+        let snapshot = d.clone();
+        assert!(d.placed_items().iter().any(|i| i.id == child));
+        assert_eq!(d.update_placed_items(|i| i.id == child, |i| i.hidden = true), 1);
+        assert!(d.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(!snapshot.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(Arc::ptr_eq(&d.stories[&untouched], &snapshot.stories[&untouched]));
+        assert!(Arc::ptr_eq(&d.spreads[0], &snapshot.spreads[0]));
+        let unchanged = d.clone();
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|_| false, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+        assert!(d.spreads.iter().zip(&unchanged.spreads).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.parents.iter().zip(&unchanged.parents).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.stories.iter().all(|(id, st)| Arc::ptr_eq(st, &unchanged.stories[id])));
+    }
+    #[test]
+    fn exhaustive_placements_bound_nested_stories_and_groups() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let target = ItemId(d.alloc());
+        let mut item = Item::new(target, layer, Shape::Rectangle, Default::default());
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(item)] };
+            item = group;
+        }
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        assert!(!d.placed_items().iter().any(|i| i.id == target));
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|i| i.id == target, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+
+        let nested = ItemId(d.alloc());
+        let sid = StoryId(d.alloc());
+        let mut story = Story::new(sid);
+        story.insert_object(
+            0,
+            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default() },
+        );
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut outer = Story::new(sid);
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, text: story }));
+            story = outer;
+        }
+        d.stories.insert(sid, Arc::new(story));
+        assert!(!d.placed_items().iter().any(|i| i.id == nested));
+        assert_eq!(d.update_placed_items(|i| i.id == nested, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+    }
+}

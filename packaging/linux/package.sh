@@ -5,11 +5,12 @@
 #   $DIST/designcraft-<version>-linux-<arch>.AppImage.zsync  delta updates (needs zsyncmake)
 #   $DIST/designcraft-<version>-linux-<arch>.deb       Debian, Ubuntu, Mint, Pop!_OS, ...
 #   $DIST/designcraft-<version>-linux-<arch>.rpm       Fedora, openSUSE, RHEL, ...
+#   $DIST/designcraft-<version>-linux-<arch>.pkg.tar.zst  Arch, Manjaro, EndeavourOS, ...
 #   $DIST/designcraft-<version>-linux-<arch>.tar.gz    plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm arch tar"]
 #
-# Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
+# Needs: cargo; nfpm for deb/rpm/arch (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
 # glibc 2.35) so the binaries run on newer ones. Optional: desktop-file-validate, appstreamcli,
 # zsyncmake (the zsync package) for the AppImage's .zsync.
@@ -20,12 +21,12 @@ HERE="$ROOT/packaging/linux"
 APP_ID=ai.storyteller.designcraft
 
 SKIP_BUILD=0
-FORMATS="appimage deb rpm tar"
-while [ $# -gt 0 ]; do
+FORMATS="appimage deb rpm arch tar"
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -42,8 +43,8 @@ BASENAME="designcraft-$VERSION-linux-$ARCH"
 
 echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS)"
 
-if [ "$SKIP_BUILD" = 0 ]; then
-  if [ -n "${CROSS_TARGET:-}" ]; then
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
     (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli --target "$CROSS_TARGET")
   else
     (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
@@ -75,7 +76,10 @@ if command -v appstreamcli >/dev/null; then
   appstreamcli validate --no-net --explain "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 fi
 
-has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+has() {
+  local fmt="$1"
+  case " $FORMATS " in *" $fmt "*) return 0 ;; *) return 1 ;; esac
+}
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
 if has tar; then
@@ -85,8 +89,8 @@ if has tar; then
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi
 
-# ---- .deb / .rpm --------------------------------------------------------------------------------
-if has deb || has rpm; then
+# ---- .deb / .rpm / .pkg.tar.zst -----------------------------------------------------------------
+if has deb || has rpm || has arch; then
   command -v nfpm >/dev/null || { echo "error: nfpm not found (https://nfpm.goreleaser.com/install/)" >&2; exit 1; }
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
@@ -95,6 +99,36 @@ if has deb || has rpm; then
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
+  # The Arch package is named by the bundle id (see `archlinux` in nfpm.yaml), which nfpm can't
+  # override per format, and `archlinux.packager` isn't env-expanded, so both are written here.
+  if has arch; then
+    sed "s|^name: designcraft\$|name: $APP_ID|" "$WORK/nfpm.yaml" >"$WORK/nfpm-arch.yaml"
+    grep -qx "name: $APP_ID" "$WORK/nfpm-arch.yaml" || { echo "error: couldn't rename the Arch package" >&2; exit 1; }
+    printf 'archlinux:\n  packager: "%s"\n' "$DESIGNCRAFT_MAINTAINER" >>"$WORK/nfpm-arch.yaml"
+    # nfpm (2.47, 2.48) writes Go's directory bit into the mode of each directory a `type: tree`
+    # entry walks (0o20000000755), and pacman then warns "directory permissions differ" on every
+    # shared directory under /usr/share. List the tree's files one by one instead: nfpm gives their
+    # parent directories a plain 0755.
+    if find "$STAGE/usr/share" ! -type d ! -type f | grep -q .; then
+      echo "error: only plain files can be listed in the Arch package's usr/share" >&2; exit 1
+    fi
+    find "$STAGE/usr/share" -type f | LC_ALL=C sort | while IFS= read -r f; do
+      printf '  - src: "%s"\n    dst: "%s"\n' "$f" "${f#"$STAGE"}"
+    done >"$WORK/arch-share.yaml"
+    awk -v files="$WORK/arch-share.yaml" -v tree="  - src: $STAGE/usr/share/" '
+      $0 == tree { while ((getline line < files) > 0) print line; skip = 2; next }
+      skip > 0 { skip--; next }
+      { print }
+    ' "$WORK/nfpm-arch.yaml" >"$WORK/nfpm-arch.yaml.new"
+    mv "$WORK/nfpm-arch.yaml.new" "$WORK/nfpm-arch.yaml"
+    if grep -q 'type: tree' "$WORK/nfpm-arch.yaml"; then
+      echo "error: couldn't list the Arch package's files" >&2; exit 1
+    fi
+    # Without a fixed time nfpm stamps the files and .MTREE a moment apart, and `pacman -Qkk`
+    # reports every file as modified. The commit time also makes the package reproducible.
+    epoch="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}"
+    (cd "$ROOT" && SOURCE_DATE_EPOCH="$epoch" nfpm package -f "$WORK/nfpm-arch.yaml" -p archlinux -t "$DIST/$BASENAME.pkg.tar.zst")
+  fi
 fi
 
 # ---- AppImage -----------------------------------------------------------------------------------
@@ -103,21 +137,22 @@ if has appimage; then
   case "$ARCH" in
     x86_64) APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 ;;
     aarch64) APPIMAGETOOL_SHA256=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158 ;;
+    # No pinned download (e.g. riscv64): set APPIMAGETOOL or put appimagetool on PATH.
+    *) APPIMAGETOOL_SHA256="" ;;
   esac
   APPDIR="$WORK/DesignCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
   ln -s usr/bin/designcraft "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
   cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
   ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
-  if [ -z "$TOOL" ]; then
+  if [[ -z "$TOOL" ]]; then
     TOOL="$CARGO_TARGET_DIR/appimagetool-$APPIMAGETOOL_VERSION-$ARCH.AppImage"
-    if [ ! -x "$TOOL" ]; then
+    if [[ ! -x "$TOOL" ]]; then
       download="$TOOL.download"
-      curl -fsSL -o "$download" \
+      curl --proto '=https' -fsSL -o "$download" \
         "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
       printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
       chmod 755 "$download"
@@ -143,16 +178,16 @@ if has appimage; then
   # package) appimagetool also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")
   echo "wrote $OUT"
-  if [ -s "$OUT.zsync" ]; then
+  if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi
 fi
 
-if [ -z "${CROSS_TARGET:-}" ]; then
+if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/designcraft-cli" --version
-elif [ -n "${EMULATOR:-}" ]; then
+elif [[ -n "${EMULATOR:-}" ]]; then
   "$EMULATOR" "$STAGE/usr/bin/designcraft-cli" --version
 fi
 echo "==> done"

@@ -33,14 +33,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Library…"))).clicked() {
-            let path = app.services.pick_save.as_mut().and_then(|f| f("Library.dclib"));
+            let path = app.pick_save("Library.dclib");
             let _ = app.run("library.new", json!({"path": path}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("library"))
             && let Err(e) = app.run("library.open", json!({"path": path}))
         {
-            app.status(format!("Library: {e}"));
+            app.status_error("Library", e);
         }
     });
     let Ok(items) = app.session.execute("library.list", &json!({})) else {
@@ -51,7 +51,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     if ui.add_enabled(has_sel, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Selection")))).clicked()
         && let Err(e) = app.run("library.add", json!({}))
     {
-        app.status(format!("Library: {e}"));
+        app.status_error("Library", e);
     }
     ui.separator();
     let items = items.as_array().cloned().unwrap_or_default();
@@ -77,31 +77,58 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Place"))).clicked()
                     && let Err(e) = app.run("library.place", json!({"index": i}))
                 {
-                    app.status(format!("Library: {e}"));
+                    app.status_error("Library", e);
                 }
             });
         });
     }
 }
 
-/// Book panel: the open book's documents with their page ranges; numbering, synchronising and
-/// exporting the whole book.
-pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
+fn book_open_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked()
-            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.dcbook"))
+            && let Some(path) = app.pick_save("Book.dcbook")
             && let Err(e) = app.run("book.new", json!({"path": path}))
         {
-            app.status(format!("Book: {e}"));
+            app.status_error("Book", e);
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("book"))
             && let Err(e) = app.run("book.open", json!({"path": path}))
         {
-            app.status(format!("Book: {e}"));
+            app.status_error("Book", e);
         }
     });
+}
+
+fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked()
+            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open"))
+            && let Err(e) = app.run("book.add", json!({"path": path}))
+        {
+            app.status_error("Book", e);
+        }
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
+            let _ = app.run("book.paginate", json!({}));
+        }
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
+            let _ = app.run("book.syncStyles", json!({}));
+        }
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked()
+            && let Some(path) = app.pick_save("Book.pdf")
+            && let Err(e) = app.run("book.exportPdf", json!({"path": path}))
+        {
+            app.status_error("Book", e);
+        }
+    });
+}
+
+/// Book panel: the open book's documents with their page ranges; numbering, synchronising and
+/// exporting the whole book.
+pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    book_open_buttons(app, ui);
     let Ok(info) = app.session.execute("book.list", &json!({})) else {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No book open.")).size(11.0).color(t.text_dim));
         return;
@@ -140,32 +167,13 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
     }
     ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open"))
-            && let Err(e) = app.run("book.add", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
-        }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
-            let _ = app.run("book.paginate", json!({}));
-        }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
-            let _ = app.run("book.syncStyles", json!({}));
-        }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked()
-            && let Some(path) = app.services.pick_save.as_mut().and_then(|f| f("Book.pdf"))
-            && let Err(e) = app.run("book.exportPdf", json!({"path": path}))
-        {
-            app.status(format!("Book: {e}"));
-        }
-    });
+    book_action_buttons(app, ui);
 }
 
 /// Scripts panel: saved command scripts — run (one undo step), edit, add, delete, load.
 pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let sel_id = egui::Id::new("scripts_sel");
+    let sel_id = egui::Id::unique("scripts_sel");
     let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
     if app.ui.scripts.is_empty() {
         crate::rtl::label(
@@ -195,14 +203,16 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked()
             && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("script"))
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            match std::fs::read_to_string(&path) {
+            // Through the host's reader, like every other file the UI opens: this crate has no
+            // file system of its own.
+            let read = app.services.read.as_mut().map_or_else(|| Err("no file access".to_string()), |r| r(&path));
+            match read.and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())) {
                 Ok(text) => {
                     let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
                     app.ui.scripts.push((name, text));
                     sel = app.ui.scripts.len() - 1;
                 }
-                Err(e) => app.status(format!("Scripts: {e}")),
+                Err(e) => app.status_error("Scripts", e),
             }
         }
         if ui
@@ -222,7 +232,11 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
         && let Some((name, text)) = app.ui.scripts.get(i).cloned()
     {
         match app.run("script.run", json!({"text": text})) {
-            Ok(r) => app.status(format!("{name}: {} step(s) done", r["steps"])),
+            Ok(r) => app.status(
+                crate::i18n::tr(&app.ui.language, "{name}: {count} step(s) done")
+                    .replace("{name}", &name)
+                    .replace("{count}", &r["steps"].to_string()),
+            ),
             Err(e) => app.status(format!("{name}: {e}")),
         }
     }

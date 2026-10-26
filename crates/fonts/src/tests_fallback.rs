@@ -1,6 +1,6 @@
 //! CJK fallback follows the character's language (and the script where it is unambiguous).
 
-use super::*;
+use super::FontDb;
 use crate::testing::font_with;
 
 const HAN: char = '直';

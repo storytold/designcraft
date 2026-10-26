@@ -5,11 +5,10 @@
 
 use std::fmt::Write as _;
 
-use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions, SpreadRef};
-use designcraft_geom::Affine;
+use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions};
 
 use crate::export::Sheet;
-use crate::transitions::{int_after, object, rfind};
+use crate::transitions::{bracketed, int_after, object, rfind};
 
 /// A field placed on an output page: (page index, PDF rectangle, field).
 pub(crate) type Placed = (usize, [f64; 4], FormField);
@@ -18,16 +17,11 @@ pub(crate) type Placed = (usize, [f64; 4], FormField);
 /// bytes, options).
 pub(crate) type PlacedMedia = (usize, [f64; 4], String, String, std::sync::Arc<Vec<u8>>, MediaOptions);
 
-/// Every shown item of the exported pages with its PDF rectangle (origin bottom left).
+/// Every item of the exported pages that goes into the PDF, with its PDF rectangle (origin bottom
+/// left).
 fn visit(doc: &Document, sheets: &[Sheet], mut f: impl FnMut(usize, [f64; 4], &Item)) {
     for (pi, sh) in sheets.iter().enumerate() {
-        let Some(sp) = doc.spread(SpreadRef::Doc(sh.spread)) else { continue };
-        let mut stack: Vec<(Affine, &std::sync::Arc<Item>)> = sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect();
-        while let Some((xf, it)) = stack.pop() {
-            stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
-            if it.hidden {
-                continue;
-            }
+        for (xf, it) in crate::export::exported_items(doc, sh.spread) {
             let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
             if r.width() <= 0.0 || r.height() <= 0.0 {
                 continue;
@@ -100,7 +94,7 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
     let pages_id = int_after(&cat, "/Pages")?;
     let pages = String::from_utf8_lossy(&pdf[object(pdf, pages_id)?]).to_string();
     let kids_str = &pages[pages.find("/Kids")? + 5..];
-    let kids_str = &kids_str[kids_str.find('[')? + 1..kids_str.find(']')?];
+    let kids_str = bracketed(kids_str)?;
     let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
 

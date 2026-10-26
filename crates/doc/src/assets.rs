@@ -2,7 +2,7 @@
 //! compaction a save applies (duplicates merged, unused assets left out).
 //!
 //! An asset holds what is shared by every placement of a file (bytes, link, type, the PDF page
-//! shown); each placement's frame data (transform, crop, fitting) lives on its [`Graphic`].
+//! and crop shown); each placement's frame data (transform, crop, fitting) lives on its [`Graphic`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::BuildHasher;
@@ -15,13 +15,79 @@ use crate::{Asset, AssetId, Content, Document, Item};
 /// is treated as using every asset, so nothing it references is merged away or pruned.
 const MAX_DEPTH: usize = 64;
 
+fn item_layer_options(it: &Item, depth: usize, overrides_only: bool) -> bool {
+    depth > MAX_DEPTH
+        || it.graphic().is_some_and(|g| g.layer_options.as_ref().is_some_and(|o| !overrides_only || o.has_visibility_overrides()))
+        || it.children().iter().any(|child| item_layer_options(child, depth + 1, overrides_only))
+}
+
+fn story_layer_options(st: &Story, depth: usize, overrides_only: bool) -> bool {
+    depth > MAX_DEPTH
+        || st.objects.iter().any(|object| item_layer_options(&object.item, depth + 1, overrides_only))
+        || st.tables.values().flat_map(|table| &table.cells).any(|cell| {
+            cell.graphic.as_ref().is_some_and(|g| g.layer_options.as_ref().is_some_and(|o| !overrides_only || o.has_visibility_overrides()))
+                || story_layer_options(&cell.text, depth + 1, overrides_only)
+        })
+        || st.notes.iter().chain(&st.endnotes).any(|note| story_layer_options(&note.text, depth + 1, overrides_only))
+}
+
+fn item_any(it: &Item, depth: usize, f: &impl Fn(&Item) -> bool) -> bool {
+    depth > MAX_DEPTH || f(it) || it.children().iter().any(|child| item_any(child, depth + 1, f))
+}
+
+fn story_any(st: &Story, depth: usize, f: &impl Fn(&Item) -> bool) -> bool {
+    depth > MAX_DEPTH
+        || st.objects.iter().any(|object| item_any(&object.item, depth + 1, f))
+        || st.tables.values().flat_map(|table| &table.cells).any(|cell| story_any(&cell.text, depth + 1, f))
+        || st.notes.iter().chain(&st.endnotes).any(|note| story_any(&note.text, depth + 1, f))
+}
+
+impl Document {
+    /// Whether saving needs a reader that retains per-placement graphic layer settings.
+    /// Exceeding the traversal budget conservatively requires the newer format.
+    pub fn has_graphic_layer_options(&self) -> bool {
+        self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_layer_options(item, 0, false))
+            || self.stories.values().any(|story| story_layer_options(story, 0, false))
+    }
+
+    /// Whether any placed PDF, on document or parent spreads, in groups or anchored, explicitly
+    /// shows every layer (an override with an empty hidden list). Older readers would take that
+    /// for "use the file's defaults". Exceeding the traversal budget conservatively says yes.
+    pub fn has_explicit_all_on_pdf_layers(&self) -> bool {
+        let all_on = |it: &Item| it.pdf_layer_override && it.pdf_hidden_layers.is_empty();
+        self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_any(item, 0, &all_on))
+            || self.stories.values().any(|story| story_any(story, 0, &all_on))
+    }
+
+    /// Whether any placed PDF, on document or parent spreads, in groups or anchored, has an
+    /// Object Layer Options choice (hidden layers or explicit all-on). Exceeding the traversal
+    /// budget conservatively says yes.
+    pub fn has_pdf_layer_overrides(&self) -> bool {
+        let chosen = |it: &Item| it.has_pdf_layer_override();
+        self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_any(item, 0, &chosen))
+            || self.stories.values().any(|story| story_any(story, 0, &chosen))
+    }
+
+    /// Placements outside the ordinary document-spread frame walk used by preflight.
+    pub fn has_unwalked_graphic_layer_visibility_overrides(&self) -> bool {
+        self.parents.iter().flat_map(|spread| &spread.items).any(|item| item_layer_options(item, 0, true))
+            || self.stories.values().any(|story| story_layer_options(story, 0, true))
+    }
+
+    /// Includes parent items, anchored objects, graphic cells and nested notes.
+    pub fn has_graphic_layer_visibility_overrides(&self) -> bool {
+        self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_layer_options(item, 0, true))
+            || self.stories.values().any(|story| story_layer_options(story, 0, true))
+    }
+}
+
 impl Asset {
-    /// Whether `other` holds the same file: the same type, page, link and bytes. Files at
+    /// Whether `other` holds the same file: the same type, PDF page and crop, link and bytes. Files at
     /// different paths stay apart even with identical bytes, since each can be updated or
     /// relinked on its own. Assets without bytes (a link that couldn't be read) are the same only
     /// when they link to the same path.
     pub fn same_file(&self, other: &Asset) -> bool {
-        if self.mime != other.mime || self.page != other.page {
+        if self.mime != other.mime || self.page != other.page || self.pdf_crop != other.pdf_crop {
             return false;
         }
         if self.link != other.link {
@@ -287,7 +353,7 @@ mod tests {
     use designcraft_geom::{Affine, Rect, shapes};
 
     fn asset(id: u64, data: &[u8]) -> Asset {
-        Asset { id: AssetId(id), name: "p.png".into(), mime: "image/png".into(), link: None, data: Arc::new(data.to_vec()), pixels: None, page: 0 }
+        Asset { id: AssetId(id), name: "p.png".into(), mime: "image/png".into(), data: Arc::new(data.to_vec()), ..Default::default() }
     }
 
     #[test]
@@ -323,6 +389,19 @@ mod tests {
         assert_eq!(d.assets.keys().copied().collect::<Vec<_>>(), (1..=7).map(AssetId).collect::<Vec<_>>());
     }
 
+    /// Two crops of one PDF page are two assets: merging them would show one crop in both frames.
+    #[test]
+    fn pdf_assets_with_different_crops_stay_apart() {
+        let mut d = Document::new(&Default::default());
+        let pdf = |id: u64, pdf_crop: crate::PdfCrop| Asset { mime: "application/pdf".into(), pdf_crop, ..asset(id, b"%PDF-") };
+        let crop = d.add_asset(pdf(1, crate::PdfCrop::Crop));
+        let trim = d.add_asset(pdf(2, crate::PdfCrop::Trim));
+        assert_ne!(crop, trim);
+        assert_eq!(d.add_asset(pdf(3, crate::PdfCrop::Trim)), trim);
+        assert_eq!(d.merge_duplicate_assets(), 0);
+        assert_eq!(d.assets.len(), 2);
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     #[ignore = "manual bounded timing comparison; no timing assertion"]
@@ -343,12 +422,16 @@ mod tests {
     fn graphic_item(id: u64, asset: u64, crop: f64) -> Item {
         let mut it = Item::new(ItemId(id), LayerId(1), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: AssetId(asset),
             size: (10.0, 10.0),
             xf: Affine::translate((crop, 0.0)),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [crop; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         it
     }
@@ -360,6 +443,13 @@ mod tests {
         let b = d.add_asset(asset(2, b"same"));
         let c = d.add_asset(asset(3, b"diff"));
         let p = d.add_asset(Asset { page: 1, ..asset(4, b"same") });
+        // One PDF page shown with two crop boxes: two assets (the box is the asset's).
+        let pdf = |id, pdf_crop| Asset { mime: "application/pdf".into(), pdf_crop, ..asset(id, b"%PDF") };
+        let crop = d.add_asset(pdf(9, crate::PdfCrop::Crop));
+        let art = d.add_asset(pdf(10, crate::PdfCrop::Art));
+        assert_ne!(crop, art);
+        assert_eq!(d.add_asset(pdf(11, crate::PdfCrop::Art)), art);
+        d.assets.retain(|id, _| ![crop, art].contains(id));
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, p);

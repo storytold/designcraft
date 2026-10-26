@@ -9,14 +9,18 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod atomic;
+pub mod autosize;
 pub mod cmd;
 pub mod dtd;
+pub mod file_access;
 pub mod guard;
+pub mod io;
 pub mod links;
 pub mod math;
 pub mod recovery;
 pub mod sample;
 pub mod script;
+pub mod separations;
 mod tooling;
 
 use std::sync::Arc;
@@ -25,11 +29,12 @@ use designcraft_compose::Cache;
 use designcraft_doc::{Document, LayerId, Selection};
 use serde_json::Value;
 
+pub use cmd::params::{check_keys, check_params};
 pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use designcraft_compose as compose;
 pub use designcraft_doc as doc;
 pub use designcraft_tools as tools;
-pub use tooling::{SnapView, UiRequest, ViewInfo};
+pub use tooling::{ImeMutation, ImeTextContext, SnapView, UiRequest, ViewInfo, ime_delete_ranges};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -76,6 +81,8 @@ pub struct Interaction {
     pub doc: Arc<Document>,
     pub selection: Selection,
     pub preview: Option<(String, Value)>,
+    /// The document's revision when the gesture began: a cancel puts it back.
+    pub revision: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +91,8 @@ pub struct DocState {
     pub selection: Selection,
     pub history: History,
     pub path: Option<String>,
+    /// Names the document state for caches keyed `(uid, revision)` (see
+    /// [`DocState::bump_revision`]).
     pub revision: u64,
     pub saved_revision: u64,
     /// The document as last saved (dirty = the current document is a different allocation).
@@ -93,6 +102,9 @@ pub struct DocState {
     /// Editing parent spreads (Pages panel double-click on a parent).
     pub editing_parents: bool,
     pub uid: u64,
+    /// Changes whenever this document state is recreated, even if [`Self::uid`] is preserved
+    /// (File › Revert keeps the uid for recovery but replaces the document).
+    pub identity_epoch: u64,
     /// Recovery entries this state actually opened or published, for repeated-open and cleanup.
     /// Bounded, deduplicated checkpoint addresses; never inferred from uid alone.
     pub(crate) recovery_entries: Vec<(std::path::PathBuf, u64)>,
@@ -110,6 +122,15 @@ pub struct DocState {
 #[derive(Debug)]
 pub struct FontScope(pub u32);
 
+/// A graphic loaded in the place cursor (`place.load`, File › Place with no frame to fill).
+#[derive(Clone, Copy, Debug)]
+pub struct LoadedGraphic {
+    pub asset: designcraft_doc::AssetId,
+    /// Natural size in points: the Image Import Options › Crop to box for a PDF page (the asset's
+    /// `pdf_box`).
+    pub size: (f64, f64),
+}
+
 impl Drop for FontScope {
     fn drop(&mut self) {
         designcraft_fonts::FontDb::global().close_scope(self.0);
@@ -117,28 +138,43 @@ impl Drop for FontScope {
 }
 
 static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_revision() -> u64 {
+    NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 impl DocState {
+    /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
     pub fn new(doc: Document, path: Option<String>) -> Self {
         let active_layer = doc.default_layer();
         let doc = Arc::new(doc);
+        let revision = next_revision();
+        let identity_epoch = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DocState {
             saved_doc: doc.clone(),
             doc,
             selection: Selection::default(),
             history: History { limit: 1000, ..Default::default() },
             path,
-            revision: 1,
-            saved_revision: 1,
+            revision,
+            saved_revision: revision,
             active_layer,
             interaction: None,
             editing_parents: false,
-            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            uid: identity_epoch,
+            identity_epoch,
             recovery_entries: Vec::new(),
             preview_stash: None,
             preview_record: None,
             fonts: None,
         }
+    }
+    /// The document changed: it gets a revision no document state had before. A cancelled
+    /// gesture puts back the revision it began at, so the numbers its previews used are never
+    /// handed out again (a cache entry for one would show the cancelled preview).
+    pub fn bump_revision(&mut self) {
+        self.revision = next_revision();
     }
     pub fn is_dirty(&self) -> bool {
         !Arc::ptr_eq(&self.doc, &self.saved_doc)
@@ -188,6 +224,10 @@ pub struct Prefs {
     /// Preferences › Type › Show Font Names in English: the font menus show CJK families by their
     /// English names instead of their native ones. Documents store the English name either way.
     pub show_font_names_in_english: bool,
+    /// Preferences › Type › Show CJK Features: the menu items, dialogs and panel fields that only
+    /// Japanese, Chinese and Korean typesetting uses. `None` follows the interface language. It
+    /// hides interface only: layout, file formats and commands work either way.
+    pub cjk_features: Option<bool>,
     /// Preferences › Type › Smart Text Reflow: pages follow the primary text frame's story
     /// (added while it oversets, empty ones at the end removed).
     pub smart_text_reflow: bool,
@@ -201,6 +241,36 @@ pub struct Prefs {
     pub show_note_anchors: bool,
     /// Preferences › File Handling: minutes between document recovery saves.
     pub recovery_minutes: f64,
+    /// File › New › Document › Save Document Preset: saved document presets, by name (`title`).
+    pub document_presets: Vec<designcraft_doc::build::NewDocument>,
+    /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
+    /// linked (Links panel) unless `file.place` says otherwise.
+    pub link_text_files: bool,
+    /// File › Open Recent: documents opened or saved, most recent first.
+    pub recent_files: Vec<String>,
+    /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
+    pub recent_files_max: u32,
+}
+
+/// The most recent files Preferences lets File › Open Recent keep.
+pub const MAX_RECENT_FILES: u32 = 100;
+
+impl Prefs {
+    /// Move `path` to the front of File › Open Recent (no duplicates, at most `recent_files_max`).
+    pub fn note_recent_file(&mut self, path: &str) {
+        if path.is_empty() {
+            return;
+        }
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_string());
+        self.trim_recent_files();
+    }
+
+    /// Drop the entries beyond `recent_files_max` (capped at `MAX_RECENT_FILES`).
+    pub fn trim_recent_files(&mut self) {
+        self.recent_files_max = self.recent_files_max.min(MAX_RECENT_FILES);
+        self.recent_files.truncate(self.recent_files_max as usize);
+    }
 }
 
 /// A starter autocorrect list (common English typing slips).
@@ -227,6 +297,7 @@ pub fn default_autocorrect() -> Vec<(String, String)> {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
+            document_presets: Vec::new(),
             show_hidden_characters: false,
             typographers_quotes: true,
             polygon_sides: 6,
@@ -243,12 +314,16 @@ impl Default for Prefs {
             favorite_fonts: Vec::new(),
             recent_fonts: Vec::new(),
             show_font_names_in_english: false,
+            cjk_features: None,
             smart_text_reflow: true,
             autocorrect: false,
             autocorrect_list: default_autocorrect(),
             show_added_text: true,
             show_note_anchors: true,
             recovery_minutes: 0.5,
+            link_text_files: false,
+            recent_files: Vec::new(),
+            recent_files_max: 20,
         }
     }
 }
@@ -256,19 +331,30 @@ impl Default for Prefs {
 pub struct Session {
     docs: Vec<DocState>,
     active: Option<usize>,
+    /// An undoable command is running: the commands it runs are part of its undo step.
+    in_undo_step: bool,
     pub prefs: Prefs,
     pub cache: Arc<Cache>,
     pub(crate) tool: Box<dyn designcraft_tools::Tool>,
+    /// The selection tool a Cmd-held press borrows for one gesture while another tool stays
+    /// chosen (#919). Dropped on release.
+    pub(crate) temp_tool: Option<Box<dyn designcraft_tools::Tool>>,
+    /// The selection tool (`selection` or `directSelection`) chosen last: the one Cmd borrows.
+    pub(crate) last_selection_tool: &'static str,
     pub journal: Vec<(String, Value)>,
+    pub(crate) find_context: Option<cmd::find::FindContext>,
     pub clipboard: Option<Arc<Document>>,
+    /// The x the clipboard's objects are measured from on their spread: its spine, or the left edge of
+    /// single-sided pages. Paste keeps their distance from it.
+    pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
     /// Copied text with its formatting (a frameless story slice) and its plain text.
     pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
-    /// Graphic loaded in the place cursor: (asset, natural size in points).
-    pub loaded: Option<(designcraft_doc::AssetId, (f64, f64))>,
+    /// Graphic loaded in the place cursor.
+    pub loaded: Option<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -276,6 +362,9 @@ pub struct Session {
     pub(crate) transforms: (Vec<(String, Value)>, Vec<designcraft_doc::ItemId>, bool),
     /// Drag and drop text editing: the press landed in the selected text.
     pub(crate) text_drag: bool,
+    /// The word, line, paragraph or story the last `text.selectAt` selected: a drag that follows a
+    /// double, triple or quadruple click extends from it by whole units (#981).
+    pub(crate) text_unit: Option<designcraft_doc::TextSel>,
     /// Character formatting chosen at a bare caret, for the text typed there next.
     pub(crate) typing_format: Option<cmd::text::TypingFormat>,
     /// The open Object Library (File › New / Open Library).
@@ -284,8 +373,12 @@ pub struct Session {
     pub book: Option<cmd::book::Book>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
-    /// Application-session drawing colours chosen with no object selected.
-    pub drawing_colors: Option<(designcraft_doc::Fill, designcraft_doc::Stroke)>,
+    /// New Document's Preview: the preview document's uid and the uid of the document that was
+    /// active before it (see [`Session::preview_new_document`]).
+    pub(crate) new_document_preview: Option<(u64, Option<u64>)>,
+    /// Linked text files checked by the Links panel: path → the size and modification time the
+    /// file had and the hash of its contents then, so a file touched but not changed is read once.
+    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
 }
 
 impl Default for Session {
@@ -295,28 +388,40 @@ impl Default for Session {
 }
 
 impl Session {
+    /// The name `file.new` gives the next document without a title (New Document shows it).
+    pub fn next_untitled_title(&self) -> String {
+        format!("Untitled-{}", self.untitled.saturating_add(1))
+    }
+
     pub fn new() -> Self {
         guard::install_panic_hook();
         Session {
             docs: vec![],
             active: None,
+            in_undo_step: false,
             prefs: Prefs::default(),
             cache: Arc::new(Cache::new()),
             tool: designcraft_tools::create("selection"),
+            temp_tool: None,
+            last_selection_tool: "selection",
             journal: vec![],
+            find_context: None,
             clipboard: None,
+            clipboard_origin: 0.0,
             recovery_dir: None,
             text_clipboard: None,
+            text_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),
             text_drag: false,
+            text_unit: None,
             typing_format: None,
             library: None,
             conveyor: Vec::new(),
-            drawing_colors: None,
             book: None,
             untitled: 0,
+            new_document_preview: None,
         }
     }
 
@@ -364,13 +469,33 @@ impl Session {
     pub fn doc_mut(&mut self) -> Result<&mut DocState> {
         self.active_mut().ok_or(EngineError::NoDocument)
     }
+    /// Release the transient Find/Change domain when its caller starts or closes a search.
+    pub fn reset_find_scope(&mut self) {
+        self.find_context = None;
+    }
+
+    fn discard_stale_find_scope(&mut self) {
+        if self.find_context.as_ref().is_some_and(|c| self.active().is_none_or(|st| !c.is_current(st))) {
+            self.reset_find_scope();
+        }
+    }
+
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() && self.active != Some(i) {
+            // The composition belongs to the document it shows in.
+            if let Err(e) = self.end_composition() {
+                log::warn!("ending the IME composition: {e}");
+            }
+            self.reset_find_scope();
             self.stop_data_preview();
             self.active = Some(i);
         }
     }
     pub fn add_document(&mut self, d: DocState) -> usize {
+        if let Err(e) = self.end_composition() {
+            log::warn!("ending the IME composition: {e}");
+        }
+        self.reset_find_scope();
         self.stop_data_preview();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
@@ -382,7 +507,7 @@ impl Session {
         st.preview_record = None;
         let Some(stash) = st.preview_stash.take() else { return };
         st.doc = stash;
-        st.revision = st.revision.saturating_add(1);
+        st.bump_revision();
     }
     pub fn close_document(&mut self, i: usize) {
         if self.active == Some(i) {
@@ -394,8 +519,14 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
+            self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
+            if self.docs.is_empty() {
+                // Retire this document generation's cache. In-flight render jobs may still
+                // own it, but must not repopulate the idle session's cache after closing.
+                self.cache = Arc::new(Cache::new());
+            }
         }
     }
 
@@ -403,29 +534,45 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        // A command from outside the IME ends its composition first, keeping the marked text as
+        // typed: Undo then takes back that typing, and nothing runs on top of the preview the
+        // composition would drop. Queries and recovery saves leave it alone.
+        if self.tool.composing() && id != "file.recovery.save" && find_command(id).is_some_and(|c| c.journal || c.undoable) {
+            self.end_composition()?;
+        }
         self.guarded(id, |s| s.execute_unguarded(id, params))
     }
 
     fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
-        if let Err(e) = (spec.enabled)(self) {
-            // A command that takes `ids` acts on the objects the call names, so it needs no
-            // selection: with a text caret or nothing selected, `{"ids": [5]}` still runs.
-            let named = if e == cmd::NOTHING_SELECTED { cmd::named_targets(spec, params) } else { None };
-            let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
-            let st = self.doc()?;
-            if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
-                return Err(EngineError::Disabled(id.into(), format!("no object with id {}", gone.0)));
-            }
-        }
+        // The crate's own tests are the audit of the params descriptions (#776): a key a test
+        // passes that its command's description doesn't name fails the test.
+        #[cfg(test)]
+        check_params(id, params)?;
+        self.check_enabled(spec, id, params)?;
         // Preview is temporary. Save, merge, and every other edit restore the template first.
         // Queries stay read-only so the panel can poll fields during a preview. `data.preview`
         // itself is the one command that fills the live document.
         if id != "data.preview" && (spec.undoable || spec.journal) {
             self.stop_data_preview();
         }
-        let before = self.active().map(|d| (d.uid, d.doc.clone()));
-        let r = (spec.run)(self, params)?;
+        // Preview restoration can replace the document before a Find handler resolves bounds.
+        self.discard_stale_find_scope();
+        let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
+        // What an undoable command runs is part of its undo step.
+        let nested = self.in_undo_step;
+        self.in_undo_step = nested || spec.undoable;
+        let ran = (spec.run)(self, params);
+        self.in_undo_step = nested;
+        let r = match ran {
+            Ok(r) => r,
+            Err(e) => {
+                // What it did before it failed can be undone too.
+                self.keep_guide_selection_valid(before.as_ref(), id);
+                self.record_undo_step(spec, before, nested);
+                return Err(e);
+            }
+        };
         // Undo, redo or deleting layers can take the active layer away: new objects would land on
         // a layer that isn't there (invisible, not exported). Fall back to the top layer.
         if let Some(st) = self.active_mut()
@@ -448,20 +595,74 @@ impl Session {
                 st.doc = Arc::new(d);
             }
         }
-        // Record undo if the document changed (and we're not previewing an interaction).
-        if let (Some((uid, old)), Some(st)) = (before, self.active_mut())
+        self.autosize_changed(spec, before.as_ref());
+        self.keep_guide_selection_valid(before.as_ref(), id);
+        self.record_undo_step(spec, before, nested);
+        if spec.journal {
+            self.journal.push((id.to_string(), params.clone()));
+        }
+        self.discard_stale_find_scope();
+        Ok(r)
+    }
+
+    /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
+    fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
+        if let Err(e) = (spec.enabled)(self) {
+            // A command that takes `ids` acts on the objects the call names, so the selection
+            // doesn't matter: with a text caret, nothing selected, or a selection the command
+            // can't act on, `{"ids": [5]}` still runs.
+            let named = if cmd::selection_reason(&e) { cmd::named_targets(spec, params) } else { None };
+            let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
+            let st = self.doc()?;
+            if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+                return Err(EngineError::Disabled(id.into(), format!("no object with id {}", gone.0)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Auto-size frames fit the text the command changed, in the same undo step.
+    fn autosize_changed(&mut self, spec: &CommandSpec, before: Option<&(u64, Arc<Document>, Selection)>) {
+        if spec.undoable
+            && let Some(st) = self.active_mut()
+        {
+            let prev = before.filter(|(uid, _, _)| *uid == st.uid).map(|(_, d, _)| d.as_ref());
+            if prev.is_none_or(|p| !std::ptr::eq(p, st.doc.as_ref())) {
+                let todo = autosize::candidates(&st.doc, prev);
+                if !todo.is_empty() {
+                    let mut d = (*st.doc).clone();
+                    if autosize::fit(&mut d, todo) {
+                        st.doc = Arc::new(d);
+                        st.bump_revision();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drops selected guides the command `id` made stale, against the document as it will be
+    /// recorded: after the passes that run with the command (smart reflow, live captions, autosize).
+    fn keep_guide_selection_valid(&mut self, before: Option<&(u64, Arc<Document>, Selection)>, id: &str) {
+        if let Some(st) = self.active_mut() {
+            let old = before.filter(|(uid, _, _)| *uid == st.uid).map(|(_, d, sel)| (d.as_ref(), sel));
+            cmd::guides::keep_selection_valid(st, old, id);
+        }
+    }
+
+    /// Record undo if the document changed (and we're not previewing an interaction), with the
+    /// selection from before the command. A command run by an undoable one leaves the step to it:
+    /// one command is one undo step.
+    fn record_undo_step(&mut self, spec: &CommandSpec, before: Option<(u64, Arc<Document>, Selection)>, nested: bool) {
+        if let (Some((uid, old, selection)), Some(st)) = (before, self.active_mut())
             && st.uid == uid
             && !Arc::ptr_eq(&old, &st.doc)
             && st.interaction.is_none()
             && spec.undoable
+            && !nested
         {
-            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection: st.selection.clone() };
+            let entry = HistoryEntry { label: spec.label.to_string(), doc: old, selection };
             push_undo(st, entry);
         }
-        if spec.journal {
-            self.journal.push((id.to_string(), params.clone()));
-        }
-        Ok(r)
     }
 
     /// Smart Text Reflow for the primary story: add threaded pages while it oversets; remove
@@ -481,31 +682,27 @@ impl Session {
         }
         let mut d = (*st.doc).clone();
         if overset {
-            let _ = cmd::place_text_autoflow(&mut d, sid, 500, "Smart Text Reflow");
+            let _ = cmd::place_text_autoflow(&mut d, sid, 500, "Smart Text Reflow", true);
         } else {
-            // Drop empty trailing frames on the last pages (one frame, nothing else there).
+            // Drop the last pages while all they hold is empty frames of the story.
             while let Some(story) = d.story(sid) {
-                if story.frames.len() < 2 {
-                    break;
-                }
                 let Some(&last) = story.frames.last() else { break };
-                let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
-                if cs.frame(last).is_some_and(|ft| !ft.range.is_empty()) {
-                    break;
-                }
                 let Some(page) = d.page_of_item(last) else { break };
-                let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).filter(|i| d.page_of_item(i.id) == Some(page)).count() == 1;
-                if page + 1 != d.page_count() || !alone || d.page_count() < 2 {
+                let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+                let on_page: Vec<_> =
+                    d.spreads.iter().flat_map(|sp| sp.items.iter()).map(|i| i.id).filter(|id| d.page_of_item(*id) == Some(page)).collect();
+                let empty = |id: &designcraft_doc::ItemId| story.frames.contains(id) && cs.frame(*id).is_none_or(|ft| ft.range.is_empty());
+                if page + 1 != d.page_count() || d.page_count() < 2 || !on_page.iter().all(empty) || on_page.len() >= story.frames.len() {
                     break;
                 }
-                if d.remove_item(last).is_err() || d.delete_pages(&[page]).is_err() {
+                if on_page.iter().any(|id| d.remove_item(*id).is_err()) || d.delete_pages(&[page]).is_err() {
                     break;
                 }
             }
         }
         if let Some(st) = self.active_mut() {
             st.doc = Arc::new(d);
-            st.revision += 1;
+            st.bump_revision();
         }
     }
 
@@ -544,10 +741,12 @@ impl Session {
         let mut sel = st.selection.clone();
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
+        crate::cmd::flex::sync(&mut doc);
         doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;
-        st.revision += 1;
+        st.bump_revision();
+        self.reset_find_scope();
         Ok(r)
     }
 }
@@ -565,6 +764,18 @@ pub(crate) use push_undo as record_undo;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_autosize;
+#[cfg(test)]
+mod tests_file_guard;
+#[cfg(test)]
 mod tests_idml;
+#[cfg(test)]
+mod tests_ime;
+#[cfg(test)]
+mod tests_linked_paths;
+#[cfg(test)]
+mod tests_params;
+#[cfg(test)]
+mod tests_roots;
 #[cfg(test)]
 mod tests_table;

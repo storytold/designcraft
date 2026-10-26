@@ -164,10 +164,7 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
         value: SwatchValue::Gradient {
             gradient: Gradient {
                 kind: GradientKind::Linear,
-                stops: vec![
-                    GradientStop { offset: 0.0, color: Color::cmyk(0.6, 0.9, 0.3, 0.2), opacity: 1.0, midpoint: 0.5 },
-                    GradientStop { offset: 1.0, color: Color::cmyk(0.0, 0.6, 0.8, 0.0), opacity: 1.0, midpoint: 0.5 },
-                ],
+                stops: vec![GradientStop::new(0.0, Color::cmyk(0.6, 0.9, 0.3, 0.2)), GradientStop::new(1.0, Color::cmyk(0.0, 0.6, 0.8, 0.0))],
             },
         },
         locked: false,
@@ -183,13 +180,12 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             d.assets.insert(
                 id,
                 Arc::new(Asset {
-                    page: 0,
                     id,
                     name: format!("art-{k}.png"),
                     mime: "image/png".into(),
-                    link: None,
                     data: Arc::new(data),
                     pixels: Some((aw, ah)),
+                    ..Default::default()
                 }),
             );
             id
@@ -240,12 +236,16 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
             let (nw, nh) = (aw as f64, ah as f64);
             let s = (r.width() / nw).max(r.height() / nh);
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset,
                 size: (nw, nh),
                 xf: Affine::translate((r.x0 + (r.width() - nw * s) / 2.0, r.y0 + (r.height() - nh * s) / 2.0)) * Affine::scale(s),
+                clip: None,
                 auto_fit: designcraft_doc::Fitting::FillProportionally,
                 fit_align: 4,
                 crop: [0.0; 4],
+                wrap: Default::default(),
+                fill: Default::default(),
             });
             if k == 0 && pi == 0 {
                 it.effects.drop_shadow.on = true;
@@ -333,7 +333,7 @@ fn row(rows: &mut Vec<Row>, name: impl Into<String>, ms: f64, budget: Option<f64
 /// Measure `doc`. `runs` = repetitions per row (median).
 fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
     let mut rows = vec![];
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let chars: usize = doc.stories.values().map(|s| s.text.len()).sum();
     // Budget: 250 ms per 300k characters (MT), scaled to this document.
     let compose_budget = 250.0 * (chars as f64 / 300_000.0).max(1.0);
@@ -530,7 +530,7 @@ fn print(title: &str, rows: &[Row], noisy: bool) -> Result<(), String> {
 }
 
 fn header() -> (usize, bool) {
-    let cores = std::thread::available_parallelism().map_or(1, |c| c.get());
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let load = load_average();
     let noisy = load.is_some_and(|l| l > cores as f64 * 0.75);
     outln!(

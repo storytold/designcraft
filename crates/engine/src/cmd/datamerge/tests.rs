@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, SourceStatus};
+use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, Selection, SourceStatus, StoryId, TextSel};
 use serde_json::{Value, json};
 
 use super::parse::{self, parse_csv};
@@ -790,6 +790,30 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     assert_eq!(s.documents().len(), before);
 }
 
+/// An IME delete-surrounding while a record is previewed edits the template, not the filled
+/// record, and its undo step restores the template.
+#[test]
+fn an_ime_delete_ends_a_preview_and_edits_the_template() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    let f = text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    let sid = StoryId(f["story"].as_u64().unwrap());
+    select_csv(&mut s, "Name\nAda\nGrace\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    assert_eq!(texts(&s), vec!["<<Name>>".to_string()]);
+    exec(&mut s, "data.preview", json!({"record": 2}));
+    assert_eq!(texts(&s), vec!["Grace".to_string()], "the preview shows the record");
+    // The caret was placed in the preview, at the end of the filled text.
+    s.doc_mut().unwrap().selection = Selection::text(TextSel { story: sid, anchor: 5, focus: 5, frame: None, cell: None });
+    let m = s.ime_delete_surrounding(1, 0, false).unwrap().expect("the delete changed the template");
+    assert!(m.inserted.is_empty());
+    assert!(s.doc().unwrap().preview_stash.is_none(), "the preview ended before the edit");
+    assert_eq!(texts(&s), vec!["<<Nae>>".to_string()], "the template lost the character, not the filled record");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(texts(&s), vec!["<<Name>>".to_string()], "Undo restores the template, never the preview record");
+    assert!(s.doc().unwrap().preview_stash.is_none());
+}
+
 #[test]
 fn update_remove_preview_inline_rows_and_old_files() {
     let dir = scratch("update");
@@ -1084,6 +1108,15 @@ fn oversized_data_file_is_refused_before_reading() {
     let msg = read_path_capped(&path, 1024).unwrap_err();
     assert!(msg.contains("larger than"), "{msg}");
     assert_eq!(read_path_capped(&path, 4096).unwrap().len(), 2048);
+}
+
+/// A device reports no length; the read still stops at the cap (an EPUB `coverImage` of
+/// `/dev/zero` must not read until memory runs out).
+#[cfg(unix)]
+#[test]
+fn endless_file_is_refused_at_the_cap() {
+    let msg = read_path_capped("/dev/zero", 1024).unwrap_err();
+    assert!(msg.contains("larger than"), "{msg}");
 }
 
 /// #198: with facing pages on, one record per page must not stack the copies at identical

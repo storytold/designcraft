@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Thread Text Frames",
             [],
             None,
-            "{from?, to?, rect?: [x0,y0,x1,y1] (spread coords), spread?, autoflow?: bool} — threads frame `to` right after frame `from` (between `from` and the frame that followed it, if any). `to` is an empty frame or a text frame nothing threads into yet; its text joins the end of the story. Give `rect` in place of `from` or `to` to thread a new text frame made there on `spread`: `{from, rect}` adds it after `from`, `{rect, to}` in front of `to`. autoflow: then add pages with threaded frames until the story fits. Selects the frame that joined the thread. → {story, from, to, overset, pagesAdded}",
+            "{from?, to?, rect?: [x0,y0,x1,y1] (spread coords), spread?, autoflow?: bool} — threads frame `to` right after frame `from` (between `from` and the frame that followed it, if any). `to` is an empty frame or a text frame nothing threads into yet; its text joins the end of the story. Give `rect` in place of `from` or `to` to thread a new text frame made there on `spread`: `{from, rect}` adds it after `from`, `{rect, to}` in front of `to`. autoflow: then thread a frame per column on the pages that follow, adding pages at the end of the document until the story fits. Selects the frame that joined the thread. → {story, from, to, overset, pagesAdded}",
             has_doc,
             thread
         ),
@@ -77,7 +77,7 @@ fn frame_rect(p: &Value) -> Result<Option<Rect>> {
 
 fn thread(s: &mut Session, p: &Value) -> Result<Value> {
     let (from, to, rect) = (id_param(p, "from"), id_param(p, "to"), frame_rect(p)?);
-    let sr = spread_param(p, "spread")?;
+    let sr = spread_param(p, "text.thread")?;
     let autoflow = bool_or(p, "autoflow", false);
     let layer = s.doc()?.active_layer;
     s.edit(|d, sel| {
@@ -104,7 +104,7 @@ fn thread(s: &mut Session, p: &Value) -> Result<Value> {
         d.check_thread(from, to)?;
         d.thread_keeping_story(from, to)?;
         let sid = d.item(from).and_then(|i| i.text_frame()).map(|t| t.story).ok_or_else(|| bad("text.thread", "threading lost the story"))?;
-        let pages = if autoflow { super::place_text_autoflow(d, sid, AUTOFLOW_MAX_PAGES, "text.thread")? } else { 0 };
+        let pages = if autoflow { super::place_text_autoflow(d, sid, AUTOFLOW_MAX_PAGES, "text.thread", false)? } else { 0 };
         *sel = Selection::items(vec![joined]);
         Ok(json!({"story": sid.0, "from": from.0, "to": to.0, "overset": overset(d, sid), "pagesAdded": pages}))
     })

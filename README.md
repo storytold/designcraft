@@ -1,43 +1,3 @@
-# DesignCraft — INDD import, tool controls and guide improvements
-
-Independent community fork by [Heatcoder](https://github.com/heatcoder), based on [DesignCraft](https://github.com/storytold/designcraft) release 0.8.0 (`11a51d5b`). This fork is free to use and build. No serial number, registration, trial, activation server or payment is required for the features below.
-
-| Feature | What it does |
-| --- | --- |
-| INDD / INDT opening | Opens supported documents and templates through File → Open or drag and drop. Converts them to IDML in memory, then uses DesignCraft's importer. |
-| Missing-link previews | Uses embedded graphic previews when available and the original linked image cannot be loaded. |
-| Top Control bar | Enables the bar on first use of this fork; displays existing object position and size controls. Window → Control can hide it again. |
-| Contextual task bar | Keeps the bar within the canvas and draws it above the document. |
-| Fill/stroke toolbox | Enlarges the swap target, preserves chosen drawing colours for the next shape, and exposes colour, gradient, None and screen-mode buttons. |
-| Guide selection and position | Highlights a selected guide in green. Vertical guides use X; horizontal guides use Y. Clicking a guide selects it without nudging it. |
-| Copy to | Creates a parallel guide at an absolute destination while leaving the original unchanged. Moving and copying support Undo. |
-
-**Example:** Select a vertical guide at X = 100 pt, enter `200 pt` in **Copy to**, then press Return. The original stays at 100 pt and the new guide appears at 200 pt. Enter `25 mm` to use an explicit unit. Values without units use the document's units; positions are spread coordinates.
-
-This fork does not include the separate Malayalam typing, Manglish, InScript, FML conversion or Thiyaara Effects additions. It retains the original editor's ordinary text and font facilities.
-
-## Import limits and attribution
-
-INDD conversion is provided by [storytold/indd-utils](https://github.com/storytold/indd-utils), pinned to `7f3060e5bce78d21ea70e0d5eacb96edce15dfbe`. Credit belongs to that library's authors and contributors; this fork integrates its conversion with DesignCraft's document opening, preview and warning paths.
-
-Import is not a promise of identical rendering or support for every document. Check conversion warnings, fonts, linked images and layout after opening. Embedded previews may be lower resolution than the original graphics. Imported documents start unsaved in DesignCraft's native format so opening does not overwrite the source INDD file. Keep your original files.
-
-## Build
-
-Use the Rust toolchain and platform prerequisites described in the upstream instructions below. From this checkout:
-
-```sh
-cargo build --release -p designcraft --locked
-```
-
-No commercial feature flag or activation configuration is needed. The optional upstream `CRAFT_FONTS_DIR` build input is described below; no separately licensed Malayalam font collection is included here.
-
-See [public changes and validation](docs/public-fork-changes.md) for the source map and test status. The original MIT / Apache-2.0 notices and third-party asset notices remain in place. This community fork is not an official ArtCraft release.
-
----
-
-## Upstream project documentation
-
 <p align="center">
   <a href="https://getartcraft.com/">
     <picture>
@@ -48,14 +8,18 @@ See [public changes and validation](docs/public-fork-changes.md) for the source 
 </p>
 
 
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png" width="128" height="128" alt="DesignCraft icon: an engraved cat in a polka-dot scarf on a green tile">
+</p>
+
 <h1 align="center">DesignCraft</h1>
 
 <p align="center">
-  <b>Page layout and publishing; an open-source, clean-room reimplementation of Adobe InDesign, rebuilt in pure Rust.</b>
+  <b>Page layout and publishing; an open-source, modern desktop publishing and page layout studio, built in pure Rust.</b>
 </p>
 
 <p align="center">
-  A fast, open-source, clean-room take on the Adobe InDesign workflow. It runs natively on macOS,
+  A fast, open-source desktop publishing and page layout workflow. It runs natively on macOS,
   Windows and Linux, and in the browser via WebAssembly.<br>
   <i>By the ArtCraft team.</i>
 </p>
@@ -65,6 +29,9 @@ See [public changes and validation](docs/public-fork-changes.md) for the source 
   <img alt="Runs on macOS, Windows, Linux and the web" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-7bb51c?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-4d7a0a?style=flat-square">
   <img alt="Agent-drivable over MCP" src="https://img.shields.io/badge/agents-MCP-7bb51c?style=flat-square">
+  <br>
+  <a href="https://sonarcloud.io/project/overview?id=storytold_designcraft"><img alt="Scanned by SonarCloud" src="https://img.shields.io/badge/Scanned_by-SonarCloud-4b9fd5?style=flat-square&logo=sonarqubecloud&logoColor=white"></a>
+  <a href="https://coderabbit.ai"><img alt="Reviewed by CodeRabbit" src="https://img.shields.io/coderabbit/prs/github/storytold/designcraft?style=flat-square&label=Reviewed%20by%20CodeRabbit&logo=coderabbit"></a>
 </p>
 
 <p align="center">
@@ -118,17 +85,19 @@ by its own renderer. Try it yourself with `File → New → Sample Document`, or
 
 ## Why DesignCraft
 
-- **Familiar.** InDesign's layout, tools, menus, panels and shortcuts: spreads and parent pages,
-  frames and threaded stories, the Control panel, paragraph and character styles, swatches, text
-  wrap and more. If you know InDesign, you already know how to use it.
+- **Familiar.** A familiar layout, tools, menus, panels and shortcuts: spreads and parent pages,
+  master pages, text frames, threaded text, paragraph and character styles, tables, text wrap and
+  more. Everything is right where you expect it.
 - **Beautiful type.** A Knuth–Plass paragraph composer (plus single-line), dictionary hyphenation
   (the public-domain Moby word list plus our own trained patterns), word, letter and glyph-scaling
   justification, keeps, optical margin alignment, columns, baseline grid, tabs, rules and shading.
   Line breaks are identical on screen and in PDF.
 - **Fast.** Multithreaded SIMD rendering (vello_cpu), copy-on-write documents with O(1) undo
   snapshots, and cached composition.
-- **Open.** A documented native format, IDML import and export, and PNG, PDF (PDF/X-4, PDF/A-2b)
-  and EPUB export.
+- **Open.** A documented native format, IDML import and export, INDD import (through
+  [indd-utils](https://github.com/storytold/indd-utils)), editable .pptx export, and PNG, PDF
+  (PDF/X-4, PDF/A-2b) and EPUB export.
+
   No subscription, no licence server, no telemetry.
 - **Agent-native.** Every menu item, tool gesture, panel control and dialog can be driven over a
   JSON control channel and an **MCP server**, so Claude and other agents can lay out and edit
@@ -152,8 +121,11 @@ cargo xtask ci                                             # fmt, clippy, tests,
 
 Japanese text (UI and documents) uses fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (font
-files are never committed here; see craftrules
-[`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)):
+files are never committed here; see the public
+[craft-fonts integration guide](https://github.com/storytold/craft-fonts/blob/main/docs/integration.md)
+for build instructions and craftrules
+[`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)
+for the shared standard):
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
@@ -172,8 +144,9 @@ The desktop app writes its `log` records to standard error and to `logs/designcr
 settings directory, beside `ui.json` and `prefs.json` (Linux `~/.config/designcraft/logs/`, or
 `$XDG_CONFIG_HOME/designcraft/logs/`; macOS `~/Library/Application Support/DesignCraft/logs/`;
 Windows `%APPDATA%\DesignCraft\logs\`). A start launched from a desktop menu or the Dock has no
-terminal, so this file is what to attach to a bug report: the crash guard's panic report and a
-failed crash-recovery save land there. Each launch moves the previous log to `designcraft.1.log`
+terminal, so this file is what to attach to a bug report: the graphics adapters found and the
+one drawing, why the app stopped (also when its window never opened), the crash guard's panic
+report and a failed crash-recovery save land there. Each launch moves the previous log to `designcraft.1.log`
 (and that one to `designcraft.2.log`), so the log of a run that crashed survives the next start.
 The file stops growing at 16 MiB. `--version` writes no file.
 
@@ -181,22 +154,80 @@ The file stops growing at 16 MiB. `--version` writes no file.
 |---|---|
 | `RUST_LOG` | Log levels for standard error and the log file. Default: `info` for DesignCraft's own crates, `warn` for everything else. env_logger-style directives replace that, e.g. `RUST_LOG=debug`, `RUST_LOG=warn,designcraft_render=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`designcraft*=debug`). |
 | `WGPU_BACKEND` | The graphics backend that composites the window: `dx12`, `vulkan`, `gl` or `metal` (a comma-separated list lets wgpu choose among them). Default: DirectX 12 on Windows, Vulkan on Linux, Metal on macOS, with OpenGL as the fallback. Setting it also turns off the start-up fallback described below. |
+| `WGPU_POWER_PREF` | The kind of GPU that draws the window: `low` (integrated), `high` (discrete) or `none` (the system's order). Default: the GPU that drives the primary display, then `low` on Windows and macOS and `none` elsewhere. |
+| `WGPU_ADAPTER_NAME` | The graphics adapter by (part of) its name, any case (`nvidia`, `radv`, `intel`); the log lists the names. |
+| `WGPU_VALIDATION_INDIRECT_CALL` | `1` turns wgpu's check of indirect draw arguments back on. DesignCraft draws nothing indirectly and turns it off: the compute shader it needs failed to compile on an Intel Mac and lost the graphics device (#334). |
 
 The logger is `apps/designcraft/src/logging.rs`; the web build logs to the browser console instead.
 
-### Graphics backend
+### Portable mode
 
-The canvas is rendered on the CPU; the GPU only composites the interface, through wgpu. A
-graphics driver that faults takes the process down before any Rust code can catch it, so the
-backend is chosen before the window exists, and a start that never showed a frame is remembered:
-`gpu.json` in the settings directory records the backend being tried until the first frame has
-been presented. A record left behind means that backend crashed (or the app was killed) at
-start-up, so the next start tries the next one (DirectX 12, Vulkan, then OpenGL on Windows;
-Vulkan, then OpenGL on Linux) and says so in the status bar. The list starts over once every
-backend has failed, or with a new DesignCraft version; delete the file or set `WGPU_BACKEND` to
-start afresh. Seen in the wild: on an AMD hybrid-graphics laptop (a Radeon RX 6800M beside an
-integrated Radeon) the AMD Vulkan driver faulted at the first present, which is why DirectX 12 is
-the Windows default. The code is `apps/designcraft/src/gpu.rs`.
+A file named `portable.txt` next to the executable (on macOS, next to `DesignCraft.app`) makes the install portable: settings, logs and
+crash recovery are kept in a `DesignCraftData` folder beside it instead of the per-user folders
+above. The Windows portable zip ships with one; delete it to go back to `%APPDATA%\DesignCraft`.
+If `DesignCraftData` cannot be written (a copy unzipped into Program Files), the per-user folders
+are used instead and the log and the status bar say so.
+`DESIGNCRAFT_CONFIG_DIR` still takes precedence. The code is `apps/designcraft/src/profile.rs`.
+
+### Graphics backend and processor
+
+The canvas is rendered on the CPU; the GPU only composites the interface, through wgpu, so any
+adapter that can show the window will do. The code is `apps/designcraft/src/gpu.rs` (the adapter)
+and `apps/designcraft/src/gpu/backend.rs` (the backend).
+
+- **Backend.** A graphics driver that faults takes the process down before any Rust code can
+  catch it, so each start creates its wgpu instance with one backend, chosen before the window
+  exists: on Windows DirectX 12, then OpenGL, then Vulkan, each on its own (creating an OpenGL
+  instance crashed inside AMD's `atio6axx.dll`, #167, and creating a Vulkan instance loads every
+  installed Vulkan driver, of which a faulty one can crash the app); on Linux Vulkan with OpenGL
+  beside it, then OpenGL alone; on macOS Metal. Seen in the wild: on an AMD hybrid-graphics laptop
+  (a Radeon RX 6800M beside an integrated Radeon) the AMD Vulkan driver faulted at the first
+  present, which is why DirectX 12 is the Windows default.
+- **A start that never showed a frame is remembered:** `gpu.json` in the settings directory
+  records the backend being tried until the first frame has been presented. A record left behind
+  means that backend crashed (or the app was killed) at start-up, so the next start tries the next
+  backend and says so in the status bar. The list starts over once every backend has failed, or
+  with a new DesignCraft version; delete the file or set `WGPU_BACKEND` to start afresh.
+- **Adapter.** Among the adapters of those backends, the app picks the one that draws the window
+  (eframe's `native_adapter_selector`): adapters that report they can't present to the window are
+  never tried; then the one `WGPU_ADAPTER_NAME` names; hardware before software (llvmpipe, WARP);
+  the native backends before OpenGL; the GPU that drives a display, and among those the one that
+  drives the primary display; then the power preference; then a GPU's DirectX 12 adapter before its
+  Vulkan one. A GPU without a monitor is the wrong one even when it can present: Windows has to
+  copy every frame to the GPU that shows it, and an integrated GPU's driver reset under that,
+  losing the graphics device or blanking every monitor for minutes. Windows says which GPU drives
+  which display (`EnumDisplayDevices`), Linux through `/sys/class/drm` (a built-in `eDP`, `LVDS` or
+  `DSI` panel counts as the primary display); on macOS, or when nothing matches, the power
+  preference decides: power saving on Windows and macOS, the system's order elsewhere (Mesa puts
+  the GPU the desktop runs on first, and a Wayland compositor may refuse frames from another GPU).
+  `WGPU_POWER_PREF` replaces this with the user's choice of kind.
+- **If the window fails on its adapter while starting up** (an error from wgpu, such as a lost
+  device, or a panic inside wgpu, egui-wgpu or naga during the first frames), the app starts
+  again without that adapter and tries the next one, telling which in the status bar; the run that
+  failed keeps its log as `designcraft.1.log`. When no adapter of the start's backends is left, it
+  starts again with the next backend. Software renderers (WARP, llvmpipe) come last: they are
+  passed over while another backend is left to try, and allowed once no graphics processor could
+  show the window. On Unix the new app replaces the process (an AppImage stays mounted); on
+  Windows it starts beside it. Adapters are told apart by backend and PCI ids, or by name where the
+  backend reports no ids (Metal lists every GPU of a dual-GPU Mac as `0000:0000`). What was left
+  out travels in the restarted app's `--gpu-skip=` argument (`Vulkan:1002:164e`, `Metal:Intel
+  Iris Pro Graphics`, or a whole backend such as `Dx12`), one more on each restart, so the
+  restarts end. When nothing is left, the app logs why and exits with an error. Documents
+  recovered after a crash stay in the recovery folder until they are saved or closed, so a restart
+  never loses them.
+- **If the window's first frame is late** (20 seconds after the app was created and the files
+  named at the start opened), the log and the status bar say so. The adapter counts as hanging,
+  and the app starts again without it, only when the UI thread has been stuck in the graphics
+  stack, outside DesignCraft's own code, for 60 seconds while the window wasn't known to be
+  minimized, covered or in the background. A large document composing on a slow machine never
+  counts.
+- **The log** lists the GPUs that drive a display (`display GPUs (PCI vendor:device): 10de:2204
+  (primary)`), every adapter with whether it drives a display, the one drawn on and why (`drawing
+  on NVIDIA GeForce RTX 3090 (Dx12, DiscreteGpu): it drives the primary display`), and the driver
+  version. That is the first thing to look for in a report of a window that stays black or never
+  opens.
+- On Linux with Mesa, `MESA_VK_DEVICE_SELECT=10de:2f04!` (vendor:device as `vulkaninfo --summary`
+  or `lspci -nn` show it) leaves only that GPU to Vulkan, and `DRI_PRIME=1` picks the other GPU.
 
 ### Web
 
@@ -209,6 +240,13 @@ You need [trunk](https://trunkrs.dev) and the `wasm32-unknown-unknown` target. T
 through eframe's web runner on WebGPU, falling back to WebGL2 (`?webgl` forces it; `?sample` opens
 the sample magazine). Open and Place use the browser's file picker, and dropping files works too.
 Save and Export download the file. The web build has no control channel.
+
+## Controls and ruler guides
+
+The top Control bar exposes object position and dimensions. Select a ruler guide to edit its X
+(vertical) or Y (horizontal) position, or enter a destination in **Copy to** to duplicate it.
+The original guide stays in place; Undo removes the copy. See the [INDD files, tools and guide
+controls notes](docs/public-fork-changes.md) for details of the public contribution.
 
 ## Architecture
 
@@ -223,10 +261,10 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 | L3 | `render` (vello_cpu) |
 | L4 | `tools` (pointer events → commands + overlays) |
 | L5 | `engine` (session, history, command registry) |
-| L6 | `ui-egui` (InDesign-style UI, control channel) |
+| L6 | `ui-egui` (publishing UI, control channel) |
 | L7 | `apps/designcraft`, `apps/designcraft-cli`, `apps/designcraft-web` |
 
-- **Status and milestones:** [ROADMAP.md](ROADMAP.md) (stage: pre-alpha); how close to InDesign: [`docs/target-app-parity.md`](docs/target-app-parity.md); known gaps: [`docs/gaps.md`](docs/gaps.md)
+- **Status and milestones:** [ROADMAP.md](ROADMAP.md) (stage: pre-alpha); feature assessment: [`docs/target-app-parity.md`](docs/target-app-parity.md); known gaps: [`docs/gaps.md`](docs/gaps.md)
 - **Contributor and agent rules** (clean-room, asset policy, quality gates): [`AGENTS.md`](AGENTS.md)
 - **Bundled assets:** every one is listed with its licence in [`ASSETS.md`](ASSETS.md)
 - **App icon and colour:** a calico cat in a polka-dot scarf on DesignCraft green `#7bb51c`; see [`assets/app-icon/`](assets/app-icon/README.md)
@@ -262,9 +300,24 @@ Installers and executables are code-signed.
 | Flatpak | `designcraft-<ver>-linux-x86_64.flatpak` | `designcraft-<ver>-linux-aarch64.flatpak` | Sandboxed; `flatpak install --user <file>` |
 | Debian/Ubuntu | `designcraft-<ver>-linux-x86_64.deb` | `designcraft-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `designcraft-<ver>-linux-x86_64.rpm` | `designcraft-<ver>-linux-aarch64.rpm` | |
+| Arch Linux/Manjaro | `designcraft-<ver>-linux-x86_64.pkg.tar.zst` | `designcraft-<ver>-linux-aarch64.pkg.tar.zst` | `sudo pacman -U <file>`; installs as `ai.storyteller.designcraft`, replacing an AUR package |
 | Tarball | `designcraft-<ver>-linux-x86_64.tar.gz` | `designcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
 
 RISC-V (riscv64): `designcraft-<ver>-linux-riscv64.tar.gz` only, cross-compiled; needs glibc 2.39+ (Ubuntu 24.04 or newer).
+
+#### Community packages
+
+These packages are maintained by community members, not by the DesignCraft team.
+
+On Gentoo, the [::snakebyte overlay](https://github.com/switch87/snakebyte-overlay) packages the
+Linux release as `media-gfx/designcraft-bin` (prebuilt) and `media-gfx/designcraft` (built from source):
+
+```sh
+eselect repository add snakebyte git https://github.com/switch87/snakebyte-overlay.git
+emaint sync -r snakebyte
+echo 'media-gfx/designcraft-bin ~amd64' >> /etc/portage/package.accept_keywords/designcraft
+emerge --ask media-gfx/designcraft-bin
+```
 
 ### FreeBSD
 
@@ -333,8 +386,6 @@ The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are tradem
 ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
 part of this repository and DesignCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
 Forks and modified versions must remove them.
-
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. DesignCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <br>
 

@@ -36,7 +36,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
     let ctx = ui.ctx();
     let ppp = ctx.pixels_per_point();
     let px = ((rect.width().min(rect.height()) * ppp).round() as u32).clamp(8, 1024);
-    let key = egui::Id::new(("artcraft_mark", px, color.to_array()));
+    let key = egui::Id::unique(("artcraft_mark", px, color.to_array()));
     let tex: Option<egui::TextureHandle> = ctx.data(|d| d.get_temp(key));
     let tex = tex.unwrap_or_else(|| {
         let mut rc = vello_cpu::RenderContext::new_with(px as u16, px as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
@@ -52,7 +52,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
         let mut res = vello_cpu::Resources::new();
         rc.render(&mut pm, &mut res);
         let ci = egui::ColorImage::from_rgba_premultiplied([px as usize, px as usize], pm.data_as_u8_slice());
-        let t = ctx.load_texture("artcraft_mark", ci, egui::TextureOptions::LINEAR);
+        let t = crate::widgets::load_texture(ctx, "artcraft_mark", ci, egui::TextureOptions::LINEAR);
         ctx.data_mut(|d| d.insert_temp(key, t.clone()));
         t
     });
@@ -77,16 +77,24 @@ pub fn paint_chat_icon(p: &egui::Painter, c: egui::Pos2, s: f32, color: Color32)
     p.circle_filled(body.center() + vec2(s * 0.18, 0.0), eye, bg);
 }
 
-/// The big "Join our Discord" button. Returns true when clicked.
+/// The Discord button's size for `label`: `min`, widened when the label would not fit inside it.
+pub fn discord_button_size(ctx: &egui::Context, label: &str, min: egui::Vec2) -> egui::Vec2 {
+    let galley = crate::rtl::plain(ctx, label, semibold((min.y * 0.42).max(11.0)), Color32::WHITE);
+    egui::vec2(min.x.max(min.y * 0.5 + 8.0 + galley.size().x + min.y), min.y)
+}
+
+/// The big "Join our Discord" button. Returns true when clicked. `size` is the minimum: a longer label
+/// widens the button (see `discord_button_size`) rather than spilling out of it.
 pub fn discord_button(ui: &mut egui::Ui, label: &str, size: egui::Vec2) -> bool {
-    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
-    let resp = resp.on_hover_text(links::DISCORD).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let fill = if resp.hovered() { Color32::from_rgb(0x47, 0x52, 0xc4) } else { DISCORD };
-    ui.painter().rect_filled(r, size.y / 2.0, fill);
+    let size = discord_button_size(ui.ctx(), label, size);
     let icon = size.y * 0.5;
     let font = semibold((size.y * 0.42).max(11.0));
     let galley = crate::rtl::plain(ui.ctx(), label, font, Color32::WHITE);
     let total = icon + 8.0 + galley.size().x;
+    let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+    let resp = resp.on_hover_text(links::DISCORD).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if resp.hovered() { Color32::from_rgb(0x47, 0x52, 0xc4) } else { DISCORD };
+    ui.painter().rect_filled(r, size.y / 2.0, fill);
     let x0 = r.center().x - total / 2.0;
     paint_chat_icon(ui.painter(), pos2(x0 + icon / 2.0, r.center().y), icon, Color32::WHITE);
     ui.painter().galley(pos2(x0 + icon + 8.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
@@ -106,8 +114,18 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let mut open: Option<&'static str> = None;
-    let resp = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
+    let area = egui::Id::unique("about");
+    let instance = area.with("placement");
+    let resp = crate::modal_drag::modal(ctx, area, instance).show(ctx, |ui| {
         ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 640.0 });
+        // The tab row is the title row. The tabs register after the drag area, so they stay clickable.
+        let margin = egui::Frame::popup(ui.style()).inner_margin;
+        let top = ui.cursor().top();
+        let title_row = Rect::from_min_max(
+            pos2(ui.max_rect().left() - margin.leftf(), top - margin.topf()),
+            pos2(ui.max_rect().right() + margin.rightf(), top + ui.spacing().interact_size.y),
+        );
+        crate::modal_drag::title_drag(ui, instance, title_row);
         ui.horizontal(|ui| {
             for (i, l) in ABOUT_TABS.iter().enumerate() {
                 let i = i as u8;
@@ -122,9 +140,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_height(h);
                 if app.ui.about_tab == 1 {
-                    crate::credits::contributors_ui(ui);
+                    crate::credits::contributors_ui(ui, &app.ui.language);
                 } else {
-                    crate::credits::models_ui(ui);
+                    crate::credits::models_ui(ui, &app.ui.language);
                 }
             });
             ui.separator();
@@ -164,7 +182,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     .color(t.text_dim),
             ));
             ui.add_space(16.0);
-            if discord_button(ui, "Join the ArtCraft Discord", vec2(300.0, 40.0)) {
+            if discord_button(ui, crate::i18n::tr(&app.ui.language, "Join the ArtCraft Discord"), vec2(300.0, 40.0)) {
                 open = Some("discord");
             }
             ui.add_space(4.0);
@@ -182,7 +200,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 for (text, key) in
                     [("DesignCraft page", "appPage"), ("GitHub", "github"), ("getartcraft.com", "website"), ("Report an issue", "issues")]
                 {
-                    if link(ui, text, links::get(key).unwrap_or_default(), t.accent) {
+                    if link(ui, crate::i18n::tr(&app.ui.language, text), links::get(key).unwrap_or_default(), t.accent) {
                         open = Some(key);
                     }
                     ui.add_space(6.0);
@@ -206,8 +224,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                 for (slug, name, what) in SIBLINGS {
                     let url = format!("{}/apps/{slug}", links::WEBSITE);
-                    let b =
-                        ui.add(egui::Button::new(egui::RichText::new(*name).size(12.0)).corner_radius(10.0)).on_hover_text(format!("{what} — {url}"));
+                    let b = ui
+                        .add(egui::Button::new(egui::RichText::new(*name).size(12.0)).corner_radius(10.0))
+                        .on_hover_text(format!("{} — {url}", crate::i18n::tr(&app.ui.language, what)));
                     if b.clicked() {
                         app.ui.pending_urls.push(url);
                     }

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_color::BlendMode as DcBlend;
-use designcraft_compose::{Cache, ComposedStory};
+use designcraft_compose::{Cache, ComposedStory, ShownOn};
 use designcraft_doc::{Content, Document, Item, PageSide, SpreadRef, StoryId, StrokeAlign, StrokeType};
 use designcraft_geom::corners;
 use designcraft_geom::{Affine, BezPath, Rect, Shape, Vec2};
@@ -23,14 +23,18 @@ use vello_cpu::{Pixmap, RenderContext, Resources};
 
 pub use vello_cpu;
 
+mod blendspace;
+mod colorize;
 pub mod damage;
 mod fx;
+mod grid;
 
 /// How far (points) an object's soft effects reach outside its geometry.
 pub fn effect_outset(it: &Item) -> f64 {
     fx::outset(it)
 }
 pub mod glyphs;
+mod pdf_bounds;
 mod pdf_layers;
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 pub mod images;
@@ -112,7 +116,7 @@ impl Rendered {
 }
 
 /// What to draw.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RenderOptions {
     /// Canvas background (premultiplied RGBA8); `None` = transparent.
     pub background: Option<[u8; 4]>,
@@ -141,8 +145,9 @@ pub struct RenderOptions {
     pub change_markup: bool,
     /// View › Structure › Show Tag Markers: brackets around inline-tagged text (screen view).
     pub tag_markers: bool,
-    /// Separations Preview: draw one process plate (0 = cyan … 3 = black) as grey ink coverage,
-    /// from each object's own colour (CMYK as authored, others through the colour settings).
+    /// The CMYK blend space's ink passes (internal): 3 draws black ink coverage as gray, 4 cyan,
+    /// magenta and yellow coverage in red, green and blue, from each object's own color (CMYK as
+    /// authored, others through the color settings); 0–2 draw cyan, magenta or yellow as gray.
     pub plate: Option<u8>,
     /// View › Display Performance.
     pub quality: DisplayQuality,
@@ -154,6 +159,10 @@ pub struct RenderOptions {
     /// Screen: spreads with transparency are shown as blended in the document's blend space (a
     /// CMYK blend space keeps their colours in the working CMYK gamut).
     pub blend_space_view: bool,
+    /// View › Show Document Grid: the area (spread coordinates) of each listed spread that the
+    /// document grid covers, drawn behind or in front of the page items as the grid settings say
+    /// (screen view). Empty draws no grid.
+    pub document_grid: Vec<(SpreadRef, Rect)>,
 }
 
 /// View › Display Performance: how placed graphics and effects are drawn on screen.
@@ -191,6 +200,7 @@ impl Default for RenderOptions {
             rich_black: false,
             overprint_preview: false,
             blend_space_view: false,
+            document_grid: vec![],
         }
     }
 }
@@ -216,7 +226,19 @@ pub struct Renderer {
     resources: Resources,
     glyphs: text::GlyphCache,
     /// Composed stories looked up during the current render.
-    stories: HashMap<(StoryId, Option<usize>), Arc<ComposedStory>>,
+    stories: HashMap<(StoryId, ShownOn), Arc<ComposedStory>>,
+    drawing_items: Vec<designcraft_doc::ItemId>,
+    cmyk_view: Option<blendspace::CachedView>,
+    /// Whether the last render ran the CMYK ink passes (only then is its view worth keeping).
+    cmyk_ran: bool,
+    #[cfg(test)]
+    cmyk_passes: usize,
+    /// Pixels the last ink pass covered (tests).
+    #[cfg(test)]
+    cmyk_pass_pixels: usize,
+    /// Items the last ink pass drew (tests).
+    #[cfg(test)]
+    cmyk_pass_items: usize,
     pub threads: u16,
     pub stats: FrameStats,
 }
@@ -255,6 +277,26 @@ pub fn default_threads() -> u16 {
     }
 }
 
+/// An item's fill under its content; an overprinting fill multiplies into what is beneath.
+fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
+    if it.fill.is_none() {
+        return;
+    }
+    let doc = f.doc;
+    ctx.set_transform(f.view * xf);
+    let op = overprints(f, &it.fill.swatch, it.fill.tint, it.fill.overprint);
+    if op {
+        ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
+    }
+    if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) {
+        ctx.fill_path(bp);
+    }
+    ctx.reset_paint_transform();
+    if op {
+        ctx.pop_layer();
+    }
+}
+
 impl Renderer {
     pub fn new() -> Self {
         Self {
@@ -262,13 +304,23 @@ impl Renderer {
             resources: Resources::new(),
             glyphs: text::GlyphCache::default(),
             stories: HashMap::new(),
+            drawing_items: Vec::new(),
+            cmyk_view: None,
+            cmyk_ran: false,
+            #[cfg(test)]
+            cmyk_passes: 0,
+            #[cfg(test)]
+            cmyk_pass_pixels: 0,
+            #[cfg(test)]
+            cmyk_pass_items: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
         }
     }
 
-    /// Drop cached glyph paths (they are rebuilt on demand).
+    /// Drop cached glyph paths and the CMYK viewport (rebuilt on demand).
     pub fn clear_caches(&mut self) {
+        self.cmyk_view = None;
         self.glyphs.clear();
         self.stories.clear();
     }
@@ -280,6 +332,37 @@ impl Renderer {
 
     /// Render the given spreads into a `width`×`height` image with `view` (canvas → pixels).
     pub fn render(
+        &mut self,
+        doc: &Document,
+        cache: &Cache,
+        spreads: &[Placed],
+        width: u32,
+        height: u32,
+        view: Affine,
+        opts: &RenderOptions,
+    ) -> Rendered {
+        let start = now();
+        RICH_BLACK.with(|r| r.set(opts.rich_black));
+        PLATE.with(|p| p.set(opts.plate));
+        if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
+            let image = hit.image();
+            self.stats = hit.stats();
+            self.stats.micros = now().saturating_sub(start);
+            return image;
+        }
+        // Release the old snapshot before rendering an edited document or resized viewport.
+        self.cmyk_view = None;
+        self.cmyk_ran = false;
+        let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
+        // Kept only when the ink passes ran: other views render at their usual cost anyway.
+        if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+            self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
+        }
+        self.stats.micros = now().saturating_sub(start);
+        image
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn render_uncached(
         &mut self,
         doc: &Document,
         cache: &Cache,
@@ -334,7 +417,7 @@ impl Renderer {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };
             for pl in spreads {
                 let Some(sp) = doc.spread(pl.spread) else { continue };
-                if sp.items.iter().any(|it| it.involves_transparency() && !it.hidden) {
+                if blendspace::uses_rgb_proof(doc, pl.spread, opts) {
                     let r = (view * pl.xf).transform_rect_bbox(sp.bounds());
                     blend_space_view(&mut img, r);
                 }
@@ -394,21 +477,49 @@ impl Renderer {
                 }
             }
         }
-        // Layers back to front; within each layer parent items first (document spreads only).
+        let grid_area = f.opts.document_grid.iter().find(|(r, _)| *r == sr).map(|(_, a)| *a);
+        let grid = &doc.settings.grid;
+        if let Some(area) = grid_area.filter(|_| grid.in_back) {
+            grid::draw(ctx, f, sp, grid, area);
+        }
+        if blendspace::uses_cmyk(doc, sr, f.opts) {
+            self.draw_cmyk_spread(ctx, f, sr);
+            if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+                grid::draw(ctx, f, sp, grid, area);
+            }
+            return;
+        }
+        // Blend modes blend with the objects below, not with the paper (as in InDesign and in PDF,
+        // where the page's group starts transparent): a Color Dodge or Screen object over blank paper
+        // shows as it is. So the items are drawn in their own group, laid over the paper once.
+        let isolate = f.opts.paper && spread_blends(doc, sp);
+        if isolate {
+            ctx.push_layer(None, None, None, None, None);
+        }
+        // Layers back to front; within each layer parent items first.
         for layer in doc.layers.iter().rev() {
             if !layer.visible || f.opts.printing_only && !layer.printable {
                 continue;
             }
-            if let SpreadRef::Doc(si) = sr {
-                let first = doc.first_page_of_spread(si);
-                for (pi, page) in sp.pages.iter().enumerate() {
-                    if !page.show_parent_items {
-                        continue;
-                    }
-                    let Some((ppi, ppage)) = doc.parent_page_for(first + pi) else { continue };
-                    let parent = &doc.parents[ppi];
-                    let dx = page.x - parent.pages[ppage].x;
-                    let pr = parent.pages[ppage].bounds();
+            // Document pages show their parent and its bases; a parent spread shows its bases.
+            let first = match sr {
+                SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
+                SpreadRef::Parent(_) => None,
+            };
+            // Base items compose for where they show: the document page, or this parent spread.
+            let shown_on = |pi: usize| match (sr, first) {
+                (SpreadRef::Parent(p), _) => ShownOn::Parent(p),
+                (_, Some(a)) => ShownOn::Page(a + pi),
+                (_, None) => ShownOn::Own,
+            };
+            for (pi, page) in sp.pages.iter().enumerate() {
+                if !page.show_parent_items {
+                    continue;
+                }
+                for (ppi, ppage) in doc.shown_parent_pages(sr, pi) {
+                    let Some(parent) = doc.parents.get(ppi) else { continue };
+                    let Some(ppg) = parent.pages.get(ppage) else { continue };
+                    let dx = page.x - ppg.x;
                     for it in &parent.items {
                         if it.layer != layer.id || page.overridden.contains(&it.id) {
                             continue;
@@ -417,87 +528,85 @@ impl Renderer {
                         if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
                             continue;
                         }
-                        let _ = pr;
-                        self.draw_item(ctx, f, it, Affine::translate((dx, 0.0)), Some(first + pi));
+                        self.draw_item(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
                     }
                 }
             }
             for it in &sp.items {
                 if it.layer == layer.id {
-                    self.draw_item(ctx, f, it, Affine::IDENTITY, None);
+                    self.draw_item(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
                 }
             }
         }
+        if isolate {
+            ctx.pop_layer();
+        }
+        if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+            grid::draw(ctx, f, sp, grid, area);
+        }
     }
 
-    fn draw_item(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: Option<usize>) {
+    fn draw_item(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
+        if self.drawing_items.len() >= 64 || self.drawing_items.contains(&it.id) {
+            return;
+        }
+        self.drawing_items.push(it.id);
+        self.draw_item_inner(ctx, f, it, parent, page);
+        self.drawing_items.pop();
+    }
+
+    /// A group: children carry their own transforms relative to the group.
+    fn draw_group(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine, page: ShownOn) {
+        // Isolate Blending / Knockout: the group is its own layer (blend modes stop at it).
+        let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal || it.isolate || it.knockout;
+        if layered {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
+        }
+        // Gradient feather: the group's objects drawn together, then faded as one.
+        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
+        if feather {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, None, None, None, None);
+        }
+        if it.knockout {
+            // Knockout: each object first clears its area of those behind it, so it composites
+            // with the group's backdrop rather than with its siblings.
+            for c in it.shown_children() {
+                if !c.hidden {
+                    ctx.set_transform(Affine::IDENTITY);
+                    ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                    ctx.set_transform(f.view * xf * c.xf);
+                    ctx.set_paint(peniko::Color::BLACK);
+                    ctx.fill_path(&c.path.to_bezpath());
+                    ctx.pop_layer();
+                }
+                self.draw_item(ctx, f, c, xf, page);
+            }
+        } else {
+            for c in it.shown_children() {
+                self.draw_item(ctx, f, c, xf, page);
+            }
+        }
+        if feather {
+            fx::gradient_feather_mask(ctx, f, it, xf);
+            ctx.pop_layer();
+        }
+        if layered {
+            ctx.pop_layer();
+        }
+    }
+
+    fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
         if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
         }
         let xf = parent * it.xf;
         let vb = xf.transform_rect_bbox(it.inner_bounds()).inflate(it.stroke.extent() + 2.0, it.stroke.extent() + 2.0);
-        if it.has_nested_items() {
-            // A frame with items pasted into it: fill, the items clipped to the frame, stroke.
-            if !rect_overlaps(vb, f.visible) {
-                return;
-            }
-            let bp = if it.corners.is_none() { it.path.to_bezpath() } else { corners::apply(&it.path, &it.corners) };
-            let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal;
-            if layered {
-                ctx.set_transform(Affine::IDENTITY);
-                ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
-            }
-            if !it.fill.is_none() {
-                ctx.set_transform(f.view * xf);
-                if set_fill_paint(ctx, f.doc, &it.fill, bp.bounding_box()) {
-                    ctx.fill_path(&bp);
-                }
-                ctx.reset_paint_transform();
-            }
-            ctx.set_transform(f.view * xf);
-            ctx.push_clip_layer(&bp);
-            for c in it.children() {
-                self.draw_item(ctx, f, c, xf, page);
-            }
-            ctx.pop_layer();
-            if !it.stroke.is_none() {
-                self.draw_stroke(ctx, f, it, &bp, xf);
-            }
-            if layered {
-                ctx.pop_layer();
-            }
-            return;
-        }
-        if !it.children().is_empty() {
-            // Groups: children carry their own transforms relative to the group.
-            // Isolate Blending / Knockout: the group is its own layer (blend modes stop at it).
-            let layered = it.opacity < 0.999 || it.blend != DcBlend::Normal || it.isolate || it.knockout;
-            if layered {
-                ctx.set_transform(Affine::IDENTITY);
-                ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
-            }
-            if it.knockout {
-                // Knockout: each object first clears its area of those behind it, so it composites
-                // with the group's backdrop rather than with its siblings.
-                for c in it.shown_children() {
-                    if !c.hidden {
-                        ctx.set_transform(Affine::IDENTITY);
-                        ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                        ctx.set_transform(f.view * xf * c.xf);
-                        ctx.set_paint(peniko::Color::BLACK);
-                        ctx.fill_path(&c.path.to_bezpath());
-                        ctx.pop_layer();
-                    }
-                    self.draw_item(ctx, f, c, xf, page);
-                }
-            } else {
-                for c in it.shown_children() {
-                    self.draw_item(ctx, f, c, xf, page);
-                }
-            }
-            if layered {
-                ctx.pop_layer();
-            }
+        // A frame with items pasted into it draws like any other object (draw_body: fill, the items
+        // clipped to the frame, stroke), so its effects apply to all of it.
+        if !it.children().is_empty() && !it.has_nested_items() {
+            self.draw_group(ctx, f, it, xf, page);
             return;
         }
         // Composed text stays inside its frame apart from glyph overhang (italics, swashes, big
@@ -530,46 +639,37 @@ impl Renderer {
 
     /// The composed story for a frame (memoised for the current render: the cache lookup
     /// validates the whole thread each time).
-    fn story(&mut self, f: &Frame, sid: StoryId, page: Option<usize>) -> Arc<ComposedStory> {
+    fn story(&mut self, f: &Frame, sid: StoryId, page: ShownOn) -> Arc<ComposedStory> {
         let key = (sid, page);
         if let Some(cs) = self.stories.get(&key) {
             return cs.clone();
         }
-        let cs = f.cache.get(f.doc, sid, page);
+        let cs = f.cache.get_on(f.doc, sid, page);
         self.stories.insert(key, cs.clone());
         cs
     }
 
     /// Fill, content and stroke of a leaf item (no opacity, blend or effects).
-    pub(crate) fn draw_body(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: Option<usize>) {
-        let doc = f.doc;
-        // Fill.
-        if !it.fill.is_none() {
-            ctx.set_transform(f.view * xf);
-            let op = overprints(f, &it.fill.swatch, it.fill.tint, it.fill.overprint);
-            if op {
-                ctx.push_layer(None, Some(BlendMode::new(Mix::Multiply, Compose::SrcOver)), None, None, None);
-            }
-            if set_fill_paint(ctx, doc, &it.fill, bp.bounding_box()) && it.path.is_closed() {
-                ctx.fill_path(bp);
-            }
-            ctx.reset_paint_transform();
-            if op {
-                ctx.pop_layer();
-            }
-        }
+    pub(crate) fn draw_body(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
+        draw_body_fill(ctx, f, it, bp, xf);
         // Content.
         match &it.content {
             Content::Graphic(g) => {
                 let g = &if it.media.is_some() { it.drawn_graphic(&f.doc.assets).unwrap_or_else(|| g.clone()) } else { g.clone() };
                 ctx.set_transform(f.view * xf);
                 ctx.push_clip_layer(bp);
-                if !it.pdf_hidden_layers.is_empty() {
-                    HIDDEN_LAYERS.with(|h| *h.borrow_mut() = it.pdf_hidden_layers.clone());
-                }
+                let hidden = it.has_pdf_layer_override().then(|| it.pdf_hidden_layers.clone());
+                let previous = HIDDEN_LAYERS.with(|h| h.replace(hidden));
                 self.draw_graphic(ctx, f, g, xf);
-                if !it.pdf_hidden_layers.is_empty() {
-                    HIDDEN_LAYERS.with(|h| h.borrow_mut().clear());
+                HIDDEN_LAYERS.with(|h| h.replace(previous));
+                ctx.pop_layer();
+            }
+            // Items pasted into the frame, clipped by it.
+            Content::Group { items } if it.has_nested_items() => {
+                ctx.set_transform(f.view * xf);
+                ctx.push_clip_layer(bp);
+                for c in items {
+                    self.draw_item(ctx, f, c, xf, page);
                 }
                 ctx.pop_layer();
             }
@@ -590,9 +690,9 @@ impl Renderer {
         {
             let r = it.inner_bounds();
             ctx.set_transform(f.view * xf);
-            ctx.set_paint(peniko::Color::from_rgba8(80, 140, 255, 40));
+            ctx.set_paint(screen_color([80, 140, 255], 40));
             ctx.fill_rect(&r);
-            ctx.set_paint(peniko::Color::from_rgba8(60, 110, 220, 200));
+            ctx.set_paint(screen_color([60, 110, 220], 200));
             ctx.set_stroke(kurbo::Stroke::new(0.75));
             ctx.stroke_path(&r.to_path(0.1));
             if ff.kind == designcraft_doc::FieldKind::CheckBox && !ff.value.is_empty() && ff.value != "Off" {
@@ -601,7 +701,7 @@ impl Renderer {
                 c.move_to((r.x0 + w * 0.22, r.y0 + h * 0.48));
                 c.line_to((r.x0 + w * 0.42, r.y0 + h * 0.72));
                 c.line_to((r.x0 + w * 0.78, r.y0 + h * 0.24));
-                ctx.set_paint(peniko::Color::BLACK);
+                ctx.set_paint(screen_color([0, 0, 0], 255));
                 ctx.set_stroke(kurbo::Stroke::new((w.min(h) * 0.12).max(0.8)).with_caps(kurbo::Cap::Round).with_join(kurbo::Join::Round));
                 ctx.stroke_path(&c);
             }
@@ -621,8 +721,17 @@ impl Renderer {
     }
 
     fn draw_stroke(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
+        self.draw_stroke_painted(ctx, f, it, bp, xf);
+        ctx.reset_paint_transform();
+    }
+
+    /// The stroke, in its colour or gradient (a gradient runs across the path's box, as a fill's).
+    fn draw_stroke_painted(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
         let st = &it.stroke;
-        let Some(c) = f.doc.resolve_color(&st.swatch, st.tint) else { return };
+        let (paint, bounds) = (st.as_fill(), bp.bounding_box());
+        if f.doc.resolve_color(&st.swatch, st.tint).is_none() && designcraft_color::swatch::resolve_gradient(&f.doc.swatches, &st.swatch).is_none() {
+            return;
+        }
         let mut stroke = kurbo::Stroke::new(st.weight)
             .with_caps(match st.cap {
                 designcraft_doc::Cap::Butt => kurbo::Cap::Butt,
@@ -636,13 +745,20 @@ impl Renderer {
             })
             .with_miter_limit(st.miter_limit);
         let kind = f.doc.stroke_kind(&st.kind);
+        let length = designcraft_doc::path_length_bound(bp);
         match &kind {
-            StrokeType::Dashed { pattern } if !pattern.is_empty() => stroke = stroke.with_dashes(0.0, pattern.iter().copied()),
-            StrokeType::Dotted => stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round),
+            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
+                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+            }
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
+                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
+            }
             _ => {}
         }
         ctx.set_transform(f.view * xf);
-        ctx.set_paint(color_of(&c, 1.0));
+        if !set_fill_paint(ctx, f.doc, &paint, bounds) {
+            return;
+        }
         let closed = it.path.is_closed();
         // Arrowheads: the path is shortened under them; they're drawn after it.
         let arrows = designcraft_doc::arrow::apply(bp, st, closed);
@@ -669,7 +785,7 @@ impl Renderer {
             if op {
                 ctx.pop_layer();
             }
-            ctx.set_paint(color_of(&c, 1.0));
+            set_fill_paint(ctx, f.doc, &paint, bounds);
         }
         // Stripes, wavy and hash strokes are fills (along the path's centre line).
         if let Some(o) = kind.outline(bp, st.weight, 0.05 * f.px) {
@@ -722,12 +838,28 @@ impl Renderer {
         }
     }
 
+    /// Draw a placed graphic, inside its clipping path when it has one.
     pub(crate) fn draw_graphic(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
+        let Some((region, even_odd)) = g.clip_region() else {
+            self.draw_graphic_unclipped(ctx, f, g, xf);
+            return;
+        };
+        ctx.set_transform(f.view * xf);
+        if even_odd {
+            ctx.set_fill_rule(peniko::Fill::EvenOdd);
+        }
+        ctx.push_clip_layer(&region);
+        ctx.set_fill_rule(peniko::Fill::NonZero);
+        self.draw_graphic_unclipped(ctx, f, g, xf);
+        ctx.pop_layer();
+    }
+
+    fn draw_graphic_unclipped(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
         let Some(asset) = f.doc.assets.get(&g.asset) else { return };
         if designcraft_doc::media_kind(&asset.mime).is_some() {
             // Video / sound: a dark frame with a play mark (the poster, when set, is drawn by the item).
             ctx.set_transform(f.view * xf * g.xf);
-            ctx.set_paint(peniko::Color::from_rgba8(48, 48, 52, 255));
+            ctx.set_paint(screen_color([48, 48, 52], 255));
             ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1));
             let (cx, cy, r) = (g.size.0 / 2.0, g.size.1 / 2.0, g.size.0.min(g.size.1) * 0.18);
             let mut tri = BezPath::new();
@@ -735,13 +867,13 @@ impl Renderer {
             tri.line_to((cx + r, cy));
             tri.line_to((cx - r * 0.6, cy + r));
             tri.close_path();
-            ctx.set_paint(peniko::Color::from_rgba8(235, 235, 235, 255));
+            ctx.set_paint(screen_color([235, 235, 235], 255));
             ctx.fill_path(&tri);
             return;
         }
         if f.opts.quality == DisplayQuality::Fast {
             ctx.set_transform(f.view * xf * g.xf);
-            ctx.set_paint(peniko::Color::from_rgba8(178, 178, 178, 255));
+            ctx.set_paint(screen_color([178, 178, 178], 255));
             ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1));
             return;
         }
@@ -749,50 +881,71 @@ impl Renderer {
         let on_screen = (f.view * xf * g.xf).determinant().abs().sqrt();
         let on_screen = if f.opts.quality == DisplayQuality::Typical { on_screen.min(1.0) } else { on_screen };
         let hidden = HIDDEN_LAYERS.with(|h| h.borrow().clone());
-        let data = if !hidden.is_empty() && is_pdf(&asset.data) { pdf_layers::layered(&asset.data, &hidden) } else { asset.data.clone() };
-        let Some(pm) = images::mip(&data, asset.page, g.size.0, on_screen) else { return };
-        let pm = match PLATE.with(|p| p.get()) {
-            Some(plate) => plate_pixmap(&pm, plate),
-            None => pm,
+        let data = match hidden.as_deref().filter(|_| is_pdf(&asset.data)) {
+            // An explicit choice (including all-on) that cannot be rewritten fails closed:
+            // stale persisted/relinked choices must not reveal hidden source content.
+            Some(hidden) => {
+                let Some(variant) = pdf_layers::layered(&asset.data, hidden) else { return };
+                variant
+            }
+            None => asset.data.clone(),
         };
-        let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+        // A placed PDF cropped to a box: the whole page, placed so that the box spans graphic space.
+        let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
+        let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
+        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else { return };
+        // A coloured image is already in the plate's inks (its colours come from `color_of`).
+        let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
+            (Some(coloured), _) => coloured,
+            (None, Some(plate)) => plate_pixmap(&pm, plate),
+            (None, None) => pm,
+        };
+        // Only where the page is: a box reaching past it (a media box larger than the crop box)
+        // shows nothing there.
+        let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page);
         ctx.set_transform(f.view * xf * g.xf);
-        let sx = g.size.0 / pm.width().max(1) as f64;
-        let sy = g.size.1 / pm.height().max(1) as f64;
+        let sx = page_w / pm.width().max(1) as f64;
+        let sy = page_h / pm.height().max(1) as f64;
         ctx.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(pm),
             sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium),
         });
-        ctx.set_paint_transform(Affine::scale_non_uniform(sx, sy));
+        ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
         ctx.fill_rect(&rect);
         ctx.reset_paint_transform();
     }
 }
 
-/// sRGB → working CMYK through a 17³ table built once per colour settings (trilinear).
-fn cmyk_lut(rgb: [f32; 3]) -> [f32; 4] {
-    const N: usize = 17;
+const CMYK_N: usize = 17;
+
+/// The sRGB → working CMYK table for the current colour settings (17³, built once per settings,
+/// trilinear);
+/// sample it with [`cmyk_in`]. Fetch it once for many pixels.
+pub(crate) fn cmyk_table() -> std::sync::Arc<Vec<[f32; 4]>> {
+    const N: usize = CMYK_N;
     type Lut = (designcraft_color::cms::ColorSettings, std::sync::Arc<Vec<[f32; 4]>>);
     static LUT: std::sync::Mutex<Option<Lut>> = std::sync::Mutex::new(None);
     let settings = designcraft_color::cms::active_settings();
-    let table = {
-        let mut g = LUT.lock().unwrap_or_else(|e| e.into_inner());
-        match g.as_ref() {
-            Some((s, t)) if *s == settings => t.clone(),
-            _ => {
-                let cms = designcraft_color::cms::active();
-                let step = |i: usize| i as f32 / (N - 1) as f32;
-                let t: Vec<[f32; 4]> = (0..N * N * N)
-                    .map(|i| {
-                        cms.srgb_to_cmyk([step(i / (N * N)), step(i / N % N), step(i % N)], designcraft_color::cms::Intent::RelativeColorimetric)
-                    })
-                    .collect();
-                let t = std::sync::Arc::new(t);
-                *g = Some((settings, t.clone()));
-                t
-            }
+    let mut g = LUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match g.as_ref() {
+        Some((s, t)) if *s == settings => t.clone(),
+        _ => {
+            let cms = designcraft_color::cms::active();
+            let step = |i: usize| i as f32 / (N - 1) as f32;
+            let t: Vec<[f32; 4]> = (0..N * N * N)
+                .map(|i| cms.srgb_to_cmyk([step(i / (N * N)), step(i / N % N), step(i % N)], designcraft_color::cms::Intent::RelativeColorimetric))
+                .collect();
+            let t = std::sync::Arc::new(t);
+            *g = Some((settings, t.clone()));
+            t
         }
-    };
+    }
+}
+
+/// Trilinear lookup of `rgb` in a [`cmyk_table`].
+pub(crate) fn cmyk_in(table: &[[f32; 4]], rgb: [f32; 3]) -> [f32; 4] {
+    const N: usize = CMYK_N;
     let f = rgb.map(|v| v.clamp(0.0, 1.0) * (N - 1) as f32);
     let i = f.map(|v| (v as usize).min(N - 2));
     let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32];
@@ -802,8 +955,10 @@ fn cmyk_lut(rgb: [f32; 3]) -> [f32; 4] {
         let w = (if a == 1 { d[0] } else { 1.0 - d[0] }) * (if b == 1 { d[1] } else { 1.0 - d[1] }) * (if cc == 1 { d[2] } else { 1.0 - d[2] });
         ((i[0] + a) * N * N + (i[1] + b) * N + i[2] + cc, w)
     }) {
-        for k in 0..4 {
-            out[k] += table[corner][k] * w;
+        if let Some(t) = table.get(corner) {
+            for k in 0..4 {
+                out[k] += t[k] * w;
+            }
         }
     }
     out
@@ -811,12 +966,27 @@ fn cmyk_lut(rgb: [f32; 3]) -> [f32; 4] {
 
 /// An image's ink coverage on one process plate, as grey (cached per image and plate).
 fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync::Arc<vello_cpu::Pixmap> {
-    type Cache = std::collections::HashMap<(usize, u8), std::sync::Arc<vello_cpu::Pixmap>>;
+    // Keep source allocations alive (their addresses are keys), invalidate on colour settings,
+    // and cap derived raster memory rather than merely counting differently sized images.
+    type Entry = (std::sync::Arc<vello_cpu::Pixmap>, std::sync::Arc<vello_cpu::Pixmap>);
+    type Cache = (designcraft_color::cms::ColorSettings, std::collections::HashMap<(usize, u8), Entry>, usize);
+    const BUDGET: usize = 64 << 20;
     static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
     let key = (std::sync::Arc::as_ptr(pm) as usize, plate);
-    if let Some(v) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&key).cloned()) {
-        return v;
+    let settings = designcraft_color::cms::active_settings();
+    {
+        let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((previous, map, _)) = guard.as_ref() {
+            if *previous == settings {
+                if let Some((_, derived)) = map.get(&key) {
+                    return derived.clone();
+                }
+            } else {
+                *guard = None;
+            }
+        }
     }
+    let table = cmyk_table();
     let data: Vec<vello_cpu::color::PremulRgba8> = pm
         .data()
         .iter()
@@ -826,18 +996,29 @@ fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync:
             }
             let k = 255.0 / p.a as f32;
             let rgb = [p.r, p.g, p.b].map(|v| (v as f32 * k / 255.0).min(1.0));
-            let cmyk = cmyk_lut(rgb);
-            let v = ((1.0 - cmyk[plate.min(3) as usize].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            let cmyk = cmyk_in(&table, rgb);
+            let ink = |i: usize| ((1.0 - cmyk[i].clamp(0.0, 1.0)) * p.a as f32).round() as u8;
+            if plate == 4 {
+                return vello_cpu::color::PremulRgba8 { r: ink(0), g: ink(1), b: ink(2), a: p.a };
+            }
+            let v = ink(plate.min(3) as usize);
             vello_cpu::color::PremulRgba8 { r: v, g: v, b: v, a: p.a }
         })
         .collect();
     let out = std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data, pm.width(), pm.height()));
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let map = c.get_or_insert_with(Default::default);
-    if map.len() > 32 {
-        map.clear();
+    let bytes = (pm.width() as usize).saturating_mul(pm.height() as usize).saturating_mul(8);
+    if bytes <= BUDGET {
+        let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (previous, map, used) = guard.get_or_insert_with(|| (settings.clone(), Default::default(), 0));
+        if *previous != settings || used.saturating_add(bytes) > BUDGET {
+            map.clear();
+            *used = 0;
+            *previous = settings;
+        }
+        if map.insert(key, (pm.clone(), out.clone())).is_none() {
+            *used += bytes;
+        }
     }
-    map.insert(key, out.clone());
     out
 }
 
@@ -847,23 +1028,38 @@ fn rect_overlaps(a: Rect, b: Rect) -> bool {
 
 thread_local! {
     /// Object Layer Options of the placed PDF being drawn.
-    static HIDDEN_LAYERS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static HIDDEN_LAYERS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
     /// Appearance of Black for the render on this thread: 100% K as pure black.
     static RICH_BLACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Separations Preview plate for the render on this thread.
+    /// The CMYK blend space's ink pass for the render on this thread (`RenderOptions::plate`).
     static PLATE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
 }
 
+/// Screen indicators and placeholders are display sRGB, independent of the document's RGB
+/// working profile. Encode their inks only while drawing a process plate or CMYK blend pass.
+pub(crate) fn screen_color(rgb: [u8; 3], alpha: u8) -> peniko::Color {
+    if PLATE.with(std::cell::Cell::get).is_none() {
+        return peniko::Color::from_rgba8(rgb[0], rgb[1], rgb[2], alpha);
+    }
+    let [c, m, y, k] = cmyk_in(&cmyk_table(), rgb.map(|v| v as f32 / 255.0));
+    color_of(&designcraft_color::Color::Cmyk { c, m, y, k }, alpha as f32 / 255.0)
+}
+
 pub fn color_of(c: &designcraft_color::Color, alpha: f32) -> peniko::Color {
-    if let Some(p) = PLATE.with(|p| p.get()) {
+    if let Some(p) = PLATE.with(std::cell::Cell::get) {
         let cmyk = match *c {
             designcraft_color::Color::Cmyk { c, m, y, k } => [c, m, y, k],
             _ => c.to_cmyk_managed(designcraft_color::cms::Intent::RelativeColorimetric),
         };
-        let v = ((1.0 - cmyk[p.min(3) as usize].clamp(0.0, 1.0)) * 255.0).round() as u8;
-        return peniko::Color::from_rgba8(v, v, v, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let ink = |i: usize| ((1.0 - cmyk[i].clamp(0.0, 1.0)) * 255.0).round() as u8;
+        if p == 4 {
+            return peniko::Color::from_rgba8(ink(0), ink(1), ink(2), a);
+        }
+        let v = ink(p.min(3) as usize);
+        return peniko::Color::from_rgba8(v, v, v, a);
     }
-    if RICH_BLACK.with(|r| r.get())
+    if RICH_BLACK.with(std::cell::Cell::get)
         && let designcraft_color::Color::Cmyk { c: cc, m, y, k } = *c
         && cc <= 1e-3
         && m <= 1e-3
@@ -878,28 +1074,25 @@ pub fn color_of(c: &designcraft_color::Color, alpha: f32) -> peniko::Color {
 
 /// Set a swatch fill (solid or gradient) as the paint. Returns false for [None]/unknown.
 fn set_fill_paint(ctx: &mut RenderContext, doc: &Document, fill: &designcraft_doc::Fill, bounds: Rect) -> bool {
-    let (swatch, tint, angle) = (fill.swatch.as_str(), fill.tint, fill.gradient_angle);
+    let (swatch, tint) = (fill.swatch.as_str(), fill.tint);
     if let Some(g) = designcraft_color::swatch::resolve_gradient(&doc.swatches, swatch) {
-        let stops: Vec<peniko::ColorStop> = g.expanded_stops().iter().map(|(o, c, a)| peniko::ColorStop::from((*o, color_of(c, *a)))).collect();
+        // Sampled so process colours blend as inks, as InDesign shows them (and as the PDF's CMYK
+        // shading prints).
+        let stops: Vec<peniko::ColorStop> = g.display_stops().iter().map(|(o, c, a)| peniko::ColorStop::from((*o, color_of(c, *a)))).collect();
         if stops.is_empty() {
             return false;
         }
-        let c = bounds.center();
-        let grad = match (g.kind, fill.gradient_vector) {
-            (designcraft_color::GradientKind::Radial, Some([x0, y0, x1, y1])) => {
-                let r = Vec2::new(x1 - x0, y1 - y0).hypot().max(1e-3);
-                peniko::Gradient::new_radial((x0, y0), r as f32).with_stops(stops.as_slice())
-            }
-            (_, Some([x0, y0, x1, y1])) => peniko::Gradient::new_linear((x0, y0), (x1, y1)).with_stops(stops.as_slice()),
-            (designcraft_color::GradientKind::Radial, None) => {
-                let r = bounds.width().max(bounds.height()) / 2.0;
-                peniko::Gradient::new_radial(c, r as f32).with_stops(stops.as_slice())
+        let grad = match g.kind {
+            // Radial: a circle stretched into the object's ellipse (the paint transform).
+            designcraft_color::GradientKind::Radial => {
+                let (c, rx, ry) = fill.radial_ellipse(bounds);
+                let rx = rx.max(1e-3);
+                ctx.set_paint_transform(Affine::translate(c.to_vec2()) * Affine::scale_non_uniform(1.0, ry / rx) * Affine::translate(-c.to_vec2()));
+                peniko::Gradient::new_radial(c, rx as f32).with_stops(stops.as_slice())
             }
             _ => {
-                let a = angle.unwrap_or(0.0).to_radians();
-                let half = (bounds.width() * a.cos().abs() + bounds.height() * a.sin().abs()) / 2.0;
-                let d = Vec2::new(a.cos(), -a.sin()) * half;
-                peniko::Gradient::new_linear(c - d, c + d).with_stops(stops.as_slice())
+                let (a, b) = fill.linear_axis(bounds);
+                peniko::Gradient::new_linear(a, b).with_stops(stops.as_slice())
             }
         };
         ctx.set_paint(grad);
@@ -918,6 +1111,17 @@ fn set_fill_paint(ctx: &mut RenderContext, doc: &Document, fill: &designcraft_do
 /// overprints by default)? It's then multiplied over what's beneath.
 pub(crate) fn overprints(f: &Frame, swatch: &str, tint: f32, flag: bool) -> bool {
     f.opts.overprint_preview && (flag || (f.doc.settings.overprint_black && swatch == designcraft_color::swatch::BLACK && tint >= 0.999))
+}
+
+/// Does any item on the spread, or on the parent pages it shows, use a blend mode other than
+/// Normal (groups and pasted-in items included)?
+fn spread_blends(doc: &Document, sp: &designcraft_doc::Spread) -> bool {
+    let blends = |it: &Item| {
+        let mut any = false;
+        it.walk(&mut |i| any |= i.blend != Default::default());
+        any
+    };
+    sp.items.iter().any(|i| blends(i)) || doc.parents.iter().any(|p| p.items.iter().any(|i| blends(i)))
 }
 
 pub fn blend_mode(b: DcBlend) -> BlendMode {
@@ -950,6 +1154,9 @@ pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
 
 /// [`decode_pixmap`] for page `page` of a PDF (other formats have one page).
 pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
+    // Documents retain the EPS source; only display its TIFF preview or placeholder.
+    let proxy = if designcraft_images::is_eps(bytes) { Some(designcraft_images::eps_proxy(bytes)?.0) } else { None };
+    let bytes = proxy.as_deref().unwrap_or(bytes);
     if is_pdf(bytes) {
         return render_pdf_page(bytes, page as usize, 3000);
     }
@@ -1010,6 +1217,9 @@ fn now() -> u64 {
 
 /// Pixel size of an encoded image without decoding it fully.
 pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if designcraft_images::is_eps(bytes) {
+        return designcraft_images::eps_pixel_size(bytes);
+    }
     if is_pdf(bytes) {
         // Placed PDFs are sized by their page (crop box) in points.
         return pdf_page_size(bytes, 0).map(|(w, h)| (w.round().max(1.0) as u32, h.round().max(1.0) as u32));
@@ -1022,7 +1232,8 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Natural size of a placed graphic, unrounded: a PDF page (crop box) and an SVG in points, a raster
-/// in pixels. Placed graphics are drawn at this size; `image_size` rounds it to whole pixels for display.
+/// in pixels, an EPS its bounding box independently of preview pixels. Placed graphics are drawn at
+/// this size; `image_size` rounds it to whole pixels for display.
 pub fn natural_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     if is_pdf(bytes) {
         return pdf_page_size(bytes, page).map(|(w, h)| (w.max(1e-3), h.max(1e-3)));
@@ -1038,68 +1249,270 @@ pub fn is_pdf(bytes: &[u8]) -> bool {
 
 /// Page count of a PDF.
 pub fn pdf_page_count(bytes: &[u8]) -> Option<usize> {
-    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     Some(pdf.pages().len())
 }
 
 /// Size of PDF page `page` (0-based), in points, as it shows (crop box, rotation applied).
 pub fn pdf_page_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
-    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let p = pdf.pages().get(page)?;
     let (w, h) = p.render_dimensions();
     Some((w as f64, h as f64))
 }
 
-/// PDF page `page` as PNG, its longer side about `max_side` pixels, with the `hidden` layers off.
-pub fn pdf_page_png(bytes: &[u8], page: usize, max_side: u32, hidden: &[String]) -> Option<Vec<u8>> {
-    let data = if hidden.is_empty() { bytes.to_vec() } else { pdf_hide_layers(bytes, hidden).unwrap_or_else(|| bytes.to_vec()) };
-    let pm = render_pdf_page(&data, page, max_side)?;
-    let pixels: Vec<u8> = pm.data().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
-    Some(Rendered { width: pm.width() as u32, height: pm.height() as u32, pixels }.to_png())
+/// A placed page could not be rasterized completely for export.
+#[derive(Debug, thiserror::Error)]
+pub enum PdfRasterError {
+    #[error("{0}")]
+    Input(#[source] craft_pdf::OpenError),
+    #[error("{0}")]
+    Render(#[from] craft_pdf::raster::Error),
+    #[error("the PDF page could not be read or rendered")]
+    InvalidPage,
+    #[error("PDF page {page} is unavailable; choose an existing page in Image Import Options or place the replacement PDF again")]
+    MissingPage { page: usize },
+    #[error("the selected PDF layers could not be hidden")]
+    LayerRewrite,
+    #[error("an image could not be decoded or exceeded the PDF renderer's resource limits; repair or replace this placed PDF before exporting again")]
+    ImageDecode,
+    #[error("the PDF renderer encountered an unsupported font")]
+    UnsupportedFont,
+    #[error(
+        "the PDF renderer could not read all page content or reached its resource limits; repair or replace this placed PDF before exporting again"
+    )]
+    ContentTruncated,
 }
 
-/// Rasterize PDF page `page` so its longer side is about `max_side` pixels (screen display; PDF
-/// export embeds the page as vectors).
+/// Reject oversized PDFs before placement, layer rewriting or output allocation.
+pub fn check_pdf_input_size(size: usize) -> Result<(), PdfRasterError> {
+    craft_pdf::check_input_size(size).map_err(PdfRasterError::Input)
+}
+
+/// PDF page `page` as PNG, its longer side about `max_side` pixels, with the `hidden` layers off.
+/// Only the `shown` part ([`designcraft_doc::Asset::shown_box`]) is kept when given.
+/// Returns `None` on the same failures as [`pdf_page_png_checked`].
+pub fn pdf_page_png(bytes: &[u8], page: usize, max_side: u32, hidden: &[String], shown: Option<[f64; 4]>) -> Option<Vec<u8>> {
+    pdf_page_png_checked(bytes, page, max_side, hidden, shown).ok()
+}
+
+/// Rasterize a placed page for export, preserving available interpreter diagnostics.
+/// This cannot detect backend approximations that do not emit an interpreter warning.
+pub fn pdf_page_png_checked(bytes: &[u8], page: usize, max_side: u32, hidden: &[String], shown: Option<[f64; 4]>) -> Result<Vec<u8>, PdfRasterError> {
+    pdf_page_png_options_checked(bytes, page, max_side, (!hidden.is_empty()).then_some(hidden), shown)
+}
+
+/// Rasterize with an explicit visibility override: `Some(&[])` enables every layer;
+/// `None` retains file defaults. The legacy entry point keeps its empty-list semantics.
+pub fn pdf_page_png_options_checked(
+    bytes: &[u8],
+    page: usize,
+    max_side: u32,
+    hidden: Option<&[String]>,
+    shown: Option<[f64; 4]>,
+) -> Result<Vec<u8>, PdfRasterError> {
+    check_pdf_input_size(bytes.len())?;
+    let data = if let Some(hidden) = hidden {
+        std::borrow::Cow::Owned(pdf_hide_layers(bytes, hidden).ok_or(PdfRasterError::LayerRewrite)?)
+    } else {
+        std::borrow::Cow::Borrowed(bytes)
+    };
+    let raster = render_pdf_raster(&data, page, max_side)?;
+    if raster.diagnostics.image_decode_failed {
+        return Err(PdfRasterError::ImageDecode);
+    }
+    if raster.diagnostics.unsupported_font {
+        return Err(PdfRasterError::UnsupportedFont);
+    }
+    if raster.diagnostics.content_truncated {
+        return Err(PdfRasterError::ContentTruncated);
+    }
+    let pm = raster_pixmap(&raster);
+    let pm = match shown {
+        Some(frac) => crop_pixmap(&pm, frac).ok_or(PdfRasterError::InvalidPage)?,
+        None => pm,
+    };
+    let pixels = pm.data().iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
+    Ok(Rendered { width: u32::from(pm.width()), height: u32::from(pm.height()), pixels }.to_png())
+}
+
+/// Rasterize PDF page `page` so its longer side is about `max_side` pixels (screen display).
+/// Export callers that need failure diagnostics use [`pdf_page_png_checked`].
 pub fn render_pdf_page(bytes: &[u8], page: usize, max_side: u32) -> Option<Pixmap> {
-    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
-    let p = pdf.pages().get(page)?;
+    #[cfg(test)]
+    PDF_RENDERS.with(|n| n.set(n.get() + 1));
+    let raster = render_pdf_raster(bytes, page, max_side).ok()?;
+    Some(raster_pixmap(&raster))
+}
+
+fn raster_pixmap(raster: &craft_pdf::raster::Raster) -> Pixmap {
+    let data = raster.bytes().as_chunks::<4>().0.iter().map(|c| vello_cpu::color::PremulRgba8 { r: c[0], g: c[1], b: c[2], a: c[3] }).collect();
+    Pixmap::from_parts(data, raster.width as u16, raster.height as u16)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many PDF pages [`render_pdf_page`] rasterized on this thread.
+    static PDF_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn render_pdf_raster(bytes: &[u8], page: usize, max_side: u32) -> Result<craft_pdf::raster::Raster, PdfRasterError> {
+    let pdf = craft_pdf::open_slice(bytes, None).map_err(|e| match e {
+        craft_pdf::OpenError::Load(_) => PdfRasterError::InvalidPage,
+        other => PdfRasterError::Input(other),
+    })?;
+    let p = pdf.pages().get(page).ok_or(PdfRasterError::MissingPage { page: page.saturating_add(1) })?;
     let (w, h) = p.render_dimensions();
     let scale = (max_side as f32 / w.max(h).max(1.0)).min(8.0);
-    let rs = hayro::RenderSettings { x_scale: scale, y_scale: scale, ..Default::default() };
-    let pm = hayro::render(p, &hayro::RenderCache::new(), &hayro::hayro_interpret::InterpreterSettings::default(), &rs);
-    let (pw, ph) = (pm.width(), pm.height());
-    let data: Vec<vello_cpu::color::PremulRgba8> =
-        pm.data_as_u8_slice().as_chunks::<4>().0.iter().map(|c| vello_cpu::color::PremulRgba8 { r: c[0], g: c[1], b: c[2], a: c[3] }).collect();
-    Some(Pixmap::from_parts(data, pw, ph))
+    craft_pdf::raster::render(
+        p,
+        &craft_pdf::raster::RenderCache::new(),
+        &craft_pdf::interpret::InterpreterSettings::default(),
+        &craft_pdf::raster::Options { scale: [scale; 2], ..Default::default() },
+    )
+    .map_err(PdfRasterError::Render)
 }
 
 /// A page box of a PDF page (`crop`, `trim`, `bleed`, `art`, `media`) as (x, y, w, h) in points
 /// from the top-left of the page as rendered (its visible crop box); missing boxes fall back to the
 /// crop box, as PDF readers do.
 pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, f64, f64)> {
-    use hayro::hayro_syntax::object::{Rect as PRect, dict::keys};
-    let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes.to_vec())).ok()?;
+    use craft_pdf::syntax::object::{Rect as PRect, dict::keys};
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let p = pdf.pages().get(page)?;
     let visible = p.intersected_crop_box();
-    // The boxes are in user space units; `/UserUnit` is the size of one in points.
-    let unit = p.user_unit() as f64;
-    let key: &[u8] = match kind {
-        "trim" => keys::TRIM_BOX,
-        "bleed" => keys::BLEED_BOX,
-        "art" => keys::ART_BOX,
-        "media" => return Some(rel(visible, p.media_box(), unit)),
-        _ => return Some(rel(visible, visible, unit)),
+    let page_box = match kind {
+        "media" => p.media_box(),
+        "trim" | "bleed" | "art" => {
+            let key: &[u8] = match kind {
+                "trim" => keys::TRIM_BOX,
+                "bleed" => keys::BLEED_BOX,
+                _ => keys::ART_BOX,
+            };
+            p.raw().get::<PRect>(key).map(|b| b.intersect(p.media_box())).unwrap_or(visible)
+        }
+        _ => visible,
     };
-    let b = p.raw().get::<PRect>(key).map(|b| b.intersect(p.media_box())).unwrap_or(visible);
-    fn rel(v: PRect, b: PRect, unit: f64) -> (f64, f64, f64, f64) {
-        ((b.x0 - v.x0) * unit, (v.y1 - b.y1) * unit, b.width() * unit, b.height() * unit)
-    }
-    Some(rel(visible, b, unit))
+    let transform = Affine::new(p.initial_transform(true).as_coeffs());
+    let b = transform.transform_rect_bbox(Rect::new(page_box.x0, page_box.y0, page_box.x1, page_box.y1));
+    b.is_finite().then_some((b.x0, b.y0, b.width(), b.height()))
 }
 
-/// Separations Preview on a rendered image: `plate` 0–3 shows that process plate (C, M, Y, K) as
-/// ink density in grey; with an `ink_limit` (0–4, total ink) areas over it are shown in red.
-/// Pixels are separated with a plain GCR (black = 1 − max(r, g, b)), so it's a preview.
+/// The part of PDF page `page` that `crop` shows: its left, top, right and bottom edges as
+/// fractions of the page as rendered (its visible crop box, rotated as it displays), and its size
+/// in points. A box the page doesn't define is its crop box, as PDF readers do. The content boxes
+/// are the bounds of what the page draws, found from its drawing operations without rendering it
+/// (the whole page when it draws nothing).
+pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -> Option<([f64; 4], (f64, f64))> {
+    use craft_pdf::syntax::object::{Rect as PRect, dict::keys};
+    use designcraft_doc::PdfCrop;
+    const WHOLE: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    let p = pdf.pages().get(page)?;
+    let (w, h) = p.render_dimensions();
+    let (w, h) = (f64::from(w), f64::from(h));
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let frac = match crop {
+        PdfCrop::Crop => WHOLE,
+        PdfCrop::ContentVisible => pdf_bounds::page_content_bounds(bytes, page).unwrap_or(WHOLE),
+        PdfCrop::ContentAll => {
+            if pdf_layers::has_optional_content(&pdf) {
+                // If all-on rewriting is unsupported, a visible-only box could cut
+                // off hidden content. Keep the entire page conservatively instead.
+                pdf_hide_layers(bytes, &[]).and_then(|all_on| pdf_bounds::page_content_bounds(&all_on, page)).unwrap_or(WHOLE)
+            } else {
+                pdf_bounds::page_content_bounds(bytes, page).unwrap_or(WHOLE)
+            }
+        }
+        PdfCrop::Art | PdfCrop::Trim | PdfCrop::Bleed | PdfCrop::Media => {
+            let media = p.media_box();
+            let b = match crop {
+                PdfCrop::Media => media,
+                _ => {
+                    let key: &[u8] = match crop {
+                        PdfCrop::Trim => keys::TRIM_BOX,
+                        PdfCrop::Bleed => keys::BLEED_BOX,
+                        _ => keys::ART_BOX,
+                    };
+                    p.raw().get::<PRect>(key).map(|b| b.intersect(media)).unwrap_or_else(|| p.intersected_crop_box())
+                }
+            };
+            // Into rendered page space (y down, rotated, origin at the crop box).
+            let r = Affine::new(p.initial_transform(true).as_coeffs()).transform_rect_bbox(Rect::new(b.x0, b.y0, b.x1, b.y1));
+            [r.x0 / w, r.y0 / h, r.x1 / w, r.y1 / h]
+        }
+    };
+    let size = ((frac[2] - frac[0]) * w, (frac[3] - frac[1]) * h);
+    (frac.iter().all(|v| v.is_finite()) && size.0 > 0.0 && size.1 > 0.0).then_some((frac, size))
+}
+
+/// The part of the page a placed PDF shows ([`designcraft_doc::Asset::shown_box`]). A Bounding
+/// Box crop that import left unmeasured is measured here, once per file, page and crop: that
+/// interprets the page's drawing, which only drawing or exporting the graphic needs.
+pub fn shown_box(asset: &designcraft_doc::Asset) -> Option<[f64; 4]> {
+    if !asset.content_box_pending() {
+        return asset.shown_box();
+    }
+    asset.shown(content_box(&asset.data, asset.page, asset.pdf_crop)?)
+}
+
+type ContentBoxes = HashMap<(usize, u32, designcraft_doc::PdfCrop), (std::sync::Weak<Vec<u8>>, Option<[f64; 4]>)>;
+
+/// [`pdf_crop_box`]'s box, cached by the file's allocation. The weak reference keeps that address
+/// from naming another file while the entry lives.
+fn content_box(bytes: &Arc<Vec<u8>>, page: u32, crop: designcraft_doc::PdfCrop) -> Option<[f64; 4]> {
+    static CACHE: std::sync::Mutex<Option<ContentBoxes>> = std::sync::Mutex::new(None);
+    let key = (Arc::as_ptr(bytes) as usize, page, crop);
+    let cached = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|c| c.get(&key)).and_then(|(file, b)| {
+        let same = file.upgrade().is_some_and(|f| Arc::ptr_eq(&f, bytes));
+        same.then_some(*b)
+    });
+    if let Some(b) = cached {
+        return b;
+    }
+    // Render outside the lock: other graphics keep drawing meanwhile.
+    let b = pdf_crop_box(bytes, page as usize, crop).map(|(frac, _)| frac);
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cache = cache.get_or_insert_with(HashMap::new);
+    cache.retain(|_, (file, _)| file.strong_count() > 0);
+    cache.insert(key, (Arc::downgrade(bytes), b));
+    b
+}
+
+/// The part of `pm` inside `frac` (left, top, right, bottom as fractions of it); what lies outside
+/// `pm` is transparent.
+pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
+    let (pw, ph) = (f64::from(pm.width()), f64::from(pm.height()));
+    let [l, t, r, b] = [frac[0] * pw, frac[1] * ph, frac[2] * pw, frac[3] * ph].map(f64::round);
+    let (w, h) = (r - l, b - t);
+    if !(w >= 1.0 && h >= 1.0 && w <= f64::from(u16::MAX) && h <= f64::from(u16::MAX)) {
+        return None;
+    }
+    let (w, h) = (w as u16, h as u16);
+    let mut out = Pixmap::new(w, h);
+    let src = pm.data();
+    let dst = out.data_mut();
+    for y in 0..usize::from(h) {
+        let sy = y as f64 + t;
+        if sy < 0.0 || sy >= ph {
+            continue;
+        }
+        for x in 0..usize::from(w) {
+            let sx = x as f64 + l;
+            if sx < 0.0 || sx >= pw {
+                continue;
+            }
+            let (Some(p), Some(q)) = (src.get(sy as usize * usize::from(pm.width()) + sx as usize), dst.get_mut(y * usize::from(w) + x)) else {
+                continue;
+            };
+            *q = *p;
+        }
+    }
+    Some(out)
+}
+
 /// View › Proof Colors: simulate the proof target (a press, another RGB space, colour-vision
 /// deficiencies) through the active colour settings' proof table.
 pub fn proof_view(img: &mut Rendered, setup: &designcraft_color::cms::ProofSetup) {
@@ -1144,31 +1557,6 @@ fn blend_space_view(img: &mut Rendered, area: Rect) {
     }
 }
 
-pub fn separation_view(img: &mut Rendered, plate: Option<u8>, ink_limit: Option<f32>) {
-    for px in img.pixels.as_chunks_mut::<4>().0 {
-        let a = px[3] as f32 / 255.0;
-        // Composite over paper white, then separate.
-        let ch = |v: u8| (v as f32 / 255.0) + (1.0 - a);
-        let (r, g, b) = (ch(px[0]).min(1.0), ch(px[1]).min(1.0), ch(px[2]).min(1.0));
-        let k = 1.0 - r.max(g).max(b);
-        let inks =
-            if k >= 0.999 { [0.0, 0.0, 0.0, 1.0] } else { [(1.0 - r - k) / (1.0 - k), (1.0 - g - k) / (1.0 - k), (1.0 - b - k) / (1.0 - k), k] };
-        let mut out = match plate {
-            Some(p) => {
-                let v = ((1.0 - inks[p.min(3) as usize].clamp(0.0, 1.0)) * 255.0).round() as u8;
-                [v, v, v, 255]
-            }
-            None => [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8, 255],
-        };
-        if let Some(limit) = ink_limit
-            && inks.iter().sum::<f32>() > limit
-        {
-            out = [230, 40, 40, 255];
-        }
-        px.copy_from_slice(&out);
-    }
-}
-
 pub fn image_mime(bytes: &[u8]) -> &'static str {
     designcraft_images::mime(bytes)
 }
@@ -1178,6 +1566,59 @@ mod tests {
     use super::*;
     use designcraft_doc::build::NewDocument;
     use designcraft_doc::{Fill, ParaFormat};
+
+    #[test]
+    fn eps_source_decodes_like_its_preview() {
+        let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
+        let mut tiff = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 128])))
+            .write_to(&mut std::io::Cursor::new(&mut tiff), image::ImageFormat::Tiff)
+            .unwrap();
+        let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+        for value in [30usize, source.len(), 0, 0, 30 + source.len(), tiff.len()] {
+            dos.extend((value as u32).to_le_bytes());
+        }
+        dos.extend([0xFF, 0xFF]);
+        dos.extend_from_slice(source);
+        dos.extend_from_slice(&tiff);
+        for source in [source.as_slice(), dos.as_slice()] {
+            let proxy = designcraft_images::eps_proxy(source).unwrap().0;
+            let actual = decode_pixmap(source).unwrap();
+            let expected = decode_pixmap(&proxy).unwrap();
+            assert_eq!((actual.width(), actual.height()), (expected.width(), expected.height()));
+            assert_eq!(actual.data(), expected.data());
+            assert_eq!(image_size(source), image_size(&proxy));
+            assert_eq!(image_mime(source), "application/postscript");
+        }
+        let corrupt = b"%!PS-Adobe-3.0 EPSF-3.0\nno bounding box\n";
+        assert!(decode_pixmap(corrupt).is_none());
+        assert!(image_size(corrupt).is_none());
+    }
+
+    #[test]
+    fn footnote_vector_objects_are_painted() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 300.0, 300.0), d.default_layer(), "Body", ParaFormat::default()).unwrap();
+        let mut item =
+            Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 12.0, 12.0)));
+        item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+        // Open contours with a fill are implicitly closed for painting. A single
+        // open contour must not hide the whole compound glyph.
+        item.path.subpaths[0].closed = false;
+        let story = d.story_mut(sid).unwrap();
+        story.insert_note(4, "", ParaFormat::default());
+        Arc::make_mut(&mut story.notes[0]).text.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+        let cache = Cache::new();
+        let cs = cache.get(&d, sid, None);
+        let note = &cs.frames[0].notes[0];
+        let object = &note.text.frames[0].objects[0];
+        let centre = note.origin + object.origin.to_vec2() + designcraft_geom::Vec2::new(6.0, 6.0);
+        let image = Renderer::new().render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let pixel = image.pixel(centre.x as u32, centre.y as u32);
+        assert!(pixel[0] < 80 && pixel[1] < 80 && pixel[2] < 80, "{pixel:?}");
+    }
 
     /// `Rendered` has public fields: a buffer that doesn't match the stated size used to panic
     /// in `to_png`.
@@ -1370,6 +1811,54 @@ mod tests {
     }
 
     #[test]
+    fn blend_modes_blend_in_cmyk_on_screen_in_a_cmyk_blend_space() {
+        // A lilac (RGB) rectangle, and a 100% K one over its lower half and the paper below it,
+        // in Color Dodge: in CMYK the black clears the lilac's inks (white), over the paper it
+        // shows as it is; in RGB, dodging with black changes nothing.
+        let mut d = Document::new(&NewDocument::default());
+        d.swatches.push(designcraft_color::swatch::Swatch::color("Lilac", designcraft_color::Color::rgb8(171, 154, 227)));
+        let lid = d.default_layer();
+        let rect = |d: &mut Document, r: Rect, fill: &str| {
+            let id = designcraft_doc::ItemId(d.alloc());
+            let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+            it.fill = Fill::swatch(fill);
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            id
+        };
+        rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0), "Lilac");
+        let black = rect(&mut d, Rect::new(150.0, 150.0, 250.0, 250.0), designcraft_color::swatch::BLACK);
+        d.item_mut(black).unwrap().blend = DcBlend::ColorDodge;
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let px = |d: &Document, r: &mut Renderer, x: u32, y: u32| {
+            r.render_page(d, &cache, 0, 1.0, false, &RenderOptions { blend_space_view: true, ..Default::default() }).unwrap().pixel(x, y)
+        };
+        let over_lilac = px(&d, &mut r, 200, 175);
+        assert!(over_lilac[..3].iter().all(|v| *v > 235), "dodged to white: {over_lilac:?}");
+        let over_paper = px(&d, &mut r, 200, 225);
+        assert!(over_paper[..3].iter().all(|v| *v < 90), "black as it is: {over_paper:?}");
+        let lilac = px(&d, &mut r, 120, 150);
+        assert!(lilac[2] > lilac[1] + 25, "the lilac beside it: {lilac:?}");
+        // Inside a group, the group's blend mode.
+        let g = designcraft_doc::ItemId(d.alloc());
+        let it = d.remove_item(black).unwrap();
+        let mut grp = Item::new(g, lid, designcraft_doc::Shape::Group, Default::default());
+        let mut inner = (*it).clone();
+        inner.blend = DcBlend::Normal;
+        grp.content = Content::Group { items: vec![Arc::new(inner)] };
+        grp.blend = DcBlend::ColorDodge;
+        d.insert_item(SpreadRef::Doc(0), grp, None).unwrap();
+        let grouped = px(&d, &mut r, 200, 175);
+        assert!(grouped[..3].iter().all(|v| *v > 235), "{grouped:?}");
+        // An RGB blend space: still lilac under the black (lightened a little: [Black] shows as a
+        // dark grey in RGB).
+        d.settings.blend_space = designcraft_doc::BlendSpace::Rgb;
+        let rgb = px(&d, &mut r, 200, 175);
+        assert!(rgb[2] > rgb[1] + 25 && rgb[1] < 220, "{rgb:?}");
+    }
+
+    #[test]
     fn knockout_group_hides_its_own_objects() {
         let mut d = Document::new(&NewDocument::default());
         let lid = d.default_layer();
@@ -1398,20 +1887,6 @@ mod tests {
         for c in 0..3 {
             assert!((ko[c] as i32 - magenta_only[c] as i32).abs() <= 3, "the overlap shows magenta alone: {ko:?} vs {magenta_only:?}");
         }
-    }
-
-    #[test]
-    fn separations_split_plates_and_flag_ink_limits() {
-        // Pure cyan (0, 255, 255) and rich black-ish (20, 20, 20).
-        let mut img = Rendered { width: 2, height: 1, pixels: vec![0, 255, 255, 255, 20, 20, 20, 255] };
-        let mut c = img.clone();
-        separation_view(&mut c, Some(0), None);
-        assert_eq!(c.pixel(0, 0)[0], 0, "cyan plate solid under cyan");
-        let mut m = img.clone();
-        separation_view(&mut m, Some(1), None);
-        assert_eq!(m.pixel(0, 0)[0], 255, "no magenta");
-        separation_view(&mut img, None, Some(0.5));
-        assert_eq!(img.pixel(0, 0), [230, 40, 40, 255], "100% over a 50% limit");
     }
 
     #[test]
@@ -1470,25 +1945,28 @@ mod tests {
         d.assets.insert(
             aid,
             Arc::new(designcraft_doc::Asset {
-                page: 0,
                 id: aid,
                 name: "red.png".into(),
                 mime: "image/png".into(),
-                link: None,
                 data: Arc::new(png),
                 pixels: Some((4, 4)),
+                ..Default::default()
             }),
         );
         let id = designcraft_doc::ItemId(d.alloc());
         let mut it =
             Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
         it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (100.0, 100.0),
             xf: Affine::translate((100.0, 100.0)),
+            clip: None,
             auto_fit: Default::default(),
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
         let cache = Cache::new();
@@ -1500,6 +1978,67 @@ mod tests {
         assert_eq!(px(DisplayQuality::High, &mut r)[..3], [255, 0, 0]);
         assert_eq!(px(DisplayQuality::Typical, &mut r)[..3], [255, 0, 0]);
         assert_eq!(px(DisplayQuality::Fast, &mut r)[..3], [178, 178, 178]);
+    }
+
+    #[test]
+    fn clipping_path_hides_the_image_outside_it() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let aid = designcraft_doc::AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset {
+                page: 0,
+                id: aid,
+                name: "red.png".into(),
+                mime: "image/png".into(),
+                link: None,
+                data: Arc::new(png),
+                pixels: Some((4, 4)),
+                ..Default::default()
+            }),
+        );
+        // A 100 pt image at 100,100 clipped by a triangle with its apex at the top middle.
+        let triangle = designcraft_geom::PathData::single(designcraft_geom::path::SubPath::polyline(
+            &[designcraft_geom::Point::new(0.0, 100.0), designcraft_geom::Point::new(50.0, 0.0), designcraft_geom::Point::new(100.0, 100.0)],
+            true,
+        ));
+        let mut clip = designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, triangle);
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut it =
+            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (100.0, 100.0),
+            xf: Affine::translate((100.0, 100.0)),
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            clip: Some(Arc::new(clip.clone())),
+            fill: Default::default(),
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let page = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        assert_eq!(page.pixel(150, 170)[..3], [255, 0, 0], "inside the triangle");
+        assert_eq!(page.pixel(110, 110)[..3], [255, 255, 255], "inside the frame, outside the triangle: paper");
+        // Inverted: the corners show and the triangle is paper.
+        clip.invert = true;
+        if let Some(designcraft_doc::Content::Graphic(g)) = d.item_mut(id).map(|it| &mut it.content) {
+            g.clip = Some(Arc::new(clip));
+        }
+        let cache = Cache::new();
+        let page = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        assert_eq!(page.pixel(150, 170)[..3], [255, 255, 255]);
+        assert_eq!(page.pixel(110, 110)[..3], [255, 0, 0]);
     }
 
     #[test]
@@ -1522,6 +2061,116 @@ mod tests {
         assert_eq!(plain.pixel(x, y)[1], 255, "no highlight in output");
         let p = shown.pixel(x, y);
         assert!(p[0] > 240 && p[1] < 200, "pink on screen: {p:?}");
+    }
+
+    #[test]
+    fn table_edges_paint_gap_colour_between_dashes_and_stripes() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 1, 0, 0, 200.0);
+        t.rows[0].height = 60.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        let gap = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.strokes[0] = gap(designcraft_doc::StrokeType::Dashed { pattern: vec![12.0, 6.0] });
+        cell.strokes[2] = gap(designcraft_doc::StrokeType::ThickThin);
+        cell.border_overrides = [true; 4];
+        cell.stroke_defined = [true; 4];
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].cell(0, 0).unwrap().rect;
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |p: [u8; 4]| p[0] < 80 && p[2] < 80;
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[2] > 150;
+        let y = rect.y0.round() as u32;
+        let (dash, space) = (img.pixel((rect.x0 + 6.0) as u32, y), img.pixel((rect.x0 + 15.0) as u32, y));
+        assert!(ink(dash), "dash {dash:?}");
+        assert!(cyan(space), "gap {space:?}");
+        let column: Vec<_> = (rect.y1 as u32 - 5..=rect.y1 as u32 + 5).map(|y| img.pixel(rect.center().x as u32, y)).collect();
+        assert!(column.iter().any(|p| ink(*p)) && column.iter().any(|p| cyan(*p)), "stripes and gap: {column:?}");
+    }
+
+    #[test]
+    fn degenerate_dash_patterns_draw_solid_and_fill_types_close_table_corners() {
+        let fine = designcraft_doc::StrokeType::Dashed { pattern: vec![1e-6, 1e-6] };
+        // Expanding these would take ~10^8 dashes per edge.
+        assert!(text::cell_stroke(&fine, 4.0, 200.0).dash_pattern.is_empty());
+        assert!(text::cell_stroke(&designcraft_doc::StrokeType::Dotted, 1e-6, 200.0).dash_pattern.is_empty());
+        assert!(!text::cell_stroke(&designcraft_doc::StrokeType::Dashed { pattern: vec![3.0, 2.0] }, 1.0, 200.0).dash_pattern.is_empty());
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        d.item_mut(fid).unwrap().stroke = designcraft_doc::Stroke { weight: 2.0, kind: fine.clone(), ..Default::default() };
+        let mut t = designcraft_doc::Table::new(1, 2, 2, 0, 0, 200.0);
+        for r in 0..2 {
+            t.rows[r].height = 60.0;
+            t.rows[r].mode = designcraft_doc::RowHeightMode::Exactly;
+        }
+        let stroke = |kind| designcraft_doc::CellStroke { weight: 8.0, kind, gap_color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        for cell in &mut t.cells {
+            cell.strokes = std::array::from_fn(|_| stroke(designcraft_doc::StrokeType::ThickThin));
+            cell.border_overrides = [true; 4];
+            cell.stroke_defined = [true; 4];
+        }
+        if let Some(cell) = t.cell_mut(1, 0) {
+            cell.strokes[2] = stroke(fine);
+        }
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let frag = cache.get(&d, sid, None).frames[0].tables[0].clone();
+        let (top, bottom) = (frag.cell(0, 0).unwrap().rect, frag.cell(1, 0).unwrap().rect);
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let ink = |p: [u8; 4]| p[0] < 80;
+        let solid: Vec<_> = (2..10).map(|i| img.pixel((bottom.x0 + 20.0 + i as f64 * 0.5) as u32, bottom.y1.round() as u32)).collect();
+        assert!(solid.iter().all(|p| ink(*p)), "the degenerate dashed edge draws solid: {solid:?}");
+        // Outside the table's top-left corner, inside both edges' reach.
+        let corner = img.pixel((top.x0 - 3.0) as u32, (top.y0 - 3.0) as u32);
+        assert!(ink(corner), "corner closed: {corner:?}");
+        let edge = frag.strokes.iter().find(|s| s.a == designcraft_geom::Point::new(top.x0, top.y0) && s.a.y == s.b.y).unwrap();
+        let (a, b) = frag.corner_capped(edge);
+        assert_eq!((a, b), (designcraft_geom::Point::new(top.x0 - 4.0, top.y0), edge.b), "only table corners extend");
+    }
+
+    #[test]
+    fn table_gradient_fill_is_continuous_across_cells() {
+        let mut d = Document::new(&NewDocument::default());
+        let mut gradient = designcraft_color::Gradient::default();
+        gradient.stops[0].color = designcraft_color::Color::rgb(1.0, 0.0, 0.0);
+        gradient.stops[1].color = designcraft_color::Color::rgb(0.0, 0.0, 1.0);
+        d.swatches.push(designcraft_color::Swatch {
+            name: "Table gradient".into(),
+            value: designcraft_color::SwatchValue::Gradient { gradient },
+            locked: false,
+            named: true,
+            hidden: false,
+        });
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+        t.rows[0].height = 40.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        for cell in &mut t.cells {
+            cell.fill = "Table gradient".into();
+        }
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].rect;
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        let img = renderer.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let y = rect.center().y as u32;
+        let a = img.pixel((rect.x0 + 20.0) as u32, y);
+        let b = img.pixel((rect.x1 - 20.0) as u32, y);
+        assert!(i16::from(a[0]) - i16::from(a[2]) > 80, "red end: {a:?}");
+        assert!(i16::from(b[2]) - i16::from(b[0]) > 80, "blue end: {b:?}");
+        let left = img.pixel((rect.center().x - 2.0) as u32, y);
+        let right = img.pixel((rect.center().x + 2.0) as u32, y);
+        assert!((i16::from(left[0]) - i16::from(right[0])).abs() < 20, "no gradient restart between cells");
     }
 
     #[test]
@@ -1557,5 +2206,44 @@ mod tests {
             .filter(|&(x, y)| img.pixel(x, y)[0] < 100)
             .count();
         assert!(dark > 30, "cell text pixels: {dark}");
+    }
+
+    /// A one-page PDF (612 x 792 pt) that draws `content`.
+    fn one_page_pdf(content: &str) -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for o in offsets {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
+        out
+    }
+
+    /// A Bounding Box crop is the exact extent of what the page draws, strokes included, found
+    /// without rasterizing the page: PDF export of a document that places a complex illustration
+    /// cropped that way spent seconds rendering it just to measure it.
+    #[test]
+    fn content_crop_box_is_measured_without_rendering_the_page() {
+        // A filled rectangle 100..300 x 532..592 (PDF y up) and a 10 pt horizontal line at
+        // y 100 from x 400 to 500, butt capped. Clipped away: a rectangle off to the left.
+        let pdf = one_page_pdf("0 0 0 rg 100 532 200 60 re f 10 w 400 100 m 500 100 l S q 0 0 50 50 re W n 100 0 10 10 re f Q");
+        let before = PDF_RENDERS.with(std::cell::Cell::get);
+        let (frac, size) = pdf_crop_box(&pdf, 0, designcraft_doc::PdfCrop::ContentVisible).unwrap();
+        assert_eq!(PDF_RENDERS.with(std::cell::Cell::get), before, "the page was rasterized");
+        let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
+        assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
+        assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
     }
 }

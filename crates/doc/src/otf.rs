@@ -31,7 +31,7 @@ pub const FIGURES: &[(&str, &str, &[&str], &str)] = &[
 
 /// Features shaping turns on by itself: "off" is an explicit `-tag`.
 fn default_on(tag: &str) -> bool {
-    matches!(tag, "calt" | "locl" | "mark")
+    matches!(tag, "calt" | "liga" | "locl" | "mark")
 }
 
 pub fn is_on(list: &[String], tag: &str) -> bool {
@@ -53,7 +53,7 @@ pub fn figures(list: &[String]) -> &'static str {
 pub fn set_figures(list: &mut Vec<String>, id: &str) -> bool {
     let Some((_, _, tags, _)) = FIGURES.iter().find(|f| f.0 == id) else { return false };
     list.retain(|t| !matches!(t.as_str(), "tnum" | "pnum" | "lnum" | "onum"));
-    list.extend(tags.iter().map(|t| t.to_string()));
+    list.extend(tags.iter().map(ToString::to_string));
     true
 }
 

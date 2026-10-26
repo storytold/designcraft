@@ -236,6 +236,23 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn page_numbers_saturate_at_the_largest_start() {
+    // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
+    let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
+    d.sections = vec![crate::Section {
+        start: 0,
+        start_number: Some(u32::MAX),
+        style: Default::default(),
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+    }];
+    assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
+    d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
+    assert_eq!(d.page_number(2), u32::MAX, "a section continuing it saturates too");
+}
+
+#[test]
 fn page_names_follow_sections() {
     let mut d = Document::new(&NewDocument { pages: 6, ..Default::default() });
     assert_eq!(d.page_name(0), "1");
@@ -262,6 +279,41 @@ fn page_names_follow_sections() {
     assert_eq!(d.page_name(5), "4");
 }
 
+/// A section restarting at 1 on page 2 leaves two odd (right) pages in a row; each gets its own
+/// spread instead of sharing one with the odd page on the left.
+#[test]
+fn consecutive_right_pages_get_separate_spreads() {
+    let mut d = Document::new(&NewDocument { pages: 4, ..Default::default() });
+    d.sections.push(Section {
+        start: 1,
+        start_number: Some(1),
+        style: NumberStyle::Arabic,
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+    });
+    d.repaginate();
+    let sides: Vec<Vec<PageSide>> = d.spreads.iter().map(|s| s.pages.iter().map(|p| p.side).collect()).collect();
+    assert_eq!(sides, vec![vec![PageSide::Right], vec![PageSide::Right], vec![PageSide::Left, PageSide::Right]]);
+    let flat: Vec<PageSide> = sides.into_iter().flatten().collect();
+    for (i, side) in flat.iter().enumerate() {
+        assert_eq!(*side == PageSide::Right, d.page_number(i) % 2 == 1, "page {i}");
+    }
+    d.check().unwrap();
+}
+
+#[test]
+fn hostile_section_start_numbers_saturate() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let first = d.sections.iter_mut().find(|s| s.start == 0).unwrap();
+    first.start_number = Some(u32::MAX);
+    let continuing = Section { start: 2, start_number: None, ..first.clone() };
+    d.sections.push(continuing);
+    assert_eq!(d.page_number(1), u32::MAX);
+    assert_eq!(d.page_number(2), u32::MAX);
+    assert_eq!(d.page_name(2), u32::MAX.to_string());
+}
+
 #[test]
 fn document_serde_roundtrip() {
     let mut d = doc();
@@ -283,4 +335,19 @@ fn next_id_near_the_top_is_rejected() {
     assert!(d.check().is_err());
     d.next_id = crate::MAX_NEXT_ID;
     d.check().unwrap();
+}
+
+/// A placed PDF saved before its crop choice was stored loads with the crop box (the whole page),
+/// and that default isn't written out.
+#[test]
+fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
+    let a: Asset = serde_json::from_str(r#"{"id": 7, "name": "a.pdf", "mime": "application/pdf", "page": 1}"#).unwrap();
+    assert_eq!((a.pdf_crop, a.pdf_box, a.shown_box()), (PdfCrop::Crop, None, None));
+    let json = serde_json::to_string(&a).unwrap();
+    assert!(!json.contains("pdfCrop") && !json.contains("pdfBox"), "{json}");
+    let trim = Asset { pdf_crop: PdfCrop::Trim, pdf_box: Some([0.1, 0.1, 0.9, 0.9]), ..a };
+    let back: Asset = serde_json::from_str(&serde_json::to_string(&trim).unwrap()).unwrap();
+    assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
+    // A box with no area shows the whole page.
+    assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }

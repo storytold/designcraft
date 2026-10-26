@@ -9,7 +9,7 @@
 use designcraft_compose as compose;
 use designcraft_doc::story::floor_char_boundary;
 use designcraft_doc::{
-    AltFills, CellAddr, CellRange, CellStroke, Document, RowHeightMode, Selection, StoryId, StrokeType, Table, TableSel, TextSel,
+    AltFills, CellAddr, CellRange, CellStroke, Document, RowHeightMode, RowKind, Selection, StoryId, StrokeType, Table, TableSel, TextSel,
     VerticalJustification,
 };
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "New Cell Style…",
             [],
             None,
-            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, stroke?: {weight, color, tint?}, paragraphStyle?} → {name}",
+            "{name, fromSelection?: bool (the target cell's look), fill?, tint?, insets?: n|[t,l,b,r], vj?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, stroke?: {weight?, color?, tint?, type?, gapColor?, gapTint?} (all four edges; values as table.setCell's stroke), paragraphStyle?, basedOn?: cell style name, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} → {name}",
             has_doc,
             |s, p| cell_style_create(s, p)
         ),
@@ -39,7 +39,7 @@ fn style_specs() -> Vec<CommandSpec> {
             "Apply Cell Style",
             [],
             None,
-            "{name, story?, table?} — the target cells (the whole table when the cursor is in it)",
+            "{name, story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} — the target cells (the whole table when the cursor is in it)",
             in_table,
             cell_style_apply
         ),
@@ -57,11 +57,19 @@ fn style_specs() -> Vec<CommandSpec> {
             "New Table Style…",
             [],
             None,
-            "{name, header?, body?, footer?, leftColumn?, rightColumn?: cell style names, border?: {weight, color}, altRows?: {first, firstColor, next, nextColor}, spaceBefore?, spaceAfter?} → {name}",
+            "{name, basedOn?: table style name, header?, body?, footer?, leftColumn?, rightColumn?: cell style names, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, altRows?: {first, firstColor, next, nextColor}, spaceBefore?, spaceAfter?} → {name}",
             has_doc,
             table_style_create
         ),
-        cmd!("style.table.apply", "Apply Table Style", [], None, "{name, story?, table?}", in_table, table_style_apply),
+        cmd!(
+            "style.table.apply",
+            "Apply Table Style",
+            [],
+            None,
+            "{name, story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?}",
+            in_table,
+            table_style_apply
+        ),
         cmd!(
             "style.table.edit",
             "Table Style Options…",
@@ -81,7 +89,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Create Table",
             [],
             Some("Cmd+Alt+Shift+T"),
-            "{rows?: body rows (4), cols? (4), headerRows? (0), footerRows? (0), width?} — at the text insertion point",
+            "{rows?: body rows (4), cols? | columns? (4), headerRows? (0), footerRows? (0), width?} — at the text insertion point",
             has_text,
             insert
         ),
@@ -90,7 +98,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Convert Text to Table",
             ["Table"],
             None,
-            "{columnSeparator?: tab|comma} — selected paragraphs become rows",
+            "{columnSeparator?: tab|comma, width?: table width (default: the column)} — selected paragraphs become rows",
             has_text,
             convert_from_text
         ),
@@ -99,20 +107,100 @@ fn table_specs() -> Vec<CommandSpec> {
             "Convert Table to Text",
             ["Table"],
             None,
-            "{} — cells separated by tabs, rows by paragraphs",
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — cells separated by tabs, rows by paragraphs",
             in_table,
             convert_to_text
         ),
-        cmd!("table.insertRow", "Insert Row", [], None, "{where?: above|below, count? (1)}", in_table, |s, p| insert_row(s, p, None)),
-        cmd!("table.insertRowAbove", "Insert Row Above", ["Table", "Insert"], None, "{count?}", in_table, |s, p| insert_row(s, p, Some(true))),
-        cmd!("table.insertRowBelow", "Insert Row Below", ["Table", "Insert"], None, "{count?}", in_table, |s, p| insert_row(s, p, Some(false))),
-        cmd!("table.insertColumn", "Insert Column", [], None, "{where?: left|right, count? (1), width?}", in_table, |s, p| insert_col(s, p, None)),
-        cmd!("table.insertColumnLeft", "Insert Column Left", ["Table", "Insert"], None, "{count?}", in_table, |s, p| insert_col(s, p, Some(true))),
-        cmd!("table.insertColumnRight", "Insert Column Right", ["Table", "Insert"], None, "{count?}", in_table, |s, p| insert_col(s, p, Some(false))),
-        cmd!("table.deleteRow", "Delete Row", ["Table", "Delete"], None, "{} — the rows of the target cells", in_table, delete_rows),
-        cmd!("table.deleteColumn", "Delete Column", ["Table", "Delete"], None, "{} — the columns of the target cells", in_table, delete_cols),
-        cmd!("table.delete", "Delete Table", ["Table", "Delete"], None, "{}", in_table, delete_table),
-        cmd!("table.merge", "Merge Cells", ["Table"], None, "{} — merge the target cell range", in_table, merge),
+        cmd!(
+            "table.insertRow",
+            "Insert Row",
+            [],
+            None,
+            "{where?: above|below, count? (1), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_row(s, p, None)
+        ),
+        cmd!(
+            "table.insertRowAbove",
+            "Insert Row Above",
+            ["Table", "Insert"],
+            None,
+            "{count?, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_row(s, p, Some(true))
+        ),
+        cmd!(
+            "table.insertRowBelow",
+            "Insert Row Below",
+            ["Table", "Insert"],
+            None,
+            "{count?, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_row(s, p, Some(false))
+        ),
+        cmd!(
+            "table.insertColumn",
+            "Insert Column",
+            [],
+            None,
+            "{where?: left|right, count? (1), width?, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_col(s, p, None)
+        ),
+        cmd!(
+            "table.insertColumnLeft",
+            "Insert Column Left",
+            ["Table", "Insert"],
+            None,
+            "{count?, width?, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_col(s, p, Some(true))
+        ),
+        cmd!(
+            "table.insertColumnRight",
+            "Insert Column Right",
+            ["Table", "Insert"],
+            None,
+            "{count?, width?, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            |s, p| insert_col(s, p, Some(false))
+        ),
+        cmd!(
+            "table.deleteRow",
+            "Delete Row",
+            ["Table", "Delete"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — the rows of the target cells",
+            in_table,
+            delete_rows
+        ),
+        cmd!(
+            "table.deleteColumn",
+            "Delete Column",
+            ["Table", "Delete"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — the columns of the target cells",
+            in_table,
+            delete_cols
+        ),
+        cmd!(
+            "table.delete",
+            "Delete Table",
+            ["Table", "Delete"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            delete_table
+        ),
+        cmd!(
+            "table.merge",
+            "Merge Cells",
+            ["Table"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — merge the target cell range",
+            in_table,
+            merge
+        ),
         cmd!(
             "table.dropCells",
             "Drag Rows or Columns",
@@ -127,7 +215,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Convert Cell to Graphic Cell",
             ["Table", "Convert Cell Type"],
             None,
-            "{path | base64+name, fit?: proportional|fill (default proportional)} — an image in the target cell (its text is kept but hidden)",
+            "{path? | base64?, name?: with base64, fit?: proportional|fill (default proportional), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — an image in the target cell (its text is kept but hidden)",
             in_table,
             place_graphic
         ),
@@ -136,7 +224,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Convert Cell to Text Cell",
             ["Table", "Convert Cell Type"],
             None,
-            "{} — drop the target cells' graphics",
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — drop the target cells' graphics",
             in_table,
             |s, p| {
                 let g = target(s, p, "table.textCell")?;
@@ -155,29 +243,43 @@ fn table_specs() -> Vec<CommandSpec> {
             "Move Row",
             [],
             None,
-            "{from?, to} (0-based; from defaults to the target row) — like dragging a row",
+            "{from?, to, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} (0-based; from defaults to the target row) — like dragging a row",
             in_table,
             |s, p| move_rc(s, p, true)
         ),
-        cmd!("table.moveColumn", "Move Column", [], None, "{from?, to} (0-based; from defaults to the target column)", in_table, |s, p| move_rc(
-            s, p, false
-        )),
+        cmd!(
+            "table.moveColumn",
+            "Move Column",
+            [],
+            None,
+            "{from?, to, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} (0-based; from defaults to the target column)",
+            in_table,
+            |s, p| move_rc(s, p, false)
+        ),
         cmd!(
             "table.sortRows",
             "Sort",
             ["Table"],
             None,
-            "{column?: 0-based (default: the target cell's), descending?: bool} — body rows by that column's text (numbers numerically)",
+            "{column?: 0-based (default: the target cell's), descending?: bool, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — body rows by that column's text (numbers numerically)",
             in_table,
             sort_rows
         ),
-        cmd!("table.unmerge", "Unmerge Cells", ["Table"], None, "{}", in_table, unmerge),
+        cmd!(
+            "table.unmerge",
+            "Unmerge Cells",
+            ["Table"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            unmerge
+        ),
         cmd!(
             "table.splitHorizontally",
             "Split Cell Horizontally",
             ["Table"],
             None,
-            "{} — each target cell becomes two, one above the other",
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — each target cell becomes two, one above the other",
             in_table,
             |s, p| split(s, p, true)
         ),
@@ -186,7 +288,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Split Cell Vertically",
             ["Table"],
             None,
-            "{} — each target cell becomes two, side by side",
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — each target cell becomes two, side by side",
             in_table,
             |s, p| split(s, p, false)
         ),
@@ -195,19 +297,61 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?, insets?: n | [t,l,b,r], vj?: top|center|bottom|justify, text?, stroke?: {weight?, color?, tint?, type?: solid|dashed|dotted, edges?: all|outer|inner|top|left|bottom|right}}",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
-        cmd!("table.setRowHeight", "Row Height", [], None, "{height, mode?: atLeast|exactly}", in_table, set_row_height),
-        cmd!("table.setColumnWidth", "Column Width", [], None, "{width}", in_table, set_col_width),
-        cmd!("table.distributeColumns", "Distribute Columns Evenly", ["Table"], None, "{}", in_table, distribute_cols),
+        cmd!(
+            query "table.getCellStroke",
+            "Get Cell Stroke",
+            [],
+            None,
+            "{story?, table?, rows?, cols?, edges?} → {weight, color, tint, type, gapColor, gapTint, fill, fillTint, edges: count} of the chosen edges of the target cells; a value that differs between them is null",
+            in_table_or_ids,
+            get_cell_stroke
+        ),
+        cmd!(
+            "table.setRowHeight",
+            "Row Height",
+            [],
+            None,
+            "{height, mode?: atLeast|exactly, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            set_row_height
+        ),
+        cmd!(
+            "table.setColumnWidth",
+            "Column Width",
+            [],
+            None,
+            "{width, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            set_col_width
+        ),
+        cmd!(
+            "table.resizeBorder",
+            "Resize Row or Column",
+            [],
+            None,
+            "{story?, table?, frame?, axis: column|row, index, delta? | size?, keepTableSize?: bool} — moves the border after column/row `index` by `delta` (or makes that column/row `size` wide/high); later columns/rows move along. The last index is the table's end/bottom edge. keepTableSize: on an inner border the next column/row gives or takes the change; on the edge all columns/rows scale proportionally. A dragged row becomes At Least. Refuses a locked `frame`",
+            in_table_or_ids,
+            resize_border
+        ),
+        cmd!(
+            "table.distributeColumns",
+            "Distribute Columns Evenly",
+            ["Table"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            in_table,
+            distribute_cols
+        ),
         cmd!(
             "table.distributeRows",
             "Distribute Rows Evenly",
             ["Table"],
             None,
-            "{story?, table?, rows?: [a,b]} — equal fixed heights preserving the selected rows' composed total height; may overset cell text; unmerge row-spanning cells first",
+            "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} — equal fixed heights preserving the selected rows' composed total height; may overset cell text; unmerge row-spanning cells first",
             in_table,
             distribute_rows
         ),
@@ -216,23 +360,50 @@ fn table_specs() -> Vec<CommandSpec> {
             "Table Options",
             [],
             None,
-            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null}",
+            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
             in_table,
             options
         ),
-        cmd!(noundo "table.select", "Select Cells", [], None, "{story?, table?, rows?: [a,b], cols?: [a,b], what?: cell|row|column|table}", in_table_or_ids, select),
-        cmd!(noundo "table.selectTable", "Select Table", ["Table", "Select"], None, "{}", in_table, |s, p| {
+        cmd!(
+            "table.convertRowsToHeader",
+            "To Header",
+            ["Table", "Convert Rows"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — the target rows, at the top of the table or right after its header rows",
+            |s| can_convert_rows(s, RowKind::Header),
+            |s, p| convert_rows(s, p, RowKind::Header)
+        ),
+        cmd!(
+            "table.convertRowsToBody",
+            "To Body",
+            ["Table", "Convert Rows"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — the target header rows next to the body, footer rows next to it, or both",
+            |s| can_convert_rows(s, RowKind::Body),
+            |s, p| convert_rows(s, p, RowKind::Body)
+        ),
+        cmd!(
+            "table.convertRowsToFooter",
+            "To Footer",
+            ["Table", "Convert Rows"],
+            None,
+            "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — the target rows, at the bottom of the table or right before its footer rows",
+            |s| can_convert_rows(s, RowKind::Footer),
+            |s, p| convert_rows(s, p, RowKind::Footer)
+        ),
+        cmd!(noundo "table.select", "Select Cells", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?, what?: cell|row|column|table}", in_table_or_ids, select),
+        cmd!(noundo "table.selectTable", "Select Table", ["Table", "Select"], None, "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}", in_table, |s, p| {
             select(s, &super::with_param(p, "what", json!("table")))
         }),
-        cmd!(noundo "table.selectRow", "Select Row", ["Table", "Select"], None, "{}", in_table, |s, p| {
+        cmd!(noundo "table.selectRow", "Select Row", ["Table", "Select"], None, "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}", in_table, |s, p| {
             select(s, &super::with_param(p, "what", json!("row")))
         }),
-        cmd!(noundo "table.selectColumn", "Select Column", ["Table", "Select"], None, "{}", in_table, |s, p| {
+        cmd!(noundo "table.selectColumn", "Select Column", ["Table", "Select"], None, "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}", in_table, |s, p| {
             select(s, &super::with_param(p, "what", json!("column")))
         }),
         cmd!(noundo "table.nextCell", "Next Cell", [], None, "{}", in_cell, |s, _| step_cell(s, true)),
         cmd!(noundo "table.prevCell", "Previous Cell", [], None, "{}", in_cell, |s, _| step_cell(s, false)),
-        cmd!(query "table.get", "Get Table", [], None, "{story?, table?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
+        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
     ]
 }
 
@@ -609,29 +780,180 @@ fn unmerge(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-fn parse_stroke(v: &Value, mut base: CellStroke) -> CellStroke {
-    if let Some(w) = v.get("weight").and_then(Value::as_f64) {
-        base.weight = w.max(0.0);
+/// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
+/// right) and the lines between its rows and columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EdgeSel {
+    top: bool,
+    left: bool,
+    bottom: bool,
+    right: bool,
+    inner_h: bool,
+    inner_v: bool,
+}
+
+impl EdgeSel {
+    const ALL: EdgeSel = EdgeSel { top: true, left: true, bottom: true, right: true, inner_h: true, inner_v: true };
+
+    fn parse(v: Option<&Value>, cmd: &str) -> Result<EdgeSel> {
+        let names: Vec<&Value> = match v {
+            None | Some(Value::Null) => return Ok(EdgeSel::ALL),
+            Some(Value::Array(a)) => a.iter().collect(),
+            Some(v) => vec![v],
+        };
+        let mut e = EdgeSel::default();
+        for n in names {
+            match n.as_str() {
+                Some("all") => e = EdgeSel::ALL,
+                Some("outer") => (e.top, e.left, e.bottom, e.right) = (true, true, true, true),
+                Some("inner") => (e.inner_h, e.inner_v) = (true, true),
+                Some("top") => e.top = true,
+                Some("left") => e.left = true,
+                Some("bottom") => e.bottom = true,
+                Some("right") => e.right = true,
+                Some("innerHorizontal") => e.inner_h = true,
+                Some("innerVertical") => e.inner_v = true,
+                _ => return Err(bad(cmd, format!("unknown edge {n}; use all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical"))),
+            }
+        }
+        if e == EdgeSel::default() {
+            return Err(bad(cmd, "no edges chosen"));
+        }
+        Ok(e)
     }
-    if let Some(c) = color_param(v, "color") {
-        base.color = c;
+
+    /// Which sides (top, left, bottom, right) of the cell at `(r, c)` with `spans` are chosen
+    /// within `rg`. Left and right are physical sides, also in RTL tables.
+    fn sides(&self, rg: CellRange, (r, c): (usize, usize), spans: (u32, u32), rtl: bool) -> [bool; 4] {
+        let last_row = r.saturating_add((spans.0.max(1) - 1) as usize);
+        let last_col = c.saturating_add((spans.1.max(1) - 1) as usize);
+        let (start, end) = (c <= rg.c0, last_col >= rg.c1);
+        let (left_outer, right_outer) = if rtl { (end, start) } else { (start, end) };
+        [
+            if r <= rg.r0 { self.top } else { self.inner_h },
+            if left_outer { self.left } else { self.inner_v },
+            if last_row >= rg.r1 { self.bottom } else { self.inner_h },
+            if right_outer { self.right } else { self.inner_v },
+        ]
     }
-    if let Some(t) = v.get("tint").and_then(Value::as_f64) {
-        base.tint = t.clamp(0.0, 1.0) as f32;
+}
+
+/// A finite number in `lo..=hi`, or an error naming `key`.
+fn num_in(v: &Value, key: &str, lo: f64, hi: f64, cmd: &str) -> Result<Option<f64>> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => match x.as_f64() {
+            Some(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(Some(n)),
+            _ => Err(bad(cmd, format!("{key} must be a number from {lo} to {hi}"))),
+        },
     }
-    match str_param(v, "type") {
-        Some("dashed") => base.kind = StrokeType::Dashed { pattern: vec![base.weight.max(1.0) * 3.0, base.weight.max(1.0) * 2.0] },
-        Some("dotted") => base.kind = StrokeType::Dotted,
-        Some("solid") => base.kind = StrokeType::Solid,
-        _ => {}
+}
+
+/// A swatch of the document (or [None]), or an error naming `key`.
+fn swatch_in(doc: &Document, v: &Value, keys: &[&str], cmd: &str) -> Result<Option<String>> {
+    let Some((key, x)) = keys.iter().find_map(|k| v.get(*k).filter(|x| !x.is_null()).map(|x| (*k, x))) else { return Ok(None) };
+    let name = x.as_str().ok_or_else(|| bad(cmd, format!("{key} must be a swatch name")))?;
+    if name != designcraft_color::swatch::NONE && doc.swatch(name).is_none() {
+        return Err(bad(cmd, format!("no swatch `{name}`")));
     }
-    base
+    Ok(Some(name.to_string()))
+}
+
+/// The cell stroke type names of `type`.
+const CELL_STROKE_TYPES: &[&str] =
+    &["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+
+/// The attributes a stroke edit sets. A plain `"dashed"` gets a pattern scaled to the
+/// resulting weight of each edge.
+struct StrokeEdit {
+    attrs: designcraft_doc::CellStrokeAttrs,
+    scaled_dashes: bool,
+}
+
+impl StrokeEdit {
+    fn parse(doc: &Document, v: &Value, cmd: &str) -> Result<StrokeEdit> {
+        if !v.is_object() {
+            return Err(bad(cmd, "stroke must be an object"));
+        }
+        let mut attrs = designcraft_doc::CellStrokeAttrs {
+            weight: num_in(v, "weight", 0.0, 1000.0, cmd)?,
+            color: swatch_in(doc, v, &["color"], cmd)?,
+            tint: num_in(v, "tint", 0.0, 1.0, cmd)?.map(|t| t as f32),
+            gap_color: swatch_in(doc, v, &["gapColor", "gapSwatch"], cmd)?,
+            gap_tint: num_in(v, "gapTint", 0.0, 1.0, cmd)?.map(|t| t as f32),
+            kind: None,
+        };
+        let mut scaled_dashes = false;
+        match v.get("type") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(name)) if name == "dashed" => {
+                scaled_dashes = true;
+                attrs.kind = Some(StrokeType::Dashed { pattern: Vec::new() });
+            }
+            Some(Value::String(name)) if CELL_STROKE_TYPES.contains(&name.as_str()) => {
+                attrs.kind = Some(serde_json::from_value(json!({"kind": name})).map_err(|e| bad(cmd, e.to_string()))?);
+            }
+            Some(t @ Value::Object(_)) => {
+                let kind: StrokeType = serde_json::from_value(t.clone()).map_err(|e| bad(cmd, format!("bad stroke type: {e}")))?;
+                let finite = |v: &[f64]| v.len() <= 64 && v.iter().all(|x| x.is_finite() && *x >= 0.0);
+                match &kind {
+                    StrokeType::Dashed { pattern } if !StrokeType::valid_dash_pattern(pattern) => {
+                        return Err(bad(cmd, "a dash pattern needs 1 to 64 lengths, each 0 or 0.1 to 10000 pt, not all 0"));
+                    }
+                    StrokeType::Stripes { bands } if bands.len() > 64 || !bands.iter().all(|(a, b)| finite(&[*a, *b])) => {
+                        return Err(bad(cmd, "stripes need up to 64 bands of non-negative numbers"));
+                    }
+                    StrokeType::Style { name } if !doc.stroke_styles.iter().any(|s| s.name == *name) => {
+                        return Err(bad(cmd, format!("no stroke style `{name}`")));
+                    }
+                    _ => {}
+                }
+                attrs.kind = Some(kind);
+            }
+            Some(other) => return Err(bad(cmd, format!("unknown stroke type {other}"))),
+        }
+        Ok(StrokeEdit { attrs, scaled_dashes })
+    }
+
+    fn apply(&self, mut base: CellStroke) -> CellStroke {
+        self.attrs.apply_to(&mut base);
+        if self.scaled_dashes {
+            let w = base.weight.max(1.0);
+            base.kind = StrokeType::Dashed { pattern: vec![w * 3.0, w * 2.0] };
+        }
+        base
+    }
+}
+
+/// The stroke drawn on side `side` of the owner cell at `(r, c)` (where that side meets its
+/// first neighbour), as rendering resolves it; the cell's own copy if the side has no stretch.
+fn drawn_side(t: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Option<CellStroke> {
+    let drawn = compose::table::cell_side_strokes(t, owners, (r, c), side).first().map(|s| s.stroke.clone());
+    drawn.or_else(|| t.cell(r, c).and_then(|cell| cell.strokes.get(side).cloned()))
+}
+
+/// Cell Options › Text › First Baseline: `firstBaseline` (offset method) and `firstBaselineMin` (pt).
+fn first_baseline_params(p: &Value, id: &str) -> Result<(Option<designcraft_doc::FirstBaseline>, Option<f64>)> {
+    let fb = match p.get("firstBaseline").filter(|v| !v.is_null()) {
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| bad(id, format!("firstBaseline: {e}")))?),
+        None => None,
+    };
+    let min = match p.get("firstBaselineMin").filter(|v| !v.is_null()) {
+        Some(v) => match v.as_f64().filter(|m| m.is_finite() && (0.0..=8640.0).contains(m)) {
+            Some(m) => Some(m),
+            None => return Err(bad(id, "firstBaselineMin: a number of points from 0 to 8640")),
+        },
+        None => None,
+    };
+    Ok((fb, min))
 }
 
 fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
-    let g = target(s, p, "table.setCell")?;
-    let fill = color_param(p, "fill");
-    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
+    const ID: &str = "table.setCell";
+    let g = target(s, p, ID)?;
+    let doc = &s.doc()?.doc;
+    let fill = swatch_in(doc, p, &["fill"], ID)?;
+    let tint = num_in(p, "tint", 0.0, 1.0, ID)?.map(|t| t as f32);
     let insets: Option<[f64; 4]> = match p.get("insets") {
         Some(Value::Number(n)) => n.as_f64().map(|v| [v.max(0.0); 4]),
         Some(Value::Array(a)) if a.len() == 4 => {
@@ -645,19 +967,49 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some("center") => Some(VerticalJustification::Center),
         Some("bottom") => Some(VerticalJustification::Bottom),
         Some("justify") => Some(VerticalJustification::Justify),
-        Some(o) => return Err(bad("table.setCell", format!("unknown vj `{o}`"))),
+        Some(o) => return Err(bad(ID, format!("unknown vj `{o}`"))),
+        None => None,
+    };
+    let (first_baseline, first_baseline_min) = first_baseline_params(p, ID)?;
+    // Cell Options › Text › Rotation. The value is kept and written back to IDML; only 0 is
+    // composed so far, which the IDML import reports (#1468).
+    let rotation = match p.get("rotation").filter(|v| !v.is_null()) {
+        Some(v) => match v.as_f64().map(|d| d.rem_euclid(360.0)) {
+            Some(d) if d == 0.0 || d == 90.0 || d == 180.0 || d == 270.0 => Some(d),
+            _ => return Err(bad(ID, "rotation: 0, 90, 180 or 270 degrees")),
+        },
         None => None,
     };
     let text = str_param(p, "text").map(|_| super::text_param(p, "text"));
-    let stroke = p.get("stroke").cloned();
-    edit_table(s, &g, "table.setCell", |t| {
+    let stroke = match p.get("stroke").filter(|v| !v.is_null()) {
+        Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
+        None => None,
+    };
+    edit_table(s, &g, ID, |t| {
+        let owners = t.owners();
         let nc = t.ncols();
         let nr = t.nrows();
         let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
-        let borders: [CellStroke; 4] = std::array::from_fn(|side| t.options.border_for(side).clone());
         // Local edits outrank previously imported edges, including explicit zero/None.
         let priority = if stroke.is_some() { next_cell_stroke_priority(t) } else { 0 };
         let rg = g.range;
+        // Edges are inner or outer within the selection grown to whole merged cells, so a
+        // merged cell selected through one of its grid positions keeps its own outline.
+        let outline = t.expand_range(rg);
+        // Each chosen edge starts from the stroke drawn there, which both copies of a shared
+        // edge then take, so the edit changes only the attributes it names.
+        let mut bases = std::collections::HashMap::new();
+        if let Some((_, edges)) = &stroke {
+            for (r, c) in t.selected_owners(rg) {
+                let Some(cell) = t.cell(r, c) else { continue };
+                for (i, on) in edges.sides(outline, (r, c), (cell.row_span, cell.col_span), rtl).into_iter().enumerate() {
+                    if let Some(base) = drawn_side(t, &owners, (r, c), i).filter(|_| on) {
+                        bases.insert((r, c, i), base);
+                    }
+                }
+            }
+        }
+        let mut edited = std::collections::HashSet::new();
         for (r, c) in t.selected_owners(rg) {
             let Some(cell) = t.cell_mut(r, c) else { continue };
             if let Some(f) = &fill {
@@ -672,28 +1024,24 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = vj {
                 cell.vj = v;
             }
+            if let Some(v) = first_baseline {
+                cell.first_baseline = v;
+            }
+            if let Some(v) = first_baseline_min {
+                cell.first_baseline_min = v;
+            }
+            if let Some(v) = rotation {
+                cell.rotation = v;
+            }
             if let Some(tx) = &text {
                 let len = cell.text.len();
                 cell.text.replace(0..len, tx);
             }
-            if let Some(sv) = &stroke {
-                let edges = str_param(sv, "edges").unwrap_or("all");
-                let at_bottom = r.saturating_add(cell.row_span.max(1) as usize);
-                let at_right = c.saturating_add(cell.col_span.max(1) as usize);
-                let perimeter = [r == 0, if rtl { at_right == nc } else { c == 0 }, at_bottom == nr, if rtl { c == 0 } else { at_right == nc }];
-                for (i, on) in [
-                    ("top", r == rg.r0),
-                    ("left", if rtl { at_right.saturating_sub(1) == rg.c1 } else { c == rg.c0 }),
-                    ("bottom", at_bottom.saturating_sub(1) == rg.r1),
-                    ("right", if rtl { c == rg.c0 } else { at_right.saturating_sub(1) == rg.c1 }),
-                ]
-                .iter()
-                .enumerate()
-                .map(|(i, (name, outer))| (i, edges == "all" || edges == *name || (edges == "outer" && *outer) || (edges == "inner" && !*outer)))
-                {
-                    if on {
-                        let base = if perimeter[i] && !cell.border_overrides[i] { &borders[i] } else { &cell.strokes[i] };
-                        cell.strokes[i] = parse_stroke(sv, base.clone());
+            if let Some((edit, _)) = &stroke {
+                for i in 0..4 {
+                    if let Some(base) = bases.remove(&(r, c, i)) {
+                        edited.insert((r, c, i));
+                        cell.strokes[i] = edit.apply(base);
                         cell.stroke_defined[i] = true;
                         cell.stroke_priorities[i] = priority;
                         cell.border_overrides[i] = true;
@@ -701,39 +1049,96 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
-        // Keep both copies of unmerged shared boundaries consistent. Left/right name
-        // physical sides, also in RTL tables.
-        if let Some(sv) = &stroke {
-            let owners = t.owners();
-            let edges = str_param(sv, "edges").unwrap_or("all");
-            let selected = |side: &str| edges == "all" || edges == "outer" || edges == side;
-            if selected("top")
+        // Keep both copies of unmerged shared boundaries consistent: each edited edge is
+        // copied to its neighbour. Left/right name physical sides, also in RTL tables.
+        let mirror = |t: &mut Table, from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize| {
+            if edited.contains(&(from.0, from.1, edge)) {
+                mirror_cell_edge(t, &owners, from, edge, to, opposite);
+            }
+        };
+        if let Some((_, edges)) = &stroke {
+            if edges.top
                 && let Some(row) = rg.r0.checked_sub(1)
             {
                 for c in rg.c0..=rg.c1 {
-                    mirror_cell_edge(t, &owners, (rg.r0, c), 0, (row, c), 2);
+                    mirror(t, (rg.r0, c), 0, (row, c), 2);
                 }
             }
-            if selected("bottom") && rg.r1.saturating_add(1) < nr {
+            if edges.bottom && rg.r1.saturating_add(1) < nr {
                 for c in rg.c0..=rg.c1 {
-                    mirror_cell_edge(t, &owners, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
+                    mirror(t, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
                 }
             }
-            if selected(if rtl { "right" } else { "left" })
+            if (if rtl { edges.right } else { edges.left })
                 && let Some(col) = rg.c0.checked_sub(1)
             {
                 for r in rg.r0..=rg.r1 {
-                    mirror_cell_edge(t, &owners, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
+                    mirror(t, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
                 }
             }
-            if selected(if rtl { "left" } else { "right" }) && rg.c1.saturating_add(1) < nc {
+            if (if rtl { edges.left } else { edges.right }) && rg.c1.saturating_add(1) < nc {
                 for r in rg.r0..=rg.r1 {
-                    mirror_cell_edge(t, &owners, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
+                    mirror(t, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
                 }
             }
         }
         ok()
     })
+}
+
+/// The shown stroke attributes of the chosen edges of the target cells, and their fill; values
+/// that differ are null.
+fn get_cell_stroke(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.getCellStroke";
+    let g = target(s, p, ID)?;
+    let edges = EdgeSel::parse(p.get("edges"), ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let owners = t.owners();
+    let outline = t.expand_range(g.range);
+    let rtl = t.options.direction == designcraft_doc::TextDirection::RightToLeft;
+    // One value per key, or null once two edges (cells) disagree.
+    fn merge(slot: &mut Option<Value>, v: Value) {
+        match slot {
+            None => *slot = Some(v),
+            Some(cur) if *cur != v => *cur = Value::Null,
+            _ => {}
+        }
+    }
+    let keys = ["weight", "color", "tint", "type", "gapColor", "gapTint"];
+    let mut stroke: [Option<Value>; 6] = Default::default();
+    let (mut fill, mut fill_tint) = (None, None);
+    // Each drawn edge once: a shared edge is a side of both its cells.
+    let mut seen = std::collections::HashSet::new();
+    for (r, c) in t.selected_owners(g.range) {
+        let Some(cell) = t.cell(r, c) else { continue };
+        merge(&mut fill, json!(cell.fill));
+        merge(&mut fill_tint, json!(cell.fill_tint));
+        for (i, on) in edges.sides(outline, (r, c), (cell.row_span, cell.col_span), rtl).into_iter().enumerate() {
+            if !on {
+                continue;
+            }
+            for side in compose::table::cell_side_strokes(t, &owners, (r, c), i) {
+                let (x, y) = (Some((r, c)), side.neighbor);
+                if !seen.insert((i % 2, side.boundary, x.min(y), x.max(y))) {
+                    continue;
+                }
+                let e = side.stroke;
+                let values = [json!(e.weight), json!(e.color), json!(e.tint), json!(e.kind), json!(e.gap_color), json!(e.gap_tint)];
+                for (slot, v) in stroke.iter_mut().zip(values) {
+                    merge(slot, v);
+                }
+            }
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (k, v) in keys.iter().zip(stroke) {
+        out.insert((*k).into(), v.unwrap_or(Value::Null));
+    }
+    out.insert("fill".into(), fill.unwrap_or(Value::Null));
+    out.insert("fillTint".into(), fill_tint.unwrap_or(Value::Null));
+    out.insert("edges".into(), json!(seen.len()));
+    Ok(Value::Object(out))
 }
 
 /// Only saturation needs rebasing. Preserve every distinct priority's order and keep
@@ -819,6 +1224,128 @@ fn set_col_width(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Smallest column width and row height a border drag leaves.
+const MIN_TRACK: f64 = 3.0;
+const MAX_TRACK: f64 = 10000.0;
+
+/// Composed height of `row` (laid out from cells that span only that row), else its model height.
+fn composed_row_height(cs: &compose::ComposedStory, t: &Table, row: usize) -> Option<f64> {
+    let laid_out = cs
+        .frames
+        .iter()
+        .flat_map(|f| &f.tables)
+        .filter(|f| f.table == t.id)
+        .flat_map(|f| &f.cells)
+        .filter(|c| c.row == row && t.cell(c.row, c.col).is_some_and(|x| x.row_span <= 1))
+        .map(|c| c.rect.height())
+        .filter(|h| h.is_finite() && *h > 0.0)
+        .reduce(f64::max);
+    laid_out.or_else(|| t.rows.get(row).map(|r| r.height))
+}
+
+/// Move the border after `index` among `sizes` by `delta`. Returns the new sizes.
+fn resize_track(sizes: &[f64], index: usize, delta: f64, keep: bool) -> Option<Vec<f64>> {
+    let mut out = sizes.to_vec();
+    let cur = *sizes.get(index)?;
+    let last = index + 1 == sizes.len();
+    if keep && last {
+        // Scale every track so the table edge moves by `delta`.
+        let total: f64 = sizes.iter().sum();
+        let smallest = sizes.iter().copied().fold(f64::INFINITY, f64::min);
+        let largest = sizes.iter().copied().fold(0.0, f64::max);
+        if !(total > 0.0 && smallest > 0.0 && largest > 0.0) {
+            return None;
+        }
+        let lo = (MIN_TRACK / smallest).min(1.0);
+        let hi = (MAX_TRACK / largest).max(1.0);
+        let f = ((total + delta) / total).clamp(lo, hi);
+        out.iter_mut().for_each(|v| *v *= f);
+    } else if keep {
+        let next = *sizes.get(index + 1)?;
+        let pair = cur + next;
+        let a = (cur + delta).clamp(MIN_TRACK, (pair - MIN_TRACK).max(MIN_TRACK));
+        let [this, after] = out.get_mut(index..index + 2)? else { return None };
+        *this = a;
+        *after = (pair - a).max(MIN_TRACK);
+    } else {
+        *out.get_mut(index)? = (cur + delta).clamp(MIN_TRACK, MAX_TRACK);
+    }
+    out.iter().all(|v| v.is_finite()).then_some(out)
+}
+
+/// The frame a border drag names must hold the table's story and be editable.
+fn check_border_frame(st: &crate::DocState, p: &Value, story: designcraft_doc::StoryId) -> Result<()> {
+    const ID: &str = "table.resizeBorder";
+    if let Some(fid) = super::id_param(p, "frame") {
+        let it = st.doc.item(fid).ok_or_else(|| bad(ID, format!("no frame {}", fid.0)))?;
+        if it.text_frame().map(|f| f.story) != Some(story) {
+            return Err(bad(ID, "the table is not in that frame's story"));
+        }
+        if it.locked || st.doc.layer(it.layer).is_some_and(|l| l.locked) {
+            return Err(bad(ID, "the frame or its layer is locked"));
+        }
+    }
+    Ok(())
+}
+
+/// The change in track size: `delta`, or `size` measured from the current size `cur`.
+fn border_delta(p: &Value, cur: f64) -> Result<f64> {
+    const ID: &str = "table.resizeBorder";
+    let delta = match (p.get("delta").and_then(Value::as_f64), p.get("size").and_then(Value::as_f64)) {
+        (Some(d), _) => d,
+        (None, Some(sz)) => sz - cur,
+        (None, None) => return Err(bad(ID, "`delta` or `size` required")),
+    };
+    if !delta.is_finite() {
+        return Err(bad(ID, "`delta`/`size` must be a finite number"));
+    }
+    Ok(delta)
+}
+
+fn resize_border(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.resizeBorder";
+    let column = match str_param(p, "axis") {
+        Some("column") => true,
+        Some("row") => false,
+        _ => return Err(bad(ID, "axis must be `column` or `row`")),
+    };
+    let index = p.get("index").and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad(ID, "`index` required"))?;
+    let keep = p.get("keepTableSize").and_then(Value::as_bool).unwrap_or(false);
+    let g = target(s, p, ID)?;
+    let st = s.doc()?;
+    check_border_frame(st, p, g.story)?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let sizes: Vec<f64> = if column {
+        t.columns.iter().map(|c| c.width).collect()
+    } else {
+        let cs = s.cache.get(&st.doc, g.story, None);
+        (0..t.nrows()).map(|r| composed_row_height(&cs, t, r).unwrap_or(MIN_TRACK)).collect()
+    };
+    let cur = *sizes.get(index).ok_or_else(|| bad(ID, format!("index {index} out of range")))?;
+    let delta = border_delta(p, cur)?;
+    let new = resize_track(&sizes, index, delta, keep).ok_or_else(|| bad(ID, "invalid table geometry"))?;
+    let size = new.get(index).copied().unwrap_or(cur);
+    let scaled = keep && index + 1 == sizes.len();
+    edit_table(s, &g, ID, |t| {
+        if column {
+            for (c, w) in t.columns.iter_mut().zip(&new) {
+                c.width = *w;
+            }
+        } else {
+            for (i, (r, h)) in t.rows.iter_mut().zip(&new).enumerate() {
+                // Only the rows the drag changed take the new height.
+                if scaled || i == index || (keep && i == index + 1) {
+                    r.height = *h;
+                }
+                if i == index && !scaled {
+                    r.mode = RowHeightMode::AtLeast;
+                }
+            }
+        }
+        Ok(json!({"axis": if column { "column" } else { "row" }, "index": index, "size": size}))
+    })
+}
+
 fn distribute_rows(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.distributeRows";
     if !p.is_object() {
@@ -892,27 +1419,31 @@ fn parse_alt(v: &Value) -> Option<AltFills> {
     }
     let d = AltFills::default();
     Some(AltFills {
-        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| x as u32),
+        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         first_color: color_param(v, "firstColor").unwrap_or(d.first_color),
         first_tint: v.get("firstTint").and_then(Value::as_f64).map_or(d.first_tint, |x| x as f32),
-        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| x as u32),
+        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         next_color: color_param(v, "nextColor").unwrap_or(d.next_color),
         next_tint: v.get("nextTint").and_then(Value::as_f64).map_or(d.next_tint, |x| x as f32),
-        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| x as u32),
-        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| x as u32),
+        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
+        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
     })
 }
 
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.options")?;
+    let border = match p.get("border").filter(|v| !v.is_null()) {
+        Some(b) => Some(StrokeEdit::parse(&s.doc()?.doc, b, "table.options")?),
+        None => None,
+    };
     let p = p.clone();
     edit_table(s, &g, "table.options", |t| {
         let o = &mut t.options;
         if let Some(v) = p.get("direction") {
             o.direction = serde_json::from_value(v.clone()).map_err(|e| bad("table.options", e.to_string()))?;
         }
-        if let Some(b) = p.get("border") {
-            o.border = parse_stroke(b, o.border.clone());
+        if let Some(b) = &border {
+            o.border = b.apply(o.border.clone());
             o.borders = Default::default();
         }
         o.space_before = f64_or(&p, "spaceBefore", o.space_before);
@@ -946,6 +1477,27 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Convert Rows is greyed out unless the selected cells (or the caret's cell) can change kind.
+fn can_convert_rows(s: &Session, kind: RowKind) -> std::result::Result<(), String> {
+    let st = s.active().ok_or("no document open")?;
+    if st.selection.cells.is_none() {
+        in_cell(s)?;
+    }
+    let g = target(s, &Value::Null, "table.convertRows").map_err(|e| e.to_string())?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or("no table")?;
+    t.convert_rows_counts(g.range.r0, g.range.r1, kind).map(|_| ())
+}
+
+fn convert_rows(s: &mut Session, p: &Value, kind: RowKind) -> Result<Value> {
+    const ID: &str = "table.convertRows";
+    let g = target(s, p, ID)?;
+    edit_table(s, &g, ID, |t| {
+        let (h, f) = t.convert_rows_counts(g.range.r0, g.range.r1, kind).map_err(|e| bad(ID, e))?;
+        t.set_header_footer(h, f);
+        Ok(json!({"headerRows": h, "footerRows": f}))
+    })
+}
+
 // ---------- selection ----------
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
@@ -975,7 +1527,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
         text: Some(TextSel { story: g.story, anchor: 0, focus: 0, frame, cell: Some(CellAddr { table: g.table, row: r.r0, col: r.c0 }) }),
         ..Default::default()
     };
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"story": g.story.0, "table": g.table, "range": r}))
 }
 
@@ -1007,7 +1559,7 @@ pub(crate) fn step_cell(s: &mut Session, forward: bool) -> Result<Value> {
     let st = s.doc_mut()?;
     let len = st.doc.text_story(t.story, Some(CellAddr { table: c.table, row, col })).map_or(0, |x| x.len());
     st.selection = Selection::text(TextSel { anchor: 0, focus: len, cell: Some(CellAddr { table: c.table, row, col }), ..t });
-    st.revision += 1;
+    st.bump_revision();
     Ok(json!({"row": row, "col": col}))
 }
 
@@ -1022,7 +1574,7 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|(r, c)| {
             let cell = t.cell(r, c)?;
             Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "style": cell.style}))
+                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
         })
         .collect();
     Ok(json!({
@@ -1034,23 +1586,17 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- cell and table styles ----------
 
-fn stroke_param(v: Option<&Value>) -> Option<designcraft_doc::CellStroke> {
-    let o = v?.as_object()?;
-    let mut st = designcraft_doc::CellStroke::default();
-    if let Some(w) = o.get("weight").and_then(Value::as_f64) {
-        st.weight = w.max(0.0);
+/// A style's uniform edge stroke from `stroke`/`border`: the given values over the default
+/// edge, validated like `table.setCell`'s stroke.
+fn stroke_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<Option<CellStroke>> {
+    match v.filter(|v| !v.is_null()) {
+        Some(v) => Ok(Some(StrokeEdit::parse(&s.doc()?.doc, v, cmd)?.apply(CellStroke::default()))),
+        None => Ok(None),
     }
-    if let Some(c) = o.get("color").and_then(Value::as_str) {
-        st.color = c.to_string();
-    }
-    if let Some(t) = o.get("tint").and_then(Value::as_f64) {
-        st.tint = t.clamp(0.0, 1.0) as f32;
-    }
-    Some(st)
 }
 
 /// Fill in the cell style fields given in `p`.
-fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) -> Result<()> {
+fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, stroke: Option<CellStroke>, cmd: &str) -> Result<()> {
     if let Some(v) = p.get("basedOn") {
         cs.based_on = v.as_str().map(str::to_string);
     }
@@ -1075,7 +1621,14 @@ fn cell_style_fields(cs: &mut designcraft_doc::CellStyle, p: &Value, cmd: &str) 
     if let Some(v) = p.get("vj") {
         cs.vj = Some(serde_json::from_value(v.clone()).map_err(|e| bad(cmd, format!("vj: {e}")))?);
     }
-    if let Some(st) = stroke_param(p.get("stroke")) {
+    let (first_baseline, first_baseline_min) = first_baseline_params(p, cmd)?;
+    if first_baseline.is_some() {
+        cs.first_baseline = first_baseline;
+    }
+    if first_baseline_min.is_some() {
+        cs.first_baseline_min = first_baseline_min;
+    }
+    if let Some(st) = stroke {
         cs.stroke = Some(st);
         cs.strokes = Default::default();
     }
@@ -1103,10 +1656,13 @@ fn cell_style_create(s: &mut Session, p: &Value) -> Result<Value> {
         cs.fill_tint = Some(cell.fill_tint);
         cs.insets = Some(cell.insets);
         cs.vj = Some(cell.vj);
+        cs.first_baseline = Some(cell.first_baseline);
+        cs.first_baseline_min = Some(cell.first_baseline_min);
         cs.stroke = Some(cell.strokes[0].clone());
         cs.paragraph_style = cell.text.paras.first().map(|p| p.style.clone());
     }
-    cell_style_fields(&mut cs, p, "style.cell.create")?;
+    let stroke = stroke_param(s, p.get("stroke"), "style.cell.create")?;
+    cell_style_fields(&mut cs, p, stroke, "style.cell.create")?;
     s.edit(|d, _| {
         let name = designcraft_doc::Styles::unique_name(|n| d.styles.cell.iter().any(|c| c.name == n), &base);
         cs.name = name.clone();
@@ -1152,7 +1708,7 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
                 }
             }
         }
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
     }
 }
 
@@ -1178,17 +1734,18 @@ fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Optio
 
 fn cell_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.cell.edit", "missing name"))?.to_string();
+    let stroke = stroke_param(s, p.get("stroke"), "style.cell.edit")?;
     let p = p.clone();
     s.edit(|d, _| {
         let cs = d.styles_mut().cell.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.cell.edit", format!("no cell style `{name}`")))?;
-        cell_style_fields(cs, &p, "style.cell.edit")?;
+        cell_style_fields(cs, &p, stroke, "style.cell.edit")?;
         let names = dependent_styles(&name, d.styles.cell.iter().map(|cs| (cs.name.as_str(), cs.based_on.as_deref())));
         reapply_cell_styles(d, &names);
         ok()
     })
 }
 
-fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
+fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value, border: Option<CellStroke>) {
     if let Some(v) = p.get("basedOn") {
         ts.based_on = v.as_str().map(str::to_string);
     }
@@ -1203,12 +1760,12 @@ fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
             *f = v.as_str().map(str::to_string);
         }
     }
-    if let Some(b) = stroke_param(p.get("border")) {
+    if let Some(b) = border {
         ts.border = Some(b);
         ts.borders = Default::default();
     }
     if let Some(a) = p.get("altRows").and_then(Value::as_object) {
-        let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| v as u32);
+        let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| u32::try_from(v).unwrap_or(u32::MAX));
         let c = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or(designcraft_color::swatch::NONE).to_string();
         let t = |k: &str| a.get(k).and_then(Value::as_f64).map_or(1.0, |v| v.clamp(0.0, 1.0) as f32);
         ts.alt_rows = Some(designcraft_doc::AltFills {
@@ -1233,7 +1790,8 @@ fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value) {
 fn table_style_create(s: &mut Session, p: &Value) -> Result<Value> {
     let base = str_param(p, "name").unwrap_or("Table Style 1").to_string();
     let mut ts = designcraft_doc::TableStyle::default();
-    table_style_fields(&mut ts, p);
+    let border = stroke_param(s, p.get("border"), "style.table.create")?;
+    table_style_fields(&mut ts, p, border);
     s.edit(|d, _| {
         let name = designcraft_doc::Styles::unique_name(|n| d.styles.table.iter().any(|c| c.name == n), &base);
         ts.name = name.clone();
@@ -1259,11 +1817,12 @@ fn table_style_apply(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.table.edit", "missing name"))?.to_string();
+    let border = stroke_param(s, p.get("border"), "style.table.edit")?;
     let p = p.clone();
     s.edit(|d, _| {
         let ts =
             d.styles_mut().table.iter_mut().find(|c| c.name == name).ok_or_else(|| bad("style.table.edit", format!("no table style `{name}`")))?;
-        table_style_fields(ts, &p);
+        table_style_fields(ts, &p, border);
         let names = dependent_styles(&name, d.styles.table.iter().map(|ts| (ts.name.as_str(), ts.based_on.as_deref())));
         let styles: Vec<_> = names.iter().map(|name| d.styles.resolve_table_style(name)).collect();
         let cells = d.styles.cell.clone();
@@ -1274,7 +1833,7 @@ fn table_style_edit(s: &mut Session, p: &Value) -> Result<Value> {
                     ts.apply_to(std::sync::Arc::make_mut(t), &cells);
                 }
             }
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
         }
         ok()
     })
@@ -1287,6 +1846,38 @@ mod style_tests {
     use crate::Session;
 
     #[test]
+    fn cell_first_baseline_is_a_cell_option_and_a_cell_style_attribute() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "capHeight", "firstBaselineMin": 3})).unwrap();
+        let got = s.execute("table.get", &json!({})).unwrap();
+        let cell = got["cells"].as_array().unwrap().iter().find(|c| c["row"] == 0 && c["col"] == 0).unwrap().clone();
+        assert_eq!((cell["firstBaseline"].as_str(), cell["firstBaselineMin"].as_f64()), (Some("capHeight"), Some(3.0)));
+        assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "middle"})).is_err());
+        // Cell Options › Text › Rotation: carried and written back, composed horizontally so far,
+        // which the IDML import reports (#1468).
+        for (given, want) in [(90, 90.0), (270, 270.0), (0, 0.0), (-90, 270.0), (450, 90.0)] {
+            s.execute("table.setCell", &json!({"row": 0, "col": 0, "rotation": given})).unwrap_or_else(|e| panic!("{given}: {e}"));
+            let cell = s.execute("table.get", &json!({})).unwrap()["cells"][0].clone();
+            assert_eq!(cell["rotation"].as_f64(), Some(want), "{given}");
+        }
+        for bad in [45, 1, 100] {
+            assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "rotation": bad})).is_err(), "{bad}");
+        }
+        assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaselineMin": -1})).is_err());
+        s.execute("style.cell.create", &json!({"name": "Leading", "firstBaseline": "leading"})).unwrap();
+        s.execute("style.cell.apply", &json!({"name": "Leading", "row": 1, "col": 1})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let t = d.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
+        assert_eq!(t.cell(1, 1).unwrap().first_baseline, designcraft_doc::FirstBaseline::Leading);
+        assert_eq!(t.cell(1, 0).unwrap().first_baseline, designcraft_doc::FirstBaseline::Ascent);
+    }
+
+    #[test]
     fn cell_and_table_styles_apply_and_follow_edits() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -1295,9 +1886,9 @@ mod style_tests {
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
         s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
         s.execute("style.paragraph.create", &json!({"name": "Cell Head"})).unwrap();
-        s.execute("style.cell.create", &json!({"name": "Head", "fill": "Black", "paragraphStyle": "Cell Head", "insets": 6})).unwrap();
+        s.execute("style.cell.create", &json!({"name": "Head", "fill": "[Black]", "paragraphStyle": "Cell Head", "insets": 6})).unwrap();
         s.execute("style.cell.create", &json!({"name": "Body", "fill": "[Paper]"})).unwrap();
-        s.execute("style.table.create", &json!({"name": "Data", "header": "Head", "body": "Body", "border": {"weight": 2, "color": "Black"}}))
+        s.execute("style.table.create", &json!({"name": "Data", "header": "Head", "body": "Body", "border": {"weight": 2, "color": "[Black]"}}))
             .unwrap();
         s.execute("style.table.apply", &json!({"name": "Data"})).unwrap();
         let t = |s: &Session| -> designcraft_doc::Table {
@@ -1308,7 +1899,7 @@ mod style_tests {
         assert_eq!(tb.style, "Data");
         assert_eq!(tb.options.border.weight, 2.0);
         let head = tb.cell(0, 0).unwrap();
-        assert_eq!((head.fill.as_str(), head.style.as_str(), head.insets), ("Black", "Head", [6.0; 4]));
+        assert_eq!((head.fill.as_str(), head.style.as_str(), head.insets), ("[Black]", "Head", [6.0; 4]));
         assert_eq!(head.text.paras[0].style, "Cell Head");
         assert_eq!(tb.cell(1, 1).unwrap().style, "Body");
         // Editing the cell style updates its cells.
@@ -1396,32 +1987,46 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, ID)?;
     let (bytes, name, link) = super::file::read_source(p)?;
     let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad(ID, "unsupported or corrupt image"))?;
+    let (nw, nh) = designcraft_render::natural_size(&bytes, 0).ok_or_else(|| bad(ID, "invalid image dimensions"))?;
     let fill = p.get("fit").and_then(Value::as_str) == Some("fill");
+    // Compute fitting before the edit: a small EPS can overflow in a huge cell.
+    let t = s.doc()?.doc.story(g.story).and_then(|st| st.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let (r, c) = t.owner(g.range.r0, g.range.c0);
+    let cell = t.cell(r, c).ok_or_else(|| bad(ID, "no cell"))?;
+    let (rs, cs) = (cell.row_span.max(1) as usize, cell.col_span.max(1) as usize);
+    let w: f64 = t.columns.get(c..c.saturating_add(cs).min(t.ncols())).ok_or_else(|| bad(ID, "invalid cell span"))?.iter().map(|x| x.width).sum();
+    let h: f64 = t.rows.get(r..r.saturating_add(rs).min(t.nrows())).ok_or_else(|| bad(ID, "invalid cell span"))?.iter().map(|x| x.height).sum();
+    let ins = cell.insets;
+    let (bw, bh) = ((w - ins[1] - ins[3]).max(1.0), (h - ins[0] - ins[2]).max(1.0));
+    let k = if fill { (bw / nw).max(bh / nh) } else { (bw / nw).min(bh / nh) };
+    let xf = designcraft_geom::Affine::translate(((bw - nw * k) / 2.0, (bh - nh * k) / 2.0)) * designcraft_geom::Affine::scale(k);
+    super::file::validate_placement((nw, nh), designcraft_geom::Rect::new(0.0, 0.0, bw, bh), xf, ID)?;
     s.edit(|d, sel| {
         let fresh = designcraft_doc::AssetId(d.alloc());
         let mime = designcraft_render::image_mime(&bytes).to_string();
-        let aid =
-            d.add_asset(designcraft_doc::Asset { page: 0, id: fresh, name, mime, link, data: std::sync::Arc::new(bytes), pixels: Some((pw, ph)) });
+        let aid = d.add_asset(designcraft_doc::Asset {
+            id: fresh,
+            name,
+            mime,
+            link,
+            data: std::sync::Arc::new(bytes),
+            pixels: Some((pw, ph)),
+            ..Default::default()
+        });
         let st = d.story_mut(g.story).ok_or_else(|| bad(ID, "no story"))?;
         let t = st.table_mut(g.table).ok_or_else(|| bad(ID, "no table"))?;
-        let (r, c) = t.owner(g.range.r0, g.range.c0);
-        let cell = t.cell(r, c).ok_or_else(|| bad(ID, "no cell"))?;
-        let (rs, cs) = (cell.row_span.max(1) as usize, cell.col_span.max(1) as usize);
-        let w: f64 = t.columns[c..(c + cs).min(t.ncols())].iter().map(|x| x.width).sum();
-        let h: f64 = t.rows[r..(r + rs).min(t.nrows())].iter().map(|x| x.height).sum();
-        let ins = cell.insets;
-        let (bw, bh) = ((w - ins[1] - ins[3]).max(1.0), (h - ins[0] - ins[2]).max(1.0));
-        let (nw, nh) = (pw as f64, ph as f64);
-        let k = if fill { (bw / nw).max(bh / nh) } else { (bw / nw).min(bh / nh) };
-        let xf = designcraft_geom::Affine::translate(((bw - nw * k) / 2.0, (bh - nh * k) / 2.0)) * designcraft_geom::Affine::scale(k);
         let cell = t.cell_mut(r, c).ok_or_else(|| bad(ID, format!("no cell {r},{c}")))?;
         cell.graphic = Some(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (nw, nh),
             xf,
+            clip: None,
             auto_fit: if fill { designcraft_doc::Fitting::FillProportionally } else { designcraft_doc::Fitting::FitProportionally },
             fit_align: 4,
             crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
         });
         clamp_selection(d, sel);
         Ok(json!({"asset": aid.0, "row": r, "col": c}))
@@ -1678,6 +2283,31 @@ mod sort_tests {
     }
 
     #[test]
+    fn move_row_cannot_move_a_header_row_out_of_place() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 3, "cols": 2, "headerRows": 1})).unwrap();
+        assert!(s.execute("table.moveRow", &json!({"from": 0, "to": 2})).is_err());
+        s.doc().unwrap().doc.check().unwrap();
+        // Dragging the selected header row onto the last body row is refused too.
+        let d = s.doc().unwrap().doc.clone();
+        let (sid, tid) = d.stories.values().find_map(|st| st.tables.keys().next().map(|k| (st.id, *k))).unwrap();
+        let fid = d.stories[&sid].frames[0];
+        let cs = s.cache.get(&d, sid, None);
+        let cells = &cs.frames[0].tables[0].cells;
+        let centre = |r: usize| {
+            let c = cells.iter().find(|c| c.row == r && c.col == 0).unwrap().rect.center();
+            d.text_xf(d.item(fid).unwrap()) * c
+        };
+        let (from, to) = (centre(0), centre(2));
+        s.execute("table.select", &json!({"story": sid.0, "table": tid, "rows": [0, 0], "what": "row"})).unwrap();
+        assert!(s.execute("table.dropCells", &json!({"frame": fid.0, "from": [from.x, from.y], "to": [to.x, to.y]})).is_err());
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
     fn table_options_limits_header_and_footer_rows() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -1755,5 +2385,118 @@ mod arabic_tests {
             s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
             assert_eq!(only_table(&s).options.direction, expected, "table.insert in a {direction} paragraph");
         }
+    }
+}
+
+#[cfg(test)]
+mod resize_border_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A 3×3 table of 80 pt columns; returns the session, frame id, story and table ids.
+    fn session() -> (Session, u64, u64, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 472, 600], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        let t = s.execute("table.insert", &json!({"rows": 3, "cols": 3, "width": 240})).unwrap();
+        (s, r["id"].as_u64().unwrap(), t["story"].as_u64().unwrap(), t["table"].as_u64().unwrap())
+    }
+
+    fn table(s: &Session) -> designcraft_doc::Table {
+        (**s.doc().unwrap().doc.stories.values().flat_map(|st| st.tables.values()).next().unwrap()).clone()
+    }
+
+    fn widths(s: &Session) -> Vec<f64> {
+        table(s).columns.iter().map(|c| c.width).collect()
+    }
+
+    /// Composed cell rects of column 0, top to bottom.
+    fn rows(s: &Session) -> Vec<designcraft_geom::Rect> {
+        let st = s.doc().unwrap();
+        let sid = st.doc.stories.values().find(|x| !x.tables.is_empty()).unwrap().id;
+        let cs = s.cache.get(&st.doc, sid, None);
+        cs.frames.iter().flat_map(|f| &f.tables).flat_map(|f| &f.cells).filter(|c| c.col == 0).map(|c| c.rect).collect()
+    }
+
+    fn resize(s: &mut Session, ids: (u64, u64, u64), mut p: serde_json::Value) {
+        p["frame"] = json!(ids.0);
+        p["story"] = json!(ids.1);
+        p["table"] = json!(ids.2);
+        s.execute("table.resizeBorder", &p).unwrap();
+    }
+
+    #[test]
+    fn column_border_drags_widen_the_table_or_keep_its_width() {
+        let (mut s, f, st, t) = session();
+        resize(&mut s, (f, st, t), json!({"axis": "column", "index": 0, "delta": 20}));
+        assert_eq!(widths(&s), [100.0, 80.0, 80.0]);
+        resize(&mut s, (f, st, t), json!({"axis": "column", "index": 1, "delta": 30, "keepTableSize": true}));
+        assert_eq!(widths(&s), [100.0, 110.0, 50.0]);
+        // Clamped at the minimum; the neighbour takes only what is left.
+        resize(&mut s, (f, st, t), json!({"axis": "column", "index": 1, "delta": 500, "keepTableSize": true}));
+        assert_eq!(widths(&s), [100.0, 157.0, 3.0]);
+        resize(&mut s, (f, st, t), json!({"axis": "column", "index": 0, "delta": -1000}));
+        assert_eq!(widths(&s), [3.0, 157.0, 3.0]);
+        // Shift on the end edge scales every column.
+        resize(&mut s, (f, st, t), json!({"axis": "column", "index": 2, "size": 166, "keepTableSize": true}));
+        let w = widths(&s);
+        assert!((w.iter().sum::<f64>() - 326.0).abs() < 1e-9, "{w:?}");
+        assert!((w[1] / w[0] - 157.0 / 3.0).abs() < 1e-9, "{w:?}");
+        assert!(s.execute("table.resizeBorder", &json!({"table": t, "axis": "column", "index": 3, "delta": 1})).is_err());
+        assert!(s.execute("table.resizeBorder", &json!({"table": t, "axis": "column", "index": 0})).is_err());
+    }
+
+    #[test]
+    fn row_drag_sets_at_least_and_moves_later_rows() {
+        let (mut s, f, st, t) = session();
+        s.execute("table.setRowHeight", &json!({"table": t, "row": 0, "height": 30, "mode": "exactly"})).unwrap();
+        let before = rows(&s);
+        resize(&mut s, (f, st, t), json!({"axis": "row", "index": 0, "delta": 12}));
+        let row = &table(&s).rows[0];
+        assert_eq!((row.height, row.mode), (42.0, designcraft_doc::RowHeightMode::AtLeast));
+        let after = rows(&s);
+        assert!((after[0].height() - 42.0).abs() < 1e-9);
+        assert!((after[1].y0 - before[1].y0 - 12.0).abs() < 1e-9 && (after[1].height() - before[1].height()).abs() < 1e-9);
+        // Below the minimum: clamped, never negative.
+        resize(&mut s, (f, st, t), json!({"axis": "row", "index": 0, "delta": -1000}));
+        assert_eq!(table(&s).rows[0].height, 3.0);
+    }
+
+    #[test]
+    fn a_drag_is_one_undo_step_and_locked_frames_refuse() {
+        let (mut s, f, st, t) = session();
+        let before = table(&s);
+        s.begin_interaction("Resize Column").unwrap();
+        for d in [5.0, 15.0, 25.0] {
+            let p = json!({"frame": f, "story": st, "table": t, "axis": "column", "index": 0, "delta": d});
+            s.preview("table.resizeBorder", p).unwrap();
+        }
+        s.commit_interaction().unwrap();
+        assert_eq!(widths(&s), [105.0, 80.0, 80.0]);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(table(&s), before);
+        s.execute("object.setFlags", &json!({"ids": [f], "locked": true})).unwrap();
+        assert!(s.execute("table.resizeBorder", &json!({"frame": f, "table": t, "axis": "column", "index": 0, "delta": 5})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod style_alt_rows_tests {
+    use serde_json::json;
+
+    use super::table_style_fields;
+
+    #[test]
+    fn style_alt_rows_counts_saturate() {
+        let mut ts = designcraft_doc::TableStyle::default();
+        let p = json!({"altRows": {"first": 4294967297u64, "next": 4294967296u64, "skipFirst": 4294967295u64, "skipLast": 3}});
+        table_style_fields(&mut ts, &p, None);
+        let a = ts.alt_rows.unwrap();
+        assert_eq!(a.first, u32::MAX, "first");
+        assert_eq!(a.next, u32::MAX, "next");
+        assert_eq!(a.skip_first, u32::MAX, "skip_first");
+        assert_eq!(a.skip_last, 3, "skip_last");
     }
 }

@@ -45,7 +45,8 @@ pub fn specs() -> Vec<CommandSpec> {
             let path = str_param(p, "path").ok_or_else(|| bad("color.loadProfile", "`path` required"))?;
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let info = cms::load_icc_file(std::path::Path::new(path)).map_err(|e| bad("color.loadProfile", e.to_string()))?;
+                let bytes = crate::io::read_file(path).map_err(|e| bad("color.loadProfile", e))?;
+                let info = cms::register_icc(&bytes, None).map_err(|e| bad("color.loadProfile", e.to_string()))?;
                 Ok(json!(info))
             }
             #[cfg(target_arch = "wasm32")]

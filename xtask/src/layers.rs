@@ -43,6 +43,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("pdf", Class::Layer(3)),
     ("idml", Class::Layer(3)),
     ("epub", Class::Layer(3)),
+    ("pptx", Class::Layer(3)),
     ("textimport", Class::Layer(3)),
     ("format", Class::Layer(3)),
     ("tools", Class::Layer(4)),
@@ -73,7 +74,7 @@ fn intra_layer_allowed(from: &str, to: &str) -> bool {
 
 /// External crates that constitute a UI toolkit / windowing dependency.
 /// Entries ending in `*` are prefixes.
-pub const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "winit", "egui_kittest", "rfd", "bevy*"];
+pub const UI_CRATES: &[&str] = &["craft-ui", "craft-window", "egui", "eframe", "winit", "egui_kittest", "rfd", "bevy*"];
 
 /// First layer allowed to use UI crates.
 pub const UI_MIN_LAYER: u8 = 6;
@@ -193,7 +194,7 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
             }
         }
     }
-    out.sort_by_key(|v| v.to_string());
+    out.sort_by_key(ToString::to_string);
     out.dedup();
     out
 }

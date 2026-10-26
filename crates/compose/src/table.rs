@@ -60,6 +60,23 @@ pub struct TableFrag {
 }
 
 impl TableFrag {
+    /// The ends of `s`, each moved outwards by half the weight where it is a corner of the
+    /// fragment. Edge types drawn as butt-ended fills (stripes, wavy, hash, the gap colour)
+    /// then close the table's corners as square-capped solid edges do.
+    pub fn corner_capped(&self, s: &StrokeSeg) -> (Point, Point) {
+        let d = s.b - s.a;
+        let len = d.hypot();
+        let half = s.stroke.weight / 2.0;
+        if !(len > 0.0 && half.is_finite() && half > 0.0) {
+            return (s.a, s.b);
+        }
+        let r = self.rect;
+        let near = |v: f64, edge: f64| (v - edge).abs() < 1e-6;
+        let corner = |p: Point| (near(p.x, r.x0) || near(p.x, r.x1)) && (near(p.y, r.y0) || near(p.y, r.y1));
+        let out = d * (half / len);
+        (if corner(s.a) { s.a - out } else { s.a }, if corner(s.b) { s.b + out } else { s.b })
+    }
+
     pub(crate) fn shift(&mut self, dy: f64) {
         if dy == 0.0 {
             return;
@@ -104,17 +121,20 @@ impl CellLineExtent {
 }
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
-fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left_page: bool) -> CellLayout {
+fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
     let spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
-        opts: TextFrameOptions::default(),
+        opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
         vertical: false,
         exclusions: vec![],
+        outline: None,
         page_name: opts.page_name.clone(),
+        section_marker: opts.section_marker.clone(),
         page: opts.page,
         grid: None,
         left_page,
+        right_page,
         page_rect: None,
     };
     let cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
@@ -181,7 +201,7 @@ pub(crate) fn place_table(
     let (nr, nc) = (table.nrows(), table.ncols());
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
-    let left_page = frames[cur.fi].left_page;
+    let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
     // Compose every owner cell.
     let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
     for r in 0..nr {
@@ -193,7 +213,7 @@ pub(crate) fn place_table(
             let cell = &table.cells[r * nc + c];
             let cs = (cell.col_span.max(1) as usize).min(nc - c);
             let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, left_page)));
+            layouts.push(Some(compose_cell(doc, cell, w, opts, side)));
         }
     }
     // Row heights.
@@ -323,6 +343,26 @@ pub(crate) fn place_table(
     true
 }
 
+/// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
+/// Uses the same baseline/bounds test as auto-growth, and retains a prefix: overset text cannot
+/// reappear after a line that did not fit.
+fn clip_overset(lay: &CellLayout, clip_height: f64) -> Arc<ComposedStory> {
+    let Some(f) = lay.text.frames.first() else { return lay.text.clone() };
+    let keep = lay.line_heights.iter().take_while(|h| **h <= clip_height + 0.01).count();
+    let overset_at = f.lines.get(keep).map(|l| l.range.start);
+    let mut t = (*lay.text).clone();
+    if let Some(frame) = t.frames.first_mut() {
+        frame.lines.truncate(keep);
+        frame.objects.retain(|o| o.line < keep);
+        frame.tables.retain(|table| table.line < keep);
+        frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
+    }
+    if let Some(at) = overset_at {
+        t.overset_at = Some(at);
+    }
+    Arc::new(t)
+}
+
 /// Build one fragment from its rows and push it (with its glyph-less line) to the current frame.
 #[allow(clippy::too_many_arguments)]
 fn emit(
@@ -387,24 +427,7 @@ fn emit(
                 _ => 0.0,
             };
             let overset = space < -0.01 || lay.text.is_overset();
-            let mut text = lay.text.clone();
-            if overset && let Some(f) = text.frames.first() {
-                // Use the same baseline/bounds test as auto-growth, and retain a prefix:
-                // overset text cannot reappear after a line that did not fit.
-                let keep = lay.line_heights.iter().take_while(|h| **h <= clip.height() + 0.01).count();
-                let overset_at = f.lines.get(keep).map(|l| l.range.start);
-                let mut t = (*text).clone();
-                if let Some(frame) = t.frames.first_mut() {
-                    frame.lines.truncate(keep);
-                    frame.objects.retain(|o| o.line < keep);
-                    frame.tables.retain(|table| table.line < keep);
-                    frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
-                }
-                if let Some(at) = overset_at {
-                    t.overset_at = Some(at);
-                }
-                text = Arc::new(t);
-            }
+            let text = if overset { clip_overset(lay, clip.height()) } else { lay.text.clone() };
             cells.push(PlacedCell {
                 row: r,
                 col: c,
@@ -505,6 +528,80 @@ fn boundary_stroke<'a>(
     }
 }
 
+/// The table's alternating row and column strokes, as drawn on body edges no cell supplies.
+/// Uniform active groups do not depend on which shared edge starts the pattern. Nonuniform
+/// and skipped patterns stay intact in the model until their phase is verified.
+fn table_patterns(table: &Table) -> (Option<&CellStroke>, Option<&CellStroke>) {
+    fn uniform(p: &Option<designcraft_doc::AltStrokes>) -> Option<&CellStroke> {
+        p.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke())
+    }
+    (uniform(&table.options.row_strokes), uniform(&table.options.column_strokes))
+}
+
+/// One stretch of a cell side, against one neighbouring cell or the outside of the table.
+#[derive(Clone, Copy, Debug)]
+pub struct SideStroke<'a> {
+    /// The neighbouring owner cell; `None` on the table's perimeter.
+    pub neighbor: Option<(usize, usize)>,
+    /// The grid line it lies on: a row boundary (0 = top) for top and bottom sides, a logical
+    /// column boundary (0 = start) for left and right sides.
+    pub boundary: usize,
+    /// The stroke drawn there.
+    pub stroke: &'a CellStroke,
+}
+
+/// The strokes drawn along side `side` (top, left, bottom, right; physical) of the owner cell
+/// at `(r, c)`, one per neighbouring cell, resolved as rendering resolves them: the winning
+/// copy of a shared edge, the table's row or column pattern where neither cell supplies the
+/// edge, and the table border on unoverridden perimeter edges. `owners` is [`Table::owners`].
+pub fn cell_side_strokes<'a>(table: &'a Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Vec<SideStroke<'a>> {
+    let Some(cell) = table.cell(r, c) else { return Vec::new() };
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let rtl = table.options.direction == designcraft_doc::TextDirection::RightToLeft;
+    let end_row = r.saturating_add(cell.row_span.max(1) as usize).min(nr);
+    let end_col = c.saturating_add(cell.col_span.max(1) as usize).min(nc);
+    let owner = |rr: usize, cc: usize| {
+        if rr >= nr || cc >= nc {
+            return None;
+        }
+        let &(orr, occ) = owners.get(rr.checked_mul(nc)?.checked_add(cc)?)?;
+        Some(((orr, occ), table.cell(orr, occ)?))
+    };
+    let me = Some(((r, c), cell));
+    let (row_pattern, column_pattern) = table_patterns(table);
+    let body = table.body_rows();
+    let mut out = Vec::new();
+    match side {
+        0 | 2 => {
+            let boundary = if side == 0 { r } else { end_row };
+            let above = boundary.checked_sub(1);
+            let pattern = if above.is_some_and(|a| body.contains(&a)) && body.contains(&boundary) { row_pattern } else { None };
+            for cc in c..end_col {
+                let other = if side == 0 { above.and_then(|a| owner(a, cc)) } else { owner(boundary, cc) };
+                let (a, b) = if side == 0 { (other, me) } else { (me, other) };
+                if let Some((stroke, _, _)) = boundary_stroke(table, a, b, 2, 0, pattern) {
+                    out.push(SideStroke { neighbor: other.map(|o| o.0), boundary, stroke });
+                }
+            }
+        }
+        1 | 3 => {
+            // Physical left is the logical start in left-to-right tables.
+            let start = (side == 1) != rtl;
+            let (boundary, other_col) = if start { (c, c.checked_sub(1)) } else { (end_col, Some(end_col)) };
+            for rr in r..end_row {
+                let other = other_col.and_then(|oc| owner(rr, oc));
+                let (left, right) = if side == 1 { (other, me) } else { (me, other) };
+                let pattern = if body.contains(&rr) { column_pattern } else { None };
+                if let Some((stroke, _, _)) = boundary_stroke(table, left, right, 3, 1, pattern) {
+                    out.push(SideStroke { neighbor: other.map(|o| o.0), boundary, stroke });
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Keep an unchanged winning cell edge continuous across different losing neighbors. In
 /// particular, splitting a merged dashed edge would restart its dash phase at every cell.
 fn push_boundary_stroke(
@@ -550,10 +647,7 @@ fn fragment_strokes(
         Some(((r, c), table.cell(r, c)?))
     };
     let x = |c: usize| colx.get(c).map(|&offset| if rtl { right - offset } else { x0 + offset });
-    // Uniform active groups do not depend on which shared edge starts the pattern. Keep
-    // nonuniform and skipped patterns intact in the model until their phase is verified.
-    let row_stroke = table.options.row_strokes.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke());
-    let column_stroke = table.options.column_strokes.as_ref().filter(|p| p.skip_first == 0 && p.skip_last == 0).and_then(|p| p.uniform_stroke());
+    let (row_stroke, column_stroke) = table_patterns(table);
     let body = table.body_rows();
     let mut strokes = Vec::new();
     for boundary in 0..=rows.len() {
@@ -630,6 +724,56 @@ pub fn hit_cell_with(
     None
 }
 
+/// A row or column border under the pointer, found by [`hit_border`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BorderHit {
+    pub table: u64,
+    /// `true`: a column border (dragged horizontally); `false`: a row border.
+    pub column: bool,
+    /// The row above / logical column before the border. The last index is the table's
+    /// bottom or end edge.
+    pub index: usize,
+    /// The column border is the physical left edge of its column (a right-to-left table), so
+    /// dragging left widens it.
+    pub mirrored: bool,
+}
+
+/// The row or column border within `tol` of `p` (frame inner space) in frame `fi`, nearest
+/// first. Only borders that resize something count: inner borders and the bottom and end
+/// edges. `tables` holds the story's tables (for cell spans).
+pub fn hit_border(cs: &ComposedStory, fi: usize, tables: &std::collections::BTreeMap<u64, Arc<Table>>, p: Point, tol: f64) -> Option<BorderHit> {
+    if !(tol.is_finite() && p.x.is_finite() && p.y.is_finite()) {
+        return None;
+    }
+    let ft = cs.frames.get(fi)?;
+    let mut best: Option<(f64, BorderHit)> = None;
+    let mut offer = |d: f64, hit: BorderHit| {
+        if d <= tol && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, hit));
+        }
+    };
+    for t in &ft.tables {
+        if !t.rect.inflate(tol, tol).contains(p) {
+            continue;
+        }
+        let Some(table) = tables.get(&t.table) else { continue };
+        let rtl = table.options.direction == designcraft_doc::TextDirection::RightToLeft;
+        for c in &t.cells {
+            let Some(cell) = table.cell(c.row, c.col) else { continue };
+            let last_col = c.col.saturating_add((cell.col_span.max(1) - 1) as usize);
+            let last_row = c.row.saturating_add((cell.row_span.max(1) - 1) as usize);
+            if (c.rect.y0..=c.rect.y1).contains(&p.y) {
+                let x = if rtl { c.rect.x0 } else { c.rect.x1 };
+                offer((p.x - x).abs(), BorderHit { table: t.table, column: true, index: last_col, mirrored: rtl });
+            }
+            if (c.rect.x0..=c.rect.x1).contains(&p.x) {
+                offer((p.y - c.rect.y1).abs(), BorderHit { table: t.table, column: false, index: last_row, mirrored: false });
+            }
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
 /// Frame index and placed cell for a cell address (the first, non-repeated occurrence).
 pub fn find_cell(cs: &ComposedStory, table: u64, row: usize, col: usize) -> Option<(usize, &TableFrag, &PlacedCell)> {
     let mut found = None;
@@ -673,7 +817,7 @@ mod height_tests {
     }
 
     fn measure(cell: &Cell, width: f64) -> CellLayout {
-        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), false)
+        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), (false, false))
     }
 
     fn compose_table(table: Table, height: f64) -> ComposedStory {
@@ -693,6 +837,23 @@ mod height_tests {
     fn object(position: AnchorPosition) -> AnchoredObject {
         let path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 12.0, 30.0));
         AnchoredObject::new(designcraft_doc::Item::new(ItemId(0), LayerId(0), designcraft_doc::Shape::Rectangle, path), position)
+    }
+
+    #[test]
+    fn cell_first_baseline_option_sets_the_first_line_and_the_row_height() {
+        // Cell Options › Text › First Baseline: Cap Height sets the first line by the cap height,
+        // not the typographic ascent, so a row sized for one line of caps keeps its height.
+        let ascent = text_cell("Hd", 4.0);
+        let mut cap = ascent.clone();
+        cap.first_baseline = designcraft_doc::FirstBaseline::CapHeight;
+        let (a, c) = (measure(&ascent, 92.0), measure(&cap, 92.0));
+        let (la, lc) = (&a.text.frames[0].lines[0], &c.text.frames[0].lines[0]);
+        assert!(lc.baseline < la.baseline, "cap height {} should sit above ascent {}", lc.baseline, la.baseline);
+        assert!(c.content_h < a.content_h);
+        let mut fixed = ascent.clone();
+        fixed.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        fixed.first_baseline_min = 6.0;
+        assert!((measure(&fixed, 92.0).text.frames[0].lines[0].baseline - 6.0).abs() < 1e-6);
     }
 
     #[test]
@@ -904,6 +1065,7 @@ mod height_tests {
                 object_point: 0,
                 ref_point: 0,
                 keep_within_column: false,
+                spine_relative: false,
             }),
         );
         assert!((measure(&cell, 92.0).content_h - original).abs() < 1e-6);

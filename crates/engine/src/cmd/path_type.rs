@@ -210,7 +210,7 @@ mod tests {
         assert!(s.execute("type.pathOptions", &json!({"id": id, "end": "far"})).is_err());
         // Saved with the document.
         let d = s.doc().unwrap().doc.clone();
-        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&d)).unwrap();
+        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&d).unwrap()).unwrap();
         let path = |d: &designcraft_doc::Document| d.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().options.path.clone();
         assert_eq!(path(&back), path(&d));
     }

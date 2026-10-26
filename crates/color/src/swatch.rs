@@ -90,6 +90,17 @@ pub fn cmyk_name(c: f32, m: f32, y: f32, k: f32) -> String {
     format!("C={} M={} Y={} K={}", p(c), p(m), p(y), p(k))
 }
 
+/// The name Name with Color Value gives a colour: `C=100 M=0 Y=0 K=0`, or `R=16 G=128 B=128`.
+pub fn value_name(c: Color) -> String {
+    match c {
+        Color::Cmyk { c, m, y, k } => cmyk_name(c, m, y, k),
+        other => {
+            let [r, g, b] = other.to_rgb();
+            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
+        }
+    }
+}
+
 /// Resolve a swatch name + tint into a display colour. `None` for `[None]` or unknown names.
 /// Gradients resolve to their first stop (callers that render gradients use [`resolve_gradient`]).
 pub fn resolve(swatches: &[Swatch], name: &str, tint: f32) -> Option<Color> {

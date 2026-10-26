@@ -1,34 +1,34 @@
-# Public fork changes
+# INDD files, tools and guide controls
 
-Scope: INDD opening, Control/contextual bars, toolbox colour controls, guide selection, movement and duplication. Base: upstream release 0.8.0, commit 11a51d5b. No Malayalam input, FML conversion, Effects, registration, payment or activation additions are included.
+This public contribution includes no serial-number or activation requirement. Its scope is INDD files, control and contextual bars, toolbox colour controls, and ruler guides.
+
+The branch is updated to current DesignCraft rather than replacing its newer import and toolbox implementations. INDD/INDT opening, embedded missing-link previews, selected-guide highlighting and X/Y positioning, and document drawing-colour defaults are already present upstream and are retained.
+
+## Changes in this update
+
+- The Control bar is visible in new preferences. Older saved preferences receive a one-time restoration of the Control and contextual bars, with any off-screen contextual pin cleared. Later visibility and pin choices are respected.
+- The contextual bar stays within the canvas even when the selected frame is off-screen.
+- The fill/stroke swap arrow has a larger clickable target.
+- Page size, liquid-page rule, character style and language dropdowns in the now-visible Control bar have accessible names.
+- Selecting one guide shows **Copy to** beside its position in the Control bar. Vertical guides use X; horizontal guides use Y. The destination uses the same ruler origin and units as the position field. For example, a vertical guide at X = 100 pt copied to 200 pt leaves the original at 100 pt and selects the new guide at 200 pt.
+- `guide.copy` preserves the guide's orientation, layer, colour and guide properties. It validates its destination and source, respects locked or hidden layers, caps guide count, and creates one undo step. Undo restores the previous guide selection.
+- Open-file labels refer to **INDD files**, **INDT templates** and **IDML files**.
 
 ## Source map
 
-- `Cargo.toml`, `Cargo.lock`, `crates/engine/Cargo.toml`: pinned INDD converter dependency.
-- `crates/engine/src/cmd/file.rs` and `interchange.rs`: recognise INDD/INDT, convert in memory, pass warnings and embedded previews to the importer. No activation gate.
-- `crates/idml/src/{import,lib,tests}.rs`: missing-link preview support and regression coverage.
-- `apps/designcraft/src/main.rs`, `apps/designcraft-web/src/web.rs`, `crates/ui-egui/src/lib.rs`: open-file filters and drop recognition; first-run control-bar migration.
-- `crates/ui-egui/src/{chrome,canvas}.rs`: selected-guide highlight, X/Y editing and Copy to, with revision-scoped selection to avoid stale guide indices after edits or Undo.
-- `crates/engine/src/cmd/guides.rs`: undoable `guide.copy` command, original preserved, orientation retained.
-- `crates/ui-egui/src/taskbar.rs`: contextual bar positioning and draw order.
-- `crates/ui-egui/src/panel_docking_tests.rs`: explicit fixture geometry so the Story Editor overlay test also works with the top Control bar visible; both blocking and allowed-release assertions remain.
-- `crates/ui-egui/src/toolbar.rs`, `panels/mod.rs`, `crates/engine/src/lib.rs`, `cmd/object.rs`: fill/stroke defaults and swap behaviour, toolbox buttons and drawing colour propagation.
+- `crates/engine/src/cmd/guides.rs`: the `guide.copy` command and synthetic regression tests.
+- `crates/ui-egui/src/object_control.rs`: ruler-aware Copy to control.
+- `crates/ui-egui/src/lib.rs` and `prefs.rs`: control visibility default and preference migration.
+- `crates/ui-egui/src/canvas.rs` and `taskbar.rs`: contextual bar visibility and placement.
+- `crates/ui-egui/src/toolbar.rs`: fill/stroke swap hit target.
+- `crates/ui-egui/src/chrome.rs`: accessible Control bar dropdown names.
+- `crates/ui-egui/src/theme.rs`: existing bundled font fallback for keyboard symbols, with a regression test independent of optional or installed fonts.
+- UI test fixtures: distinguish the Properties orientation button from its Control bar counterpart; use host-correct Command/Control modifiers and shortcut labels, install the application fonts in panel-only fixtures, and skip the optional Arabic-font portion when its build input is absent.
+- `apps/designcraft/src/main.rs`: file-picker labels.
+- `crates/pdf/src/gradient_inks.rs` and PDF export test helpers in `crates/engine/src/cmd/export.rs`: equivalent Boolean expressions to satisfy the current Clippy gate; no rendering behavior change.
 
-Only selected changes from the development tree were extracted. Unrelated tools, margins/layout changes, product branding changes and all commercial modules were left out. Existing upstream features remain.
+Malayalam input, Manglish, InScript, FML conversion, Thiyaara Effects, customer records, payments and activation code are excluded from this contribution. Existing open-source notices remain applicable.
 
 ## Validation
 
-The earlier combined Mac development build passed native checks for guide selection without movement, X/Y editing, Copy to preserving originals, and Undo in both orientations. Those results do not certify this separately extracted build.
-
-Checks completed on 26 October 2026 for this public-only checkout:
-
-- `cargo fmt --all -- --check`: passed.
-- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo xtask assets`: all 58 assets attributed.
-- Candidate-file scan: no commercial module references, activation keys, private credential patterns or private machine paths found.
-- `cargo test --workspace`: 1,581 passed, 0 failed, 5 ignored across 58 test suites (including documentation tests).
-- `cargo xtask layers`: 20 crates, no layering violations.
-- `cargo xtask wasm`: all 15 selected WebAssembly crates checked successfully. An existing unused-variable warning remains in the unchanged `panels/library.rs` file.
-- `cargo xtask ci`: all six required stages passed after adapting the docking test fixture to the visible Control bar.
-
-No new Windows installer or Microsoft Store update is included in this source contribution. The checks above ran on macOS; native Windows and Linux installer testing was not performed for this source publication.
+The repository's required gate is `cargo xtask ci`: formatting, PDF dependency checks, Clippy, workspace tests, translation reporting, doctests, asset attribution, dependency layers and WebAssembly checks. The regression tests cover copy/undo/redo, invalid destinations, guide limits and layer protection, toolbar preference migration and off-screen contextual-bar placement. Native Windows installer testing is separate from these source checks.
