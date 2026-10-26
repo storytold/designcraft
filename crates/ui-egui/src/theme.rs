@@ -266,6 +266,7 @@ impl Tokens {
 /// installed without waiting, and the caller installs again once they are (see
 /// [`system_fonts_ready`]) to add the installed faces for the scripts they lack.
 pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("taiwan-ui-text"), cjk_script(lang) == "Hant"));
     let craft = designcraft_fonts::CRAFT_FONTS;
     let mut defs = font_definitions(craft, lang);
     let system = system_ui_fonts(craft);
@@ -424,7 +425,7 @@ pub(crate) fn baseline_tweak(face: &[u8], index: u32) -> egui::FontTweak {
 fn cjk_script(lang: &str) -> &'static str {
     match lang {
         "zh" | "zh-hans" | "zh-cn" => "Hans",
-        "zh-hant" | "zh-tw" | "zh-hk" => "Hant",
+        "zh-hant" | "zh-Hant" | "zh-tw" | "zh-TW" | "zh-hk" => "Hant",
         "ko" => "Kore",
         _ => "Jpan",
     }
@@ -537,12 +538,14 @@ pub fn semibold(size: f32) -> FontId {
 
 pub fn apply(ctx: &egui::Context, t: &Tokens) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, *t));
+    let traditional = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("taiwan-ui-text")).unwrap_or(false));
+    let (small, body, mono) = if traditional { (12.0, 13.0, 13.0) } else { (10.0, 11.0, 11.5) };
     let text_styles: std::collections::BTreeMap<TextStyle, FontId> = [
-        (TextStyle::Small, FontId::proportional(10.0)),
-        (TextStyle::Body, FontId::proportional(11.0)),
-        (TextStyle::Button, FontId::proportional(11.0)),
+        (TextStyle::Small, FontId::proportional(small)),
+        (TextStyle::Body, FontId::proportional(body)),
+        (TextStyle::Button, FontId::proportional(body)),
         (TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into()))),
-        (TextStyle::Monospace, FontId::monospace(11.5)),
+        (TextStyle::Monospace, FontId::monospace(mono)),
     ]
     .into();
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };

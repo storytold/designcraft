@@ -1450,6 +1450,7 @@ impl DesignApp {
             if self.fonts_lang != self.ui.language || (!self.fonts_system && theme::system_fonts_ready()) {
                 self.fonts_system = theme::install_fonts(ctx, &self.ui.language);
                 self.fonts_lang = self.ui.language.clone();
+                self.restyle = true;
             }
             self.fonts_ready = true;
         }

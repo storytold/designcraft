@@ -15,6 +15,7 @@ mod pl;
 mod pt_br;
 mod ru;
 mod uk;
+mod zh_tw;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -24,6 +25,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("es", "Español"),
     ("ja", "日本語"),
     ("zh", "简体中文"),
+    ("zh-TW", "繁體中文"),
     ("ar", "العربية"),
     ("pt-br", "Português (Brasil)"),
     ("it", "Italiano"),
@@ -4755,6 +4757,11 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static TRADITIONAL_CHINESE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    if lang.eq_ignore_ascii_case("zh-TW") || lang.eq_ignore_ascii_case("zh-Hant") {
+        return TRADITIONAL_CHINESE.get_or_init(|| zh_tw::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -4810,6 +4817,7 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     let contexts = match lang {
+        "zh-TW" | "zh-tw" | "zh-Hant" => zh_tw::CONTEXT,
         "uk" => uk::CONTEXT,
         "ru" => ru::CONTEXT,
         "cs" => cs::CONTEXT,
@@ -4911,6 +4919,7 @@ mod tests {
         ("pt-br", pt_br::TABLE),
         ("ru", ru::TABLE),
         ("uk", uk::TABLE),
+        ("zh-TW", zh_tw::TABLE),
     ];
 
     /// Every per-language table `tr_context` looks up.
@@ -5290,5 +5299,18 @@ mod picker_order_tests {
         assert!(pos("cs") < pos("de"), "Čeština sorts under C");
         assert!(pos("pl") < pos("ru"), "Latin names come before Cyrillic");
         assert!(pos("ru") < pos("ja"), "Cyrillic names come before CJK");
+    }
+}
+
+#[cfg(test)]
+mod taiwan_tests {
+    #[test]
+    fn taiwan_terms_aliases_and_fallback() {
+        for tag in ["zh-TW", "zh-tw", "zh-Hant"] {
+            assert_eq!(super::tr(tag, "File"), "檔案");
+            assert_eq!(super::tr(tag, "Save As…"), "另存新檔…");
+            assert_eq!(super::tr(tag, "Unknown custom text"), "Unknown custom text");
+        }
+        assert!(super::LANGUAGES.iter().any(|(code, _)| *code == "zh-TW"));
     }
 }
