@@ -3525,10 +3525,11 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let mut kashidas: Vec<(usize, f64)> = Vec::new();
-    if justify_this && extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification" {
+    let kashida_em = pp.kashida_level.max_em();
+    if justify_this && extra > 0.0 && pp.kashidas && kashida_em > 0.0 && pp.arabic_justification != "DefaultJustification" {
         let points: Vec<usize> = kashida_points(&line).into_iter().filter(|&i| i >= seg).collect();
         if !points.is_empty() {
-            let total = extra.min(points.iter().map(|&i| line[i].size * 1.5).sum());
+            let total = extra.min(points.iter().map(|&i| line[i].size * kashida_em).sum());
             let per = total / points.len() as f64;
             kashidas = points.into_iter().map(|i| (i, per)).collect();
             extra -= total;

@@ -4492,6 +4492,40 @@ fn arabic_joining_context_crosses_character_style_boundaries() {
 }
 
 #[test]
+fn kashida_level_sets_how_far_each_join_stretches() {
+    use designcraft_doc::arabic::KashidaLevel as K;
+    let text = "بسم الله الرحمن";
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 400.0, 100.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    d.settings.glyph_fallback = true;
+    // The words' space width is what is left after the joins took their share.
+    let space_w = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let line = cs.frames[0].lines[0].clone();
+        let tatweel = line.glyphs.iter().any(|g| g.face.glyph_for('\u{0640}') != 0);
+        let w = line.glyphs.iter().filter(|g| g.len > 0 && text[g.byte..].starts_with(' ')).map(|g| g.adv).fold(0.0, f64::max);
+        (tatweel, w)
+    };
+    let mut widths = Vec::new();
+    for level in [K::None, K::Low, K::Medium, K::High] {
+        d.story_mut(sid).unwrap().paras[0].para.kashida_level = Some(level);
+        let (tatweel, w) = space_w(&d);
+        if !tatweel {
+            return; // No font here can draw a kashida: the levels cannot show.
+        }
+        widths.push(w);
+    }
+    assert!(widths.windows(2).all(|w| w[0] > w[1] + 0.5), "more kashida, narrower spaces: {widths:?}");
+    // None is the switch off.
+    d.story_mut(sid).unwrap().paras[0].para.kashida_level = Some(K::Medium);
+    d.story_mut(sid).unwrap().paras[0].para.kashidas = Some(false);
+    assert!((space_w(&d).1 - widths[0]).abs() < 1e-6);
+}
+
+#[test]
 fn arabic_character_kashida_switch_prevents_insertion() {
     let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين";
     let (mut d, sid, _) = doc_with(

@@ -1264,6 +1264,8 @@ attr_set! {
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,
+        /// How far each join may stretch when Insert Kashidas is on (None, Low, Medium, High).
+        kashida_level: crate::arabic::KashidaLevel = crate::arabic::KashidaLevel::Medium,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
         paragraph_kashida_width: Option<f64> = None => "deserialize_explicit_value",
