@@ -28,7 +28,8 @@ pub fn specs() -> Vec<CommandSpec> {
 fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
-    let bytes = designcraft_idml::export_idml_with(&st.doc, &opts);
+    let layer_doc = with_pdf_layer_variants(&st.doc, opts.embed_images)?;
+    let bytes = designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -37,6 +38,99 @@ fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => Ok(json!({"base64": base64_encode(&bytes), "bytes": bytes.len()})),
     }
+}
+
+/// Whether a placement holds an Object Layer Options choice an export can still apply: a graphic
+/// whose asset is a PDF. A choice left on an item that is no longer a placed PDF (its link was
+/// replaced with another format) is not one, so the package report does not name it.
+pub(crate) fn has_applicable_pdf_layer_overrides(doc: &Document) -> bool {
+    doc.placed_items().into_iter().any(|it| {
+        it.has_pdf_layer_override() && it.graphic().and_then(|g| doc.assets.get(&g.asset)).is_some_and(|a| designcraft_render::is_pdf(&a.data))
+    })
+}
+
+/// Each placement gets its own embedded variant so two frames sharing a PDF can
+/// choose different layers. The live document and original linked bytes stay untouched.
+///
+/// Parent-page and anchored placements count too, so a page that inherits the placement does not
+/// quietly fall back to the file's defaults. Read and write walks also reach table-cell and
+/// note text. Endnote variants are prepared too, but IDML endnote structures/artwork are not
+/// serialized yet (see `docs/pdf-layer-visibility.md`).
+fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Document>> {
+    let choices: Vec<_> = doc
+        .placed_items()
+        .into_iter()
+        .filter(|it| it.has_pdf_layer_override())
+        .filter_map(|it| {
+            let asset = it.graphic().and_then(|g| doc.assets.get(&g.asset)).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            Some((it.id, asset, it.pdf_hidden_layers.clone(), it.pdf_layer_override))
+        })
+        .collect();
+    if choices.is_empty() {
+        return Ok(None);
+    }
+    if !embed {
+        return Err(EngineError::Other("PDF layer choices require embedded images in IDML export".into()));
+    }
+    let mut out = doc.clone();
+    let mut variants = std::collections::HashMap::new();
+    // Duplicated anchors can share an id. Reuse a variant only when source and choice agree.
+    let mut expected = std::collections::HashMap::new();
+    for (id, asset, hidden, overridden) in choices {
+        let signature = (asset.id, hidden.clone(), overridden);
+        if let Some(previous) = expected.get(&id) {
+            if previous != &signature {
+                return Err(EngineError::Other(format!("PDF layer choices: placements sharing id {id} have different sources or layer choices")));
+            }
+            continue;
+        }
+        expected.insert(id, signature);
+        let bytes = designcraft_render::pdf_hide_layers(&asset.data, &hidden)
+            .ok_or_else(|| EngineError::Other(format!("{}: PDF layer choices could not be applied", asset.name)))?;
+        let mut variant = (**asset).clone();
+        variant.id = designcraft_doc::AssetId(out.alloc());
+        variant.data = std::sync::Arc::new(bytes);
+        variant.link = None;
+        let aid = variant.id;
+        out.assets.insert(aid, std::sync::Arc::new(variant));
+        variants.insert(id, aid);
+    }
+    // Anchored objects live in stories, and parent pages outside the document-spread walk, so
+    // the choice is cleared where the placement actually is.
+    // Count distinct ids, allowing identical duplicated anchors, but check every hit against
+    // the original source and choice before rewriting (including placements using defaults).
+    let mut reached = std::collections::HashSet::new();
+    let mut conflicting_id = None;
+    out.update_placed_items(
+        |it| variants.contains_key(&it.id),
+        |it| {
+            reached.insert(it.id);
+            if let Some((asset, hidden, overridden)) = expected.get(&it.id)
+                && (it.graphic().map(|g| g.asset) != Some(*asset) || &it.pdf_hidden_layers != hidden || it.pdf_layer_override != *overridden)
+            {
+                conflicting_id = Some(it.id);
+                return;
+            }
+            if let designcraft_doc::Content::Graphic(g) = &mut it.content
+                && let Some(aid) = variants.get(&it.id)
+            {
+                g.asset = *aid;
+            }
+            it.pdf_layer_override = false;
+            it.pdf_hidden_layers.clear();
+        },
+    );
+    if let Some(id) = conflicting_id {
+        return Err(EngineError::Other(format!("PDF layer choices: placements sharing id {id} have different sources or layer choices")));
+    }
+    if reached.len() != variants.len() {
+        return Err(EngineError::Other(format!(
+            "PDF layer choices could not be applied to every placement (reached {} of {})",
+            reached.len(),
+            variants.len()
+        )));
+    }
+    Ok(Some(out))
 }
 
 /// [`designcraft_idml::import_idml`] with the linked images read through [`crate::io`] from
@@ -518,8 +612,10 @@ mod tests {
         for link in links {
             let (idml, _) = linked_idml(link, false).unwrap();
             let (doc, seen) = crate::io::touched(|| import(&idml, Some(&package)).unwrap());
-            // Beside the package, and the link itself where it is on this computer.
-            assert!(seen.iter().all(|p| p.starts_with(&dir) || p == std::path::Path::new(link)), "{link}: {seen:?}");
+            // Beside the package, and the link itself where it is on this computer (on Windows,
+            // `/dev/zero` is `\dev\zero` on the package's drive).
+            let itself = crate::io::document_path(link, Some(&package)).ok();
+            assert!(seen.iter().all(|p| p.starts_with(&dir) || itself.as_ref() == Some(p)), "{link}: {seen:?}");
             let asset = doc.assets.values().next().unwrap();
             assert!(asset.data.is_empty(), "{link}");
             assert_eq!(super::super::links::status(asset, None), "missing", "{link}");
@@ -563,5 +659,292 @@ mod tests {
         assert!(!is_indd("Brochure.idml", b"PK"));
         assert_eq!(without_document_extension("Brochure.INDD"), "Brochure");
         assert_eq!(without_document_extension("notes.txt"), "notes.txt");
+    }
+}
+
+#[cfg(test)]
+mod nested_layer_tests {
+    use std::{io::Read, sync::Arc};
+
+    use designcraft_doc::{AnchoredObject, ItemId, SpreadRef, Story, StoryId, Table};
+    use designcraft_geom::Rect;
+
+    use super::*;
+
+    // One default placement and two nested placements share bytes. The latter use a legacy
+    // nonempty hidden list and explicit all-on, so each needs a different embedded variant.
+    fn fixture(location: &str) -> (Session, ItemId, [ItemId; 2]) {
+        let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "layers.pdf"})).unwrap();
+        let control = ItemId(placed["id"].as_u64().unwrap());
+        let ids = {
+            let doc = Arc::make_mut(&mut session.doc_mut().unwrap().doc);
+            let original = doc.item(control).unwrap().clone();
+            let aid = original.graphic().unwrap().asset;
+            Arc::make_mut(doc.assets.get_mut(&aid).unwrap()).link = Some("/synthetic/layers.pdf".into());
+            let mut hidden = original.clone();
+            hidden.id = ItemId(doc.alloc());
+            hidden.pdf_hidden_layers = vec!["Blue".into()];
+            let mut all_on = original;
+            all_on.id = ItemId(doc.alloc());
+            all_on.pdf_layer_override = true;
+            let ids = [hidden.id, all_on.id];
+            let mut nested = Story::new(StoryId(0));
+            for item in [hidden, all_on] {
+                nested.insert_object(nested.len(), AnchoredObject { item, position: Default::default() });
+            }
+            let layer = doc.default_layer();
+            let (_, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
+            let story = doc.story_mut(sid).unwrap();
+            match location {
+                "cell" => {
+                    let mut table = Table::new(1, 1, 1, 0, 0, 100.0);
+                    table.cells[0].text = nested;
+                    story.insert_table(0, table);
+                }
+                "footnote" => {
+                    story.insert_note(0, "Note", Default::default()).unwrap();
+                    Arc::make_mut(&mut story.notes[0]).text = nested;
+                }
+                _ => {
+                    assert_eq!(location, "endnote");
+                    story.insert_endnote(0, "Endnote", Default::default()).unwrap();
+                    Arc::make_mut(&mut story.endnotes[0]).text = nested;
+                }
+            }
+            ids
+        };
+        (session, control, ids)
+    }
+
+    fn states(blue: bool, red: bool) -> Vec<(String, bool)> {
+        vec![("Blue".into(), blue), ("Red".into(), red)]
+    }
+
+    fn prepared(location: &str) {
+        let (session, control, ids) = fixture(location);
+        let source = &session.doc().unwrap().doc;
+        let original_asset = source.item(control).unwrap().graphic().unwrap().asset;
+        let copy = with_pdf_layer_variants(source, true).unwrap().unwrap();
+        for (id, expected) in ids.into_iter().zip([states(false, true), states(true, true)]) {
+            let item = copy.placed_items().into_iter().find(|i| i.id == id).unwrap();
+            let asset = &copy.assets[&item.graphic().unwrap().asset];
+            assert_eq!(designcraft_render::pdf_layers(&asset.data), expected, "{location}: placement {id}");
+            assert_ne!(asset.id, original_asset);
+            assert!(asset.link.is_none());
+            assert!(!item.pdf_layer_override && item.pdf_hidden_layers.is_empty());
+        }
+        assert_eq!(copy.item(control).unwrap().graphic().unwrap().asset, original_asset);
+        assert!(Arc::ptr_eq(&copy.assets[&original_asset], &source.assets[&original_asset]));
+        assert_eq!(designcraft_render::pdf_layers(&source.assets[&original_asset].data), states(true, false));
+        assert!(source.placed_items().into_iter().filter(|i| ids.contains(&i.id)).all(|i| i.has_pdf_layer_override()));
+    }
+
+    fn embedded(location: &str) {
+        let (mut session, _, _) = fixture(location);
+        let original = session.doc().unwrap().doc.clone();
+        let result = session.execute("file.exportIdml", &json!({})).unwrap();
+        let bytes = base64_decode(result["base64"].as_str().unwrap());
+        let imported = designcraft_idml::import_idml(&bytes).unwrap();
+        let mut roundtrip: Vec<_> =
+            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        let mut expected = vec![states(true, false), states(false, true), states(true, true)];
+        roundtrip.sort();
+        expected.sort();
+        assert_eq!(roundtrip, expected, "{location}: reopened IDML keeps each choice");
+        let mut package = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut actual = Vec::new();
+        for index in 0..package.len() {
+            let mut entry = package.by_index(index).unwrap();
+            if !entry.name().ends_with(".xml") {
+                continue;
+            }
+            let mut xml = String::new();
+            entry.read_to_string(&mut xml).unwrap();
+            for cdata in xml.split("<![CDATA[").skip(1) {
+                let data = base64_decode(cdata.split("]]>").next().unwrap());
+                if designcraft_render::is_pdf(&data) {
+                    actual.push(designcraft_render::pdf_layers(&data));
+                }
+            }
+        }
+        actual.sort();
+        assert_eq!(actual, expected, "{location}: each placement embeds its own visibility state");
+        assert!(Arc::ptr_eq(&original, &session.doc().unwrap().doc), "export must not edit the live document");
+    }
+
+    fn external(location: &str) {
+        let (mut session, _, ids) = fixture(location);
+        // Each choice alone must reject the export, including a legacy nonempty hidden list.
+        for active in ids {
+            let original = session.doc().unwrap().doc.clone();
+            let mut one = (*original).clone();
+            one.update_placed_items(
+                |i| ids.contains(&i.id) && i.id != active,
+                |i| {
+                    i.pdf_layer_override = false;
+                    i.pdf_hidden_layers.clear();
+                },
+            );
+            let mut single = Session::new();
+            single.add_document(DocState::new(one, None));
+            let before = single.doc().unwrap().doc.clone();
+            let err = single.execute("file.exportIdml", &json!({"embedImages": false})).unwrap_err().to_string();
+            assert!(err.contains("embedded images"), "{location}: {err}");
+            assert!(Arc::ptr_eq(&before, &single.doc().unwrap().doc));
+        }
+        Arc::make_mut(&mut session.doc_mut().unwrap().doc).update_placed_items(
+            |i| ids.contains(&i.id),
+            |i| {
+                i.pdf_layer_override = false;
+                i.pdf_hidden_layers.clear();
+            },
+        );
+        session.execute("file.exportIdml", &json!({"embedImages": false})).unwrap();
+    }
+
+    // Duplicating a text frame that holds an anchored placed PDF leaves two placements sharing
+    // one ItemId (renumber gap, tracked separately). Export must still apply the choice to both.
+    #[test]
+    fn duplicated_frame_keeps_its_anchored_pdf_choice_in_idml() {
+        let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let placed = s.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "layers.pdf"})).unwrap();
+        let control = ItemId(placed["id"].as_u64().unwrap());
+        let (frame, chosen) = {
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut item = doc.item(control).unwrap().clone();
+            item.id = ItemId(doc.alloc());
+            item.pdf_hidden_layers = vec!["Blue".into()];
+            let chosen = item.id;
+            let layer = doc.default_layer();
+            let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            (frame, chosen)
+        };
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        let doc = s.doc().unwrap().doc.clone();
+        let with_choice: Vec<_> = doc.placed_items().into_iter().filter(|i| i.has_pdf_layer_override()).map(|i| i.id).collect();
+        assert_eq!(with_choice, [chosen, chosen], "both placements share one id");
+        assert!(doc.check().unwrap_err().to_string().contains(&format!("duplicate item id {chosen}")));
+        let result = s.execute("file.exportIdml", &json!({})).unwrap();
+        let imported = designcraft_idml::import_idml(&base64_decode(result["base64"].as_str().unwrap())).unwrap();
+        let mut layers: Vec<_> =
+            imported.assets.values().filter(|a| designcraft_render::is_pdf(&a.data)).map(|a| designcraft_render::pdf_layers(&a.data)).collect();
+        layers.sort();
+        assert_eq!(layers, vec![states(false, true), states(true, false)]);
+    }
+
+    // Shared anchored ids are a pre-existing duplication gap. Conflicting choices must not
+    // silently select one variant; this fixture changes only the copied anchor's choice.
+    #[test]
+    fn shared_id_with_divergent_pdf_choices_is_rejected() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
+        let placed = s.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "layers.pdf"})).unwrap();
+        let control = ItemId(placed["id"].as_u64().unwrap());
+        let frame = {
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut item = doc.item(control).unwrap().clone();
+            item.id = ItemId(doc.alloc());
+            item.pdf_hidden_layers = vec!["Blue".into()];
+            let layer = doc.default_layer();
+            let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
+            doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            frame
+        };
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        // Change ONLY the copy in the newest story to explicit all-on.
+        {
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let (_, st) = doc.stories.iter_mut().filter(|(_, st)| !st.objects.is_empty()).last().unwrap();
+            let o = &mut Arc::make_mut(st).objects[0];
+            let it = &mut Arc::make_mut(o).item;
+            it.pdf_hidden_layers.clear();
+            it.pdf_layer_override = true;
+        }
+        let before = s.doc().unwrap().doc.clone();
+        let chosen: Vec<_> = before.placed_items().into_iter().filter(|i| i.has_pdf_layer_override()).collect();
+        assert_eq!(chosen.len(), 2);
+        assert_eq!(chosen[0].id, chosen[1].id);
+        assert_eq!(chosen[0].graphic().unwrap().asset, chosen[1].graphic().unwrap().asset);
+        assert_ne!(chosen[0].pdf_hidden_layers, chosen[1].pdf_hidden_layers);
+        let err = s.execute("file.exportIdml", &json!({})).unwrap_err().to_string();
+        assert!(err.contains("placements sharing id") && err.contains("different sources or layer choices"), "{err}");
+        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    }
+
+    // Cross-document paste: the pasted frame's anchored placement keeps its source id,
+    // which can collide with an unrelated placement in the destination.
+    #[test]
+    fn shared_id_with_different_pdf_assets_is_rejected() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
+        let a = s.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "a.pdf"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.layerOptions", &json!({"ids": [a], "hidden": ["Blue"]})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(ItemId(f)).unwrap().text_frame().unwrap().story;
+        s.execute("anchored.insert", &json!({"ids": [a], "story": sid.0, "pos": 0})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        // A different, unrelated PDF placement in the destination (no choice).
+        let b = s
+            .execute("file.place", &json!({"base64": base64_encode(&super::super::pdflayers::tests::two_layer_pdf()), "name": "b.pdf"}))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(a, b, "fresh documents allocate the same first placement id");
+        let before = s.doc().unwrap().doc.clone();
+        let graphics: Vec<_> = before.placed_items().into_iter().filter(|i| i.graphic().is_some()).collect();
+        assert_eq!(graphics.len(), 2);
+        assert_eq!(graphics[0].id, graphics[1].id);
+        assert_ne!(graphics[0].graphic().unwrap().asset, graphics[1].graphic().unwrap().asset);
+        assert!(!graphics[0].has_pdf_layer_override(), "destination placement uses file defaults");
+        assert!(graphics[1].has_pdf_layer_override());
+        let err = s.execute("file.exportIdml", &json!({})).unwrap_err().to_string();
+        assert!(err.contains("placements sharing id") && err.contains("different sources or layer choices"), "{err}");
+        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    }
+
+    #[test]
+    fn nested_idml_cell_variants_are_applied() {
+        prepared("cell");
+    }
+    #[test]
+    fn nested_idml_footnote_variants_are_applied() {
+        prepared("footnote");
+    }
+    // Endnote structures/artwork are not serialized by IDML yet. Check preparation without
+    // mistaking a correct export-only variant for endnote-artwork serialization support.
+    #[test]
+    fn nested_idml_endnote_variants_are_prepared() {
+        prepared("endnote");
+    }
+    #[test]
+    fn nested_idml_cell_embedded_choices() {
+        embedded("cell");
+    }
+    #[test]
+    fn nested_idml_footnote_embedded_choices() {
+        embedded("footnote");
+    }
+    #[test]
+    fn nested_idml_cell_external_choices_are_rejected() {
+        external("cell");
+    }
+    #[test]
+    fn nested_idml_footnote_external_choices_are_rejected() {
+        external("footnote");
+    }
+    #[test]
+    fn nested_idml_endnote_external_choices_are_rejected() {
+        external("endnote");
     }
 }

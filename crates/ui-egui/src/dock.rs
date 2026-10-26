@@ -1,16 +1,16 @@
-//! The right dock: an expanded panel group (Properties · Pages · Layers) and a collapsed icon
-//! column whose panels open as flyouts beside the dock.
+//! The panels: their ids, names, icons and contents, and the windows of the float-only panels.
+//! `panel_docking` places the others in the docking layout.
 
-use egui::{Color32, Sense, Stroke, vec2};
+use egui::{Sense, vec2};
 
 use crate::theme::{Tokens, semibold};
-use crate::{DesignApp, icons, panels};
+use crate::{DesignApp, panels};
 
-/// (id, label, icon) of the tabs in the expanded group.
+/// (id, label, icon) of the Properties · Pages · Layers group of the default dock.
 pub const DOCK_TABS: &[(&str, &str, &str)] =
     &[("properties", "Properties", "panel-properties"), ("pages", "Pages", "panel-pages"), ("layers", "Layers", "panel-layers")];
 
-/// Panels in the collapsed icon column.
+/// (id, label, icon) of the other dock panels, which start in the iconic column.
 pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("stroke", "Stroke", "panel-stroke"),
     ("swatches", "Swatches", "panel-swatches"),
@@ -23,6 +23,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("typography", "Typography", "panel-typography"),
     ("glyphs", "Glyphs", "panel-character"),
     ("paragraph", "Paragraph", "panel-paragraph"),
+    ("story", "Story", "panel-text-frame"),
     ("textWrap", "Text Wrap", "panel-wrap"),
     ("table", "Table", "panel-table"),
     ("align", "Align", "panel-align"),
@@ -31,6 +32,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("links", "Links", "panel-links"),
     ("info", "Info", "panel-info"),
     ("preflight", "Preflight", "panel-preflight"),
+    ("separations", "Separations Preview", "panel-swatches"),
     ("attributes", "Attributes", "panel-attributes"),
     ("conditions", "Conditional Text", "panel-conditions"),
     ("notes", "Notes", "panel-notes"),
@@ -50,210 +52,12 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("dataMerge", "Data Merge", "panel-datamerge"),
 ];
 
-/// Panels that only float (they open from a menu, not from the icon column).
+/// Panels that only float, outside the docking layout (they open from a menu).
 pub const FLOATING_PANELS: &[(&str, &str)] = &[("tabs", "Tabs")];
 
 /// The English name of panel `id`.
 pub fn panel_label(id: &str) -> &'static str {
     DOCK_TABS.iter().chain(ICON_PANELS).map(|p| (p.0, p.1)).chain(FLOATING_PANELS.iter().copied()).find(|p| p.0 == id).map_or("Panel", |p| p.1)
-}
-
-pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    if crate::panel_docking::show(app, ui) {
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    // Expanded panel stack (outermost, 253 pt) — declared first so it sits at the far right.
-    if app.ui.dock_expanded {
-        egui::Panel::right("dock").default_size(253.0).size_range(220.0..=420.0).resizable(true).frame(egui::Frame::NONE.fill(t.panel)).show(
-            ui,
-            |ui| {
-                if dock_header(ui, &t, "»").clicked() {
-                    let _ = app.run("window.collapseToIcons", serde_json::json!({}));
-                }
-                // Tab strip (27 pt).
-                let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), 27.0), Sense::hover());
-                ui.painter().rect_filled(strip, 0.0, t.tab_strip);
-                let mut x = strip.min.x;
-                for (id, label, _) in DOCK_TABS {
-                    let active = app.ui.dock_tab == *id;
-                    let g = crate::rtl::plain(
-                        ui.ctx(),
-                        crate::i18n::tr(&app.ui.language, label),
-                        semibold(11.5),
-                        if active { t.text_strong } else { t.text_dim },
-                    );
-                    let w = g.size().x + 26.0;
-                    let r = egui::Rect::from_min_size(egui::pos2(x, strip.min.y), vec2(w, 27.0));
-                    if active {
-                        ui.painter().rect_filled(r, 0.0, t.panel);
-                    }
-                    ui.painter().galley(egui::pos2(r.min.x + 13.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
-                    ui.painter().line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.border));
-                    let response = craft_ui::tabs::Tab::new(ui.id().with(("docktab", *id)), label, active).sense(Sense::click_and_drag()).show_at(
-                        ui,
-                        r,
-                        |_, _| {},
-                    );
-                    if response.clicked() {
-                        app.ui.dock_tab = id.to_string();
-                    }
-                    crate::panel_docking::legacy_tab(app, ui, id, &response);
-                    x += w;
-                }
-                let menu_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 24.0, strip.min.y + 4.0), vec2(18.0, 18.0));
-                let menu = ui.interact(menu_r, ui.id().with("dock-menu"), Sense::click());
-                if menu.hovered() {
-                    ui.painter().rect_filled(menu_r, 3.0, t.hover);
-                }
-                icons::paint(ui.painter(), menu_r, "menu", t.icon);
-                let tab = app.ui.dock_tab.clone();
-                egui::Popup::menu(&menu)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show(|ui| crate::panel_docking::three_line_menu(app, ui, &tab));
-                egui::Frame::NONE.inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 6 }).show(ui, |ui| {
-                    // The Pages panel scrolls its parts itself and keeps its footer at the bottom.
-                    if app.ui.dock_tab == "pages" {
-                        panels::pages::show(app, ui);
-                        return;
-                    }
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match app.ui.dock_tab.as_str() {
-                        "layers" => panels::layers::show(app, ui),
-                        _ => panels::properties::show(app, ui),
-                    });
-                });
-            },
-        );
-    }
-    // Collapsed icon strip (37 pt) to the left of the panel stack; a workspace's iconic groups
-    // (Essentials Classic) show their names.
-    let groups = app.ui.icon_groups.clone();
-    egui::Panel::right("icon_column").exact_size(icon_column_width(app)).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
-        if dock_header(ui, &t, "«").clicked() {
-            app.ui.dock_expanded = true;
-        }
-        ui.add_space(4.0);
-        match &groups {
-            Some(groups) => {
-                for (i, group) in groups.iter().enumerate() {
-                    if i > 0 {
-                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 7.0), Sense::hover());
-                        ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, t.border));
-                    }
-                    for (id, label, icon) in group.iter().filter_map(|id| panel_entry(id)) {
-                        let on = app.ui.open_panel.as_deref() == Some(id) || app.ui.floating.iter().any(|(p, _)| p == id);
-                        let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
-                        if on {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.tool_active);
-                        } else if response.hovered() {
-                            ui.painter().rect_filled(r.shrink2(vec2(3.0, 1.0)), 3.0, t.hover);
-                        }
-                        icons::paint(ui.painter(), egui::Rect::from_min_size(r.min + vec2(8.0, 4.0), vec2(18.0, 18.0)), icon, t.icon);
-                        crate::rtl::paint(
-                            ui.painter(),
-                            r.left_center() + vec2(32.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            crate::i18n::tr(&app.ui.language, label),
-                            semibold(11.5),
-                            t.text,
-                        );
-                        icon_clicked(app, ui, id, &response);
-                    }
-                }
-            }
-            None => {
-                ui.vertical_centered(|ui| {
-                    for (id, label, icon) in ICON_PANELS {
-                        let on = app.ui.open_panel.as_deref() == Some(*id) || app.ui.floating.iter().any(|(p, _)| p == id);
-                        let response = icons::button(ui, icon, 28.0, on, crate::i18n::tr(&app.ui.language, label)).interact(Sense::click_and_drag());
-                        icon_clicked(app, ui, id, &response);
-                        ui.add_space(1.0);
-                    }
-                });
-            }
-        }
-    });
-}
-
-/// Width of the icon column: icons only, or icons with names for a workspace's groups.
-fn icon_column_width(app: &DesignApp) -> f32 {
-    if app.ui.icon_groups.is_some() { 150.0 } else { 37.0 }
-}
-
-/// (id, label, icon) of any dock panel.
-fn panel_entry(id: &str) -> Option<(&'static str, &'static str, &'static str)> {
-    DOCK_TABS.iter().chain(ICON_PANELS).find(|p| p.0 == id).copied()
-}
-
-/// A click on a panel's icon: raise it when it floats, else open or close its flyout.
-fn icon_clicked(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, response: &egui::Response) {
-    if response.clicked() {
-        if app.ui.floating.iter().any(|(p, _)| p == id) {
-            ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("floating_panel", id))));
-        } else {
-            let open = app.ui.open_panel.as_deref() == Some(id);
-            app.ui.open_panel = if open { None } else { Some(id.to_string()) };
-        }
-    }
-    crate::panel_docking::legacy_tab(app, ui, id, response);
-}
-
-/// 11 pt dock header strip with a collapse chevron; clicking it reports a click on the response.
-fn dock_header(ui: &mut egui::Ui, t: &Tokens, chevron: &str) -> egui::Response {
-    let (r, response) = ui.allocate_exact_size(vec2(ui.available_width(), 11.0), Sense::click());
-    ui.painter().rect_filled(r, 0.0, t.tab_strip);
-    ui.painter().text(egui::pos2(r.max.x - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, chevron, egui::FontId::proportional(9.0), t.text_dim);
-    ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.border));
-    response
-}
-
-/// A panel opened from the icon column, shown as a floating flyout next to the dock.
-pub fn flyout(app: &mut DesignApp, ctx: &egui::Context) {
-    if app.ui.docking.is_some() {
-        return;
-    }
-    let Some(id) = app.ui.open_panel.clone() else { return };
-    let t = Tokens::get(ctx);
-    let label = crate::i18n::tr(&app.ui.language, panel_label(&id)).to_owned();
-    let screen = ctx.content_rect();
-    let dock_w = if app.ui.dock_expanded { ctx.memory(|m| m.area_rect(egui::Id::new("dock")).map(|r| r.width())).unwrap_or(280.0) } else { 0.0 };
-    let pos = egui::pos2(screen.max.x - icon_column_width(app) - dock_w - 262.0, 120.0);
-    let mut open = true;
-    egui::Area::new(egui::Id::new("panel_flyout")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).fill(t.panel).inner_margin(egui::Margin::same(0)).show(ui, |ui| {
-            ui.set_width(256.0);
-            // A previous shorter flyout must not constrain the next panel's scroll viewport.
-            ui.set_max_height((screen.max.y - pos.y - 12.0).max(80.0));
-            let (strip, _) = ui.allocate_exact_size(vec2(256.0, 26.0), Sense::hover());
-            ui.painter().rect_filled(strip, 0.0, t.panel_darker);
-            crate::rtl::paint(ui.painter(), strip.min + vec2(10.0, 13.0), egui::Align2::LEFT_CENTER, &label, semibold(12.0), t.text_strong);
-            let close = egui::Rect::from_min_size(egui::pos2(strip.max.x - 22.0, strip.min.y + 4.0), vec2(18.0, 18.0));
-            if ui.interact(close, ui.id().with("flyclose"), Sense::click()).clicked() {
-                open = false;
-            }
-            ui.painter().text(close.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(15.0), t.text_dim);
-            // Float: the button beside the close box, or drag the header away from the dock.
-            let float_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 44.0, strip.min.y + 4.0), vec2(18.0, 18.0));
-            let fr = ui.interact(float_r, ui.id().with("flyfloat"), Sense::click()).on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Float panel"));
-            });
-            float_glyph(ui.painter(), float_r, t.text_dim);
-            let head = egui::Rect::from_min_max(strip.min, egui::pos2(float_r.min.x - 2.0, strip.max.y));
-            let hr = ui.interact(head, ui.id().with("flyhead"), Sense::drag());
-            let torn = hr.drag_stopped() && hr.total_drag_delta().is_some_and(|d| d.length() > 24.0);
-            if fr.clicked() || torn {
-                let at = if torn { ui.ctx().pointer_latest_pos().unwrap_or(pos) - vec2(20.0, 10.0) } else { pos - vec2(30.0, -30.0) };
-                float_panel(app, &id, at);
-                return;
-            }
-            egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                scrolled_body(app, ui, &id, screen.height() - 220.0);
-            });
-        });
-    });
-    if !open {
-        app.ui.open_panel = None;
-    }
 }
 
 /// A panel's contents at most `max_h` tall, scrolling past that. The Pages panel scrolls its
@@ -285,6 +89,7 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "typography" => panels::typography::show(app, ui),
         "glyphs" => panels::glyphs::show(app, ui),
         "paragraph" => panels::properties::paragraph_panel(app, ui),
+        "story" => panels::story::show(app, ui),
         "textWrap" => panels::properties::wrap_panel(app, ui),
         "align" => panels::properties::align_panel(app, ui),
         "pathfinder" => panels::properties::pathfinder_panel(app, ui),
@@ -297,6 +102,7 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "attributes" => panels::properties::attributes_panel(app, ui),
         "conditions" => panels::conditions::show(app, ui),
         "notes" => panels::notes::show(app, ui),
+        "separations" => panels::separations::show(app, ui),
         "library" => panels::library::show(app, ui),
         "hyperlinks" => panels::interactive::hyperlinks(app, ui),
         "bookmarks" => panels::interactive::bookmarks(app, ui),
@@ -322,44 +128,18 @@ pub(crate) fn float_only(id: &str) -> bool {
     FLOATING_PANELS.iter().any(|p| p.0 == id)
 }
 
-/// Tear panel `id` off the dock into a floating window at `at`.
-pub fn float_panel(app: &mut DesignApp, id: &str, at: egui::Pos2) {
-    if float_only(id) {
-        app.ui.floating.retain(|(p, _)| p != id);
-        app.ui.floating.push((id.to_string(), [at.x, at.y]));
-        return;
-    }
-    if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.float", &serde_json::json!({"panel":id,"x":at.x,"y":at.y})) {
-        app.status(error);
-    }
-}
-
-/// Put a floating panel back in the dock's icon column.
-pub fn dock_panel(app: &mut DesignApp, id: &str) {
-    if app.ui.docking.is_some() && !float_only(id) {
-        if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.dock", &serde_json::json!({"panel":id})) {
-            app.status(error);
-        }
-        return;
-    }
-    app.ui.floating.retain(|(p, _)| p != id);
-}
-
-/// Floating panels: movable, resizable windows; "Dock" returns one to the icon column.
-pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
-    // A customized layout draws its own floating groups; float-only panels are drawn here.
-    let customized = app.ui.docking.is_some();
+/// The float-only panels' windows (the Tabs panel). The docking layout draws the other
+/// floating panels.
+pub fn float_only_windows(app: &mut DesignApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     for (id, at) in app.ui.floating.clone() {
-        if customized && !float_only(&id) {
+        if !float_only(&id) {
             continue;
         }
         let label = crate::i18n::tr(&app.ui.language, panel_label(&id)).to_owned();
-        let docks = !float_only(&id);
         let mut open = true;
-        let mut dock = false;
         let mut w = egui::Window::new(label.clone())
-            .id(egui::Id::new(("floating_panel", &id)))
+            .id(egui::Id::unique(("floating_panel", &id)))
             .title_bar(false)
             .default_pos(egui::pos2(at[0], at[1]))
             .default_width(if id == "tabs" { 560.0 } else { 256.0 })
@@ -372,13 +152,13 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
             w = w.current_pos(pos).min_width(width).max_width(width);
         }
         let r = w.show(ctx, |ui| {
-            // Header strip (drag it to move the panel): name, Dock, close.
+            // Header strip (drag it to move the panel): name and close.
             let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width().max(200.0), 24.0), Sense::hover());
             ui.painter().rect_filled(strip, 0.0, t.panel_darker);
             crate::rtl::paint(ui.painter(), strip.min + vec2(10.0, 12.0), egui::Align2::LEFT_CENTER, &label, semibold(12.0), t.text_strong);
             let close = egui::Rect::from_min_size(egui::pos2(strip.max.x - 22.0, strip.min.y + 3.0), vec2(18.0, 18.0));
             if ui
-                .interact(close, ui.id().with("fclose"), Sense::click())
+                .interact(close, ui.scope_id().with("fclose"), Sense::click())
                 .on_hover_ui(|ui| {
                     crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Close"));
                 })
@@ -387,20 +167,6 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
                 open = false;
             }
             ui.painter().text(close.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(15.0), t.text_dim);
-            let dock_r = egui::Rect::from_min_size(egui::pos2(strip.max.x - 44.0, strip.min.y + 3.0), vec2(18.0, 18.0));
-            if docks
-                && ui
-                    .interact(dock_r, ui.id().with("fdock"), Sense::click())
-                    .on_hover_ui(|ui| {
-                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Dock panel"));
-                    })
-                    .clicked()
-            {
-                dock = true;
-            }
-            if docks {
-                dock_glyph(ui.painter(), dock_r, t.text_dim);
-            }
             egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                 scrolled_body(app, ui, &id, ctx.content_rect().height() - 160.0);
             });
@@ -411,29 +177,16 @@ pub fn floating(app: &mut DesignApp, ctx: &egui::Context) {
         {
             f.1 = [r.response.rect.min.x, r.response.rect.min.y];
         }
-        if !open || dock {
-            dock_panel(app, &id);
+        if !open {
+            app.ui.floating.retain(|(p, _)| *p != id);
         }
     }
-}
-
-/// Two overlapping boxes: "float this panel".
-fn float_glyph(p: &egui::Painter, r: egui::Rect, c: Color32) {
-    let s = Stroke::new(1.0, c);
-    p.rect_stroke(egui::Rect::from_min_size(r.min + vec2(3.5, 6.5), vec2(9.0, 8.0)), 0.0, s, egui::StrokeKind::Middle);
-    p.rect_stroke(egui::Rect::from_min_size(r.min + vec2(6.5, 3.5), vec2(9.0, 8.0)), 0.0, s, egui::StrokeKind::Middle);
-}
-
-/// A box with a bar on its right: "back into the dock".
-fn dock_glyph(p: &egui::Painter, r: egui::Rect, c: Color32) {
-    let b = egui::Rect::from_min_size(r.min + vec2(3.5, 4.5), vec2(11.0, 9.0));
-    p.rect_stroke(b, 0.0, Stroke::new(1.0, c), egui::StrokeKind::Middle);
-    p.rect_filled(egui::Rect::from_min_max(egui::pos2(b.max.x - 3.5, b.min.y), b.max), 0.0, c);
 }
 
 #[cfg(test)]
 mod visual_regressions {
     use super::*;
+    use egui::Color32;
 
     fn scaled_input(size: egui::Vec2, scale: f32) -> egui::RawInput {
         let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };
@@ -449,9 +202,7 @@ mod visual_regressions {
         for brightness in crate::theme::Brightness::ALL {
             for width in [800.0, 1280.0] {
                 for scale in [1.0, 1.5, 2.0] {
-                    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-                    app.ui.dock_expanded = true;
-                    app.ui.dock_tab = "properties".into();
+                    let app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
                     let mut ready = false;
                     let mut harness =
                         egui_kittest::Harness::builder().with_size(vec2(width, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
@@ -462,7 +213,7 @@ mod visual_regressions {
                                     ready = true;
                                     return;
                                 }
-                                show(app, ui);
+                                crate::panel_docking::show(app, ui);
                             },
                             app,
                         );
@@ -470,10 +221,11 @@ mod visual_regressions {
                     harness.run_steps(4);
                     let stem = format!("designcraft-dock-{}-{width}-{scale}x", brightness.id());
                     harness.render().unwrap().save(directory.join(format!("{stem}.png"))).unwrap();
-                    let panel = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new("dock")).unwrap().outer_rect;
+                    let tab = crate::panel_docking::tab_id("properties");
+                    let tab = harness.ctx.read_response(tab).unwrap().rect;
                     let region = serde_json::json!({
                         "screen": [width, 640.0], "scale": scale,
-                        "regions": {"dock-tabs": [panel.left(), panel.top(), panel.width(), 45.0]}
+                        "regions": {"dock-tabs": [tab.left(), tab.top(), (width - tab.left()), tab.height()]}
                     });
                     std::fs::write(directory.join(format!("{stem}.json")), serde_json::to_vec_pretty(&region).unwrap()).unwrap();
                 }
@@ -499,9 +251,9 @@ mod visual_regressions {
                     let tokens = Tokens::for_brightness(brightness);
                     crate::theme::apply(&ctx, &tokens);
                     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-                    app.ui.dock_expanded = true;
-                    app.ui.dock_tab = "properties".into();
-                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| show(&mut app, ui));
+                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| crate::panel_docking::show(&mut app, ui));
+                    output.textures_delta.clear();
+                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| crate::panel_docking::show(&mut app, ui));
                     output.textures_delta.clear();
                     assert_eq!(ctx.content_rect().size(), vec2(width, 640.0));
                     assert_eq!(ctx.pixels_per_point(), scale);
@@ -521,52 +273,5 @@ mod visual_regressions {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod chevron_tests {
-    use super::*;
-    use egui_kittest::Harness;
-
-    fn click(harness: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
-        harness.hover_at(at);
-        harness.run_steps(1);
-        harness.drag_at(at);
-        harness.run_steps(1);
-        harness.drop_at(at);
-        harness.run_steps(3);
-    }
-
-    /// The » / « chevron painted at the right end of a panel's 11 pt header.
-    fn chevron(harness: &Harness<'_, DesignApp>, panel: &str) -> egui::Pos2 {
-        let r = egui::containers::panel::PanelState::load(&harness.ctx, egui::Id::new(panel)).expect("the panel is laid out").outer_rect;
-        egui::pos2(r.max.x - 10.0, r.min.y + 5.0)
-    }
-
-    /// Issue #1203: the header chevrons were painted text; clicking them did nothing.
-    #[test]
-    fn the_dock_chevron_collapses_and_expands_the_dock() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-        app.ui.dock_expanded = true;
-        let mut ready = false;
-        let mut harness = Harness::builder().with_size(vec2(1280.0, 640.0)).build_ui_state(
-            move |ui, app: &mut DesignApp| {
-                if !ready {
-                    crate::theme::install_fonts(ui.ctx(), "en");
-                    ready = true;
-                    return;
-                }
-                show(app, ui);
-            },
-            app,
-        );
-        harness.run_steps(4);
-        let at = chevron(&harness, "dock");
-        click(&mut harness, at);
-        assert!(!harness.state().ui.dock_expanded, "» collapses the dock to icons");
-        let at = chevron(&harness, "icon_column");
-        click(&mut harness, at);
-        assert!(harness.state().ui.dock_expanded, "« expands the dock again");
     }
 }

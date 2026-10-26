@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::*;
+use super::{Arc, DOCUMENT_FONTS_FOLDER, FALLBACK_FAMILY, FontDb, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES};
 use crate::testing::{font_with, font_with_names, font_with_wws, with_fs_type};
 
 /// An empty temporary folder unique to `name` and this process.

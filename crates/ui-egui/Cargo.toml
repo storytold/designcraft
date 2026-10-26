@@ -10,7 +10,9 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
-craft-ui = { workspace = true }
+craft-ui = { workspace = true, features = ["native-windows"] }
+craft-window = { workspace = true }
+craft-keymap = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
@@ -19,15 +21,21 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
+craft-prepress = { workspace = true }
+# The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
+# them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
+egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+web-time = { workspace = true }
+# Unicode bidi classes are used only to bypass the label cache for ordinary LTR text.
 unicode-bidi = { workspace = true }
-unicode-bidi-mirroring = { workspace = true }
-unicode-segmentation = { workspace = true }
-egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+# egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables
+# egui's defaults, and package-scoped UI tests do not build the app binary.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 tempfile = { workspace = true }
 designcraft-idml = { workspace = true }
 zip = { workspace = true }
@@ -38,3 +46,6 @@ designcraft-fonts = { workspace = true, features = ["testing"] }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-update = { workspace = true }

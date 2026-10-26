@@ -233,11 +233,12 @@ fn same_rect(a: Rect, b: Rect) -> bool {
 }
 
 /// Thread new frames until the story fits: first into the columns after the last frame's column
-/// on its page (when it sits in one), then one frame per column on each page it adds. With
-/// `primary` (Smart Text Reflow of the primary text frame), each added page gets one frame on the
-/// live area with the page's columns instead. Empty frames it made at the end of the thread are
-/// removed again, except the first on a page it didn't add; a page it added that holds only such
-/// a frame goes with it. Returns pages added.
+/// on its page (when it sits in one), then one frame per column on each page that follows it,
+/// whatever else the page holds, and on each page it adds at the end of the document, as InDesign
+/// does. With `primary` (Smart Text Reflow of the primary text frame), pages are added right after
+/// the last frame's page, each with one frame on the live area with the page's columns instead.
+/// Empty frames it made at the end of the thread are removed again; a page it added that holds
+/// only such a frame goes with it. Returns pages added.
 /// A story on a parent spread doesn't autoflow: its frames thread only on that parent. Errors
 /// name `cmd`, the command that autoflows.
 pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &str, primary: bool) -> Result<usize> {
@@ -252,6 +253,8 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
     let mut made = Vec::new();
     let mut new_pages = Vec::new();
     let mut first = true;
+    // The next page of the document autoflow may set frames on; it only moves forward.
+    let mut following = 0;
     loop {
         let (overset, held, full) = fit(d, sid);
         let Some(at) = overset else { break };
@@ -267,16 +270,33 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
             let rects = flow_rects(d, dir, vertical, page);
             let next = d.item(last).and_then(|it| rects.iter().position(|r| same_rect(*r, it.bounds()))).map_or(rects.len(), |k| k + 1);
             if let (Some(rest), Some((si, _))) = (rects.get(next..).filter(|r| !r.is_empty()), d.page_loc(page)) {
-                for r in rest.iter().take(want) {
+                // Whole pages: an estimate that stops inside one would leave its later columns out
+                // of the thread for good. The cleanup below takes the frames the text doesn't reach.
+                for r in rest {
                     prev = add_flow_frame(d, si, *r, layer, prev)?;
                     made.push(prev);
                 }
                 continue;
             }
         }
+        following = following.max(page + 1);
+        if !primary && following < d.page_count() {
+            let mut left = want;
+            while left > 0 && following < d.page_count() {
+                let Some((si, _)) = d.page_loc(following) else { break };
+                for r in flow_rects(d, dir, vertical, following) {
+                    prev = add_flow_frame(d, si, r, layer, prev)?;
+                    made.push(prev);
+                    left = left.saturating_sub(1);
+                }
+                following += 1;
+            }
+            continue;
+        }
         if added >= max_pages {
             return Err(bad(cmd, format!("autoflow stopped after {max_pages} pages")));
         }
+        // Past the following pages, `page` is the document's last: autoflow adds pages at its end.
         let per_page = if vertical { 1 } else { d.page(page).map_or(1, |p| p.column_rects().len().max(1)) };
         let pages = want.div_ceil(per_page).clamp(1, max_pages - added);
         let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
@@ -304,16 +324,23 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
         }
         let page = d.page_of_item(f);
         if d.page_of_item(*before) != page {
-            // The first frame on its page: the estimate added more pages than the text needs.
-            // Drop the page too when autoflow added it and the frame is all it holds.
-            let Some(pg) = page.filter(|pg| d.page(*pg).is_some_and(|p| new_pages.contains(&p.id))) else { break };
-            let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).all(|it| it.id == f || d.page_of_item(it.id) != Some(pg));
-            if !alone {
-                break;
+            // The first frame on its page: the estimate asked for more pages than the text needs.
+            // Drop the page too when autoflow added it and the frame is all it holds; a page the
+            // document had keeps whatever else is on it.
+            match page.filter(|pg| d.page(*pg).is_some_and(|p| new_pages.contains(&p.id))) {
+                Some(pg) => {
+                    let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).all(|it| it.id == f || d.page_of_item(it.id) != Some(pg));
+                    if !alone {
+                        break;
+                    }
+                    d.remove_item(f)?;
+                    d.delete_pages(&[pg])?;
+                    added = added.saturating_sub(1);
+                }
+                None => {
+                    d.remove_item(f)?;
+                }
             }
-            d.remove_item(f)?;
-            d.delete_pages(&[pg])?;
-            added = added.saturating_sub(1);
         } else {
             d.remove_item(f)?;
         }
@@ -565,6 +592,141 @@ mod tests {
         assert_eq!(d.page_of_item(frames[1]), Some(1));
         assert_eq!(d.item(frames[1]).unwrap().bounds(), cols[0]);
         assert_eq!(d.item(frames[2]).unwrap().bounds(), cols[1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A facing-pages document with two columns, its inside margin wider than the outside one, so
+    /// left and right pages have their columns in different places. A graphic frame sits on the
+    /// page `marker` (0-based). Returns the session and the marker's id.
+    fn facing_document(pages: usize, marker: usize) -> (Session, u64) {
+        let mut s = Session::new();
+        let margins = json!({"top": 54, "bottom": 54, "inside": 72, "outside": 36});
+        s.execute("file.new", &json!({"preset": "Letter", "pages": pages, "facingPages": true, "columns": 2, "gutter": 18, "margins": margins}))
+            .unwrap();
+        let d = &s.doc().unwrap().doc;
+        let (si, _) = d.page_loc(marker).unwrap();
+        let m = d.page(marker).unwrap().margin_rect();
+        let rect = [m.x0 + 20.0, m.y0 + 20.0, m.x0 + 120.0, m.y0 + 120.0];
+        let id = s.execute("frame.create", &json!({"rect": rect, "spread": si, "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        // Selected, an empty frame would take the placed text.
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        (s, id)
+    }
+
+    /// Every frame of the story on the column of its page, the story running through the pages in
+    /// order, two frames a page.
+    fn assert_frames_in_columns(d: &Document, frames: &[designcraft_doc::ItemId]) {
+        for (i, f) in frames.iter().enumerate() {
+            let page = d.page_of_item(*f).unwrap();
+            assert_eq!(page, i / 2, "frame {i}");
+            assert_eq!(d.item(*f).unwrap().bounds(), d.page(page).unwrap().column_rects()[i % 2], "frame {i}");
+        }
+    }
+
+    #[test]
+    fn autoflow_fills_the_pages_that_follow_before_adding_any() {
+        // Gap 26: autoflow inserted pages after the first frame's page, in front of the empty
+        // pages the document already had. InDesign threads frames on those first.
+        let dir = std::env::temp_dir().join(format!("dc-place-following-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.txt");
+        std::fs::write(&path, vec!["Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12); 24].join("\n")).unwrap();
+        let (mut s, marker) = facing_document(6, 2);
+        let ids: Vec<_> = (0..6).map(|i| s.doc().unwrap().doc.page(i).unwrap().id).collect();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "page": 1, "autoflow": true})).unwrap();
+        assert_eq!(r["overset"], false, "{r}");
+        assert_eq!(r["pagesAdded"], 0, "{r}");
+        let d = &s.doc().unwrap().doc;
+        assert_eq!((0..d.page_count()).map(|i| d.page(i).unwrap().id).collect::<Vec<_>>(), ids);
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let frames = d.story(sid).unwrap().frames.clone();
+        // Past page 3, which holds the marker: frames go on a page whatever else it holds.
+        assert!(d.page_of_item(*frames.last().unwrap()).unwrap() > 2, "{} frames", frames.len());
+        assert_frames_in_columns(d, &frames);
+        // The text ends before the document does: no empty frame after it.
+        let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+        assert!(frames.iter().all(|f| cs.frame(*f).is_some_and(|ft| !ft.range.is_empty())));
+        assert!(d.page_of_item(*frames.last().unwrap()).unwrap() < 5);
+        assert_eq!(d.page_of_item(designcraft_doc::ItemId(marker)), Some(2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autoflow_adds_pages_at_the_end_of_the_document() {
+        let dir = std::env::temp_dir().join(format!("dc-place-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.txt");
+        std::fs::write(&path, vec!["Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12); 60].join("\n")).unwrap();
+        let (mut s, marker) = facing_document(3, 2);
+        let ids: Vec<_> = (0..3).map(|i| s.doc().unwrap().doc.page(i).unwrap().id).collect();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "page": 1, "autoflow": true})).unwrap();
+        assert_eq!(r["overset"], false, "{r}");
+        let d = &s.doc().unwrap().doc;
+        assert!(d.page_count() > 4, "{r}");
+        assert_eq!(r["pagesAdded"].as_u64(), Some(d.page_count() as u64 - 3), "{r}");
+        // The document's own pages come first, the added ones after the last of them.
+        assert_eq!((0..3).map(|i| d.page(i).unwrap().id).collect::<Vec<_>>(), ids);
+        assert_eq!(d.page_of_item(designcraft_doc::ItemId(marker)), Some(2));
+        let frames = d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames.clone();
+        assert_frames_in_columns(d, &frames);
+        assert_eq!(d.page_of_item(*frames.last().unwrap()), Some(d.page_count() - 1));
+        // One undo step takes the frames, the pages and the story away.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!((0..d.page_count()).map(|i| d.page(i).unwrap().id).collect::<Vec<_>>(), ids);
+        assert!(d.story(StoryId(r["story"].as_u64().unwrap())).is_none());
+        assert_eq!(d.spreads.iter().map(|sp| sp.items.len()).sum::<usize>(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autoflow_fills_every_column_of_a_following_page() {
+        // A first frame across the whole live area holds twice what a column does, so autoflow
+        // asks for half the frames it needs. Asked page by page, it left the later columns of a
+        // page out of the thread and went on to the next page.
+        let dir = std::env::temp_dir().join(format!("dc-place-under-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.txt");
+        std::fs::write(&path, vec!["Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12); 30].join("\n")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Letter", "pages": 6, "facingPages": false, "columns": 2, "gutter": 18, "margins": 54})).unwrap();
+        let m = s.doc().unwrap().doc.page(0).unwrap().margin_rect();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [m.x0, m.y0, m.x1, m.y1], "autoflow": true})).unwrap();
+        assert_eq!(r["overset"], false, "{r}");
+        assert_eq!(r["pagesAdded"], 0, "{r}");
+        let d = &s.doc().unwrap().doc;
+        let frames = &d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames;
+        assert_eq!(d.item(frames[0]).unwrap().bounds(), m);
+        assert!(d.page_of_item(*frames.last().unwrap()).unwrap() >= 3, "{} frames", frames.len());
+        for (k, f) in frames[1..].iter().enumerate() {
+            let page = d.page_of_item(*f).unwrap();
+            assert_eq!(page, 1 + k / 2, "frame {}", k + 1);
+            assert_eq!(d.item(*f).unwrap().bounds(), d.page(page).unwrap().column_rects()[k % 2], "frame {}", k + 1);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autoflow_leaves_no_empty_frame_on_the_pages_that_follow() {
+        // A small first frame makes autoflow ask for more frames than the columns need; the ones
+        // it set on the following pages past the end of the text go again, the pages stay.
+        let dir = std::env::temp_dir().join(format!("dc-place-small-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.txt");
+        std::fs::write(&path, vec!["Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(12); 12].join("\n")).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Letter", "pages": 8, "facingPages": false, "margins": 54})).unwrap();
+        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "rect": [100, 100, 200, 130], "autoflow": true})).unwrap();
+        assert_eq!(r["overset"], false, "{r}");
+        assert_eq!(r["pagesAdded"], 0, "{r}");
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page_count(), 8);
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let frames = &d.story(sid).unwrap().frames;
+        assert!(frames.len() >= 2, "{r}");
+        let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+        assert!(frames.iter().all(|f| cs.frame(*f).is_some_and(|ft| !ft.range.is_empty())), "{} frames", frames.len());
+        assert_eq!(d.spreads.iter().map(|sp| sp.items.len()).sum::<usize>(), frames.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

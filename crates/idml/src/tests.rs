@@ -10,6 +10,8 @@ use super::*;
 mod assets;
 mod clipping;
 mod decorations;
+mod facing_ltr;
+mod frame_grid;
 mod index_sort;
 mod liquid_guides;
 mod object_styles;
@@ -298,6 +300,7 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "HyphenateLadderLimit": "3" => 3, "0" => 0, |r| r.0.hyph_limit;
         "HyphenationZone": "36" => 36.0, "18" => 18.0, |r| r.0.hyph_zone;
         "HyphenateCapitalizedWords": "true" => true, "false" => false, |r| r.0.hyph_capitalized;
+        "IgnoreEdgeAlignment": "false" => false, "true" => true, |r| r.0.ignore_optical_margin;
         "HyphenateLastWord": "true" => true, "false" => false, |r| r.0.hyph_last_word;
         "HyphenateAcrossColumns": "true" => true, "false" => false, |r| r.0.hyph_across_column;
         "HyphenWeight": "5" => 0.5, "9" => 0.9, |r| r.0.hyph_weight;
@@ -480,6 +483,57 @@ fn text_color_rules_round_trip() {
     let p = &back.stories.values().find(|s| s.text == "Ruled").unwrap().paras[0];
     assert_eq!((p.para.rule_above.as_ref(), p.para.rule_below.as_ref()), (para.rule_above.as_ref(), para.rule_below.as_ref()));
     assert_eq!(p.para.kashidas, Some(false));
+}
+
+fn optical_story(pref: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <StoryPreference {pref} StoryOrientation="Horizontal" StoryDirection="LeftToRightDirection"/>
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>“Hung” here.</Content><Br/></CharacterStyleRange>
+    </ParagraphStyleRange>
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Body" IgnoreEdgeAlignment="true">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>“Flush” here.</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#
+    )
+}
+
+/// Story ▸ Optical Margin Alignment and its size, and Ignore Optical Margin on paragraphs and
+/// paragraph styles, survive import and export.
+#[test]
+fn story_optical_margin_round_trips() {
+    let story = |d: &Document| d.stories.values().find(|s| s.text.starts_with("“Hung”")).cloned().unwrap();
+    let d = import_idml_with(&fixture_with_story(&optical_story(r#"OpticalMarginAlignment="true" OpticalMarginSize="18""#)), &|_| None).unwrap();
+    let s = story(&d);
+    assert_eq!(s.optical_margin, designcraft_doc::OpticalMargin { on: true, size: 18.0 });
+    assert_eq!((s.paras[0].para.ignore_optical_margin, s.paras[1].para.ignore_optical_margin), (None, Some(true)));
+    let bytes = export_idml(&d);
+    let text = zip_text(&bytes, "Stories/");
+    assert!(text.contains(r#"OpticalMarginAlignment="true" OpticalMarginSize="18""#), "{text}");
+    assert!(text.contains(r#"IgnoreEdgeAlignment="true""#), "{text}");
+    let back = story(&import_idml(&bytes).unwrap());
+    assert_eq!(back.optical_margin, s.optical_margin);
+    assert_eq!(back.paras[1].para.ignore_optical_margin, Some(true));
+    // Sizes outside InDesign's range are clamped; malformed ones and an absent preference are the default.
+    for (pref, want) in [
+        (r#"OpticalMarginAlignment="true" OpticalMarginSize="1e9""#, (true, 1296.0)),
+        (r#"OpticalMarginAlignment="true" OpticalMarginSize="0""#, (true, 0.1)),
+        (r#"OpticalMarginAlignment="true" OpticalMarginSize="NaN""#, (true, 12.0)),
+        (r#"OpticalMarginAlignment="false""#, (false, 12.0)),
+    ] {
+        let d = import_idml_with(&fixture_with_story(&optical_story(pref)), &|_| None).unwrap();
+        let om = story(&d).optical_margin;
+        assert_eq!((om.on, om.size), want, "{pref}");
+    }
+    // On a paragraph style.
+    let d = import_idml_with(&fixture_with_styles(&keep_styles(r#"IgnoreEdgeAlignment="true""#)), &|_| None).unwrap();
+    assert!(d.styles.resolve_para_style("Body").0.ignore_optical_margin);
+    let styles = zip_text(&export_idml(&d), "Resources/Styles.xml");
+    assert!(styles.contains(r#"IgnoreEdgeAlignment="true""#), "{styles}");
 }
 
 /// `[Basic Paragraph]` is InDesign's `$ID/NormalParagraphStyle`, both ways.
@@ -707,6 +761,8 @@ fn imports_hand_written_fixture() {
     assert_eq!(gradient.kind, designcraft_color::GradientKind::Radial);
     assert_eq!(gradient.stops[1].color, Color::cmyk(0.1, 0.2, 0.3, 0.4));
     assert!((gradient.stops[0].midpoint - 0.3).abs() < 1e-6);
+    assert_eq!(gradient.stops[0].swatch.as_deref(), Some("Brand"), "a stop on a swatch keeps it");
+    assert_eq!(gradient.stops[1].swatch, None, "an unnamed color stays plain");
     // The parent rectangle used an unnamed colour → value-named swatch.
     let mr = &d.parents[0].items[0];
     assert_eq!(mr.fill.swatch, "C=10 M=20 Y=30 K=40");
@@ -989,6 +1045,29 @@ fn round_trips_small_document() {
 }
 
 #[test]
+fn gradient_stops_keep_their_swatches_through_a_round_trip() {
+    use designcraft_color::{ColorType, Gradient, GradientKind, GradientStop};
+    let mut d = Document::new(&NewDocument::default());
+    let gold = Color::cmyk(0.0, 0.3, 0.9, 0.1);
+    d.swatches.push(Swatch { value: SwatchValue::Color { color: gold, color_type: ColorType::Spot }, ..Swatch::color("Gold", gold) });
+    d.swatches.push(Swatch { value: SwatchValue::Tint { base: "Gold".into(), tint: 0.4 }, ..Swatch::color("Gold 40%", gold) });
+    let on = |offset: f32, name: &str| GradientStop {
+        swatch: Some(name.into()),
+        ..GradientStop::new(offset, designcraft_color::swatch::resolve(&d.swatches, name, 1.0).unwrap())
+    };
+    let stops = vec![on(0.0, "Gold"), on(0.3, "Gold 40%"), GradientStop::new(0.6, Color::cmyk(0.5, 0.0, 0.0, 0.0)), on(1.0, "[Paper]")];
+    d.swatches.push(Swatch {
+        value: SwatchValue::Gradient { gradient: Gradient { kind: GradientKind::Linear, stops } },
+        ..Swatch::color("Gold fade", gold)
+    });
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let SwatchValue::Gradient { gradient } = &back.swatch("Gold fade").unwrap().value else { panic!("gradient") };
+    let names: Vec<Option<&str>> = gradient.stops.iter().map(|s| s.swatch.as_deref()).collect();
+    assert_eq!(names, [Some("Gold"), Some("Gold 40%"), None, Some("[Paper]")]);
+    assert_eq!(gradient.stops[2].color, Color::cmyk(0.5, 0.0, 0.0, 0.0));
+}
+
+#[test]
 fn round_trips_overridden_parent_items() {
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
     let lid = d.default_layer();
@@ -1098,6 +1177,35 @@ fn imports_and_round_trips_explicit_cell_border_overrides() {
     assert_eq!(roundtrip.cell(0, 0).unwrap().border_overrides, cell.border_overrides);
     assert_eq!(roundtrip.cell(0, 0).unwrap().strokes, cell.strokes);
     assert_eq!(roundtrip.cell(0, 1).unwrap().border_overrides, [false; 4]);
+}
+
+#[test]
+fn explicitly_hidden_cell_edges_hide_the_default_table_border() {
+    // No table border or table style is given, and every cell edge is explicitly hidden (issue #1623):
+    // the first cell by weight 0, the second by the None swatch.
+    let cell = |name: &str, attr: &str, value: &str| {
+        format!(
+            r#"<Cell Name="{name}" LeftEdge{attr}="{value}" RightEdge{attr}="{value}" TopEdge{attr}="{value}" BottomEdge{attr}="{value}">
+    <ParagraphStyleRange><CharacterStyleRange><Content>X</Content></CharacterStyleRange></ParagraphStyleRange></Cell>"#
+        )
+    };
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1"><ParagraphStyleRange><CharacterStyleRange>
+<Table HeaderRowCount="0" FooterRowCount="0">
+  <Row Name="0" MinimumHeight="24"/>
+  <Column Name="0" SingleColumnWidth="60"/><Column Name="1" SingleColumnWidth="60"/>
+  {}{}
+</Table></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#,
+        cell("0:0", "StrokeWeight", "0"),
+        cell("1:0", "StrokeColor", "Swatch/None")
+    );
+    let d = import_idml(&fixture_with_story(&story)).unwrap();
+    d.check().unwrap();
+    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    for c in 0..2 {
+        assert_eq!(table.cell(0, c).unwrap().border_overrides, [true; 4], "cell {c} suppresses the table border");
+    }
 }
 
 #[test]
@@ -1325,6 +1433,7 @@ fn anchored_objects_take_unset_settings_from_object_styles() {
         object_point,
         ref_point: 6,
         keep_within_column,
+        spine_relative: false,
     };
     let positions: Vec<_> = s.objects.iter().map(|o| o.position.clone()).collect();
     assert_eq!(
@@ -1335,6 +1444,44 @@ fn anchored_objects_take_unset_settings_from_object_styles() {
             custom(R::PageMargin, R::Anchor, -2.0, 0.0, 8, false),
         ]
     );
+}
+
+/// Relative to Spine comes from the object style chain like the other anchored settings, an
+/// item's own setting wins, and export writes it back.
+#[test]
+fn anchored_spine_relative_comes_from_object_styles_and_round_trips() {
+    use designcraft_doc::AnchorPosition;
+    let styles = STYLES.replace(
+        r#"<ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]"/>"#,
+        r#"<ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]"/>
+        <ObjectStyle Self="ObjectStyle/Side" Name="Side"><AnchoredObjectSetting SpineRelative="true"/></ObjectStyle>
+        <ObjectStyle Self="ObjectStyle/Note" Name="Note"><Properties><BasedOn type="object">ObjectStyle/Side</BasedOn></Properties></ObjectStyle>"#,
+    );
+    let rect = |style: &str, setting: &str| {
+        format!(
+            r#"<Rectangle Self="r{style}" AppliedObjectStyle="ObjectStyle/{style}" ItemTransform="1 0 0 1 0 0">
+              <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+                <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+              </PathPointArray></GeometryPathType></PathGeometry></Properties>
+              <AnchoredObjectSetting AnchoredPosition="Anchored" {setting}/>
+            </Rectangle>"#
+        )
+    };
+    let story = format!(
+        r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+          <ParagraphStyleRange><CharacterStyleRange><Content>a</Content>{}{}{}</CharacterStyleRange></ParagraphStyleRange>
+        </Story></idPkg:Story>"#,
+        rect("Note", ""),
+        rect("Note", r#"SpineRelative="false""#),
+        rect("$ID/[None]", ""),
+    );
+    let spine = |d: &Document| -> Vec<bool> {
+        let s = d.stories.values().find(|s| !s.objects.is_empty()).unwrap();
+        s.objects.iter().map(|o| matches!(o.position, AnchorPosition::Custom { spine_relative: true, .. })).collect()
+    };
+    let d = import_idml(&fixture_with_table_styles(&styles, &story)).unwrap();
+    assert_eq!(spine(&d), [true, false, false]);
+    assert_eq!(spine(&import_idml(&export_idml(&d)).unwrap()), [true, false, false]);
 }
 
 /// IDML measures a left-aligned anchored object's X offset leftwards; the document model and
@@ -4367,4 +4514,200 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     assert_eq!(t2.cell(0, 1).unwrap().first_baseline, FirstBaseline::Leading);
     let s2 = back.styles.cell.iter().find(|c| c.name == "Cap").unwrap();
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
+}
+
+/// A graphic placed in a table cell is written into the cell, not dropped.
+#[test]
+fn exports_graphic_in_table_cell() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Intro", ParaFormat::default()).unwrap();
+    let asset = designcraft_doc::AssetId(d.alloc());
+    let id = d.add_asset(designcraft_doc::Asset {
+        id: asset,
+        name: "tick.png".into(),
+        mime: "image/png".into(),
+        data: std::sync::Arc::new(vec![1, 2, 3]),
+        ..Default::default()
+    });
+    let mut t = designcraft_doc::Table::new(d.alloc(), 2, 2, 0, 0, 200.0);
+    t.cell_mut(1, 0).unwrap().graphic = Some(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: id,
+        size: (24.0, 24.0),
+        xf: designcraft_geom::Affine::IDENTITY,
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.story_mut(sid).unwrap().insert_table(5, t);
+    let story = zip_text(&export_idml(&d), "Stories/");
+    let cell = story.split("<Cell ").nth(3).unwrap_or_default();
+    let cell = cell.split("</Cell>").next().unwrap_or_default();
+    assert!(cell.contains("<Image "), "{story}");
+    assert!(cell.contains("ClipContentToCell=\"true\""), "{story}");
+}
+
+/// Non-finite numbers in colour values, page bounds and item transforms (NaN, infinities and
+/// values like 1e300 that overflow `f32`) never reach the model: JSON would write them as null.
+#[test]
+fn non_finite_number_lists_never_reach_the_model() {
+    let graphic = GRAPHIC.replace(r#"ColorValue="255 0 0""#, r#"ColorValue="NaN 1e300 inf""#);
+    let spread = SPREAD
+        .replace(r#"Self="p2" AppliedMaster="m1" GeometricBounds="0 0 700 500""#, r#"Self="p2" AppliedMaster="m1" GeometricBounds="0 0 NaN 500""#)
+        .replace(r#"ItemTransform="1 0 0 1 50 -300""#, r#"ItemTransform="1 0 0 1 inf -300""#);
+    let bytes = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", &graphic),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", &spread),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let doc = import_idml(&bytes).unwrap();
+    for s in &doc.swatches {
+        if let SwatchValue::Color { color, .. } | SwatchValue::Paper { color } = &s.value {
+            let parts: Vec<f32> = match *color {
+                Color::Rgb { r, g, b } => vec![r, g, b],
+                Color::Cmyk { c, m, y, k } => vec![c, m, y, k],
+                Color::Gray { k } => vec![k],
+            };
+            assert!(parts.iter().all(|v| v.is_finite()), "swatch {} is not finite: {color:?}", s.name);
+        }
+    }
+    for sp in doc.spreads.iter().chain(&doc.parents) {
+        for p in &sp.pages {
+            assert!(p.width.is_finite() && p.height.is_finite() && p.x.is_finite(), "page {p:?}");
+        }
+    }
+    assert_eq!(doc.non_finite_item(), None);
+}
+
+/// Cell Options › Text › Rotation: the angle survives the round trip, and the import says it is
+/// not composed — narrow header columns of vertical labels come in horizontal and wrap mid-word,
+/// and nothing said so (#1468).
+#[test]
+fn rotated_cell_text_round_trips_and_the_import_says_it_is_not_composed() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(7, 1, 3, 0, 0, 300.0);
+    t.cell_mut(0, 0).unwrap().rotation = 90.0;
+    t.cell_mut(0, 1).unwrap().rotation = 270.0;
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let bytes = export_idml(&d);
+    let story = zip_text(&bytes, "Stories/");
+    assert!(story.contains(r#"RotationAngle="90""#) && story.contains(r#"RotationAngle="270""#), "{story}");
+
+    let back = import_idml_report(&bytes, &|_| None).unwrap();
+    let t = back.document.stories.values().find(|st| !st.tables.is_empty()).unwrap().tables.values().next().unwrap().clone();
+    assert_eq!((t.cell(0, 0).unwrap().rotation, t.cell(0, 1).unwrap().rotation, t.cell(0, 2).unwrap().rotation), (90.0, 270.0, 0.0));
+    let about: Vec<&String> = back.warnings.iter().filter(|w| w.contains("rotated text")).collect();
+    assert_eq!(about.len(), 1, "one line for the file, not one per cell: {:?}", back.warnings);
+    assert!(about[0].starts_with("2 table cell(s)"), "{}", about[0]);
+    assert!(about[0].contains("composed horizontally"), "{}", about[0]);
+
+    // A file with no rotated cell says nothing.
+    let mut plain = Document::new(&NewDocument::default());
+    let (_, sid) =
+        plain.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), plain.default_layer(), "", ParaFormat::default()).unwrap();
+    plain.story_mut(sid).unwrap().insert_table(0, designcraft_doc::Table::new(8, 1, 2, 0, 0, 200.0));
+    let quiet = import_idml_report(&export_idml(&plain), &|_| None).unwrap();
+    assert!(quiet.warnings.iter().all(|w| !w.contains("rotated text")), "{:?}", quiet.warnings);
+}
+
+#[test]
+fn style_names_with_a_literal_colon_survive_a_round_trip() {
+    use designcraft_doc::styles::{CellStyle, CharacterStyle, ObjectStyle, ParagraphStyle, TableStyle};
+    let names = ["Title: Big", "Group/Child: X", "Back\\slash: \\:"];
+    let mut d = small_doc();
+    for n in names {
+        let st = d.styles_mut();
+        st.paragraph.push(ParagraphStyle {
+            name: n.into(),
+            based_on: None,
+            next_style: None,
+            para: Default::default(),
+            chars: Default::default(),
+            shortcut: String::new(),
+        });
+        st.character.push(CharacterStyle { name: n.into(), based_on: None, chars: Default::default(), shortcut: String::new() });
+        st.cell.push(CellStyle { name: n.into(), ..Default::default() });
+        st.table.push(TableStyle { name: n.into(), ..Default::default() });
+        st.object.push(ObjectStyle { name: n.into(), ..Default::default() });
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for n in names {
+        assert!(
+            back.styles.paragraph.iter().any(|s| s.name == n),
+            "paragraph {n:?}: {:?}",
+            back.styles.paragraph.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(back.styles.character.iter().any(|s| s.name == n), "character {n:?}");
+        assert!(back.styles.cell.iter().any(|s| s.name == n), "cell {n:?}");
+        assert!(back.styles.table.iter().any(|s| s.name == n), "table {n:?}");
+        assert!(back.styles.object.iter().any(|s| s.name == n), "object {n:?}");
+    }
+    // A group is still written as an IDML `:` group path.
+    assert_eq!(names::style_name_out(names::PARA_BUILTINS, "Group/Child"), "Group:Child");
+    for n in names {
+        assert_eq!(names::style_name_in(names::PARA_BUILTINS, &names::style_name_out(names::PARA_BUILTINS, n)), n);
+    }
+}
+
+/// Split Document (EPUB only) comes from the style, or from its EPUB export tag map, and is
+/// written back on the style.
+#[test]
+fn split_document_round_trips() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12" SplitDocument="false"/>
+    <ParagraphStyle Self="ParagraphStyle/Part" Name="Part" SplitDocument="true"/>
+    <ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter" SplitDocument="false">
+      <StyleExportTagMap Self="uaStyleExportTagMapnEPUB" ExportType="EPUB" ExportTag="h1" ExportClass="" ExportAttributes="" SplitDocument="true" EmitCss="true"/>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Body" Name="Body" SplitDocument="false"/>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(xml), &|_| None).unwrap();
+    let split = |d: &designcraft_doc::Document, name: &str| d.styles.export_tag(name, false).is_some_and(|t| t.split);
+    assert!(split(&d, "Part") && split(&d, "Chapter") && !split(&d, "Body"));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert!(split(&back, "Part") && split(&back, "Chapter") && !split(&back, "Body"));
+}
+
+/// EPUB Export Options › Split Document: off, one style (built in or not) or the styles' export
+/// tags, read from the file's `EPubExportPreference` and written back.
+#[test]
+fn epub_split_document_round_trips() {
+    use designcraft_doc::EpubSplit;
+    let styles =
+        STYLES.replace("</RootParagraphStyleGroup>", r#"<ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter"/></RootParagraphStyleGroup>"#);
+    assert!(styles.contains("ParagraphStyle/Chapter"), "the fixture has a paragraph style group");
+    for (attrs, want) in [
+        (r#"BreakDocument="false" ParagraphStyleName="ParagraphStyle/Chapter""#, EpubSplit::Off),
+        (r#"BreakDocument="true" ParagraphStyleName="ParagraphStyle/Chapter""#, EpubSplit::Style("Chapter".into())),
+        (r#"BreakDocument="true" ParagraphStyleName="ParagraphStyle/Text%3aBody""#, EpubSplit::Style("Text/Body".into())),
+        (r#"BreakDocument="true" ParagraphStyleName="$ID/NormalParagraphStyle""#, EpubSplit::Style(designcraft_doc::BASIC_PARAGRAPH.into())),
+        (r#"BreakDocument="true" ParagraphStyleName="""#, EpubSplit::ExportTags),
+        (r#"BreakDocument="true" ParagraphStyleName="ParagraphStyle/Missing""#, EpubSplit::Off),
+    ] {
+        let prefs = PREFS.replace("</idPkg:Preferences>", &format!("<EPubExportPreference {attrs}/></idPkg:Preferences>"));
+        let file = zip_files(&[
+            ("designmap.xml", DESIGNMAP),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", &styles),
+            ("Resources/Preferences.xml", &prefs),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", SPREAD),
+            ("Stories/Story_s1.xml", STORY),
+        ]);
+        let d = import_idml_with(&file, &|_| None).unwrap();
+        assert_eq!(d.settings.epub_split, want, "{attrs}");
+        assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.epub_split, want, "{attrs}");
+    }
 }

@@ -20,8 +20,6 @@ mod gpu;
 mod gpu_limits;
 mod logging;
 #[cfg(target_os = "macos")]
-mod mac_window;
-#[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
 
@@ -37,7 +35,7 @@ struct App {
     /// Documents and quit requests from Finder, the Dock and Open With.
     #[cfg(target_os = "macos")]
     apple_events: fmv_macos_events::Inbox,
-    /// The window's `movable` flag as last set; see `mac_window`.
+    /// The window's `movable` flag as last set; see `craft_window::title_bar`.
     #[cfg(target_os = "macos")]
     movable: Option<bool>,
     /// Frames begun so far.
@@ -51,39 +49,45 @@ struct App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.startup.enter();
-        if let Some(note) = self.startup.take_notice() {
-            self.app.status(note);
-        }
-        // The third call: two frames went through `ui`, so the first was presented and the driver
-        // survived it (a fault at the first present is what the fallback in `gpu` is for).
-        if self.frames == 2 {
-            self.startup.presented();
-        }
-        self.frames = self.frames.saturating_add(1);
-        if u64::from(self.frames) >= gpu::STARTUP_FRAMES
-            && let Some(device) = self.log_errors_after_startup.take()
-        {
-            gpu_limits::log_uncaptured_errors(&device);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            if self.menu.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
-                self.menu = Some(native_menu::NativeMenu::install(&mut self.app, ctx));
-            }
-            if let Some(m) = &mut self.menu {
-                m.poll(&mut self.app, ctx);
-            }
-            // Noted for a start again after a graphics failure, which reopens them (`gpu::restart`).
-            self.startup.opening(apple_events::poll(&self.apple_events, &mut self.app, ctx));
-        }
+        // Queue/deadline work only. A hidden `run_logic` tick also reports pass index zero, so
+        // startup counters and native-menu polling must not live here.
         self.app.logic(ctx);
         self.startup.leave();
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.app.raw_input_hook(ctx, raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.startup.enter();
+        // `App::ui` is the only signal that a real layout pass ran. A discarded multipass first
+        // pass reports index 0 once, so these once-per-frame counters/menu polls still run once.
+        if ui.ctx().current_pass_index() == 0 {
+            if let Some(note) = self.startup.take_notice() {
+                self.app.status(note);
+            }
+            // The third UI callback: two frames went through `ui`, so the first was presented and
+            // the driver survived it (a fault at the first present is what `gpu` falls back for).
+            if self.frames == 2 {
+                self.startup.presented();
+            }
+            self.frames = self.frames.saturating_add(1);
+            if u64::from(self.frames) >= gpu::STARTUP_FRAMES
+                && let Some(device) = self.log_errors_after_startup.take()
+            {
+                gpu_limits::log_uncaptured_errors(&device);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                if self.menu.is_none() && std::env::var_os("DESIGNCRAFT_NO_NATIVE_MENU").is_none() {
+                    self.menu = Some(native_menu::NativeMenu::install(&mut self.app, ui.ctx()));
+                }
+                if let Some(m) = &mut self.menu {
+                    m.poll(&mut self.app, ui.ctx());
+                }
+                // Noted for a start again after a graphics failure, which reopens them (`gpu::restart`).
+                self.startup.opening(apple_events::poll(&self.apple_events, &mut self.app, ui.ctx()));
+            }
+        }
         self.app.ui(ui);
         self.startup.leave();
         #[cfg(target_os = "macos")]
@@ -91,7 +95,7 @@ impl eframe::App for App {
             discard_marked_text();
         }
         #[cfg(target_os = "macos")]
-        mac_window::sync_movable(ui.ctx(), &mut self.movable);
+        craft_window::title_bar::sync_movable(ui.ctx(), &mut self.movable);
     }
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
@@ -143,15 +147,48 @@ fn prefs_path() -> Option<std::path::PathBuf> {
     profile::config_dir().map(|b| b.join("ui.json"))
 }
 
+/// Set when `ui.json` could not be read in full and no copy of it could be kept: the file is
+/// then left as it is rather than overwritten.
+static KEEP_UI_PREFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Copy an unreadable (or partly unreadable) `ui.json` beside it, as `ui.unreadable.json` or the
+/// first free `ui.unreadable-N.json`, before the next save replaces it. A newer DesignCraft may
+/// have written it.
+fn keep_unreadable_prefs(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    for n in 1..100u32 {
+        let name = if n == 1 { "ui.unreadable.json".to_string() } else { format!("ui.unreadable-{n}.json") };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path.with_file_name(name)) {
+            Ok(mut file) => {
+                if file.write_all(bytes).is_ok() {
+                    return;
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => break,
+        }
+    }
+    KEEP_UI_PREFS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn load_prefs(app: &mut DesignApp) {
     if no_prefs() {
         return;
     }
     if let Some(p) = prefs_path()
         && let Ok(bytes) = std::fs::read(&p)
-        && let Ok(ui) = designcraft_ui_egui::UiState::from_preferences_json(&bytes)
     {
-        app.ui = ui;
+        match designcraft_ui_egui::UiState::read_preferences(&bytes) {
+            Ok(read) => {
+                app.ui = read.ui;
+                if !read.intact {
+                    keep_unreadable_prefs(&p, &bytes);
+                }
+            }
+            Err(_) => keep_unreadable_prefs(&p, &bytes),
+        }
+        app.sync_keymap();
     }
     // Engine preferences (Preferences dialog, favourites…) live beside the UI state.
     if let Some(p) = prefs_path().map(|p| p.with_file_name("prefs.json"))
@@ -168,7 +205,9 @@ fn save_prefs(app: &DesignApp) {
     }
     if let Some(p) = prefs_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new(".")));
-        if let Ok(bytes) = serde_json::to_vec_pretty(&app.ui) {
+        if !KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(bytes) = serde_json::to_vec_pretty(&app.ui)
+        {
             let _ = std::fs::write(&p, bytes);
         }
         if let Ok(bytes) = serde_json::to_vec_pretty(&app.session.prefs) {
@@ -187,6 +226,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
@@ -256,7 +296,7 @@ const ALL_FILES: &str = if cfg!(target_os = "macos") { "public.data" } else { "*
 /// The extension of the file name a save dialog suggests (`Brochure.designcraft`), if it has one.
 /// The dialog filters on it, so the macOS and Windows dialogs add it to a name typed without it.
 fn suggested_extension(name: &str) -> Option<&str> {
-    std::path::Path::new(name).extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty() && !e.contains(char::is_whitespace))
+    std::path::Path::new(name).extension().and_then(std::ffi::OsStr::to_str).filter(|e| !e.is_empty() && !e.contains(char::is_whitespace))
 }
 
 /// The file a save dialog's answer writes: `picked` with the suggested extension added when it has
@@ -277,12 +317,27 @@ fn picked_save_path(picked: std::path::PathBuf, ext: Option<&str>) -> std::path:
     s.into()
 }
 
+/// The folder a save dialog starts in and the name it suggests. A suggestion with a folder in
+/// front (the document's, or the last one used) starts there while that folder still exists;
+/// otherwise the system picks, as it did before.
+fn save_dialog_start(suggested: &str) -> (Option<std::path::PathBuf>, String) {
+    let path = std::path::Path::new(suggested);
+    let name = path.file_name().map_or_else(|| suggested.to_string(), |n| n.to_string_lossy().to_string());
+    let folder = path.parent().filter(|f| !f.as_os_str().is_empty() && f.is_dir()).map(std::path::Path::to_path_buf);
+    (folder, name)
+}
+
 /// The save dialog: the suggested name's extension as its filter, and the extension added to a
 /// name typed without it. Adding it names another file than the one the dialog checked, so
 /// replacing an existing one asks again.
-fn pick_save(name: &str) -> Option<String> {
+fn pick_save(suggested: &str) -> Option<String> {
+    let (folder, name) = save_dialog_start(suggested);
+    let name = name.as_str();
     let ext = suggested_extension(name);
     let mut dialog = rfd::FileDialog::new().set_file_name(name);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
     if let Some(ext) = ext {
         dialog = dialog.add_filter(ext.to_ascii_uppercase(), &[ext]);
     }
@@ -345,6 +400,11 @@ fn control_port_from(source: &str, value: Option<String>) -> Option<u16> {
 }
 
 fn main() -> std::process::ExitCode {
+    // Windows: the update helper is a copy of this program started with `--finish-update`.
+    #[cfg(windows)]
+    if let Some(result) = craft_update::self_update::finish(&craft_update::suite::DESIGNCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        std::process::exit(i32::from(result.is_err()));
+    }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Session) is captured; see `logging`.
     let logger = logging::install();
@@ -392,6 +452,9 @@ fn main() -> std::process::ExitCode {
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false),
+        // DesignCraft's own FontDb supplies script-specific system fallbacks; egui's system-font
+        // provider would put its discovery ahead of that order and change line metrics.
+        system_font_fallback: false,
         ..Default::default()
     };
     options.viewport = options.viewport.with_app_id(APP_ID);
@@ -497,6 +560,7 @@ fn main() -> std::process::ExitCode {
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
+                app.set_startup_update_check(true);
                 if let Some(line) = restarted.or_else(|| created.status_line()) {
                     app.status(line);
                 }
@@ -558,6 +622,22 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn an_unreadable_ui_json_is_kept_beside_it() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("designcraft-ui-prefs-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("ui.json");
+        super::keep_unreadable_prefs(&path, b"{\"docking\": {\"root\": {\"FutureLayout\": {}}}}");
+        super::keep_unreadable_prefs(&path, b"not json");
+        let first = std::fs::read(dir.join("ui.unreadable.json")).unwrap();
+        let second = std::fs::read(dir.join("ui.unreadable-2.json")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(first.starts_with(b"{\"docking\""), "the first copy is not replaced");
+        assert_eq!(second, b"not json");
+        assert!(!super::KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed), "ui.json can be saved once a copy is kept");
+    }
+
+    #[test]
     fn relink_open_dialog_lists_graphics() {
         let filters = super::open_filters("relink");
         let exts: Vec<&str> = filters.iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
@@ -605,6 +685,17 @@ mod tests {
         assert_eq!(save("/d/Brochure", "Untitled.pdf"), PathBuf::from("/d/Brochure.pdf"));
         assert_eq!(save("/d/Brochure.txt", "Untitled.rtf"), PathBuf::from("/d/Brochure.txt"), "another export format is kept");
         assert_eq!(save("/d/Package", "Untitled 1.2 Folder"), PathBuf::from("/d/Package"), "a folder has no extension");
+    }
+
+    /// #1653: the save dialog opens in the folder the suggestion names, unless it is gone.
+    #[test]
+    fn save_dialog_starts_in_the_suggested_folder_while_it_exists() {
+        let folder = std::env::temp_dir();
+        let suggested = folder.join("Brochure.pdf");
+        assert_eq!(super::save_dialog_start(&suggested.to_string_lossy()), (Some(folder.clone()), "Brochure.pdf".to_string()));
+        let gone = folder.join(format!("designcraft-gone-{}", std::process::id())).join("Brochure.pdf");
+        assert_eq!(super::save_dialog_start(&gone.to_string_lossy()), (None, "Brochure.pdf".to_string()), "a folder deleted since: the system's own");
+        assert_eq!(super::save_dialog_start("Untitled 1.2 Folder"), (None, "Untitled 1.2 Folder".to_string()), "a bare name: the system's own");
     }
 }
 

@@ -166,7 +166,7 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 /// the file opens from the file manager. A path without a file name is left for the write to fail.
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
-    let ext = p.extension().and_then(|e| e.to_str());
+    let ext = p.extension().and_then(std::ffi::OsStr::to_str);
     if p.file_name().is_none() || ext.is_some_and(|e| e.eq_ignore_ascii_case(designcraft_format::EXTENSION)) {
         return path.to_string();
     }
@@ -231,11 +231,24 @@ fn new_document_settings(s: &Session, p: &Value) -> Result<NewDocument> {
     Ok(nd)
 }
 
+/// A document as `file.new` makes it. Its Basic Paragraph doesn't hyphenate capitalized words, a
+/// paragraph's last word or across a column. Opened and imported files keep their own values,
+/// which is why `ParaProps` keeps the IDML defaults (on).
+fn new_document(nd: &NewDocument) -> Document {
+    let mut d = Document::new(nd);
+    if let Some(st) = Arc::make_mut(&mut d.styles).para_mut(designcraft_doc::BASIC_PARAGRAPH) {
+        st.para.hyph_capitalized = Some(false);
+        st.para.hyph_last_word = Some(false);
+        st.para.hyph_across_column = Some(false);
+    }
+    d
+}
+
 fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     let mut nd = new_document_settings(s, p)?;
     s.untitled += 1;
     nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
-    let d = Document::new(&nd);
+    let d = new_document(&nd);
     let i = s.add_document(DocState::new(d, None));
     Ok(json!({"index": i}))
 }
@@ -259,7 +272,7 @@ impl Session {
             self.untitled += 1;
         }
         nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| self.next_untitled_title());
-        let st = DocState::new(Document::new(&nd), None);
+        let st = DocState::new(new_document(&nd), None);
         let uid = st.uid;
         match replace.and_then(|i| self.docs.get_mut(i).map(|d| (i, d))) {
             Some((i, d)) => {
@@ -469,7 +482,7 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
-        let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+        let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
         let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
         if designcraft_idml::is_idml(&bytes) || (!native && (super::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return super::interchange::open_idml(s, p);
@@ -685,7 +698,11 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
-    let spread = super::spread_param(p, "file.place")?;
+    // `"spread": null` counts as omitted, like the other placement parameters.
+    let spread = match p.get("spread") {
+        Some(Value::Null) => designcraft_doc::SpreadRef::Doc(0),
+        _ => super::spread_param(p, "file.place")?,
+    };
     let lid = s.doc()?.active_layer;
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
@@ -712,6 +729,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let xf = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
             validate_placement((bw, bh), r, xf, "file.place")?;
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (bw, bh),
                 xf,
@@ -738,6 +756,7 @@ fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
                 it.effects = e.clone();
             }
             it.content = Content::Graphic(Graphic {
+                layer_options: None,
                 asset: aid,
                 size: (bw, bh),
                 xf,
@@ -902,6 +921,7 @@ fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     validate_placement((nw, nh), frame_rect, xf, "place.drop")?;
     let r = s.edit(|d, sel| {
         let graphic = Content::Graphic(Graphic {
+            layer_options: None,
             asset: aid,
             size: (nw, nh),
             xf,
@@ -2124,5 +2144,37 @@ mod recent_tests {
         assert_eq!(back.recent_files_max, 20);
         let old: crate::Prefs = serde_json::from_slice(br#"{"recoveryMinutes": 2.0}"#).unwrap();
         assert!(old.recent_files.is_empty(), "older prefs.json without the list still load");
+    }
+}
+
+#[cfg(test)]
+mod hyphenation_default_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::BASIC_PARAGRAPH;
+    use designcraft_doc::build::NewDocument;
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn hyph_flags(d: &designcraft_doc::Document) -> (bool, bool, bool) {
+        let (pp, _) = d.styles.resolve_para(&designcraft_doc::ParaFormat::default());
+        (pp.hyph_capitalized, pp.hyph_last_word, pp.hyph_across_column)
+    }
+
+    #[test]
+    fn new_documents_hyphenate_no_capitalized_last_or_column_end_words_and_imports_keep_theirs() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert_eq!(hyph_flags(&s.doc().unwrap().doc), (false, false, false));
+
+        let mut d = designcraft_doc::Document::new(&NewDocument::default());
+        let st = Arc::make_mut(&mut d.styles).para_mut(BASIC_PARAGRAPH).unwrap();
+        st.para.hyph_capitalized = Some(true);
+        st.para.hyph_last_word = Some(true);
+        st.para.hyph_across_column = Some(true);
+        let b64 = super::base64_encode(&designcraft_idml::export_idml(&d));
+        s.execute("file.openIdml", &json!({"base64": b64, "name": "in.idml"})).unwrap();
+        assert_eq!(hyph_flags(&s.doc().unwrap().doc), (true, true, true));
     }
 }

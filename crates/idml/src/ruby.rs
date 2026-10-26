@@ -98,11 +98,45 @@ pub(crate) fn read(e: &El, a: &mut CharAttrs, mut swatch: impl FnMut(&str) -> St
     a.ruby_overprint_stroke = overprint("RubyOverprintStroke");
 }
 
+/// Ruby parent-text options (OpenType Pro, auto tate-chu-yoko, overhang, spacing, scaling).
+fn write_parent_options(el: &mut El, a: &CharAttrs) {
+    let b = |v: bool| if v { "true" } else { "false" };
+    if let Some(v) = a.ruby_open_type_pro {
+        el.set("RubyOpenTypePro", b(v));
+    }
+    if let Some(v) = a.ruby_auto_tcy_digits {
+        el.set("RubyAutoTcyDigits", v);
+    }
+    if let Some(v) = a.ruby_auto_tcy_include_roman {
+        el.set("RubyAutoTcyIncludeRoman", b(v));
+    }
+    if let Some(v) = a.ruby_auto_tcy_auto_scale {
+        el.set("RubyAutoTcyAutoScale", b(v));
+    }
+    if let Some(v) = a.ruby_overhang {
+        el.set("RubyOverhang", b(v));
+    }
+    if let Some(v) = a.ruby_overhang_amount.and_then(|v| name(OVERHANGS, v)) {
+        el.set("RubyParentOverhangAmount", v);
+    }
+    if let Some(v) = a.ruby_parent_spacing.and_then(|v| name(SPACINGS, v)) {
+        el.set("RubyParentSpacing", v);
+    }
+    if let Some(v) = a.ruby_auto_align {
+        el.set("RubyAutoAlign", b(v));
+    }
+    if let Some(v) = a.ruby_auto_scaling {
+        el.set("RubyAutoScaling", b(v));
+    }
+    if let Some(v) = a.ruby_scaling_min {
+        el.set("RubyParentScalingPercent", num(v * 100.0));
+    }
+}
+
 /// Write the ruby settings set in `a`: attributes on `el`, fonts and colours as `props`. `sw`
 /// maps a swatch name to its IDML reference. Returns the ruby font (family, style) to list in
 /// the fonts part.
 pub(crate) fn write(el: &mut El, props: &mut Vec<El>, a: &CharAttrs, sw: impl Fn(&str) -> String) -> Option<(String, String)> {
-    let b = |v: bool| if v { "true" } else { "false" };
     let prop = |k: &str, ty: &str, v: String| El::new(k).attr("type", ty).text(v);
     if let Some(v) = a.ruby_type.and_then(|v| name(TYPES, v)) {
         el.set("RubyType", v);
@@ -134,36 +168,7 @@ pub(crate) fn write(el: &mut El, props: &mut Vec<El>, a: &CharAttrs, sw: impl Fn
     if let Some(v) = a.ruby_y_scale {
         el.set("RubyYScale", num(v * 100.0));
     }
-    if let Some(v) = a.ruby_open_type_pro {
-        el.set("RubyOpenTypePro", b(v));
-    }
-    if let Some(v) = a.ruby_auto_tcy_digits {
-        el.set("RubyAutoTcyDigits", v);
-    }
-    if let Some(v) = a.ruby_auto_tcy_include_roman {
-        el.set("RubyAutoTcyIncludeRoman", b(v));
-    }
-    if let Some(v) = a.ruby_auto_tcy_auto_scale {
-        el.set("RubyAutoTcyAutoScale", b(v));
-    }
-    if let Some(v) = a.ruby_overhang {
-        el.set("RubyOverhang", b(v));
-    }
-    if let Some(v) = a.ruby_overhang_amount.and_then(|v| name(OVERHANGS, v)) {
-        el.set("RubyParentOverhangAmount", v);
-    }
-    if let Some(v) = a.ruby_parent_spacing.and_then(|v| name(SPACINGS, v)) {
-        el.set("RubyParentSpacing", v);
-    }
-    if let Some(v) = a.ruby_auto_align {
-        el.set("RubyAutoAlign", b(v));
-    }
-    if let Some(v) = a.ruby_auto_scaling {
-        el.set("RubyAutoScaling", b(v));
-    }
-    if let Some(v) = a.ruby_scaling_min {
-        el.set("RubyParentScalingPercent", num(v * 100.0));
-    }
+    write_parent_options(el, a);
     for (k, c) in [("RubyFill", &a.ruby_fill), ("RubyStroke", &a.ruby_stroke)] {
         if let Some(c) = c {
             props.push(if c.is_empty() { prop(k, "string", TEXT_COLOR.into()) } else { prop(k, "object", sw(c.as_str())) });

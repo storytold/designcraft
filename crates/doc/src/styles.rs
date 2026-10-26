@@ -113,6 +113,10 @@ pub struct ExportTag {
     pub tag: String,
     /// CSS class (empty = from the style name).
     pub class: String,
+    /// Split Document (EPUB only): an EPUB content file starts before each paragraph of the
+    /// style, when the document's EPUB split is based on export tags (`EpubSplit::ExportTags`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub split: bool,
 }
 
 impl Styles {

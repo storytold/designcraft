@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::panels;
 use crate::theme::{Tokens, semibold};
-use crate::widgets::{caption, measure, number};
+use crate::widgets::{NumField, caption, measure};
 use crate::{DesignApp, icons};
 
 /// Height of the application bar (InDesign 2026), then a 7 pt lower band and a 1 pt border. The
@@ -31,7 +31,7 @@ const MAC_LIGHTS_LEFT: f32 = 10.0;
 pub const MAC_CONTENT_LEFT: f32 = MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT + (MAC_APP_BAR - MAC_LIGHT) / 2.0;
 
 fn search_id() -> egui::Id {
-    egui::Id::new("app_bar_search")
+    egui::Id::unique("app_bar_search")
 }
 
 /// Whether the application bar's search field had the keyboard last frame. Escape takes egui's
@@ -94,7 +94,7 @@ fn search_field(app: &mut DesignApp, ui: &mut egui::Ui) {
                 .text_color(t.text)
                 .hint_text(hint)
                 .desired_width(field.width())
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 // Return runs the highlighted match instead of leaving the field.
                 .return_key(None),
         )
@@ -180,6 +180,7 @@ fn tools_slot_width(available: f32, tools_w: f32) -> f32 {
     (available - 1.0).max(tools_w)
 }
 
+/// Lay out the application bar, native/custom title handling, menu and tool scrolling, drag region, caption controls and search.
 pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let mac = app.integrated_titlebar;
@@ -204,7 +205,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     egui::pos2(full.min.x - f32::from(left), full.min.y),
                     egui::pos2(full.max.x + 10.0, full.min.y + MAC_APP_BAR),
                 );
-                crate::title_bar::empty_area(ui, band);
+                let _ = craft_window::title_bar::empty_area(ui, band);
             }
             let mut menus_end = full.min.x;
             let mut tools_start = full.max.x;
@@ -219,12 +220,12 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     egui::pos2(full.min.x - left as f32, full.min.y),
                     egui::pos2(full.max.x - caption_w, full.min.y + bar + APP_BAR_BAND),
                 );
-                let response = ui.interact(drag, egui::Id::new("window_title_drag"), Sense::click_and_drag());
+                let response = ui.interact(drag, egui::Id::unique("window_title_drag"), Sense::click_and_drag());
                 // Only from an empty part of the bar: the lower band, or the gap between the menus
                 // and the tools (as they were last frame). A menu title pressed and dragged doesn't
                 // move the window, as with native title bars.
-                let (gap0, gap1) =
-                    ui.data(|d| (d.get_temp::<f32>(egui::Id::new("app_bar_menus_end")), d.get_temp::<f32>(egui::Id::new("app_bar_tools_start"))));
+                let (gap0, gap1) = ui
+                    .data(|d| (d.get_temp::<f32>(egui::Id::unique("app_bar_menus_end")), d.get_temp::<f32>(egui::Id::unique("app_bar_tools_start"))));
                 let empty = |p: egui::Pos2| p.y >= full.min.y + bar || matches!((gap0, gap1), (Some(a), Some(b)) if p.x >= a && p.x <= b);
                 let from_empty = ui.input(|i| i.pointer.press_origin().or(i.pointer.interact_pos())).is_some_and(empty);
                 if response.double_clicked() && from_empty {
@@ -245,7 +246,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.scope_builder(egui::UiBuilder::new().max_rect(scrolled), |ui| {
                 // The right-hand controls' width, measured last frame: in a window too narrow for them
                 // and the menus they follow the menus, and the bar scrolls sideways.
-                let tools_w_id = ui.id().with("tools_width");
+                let tools_w_id = ui.scope_id().with("tools_width");
                 let tools_w: f32 = ui.data(|d| d.get_temp(tools_w_id)).unwrap_or(0.0);
                 crate::widgets::overflow_scrolling(ui);
                 // (Drag-scrolling is touch-only by default, so a mouse drag on the bar moves the window.)
@@ -264,7 +265,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                         }
                         menus_end = ui.min_rect().max.x;
                         // Where the menus end on screen (moves as a narrow bar scrolls).
-                        ui.data_mut(|d| d.insert_temp(egui::Id::new("app_bar_menus_end"), menus_end));
+                        ui.data_mut(|d| d.insert_temp(egui::Id::unique("app_bar_menus_end"), menus_end));
                         let size = vec2(tools_slot_width(ui.available_width(), tools_w), ui.available_height());
                         let tools = ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(4.0);
@@ -331,7 +332,7 @@ pub fn app_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 let _ = app.run("help.discord", json!({}));
                             }
                             tools_start = ui.min_rect().min.x;
-                            ui.data_mut(|d| d.insert_temp(egui::Id::new("app_bar_tools_start"), tools_start));
+                            ui.data_mut(|d| d.insert_temp(egui::Id::unique("app_bar_tools_start"), tools_start));
                             ui.min_rect().width()
                         });
                         if (tools.inner - tools_w).abs() > 0.5 {
@@ -373,8 +374,8 @@ fn caption_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         [("window.close", "Close"), ("window.maximize", if maximized { "Restore" } else { "Maximize" }), ("window.minimize", "Minimize")]
     {
         let (rect, _) = ui.allocate_exact_size(vec2(CAPTION_BUTTON_W, APP_BAR), Sense::hover());
-        let response = ui.interact(rect, egui::Id::new(command), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+        let response = ui.interact(rect, egui::Id::unique(command), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
         let hovered = response.hovered();
         if hovered {
             ui.painter().rect_filled(rect, 0.0, if command == "window.close" { t.caption_close } else { t.hover });
@@ -430,7 +431,7 @@ pub(crate) fn resize_borders(app: &mut DesignApp, ui: &mut egui::Ui) {
         ("west", rect(r.left(), r.top() + corner, r.left() + edge, r.bottom() - corner), egui::CursorIcon::ResizeHorizontal),
         ("east", rect(r.right() - edge, r.top() + corner, r.right(), r.bottom() - corner), egui::CursorIcon::ResizeHorizontal),
     ] {
-        let response = ui.interact(region, egui::Id::new(("window_resize", name)), Sense::drag()).on_hover_cursor(cursor);
+        let response = ui.interact(region, egui::Id::unique(("window_resize", name)), Sense::drag()).on_hover_cursor(cursor);
         if response.drag_started_by(egui::PointerButton::Primary) {
             let _ = app.run("window.resize", json!({"edge": name}));
             app.flush_window_commands(ui.ctx());
@@ -477,6 +478,32 @@ pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
 }
 
+/// Page-size preset menu and the portrait / landscape toggles of the Control panel.
+fn page_preset_and_orientation(app: &mut DesignApp, ui: &mut egui::Ui, lang: &str, size: (f64, f64), n: usize, anchor: u8) {
+    let landscape = size.0 > size.1;
+    ui.vertical(|ui| {
+        let cur = panels::properties::preset_name(size.0, size.1);
+        egui::ComboBox::from_id_salt("ctl_page_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur))).width(130.0).show_ui(
+            ui,
+            |ui| {
+                for (name, w, h) in panels::properties::PAGE_PRESETS {
+                    if ui.selectable_label(cur == *name, crate::rtl::widget(ui, crate::i18n::tr(lang, name))).clicked() {
+                        let (w, h) = if landscape { (h, w) } else { (w, h) };
+                        let _ = app.run("layout.pageSize", json!({"pages": [n], "width": w, "height": h, "anchor": anchor}));
+                    }
+                }
+            },
+        );
+        ui.horizontal(|ui| {
+            for (icon, tip, want) in [("orient-portrait", "Portrait", false), ("orient-landscape", "Landscape", true)] {
+                if crate::widgets::icon_toggle(ui, icon, landscape == want, crate::i18n::tr(lang, tip)).clicked() && landscape != want {
+                    let _ = app.run("layout.pageSize", json!({"pages": [n], "width": size.1, "height": size.0, "anchor": anchor}));
+                }
+            }
+        });
+    });
+}
+
 /// The Control panel with the Page tool, as InDesign's: reference point, X/Y, W/H, page-size
 /// preset, orientation, Liquid Page Rule and Show Parent Page Overlay, for
 /// the page the Page tool selected (else the page in view). W/H keep the reference point in place.
@@ -518,28 +545,7 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     vsep(ui);
     // Page-size preset and orientation.
-    let landscape = pg.width > pg.height;
-    ui.vertical(|ui| {
-        let cur = panels::properties::preset_name(pg.width, pg.height);
-        egui::ComboBox::from_id_salt("ctl_page_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, cur))).width(130.0).show_ui(
-            ui,
-            |ui| {
-                for (name, w, h) in panels::properties::PAGE_PRESETS {
-                    if ui.selectable_label(cur == *name, crate::rtl::widget(ui, crate::i18n::tr(&lang, name))).clicked() {
-                        let (w, h) = if landscape { (h, w) } else { (w, h) };
-                        let _ = app.run("layout.pageSize", json!({"pages": [n], "width": w, "height": h, "anchor": anchor}));
-                    }
-                }
-            },
-        );
-        ui.horizontal(|ui| {
-            for (icon, tip, want) in [("orient-portrait", "Portrait", false), ("orient-landscape", "Landscape", true)] {
-                if crate::widgets::icon_toggle(ui, icon, landscape == want, crate::i18n::tr(&lang, tip)).clicked() && landscape != want {
-                    let _ = app.run("layout.pageSize", json!({"pages": [n], "width": pg.height, "height": pg.width, "anchor": anchor}));
-                }
-            }
-        });
-    });
+    page_preset_and_orientation(app, ui, &lang, (pg.width, pg.height), n, anchor);
     vsep(ui);
     ui.vertical(|ui| {
         caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
@@ -564,20 +570,106 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The Control panel's font sizes (and leadings), as InDesign lists them.
+const SIZES: &[f64] = &[6.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
+/// The Control panel's tracking values (1/1000 em).
+const TRACKING: &[f64] = &[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0, 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 200.0];
+
+/// Whether the text Control panel shows Paragraph Formatting Controls (¶) rather than Character
+/// Formatting Controls (A).
+const PARA_MODE: &str = "ctl_text_para_mode";
+
+/// An icon and a field after it, as the Control panel lays its fields out.
+pub(crate) fn icon_field(ui: &mut egui::Ui, icon: &str, tip: &str, field: NumField) -> Option<f64> {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+    icons::paint(ui.painter(), r, icon, t.icon);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, tip));
+    let label = resp.id;
+    resp.on_hover_text(tip);
+    field.spinner().labelled_by(label).show(ui)
+}
+
+/// A column of two rows (the Control panel's two-row groups).
+fn rows(ui: &mut egui::Ui, mut row: impl FnMut(&mut egui::Ui, usize)) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.horizontal(|ui| row(ui, 0));
+        ui.horizontal(|ui| row(ui, 1));
+    });
+}
+
+/// A small toggle button showing `text` (the case and position buttons).
+fn text_toggle(ui: &mut egui::Ui, text: &str, strike: bool, on: bool, tip: &str) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 20.0), Sense::click());
+    if on {
+        ui.painter().rect_filled(r, 2.0, t.tool_active);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(r, 2.0, t.hover);
+    }
+    let col = if on { t.text_strong } else { t.icon };
+    if text == "small-caps" {
+        crate::icons::paint(ui.painter(), r, "small-caps", col);
+    } else {
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(13.0), col);
+    }
+    if strike {
+        ui.painter().line_segment([r.center() + vec2(-6.0, 0.5), r.center() + vec2(6.0, 0.5)], Stroke::new(1.2, col));
+    }
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, tip));
+    resp.on_hover_text(tip).clicked()
+}
+
+/// The text Control panel, as InDesign's: A shows the Character Formatting Controls (font, size
+/// and leading, the case and position buttons, kerning and tracking, the scales, baseline shift
+/// and skew, the character style and language); ¶ the Paragraph Formatting Controls (alignment,
+/// the indents, space before and after, the drop cap, the paragraph style, Hyphenate and Align to
+/// Baseline Grid).
 fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let attrs = panels::text_attrs(app);
     let chars = attrs.as_ref().map(|a| a["chars"].clone()).unwrap_or_default();
     let para = attrs.as_ref().map(|a| a["para"].clone()).unwrap_or_default();
+    let mode_id = egui::Id::unique(PARA_MODE);
+    let para_mode = ui.data(|d| d.get_temp::<bool>(mode_id)).unwrap_or(false);
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("A").font(semibold(15.0)).color(t.text_strong));
-        });
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("¶").font(semibold(15.0)).color(t.text_dim));
-        });
+        ui.spacing_mut().item_spacing.y = 3.0;
+        for (para, text, tip) in [(false, "A", "Character Formatting Controls"), (true, "¶", "Paragraph Formatting Controls")] {
+            let on = para_mode == para;
+            let (r, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+            if on {
+                ui.painter().rect_filled(r, 2.0, t.tool_active);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, t.hover);
+            }
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, semibold(15.0), if on { t.text_strong } else { t.text_dim });
+            let tip = tr(tip);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &tip));
+            if resp.on_hover_text(&tip).clicked() {
+                ui.data_mut(|d| d.insert_temp(mode_id, para));
+            }
+        }
     });
     vsep(ui);
+    if para_mode {
+        control_paragraph(app, ui, &attrs, &para, &tr);
+    } else {
+        control_character(app, ui, &attrs, &chars, &para, &tr);
+    }
+}
+
+/// Draw the character-mode controls and issue their corresponding text commands.
+fn control_character(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    chars: &serde_json::Value,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+) {
     ui.vertical(|ui| {
         let fam = chars["fontFamily"].as_str().unwrap_or("").to_string();
         let sty = chars["fontStyle"].as_str().unwrap_or("").to_string();
@@ -585,82 +677,384 @@ fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
         panels::font_style_picker(app, ui, &fam, &sty, 170.0);
     });
     vsep(ui);
-    egui::Grid::new("ctl_char").num_columns(4).spacing(vec2(4.0, 3.0)).show(ui, |ui| {
-        caption(ui, "𝐓");
-        if let Some(v) = number(ui, "csize", chars["size"].as_f64(), " pt", 54.0, 2) {
-            let _ = app.run("type.char", json!({"attrs": {"size": v}}));
+    // Size and leading: a spinner on the left and a list of common values on the right;
+    // automatic leading in parentheses.
+    rows(ui, |ui, row| {
+        if row == 0 {
+            if let Some(v) = icon_field(
+                ui,
+                "font-size",
+                &tr("Font Size"),
+                NumField::number("csize", chars["size"].as_f64(), " pt", 2).width(84.0).presets(SIZES).range(0.1, 1296.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"size": v}}));
+            }
+        } else {
+            let auto = chars["leading"]["kind"].as_str() != Some("points");
+            let lead = if auto {
+                chars["size"].as_f64().map(|s| s * para["autoLeading"].as_f64().unwrap_or(1.2))
+            } else {
+                chars["leading"]["value"].as_f64()
+            };
+            let lead = lead.map(|v| (v * 100.0).round() / 100.0);
+            let key = if auto { "cleadauto" } else { "clead" };
+            if let Some(v) = icon_field(
+                ui,
+                "leading",
+                &tr("Leading"),
+                NumField::number(key, lead, " pt", 2).width(84.0).presets(SIZES).range(0.0, 5000.0).parens(auto),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
+            }
         }
-        caption(ui, crate::i18n::tr(&app.ui.language, "VA"));
-        if let Some(v) = number(ui, "ctrack", chars["tracking"].as_f64(), "", 48.0, 0) {
-            let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
+    });
+    vsep(ui);
+    // All Caps, Superscript, Underline / Small Caps, Subscript, Strikethrough.
+    let caps = chars["capitalization"].as_str().unwrap_or("normal").to_string();
+    let pos = chars["position"].as_str().unwrap_or("normal").to_string();
+    let (ul, st) = (chars["underline"].as_bool().unwrap_or(false), chars["strikethrough"].as_bool().unwrap_or(false));
+    let mut set = None;
+    rows(ui, |ui, row| {
+        if row == 0 {
+            if text_toggle(ui, "TT", false, caps == "allCaps", &tr("All Caps")) {
+                set = Some(json!({"capitalization": if caps == "allCaps" { "normal" } else { "allCaps" }}));
+            }
+            if text_toggle(ui, "T¹", false, pos == "superscript", &tr("Superscript")) {
+                set = Some(json!({"position": if pos == "superscript" { "normal" } else { "superscript" }}));
+            }
+            if text_toggle(ui, "T̲", false, ul, &tr("Underline")) {
+                set = Some(json!({"underline": !ul}));
+            }
+        } else {
+            if text_toggle(ui, "small-caps", false, caps == "smallCaps", &tr("Small Caps")) {
+                set = Some(json!({"capitalization": if caps == "smallCaps" { "normal" } else { "smallCaps" }}));
+            }
+            if text_toggle(ui, "T₁", false, pos == "subscript", &tr("Subscript")) {
+                set = Some(json!({"position": if pos == "subscript" { "normal" } else { "subscript" }}));
+            }
+            if text_toggle(ui, "T", true, st, &tr("Strikethrough")) {
+                set = Some(json!({"strikethrough": !st}));
+            }
         }
-        ui.end_row();
-        caption(ui, "Ā");
-        let lead = match chars["leading"]["kind"].as_str() {
-            Some("points") => chars["leading"]["value"].as_f64(),
-            _ => chars["size"].as_f64().map(|s| s * para["autoLeading"].as_f64().unwrap_or(1.2)),
-        };
-        if let Some(v) = number(ui, "clead", lead, " pt", 54.0, 2) {
-            let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
+    });
+    if let Some(a) = set {
+        let _ = app.run("type.char", json!({"attrs": a}));
+    }
+    vsep(ui);
+    rows(ui, |ui, row| {
+        if row == 0 {
+            let t = Tokens::get(ui.ctx());
+            let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+            icons::paint(ui.painter(), r, "kerning", t.icon);
+            resp.on_hover_text(tr("Kerning"));
+            crate::panels::properties::kerning_control(app, ui, "ckern", &chars["kerning"], 92.0);
+        } else {
+            if let Some(v) = icon_field(
+                ui,
+                "tracking",
+                &tr("Tracking"),
+                NumField::number("ctrack", chars["tracking"].as_f64(), "", 0).width(92.0).presets(TRACKING).step(5.0).range(-1000.0, 10000.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"tracking": v}}));
+            }
         }
-        caption(ui, crate::i18n::tr(&app.ui.language, "IT"));
-        if let Some(v) = number(ui, "chs", chars["hScale"].as_f64().map(|v| v * 100.0), "%", 48.0, 0) {
-            let _ = app.run("type.char", json!({"attrs": {"hScale": v / 100.0}}));
+    });
+    vsep(ui);
+    const SCALES: &[f64] = &[25.0, 50.0, 75.0, 80.0, 90.0, 100.0, 110.0, 120.0, 125.0, 150.0, 200.0];
+    let pct = |v: &serde_json::Value| v.as_f64().map(|s| (s * 1000.0).round() / 10.0);
+    rows(ui, |ui, row| {
+        if row == 0 {
+            if let Some(v) = icon_field(
+                ui,
+                "vscale",
+                &tr("Vertical Scale"),
+                NumField::number("cvs", pct(&chars["vScale"]), "%", 1).width(84.0).presets(SCALES).range(1.0, 1000.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"vScale": v / 100.0}}));
+            }
+        } else {
+            if let Some(v) = icon_field(
+                ui,
+                "hscale",
+                &tr("Horizontal Scale"),
+                NumField::number("chs", pct(&chars["hScale"]), "%", 1).width(84.0).presets(SCALES).range(1.0, 1000.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"hScale": v / 100.0}}));
+            }
         }
-        ui.end_row();
+    });
+    vsep(ui);
+    rows(ui, |ui, row| {
+        if row == 0 {
+            if let Some(v) = icon_field(
+                ui,
+                "baseline-shift",
+                &tr("Baseline Shift"),
+                NumField::number("cbs", chars["baselineShift"].as_f64(), " pt", 2).width(76.0).range(-5000.0, 5000.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
+            }
+        } else {
+            if let Some(v) = icon_field(
+                ui,
+                "skew",
+                &tr("Skew (False Italic)"),
+                NumField::number("csk", chars["skew"].as_f64(), "°", 1).width(76.0).range(-85.0, 85.0),
+            ) {
+                let _ = app.run("type.char", json!({"attrs": {"skew": v}}));
+            }
+        }
     });
     vsep(ui);
     ui.vertical(|ui| {
-        let cur: Align = serde_json::from_value(para["align"].clone()).unwrap_or_default();
-        ui.horizontal(|ui| {
-            for (a, icon) in [(Align::Left, "align-left"), (Align::Center, "align-center"), (Align::Right, "align-right")] {
-                if icons::button(ui, icon, 20.0, cur == a, a.label()).clicked() {
-                    let _ = app.run("type.para", json!({"attrs": {"align": a}}));
+        ui.spacing_mut().item_spacing.y = 3.0;
+        // The character style, then the language.
+        let cs = attrs.as_ref().and_then(|a| a["characterStyle"].as_str()).unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_string();
+        let names: Vec<String> = app.session.active().map(|d| d.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+        let mut pick = None;
+        egui::ComboBox::from_id_salt("ctl_char_style")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &cs)))
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for n in &names {
+                    if ui.selectable_label(*n == cs, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
+                        pick = Some(n.clone());
+                    }
                 }
-            }
-        });
-        ui.horizontal(|ui| {
-            for (a, icon) in [(Align::LeftJustified, "align-justify"), (Align::FullyJustified, "align-justify-all")] {
-                if icons::button(ui, icon, 20.0, cur == a, a.label()).clicked() {
-                    let _ = app.run("type.para", json!({"attrs": {"align": a}}));
-                }
-            }
+            });
+        if let Some(n) = pick {
+            let _ = app.run("style.character.apply", json!({"name": n}));
+        }
+        let lang = chars["language"].as_str().unwrap_or("English: USA").to_string();
+        egui::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| crate::panels::properties::language_menu(app, ui, &lang));
         });
     });
+}
+
+fn control_paragraph(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+) {
+    let cur: Align = serde_json::from_value(para["align"].clone()).unwrap_or_default();
+    if let Some(a) = align_buttons(ui, cur, tr) {
+        let _ = app.run("type.para", json!({"attrs": {"align": a}}));
+    }
     vsep(ui);
     let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    egui::Grid::new("ctl_para").num_columns(4).spacing(vec2(4.0, 3.0)).show(ui, |ui| {
-        caption(ui, "→|");
-        if let Some(v) = measure(ui, "cli", para["leftIndent"].as_f64(), units, 54.0) {
-            let _ = app.run("type.para", json!({"attrs": {"leftIndent": v}}));
+    if let Some((k, v)) = indent_space_fields(ui, para, units, tr) {
+        let _ = app.run("type.para", json!({"attrs": {k: v}}));
+    }
+    if let Some((k, v)) = drop_cap_fields(ui, para, tr) {
+        let _ = app.run("type.para", json!({"attrs": {k: v.max(0.0) as u64}}));
+    }
+    vsep(ui);
+    // Bulleted List over Numbered List, as InDesign's (a list with the default hanging indent, or,
+    // pressed, none). Pressed when every selected paragraph has it, as Type › Apply Bullets shows.
+    use designcraft_doc::ListType;
+    let pressed = [ListType::Bullets, ListType::Numbers].map(|k| app.session.selection_has_list(k));
+    let mut list = None;
+    rows(ui, |ui, row| {
+        let (icon, cmd, tip) = if row == 0 { ("bullets", "list.bullets", "Bulleted List") } else { ("numbering", "list.numbers", "Numbered List") };
+        let on = pressed.get(row).copied().unwrap_or(false);
+        if crate::widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() {
+            list = Some((cmd, !on));
         }
-        caption(ui, "↑¶");
-        if let Some(v) = measure(ui, "csb", para["spaceBefore"].as_f64(), units, 54.0) {
-            let _ = app.run("type.para", json!({"attrs": {"spaceBefore": v}}));
-        }
-        ui.end_row();
-        caption(ui, "→¶");
-        if let Some(v) = measure(ui, "cfi", para["firstLineIndent"].as_f64(), units, 54.0) {
-            let _ = app.run("type.para", json!({"attrs": {"firstLineIndent": v}}));
-        }
-        caption(ui, "↓¶");
-        if let Some(v) = measure(ui, "csa", para["spaceAfter"].as_f64(), units, 54.0) {
-            let _ = app.run("type.para", json!({"attrs": {"spaceAfter": v}}));
-        }
-        ui.end_row();
     });
+    if let Some((cmd, on)) = list {
+        let _ = app.run(cmd, json!({"on": on}));
+    }
+    vsep(ui);
+    let (shade, dialog) = shading_buttons(app, ui, para, tr);
+    if let Some(attrs) = shade {
+        let _ = app.run("type.para", json!({ "attrs": attrs }));
+    }
+    if let Some(tab) = dialog {
+        let _ = app.run("app.paragraphBordersDialog", json!({ "tab": tab }));
+    }
     vsep(ui);
     ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
         let ps = attrs.as_ref().and_then(|a| a["paragraphStyle"].as_str()).unwrap_or("").to_string();
         let ov = attrs.as_ref().and_then(|a| a["paraOverrides"].as_u64()).unwrap_or(0)
             + attrs.as_ref().and_then(|a| a["charOverrides"].as_u64()).unwrap_or(0);
         panels::para_style_picker(app, ui, &ps, ov > 0, 170.0);
-        let hy = para["hyphenate"].as_bool().unwrap_or(true);
-        let mut h = hy;
-        if ui.checkbox(&mut h, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Hyphenate"))).changed() {
-            let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
+        ui.horizontal(|ui| {
+            let mut h = para["hyphenate"].as_bool().unwrap_or(true);
+            if crate::widgets::checkbox(ui, &mut h, &tr("Hyphenate")).changed() {
+                let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
+            }
+            // First Line Only is aligned too: the button shows it pressed, and a click turns alignment off.
+            let grid = matches!(para["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));
+            if crate::widgets::icon_toggle(ui, "grid-baseline", grid, &tr("Align to Baseline Grid")).clicked() {
+                let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "none" } else { "allLines" }}}));
+            }
+        });
+    });
+}
+
+/// The paragraph alignment buttons, in two rows: the alignment picked this frame, if any.
+fn align_buttons(ui: &mut egui::Ui, cur: Align, tr: &dyn Fn(&str) -> String) -> Option<Align> {
+    let mut align = None;
+    rows(ui, |ui, row| {
+        if row == 0 {
+            for (a, icon) in [
+                (Align::Left, "palign-left"),
+                (Align::Center, "palign-center"),
+                (Align::Right, "palign-right"),
+                (Align::TowardsSpine, "palign-spine-towards"),
+            ] {
+                if icons::button(ui, icon, 20.0, cur == a, &tr(a.label())).clicked() {
+                    align = Some(a);
+                }
+            }
+        } else {
+            for (a, icon) in [
+                (Align::LeftJustified, "palign-justify-left"),
+                (Align::CenterJustified, "palign-justify-center"),
+                (Align::RightJustified, "palign-justify-right"),
+                (Align::FullyJustified, "palign-justify-all"),
+                (Align::AwayFromSpine, "palign-spine-away"),
+            ] {
+                if icons::button(ui, icon, 20.0, cur == a, &tr(a.label())).clicked() {
+                    align = Some(a);
+                }
+            }
         }
     });
+    align
+}
+
+/// The indents and space before and after, two per column. Returns the one field changed this
+/// frame, with its paragraph attribute and value.
+fn indent_space_fields(ui: &mut egui::Ui, para: &serde_json::Value, units: Unit, tr: &dyn Fn(&str) -> String) -> Option<(&'static str, f64)> {
+    let mut set = None;
+    for ((ia, ta, ka), (ib, tb, kb)) in [
+        (("indent-left", "Left Indent", "leftIndent"), ("indent-first", "First Line Left Indent", "firstLineIndent")),
+        (("indent-right", "Right Indent", "rightIndent"), ("indent-last", "Last Line Right Indent", "lastLineIndent")),
+        (("space-before", "Space Before", "spaceBefore"), ("space-after", "Space After", "spaceAfter")),
+    ] {
+        rows(ui, |ui, row| {
+            if row == 0 {
+                if let Some(v) = icon_field(ui, ia, &tr(ta), NumField::measure(ka, para[ka].as_f64(), units).width(84.0).range(0.0, 10_000.0)) {
+                    set = Some((ka, v));
+                }
+            } else {
+                let min = crate::panels::properties::para_field_min(kb);
+                if let Some(v) = icon_field(ui, ib, &tr(tb), NumField::measure(kb, para[kb].as_f64(), units).width(84.0).range(min, 10_000.0)) {
+                    set = Some((kb, v));
+                }
+            }
+        });
+        vsep(ui);
+    }
+    set
+}
+
+/// The drop cap's line and character counts. Returns the one changed this frame, with its
+/// paragraph attribute and value.
+fn drop_cap_fields(ui: &mut egui::Ui, para: &serde_json::Value, tr: &dyn Fn(&str) -> String) -> Option<(&'static str, f64)> {
+    let mut drop = None;
+    rows(ui, |ui, row| {
+        if row == 0 {
+            let max = designcraft_compose::MAX_DROP_CAP_LINES as f64;
+            if let Some(v) = icon_field(
+                ui,
+                "drop-lines",
+                &tr("Drop Cap Number of Lines"),
+                NumField::number("cdl", para["dropCapLines"].as_f64(), "", 0).width(64.0).range(0.0, max),
+            ) {
+                drop = Some(("dropCapLines", v));
+            }
+        } else {
+            let max = designcraft_compose::MAX_DROP_CAP_CHARS as f64;
+            if let Some(v) = icon_field(
+                ui,
+                "drop-chars",
+                &tr("Drop Cap One or More Characters"),
+                NumField::number("cdc", para["dropCapChars"].as_f64(), "", 0).width(64.0).range(0.0, max),
+            ) {
+                drop = Some(("dropCapChars", v));
+            }
+        }
+    });
+    drop
+}
+
+/// Shading over Border: the on/off checkboxes, the colour swatches and the Paragraph Borders and
+/// Shading buttons. Returns the attributes to set and the dialog tab to open, if any.
+fn shading_buttons(
+    app: &DesignApp,
+    ui: &mut egui::Ui,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+) -> (Option<serde_json::Value>, Option<&'static str>) {
+    // On or off, the Paragraph Borders and Shading dialog on its tab, and the colour, as InDesign's.
+    let doc = app.session.active().map(|d| d.doc.clone());
+    let mut shade = None;
+    let mut dialog = None;
+    // Both checkboxes as wide as the wider label, so the icons and colours line up in columns.
+    let check_w = ["Shading", "Border"]
+        .iter()
+        .map(|l| ui.fonts_mut(|f| f.layout_no_wrap(tr(l), egui::FontId::proportional(11.5), Color32::WHITE).size().x))
+        .fold(0.0, f32::max)
+        + 28.0;
+    rows(ui, |ui, row| {
+        let (on_key, color_key, label, icon, tab) = if row == 0 {
+            ("shadingOn", "shadingColor", "Shading", "para-shading", "shading")
+        } else {
+            ("borderOn", "borderColor", "Border", "para-border", "border")
+        };
+        let mut on = para[on_key].as_bool().unwrap_or(false);
+        ui.allocate_ui_with_layout(vec2(check_w, crate::widgets::FIELD_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(check_w);
+            if crate::widgets::checkbox(ui, &mut on, &tr(label)).changed() {
+                shade = Some(json!({ on_key: on }));
+            }
+        });
+        if crate::widgets::icon_toggle(ui, icon, false, &tr("Paragraph Borders and Shading…")).clicked() {
+            dialog = Some(tab);
+        }
+        if let Some(doc) = &doc {
+            let cur = para[color_key].as_str().unwrap_or("[Black]").to_string();
+            if let Some(w) = swatch_field(ui, doc, &cur, 96.0, &tr(if row == 0 { "Paragraph Shading" } else { "Paragraph Border" })) {
+                shade = Some(json!({ color_key: w }));
+            }
+        }
+    });
+    (shade, dialog)
+}
+
+/// A swatch field of the Control panel (Shading and Border colours): the swatch's chip and name,
+/// and the document's swatches in its menu. Returns the swatch picked.
+pub(crate) fn swatch_field(ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: &str, width: f32, label: &str) -> Option<String> {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(width, crate::widgets::FIELD_H), Sense::click());
+    let resp = resp.on_hover_text(label);
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::ComboBox, true, label);
+        info.current_text_value = Some(cur.to_string());
+        info
+    });
+    let p = ui.painter();
+    p.rect_filled(r, 0.0, if resp.hovered() { t.hover } else { t.input });
+    p.rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    let seg = egui::Rect::from_min_max(egui::pos2(r.max.x - crate::widgets::SEG_W, r.min.y), r.max);
+    p.line_segment([seg.left_top(), seg.left_bottom()], Stroke::new(1.0, t.field_border));
+    icons::paint(p, egui::Rect::from_center_size(seg.center(), vec2(12.0, 12.0)), "chevron-down", t.icon);
+    let (c, g) = crate::widgets::swatch_colors(doc, cur, 1.0);
+    let chip = egui::Rect::from_min_size(egui::pos2(r.min.x + 4.0, r.center().y - 6.0), vec2(12.0, 12.0));
+    crate::widgets::paint_chip(p, chip, c, g);
+    let clip = egui::Rect::from_min_max(r.min, egui::pos2(seg.min.x - 2.0, r.max.y));
+    p.with_clip_rect(clip).text(egui::pos2(chip.max.x + 5.0, r.center().y), egui::Align2::LEFT_CENTER, cur, egui::FontId::proportional(11.5), t.text);
+    let mut picked = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        picked = crate::panels::swatch_list(ui, doc, cur);
+    });
+    picked
 }
 
 /// The widest a document tab grows: a longer name is shortened so its close button and the
@@ -669,6 +1063,7 @@ const DOC_TAB_MAX_W: f32 = 260.0;
 /// Close button and padding around a tab's title.
 const DOC_TAB_PAD: f32 = 44.0;
 
+/// Draw bounded document tabs with active, dirty, preview and zoom state, plus activation and close actions.
 pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
@@ -695,8 +1090,8 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         let elided = galley.elided;
         let w = (galley.size().x + zoom_label.size().x + DOC_TAB_PAD).max(if is_active { 210.0 } else { 150.0 }).min(max_w);
         let r = egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(w, 28.0));
-        let resp = ui.interact(r, ui.id().with(("doctab", i)), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+        let resp = ui.interact(r, ui.scope_id().with(("doctab", i)), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
         let resp = if elided {
             resp.on_hover_ui(|ui| {
                 let _ = crate::rtl::label(ui, title);
@@ -706,8 +1101,8 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         };
         ui.painter().rect_filled(r, 0.0, if is_active { t.panel } else { t.tab_strip });
         let cr = egui::Rect::from_center_size(egui::pos2(r.min.x + 18.0, r.center().y), vec2(14.0, 14.0));
-        let cresp = ui.interact(cr, ui.id().with(("docclose", i)), Sense::click());
-        cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{close_label} {title}")));
+        let cresp = ui.interact(cr, ui.scope_id().with(("docclose", i)), Sense::click());
+        cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{close_label} {title}")));
         ui.painter().text(
             cr.center(),
             egui::Align2::CENTER_CENTER,
@@ -735,10 +1130,9 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Show the Preflight panel. `window.panel` toggles a panel that is already open, so it runs
-/// only when Preflight isn't showing.
+/// Show the Preflight panel. An open Preflight flyout stays: `window.panel` would close it.
 fn show_preflight(app: &mut DesignApp) {
-    if app.ui.open_panel.as_deref() != Some("preflight")
+    if app.ui.docking_flyout.as_deref() != Some("preflight")
         && let Err(e) = app.run("window.panel", json!({"panel": "preflight"}))
     {
         app.status(e);
@@ -852,85 +1246,97 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
             egui::Align::Min
         })),
         |ui| {
-            ui.label(crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Welcome to DesignCraft")).font(semibold(28.0)).color(t.text_strong),
-            ));
-            ui.label(crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page layout for print and screen — fast, open and scriptable."))
-                    .size(15.0)
-                    .color(t.text_dim),
-            ));
-            ui.add_space(24.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::new(crate::rtl::widget(
-                            ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(Color32::WHITE),
-                        ))
-                        .fill(t.accent_strong)
-                        .corner_radius(16.0)
-                        .min_size(vec2(0.0, 32.0)),
-                    )
-                    .clicked()
-                {
-                    let _ = app.run("app.newDocumentDialog", json!({}));
-                }
-                if ui
-                    .add(
-                        egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open  ")).size(14.0)))
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.label(crate::rtl::widget(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Welcome to DesignCraft")).font(semibold(28.0)).color(t.text_strong),
+                ));
+                ui.label(crate::rtl::widget(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page layout for print and screen — fast, open and scriptable."))
+                        .size(15.0)
+                        .color(t.text_dim),
+                ));
+                ui.add_space(24.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(crate::rtl::widget(
+                                ui,
+                                egui::RichText::new(crate::i18n::tr(&app.ui.language, "  New file  ")).size(14.0).color(Color32::WHITE),
+                            ))
+                            .fill(t.accent_strong)
                             .corner_radius(16.0)
                             .min_size(vec2(0.0, 32.0)),
-                    )
-                    .clicked()
-                {
-                    let _ = app.run("app.openDialog", json!({}));
-                }
-                if ui
-                    .add(
-                        egui::Button::new(crate::rtl::widget(
-                            ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open sample magazine  ")).size(14.0),
-                        ))
-                        .corner_radius(16.0)
-                        .min_size(vec2(0.0, 32.0)),
-                    )
-                    .clicked()
-                {
-                    let _ = app.run("file.newSample", json!({}));
-                }
-            });
-            ui.add_space(20.0);
-            community_card(app, ui);
-            recent_files(app, ui);
-            ui.add_space(24.0);
-            ui.label(crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Start a new document")).font(semibold(15.0)).color(t.text_strong),
-            ));
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
-                    let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
-                    let hov = resp.hovered();
-                    ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
-                    let k = (80.0 / p.width.max(p.height)) as f32;
-                    let pr = egui::Rect::from_center_size(cr.center() - vec2(0.0, 14.0), vec2(p.width as f32 * k, p.height as f32 * k));
-                    ui.painter().rect_filled(pr, 0.0, Color32::from_gray(245));
-                    ui.painter().text(egui::pos2(cr.center().x, cr.max.y - 26.0), egui::Align2::CENTER_CENTER, p.name, semibold(12.0), t.text_strong);
-                    ui.painter().text(
-                        egui::pos2(cr.center().x, cr.max.y - 11.0),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{} × {}", designcraft_geom::format_measure(p.width, p.units), designcraft_geom::format_measure(p.height, p.units)),
-                        egui::FontId::proportional(10.0),
-                        t.text_dim,
-                    );
-                    if resp.clicked() {
-                        let _ = app.run("file.new", json!({"preset": p.name}));
+                        )
+                        .clicked()
+                    {
+                        let _ = app.run("app.newDocumentDialog", json!({}));
                     }
-                }
+                    if ui
+                        .add(
+                            egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open  ")).size(14.0)))
+                                .corner_radius(16.0)
+                                .min_size(vec2(0.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        let _ = app.run("app.openDialog", json!({}));
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(crate::rtl::widget(
+                                ui,
+                                egui::RichText::new(crate::i18n::tr(&app.ui.language, "  Open sample magazine  ")).size(14.0),
+                            ))
+                            .corner_radius(16.0)
+                            .min_size(vec2(0.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        let _ = app.run("file.newSample", json!({}));
+                    }
+                });
+                ui.add_space(20.0);
+                community_card(app, ui);
+                recent_files(app, ui);
+                ui.add_space(24.0);
+                ui.label(crate::rtl::widget(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(&app.ui.language, "Start a new document")).font(semibold(15.0)).color(t.text_strong),
+                ));
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
+                        let (cr, resp) = ui.allocate_exact_size(vec2(120.0, 150.0), Sense::click());
+                        let hov = resp.hovered();
+                        ui.painter().rect_filled(cr, 6.0, if hov { t.hover } else { t.panel });
+                        let k = (80.0 / p.width.max(p.height)) as f32;
+                        let pr = egui::Rect::from_center_size(cr.center() - vec2(0.0, 14.0), vec2(p.width as f32 * k, p.height as f32 * k));
+                        ui.painter().rect_filled(pr, 0.0, Color32::from_gray(245));
+                        ui.painter().text(
+                            egui::pos2(cr.center().x, cr.max.y - 26.0),
+                            egui::Align2::CENTER_CENTER,
+                            p.name,
+                            semibold(12.0),
+                            t.text_strong,
+                        );
+                        ui.painter().text(
+                            egui::pos2(cr.center().x, cr.max.y - 11.0),
+                            egui::Align2::CENTER_CENTER,
+                            format!(
+                                "{} × {}",
+                                designcraft_geom::format_measure(p.width, p.units),
+                                designcraft_geom::format_measure(p.height, p.units)
+                            ),
+                            egui::FontId::proportional(10.0),
+                            t.text_dim,
+                        );
+                        if resp.clicked() {
+                            let _ = app.run("file.new", json!({"preset": p.name}));
+                        }
+                    }
+                });
             });
         },
     );
@@ -1017,7 +1423,7 @@ pub(crate) fn recent_file_stat(ctx: &egui::Context, path: &str) -> RecentStat {
 }
 
 fn recent_file_stat_at(ctx: &egui::Context, path: &str, now: f64) -> RecentStat {
-    let key = egui::Id::new(("recent_stat", path));
+    let key = egui::Id::unique(("recent_stat", path));
     if let Some(st) = ctx.data(|d| d.get_temp::<RecentStat>(key))
         && (0.0..RECENT_STAT_MS).contains(&(now - st.checked))
     {
@@ -1032,7 +1438,7 @@ fn recent_file_stat_at(ctx: &egui::Context, path: &str, now: f64) -> RecentStat 
 /// The texture of a recent file's saved first-page picture, decoded once per file version.
 fn recent_preview_texture(ctx: &egui::Context, path: &str, modified: Option<std::time::SystemTime>) -> Option<egui::TextureHandle> {
     type Cached = (Option<std::time::SystemTime>, Option<egui::TextureHandle>);
-    let key = egui::Id::new(("recent_preview", path));
+    let key = egui::Id::unique(("recent_preview", path));
     if let Some((m, tex)) = ctx.data(|d| d.get_temp::<Cached>(key))
         && m == modified
     {
@@ -1060,7 +1466,9 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
             let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
             crate::about::paint_mark(ui, r, crate::about::BRAND);
             ui.add_space(8.0);
-            let text_width = (ui.available_width() - BUTTON.x - 16.0).max(120.0);
+            let label = crate::i18n::tr(&app.ui.language, "Join our Discord");
+            let button = crate::about::discord_button_size(ui.ctx(), label, BUTTON);
+            let text_width = (ui.available_width() - button.x - 16.0).max(120.0);
             ui.vertical(|ui| {
                 ui.set_max_width(text_width);
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
@@ -1090,7 +1498,7 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::about::discord_button(ui, crate::i18n::tr(&app.ui.language, "Join our Discord"), BUTTON) {
+                if crate::about::discord_button(ui, label, BUTTON) {
                     let _ = app.run("help.discord", json!({}));
                 }
             });
@@ -1100,6 +1508,28 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A Control panel field is labelled by its icon, so assistive technology reads "Tracking"
+    /// (or "Font Size", …) with the value.
+    #[test]
+    fn icon_fields_are_labelled_by_their_icon() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        ctx.enable_accesskit();
+        let mut update = None;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                icon_field(ui, "tracking", "Tracking", NumField::number("tracking_test", Some(0.0), "", 0));
+            });
+            out.textures_delta.clear();
+            update = out.platform_output.accesskit_update;
+        }
+        let update = update.expect("an AccessKit tree");
+        let named = |n: &egui::accesskit::Node| n.label() == Some("Tracking") || n.value() == Some("Tracking");
+        let icon = update.nodes.iter().find(|(_, n)| named(n)).map(|(id, _)| *id).expect("the icon's node");
+        assert!(update.nodes.iter().any(|(_, n)| n.role() == Role::TextInput && n.labelled_by().contains(&icon)), "the editor names its icon");
+    }
     use egui::{pos2, vec2};
     use egui_kittest::kittest::{NodeT, Queryable};
 
@@ -1143,7 +1573,7 @@ mod tests {
 
     /// The rect of an object Control panel group.
     fn group(h: &egui_kittest::Harness<'static, test_window::Window>, id: &str) -> egui::Rect {
-        h.ctx.read_response(egui::Id::new(("object_control", id))).unwrap().rect
+        h.ctx.read_response(egui::Id::unique(("object_control", id))).unwrap().rect
     }
 
     /// The rect of the node with this label, preferring the one in the Control bar's row: the
@@ -1155,7 +1585,7 @@ mod tests {
 
     /// The application bar's search field (German interface).
     fn search_node<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Node<'h> {
-        h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Suchen"))
+        h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some(crate::i18n::tr("de", "Search")))
     }
 
     /// A document with two frames, the Selection tool, German menus, and the search field clicked.
@@ -1187,12 +1617,12 @@ mod tests {
     #[test]
     fn the_search_field_finds_and_runs_menu_commands() {
         let mut h = searching();
-        h.event(egui::Event::Text("gruppier".into()));
+        let group = crate::i18n::tr("de", "Group");
+        h.event(egui::Event::Text(group.to_lowercase()));
         h.run_steps(4);
-        assert!(row(&h, "Gruppieren").is_some(), "the German label is listed");
-        assert!(row(&h, "Gruppierung aufheben").is_some());
+        assert!(row(&h, group).is_some(), "the German label is listed");
         // Nothing is selected, so Group is off and Return doesn't run it.
-        assert!(row(&h, "Gruppieren").is_some_and(|n| n.accesskit_node().is_disabled()));
+        assert!(row(&h, group).is_some_and(|n| n.accesskit_node().is_disabled()));
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
         assert_eq!(items(&h), (2, 0), "a disabled command doesn't run");
@@ -1205,7 +1635,7 @@ mod tests {
         h.key_press(egui::Key::Enter);
         h.run_steps(4);
         assert_eq!(items(&h).0, 1, "the two frames are grouped");
-        assert!(row(&h, "Gruppieren").is_none(), "the matches closed");
+        assert!(row(&h, group).is_none(), "the matches closed");
         assert!(!h.ctx.memory(|m| m.has_focus(super::search_id())), "the field gave the keyboard back");
     }
 
@@ -1227,11 +1657,11 @@ mod tests {
         assert_eq!(items(&h), (2, 2), "nothing was deleted or deselected");
         h.event(egui::Event::Text("zz-no-such-command".into()));
         h.run_steps(4);
-        assert!(h.query_by_label("Keine passenden Befehle").is_some());
+        assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_some());
         // Escape closes the matches and clears the field without touching the document.
         h.key_press(egui::Key::Escape);
         h.run_steps(4);
-        assert!(h.query_by_label("Keine passenden Befehle").is_none());
+        assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_none());
         assert!(!h.ctx.text_edit_focused());
         assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
         assert_eq!(items(&h), (2, 2));
@@ -1250,15 +1680,15 @@ mod tests {
         h.run_steps(3);
         h.get_by_label("Preflight Panel…").click();
         h.run_steps(3);
-        // Preflight is not a dock tab: `window.panel` shows it as its own panel.
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
-        h.get_by_label("Preflight");
+        // Preflight is in the iconic column: `window.panel` shows it.
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
+        assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
         // With the panel already showing, the entry keeps it open.
         h.get_by_label("No errors ▾").click();
         h.run_steps(3);
         h.get_by_label("Preflight Panel…").click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     }
 
     /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
@@ -1272,15 +1702,18 @@ mod tests {
         count.click();
         count.click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
-        h.get_by_label("Preflight");
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
+        assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
         assert!(h.query_by_label("Preflight Panel…").is_none(), "the menu isn't left open");
-        // A double-click with the panel already showing keeps it open.
+        // A double-click with the panel already showing keeps it open (the first click closes
+        // its flyout, the double-click opens it again). Past the double-click time, so the
+        // clicks are not counted with the ones before.
+        h.run_steps(30);
         let count = h.get_by_label("No errors ▾");
         count.click();
         count.click();
         h.run_steps(3);
-        assert_eq!(h.state().app.ui.open_panel.as_deref(), Some("preflight"));
+        assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     }
 
     /// A very long document name made its tab grow past the window, hiding the close button
@@ -1289,12 +1722,21 @@ mod tests {
     fn long_document_names_keep_tabs_short_and_close_buttons_visible() {
         let latin = "Quarterly report with a very long file name ".repeat(6);
         let hebrew = "דוח רבעוני עם שם קובץ ארוך מאוד ".repeat(6);
-        let mut app = app();
-        for title in [latin.as_str(), hebrew.as_str(), "Short"] {
-            app.run("file.new", serde_json::json!({ "title": title })).unwrap();
+        // Use the bundled or pinned test face; optional-input builds without either skip
+        // the Hebrew tab explicitly instead of rendering tofu under the strict glyph policy.
+        let hebrew_ok = test_window::install_test_hebrew_face();
+        if !hebrew_ok {
+            eprintln!("skipped the Hebrew tab: set DESIGNCRAFT_TEST_HEBREW_FONT to the pinned NotoSansHebrew.ttf");
         }
+        let mut app = app();
+        app.run("file.new", serde_json::json!({ "title": latin })).unwrap();
+        if hebrew_ok {
+            app.run("file.new", serde_json::json!({ "title": hebrew })).unwrap();
+        }
+        app.run("file.new", serde_json::json!({ "title": "Short" })).unwrap();
         let h = test_window::open(app, vec2(1200.0, 600.0));
-        for title in [latin.as_str(), hebrew.as_str()] {
+        let titles = if hebrew_ok { vec![latin.as_str(), hebrew.as_str()] } else { vec![latin.as_str()] };
+        for title in titles {
             let tab = rect(&h, title);
             assert!(tab.width() <= super::DOC_TAB_MAX_W, "{title:?} tab is {} wide", tab.width());
             let close = rect(&h, &format!("Close {title}"));
@@ -1302,6 +1744,233 @@ mod tests {
         }
         let (first, short) = (rect(&h, &latin), rect(&h, "Short"));
         assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
+    }
+
+    /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size
+    /// has a list of sizes; the instructor picks 72 pt from it. Leading has the same list.
+    #[test]
+    fn the_type_control_panel_lists_font_sizes_and_leadings() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Headline"})).unwrap();
+        app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 8})).unwrap();
+        app.session.set_tool("type");
+        let mut h = test_window::open(app, vec2(1800.0, 700.0));
+        let bar = test_window::panel_rect(&h, "control_bar");
+        let in_bar = |r: &egui::Rect| bar.y_range().contains(r.center().y);
+        let field = |h: &egui_kittest::Harness<'static, test_window::Window>, value: &str| {
+            h.query_all_by_value(value).map(|n| n.rect()).find(in_bar).unwrap_or_else(|| panic!("no {value:?} field in the Control panel"))
+        };
+        let press = |h: &mut egui_kittest::Harness<'static, test_window::Window>, p: egui::Pos2| {
+            h.hover_at(p);
+            h.drag_at(p);
+            h.drop_at(p);
+        };
+        let size_of = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+            let st = h.state().app.session.doc().unwrap();
+            let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+            st.doc.story(sid).unwrap().format_after(0).over.size
+        };
+        // The ⌄ segment right of the size field opens the list; choosing 72 pt sets the size.
+        let size = field(&h, "12 pt");
+        let chevron = pos2(size.max.x + 1.0 + crate::widgets::SEG_W / 2.0, size.center().y);
+        press(&mut h, chevron);
+        h.run_steps(3);
+        h.get_by_label("72 pt").click();
+        h.run_steps(3);
+        assert_eq!(size_of(&h), Some(72.0));
+        // Auto leading shows in parentheses, with the same list beside it.
+        let lead = field(&h, "(86.4 pt)");
+        press(&mut h, pos2(lead.max.x + 1.0 + crate::widgets::SEG_W / 2.0, lead.center().y));
+        h.run_steps(3);
+        h.get_by_label("60 pt").click();
+        h.run_steps(3);
+        let st = h.state().app.session.doc().unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(st.doc.story(sid).unwrap().format_after(0).over.leading, Some(designcraft_doc::Leading::Points(60.0)));
+        // The spinner left of the size steps it by a point.
+        let size = field(&h, "72 pt");
+        press(&mut h, pos2(size.min.x - 5.0 - crate::widgets::SEG_W / 2.0, size.min.y + 3.0));
+        h.run_steps(3);
+        assert_eq!(size_of(&h), Some(73.0));
+        // Typing the automatic value itself over "(87.6 pt)" fixes the leading at it.
+        h.state_mut().app.run("type.char", serde_json::json!({"attrs": {"leading": {"kind": "auto"}}})).unwrap();
+        h.run_steps(3);
+        let lead = field(&h, "(87.6 pt)");
+        press(&mut h, lead.center());
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("87.6".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let st = h.state().app.session.doc().unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(st.doc.story(sid).unwrap().format_after(0).over.leading, Some(designcraft_doc::Leading::Points(87.6)));
+        // Escape cancels: the same typing, then Escape, leaves the leading automatic.
+        h.state_mut().app.run("type.char", serde_json::json!({"attrs": {"leading": {"kind": "auto"}}})).unwrap();
+        h.run_steps(3);
+        let auto = h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading;
+        let lead = field(&h, "(87.6 pt)");
+        press(&mut h, lead.center());
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("87.6".into()));
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert_eq!(h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading, auto, "Escape leaves it automatic");
+        // Escape also reverts a different number, in the leading field and in a plain one. (It
+        // leaves the text too, so each try selects it again.)
+        for (shown, typed) in [("(87.6 pt)", "20"), ("73 pt", "50")] {
+            h.state_mut().app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 8})).unwrap();
+            h.state_mut().app.session.set_tool("type");
+            h.run_steps(3);
+            let r = field(&h, shown);
+            press(&mut h, r.center());
+            h.run_steps(2);
+            h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            h.event(egui::Event::Text(typed.into()));
+            h.key_press(egui::Key::Escape);
+            h.run_steps(3);
+        }
+        assert_eq!(h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading, auto, "still automatic");
+        assert_eq!(size_of(&h), Some(73.0), "the size is unchanged");
+    }
+
+    /// The Control panel's ¶ mode on a First Line Only paragraph: Align to Baseline Grid shows
+    /// pressed, and a click turns alignment off instead of making it All Lines.
+    #[test]
+    fn the_control_panel_grid_button_keeps_first_line_only() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Bulbs"})).unwrap();
+        app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        app.run("type.para", serde_json::json!({"attrs": {"gridAlign": "firstLineOnly"}})).unwrap();
+        app.session.set_tool("type");
+        let mut h = test_window::open(app, vec2(2400.0, 700.0));
+        let bar = test_window::panel_rect(&h, "control_bar");
+        let in_bar = move |r: egui::Rect| bar.y_range().contains(r.center().y);
+        let click = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+            let r = h.query_all_by_label(label).map(|n| n.rect()).find(|r| in_bar(*r)).unwrap_or_else(|| panic!("no {label:?} in the Control panel"));
+            h.hover_at(r.center());
+            h.drag_at(r.center());
+            h.drop_at(r.center());
+            h.run_steps(3);
+        };
+        click(&mut h, "Paragraph Formatting Controls");
+        let pressed = h.query_all_by_label("Align to Baseline Grid").find(|n| in_bar(n.rect())).map(|n| n.accesskit_node().toggled());
+        assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)));
+        assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "firstLineOnly");
+        click(&mut h, "Align to Baseline Grid");
+        assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "none");
+    }
+
+    /// The course's chapter 16: the text Control panel has InDesign's two modes. A shows the
+    /// Character Formatting Controls (the case buttons, kerning and tracking, the scales…), ¶ the
+    /// Paragraph Formatting Controls (alignment, indents, spacing, the drop cap…).
+    #[test]
+    fn the_type_control_panel_has_character_and_paragraph_modes() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Bulbs"})).unwrap();
+        app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        app.session.set_tool("type");
+        let mut h = test_window::open(app, vec2(2400.0, 700.0));
+        let bar = test_window::panel_rect(&h, "control_bar");
+        let in_bar = move |r: egui::Rect| bar.y_range().contains(r.center().y);
+        let click = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+            let r = h.query_all_by_label(label).map(|n| n.rect()).find(|r| in_bar(*r)).unwrap_or_else(|| panic!("no {label:?} in the Control panel"));
+            h.hover_at(r.center());
+            h.drag_at(r.center());
+            h.drop_at(r.center());
+            h.run_steps(3);
+        };
+        let has = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| h.query_all_by_label(label).any(|n| in_bar(n.rect()));
+        assert!(has(&h, "Small Caps") && has(&h, "Vertical Scale") && !has(&h, "Drop Cap Number of Lines"));
+        click(&mut h, "Small Caps");
+        click(&mut h, "Paragraph Formatting Controls");
+        assert!(has(&h, "Drop Cap Number of Lines") && has(&h, "Space Before") && !has(&h, "Small Caps"));
+        click(&mut h, "Align to Baseline Grid");
+        click(&mut h, "Align center");
+        let a = crate::panels::text_attrs(&mut h.state_mut().app).unwrap();
+        assert_eq!(a["chars"]["capitalization"], "smallCaps");
+        assert_eq!(a["para"]["gridAlign"], "allLines");
+        assert_eq!(a["para"]["align"], "center");
+        click(&mut h, "Character Formatting Controls");
+        assert!(has(&h, "Small Caps"));
+    }
+
+    /// The course's chapter 21: the ¶ Control panel has InDesign's Bulleted and Numbered List
+    /// buttons (with the default hanging indent), and Shading and Border with their colours and
+    /// the Paragraph Borders and Shading dialog.
+    #[test]
+    fn the_paragraph_control_panel_has_lists_shading_and_border() {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app
+            .run(
+                "frame.create",
+                serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "4 eggs
+1 cup milk"}),
+            )
+            .unwrap();
+        app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+        app.session.set_tool("type");
+        let mut h = test_window::open(app, vec2(2400.0, 700.0));
+        let bar = test_window::panel_rect(&h, "control_bar");
+        let in_bar = move |r: egui::Rect| bar.y_range().contains(r.center().y);
+        let click = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str, nth: usize| {
+            let r = h
+                .query_all_by_label(label)
+                .map(|n| n.rect())
+                .filter(|r| in_bar(*r))
+                .nth(nth)
+                .unwrap_or_else(|| panic!("no {label:?} in the Control panel"));
+            h.hover_at(r.center());
+            h.drag_at(r.center());
+            h.drop_at(r.center());
+            h.run_steps(3);
+        };
+        click(&mut h, "Paragraph Formatting Controls", 0);
+        click(&mut h, "Bulleted List", 0);
+        let a = crate::panels::text_attrs(&mut h.state_mut().app).unwrap();
+        assert_eq!(
+            (a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64(), a["para"]["firstLineIndent"].as_f64()),
+            (Some("bullets"), Some(18.0), Some(-18.0))
+        );
+        click(&mut h, "Numbered List", 0);
+        assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["listType"], "numbers");
+        click(&mut h, "Shading", 0);
+        click(&mut h, "Border", 0);
+        let a = crate::panels::text_attrs(&mut h.state_mut().app).unwrap();
+        assert_eq!((a["para"]["shadingOn"].as_bool(), a["para"]["borderOn"].as_bool()), (Some(true), Some(true)));
+        assert!(h.query_all_by_label("Paragraph Shading").any(|n| in_bar(n.rect())), "the shading colour");
+        // The icon beside Border opens the dialog on its Border tab.
+        click(&mut h, "Paragraph Borders and Shading…", 1);
+        let d = h.state().app.ui.dialog.clone().expect("the dialog");
+        assert_eq!((d.id.as_str(), d.s("section").as_str()), ("paragraphLocal", "border"));
+        // The Last Line Right Indent takes a negative value, as the First Line Left Indent does.
+        h.state_mut().app.ui.dialog = None;
+        h.state_mut().app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+        h.state_mut().app.session.set_tool("type");
+        h.run_steps(3);
+        // The field is labelled by its icon.
+        let at = h
+            .query_all_by_label("Last Line Right Indent")
+            .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::TextInput)
+            .map(|n| n.rect())
+            .find(|r| in_bar(*r))
+            .expect("the last line indent")
+            .center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text("-0p6".into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["lastLineIndent"].as_f64(), Some(-6.0));
     }
 
     #[test]
@@ -1465,7 +2134,7 @@ mod tests {
         let mut movable_at = |at: egui::Pos2| {
             h.hover_at(at);
             h.run_steps(2);
-            crate::title_bar::window_movable(&h.ctx)
+            craft_window::title_bar::window_movable(&h.ctx)
         };
         for at in [pos2(bar.center().x, mid), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0), pos2(bar.center().x, 500.0)] {
             assert!(movable_at(at), "empty title bar or the page at {at:?}");
@@ -1582,7 +2251,7 @@ mod tests {
         }
 
         fn caption_center(&self, id: &str) -> egui::Pos2 {
-            self.ctx.read_response(egui::Id::new(id)).unwrap().rect.center()
+            self.ctx.read_response(egui::Id::unique(id)).unwrap().rect.center()
         }
     }
 
@@ -1606,7 +2275,7 @@ mod tests {
     #[test]
     fn title_area_drags_and_double_clicks_but_menus_do_not_drag() {
         let mut h = WindowHarness::new();
-        let title = h.ctx.read_response(egui::Id::new("window_title_drag")).unwrap().rect;
+        let title = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
         assert!(title.width() > 0.0, "there is a drag region between menus and tools");
         let p = title.center();
         let mut commands = h.press(p);
@@ -1656,8 +2325,8 @@ mod tests {
         h.size = vec2(640.0, 560.0);
         h.frame(vec![]);
         h.frame(vec![]);
-        let rect = |h: &WindowHarness, id: &str| h.ctx.read_response(egui::Id::new(id)).unwrap().rect;
-        let menus_end = |h: &WindowHarness| h.ctx.data(|d| d.get_temp::<f32>(egui::Id::new("app_bar_menus_end"))).unwrap();
+        let rect = |h: &WindowHarness, id: &str| h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
+        let menus_end = |h: &WindowHarness| h.ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("app_bar_menus_end"))).unwrap();
         let (close, menus0) = (rect(&h, "window.close"), menus_end(&h));
         assert!(close.left() >= 0.0 && close.right() <= h.size.x, "{close:?}");
         let p = egui::pos2(200.0, 18.0);
@@ -1668,6 +2337,7 @@ mod tests {
                 delta: vec2(0.0, -3000.0),
                 phase: egui::TouchPhase::Move,
                 modifiers: egui::Modifiers::NONE,
+                source: egui::MouseWheelSource::Unknown,
             },
         ]);
         for _ in 0..10 {
@@ -1686,8 +2356,8 @@ mod tests {
         h.size = vec2(900.0, 560.0);
         h.frame(vec![]);
         h.frame(vec![]);
-        let drag = h.ctx.read_response(egui::Id::new("window_title_drag")).unwrap().rect;
-        let close = h.ctx.read_response(egui::Id::new("window.close")).unwrap().rect;
+        let drag = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
+        let close = h.ctx.read_response(egui::Id::unique("window.close")).unwrap().rect;
         assert!(drag.right() <= close.left() + 0.5, "{drag:?} {close:?}");
         let p = egui::pos2(450.0, APP_BAR + APP_BAR_BAND / 2.0);
         assert!(drag.contains(p), "{drag:?}");
@@ -1703,7 +2373,7 @@ mod tests {
         h.frame(vec![]);
         h.frame(vec![]);
         for id in ["window.minimize", "window.maximize", "window.close"] {
-            let rect = h.ctx.read_response(egui::Id::new(id)).unwrap().rect;
+            let rect = h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
             assert!(rect.left() >= 0.0 && rect.right() <= h.size.x, "{id}: {rect:?}");
             let p = rect.center();
             assert!(!h.click(p).is_empty(), "{id} remains clickable");

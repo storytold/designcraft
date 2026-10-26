@@ -3,7 +3,7 @@
 use designcraft_color::{Color, ColorType, SwatchValue};
 use serde_json::{Map, Value, json};
 
-use super::{Dialog, check, text_field};
+use super::{Dialog, check, text_field_named};
 use crate::DesignApp;
 use crate::i18n::tr;
 
@@ -94,10 +94,15 @@ fn caption(ui: &mut egui::Ui, lang: &str, s: &str) {
     crate::rtl::label(ui, tr(lang, s));
 }
 
+/// Render a labelled, bounded colour-channel spinner, name it for accessibility and write changed values to dialog fields.
 fn channel(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str, max: f64, suffix: &str) {
     ui.label(egui::RichText::new(label).monospace());
     let mut v = d.n(key).unwrap_or(0.0);
-    if ui.add(egui::DragValue::new(&mut v).range(0.0..=max).speed(0.5).max_decimals(1).suffix(suffix)).changed() {
+    let resp = ui.add(egui::DragValue::new(&mut v).range(0.0..=max).speed(0.5).max_decimals(1).suffix(suffix));
+    let changed = resp.changed();
+    // The channel name is a painted label beside a bare spinner: name the spinner too.
+    let _ = resp.accessible_name(label.to_owned());
+    if changed {
         d.fields.insert(key.into(), json!(v));
     }
     ui.end_row();
@@ -112,7 +117,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     egui::Grid::new("swatch_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         caption(ui, lang, "Swatch Name:");
-        ui.add_enabled_ui(!d.b("locked") && !auto, |ui| text_field(ui, d, "swatchName", 220.0));
+        ui.add_enabled_ui(!d.b("locked") && !auto, |ui| text_field_named(ui, d, "swatchName", 220.0, tr(lang, "Swatch Name")));
         ui.end_row();
     });
     if kind == "color" {
@@ -125,7 +130,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 if kind == "color" {
                     caption(ui, lang, "Color Type:");
                     let cur = d.s("colorType");
-                    egui::ComboBox::from_id_salt("swatch_color_type")
+                    let combo = egui::ComboBox::from_id_salt("swatch_color_type")
                         .selected_text(crate::rtl::widget(ui, tr(lang, if cur == "spot" { "Spot" } else { "Process" })))
                         .show_ui(ui, |ui| {
                             for (v, l) in [("process", "Process"), ("spot", "Spot")] {
@@ -134,6 +139,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                                 }
                             }
                         });
+                    let _ = crate::widgets::name_combo(combo, tr(lang, "Color Type"));
                     ui.end_row();
                 }
                 caption(ui, lang, "Color Mode:");
@@ -143,16 +149,20 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     "gray" => "Gray",
                     _ => "CMYK",
                 };
-                egui::ComboBox::from_id_salt("swatch_color_mode").selected_text(crate::rtl::widget(ui, tr(lang, label(&cur)))).show_ui(ui, |ui| {
-                    for m in ["cmyk", "rgb", "gray"] {
-                        if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
-                            && cur != m
-                            && let Some(c) = dialog_color(&d.fields)
-                        {
-                            set_color(&mut d.fields, c, Some(m));
+                let combo = egui::ComboBox::from_id_salt("swatch_color_mode").selected_text(crate::rtl::widget(ui, tr(lang, label(&cur)))).show_ui(
+                    ui,
+                    |ui| {
+                        for m in ["cmyk", "rgb", "gray"] {
+                            if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
+                                && cur != m
+                                && let Some(c) = dialog_color(&d.fields)
+                            {
+                                set_color(&mut d.fields, c, Some(m));
+                            }
                         }
-                    }
-                });
+                    },
+                );
+                let _ = crate::widgets::name_combo(combo, tr(lang, "Color Mode"));
                 ui.end_row();
                 match d.s("mode").as_str() {
                     "rgb" => {
@@ -182,7 +192,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 ui.end_row();
                 caption(ui, lang, "Tint:");
                 let mut v = d.n("tint").unwrap_or(100.0);
-                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%").integer()).changed() {
+                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%").integer()).accessible_name(tr(lang, "Tint")).changed() {
                     d.fields.insert("tint".into(), json!(v));
                 }
                 ui.end_row();
@@ -239,7 +249,7 @@ pub fn open_color_group_options(app: &mut DesignApp, name: &str) -> Result<(), S
 pub fn color_group_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         caption(ui, &app.ui.language, "Name:");
-        text_field(ui, d, "groupName", 220.0);
+        text_field_named(ui, d, "groupName", 220.0, tr(&app.ui.language, "Name"));
     });
     status(ui, d);
 }
@@ -269,11 +279,11 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let named = designcraft_doc::LAYER_COLORS.iter().find(|(_, c)| *c == rgb).map(|(n, _)| *n);
     egui::Grid::new("layer_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         caption(ui, lang, "Name:");
-        text_field(ui, d, "name", 220.0);
+        text_field_named(ui, d, "name", 220.0, tr(lang, "Name"));
         ui.end_row();
         caption(ui, lang, "Color:");
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("layer_color")
+            let combo = egui::ComboBox::from_id_salt("layer_color")
                 .selected_text(crate::rtl::widget(ui, tr(lang, named.unwrap_or("Custom"))))
                 .width(140.0)
                 .show_ui(ui, |ui| {
@@ -287,6 +297,7 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         }
                     }
                 });
+            let _ = crate::widgets::name_combo(combo, tr(lang, "Color"));
             super::color_field(ui, d, "rgb");
         });
         ui.end_row();
@@ -326,7 +337,7 @@ mod tests {
         let mut h = Harness::builder().with_size(vec2(360.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 // The fonts are installed before the first frame that draws.
-                let id = egui::Id::new("test_fonts");
+                let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(id, true));

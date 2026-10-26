@@ -20,7 +20,7 @@ fn dest_text(lang: &str, d: &Value) -> String {
 
 pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let id = egui::Id::new("new_hyperlink_url");
+    let id = egui::Id::unique("new_hyperlink_url");
     let mut url: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| "https://".into());
     let has_target = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| !t.is_caret()) || !d.selection.items.is_empty());
     ui.horizontal(|ui| {
@@ -168,7 +168,7 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
     let has_sel = app.session.active().is_some_and(|d| !d.selection.items.is_empty());
     // Selected text is tagged inline instead of its frame.
     let text_sel = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| !t.range().is_empty());
-    let id = egui::Id::new("new_tag_name");
+    let id = egui::Id::unique("new_tag_name");
     let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.add(
@@ -227,7 +227,7 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     // DTD: load, validate (problems listed until the next validation), delete.
-    let vid = egui::Id::new("dtd_problems");
+    let vid = egui::Id::unique("dtd_problems");
     let mut problems: Option<Vec<String>> = ui.data(|d| d.get_temp(vid));
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load DTD…"))).clicked()
@@ -365,7 +365,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut pick = None;
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "On Release"));
-        egui::ComboBox::from_id_salt("button_action")
+        let combo = egui::ComboBox::from_id_salt("button_action")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, labels.iter().find(|l| l.0 == kind).map_or("", |l| l.1))))
             .show_ui(ui, |ui| {
                 for (k, l) in labels {
@@ -374,6 +374,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 }
             });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "On Release Action"));
     });
     let mut params = None;
     if let Some(k) = pick {
@@ -390,7 +391,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
     }
     if kind == "url" {
-        let key = egui::Id::new(("button_url", id.0));
+        let key = egui::Id::unique(("button_url", id.0));
         let mut u: String = ui.data(|d| d.get_temp(key)).unwrap_or(url.clone());
         let r = ui.add(egui::TextEdit::singleline(&mut u).desired_width(f32::INFINITY));
         if r.lost_focus() && u != url {
@@ -425,7 +426,7 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = ff.as_ref().map(|f| f.kind);
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Form Field"));
-        egui::ComboBox::from_id_salt("form_kind")
+        let combo = egui::ComboBox::from_id_salt("form_kind")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kinds.iter().find(|k| k.0 == cur).map_or("", |k| k.1))))
             .show_ui(ui, |ui| {
                 for (k, l) in kinds {
@@ -437,9 +438,10 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                 }
             });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Form Field Type"));
     });
     if let Some(f) = ff {
-        let key = egui::Id::new(("form_edit", id.0));
+        let key = egui::Id::unique(("form_edit", id.0));
         let (mut name, mut value, mut opts): (String, String, String) =
             ui.data(|d| d.get_temp(key)).unwrap_or((f.name.clone(), f.value.clone(), f.options.join(", ")));
         let mut commit = false;
@@ -537,7 +539,7 @@ pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::widgets::caption(ui, &format!("{} {}", crate::i18n::tr(&lang, "Page:"), d.page_name(page)));
         });
     });
-    egui::ComboBox::from_id_salt("liquid_rule")
+    let combo = egui::ComboBox::from_id_salt("liquid_rule")
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, liquid_rule_label(pg.liquid))))
         .width(190.0)
         .show_ui(ui, |ui| {
@@ -547,6 +549,7 @@ pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
                 }
             }
         });
+    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&lang, "Liquid Page Rule"));
     ui.separator();
     // The selected object (one on this page).
     let item = app
@@ -666,7 +669,7 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     use designcraft_doc::TransitionKind as K;
     crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Spread"), si + 1)).strong());
     let mut kind = cur.map(|c| c.kind);
-    egui::ComboBox::from_id_salt("transition_kind")
+    let combo = egui::ComboBox::from_id_salt("transition_kind")
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kind.map_or("None", K::label))))
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut kind, None, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None")));
@@ -674,6 +677,7 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut kind, Some(k), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, k.label())));
             }
         });
+    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Transition"));
     let mut duration = cur.map_or(1.0, |c| c.duration);
     let mut horizontal = cur.is_some_and(|c| c.horizontal);
     let mut changed = kind != cur.map(|c| c.kind);
@@ -789,7 +793,7 @@ mod liquid_panel_tests {
         let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
         let mut h = Harness::builder().with_size(egui::vec2(260.0, 420.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
-                let key = egui::Id::new("test_fonts");
+                let key = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(key, true));

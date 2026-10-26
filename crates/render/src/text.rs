@@ -156,13 +156,29 @@ fn union(r: Option<Rect>, b: Rect) -> Option<Rect> {
     Some(r.map_or(b, |r| r.union(b)))
 }
 
+/// Add a rule bar, joined onto the previous one when it continues the same stretch.
+fn push_bar(bars: &mut Vec<(String, f32, Rect)>, color: &str, tint: f32, r: Rect) {
+    match bars.last_mut() {
+        Some((c, t, last))
+            if c.as_str() == color
+                && *t == tint
+                && (last.y0 - r.y0).abs() < 1e-6
+                && (last.y1 - r.y1).abs() < 1e-6
+                && (r.x0 - last.x1).abs() < 0.5 =>
+        {
+            last.x1 = last.x1.max(r.x1);
+        }
+        _ => bars.push((color.to_owned(), tint, r)),
+    }
+}
+
 fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> LineGlyphs {
     let mut runs: Vec<(u32, BezPath)> = Vec::new();
     let mut underlines: Vec<(String, f32, Rect)> = Vec::new();
     let mut strikes: Vec<(String, f32, Rect)> = Vec::new();
     let mut glyphs = 0;
     for g in &l.glyphs {
-        if !g.visible {
+        if !g.spans_rules() {
             continue;
         }
         let style = &cs.styles[g.style as usize];
@@ -171,19 +187,12 @@ fn build_line(db: &FontDb, cs: &ComposedStory, l: &Line, vertical: bool) -> Line
                 let r = rule.rect(g.x, g.x + g.adv, designcraft_compose::rule_baseline(style, l, g));
                 // One bar per stretch, as the PDF export draws them: a bar per glyph left
                 // anti-aliased seams between the letters.
-                match bars.last_mut() {
-                    Some((color, tint, last))
-                        if *color == rule.color
-                            && *tint == rule.tint
-                            && (last.y0 - r.y0).abs() < 1e-6
-                            && (last.y1 - r.y1).abs() < 1e-6
-                            && (r.x0 - last.x1).abs() < 0.5 =>
-                    {
-                        last.x1 = last.x1.max(r.x1);
-                    }
-                    _ => bars.push((rule.color.clone(), rule.tint, r)),
-                }
+                push_bar(bars, &rule.color, rule.tint, r);
             }
+        }
+        // A tab carries the rule across its width but draws nothing itself.
+        if !g.visible {
+            continue;
         }
         let outline = db.outline(&g.face, g.gid);
         if outline.elements().is_empty() {
@@ -461,14 +470,16 @@ impl Renderer {
         let doc = f.doc;
         for t in &ft.tables {
             for c in &t.cells {
-                if let Some((sw, tint)) = &c.fill
-                    && let Some(col) = doc.resolve_color(sw, *tint)
-                {
+                if let Some((sw, tint)) = &c.fill {
                     ctx.set_transform(f.view * xf);
-                    ctx.set_paint(color_of(&col, 1.0));
+                    let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
                     // Overlap neighbours by half a device pixel so adjacent fills show no seams.
                     let h = 0.5 * f.px;
-                    ctx.fill_rect(&c.rect.inflate(h, h));
+                    // All cells share the table's gradient space; it must not restart at a cell edge.
+                    if crate::set_fill_paint(ctx, doc, &fill, t.rect) {
+                        ctx.fill_rect(&c.rect.inflate(h, h));
+                    }
+                    ctx.reset_paint_transform();
                 }
             }
             for c in &t.cells {
@@ -723,5 +734,47 @@ mod cache_identity_tests {
         origin.clear();
         drop(cs);
         assert_eq!(glyphs.lines[0].runs, runs);
+    }
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+
+    /// A tab is not drawn, but it is a character with an advance, and InDesign underlines it:
+    /// forms rule their fill-in lines with underlined tabs (`Name ⇥⇥⇥⇥, city ⇥⇥⇥⇥`). The bars
+    /// stopped at the last letter before each tab, so an imported form lost every writing line
+    /// (#1466).
+    #[test]
+    fn an_underline_runs_across_a_tab() {
+        let mut doc = designcraft_doc::Document::new(&Default::default());
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = Some(true);
+        }
+        let layer = doc.default_layer();
+        let (_, sid) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                Rect::new(36.0, 36.0, 400.0, 300.0),
+                layer,
+                "Name\tCity",
+                designcraft_doc::ParaFormat::default(),
+            )
+            .unwrap();
+        let owner = crate::Cache::new();
+        let cs = owner.get(&doc, sid, None);
+        let line = &cs.frames[0].lines[0];
+        let tab = line.glyphs.iter().find(|g| g.rendered_char == '\t').expect("the tab is placed on the line");
+        assert!(!tab.visible, "a tab draws nothing itself");
+        assert!(tab.adv > 1.0, "it advances to its stop: {}", tab.adv);
+
+        let mut cache = GlyphCache::default();
+        cache.tick();
+        let glyphs = cache.get(&cs, &cs.frames[0]);
+        let bars = &glyphs.lines[0].underlines;
+        assert_eq!(bars.len(), 1, "one bar across the line, not one before the tab and one after: {bars:?}");
+        let bar = bars[0].2;
+        assert!(bar.x0 <= tab.x + 0.5, "the bar starts at the text, not at the tab: {bar:?}");
+        assert!(bar.x1 >= tab.x + tab.adv - 0.5, "the bar covers the tab's width: {bar:?}, tab {} + {}", tab.x, tab.adv);
     }
 }

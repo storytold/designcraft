@@ -27,6 +27,7 @@ fn color_theme_tool_requests_a_palette_without_editing_the_image() {
     let mut d = Document::new(&NewDocument::default());
     let id = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
     d.item_mut(id).unwrap().content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (100.0, 100.0),
         xf: designcraft_geom::Affine::IDENTITY,
@@ -191,6 +192,32 @@ fn gradient_tool_drag_sets_the_vector() {
         other => panic!("{other:?}"),
     }
     assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 220.0 + off.x, 153.0 + off.y)), vec![Action::Commit]);
+}
+
+#[test]
+fn gradient_tool_drag_follows_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+    Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let start = l.to_canvas(SpreadRef::Doc(0), Point::new(150.0, 150.0));
+    let mut t = create("gradientSwatch");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    for shift in [false, true] {
+        let ev = PointerEvent::new(PointerKind::Drag, start.x + 100.0, start.y).with_mods(Mods { shift, ..Default::default() });
+        match &t.pointer(&cx, &ev)[0] {
+            Action::Preview(_, p) => {
+                let to: Vec<f64> = p["to"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+                let want = l.delta_to_spread(SpreadRef::Doc(0), Vec2::new(100.0, 0.0));
+                assert!((to[0] - (150.0 + want.x)).abs() < 1e-6 && (to[1] - (150.0 + want.y)).abs() < 1e-6, "{to:?} want {want:?}");
+                assert!((to[0] - 150.0).abs() > 1e-6 || (to[1] - 150.0).abs() > 1e-6);
+                assert!((to[0] - 150.0).abs() < 1e-6, "{to:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -1108,6 +1135,7 @@ fn graphic_frame(doc: &mut Document) -> ItemId {
     let id = ItemId(doc.alloc());
     let mut item = Item::new(id, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
     item.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (200.0, 100.0),
         xf: designcraft_geom::Affine::translate((50.0, 100.0)),
@@ -1502,6 +1530,7 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
     let photo = ItemId(d.alloc());
     let mut it = Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
     it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
         asset: designcraft_doc::AssetId(1),
         size: (100.0, 100.0),
         xf: designcraft_geom::Affine::translate((0.0, 0.0)),
@@ -1855,6 +1884,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
     let raster = {
         let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(area));
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: AssetId(1),
             size: (100.0, 100.0),
             xf: designcraft_geom::Affine::translate((0.0, 0.0)),

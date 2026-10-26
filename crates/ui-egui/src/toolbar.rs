@@ -15,7 +15,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let frame = egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider));
     // A single column that doesn't fit the window's height becomes two, without changing the
     // preference; whatever two columns still can't fit scrolls.
-    let single_h_id = egui::Id::new("tools_single_column_height");
+    let single_h_id = egui::Id::unique("tools_single_column_height");
     let single_h: Option<f32> = ui.data(|d| d.get_temp(single_h_id));
     let viewport_h = ui.available_height() - frame.total_margin().sum().y;
     let crowded = !app.ui.tools_double_column && single_h.is_some_and(|h| h > viewport_h);
@@ -84,7 +84,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 let shown = g.iter().find(|tl| tl.id == current).unwrap_or(&g[0]);
                                 let active = g.iter().any(|tl| tl.id == current);
                                 let name = crate::i18n::tr(&app.ui.language, shown.label);
-                                let tip = match shown.shortcut {
+                                let tip = match crate::menus::tool_shortcut_label(app, shown.id) {
                                     Some(s) => format!("{name} ({s})"),
                                     None => name.to_string(),
                                 };
@@ -101,7 +101,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 }
                                 // The release that ends a hold which opened the flyout isn't a click
                                 // on the tool (egui reports releases within 0.8 s as clicks).
-                                let hold_id = egui::Id::new(("flyout_hold", gi));
+                                let hold_id = egui::Id::unique(("flyout_hold", gi));
                                 let ended_hold = resp.clicked() && ui.data_mut(|d| d.remove_temp::<bool>(hold_id)).unwrap_or(false);
                                 if resp.clicked() && !ended_hold {
                                     chosen = Some(shown.id);
@@ -131,7 +131,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 }
                                 if app.ui.flyout == Some(gi) {
                                     let pos = resp.rect.right_top() + vec2(4.0, 0.0);
-                                    egui::Area::new(egui::Id::new(("flyout", gi))).order(egui::Order::Foreground).fixed_pos(pos).show(
+                                    egui::Area::new(egui::Id::unique(("flyout", gi))).order(egui::Order::Foreground).fixed_pos(pos).show(
                                         ui.ctx(),
                                         |ui| {
                                             egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -157,7 +157,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                             egui::FontId::proportional(12.5),
                                                             t.text,
                                                         );
-                                                        if let Some(sc) = tl.shortcut {
+                                                        if let Some(sc) = crate::menus::tool_shortcut_label(app, tl.id) {
                                                             ui.painter().text(
                                                                 r.right_center() - vec2(6.0, 0.0),
                                                                 egui::Align2::RIGHT_CENTER,
@@ -166,7 +166,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                                                 t.text_dim,
                                                             );
                                                         }
-                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl.label));
+                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl.label));
                                                         if row.clicked() {
                                                             chosen = Some(tl.id);
                                                         }
@@ -195,7 +195,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 && chosen.is_none()
                 && !opened_now
             {
-                let area = ui.ctx().memory(|m| m.area_rect(egui::Id::new(("flyout", gi))));
+                let area = ui.ctx().memory(|m| m.area_rect(egui::Id::unique(("flyout", gi))));
                 let outside = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| area.is_none_or(|a| !a.contains(p))));
                 let esc = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
                 if outside || esc {
@@ -241,7 +241,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
     let def = egui::Rect::from_min_size(egui::pos2(x0, row.min.y), vec2(10.0, 10.0));
     icons::paint(ui.painter(), def, "default-colors", t.icon);
     if ui
-        .interact(def, ui.id().with("proxy_default"), Sense::click())
+        .interact(def, ui.scope_id().with("proxy_default"), Sense::click())
         .on_hover_ui(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Default Fill and Stroke (D)"));
         })
@@ -252,7 +252,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
     let swap = egui::Rect::from_min_size(egui::pos2(x0 + 19.0, row.min.y), vec2(11.0, 11.0));
     icons::paint(ui.painter(), swap, "swap", t.icon);
     if ui
-        .interact(swap, ui.id().with("proxy_swap_btn"), Sense::click())
+        .interact(swap, ui.scope_id().with("proxy_swap_btn"), Sense::click())
         .on_hover_ui(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Swap Fill and Stroke (Shift+X)"));
         })
@@ -297,15 +297,15 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
         paint_fill(p);
     }
     let fill_tip = crate::i18n::tr(&app.ui.language, "Fill (X)");
-    let fresp = ui.interact(fill_r, ui.id().with("proxy_fill"), Sense::click()).on_hover_ui(|ui| {
+    let fresp = ui.interact(fill_r, ui.scope_id().with("proxy_fill"), Sense::click()).on_hover_ui(|ui| {
         crate::rtl::label(ui, fill_tip);
     });
-    fresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fill_tip));
+    fresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, fill_tip));
     let stroke_tip = crate::i18n::tr(&app.ui.language, "Stroke (X)");
-    let sresp = ui.interact(stroke_r.translate(vec2(0.0, 0.0)), ui.id().with("proxy_stroke"), Sense::click()).on_hover_ui(|ui| {
+    let sresp = ui.interact(stroke_r.translate(vec2(0.0, 0.0)), ui.scope_id().with("proxy_stroke"), Sense::click()).on_hover_ui(|ui| {
         crate::rtl::label(ui, stroke_tip);
     });
-    sresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, stroke_tip));
+    sresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, stroke_tip));
     if fresp.clicked() || sresp.clicked() {
         let front =
             if stroke_front { !fresp.clicked() } else { sresp.clicked() && !fill_r.contains(sresp.interact_pointer_pos().unwrap_or_default()) };
@@ -334,7 +334,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
         }
         icons::paint(ui.painter(), r.shrink(1.5), icon, if on { t.text_strong } else { t.icon });
         if ui
-            .interact(r, ui.id().with(("proxy_fmt", k)), Sense::click())
+            .interact(r, ui.scope_id().with(("proxy_fmt", k)), Sense::click())
             .on_hover_ui(|ui| {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, tip));
             })
@@ -373,8 +373,8 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
         for (k, (tip, id)) in applies.into_iter().enumerate() {
             let c = egui::pos2(row.min.x + width / 2.0 + (k as f32 - 1.0) * pitch, row.center().y);
             let r = egui::Rect::from_center_size(c, vec2(18.0, 18.0));
-            let resp = ui.interact(r, ui.id().with(("proxy_apply", k)), Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr(&app.ui.language, tip)));
+            let resp = ui.interact(r, ui.scope_id().with(("proxy_apply", k)), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr(&app.ui.language, tip)));
             if k == front_kind {
                 ui.painter().rect(r, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Outside);
             }
@@ -391,8 +391,8 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
     } else {
         let well = egui::Rect::from_center_size(egui::pos2(row.min.x + width / 2.0, row.center().y), vec2(28.0, 21.0));
         let (tip, id) = applies[front_kind];
-        let resp = ui.interact(well, ui.id().with("proxy_apply"), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr(&app.ui.language, tip)));
+        let resp = ui.interact(well, ui.scope_id().with("proxy_apply"), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr(&app.ui.language, tip)));
         let resp = resp.on_hover_ui(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, tip));
         });
@@ -432,7 +432,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
                 }
                 let on = crate::menus::checked(app, id, &Value::Null).unwrap_or(false);
                 let label = VIEW_OPTIONS[k];
-                let sc = crate::menus::ui_label(id).and_then(|c| c.1).unwrap_or("");
+                let sc = crate::menus::shortcut_label(app, id, &Value::Null).unwrap_or_default();
                 let text = format!("{}  {}", if on { "✓" } else { "   " }, crate::i18n::tr(&app.ui.language, label));
                 if ui.add(egui::Button::new(crate::rtl::widget(ui, &text)).shortcut_text(sc)).clicked() {
                     let _ = app.run(id, json!({}));
@@ -460,13 +460,13 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
         flyout_triangle(ui.painter(), other, t.icon);
         let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
         let (normal_tip, other_tip) = (tr("Normal"), format!("{} (W)", tr("Preview")));
-        let resp = ui.interact(normal, ui.id().with("screen_normal"), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &normal_tip));
+        let resp = ui.interact(normal, ui.scope_id().with("screen_normal"), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &normal_tip));
         if resp.on_hover_text(&normal_tip).clicked() {
             let _ = app.run("view.screenMode", json!({"mode": "normal"}));
         }
-        let resp = ui.interact(other, ui.id().with("screen_mode"), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &other_tip));
+        let resp = ui.interact(other, ui.scope_id().with("screen_mode"), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &other_tip));
         let resp = resp.on_hover_text(&other_tip);
         if resp.clicked() {
             let _ = app.run("view.screenMode", json!({"mode": "preview"}));
@@ -482,7 +482,7 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
         return;
     }
     let well = egui::Rect::from_center_size(egui::pos2(row.min.x + width / 2.0, row.center().y), vec2(28.0, 21.0));
-    let resp = ui.interact(well, ui.id().with("screen_mode"), Sense::click());
+    let resp = ui.interact(well, ui.scope_id().with("screen_mode"), Sense::click());
     ui.painter().rect(well, 2.0, t.well, Stroke::new(1.0, t.well_rim), StrokeKind::Outside);
     let preview = mode == crate::ScreenMode::Preview;
     icons::paint(
@@ -550,7 +550,7 @@ fn tool_button(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::
     }
     icons::paint(ui.painter(), egui::Rect::from_center_size(r.center(), egui::vec2(17.0, 17.0)), icon, if active { t.text_strong } else { t.icon });
     let enabled = ui.is_enabled();
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, tip));
     resp.on_hover_ui(|ui| {
         crate::rtl::label(ui, tip);
     })

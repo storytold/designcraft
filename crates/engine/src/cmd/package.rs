@@ -135,8 +135,9 @@ impl OutputRoot {
         {
             use std::os::unix::fs::PermissionsExt;
 
-            // Match fs::write for a new output: 0666 restricted by the caller's umask.
-            builder.permissions(std::fs::Permissions::from_mode(0o666));
+            // Like fs::write for a new output: request 0666 and let the process umask decide the
+            // effective mode (0644 with the usual 022, 0664 with 002).
+            builder.permissions(std::fs::Permissions::from_mode(0o666)); // NOSONAR
         }
         let file = builder.tempfile_in(parent).map_err(|e| path_error(path, e))?;
         #[cfg(unix)]
@@ -426,12 +427,19 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         .iter()
         .map(|f| format!("  {} {}{}\n", f.family, f.style, copy_font(&root, f, &fonts_dir, &mut copied, &mut taken, &mut files)))
         .collect();
+    // The IDML copy links the placed files, so a per-placement PDF layer choice cannot travel in
+    // it (an external-only IDML export rejects one for the same reason). Say so in the report
+    // instead of leaving a silent difference between the package's copies.
+    let mut idml_layer_note = "";
     if p.get("idml").and_then(Value::as_bool).unwrap_or(true) {
         let path = package_output_path(&dir, &title, "idml")?;
         // The images are in Links/ beside it: link them there, without embedded copies.
         let opts = designcraft_idml::ExportOptions { embed_images: false };
         root.write(&path, &designcraft_idml::export_idml_with(&packed, &opts))?;
         files.push(path);
+        if super::interchange::has_applicable_pdf_layer_overrides(&packed) {
+            idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
+        }
     }
     if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
         let path = package_output_path(&dir, &title, "pdf")?;
@@ -455,6 +463,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     for l in links.as_array().into_iter().flatten() {
         r += &format!("  {} ({})\n", l["name"].as_str().unwrap_or(""), l["status"].as_str().unwrap_or(""));
     }
+    r += idml_layer_note;
     if let Some(issues) = pre.get("issues").and_then(Value::as_array) {
         r += &format!("\nPreflight: {} issue(s)\n", issues.len());
         for i in issues {
@@ -506,6 +515,32 @@ mod tests {
             let links = opened.execute("links.list", &json!({})).unwrap();
             assert_eq!(links[0]["status"], "ok", "{extension}");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A per-placement PDF layer choice cannot travel in an IDML copy that links its files, so the
+    /// report says the copies differ instead of leaving it to be discovered.
+    #[test]
+    fn package_report_names_placed_pdf_layer_choices() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("dc-package-pdf-layers-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = super::super::pdflayers::tests::two_layer_pdf();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "LayeredPackage", "width": 100, "height": 100})).unwrap();
+        let id = s
+            .execute("file.place", &json!({"base64": super::super::base64_encode(&pdf), "name": "art.pdf", "x": 0, "y": 0, "width": 100}))
+            .unwrap()["id"]
+            .clone();
+        s.execute("object.layerOptions", &json!({"ids": [id], "hidden": ["Red"]})).unwrap();
+        let r = s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
+        let report = r["report"].as_str().unwrap();
+        assert!(report.contains("Placed PDF layers"), "{report}");
+        // The DesignCraft copy keeps the choice; only the linked IDML copy shows file defaults.
+        let packed = super::super::from_bytes(&std::fs::read(dir.join("LayeredPackage.designcraft")).unwrap()).unwrap();
+        let item = packed.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap();
+        assert_eq!(item.pdf_hidden_layers, vec!["Red".to_string()]);
+        assert!(item.has_pdf_layer_override());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -906,13 +941,12 @@ mod tests {
         let outside = base.join("separate");
         std::fs::create_dir_all(&outside).unwrap();
         let redirected = base.join("Package");
-        match symlink_dir(&outside, &redirected) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                let _ = std::fs::remove_dir_all(&base);
-                return;
-            }
-            Err(e) => panic!("could not create directory redirect: {e}"),
+        // A symbolic link needs Developer Mode or elevation (os error 1314 without them); a
+        // directory junction needs neither, and `is_redirect` treats both as redirects.
+        if symlink_dir(&outside, &redirected).is_err() && !make_junction(&outside, &redirected) {
+            eprintln!("skipped: directory redirects can't be made here");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
         }
         let mut s = Session::new();
         s.execute("file.new", &json!({"title": "Annual"})).unwrap();
@@ -920,5 +954,18 @@ mod tests {
         assert!(!outside.join("Annual.designcraft").exists());
         std::fs::remove_dir(&redirected).unwrap();
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Makes `link` a directory junction to `target` with `mklink /J`, and reports whether it was made.
+    #[cfg(windows)]
+    fn make_junction(target: &Path, link: &Path) -> bool {
+        use std::os::windows::process::CommandExt;
+
+        // Windows paths can't hold `"`, so quoting each one keeps `&` and spaces in it literal for cmd.
+        std::process::Command::new("cmd")
+            .args(["/D", "/C"])
+            .raw_arg(format!("mklink /J \"{}\" \"{}\"", link.display(), target.display()))
+            .output()
+            .is_ok_and(|output| output.status.success())
     }
 }

@@ -4,6 +4,7 @@
 //! - `engine.execute {command, params}` / `ui.menu.invoke {command|id, params}`: run any command
 //! - `engine.commands`: engine + UI commands with enablement
 //! - `document.inspect`: document summary; `ui.inspect`: UI state
+//! - `ui.docking`: the panel layout in use and the focused panel
 //! - `ui.menu.list`: flattened menu tree
 //! - `ui.tool.select {tool}`, `ui.tool.list`
 //! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
@@ -77,6 +78,7 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
         "view": app.view().map(|v| serde_json::to_value(v).unwrap_or_default()),
         "canvasRect": app.canvas_rect.map(|c| json!([c.left(), c.top(), c.width(), c.height()])),
+        "docking": crate::panel_docking::inspect(app, ctx),
         "window": [r.width(), r.height()],
         "documents": app
             .session
@@ -91,6 +93,7 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
             })
             .collect::<Vec<_>>(),
         "currentPage": crate::canvas::current_page(app),
+        "separations": crate::separations::inspect(app),
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
@@ -169,6 +172,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         "engine.commands" => ok(all_commands(app)),
         "document.inspect" => wrap(app.run("document.inspect", json!({}))),
         "ui.inspect" => ok(inspect(app, ctx)),
+        "ui.docking" => ok(crate::panel_docking::inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
         "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
@@ -361,7 +365,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
-                app.ui.dock_expanded = v;
+                r = crate::panel_docking::set_iconic(app, !v);
             }
             wrap(r)
         }
@@ -600,7 +604,7 @@ mod automation_contract_tests {
         assert_eq!(app.control_synthetic, queued);
         // The ordinary input hook consumes one pointer event per frame, freeing
         // enough room for a complete click without dropping earlier input.
-        app.raw_input_hook(&mut egui::RawInput::default());
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         assert_eq!(app.control_synthetic.len(), 10000);
         assert_eq!(call(&mut app, &ctx, "ui.click", json!({}))["ok"], true);
         assert_eq!(app.control_synthetic.len(), 10003);
@@ -786,7 +790,7 @@ mod deferred_clipboard_tests {
         assert!(!app.in_control);
         for step in 0..3 {
             let mut raw = egui::RawInput { time: Some(step as f64 * 0.05), ..Default::default() };
-            app.raw_input_hook(&mut raw);
+            app.raw_input_hook(&ctx, &mut raw);
             ctx.run_ui(raw, |ui| menus::shortcuts(&mut app, ui.ctx())).textures_delta.clear();
         }
         let texts: Vec<String> = app.session.active().unwrap().doc.stories.values().map(|story| story.text.clone()).collect();
@@ -794,7 +798,7 @@ mod deferred_clipboard_tests {
         assert!(!texts.iter().any(|text| text.contains("SYNTHETIC_CLIPBOARD_SENTINEL")));
         // Once control input is drained, an ordinary user paste still reads its clipboard.
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         app.run("edit.paste", json!({})).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
@@ -805,12 +809,12 @@ mod deferred_clipboard_tests {
         let (req, _) = ControlRequest::new("ui.move", json!({"x":10,"y":10}));
         let _ = handle(&mut app, &ctx, &req);
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         let mut private = ctx.run_ui(raw, |ui| ui.ctx().copy_text("control field".into()));
         assert!(!private.platform_output.commands.iter().any(|cmd| matches!(cmd, egui::OutputCommand::CopyText(_))));
         private.textures_delta.clear();
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         let mut native = ctx.run_ui(raw, |ui| ui.ctx().copy_text("native field".into()));
         assert!(native.platform_output.commands.iter().any(|cmd| matches!(cmd, egui::OutputCommand::CopyText(text) if text=="native field")));
         native.textures_delta.clear();

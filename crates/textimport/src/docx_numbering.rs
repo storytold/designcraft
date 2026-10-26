@@ -129,7 +129,8 @@ fn number_style(fmt: &str) -> Format {
 }
 
 fn parse_level(e: &El) -> Level {
-    let tw = |v: Option<&str>| v.and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
+    // Twips, clamped as elsewhere: a level's indent is a measure, not any number (#1593).
+    let tw = |v: Option<&str>| v.and_then(|v| v.trim().parse::<f64>().ok()).map(|v| v / 20.0).and_then(designcraft_doc::attrs::imported_measure);
     let ind = e.child("pPr").and_then(|p| p.child("ind"));
     Level {
         format: e.val("numFmt").map_or(Format::Number(NumberStyle::Arabic), |f| number_style(&f)),

@@ -30,6 +30,29 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "カット"),
     ("Copy", "コピー"),
     ("Paste", "ペースト"),
+    ("Restart Numbering", "番号の振り直し"),
+    ("Continue Numbering", "番号の継続"),
+    ("Keep Options…", "段落分離禁止オプション…"),
+    ("Space Between Paragraphs Using Same Style", "同じスタイルの段落間のスペース"),
+    ("Ignore", "無視"),
+    ("Do Not Align to Baseline Grid", "ベースライングリッドに揃えない"),
+    ("Only Align First Line to Grid", "最初の行のみグリッドに揃える"),
+    ("Balance Ragged Lines", "行末を調整"),
+    ("Drop Caps and Nested Styles…", "ドロップキャップと先頭文字スタイル…"),
+    ("GREP Styles…", "正規表現スタイル…"),
+    ("Restart/Continue Numbering", "番号の振り直し/継続"),
+    ("Convert Bullets and Numbering to Text", "箇条書きと段落番号をテキストに変換"),
+    ("Hyphenation…", "ハイフネーション…"),
+    ("Hyphenation Settings", "ハイフネーション設定"),
+    ("hyphens", "ハイフン"),
+    ("Hyphenation Zone:", "ハイフネーション領域 :"),
+    ("Better Spacing", "スペースを優先"),
+    ("Fewer Hyphens", "ハイフンを減らす"),
+    ("Hyphenate Capitalized Words", "大文字で始まる単語をハイフネーション"),
+    ("Hyphenate Last Word", "最後の単語をハイフネーション"),
+    ("Hyphenate Across Column", "段をまたいでハイフネーション"),
+    ("Apply Bullets", "箇条書きを適用"),
+    ("Apply Numbers", "段落番号を適用"),
     ("Paste Vector Art", "ベクトルアートをペースト"),
     ("Baseline Options", "ベースラインオプション"),
     ("Column Rules", "段落境界線"),
@@ -713,6 +736,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Convert Text to Table", "テキストを表に変換"),
     ("Convert to Button", "ボタンに変換"),
     ("Convert to Form Field", "フォームフィールドに変換"),
+    ("Convert to Note", "注釈に変換"),
     ("Conveyor", "コンベヤー"),
     ("Copy Link(s) To…", "リンクを指定先にコピー…"),
     ("Corner Options…", "角のオプション…"),
@@ -803,6 +827,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Insert Math Expression…", "数式を挿入…"),
     ("Insert Pages…", "ページを挿入…"),
     ("Insert Variable", "変数を挿入"),
+    ("Convert Variable to Text", "変数をテキストに変換"),
     ("Inspect Document", "ドキュメントを調査"),
     ("Interface Color Theme", "インターフェイスのカラーテーマ"),
     ("Join the ArtCraft Discord…", "ArtCraft の Discord に参加…"),
@@ -838,6 +863,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Table Style…", "新規表スタイル…"),
     ("Next Cell", "次のセル"),
     ("Next Document", "次のドキュメント"),
+    ("Next Note", "次の注釈"),
     ("Next Object Above", "1つ前面のオブジェクト"),
     ("Next Object Below", "1つ背面のオブジェクト"),
     ("Next Object in Group", "グループ内の次のオブジェクト"),
@@ -871,6 +897,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Preflight Document", "ドキュメントのプリフライト"),
     ("Previous Cell", "前のセル"),
     ("Previous Document", "前のドキュメント"),
+    ("Previous Note", "前の注釈"),
     ("Previous Object in Group", "グループ内の前のオブジェクト"),
     ("Primary Text Frame", "主テキストフレーム"),
     ("Print Booklet…", "小冊子をプリント…"),
@@ -924,6 +951,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "並べ替え"),
     ("Split Cell Horizontally", "セルを横方向に分割"),
     ("Split Cell Vertically", "セルを縦方向に分割"),
+    ("Split Note", "注釈を分割"),
     ("Split Path", "パスを分割"),
     ("Step and Repeat…", "間隔を指定して複製…"),
     ("Stroke Styles", "線スタイル"),
@@ -1926,6 +1954,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "ここまでインデント"),
     ("Ink Limit 300%", "インキ量の上限 300%"),
+    ("All Inks", "すべてのインキ"),
     ("Internet Standard RGB (sRGB)", "インターネット標準 RGB (sRGB)"),
     ("Left:", "左:"),
     ("Legacy Macintosh RGB", "旧 Macintosh RGB"),
@@ -2124,55 +2153,3 @@ pub(super) const TABLE: &[(&str, &str)] = &[
 
 /// Captions whose Japanese depends on where they appear: (English, context, Japanese).
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[("Span Columns", "paragraphLayout", "段抜き"), ("Columns:", "grid", "列:")];
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::TABLE;
-    use crate::i18n::tr;
-
-    fn placeholders(text: &str) -> Vec<&str> {
-        let mut found = Vec::new();
-        let mut rest = text;
-        while let Some(start) = rest.find('{') {
-            let Some(len) = rest[start..].find('}') else { break };
-            found.push(&rest[start..start + len + 1]);
-            rest = &rest[start + len + 1..];
-        }
-        found.sort_unstable();
-        found
-    }
-
-    #[test]
-    fn rows_are_unique_and_complete() {
-        let mut seen = HashSet::new();
-        for (en, ja) in TABLE {
-            assert!(seen.insert(*en), "duplicate {en}");
-            assert!(!ja.is_empty(), "{en}");
-        }
-    }
-
-    #[test]
-    fn rows_keep_placeholders_padding_and_endings() {
-        let ellipsis = |text: &str| text.trim_end().ends_with('…') || text.trim_end().ends_with("...");
-        for (en, ja) in TABLE {
-            assert_eq!(placeholders(en), placeholders(ja), "placeholders of {en}");
-            assert_eq!(en.len() - en.trim_start().len(), ja.len() - ja.trim_start().len(), "leading space of {en}");
-            assert_eq!(en.len() - en.trim_end().len(), ja.len() - ja.trim_end().len(), "trailing space of {en}");
-            assert_eq!(ellipsis(en), ellipsis(ja), "ellipsis of {en}");
-            // The numbering samples (`a, b, c, d...`) stay as they are; everything else uses `…`.
-            assert!(!ja.contains("...") || ja == en, "ASCII ellipsis in {en}");
-            assert_eq!(en.trim_end().ends_with(':'), ja.trim_end().ends_with(':'), "colon of {en}");
-        }
-    }
-
-    #[test]
-    fn lookup_uses_this_table_and_leaves_unknown_text_alone() {
-        assert_eq!(tr("ja", "File"), "ファイル");
-        assert_eq!(tr("ja", "Cancel"), "キャンセル");
-        assert_eq!(tr("ja", "{count} glyphs — click to insert at the text cursor").matches("{count}").count(), 1);
-        let unknown = String::from("A user-defined untranslated label");
-        assert!(std::ptr::eq(tr("ja", &unknown), unknown.as_str()));
-    }
-}

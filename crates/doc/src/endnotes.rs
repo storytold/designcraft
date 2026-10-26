@@ -147,7 +147,7 @@ impl crate::Document {
             if st.id == sid {
                 break;
             }
-            n += st.endnotes.len() as u32;
+            n = n.saturating_add(st.endnotes.len() as u32);
         }
         n
     }
@@ -173,7 +173,7 @@ impl crate::Document {
                     let at = out.len();
                     out.insert_with(at, &note.text.text[r].replace('\n', " "), f.clone());
                 }
-                n += 1;
+                n = n.saturating_add(1);
             }
         }
         out

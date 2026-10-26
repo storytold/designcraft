@@ -16,7 +16,7 @@ const GRIP: &str = "task_bar_grip";
 /// Show the bar under `sel` (screen rect of the selection), or where it is pinned, kept inside
 /// `canvas`.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
-    let grip_id = egui::Id::new((GRIP, ctx.viewport_id(), app.pane));
+    let grip_id = egui::Id::unique((GRIP, ctx.viewport_id(), app.pane));
     // (Two separate context calls: `is_pointer_over_egui` inside an `input` closure deadlocks.)
     let dragging = ctx.dragged_id() == Some(grip_id);
     if !app.ui.task_bar || (ctx.input(|i| i.pointer.any_down()) && !ctx.is_pointer_over_egui() && !dragging) {
@@ -29,7 +29,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
     }
     let t = Tokens::get(ctx);
     // The same selection can be shown in two canvases; each bar needs its own area and widgets.
-    let id = egui::Id::new(("task_bar", ctx.viewport_id(), app.pane));
+    let id = egui::Id::unique(("task_bar", ctx.viewport_id(), app.pane));
     // Width from the previous frame (content-sized).
     let w = ctx.memory(|m| m.area_rect(id).map(|r| r.width())).unwrap_or(420.0);
     let at = match app.ui.task_bar_pin {
@@ -100,8 +100,8 @@ fn split_button(ui: &mut Ui, icon: &str, label: &str) -> (egui::Response, egui::
     let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
     let main = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
     let seg = Rect::from_min_max(pos2(main.max.x, r.min.y), r.max);
-    let mr = ui.interact(main, ui.id().with(("split", label)), Sense::click());
-    let sr = ui.interact(seg, ui.id().with(("splitseg", label)), Sense::click());
+    let mr = ui.interact(main, ui.scope_id().with(("split", label)), Sense::click());
+    let sr = ui.interact(seg, ui.scope_id().with(("splitseg", label)), Sense::click());
     for (rr, resp) in [(main, &mr), (seg, &sr)] {
         if resp.hovered() {
             ui.painter().rect_filled(rr, 0.0, t.hover);
@@ -165,7 +165,7 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
         let sw = c["fill"].as_str().unwrap_or("[Black]").to_string();
         let (col, g) = widgets::swatch_colors(&doc, &sw, 1.0);
         let resp = widgets::swatch_chip(ui, 17.0, col, g).on_hover_text(format!("{}: {sw}", crate::i18n::tr(&app.ui.language, "Fill")));
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Task Bar fill"));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Task Bar fill"));
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
             picked = panels::swatch_list(ui, &doc, &sw);
@@ -227,9 +227,7 @@ fn object_controls(app: &mut DesignApp, ui: &mut Ui) {
             widgets::paint_stroke_chip(ui.painter(), r, col, egui::Color32::from_gray(20));
         }
         let resp = resp.on_hover_text(format!("{}: {sw}", if k == 0 { "Fill" } else { "Stroke" }));
-        resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Task Bar {}", if k == 0 { "fill" } else { "stroke" }))
-        });
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Task Bar {}", if k == 0 { "fill" } else { "stroke" })));
         let mut picked = None;
         egui::Popup::menu(&resp).show(|ui| {
             picked = panels::swatch_list(ui, &doc, &sw);
@@ -311,7 +309,7 @@ mod tests {
     }
 
     fn bar(h: &Harness<'static, Window>) -> egui::Rect {
-        h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), h.state().app.pane)))).unwrap()
+        h.ctx.memory(|m| m.area_rect(egui::Id::unique(("task_bar", h.ctx.viewport_id(), h.state().app.pane)))).unwrap()
     }
 
     fn grip(h: &Harness<'static, Window>) -> egui::Pos2 {
@@ -371,7 +369,7 @@ mod tests {
         h.state_mut().app.run("window.split", json!({"on":true})).unwrap();
         h.run_steps(6);
         let area =
-            |h: &Harness<'static, Window>, pane| h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), pane)))).unwrap();
+            |h: &Harness<'static, Window>, pane| h.ctx.memory(|m| m.area_rect(egui::Id::unique(("task_bar", h.ctx.viewport_id(), pane)))).unwrap();
         for pane in [0_u8, 1] {
             h.state_mut().app.run("window.taskBarPin", json!({"at":[100,120]})).unwrap();
             h.run_steps(4);
@@ -397,7 +395,7 @@ mod tests {
         h.state_mut().app.switch_pane(0);
         h.run_steps(4);
         let expected = h.state().app.ui.task_bar_at.unwrap();
-        let left = h.ctx.memory(|m| m.area_rect(egui::Id::new(("task_bar", h.ctx.viewport_id(), 0_u8)))).unwrap();
+        let left = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("task_bar", h.ctx.viewport_id(), 0_u8)))).unwrap();
         click_at(&mut h, pos2(left.max.x - 19.0, left.center().y));
         let pin = h.get_by_label_contains("Pin Bar Position").rect();
         let at = pos2(pin.max.x - 2.0, pin.center().y);

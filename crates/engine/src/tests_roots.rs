@@ -23,7 +23,7 @@ fn folders(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
     for d in ["in", "out", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
-    let roots = AutomationRoots::new(Some(&base.join("in")), Some(&base.join("out"))).unwrap().unwrap();
+    let roots = AutomationRoots::new(&[&base.join("in")], &[&base.join("out")]).unwrap().unwrap();
     (base, roots)
 }
 

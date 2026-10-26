@@ -81,6 +81,16 @@ impl Mode {
 
 /// The merged composite as straight RGBA8, `None` when the file is damaged or unsupported (32-bit,
 /// Multichannel, ZIP-compressed composite).
+/// Whether the header's depth, channel count and size are all within what the decoder supports.
+fn header_in_range(mode: Mode, depth: u16, channels: usize, (w, h): (u32, u32), max_side: u32) -> bool {
+    let depth_ok = match mode {
+        Mode::Bitmap => depth == 1,
+        Mode::Indexed => depth == 8,
+        _ => depth == 8 || depth == 16,
+    };
+    (1..=56).contains(&channels) && channels >= mode.colour_channels() && (1..=max_side).contains(&w) && (1..=max_side).contains(&h) && depth_ok
+}
+
 pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     let mut r = Reader { b: bytes };
     if r.take(4)? != b"8BPS" {
@@ -97,13 +107,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
     let depth = r.u16()?;
     let mode = Mode::parse(r.u16()?)?;
     let max_side = if psb { 300_000 } else { 30_000 };
-    let depth_ok = match mode {
-        Mode::Bitmap => depth == 1,
-        Mode::Indexed => depth == 8,
-        _ => depth == 8 || depth == 16,
-    };
     let colours = mode.colour_channels();
-    if !(1..=56).contains(&channels) || channels < colours || !(1..=max_side).contains(&w) || !(1..=max_side).contains(&h) || !depth_ok {
+    if !header_in_range(mode, depth, channels, (w, h), max_side) {
         return None;
     }
     let (wu, hu) = (usize::try_from(w).ok()?, usize::try_from(h).ok()?);
@@ -298,7 +303,7 @@ impl<'a> ImageData<'a> {
         }
         let mut counts = self.counts.chunks_exact(self.count_size).map(|c| c.iter().fold(0usize, |n, &b| n << 8 | usize::from(b)));
         // This channel starts after every earlier channel's rows.
-        let mut at = counts.by_ref().take(ch.checked_mul(self.height)?).try_fold(0usize, |at, n| at.checked_add(n))?;
+        let mut at = counts.by_ref().take(ch.checked_mul(self.height)?).try_fold(0usize, usize::checked_add)?;
         for _ in 0..self.height {
             let n = counts.next()?;
             let end = at.checked_add(n)?;

@@ -14,6 +14,8 @@ designcraft-fonts = { workspace = true }
 image = { workspace = true }
 tiff = { workspace = true }
 resvg = { workspace = true }
+quick-xml = { workspace = true }
+flate2 = "1"
 log = { workspace = true }
 craft-cms = { workspace = true }
 zune-core = { version = "0.5", default-features = false }

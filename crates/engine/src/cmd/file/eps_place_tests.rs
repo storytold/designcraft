@@ -3,7 +3,7 @@
 //! These helpers write real files, so they live in their own `_tests.rs` file: the
 //! file-system guard in `tests_file_guard.rs` checks `src` files but exempts test ones.
 
-use super::*;
+use super::{Arc, AssetId, Content, ItemId, Session, base64_encode, json};
 
 pub(crate) fn tiff_eps() -> Vec<u8> {
     let mut tiff = b"II".to_vec();

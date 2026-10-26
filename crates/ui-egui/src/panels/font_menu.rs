@@ -64,7 +64,7 @@ fn regular(styles: &[String]) -> String {
 }
 
 fn meta(ui: &Ui, fonts: &designcraft_fonts::ScopedFonts<'static>, scope: u32, family: &str) -> FamilyMeta {
-    let key = egui::Id::new(("font_meta", family, scope));
+    let key = egui::Id::unique(("font_meta", family, scope));
     if let Some(m) = ui.data(|d| d.get_temp::<FamilyMeta>(key)) {
         return m;
     }
@@ -101,7 +101,7 @@ fn family_kind(fonts: &designcraft_fonts::ScopedFonts<'static>, family: &str) ->
 
 /// The families' kinds, starting to read them the first time they're needed for `scope`.
 fn kinds(ctx: &egui::Context, fonts: &designcraft_fonts::ScopedFonts<'static>, scope: u32) -> SharedKinds {
-    let shared: SharedKinds = ctx.data_mut(|d| d.get_temp_mut_or_default::<SharedKinds>(egui::Id::new("font_kinds")).clone());
+    let shared: SharedKinds = ctx.data_mut(|d| d.get_temp_mut_or_default::<SharedKinds>(egui::Id::unique("font_kinds")).clone());
     let start = {
         let mut k = lock(&shared);
         let start = k.scope != Some(scope);
@@ -225,8 +225,8 @@ fn preview(
 ) -> egui::TextureHandle {
     let ppp = ui.ctx().pixels_per_point();
     let px = (size * ppp).round() as u32;
-    let key = egui::Id::new(("font_preview", family, style, scope, text, px, color.to_array()));
-    let cache_id = egui::Id::new("font_previews");
+    let key = egui::Id::unique(("font_preview", family, style, scope, text, px, color.to_array()));
+    let cache_id = egui::Id::unique("font_previews");
     if let Some(t) = ui.data_mut(|d| d.get_temp_mut_or_default::<Previews>(cache_id).get(key)) {
         return t;
     }
@@ -281,7 +281,7 @@ fn toggle(ui: &mut Ui, on: bool, tip: &str, paint: impl FnOnce(&egui::Painter, R
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     paint(ui.painter(), r, if on { t.text_strong } else { t.icon });
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, tip));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, tip));
     resp.on_hover_text(tip).clicked()
 }
 
@@ -303,7 +303,7 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
     let (fonts, scope) = (super::fonts(app), super::font_scope(app));
     let english = app.session.prefs.show_font_names_in_english;
     let mut favs = app.session.prefs.favorite_fonts.clone();
-    let state_id = egui::Id::new("font_menu_state");
+    let state_id = egui::Id::unique("font_menu_state");
     let mut st: MenuState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
     let frame = ui.ctx().cumulative_frame_nr();
     if st.frame.is_none_or(|f| f.saturating_add(1) < frame) {
@@ -552,7 +552,7 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
                 None => family.label(english).to_string(),
             };
             let is_current = style.is_none() && f == current;
-            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, is_current, &label));
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, &label));
             if style.is_none() && label != *f {
                 resp = resp.on_hover_text(f);
             }
@@ -571,7 +571,7 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
                 // Favourite star.
                 let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
                 let fav = favs.contains(f);
-                let sr = ui.interact(star, ui.id().with(("fav", f, recent)), Sense::click());
+                let sr = ui.interact(star, ui.scope_id().with(("fav", f, recent)), Sense::click());
                 paint_star(&p, star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
                 if sr.clicked() {
                     toggle_fav = Some(f.clone());
@@ -580,13 +580,9 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
                 // The arrow opens a family of several styles.
                 if m.styles.len() > 1 && !recent {
                     let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
-                    let ar = ui.interact(arrow, ui.id().with(("open", f)), Sense::click());
+                    let ar = ui.interact(arrow, ui.scope_id().with(("open", f)), Sense::click());
                     ar.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            true,
-                            tr(if st.expanded.contains(f) { "Hide Styles" } else { "Show Styles" }),
-                        )
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, tr(if st.expanded.contains(f) { "Hide Styles" } else { "Show Styles" }))
                     });
                     let open = st.expanded.contains(f);
                     crate::icons::paint(&p, arrow.shrink(2.0), if open { "chevron-down" } else { "chevron-right" }, t.icon);
@@ -611,8 +607,8 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
             // Show Similar Fonts (on hover), and the format.
             if style.is_none() && (hovered || st.similar.as_deref() == Some(f.as_str())) {
                 let sim = Rect::from_center_size(pos2(icons_x + 12.0, cy), vec2(18.0, 18.0));
-                let sr = ui.interact(sim, ui.id().with(("similar", f, recent)), Sense::click());
-                sr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tr("Show Similar Fonts")));
+                let sr = ui.interact(sim, ui.scope_id().with(("similar", f, recent)), Sense::click());
+                sr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tr("Show Similar Fonts")));
                 p.text(sim.center(), Align2::CENTER_CENTER, "≈", FontId::proportional(15.0), if sr.hovered() { t.text_strong } else { t.icon });
                 if sr.on_hover_text(tr("Show Similar Fonts")).clicked() {
                     similar = Some(f.clone());
@@ -622,7 +618,7 @@ pub fn font_menu_body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], cur
             if style.is_none() {
                 let badge = Rect::from_center_size(pos2(r.max.x - 16.0, cy), vec2(20.0, 16.0));
                 paint_format(&p, badge, m.kind.format, t.text_dim, t.accent);
-                ui.interact(badge, ui.id().with(("format", f, recent)), Sense::hover()).on_hover_text(tr(format_name(m.kind.format)));
+                ui.interact(badge, ui.scope_id().with(("format", f, recent)), Sense::hover()).on_hover_text(tr(format_name(m.kind.format)));
             }
             if resp.clicked() && !handled {
                 pick = Some(FontPick { family: f.clone(), style: style.map(str::to_string) });
@@ -673,7 +669,7 @@ mod preview_cache_tests {
         let ctx = egui::Context::default();
         let tex = |i: usize| ctx.load_texture(format!("t{i}"), egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]), Default::default());
         let mut c = Previews::default();
-        let key = |i: usize| egui::Id::new(("p", i));
+        let key = |i: usize| egui::Id::unique(("p", i));
         for i in 0..Previews::CAP + 40 {
             c.insert(key(i), tex(i));
             // The first one stays in use, so it is kept.

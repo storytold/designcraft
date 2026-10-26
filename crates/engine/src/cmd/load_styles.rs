@@ -201,9 +201,9 @@ fn plan(doc: &Document, src: &Document, paragraph: Option<&[String]>, character:
     Ok((para, chars))
 }
 
-fn load(s: &mut Session, p: &Value) -> Result<Value> {
-    let src = source(p, ID)?;
-    let conflict = match p.get("conflicts") {
+/// The `conflicts` parameter: how a style that differs under the same name is handled.
+fn conflict_param(p: &Value) -> Result<Conflict> {
+    Ok(match p.get("conflicts") {
         None | Some(Value::Null) => Conflict::Redefine,
         Some(v) => match v.as_str() {
             Some("redefine") => Conflict::Redefine,
@@ -211,7 +211,37 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
             Some("autoRename") => Conflict::AutoRename,
             _ => return Err(bad(ID, "`conflicts` must be redefine, useExisting or autoRename")),
         },
+    })
+}
+
+/// Give the loaded style `ours` the export tag the source had for `theirs` (`kind` is `p` or `c`).
+fn carry_export_tag(src: &Styles, dst: &mut Styles, kind: char, theirs: &str, ours: &str) {
+    let tag = format!("{kind}:{ours}");
+    match src.export_tags.get(&format!("{kind}:{theirs}")) {
+        Some(t) => dst.export_tags.insert(tag, t.clone()),
+        None => dst.export_tags.remove(&tag),
     };
+}
+
+/// A loaded style and one the document keeps can name each other as their base.
+fn check_based_on_cycles(styles: &Styles, loaded: &[(bool, String)]) -> Result<()> {
+    for (is_para, name) in loaded {
+        let looped = if *is_para {
+            styles.para(name).and_then(|s| s.based_on.as_deref()).is_some_and(|b| styles.para_based_on_cycles(name, b))
+        } else {
+            styles.char_style(name).and_then(|s| s.based_on.as_deref()).is_some_and(|b| styles.char_based_on_cycles(name, b))
+        };
+        if looped {
+            let kind = if *is_para { "paragraph" } else { "character" };
+            return Err(bad(ID, format!("{kind} style `{name}` would be based on itself; load the style it is based on as well")));
+        }
+    }
+    Ok(())
+}
+
+fn load(s: &mut Session, p: &Value) -> Result<Value> {
+    let src = source(p, ID)?;
+    let conflict = conflict_param(p)?;
     let (paragraph, character) = (names(p, "paragraph")?, names(p, "character")?);
     let doc = s.doc()?.doc.clone();
     let (mut para, mut chars) = plan(&doc, &src, paragraph.as_deref(), character.as_deref(), conflict)?;
@@ -231,11 +261,7 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
         p.nested_line_styles.iter_mut().flatten().for_each(|l| chars.follow(&mut l.style));
         swatches.extend(char_swatches(&style.chars).chain(para_swatches(&style.para)).cloned());
         lists.extend(style.para.list_name.iter().cloned());
-        let tag = format!("p:{}", style.name);
-        match src.styles.export_tags.get(&format!("p:{}", theirs.name)) {
-            Some(t) => styles.export_tags.insert(tag, t.clone()),
-            None => styles.export_tags.remove(&tag),
-        };
+        carry_export_tag(&src.styles, &mut styles, 'p', &theirs.name, &style.name);
         loaded.push((true, style.name.clone()));
         match styles.para_mut(&style.name) {
             Some(m) if action == Action::Replace => {
@@ -256,11 +282,7 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
         chars.follow(&mut style.name);
         style.based_on.iter_mut().for_each(|n| chars.follow(n));
         swatches.extend(char_swatches(&style.chars).cloned());
-        let tag = format!("c:{}", style.name);
-        match src.styles.export_tags.get(&format!("c:{}", theirs.name)) {
-            Some(t) => styles.export_tags.insert(tag, t.clone()),
-            None => styles.export_tags.remove(&tag),
-        };
+        carry_export_tag(&src.styles, &mut styles, 'c', &theirs.name, &style.name);
         loaded.push((false, style.name.clone()));
         match styles.char_style_mut(&style.name) {
             Some(m) if action == Action::Replace => {
@@ -275,18 +297,7 @@ fn load(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
-    // A loaded style and one the document keeps can name each other as their base.
-    for (is_para, name) in &loaded {
-        let looped = if *is_para {
-            styles.para(name).and_then(|s| s.based_on.as_deref()).is_some_and(|b| styles.para_based_on_cycles(name, b))
-        } else {
-            styles.char_style(name).and_then(|s| s.based_on.as_deref()).is_some_and(|b| styles.char_based_on_cycles(name, b))
-        };
-        if looped {
-            let kind = if *is_para { "paragraph" } else { "character" };
-            return Err(bad(ID, format!("{kind} style `{name}` would be based on itself; load the style it is based on as well")));
-        }
-    }
+    check_based_on_cycles(&styles, &loaded)?;
 
     let swatches = missing_swatches(&doc, &src, swatches);
     let lists: Vec<NumberedList> = {
@@ -572,8 +583,8 @@ mod tests {
             d.settings.lists.push(NumberedList { name: "Steps".into(), continue_across_stories: false });
             d.settings.lists.push(NumberedList { name: "Unused".into(), ..Default::default() });
             let st = d.styles_mut();
-            st.export_tags.insert("p:Head".into(), ExportTag { tag: "h1".into(), class: "title".into() });
-            st.export_tags.insert("c:Lead".into(), ExportTag { tag: "em".into(), class: String::new() });
+            st.export_tags.insert("p:Head".into(), ExportTag { tag: "h1".into(), class: "title".into(), split: true });
+            st.export_tags.insert("c:Lead".into(), ExportTag { tag: "em".into(), class: String::new(), ..Default::default() });
             st.para_mut("Quote").unwrap().para.list_name = Some("Steps".into());
             Ok(())
         })
@@ -581,7 +592,7 @@ mod tests {
         let mut s = doc_with_body_and_lead();
         s.execute("style.load", &json!({"base64": file_of(&src), "conflicts": "autoRename"})).unwrap();
         let d = &s.doc().unwrap().doc;
-        assert_eq!(d.styles.export_tag("Head", false).map(|t| t.tag.as_str()), Some("h1"));
+        assert_eq!(d.styles.export_tag("Head", false).map(|t| (t.tag.as_str(), t.split)), Some(("h1", true)), "Split Document comes along");
         assert_eq!(d.styles.export_tag("Lead 2", true).map(|t| t.tag.as_str()), Some("em"), "the tag follows the new name");
         assert_eq!(d.styles.export_tag("Lead", true), None);
         assert_eq!(d.settings.lists.iter().map(|l| (l.name.as_str(), l.continue_across_stories)).collect::<Vec<_>>(), [("Steps", false)]);

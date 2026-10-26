@@ -27,7 +27,7 @@ pub fn is_svg_markup(text: &str) -> bool {
     designcraft_images::is_svg(text.as_bytes())
 }
 
-/// Nesting deeper than this is flattened into its parent (hostile input can't exhaust the stack).
+/// Cap conversion nesting too; the shared image parser bounds XML before usvg runs.
 const MAX_DEPTH: usize = 64;
 
 /// A converted SVG node, in points.
@@ -426,13 +426,16 @@ mod tests {
     #[test]
     fn deeply_nested_groups_do_not_exhaust_the_stack() {
         let mut s = session();
+        let before = serde_json::to_value(&s.doc().unwrap().doc).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
         let depth = 2000;
         let svg = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}<rect width="10" height="10"/>{}</svg>"#,
             "<g opacity=\"0.99\">".repeat(depth),
             "</g>".repeat(depth)
         );
-        // usvg itself may refuse a document this deep; either way, no crash.
-        let _ = s.execute("edit.pasteSvg", &json!({"svg": svg}));
+        assert!(s.execute("edit.pasteSvg", &json!({"svg": svg})).is_err());
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
     }
 }

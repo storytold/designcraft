@@ -8,7 +8,7 @@ use designcraft_doc::{Align, Document, ParaAttrs, ParaFormat, SpreadRef, TextDir
 use designcraft_geom::Rect;
 
 use crate::tests::extract_text;
-use crate::*;
+use crate::{PdfOptions, export_pdf};
 
 const HEBREW: &str = "DC Test PDF Hebrew";
 const ARABIC: &str = "DC Test PDF Arabic";

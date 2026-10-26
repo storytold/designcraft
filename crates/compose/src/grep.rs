@@ -23,6 +23,13 @@ use designcraft_doc::story;
 pub const MAX_PATTERN: usize = 4096;
 /// Backtracking steps one search may take before it gives up.
 pub const BACKTRACK_LIMIT: usize = 200_000;
+/// Matches one GREP style may contribute to one paragraph.
+///
+/// [`BACKTRACK_LIMIT`] bounds a single search, not a scan: `find_all` pays it again for every
+/// match, so a pattern tuned just under the limit cost `BACKTRACK_LIMIT × matches` per paragraph
+/// on every relayout (#1598). A paragraph cannot usefully carry more styled runs than this, and
+/// a scan that reaches it stops with what it has.
+pub const MAX_MATCHES_PER_PARAGRAPH: usize = 4096;
 /// Compiled program size cap (bytes) for the underlying regex engine.
 const SIZE_LIMIT: usize = 4 << 20;
 
@@ -376,6 +383,17 @@ impl Grep {
     /// The first `limit` non-overlapping matches in `text`.
     pub fn find_all(&self, text: &str, limit: usize) -> Result<Vec<Range<usize>>, GrepError> {
         self.re.find_iter(text).take(limit).map(|m| m.map(|m| m.range()).map_err(run_err)).collect()
+    }
+
+    /// Non-empty matches in `text`, at most `limit` of them: an empty match styles nothing, so it
+    /// doesn't count toward a GREP style's cap.
+    pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<Vec<Range<usize>>, GrepError> {
+        self.re
+            .find_iter(text)
+            .filter(|m| !m.as_ref().is_ok_and(|m| m.range().is_empty()))
+            .take(limit)
+            .map(|m| m.map(|m| m.range()).map_err(run_err))
+            .collect()
     }
 
     /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see

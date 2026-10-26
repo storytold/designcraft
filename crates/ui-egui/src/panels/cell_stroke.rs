@@ -111,7 +111,7 @@ pub fn edge_proxy(ui: &mut Ui, id: &str, edges: &mut Edges, lang: &str) -> bool 
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(PROXY_SIZE, PROXY_SIZE), Sense::click());
     let label = tr(lang, "Cell edges").to_string();
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, &label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, &label));
     let resp = resp.on_hover_text(tr(
         lang,
         "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
@@ -122,8 +122,8 @@ pub fn edge_proxy(ui: &mut Ui, id: &str, edges: &mut Edges, lang: &str) -> bool 
         let (double, triple) = (resp.double_clicked(), resp.triple_clicked());
         // A double-click counts only on the line of the click before it; a triple-click
         // decides from the choice before the sequence's first click.
-        let last_key = ui.id().with((id, "proxy_last"));
-        let start_key = ui.id().with((id, "proxy_start"));
+        let last_key = ui.scope_id().with((id, "proxy_last"));
+        let start_key = ui.scope_id().with((id, "proxy_start"));
         let last: Option<usize> = ui.data(|d| d.get_temp(last_key)).flatten();
         if !double && !triple {
             ui.data_mut(|d| d.insert_temp(start_key, *edges));
@@ -192,7 +192,7 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
         ui.end_row();
         caption(ui, tr(&lang, "Type:"));
         let shown = type_label(&lang, &v["type"]);
-        egui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
             for kind in TYPES {
                 let text = tr(&lang, builtin(kind).label());
                 if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
@@ -208,6 +208,7 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
                 }
             }
         });
+        let _ = crate::widgets::name_combo(combo, tr(&lang, "Type"));
         ui.end_row();
         for (label, key, tint_label, tint_key) in [("Color:", "color", "Tint:", "tint"), ("Gap Color:", "gapColor", "Gap Tint:", "gapTint")] {
             caption(ui, tr(&lang, label));
@@ -238,7 +239,7 @@ pub fn current(app: &mut DesignApp, edges: &Edges) -> Value {
 
 /// The Stroke panel for table cells: the proxy and the stroke fields, applied at once.
 pub fn panel(app: &mut DesignApp, ui: &mut Ui) {
-    let key = egui::Id::new("cell_stroke_edges");
+    let key = egui::Id::unique("cell_stroke_edges");
     let mut edges: Edges = ui.data(|d| d.get_temp(key)).unwrap_or([true; 6]);
     let lang = app.ui.language.clone();
     if edge_proxy(ui, "stroke_panel", &mut edges, &lang) {
@@ -282,7 +283,7 @@ mod tests {
         app.run("table.select", json!({"what": "table"})).unwrap();
         let mut h = Harness::builder().with_size(vec2(320.0, 600.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
-                let id = egui::Id::new("test_fonts");
+                let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(id, true));

@@ -115,6 +115,12 @@ pub(crate) fn parse(xml: &str) -> Result<El, ImportError> {
                     p.kids.push(Node::Text(s));
                 }
             }
+            Event::CData(t) => {
+                let s = t.decode().map(|s| s.to_string()).unwrap_or_default();
+                if let Some(p) = stack.last_mut() {
+                    p.kids.push(Node::Text(s));
+                }
+            }
             Event::GeneralRef(e) => {
                 let name = String::from_utf8_lossy(&e).to_string();
                 let s = match name.as_str() {
@@ -180,8 +186,9 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     if let Some(s) = r.on("strike") {
         a.strikethrough = Some(s);
     }
-    if let Some(sz) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()) {
-        a.size = Some(sz / 2.0);
+    // Half-points; a size the engine cannot mean is dropped (#1593).
+    if let Some(pt) = r.val("sz").and_then(|v| v.parse::<f64>().ok()).map(|sz| sz / 2.0).and_then(designcraft_doc::attrs::imported_type_size) {
+        a.size = Some(pt);
     }
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
         a.font_family = Some(f.to_string());
@@ -203,7 +210,8 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
 fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     let mut a = ParaAttrs::default();
     let Some(p) = ppr else { return a };
-    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map(|v| v / 20.0);
+    // Twips, clamped: a file can hold 1e300, which became a 5e298 pt indent (#1593).
+    let tw = |v: Option<&str>| v.and_then(|v| v.parse::<f64>().ok()).map(|v| v / 20.0).and_then(designcraft_doc::attrs::imported_measure);
     if let Some(sp) = p.child("spacing") {
         a.space_before = tw(sp.attr("before"));
         a.space_after = tw(sp.attr("after"));
@@ -296,7 +304,7 @@ impl Ctx {
                     let t = Table::from_strings(self.next_table, &rows, 300.0, &ParaFormat::default(), &CharFormat::default());
                     let len = st.len();
                     st.insert_table(len, t);
-                    first = false;
+                    first = st.text.ends_with('\n');
                 }
                 "sdt" => {
                     if let Some(c) = e.child("sdtContent") {
@@ -578,6 +586,12 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn cdata_text() {
+        let el = parse("<a><t><![CDATA[x < y]]></t></a>").unwrap();
+        assert_eq!(el.child("t").unwrap().text(), "x < y");
+    }
+
     /// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.
     #[test]
     fn nesting_past_the_budget_is_refused() {
@@ -587,6 +601,23 @@ mod tests {
         let err = parse(&nested(MAX_DEPTH + 1)).expect_err("one level more is refused");
         assert!(err.to_string().contains("nested deeper"), "{err}");
         assert!(parse(&nested(100_000)).is_err());
+    }
+
+    #[test]
+    fn table_adds_no_empty_paragraph() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:t>Before</w:t></w:r></w:p>
+              <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+              <w:p><w:r><w:t>After</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        st.check().unwrap();
+        let paras: Vec<&str> = st.para_ranges().into_iter().map(|r| &st.text[r]).collect();
+        assert_eq!(paras.len(), 3, "{paras:?}");
+        assert_eq!(paras[0], "Before");
+        assert_eq!(paras[2], "After");
     }
 
     pub(crate) fn docx(document: &str, styles: &str, footnotes: &str) -> Vec<u8> {
@@ -618,6 +649,29 @@ mod tests {
         // At or under the cap reads fine; a missing part is `None`.
         assert_eq!(part_capped(&mut zip, "word/document.xml", 64 * 1024).unwrap().map(|s| s.len()), Some(64 * 1024));
         assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
+    }
+
+    /// A DOCX can hold any number where a measure belongs: `1e300` twips became a 5e298 pt
+    /// indent, and `w:sz` of `1e300` a 5e299 pt type size. Measures are clamped to the widest
+    /// page and a size the engine cannot mean is dropped (#1593).
+    #[test]
+    fn a_measure_or_size_a_file_cannot_mean_is_bounded() {
+        use designcraft_doc::attrs::MAX_MEASURE;
+        let doc = format!(
+            r#"<w:document {W}><w:body><w:p><w:pPr>
+                 <w:spacing w:before="1e300" w:after="-1e300"/><w:ind w:left="1e300" w:firstLine="-1e300"/>
+               </w:pPr><w:r><w:rPr><w:sz w:val="1e300"/></w:rPr><w:t>big</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let i = import(&docx(&doc, "", "")).unwrap();
+        let p = &i.story.paras[0].para;
+        for (what, v) in
+            [("space before", p.space_before), ("space after", p.space_after), ("left indent", p.left_indent), ("first line", p.first_line_indent)]
+        {
+            let v = v.expect("the value is kept, bounded");
+            assert!(v.is_finite() && v.abs() <= MAX_MEASURE, "{what} is within the widest page: {v}");
+        }
+        let size = i.story.char_format_at(i.story.text.find("big").unwrap() + 1).over.size;
+        assert_eq!(size, None, "a size the engine cannot mean is dropped, so the style's size stands");
     }
 
     #[test]
@@ -699,6 +753,19 @@ mod tests {
         }
         for at in [0, 1] {
             assert!(fin(st.format_after(at).over.size), "{:?}", st.format_after(at).over.size);
+        }
+    }
+
+    #[test]
+    fn out_of_range_sizes_are_dropped() {
+        let document = format!(
+            r#"<w:document {W}><w:body>
+              <w:p><w:r><w:rPr><w:sz w:val="0"/></w:rPr><w:t>a</w:t></w:r><w:r><w:rPr><w:sz w:val="99999999"/></w:rPr><w:t>b</w:t></w:r></w:p>
+            </w:body></w:document>"#
+        );
+        let st = import(&docx(&document, "", "")).unwrap().story;
+        for at in [0, 1] {
+            assert_eq!(st.format_after(at).over.size, None, "run {at}");
         }
     }
 

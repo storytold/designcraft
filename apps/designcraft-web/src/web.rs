@@ -350,9 +350,14 @@ struct WebShell {
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
-        let _ = graphics.run_if_healthy(|| {
-            let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-            for f in dropped {
+        let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let _ = self.graphics.run_if_healthy(|| {
+            // Dropped files belong to this host iteration's raw input, not to stale logic input:
+            // read them here once, before the batch is saved as pending for a hidden pass.
+            for f in std::mem::take(&mut raw.dropped_files) {
                 let request = self.app.import_request("drop");
                 let inbox = self.inbox.clone();
                 let ctx = ctx.clone();
@@ -367,14 +372,8 @@ impl eframe::App for WebShell {
                     }
                 });
             }
-            self.app.logic(ctx);
-        });
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        let _ = self.graphics.run_if_healthy(|| {
             designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused() || self.app.canvas_ime());
-            self.app.raw_input_hook(raw);
+            self.app.raw_input_hook(ctx, raw);
         });
     }
 
@@ -395,6 +394,8 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let ctx = ctx.clone();
             let dialog = if request.purpose == "swatches" {
                 rfd::AsyncFileDialog::new().add_filter("Swatch Exchange (ASE)", &["ase"])
+            } else if request.purpose == "shortcuts" {
+                rfd::AsyncFileDialog::new().add_filter("Shortcut set (JSON, InDesign text)", &["json", "txt"])
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {

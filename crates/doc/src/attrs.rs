@@ -371,7 +371,7 @@ fn locale_code(words: &[&str]) -> Option<String> {
 /// from documents, so at most [`MAX_TAGS`] are kept; past that a new tag is unknown (`None`).
 fn intern_tag(tag: String) -> Option<&'static str> {
     const MAX_TAGS: usize = 512;
-    static TAGS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    static TAGS: std::sync::Mutex<Vec<&str>> = std::sync::Mutex::new(Vec::new());
     let mut tags = TAGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(t) = tags.iter().find(|t| **t == tag) {
         return Some(t);
@@ -649,6 +649,34 @@ pub const MAX_TAB_POSITION: f64 = 15_552.0;
 pub const MAX_TAB_LEADER: usize = 8;
 /// Stops closer than this share a position.
 pub const SAME_TAB_POSITION: f64 = 0.01;
+
+/// Smallest type size the engine accepts, in points.
+pub const MIN_TYPE_SIZE: f64 = 0.1;
+/// Largest type size the engine accepts, in points, as InDesign's own field allows.
+pub const MAX_TYPE_SIZE: f64 = 1296.0;
+/// Largest measure an imported indent, spacing or offset can carry, in points: the furthest tab
+/// stop, which is the widest page.
+pub const MAX_MEASURE: f64 = MAX_TAB_POSITION;
+
+/// A type size read from a file, or `None` when it is not a size the engine can mean.
+///
+/// A file can hold any number, including `NaN`, `inf`, `0`, a negative or `1e300`. Every importer
+/// had its own spelling of this test, or only checked that the value was finite -- so tagged text
+/// took `<cSize:1e300>` and set a 1e300 pt size on the text (#1593). A size outside the range is
+/// dropped rather than clamped, so the text keeps the size its style gives it.
+pub fn imported_type_size(pt: f64) -> Option<f64> {
+    (pt.is_finite() && (MIN_TYPE_SIZE..=MAX_TYPE_SIZE).contains(&pt)).then_some(pt)
+}
+
+/// An indent, spacing or offset read from a file, clamped to ±[`MAX_MEASURE`]; `None` when the
+/// value is not finite.
+///
+/// Unlike a type size this is clamped rather than dropped: a file that says "indent everything"
+/// still indents to the widest page the engine has, where dropping the value would quietly
+/// restore the style's own indent and hide what the file asked for (#1593).
+pub fn imported_measure(pt: f64) -> Option<f64> {
+    pt.is_finite().then(|| pt.clamp(-MAX_MEASURE, MAX_MEASURE))
+}
 
 impl TabStop {
     /// A finite position clamped to `0..=MAX_TAB_POSITION`.
@@ -1270,8 +1298,17 @@ attr_set! {
         number_expression: String = "^#.^t".into(),
         /// Text after the bullet (metacharacters expand as in [`expand_list_text`]).
         list_separator: String = "\t".into(),
+        /// The hanging indent was set by the Bulleted or Numbered List button, which takes it away
+        /// again with the list (an indent the paragraph had before stays).
+        list_hang: bool = false,
         balance_ragged: bool = false,
+        /// Hang punctuation outside the measure in this paragraph, at each character's own size
+        /// (DesignCraft's own per-paragraph switch; a story with Optical Margin Alignment on
+        /// overrides it with the story's size).
         optical_margin: bool = false,
+        /// Ignore Optical Margin: no hang in this paragraph, whatever the story or
+        /// `optical_margin` say.
+        ignore_optical_margin: bool = false,
         /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.
         kinsoku: Option<crate::cjk::Kinsoku> = None => "deserialize_explicit_value",
         /// Preserved spacing-table reference; compatibility audit reports unsupported composition.

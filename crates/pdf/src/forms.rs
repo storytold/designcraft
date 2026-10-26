@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions};
 
 use crate::export::Sheet;
-use crate::transitions::{int_after, object, rfind};
+use crate::transitions::{bracketed, int_after, object, rfind};
 
 /// A field placed on an output page: (page index, PDF rectangle, field).
 pub(crate) type Placed = (usize, [f64; 4], FormField);
@@ -94,7 +94,7 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
     let pages_id = int_after(&cat, "/Pages")?;
     let pages = String::from_utf8_lossy(&pdf[object(pdf, pages_id)?]).to_string();
     let kids_str = &pages[pages.find("/Kids")? + 5..];
-    let kids_str = &kids_str[kids_str.find('[')? + 1..kids_str.find(']')?];
+    let kids_str = bracketed(kids_str)?;
     let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
 

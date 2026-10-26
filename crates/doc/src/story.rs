@@ -125,6 +125,9 @@ pub struct Story {
     /// right to left, in every frame of the thread.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vertical: bool,
+    /// Story ▸ Optical Margin Alignment.
+    #[serde(default, skip_serializing_if = "OpticalMargin::is_default")]
+    pub optical_margin: OpticalMargin,
     /// Bumped on every edit (composition cache key).
     #[serde(default)]
     pub rev: u64,
@@ -158,6 +161,45 @@ pub struct Story {
     /// File › Place with Create Links: the text file the story was placed from (Links panel).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_link: Option<TextFileLink>,
+}
+
+/// Story ▸ Optical Margin Alignment: punctuation and the edges of some letters hang outside the
+/// frame's edges, in every paragraph of the story except those with Ignore Optical Margin.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpticalMargin {
+    pub on: bool,
+    /// The type size (points) the hang amounts are set for: text of this size hangs by the
+    /// built-in proportions of each character's advance, and the hang grows with this size.
+    pub size: f64,
+}
+
+impl Default for OpticalMargin {
+    fn default() -> Self {
+        OpticalMargin { on: false, size: Self::DEFAULT_SIZE }
+    }
+}
+
+impl OpticalMargin {
+    pub const DEFAULT_SIZE: f64 = 12.0;
+    /// InDesign's range for the size.
+    pub const MIN_SIZE: f64 = 0.1;
+    pub const MAX_SIZE: f64 = 1296.0;
+
+    /// `v` clamped to the size range, or `None` when it isn't a finite number.
+    pub fn clamp_size(v: f64) -> Option<f64> {
+        v.is_finite().then(|| v.clamp(Self::MIN_SIZE, Self::MAX_SIZE))
+    }
+
+    /// The size the story's text hangs for, when the setting is on (a stored size outside the
+    /// range is clamped, a non-finite one reads as the default).
+    pub fn hang_size(&self) -> Option<f64> {
+        self.on.then(|| Self::clamp_size(self.size).unwrap_or(Self::DEFAULT_SIZE))
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A linked text file: where a placed story came from, what the file held, and the Word Import
@@ -201,6 +243,7 @@ impl Story {
             frames: vec![],
             direction: crate::TextDirection::LeftToRight,
             vertical: false,
+            optical_margin: OpticalMargin::default(),
             rev: 0,
             tables: BTreeMap::new(),
             notes: Vec::new(),
@@ -594,6 +637,22 @@ mod tests {
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    #[test]
+    fn optical_margin_is_optional_in_saved_stories() {
+        let plain = serde_json::to_value(st("Text")).unwrap();
+        assert!(plain.get("opticalMargin").is_none());
+        let old: Story = serde_json::from_value(plain).unwrap();
+        assert_eq!(old.optical_margin, OpticalMargin { on: false, size: 12.0 });
+        let mut s = st("Text");
+        s.optical_margin = OpticalMargin { on: true, size: 18.0 };
+        let back: Story = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert_eq!(back.optical_margin, s.optical_margin);
+        // A hostile stored size is clamped where it is used.
+        assert_eq!(OpticalMargin { on: true, size: 1e9 }.hang_size(), Some(OpticalMargin::MAX_SIZE));
+        assert_eq!(OpticalMargin { on: true, size: -3.0 }.hang_size(), Some(OpticalMargin::MIN_SIZE));
+        assert_eq!(OpticalMargin { on: false, size: 18.0 }.hang_size(), None);
     }
 
     #[test]

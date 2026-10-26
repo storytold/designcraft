@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use kurbo::BezPath;
 use skrifa::instance::{Location, LocationRef, Size};
@@ -148,12 +148,12 @@ pub struct FaceRef(&'static FontFace);
 impl FaceRef {
     /// The handle for a loaded face (memoised per face).
     pub fn of(face: &Arc<FontFace>) -> FaceRef {
-        static LEAKED: RwLock<Vec<Option<&'static FontFace>>> = RwLock::new(Vec::new());
+        static LEAKED: RwLock<Vec<Option<&FontFace>>> = RwLock::new(Vec::new());
         let id = face.id as usize;
-        if let Some(Some(f)) = LEAKED.read().unwrap_or_else(|e| e.into_inner()).get(id) {
+        if let Some(Some(f)) = LEAKED.read().unwrap_or_else(PoisonError::into_inner).get(id) {
             return FaceRef(f);
         }
-        let mut w = LEAKED.write().unwrap_or_else(|e| e.into_inner());
+        let mut w = LEAKED.write().unwrap_or_else(PoisonError::into_inner);
         if w.len() <= id {
             w.resize(id + 1, None);
         }
@@ -579,7 +579,7 @@ fn script_chain(c: char) -> Option<&'static [&'static str]> {
 /// The Japanese fallback chain: the craft-fonts Japanese faces' families in document order
 /// (Mincho first; none without craft-fonts), then [`JAPANESE_FALLBACKS`].
 fn japanese_chain() -> &'static [&'static str] {
-    static CHAIN: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    static CHAIN: std::sync::OnceLock<Vec<&str>> = std::sync::OnceLock::new();
     CHAIN.get_or_init(|| {
         let mut chain: Vec<&'static str> = Vec::new();
         for f in crate::japanese_document_fonts() {
@@ -1037,7 +1037,7 @@ pub fn same_style(a: &str, b: &str) -> bool {
 }
 
 fn norm(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
 /// Weight implied by a style name.
@@ -1067,12 +1067,20 @@ fn style_italic(style: &str) -> bool {
 }
 
 impl FontDb {
-    /// A database holding the bundled fonts, then the craft-fonts Japanese faces (Mincho first,
-    /// so they are the fallback for Japanese text after the requested and bundled fonts; empty
-    /// without `CRAFT_FONTS_DIR`), whose system font scan reads `font_dirs`.
+    /// A database holding the bundled fonts, then the craft-fonts Japanese faces (Mincho first),
+    /// followed by Noto Sans Hebrew Regular and Noto Sans Devanagari Regular for document text.
+    /// The optional craft-fonts faces are absent without `CRAFT_FONTS_DIR`; system font scans
+    /// read `font_dirs`. Japanese fallback and UI ordering remain independent of these additions.
     pub fn with_font_dirs(font_dirs: Vec<std::path::PathBuf>) -> Self {
         let mut faces = Vec::new();
-        let craft = crate::japanese_document_fonts().into_iter().map(|f| f.bytes);
+        let craft = crate::japanese_document_fonts()
+            .into_iter()
+            .chain(
+                ["Noto Sans Hebrew", "Noto Sans Devanagari"]
+                    .into_iter()
+                    .filter_map(|family| crate::CRAFT_FONTS.iter().find(|f| f.family == family && f.style == "Regular")),
+            )
+            .map(|f| f.bytes);
         for data in BUNDLED.iter().copied().chain(craft) {
             for (i, family, style, coords) in enumerate_faces(data) {
                 if let Some(f) = make_face(FontBytes::Static(data), FontSource::Bundled, i, family, style, coords) {
@@ -1107,7 +1115,7 @@ impl FontDb {
     pub fn set_system_fallback(&self, on: bool) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.sys.lock().unwrap_or_else(|e| e.into_inner()).enabled = on;
+            self.sys.lock().unwrap_or_else(PoisonError::into_inner).enabled = on;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = on;
@@ -1123,20 +1131,20 @@ impl FontDb {
     }
 
     fn read_faces(&self) -> std::sync::RwLockReadGuard<'_, Vec<Arc<FontFace>>> {
-        self.faces.read().unwrap_or_else(|e| e.into_inner())
+        self.faces.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The system font catalog, scanned first if it hasn't been yet.
     #[cfg(not(target_arch = "wasm32"))]
     fn read_catalog(&self) -> std::sync::RwLockReadGuard<'_, Vec<CatalogEntry>> {
         self.ensure_catalog();
-        self.catalog.read().unwrap_or_else(|e| e.into_inner())
+        self.catalog.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What the document with font scope `scope` sees: its own fonts ahead of the shared ones.
     /// Scope 0 (a document without fonts of its own) or a closed scope sees the shared fonts.
     pub fn scoped(&self, scope: u32) -> ScopedFonts<'_> {
-        let own = if scope == 0 { None } else { self.scopes.read().unwrap_or_else(|e| e.into_inner()).get(&scope).cloned() };
+        let own = if scope == 0 { None } else { self.scopes.read().unwrap_or_else(PoisonError::into_inner).get(&scope).cloned() };
         ScopedFonts { db: self, own }
     }
 
@@ -1187,7 +1195,7 @@ impl FontDb {
     /// family's bold without its regular), skipping a family and style another thread has added
     /// meanwhile. Returns the number added.
     fn insert_faces(&self, new: Vec<FontFace>) -> usize {
-        let mut faces = self.faces.write().unwrap_or_else(|e| e.into_inner());
+        let mut faces = self.faces.write().unwrap_or_else(PoisonError::into_inner);
         let mut added = 0;
         for f in new {
             if !has_face(&faces, &f.family, &f.style) {
@@ -1238,7 +1246,7 @@ impl FontDb {
         let count = first.unwrap_or_else(|| self.scan_font_dirs());
         // Retry characters and CJK chain families that newly installed fonts can now cover.
         // Reset outside scan_font_dirs: a chain lookup can hold sys during the initial scan.
-        let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sys = self.sys.lock().unwrap_or_else(PoisonError::into_inner);
         sys.generation = sys.generation.wrapping_add(1);
         sys.misses.clear();
         sys.chain_tried.clear();
@@ -1257,7 +1265,7 @@ impl FontDb {
             // Rescan first: a lookup after the faces are dropped finds the new files.
             let cataloged = self.load_system_fonts();
             let changed: Vec<std::path::PathBuf> = {
-                let mut files = self.installed_files.lock().unwrap_or_else(|e| e.into_inner());
+                let mut files = self.installed_files.lock().unwrap_or_else(PoisonError::into_inner);
                 let mut changed: Vec<_> = files.iter().filter(|(p, stamp)| file_stamp(p).as_ref() != Some(*stamp)).map(|(p, _)| p.clone()).collect();
                 changed.sort();
                 for p in &changed {
@@ -1268,15 +1276,15 @@ impl FontDb {
             if !changed.is_empty() {
                 let stale = |f: &FontFace| matches!(&f.source, FontSource::Installed(p) if changed.contains(p));
                 let mut dropped = std::collections::HashSet::new();
-                self.faces.write().unwrap_or_else(|e| e.into_inner()).retain(|f| {
+                self.faces.write().unwrap_or_else(PoisonError::into_inner).retain(|f| {
                     let keep = !stale(f);
                     if !keep {
                         dropped.insert(f.id);
                     }
                     keep
                 });
-                self.instances.write().unwrap_or_else(|e| e.into_inner()).retain(|(base, _), f| !dropped.contains(base) && !stale(f));
-                self.outlines.lock().unwrap_or_else(|e| e.into_inner()).retain(|(face, _), _| !dropped.contains(face));
+                self.instances.write().unwrap_or_else(PoisonError::into_inner).retain(|(base, _), f| !dropped.contains(base) && !stale(f));
+                self.outlines.lock().unwrap_or_else(PoisonError::into_inner).retain(|(face, _), _| !dropped.contains(face));
                 log::debug!("reloading {} changed font files ({} faces)", changed.len(), dropped.len());
             }
             ReloadedFonts { cataloged, changed }
@@ -1291,7 +1299,7 @@ impl FontDb {
     fn read_installed(&self, path: &std::path::Path) -> Option<Vec<u8>> {
         let stamp = file_stamp(path)?;
         let data = std::fs::read(path).ok()?;
-        self.installed_files.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), stamp);
+        self.installed_files.lock().unwrap_or_else(PoisonError::into_inner).insert(path.to_path_buf(), stamp);
         Some(data)
     }
 
@@ -1314,7 +1322,7 @@ impl FontDb {
                     stack.push(p);
                     continue;
                 }
-                let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+                let ext = p.extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
                 if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
                     continue;
                 }
@@ -1351,7 +1359,7 @@ impl FontDb {
         }
         let n = found.len();
         log::debug!("cataloged {n} system font faces");
-        *self.catalog.write().unwrap_or_else(|e| e.into_inner()) = found;
+        *self.catalog.write().unwrap_or_else(PoisonError::into_inner) = found;
         n
     }
 
@@ -1399,7 +1407,7 @@ impl FontDb {
         let Ok(entries) = std::fs::read_dir(folder) else { return out };
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         for path in entries.flatten().map(|e| e.path()) {
-            let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+            let ext = path.extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase);
             if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
                 continue;
             }
@@ -1421,7 +1429,7 @@ impl FontDb {
             let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
             // The listed length skips oversized files unread.
             let meta = std::fs::metadata(path).ok();
-            let listed = meta.as_ref().map_or(0, |m| m.len());
+            let listed = meta.as_ref().map_or(0, std::fs::Metadata::len);
             let faces = if listed > MAX_DOCUMENT_FONT_BYTES {
                 Err(too_large())
             } else if total.saturating_add(listed) > MAX_DOCUMENT_FONTS_TOTAL {
@@ -1449,7 +1457,7 @@ impl FontDb {
         if !own.is_empty() {
             out.scope = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
             out.faces = own.len();
-            self.scopes.write().unwrap_or_else(|e| e.into_inner()).insert(out.scope, own.into());
+            self.scopes.write().unwrap_or_else(PoisonError::into_inner).insert(out.scope, own.into());
         }
         out
     }
@@ -1466,7 +1474,7 @@ impl FontDb {
         room: u64,
     ) -> Result<(Vec<Arc<FontFace>>, u64), String> {
         use std::io::Read;
-        if let Some((len, m, faces)) = self.document_files.lock().unwrap_or_else(|e| e.into_inner()).get(path)
+        if let Some((len, m, faces)) = self.document_files.lock().unwrap_or_else(PoisonError::into_inner).get(path)
             && (*len, *m) == (listed, modified)
         {
             return Ok((faces.clone(), listed));
@@ -1494,14 +1502,14 @@ impl FontDb {
         if faces.is_empty() {
             return Err("not a font DesignCraft can read".into());
         }
-        self.document_files.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), (listed, modified, faces.clone()));
+        self.document_files.lock().unwrap_or_else(PoisonError::into_inner).insert(path.to_path_buf(), (listed, modified, faces.clone()));
         Ok((faces, len))
     }
 
     /// Close a document's font scope: its fonts are no longer found (in it or anywhere). Their
     /// files stay read, for the document opening again.
     pub fn close_scope(&self, scope: u32) {
-        self.scopes.write().unwrap_or_else(|e| e.into_inner()).remove(&scope);
+        self.scopes.write().unwrap_or_else(PoisonError::into_inner).remove(&scope);
     }
 
     /// The shared fonts' face for `family` + `style` (see [`ScopedFonts::face`]).
@@ -1542,7 +1550,7 @@ impl FontDb {
             return false;
         }
         let generation = {
-            let sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+            let sys = self.sys.lock().unwrap_or_else(PoisonError::into_inner);
             if !sys.enabled || sys.misses.contains(&c) {
                 return false;
             }
@@ -1558,12 +1566,12 @@ impl FontDb {
                 }
             }
         }
-        let mut paths: Vec<std::path::PathBuf> = self.catalog.read().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.path.clone()).collect();
+        let mut paths: Vec<std::path::PathBuf> = self.catalog.read().unwrap_or_else(PoisonError::into_inner).iter().map(|e| e.path.clone()).collect();
         paths.sort();
         paths.dedup();
         #[cfg(all(test, target_os = "linux"))]
         {
-            let hook = self.fallback_snapshot_hook.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let hook = self.fallback_snapshot_hook.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(hook) = hook {
                 let _ = hook.reached.send(());
                 hook.resume.wait();
@@ -1580,7 +1588,7 @@ impl FontDb {
                 return true;
             }
         }
-        let mut sys = self.sys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sys = self.sys.lock().unwrap_or_else(PoisonError::into_inner);
         if sys.generation == generation {
             sys.misses.insert(c);
         }
@@ -1619,12 +1627,12 @@ impl FontDb {
     /// disappears.
     pub fn outline(&self, face: &FontFace, gid: u32) -> Arc<BezPath> {
         let key = (face.id, gid);
-        if let Some(p) = self.outlines.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if let Some(p) = self.outlines.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
             return p.clone();
         }
         let drawn = font_outline(face, gid);
         let p = Arc::new(if gid == 0 && drawn.elements().is_empty() { self.missing_box(face).unwrap_or(drawn) } else { drawn });
-        let mut cache = self.outlines.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.outlines.lock().unwrap_or_else(PoisonError::into_inner);
         if cache.len() >= OUTLINE_CACHE_MAX {
             cache.clear();
         }
@@ -1986,7 +1994,7 @@ impl ScopedFonts<'_> {
             return Some(base);
         }
         let key = (base.id, style.to_string());
-        if let Some(f) = self.db.instances.read().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        if let Some(f) = self.db.instances.read().unwrap_or_else(PoisonError::into_inner).get(&key) {
             return Some(f.clone());
         }
         let mut coords = base.coords.clone();
@@ -2004,7 +2012,7 @@ impl ScopedFonts<'_> {
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;
-        Some(self.db.instances.write().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert_with(|| Arc::new(f)).clone())
+        Some(self.db.instances.write().unwrap_or_else(PoisonError::into_inner).entry(key).or_insert_with(|| Arc::new(f)).clone())
     }
 
     fn find(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
@@ -2077,7 +2085,7 @@ impl ScopedFonts<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if !self.db.is_loaded(family) {
             // Held while loading, so a parallel lookup waits for the font instead of passing it by.
-            let mut sys = self.db.sys.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sys = self.db.sys.lock().unwrap_or_else(PoisonError::into_inner);
             if sys.enabled && sys.chain_tried.insert(family) {
                 self.db.load_cataloged(family);
             }
@@ -2199,6 +2207,72 @@ mod tests_fallback;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests_docfonts.rs"]
 mod tests_docfonts;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_gui_document_fonts_tests {
+    use super::*;
+
+    /// The production font scope contains the canonical bundled and Japanese faces in their existing order, including bundled Hebrew/Devanagari faces, without system or injected fonts.
+    #[test]
+    fn native_gui_canonical_document_faces_load_without_system_or_added_fonts() {
+        if crate::CRAFT_FONTS.is_empty() {
+            assert!(std::env::var_os("CRAFT_FONTS_REQUIRED").is_none(), "required canonical fonts were not embedded");
+            return; // Optional-input builds retain their supported Latin-only database.
+        }
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let scope = db.scoped(0);
+        let japanese = crate::japanese_document_fonts();
+        let previous: Vec<_> = BUNDLED
+            .iter()
+            .copied()
+            .chain(japanese.iter().map(|f| f.bytes))
+            .flat_map(enumerate_faces)
+            .map(|(_, family, style, _)| (family, style))
+            .collect();
+        let loaded: Vec<_> = db.read_faces().iter().map(|f| (f.family.clone(), f.style.clone())).collect();
+        assert!(loaded.len() >= previous.len(), "existing bundled/Japanese faces disappeared");
+        assert_eq!(&loaded[..previous.len()], previous.as_slice(), "preserve all Latin and Japanese face ordering");
+        for family in ["Source Sans 3", "Source Serif 4", "Inter", "JetBrains Mono"] {
+            let face = db.face(family, "Regular");
+            assert_eq!((face.family.as_str(), face.style.as_str(), &face.source), (family, "Regular", &FontSource::Bundled));
+        }
+        assert!(!japanese.is_empty(), "the required central manifest includes the existing Japanese faces");
+        assert!(japanese[0].family.contains("Mincho"));
+        assert_eq!(crate::japanese_ui_fonts(false)[0].family, "BIZ UDPGothic");
+        assert_eq!(crate::japanese_ui_fonts(true)[0].style, "Bold");
+        let latin = db.face(crate::DEFAULT_FAMILY, "Regular");
+        for language in [Some("ja"), None] {
+            assert!(db.fallback_for('語', latin.id(), language).unwrap().family.contains("Mincho"), "Japanese fallback changed: {language:?}");
+        }
+        let mut admitted = Vec::new();
+        for (family, text) in [("Noto Sans Hebrew", "שלום עולם"), ("Noto Sans Devanagari", "नमस्ते दुनिया")] {
+            let embedded: Vec<_> = crate::CRAFT_FONTS.iter().filter(|f| f.family == family && f.style == "Regular").collect();
+            assert_eq!(embedded.len(), 1, "exactly one canonical {family} Regular input");
+            assert!(scope.has_family(family), "production database did not register {family}");
+            assert!(scope.has_style(family, "Regular"), "{family} Regular");
+            assert!(!scope.has_style(family, "Unavailable Native GUI Style"));
+            assert!(db.families().iter().any(|f| f == family), "family catalog omits {family}");
+            assert!(scope.family_infos().iter().any(|f| f.family == family), "menu catalog omits {family}");
+            let face = scope.face(family, "Regular");
+            assert_eq!((face.family.as_str(), face.style.as_str(), &face.source), (family, "Regular", &FontSource::Bundled));
+            assert_eq!(face.data(), embedded[0].bytes, "neither OS discovery nor an injected face may satisfy this contract");
+            for c in text.chars().filter(|c| !c.is_whitespace()) {
+                assert_ne!(face.glyph_for(c), 0, "{family} lacks U+{:04X} ({c})", u32::from(c));
+                let fallback = db.fallback_for(c, latin.id(), None).unwrap();
+                assert_eq!((fallback.family.as_str(), fallback.style.as_str(), &fallback.source), (family, "Regular", &FontSource::Bundled));
+                assert_eq!(fallback.data(), embedded[0].bytes, "document fallback must use the canonical {family} face for {c}");
+                assert_ne!(fallback.glyph_for(c), 0);
+            }
+            let replacement = scope.face(family, "Unavailable Native GUI Style");
+            assert_eq!((replacement.family.as_str(), replacement.style.as_str()), (family, "Regular"), "nearest-style policy stays truthful");
+            admitted.push((family.to_string(), "Regular".to_string()));
+        }
+        assert_eq!(&loaded[previous.len()..], admitted.as_slice(), "only the two deliberate Regular tuples follow the existing document faces");
+        assert!(!scope.has_family("Unavailable Native GUI Family"));
+        assert_eq!(scope.face("Unavailable Native GUI Family", "Regular").family, FALLBACK_FAMILY);
+    }
+}
 
 #[cfg(test)]
 #[path = "tests_vertical.rs"]

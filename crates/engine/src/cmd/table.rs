@@ -297,7 +297,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
@@ -971,6 +971,15 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let (first_baseline, first_baseline_min) = first_baseline_params(p, ID)?;
+    // Cell Options › Text › Rotation. The value is kept and written back to IDML; only 0 is
+    // composed so far, which the IDML import reports (#1468).
+    let rotation = match p.get("rotation").filter(|v| !v.is_null()) {
+        Some(v) => match v.as_f64().map(|d| d.rem_euclid(360.0)) {
+            Some(d) if d == 0.0 || d == 90.0 || d == 180.0 || d == 270.0 => Some(d),
+            _ => return Err(bad(ID, "rotation: 0, 90, 180 or 270 degrees")),
+        },
+        None => None,
+    };
     let text = str_param(p, "text").map(|_| super::text_param(p, "text"));
     let stroke = match p.get("stroke").filter(|v| !v.is_null()) {
         Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
@@ -1020,6 +1029,9 @@ fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(v) = first_baseline_min {
                 cell.first_baseline_min = v;
+            }
+            if let Some(v) = rotation {
+                cell.rotation = v;
             }
             if let Some(tx) = &text {
                 let len = cell.text.len();
@@ -1261,6 +1273,35 @@ fn resize_track(sizes: &[f64], index: usize, delta: f64, keep: bool) -> Option<V
     out.iter().all(|v| v.is_finite()).then_some(out)
 }
 
+/// The frame a border drag names must hold the table's story and be editable.
+fn check_border_frame(st: &crate::DocState, p: &Value, story: designcraft_doc::StoryId) -> Result<()> {
+    const ID: &str = "table.resizeBorder";
+    if let Some(fid) = super::id_param(p, "frame") {
+        let it = st.doc.item(fid).ok_or_else(|| bad(ID, format!("no frame {}", fid.0)))?;
+        if it.text_frame().map(|f| f.story) != Some(story) {
+            return Err(bad(ID, "the table is not in that frame's story"));
+        }
+        if it.locked || st.doc.layer(it.layer).is_some_and(|l| l.locked) {
+            return Err(bad(ID, "the frame or its layer is locked"));
+        }
+    }
+    Ok(())
+}
+
+/// The change in track size: `delta`, or `size` measured from the current size `cur`.
+fn border_delta(p: &Value, cur: f64) -> Result<f64> {
+    const ID: &str = "table.resizeBorder";
+    let delta = match (p.get("delta").and_then(Value::as_f64), p.get("size").and_then(Value::as_f64)) {
+        (Some(d), _) => d,
+        (None, Some(sz)) => sz - cur,
+        (None, None) => return Err(bad(ID, "`delta` or `size` required")),
+    };
+    if !delta.is_finite() {
+        return Err(bad(ID, "`delta`/`size` must be a finite number"));
+    }
+    Ok(delta)
+}
+
 fn resize_border(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.resizeBorder";
     let column = match str_param(p, "axis") {
@@ -1272,15 +1313,7 @@ fn resize_border(s: &mut Session, p: &Value) -> Result<Value> {
     let keep = p.get("keepTableSize").and_then(Value::as_bool).unwrap_or(false);
     let g = target(s, p, ID)?;
     let st = s.doc()?;
-    if let Some(fid) = super::id_param(p, "frame") {
-        let it = st.doc.item(fid).ok_or_else(|| bad(ID, format!("no frame {}", fid.0)))?;
-        if it.text_frame().map(|f| f.story) != Some(g.story) {
-            return Err(bad(ID, "the table is not in that frame's story"));
-        }
-        if it.locked || st.doc.layer(it.layer).is_some_and(|l| l.locked) {
-            return Err(bad(ID, "the frame or its layer is locked"));
-        }
-    }
+    check_border_frame(st, p, g.story)?;
     let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
     let sizes: Vec<f64> = if column {
         t.columns.iter().map(|c| c.width).collect()
@@ -1289,14 +1322,7 @@ fn resize_border(s: &mut Session, p: &Value) -> Result<Value> {
         (0..t.nrows()).map(|r| composed_row_height(&cs, t, r).unwrap_or(MIN_TRACK)).collect()
     };
     let cur = *sizes.get(index).ok_or_else(|| bad(ID, format!("index {index} out of range")))?;
-    let delta = match (p.get("delta").and_then(Value::as_f64), p.get("size").and_then(Value::as_f64)) {
-        (Some(d), _) => d,
-        (None, Some(sz)) => sz - cur,
-        (None, None) => return Err(bad(ID, "`delta` or `size` required")),
-    };
-    if !delta.is_finite() {
-        return Err(bad(ID, "`delta`/`size` must be a finite number"));
-    }
+    let delta = border_delta(p, cur)?;
     let new = resize_track(&sizes, index, delta, keep).ok_or_else(|| bad(ID, "invalid table geometry"))?;
     let size = new.get(index).copied().unwrap_or(cur);
     let scaled = keep && index + 1 == sizes.len();
@@ -1393,14 +1419,14 @@ fn parse_alt(v: &Value) -> Option<AltFills> {
     }
     let d = AltFills::default();
     Some(AltFills {
-        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| x as u32),
+        first: v.get("first").and_then(Value::as_u64).map_or(d.first, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         first_color: color_param(v, "firstColor").unwrap_or(d.first_color),
         first_tint: v.get("firstTint").and_then(Value::as_f64).map_or(d.first_tint, |x| x as f32),
-        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| x as u32),
+        next: v.get("next").and_then(Value::as_u64).map_or(d.next, |x| u32::try_from(x).unwrap_or(u32::MAX)),
         next_color: color_param(v, "nextColor").unwrap_or(d.next_color),
         next_tint: v.get("nextTint").and_then(Value::as_f64).map_or(d.next_tint, |x| x as f32),
-        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| x as u32),
-        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| x as u32),
+        skip_first: v.get("skipFirst").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
+        skip_last: v.get("skipLast").and_then(Value::as_u64).map_or(0, |x| u32::try_from(x).unwrap_or(u32::MAX)),
     })
 }
 
@@ -1548,7 +1574,7 @@ fn get(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|(r, c)| {
             let cell = t.cell(r, c)?;
             Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "style": cell.style}))
+                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
         })
         .collect();
     Ok(json!({
@@ -1739,7 +1765,7 @@ fn table_style_fields(ts: &mut designcraft_doc::TableStyle, p: &Value, border: O
         ts.borders = Default::default();
     }
     if let Some(a) = p.get("altRows").and_then(Value::as_object) {
-        let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| v as u32);
+        let n = |k: &str, d: u32| a.get(k).and_then(Value::as_u64).map_or(d, |v| u32::try_from(v).unwrap_or(u32::MAX));
         let c = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or(designcraft_color::swatch::NONE).to_string();
         let t = |k: &str| a.get(k).and_then(Value::as_f64).map_or(1.0, |v| v.clamp(0.0, 1.0) as f32);
         ts.alt_rows = Some(designcraft_doc::AltFills {
@@ -1832,6 +1858,16 @@ mod style_tests {
         let cell = got["cells"].as_array().unwrap().iter().find(|c| c["row"] == 0 && c["col"] == 0).unwrap().clone();
         assert_eq!((cell["firstBaseline"].as_str(), cell["firstBaselineMin"].as_f64()), (Some("capHeight"), Some(3.0)));
         assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaseline": "middle"})).is_err());
+        // Cell Options › Text › Rotation: carried and written back, composed horizontally so far,
+        // which the IDML import reports (#1468).
+        for (given, want) in [(90, 90.0), (270, 270.0), (0, 0.0), (-90, 270.0), (450, 90.0)] {
+            s.execute("table.setCell", &json!({"row": 0, "col": 0, "rotation": given})).unwrap_or_else(|e| panic!("{given}: {e}"));
+            let cell = s.execute("table.get", &json!({})).unwrap()["cells"][0].clone();
+            assert_eq!(cell["rotation"].as_f64(), Some(want), "{given}");
+        }
+        for bad in [45, 1, 100] {
+            assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "rotation": bad})).is_err(), "{bad}");
+        }
         assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "firstBaselineMin": -1})).is_err());
         s.execute("style.cell.create", &json!({"name": "Leading", "firstBaseline": "leading"})).unwrap();
         s.execute("style.cell.apply", &json!({"name": "Leading", "row": 1, "col": 1})).unwrap();
@@ -1981,6 +2017,7 @@ fn place_graphic(s: &mut Session, p: &Value) -> Result<Value> {
         let t = st.table_mut(g.table).ok_or_else(|| bad(ID, "no table"))?;
         let cell = t.cell_mut(r, c).ok_or_else(|| bad(ID, format!("no cell {r},{c}")))?;
         cell.graphic = Some(designcraft_doc::Graphic {
+            layer_options: None,
             asset: aid,
             size: (nw, nh),
             xf,
@@ -2442,5 +2479,24 @@ mod resize_border_tests {
         assert_eq!(table(&s), before);
         s.execute("object.setFlags", &json!({"ids": [f], "locked": true})).unwrap();
         assert!(s.execute("table.resizeBorder", &json!({"frame": f, "table": t, "axis": "column", "index": 0, "delta": 5})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod style_alt_rows_tests {
+    use serde_json::json;
+
+    use super::table_style_fields;
+
+    #[test]
+    fn style_alt_rows_counts_saturate() {
+        let mut ts = designcraft_doc::TableStyle::default();
+        let p = json!({"altRows": {"first": 4294967297u64, "next": 4294967296u64, "skipFirst": 4294967295u64, "skipLast": 3}});
+        table_style_fields(&mut ts, &p, None);
+        let a = ts.alt_rows.unwrap();
+        assert_eq!(a.first, u32::MAX, "first");
+        assert_eq!(a.next, u32::MAX, "next");
+        assert_eq!(a.skip_first, u32::MAX, "skip_first");
+        assert_eq!(a.skip_last, 3, "skip_last");
     }
 }

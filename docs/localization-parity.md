@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-14 · **Change:** minor (Polish and Georgian interfaces; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -18,6 +18,10 @@ literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 ca
 in the UI crate appear in no catalog (some are test data or proper names), so the true total is
 somewhat higher and every percentage below is a slight overestimate. Help: DesignCraft has no
 help content in any language (Help ▸ opens the project's pages).
+
+A missing translation never fails a test, a build or a release. `cargo xtask i18n-report` (also
+a step of `cargo xtask ci`, so the list is in every gate log) prints how many interface strings
+each language lacks, then the strings.
 
 InDesign 2026 ships 25 interface localizations (`.lproj` folders: cs, da, de, el, en, en_GB, es,
 fi, fr, hu, it, ja, ko, nb, nl, pl, pt, ro, ru, sq, sv, tr, uk, zh_CN, zh_TW); Arabic and Hebrew

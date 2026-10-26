@@ -12,6 +12,8 @@ pub mod library;
 pub mod notes;
 pub mod pages;
 pub mod properties;
+pub mod separations;
+pub mod story;
 pub mod styles;
 pub mod swatches;
 pub mod table;
@@ -264,7 +266,7 @@ pub fn preflight_errors(app: &DesignApp) -> usize {
     static MEMO: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
     let Some(st) = app.session.active() else { return 0 };
     let key = std::sync::Arc::as_ptr(&st.doc) as usize;
-    let mut g = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((k, n)) = *g
         && k == key
     {
@@ -292,7 +294,7 @@ fn swatch_menu_font() -> egui::FontId {
 pub fn swatch_menu_row(ui: &mut egui::Ui, doc: &designcraft_doc::Document, name: &str, current: &str, width: f32) -> bool {
     let t = Tokens::get(ui.ctx());
     let (row, resp) = ui.allocate_exact_size(vec2(width, SWATCH_MENU_ROW_H), egui::Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, name == current, name));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, name == current, name));
     let hovered = resp.hovered();
     if hovered {
         ui.painter().rect_filled(row, 2.0, t.accent_strong);
@@ -403,9 +405,10 @@ pub fn font_combo(
 pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[designcraft_fonts::FamilyInfo], current: &str) -> Option<FontPick> {
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
     field.widget_info(|| {
-        let mut info = egui::WidgetInfo::new(egui::WidgetType::ComboBox);
+        let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
         info.enabled = true;
         info.current_text_value = Some(shown.clone());
+        info.label = Some(crate::i18n::tr(&app.ui.language, "Font Family").to_owned());
         info
     });
     egui::Popup::menu(field)
@@ -451,13 +454,14 @@ pub fn style_shown(current: &str) -> String {
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
     let styles = fonts(app).styles(family);
     let mut pick = None;
-    egui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
         for s in &styles {
             if ui.selectable_label(s == current, s).clicked() {
                 pick = Some(s.clone());
             }
         }
     });
+    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Font Style"));
     if let Some(s) = pick {
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": s}}));
     }
@@ -468,13 +472,14 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
-    egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
+    let combo = egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());
             }
         }
     });
+    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Paragraph Style"));
     if let Some(n) = pick {
         let _ = app.run("style.paragraph.apply", json!({"name": n, "clearOverrides": false}));
     }
@@ -499,17 +504,26 @@ mod font_menu_tests {
         const FAMILY: &str = "DC UI Test Mincho";
         let font = font_with(FAMILY, &['a']).unwrap();
         let font = with_names(&font, &[(3, 1, 0x409, 1, FAMILY), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x0411, 1, "UIテスト明朝")]).unwrap();
-        designcraft_fonts::FontDb::global().add_font(font);
+        // A database of this test's own: a font added to the process-wide one stays there, and its
+        // Japanese native name would then need CJK glyphs in every later test that draws the menu.
+        let db = designcraft_fonts::FontDb::with_font_dirs(Vec::new());
+        db.add_font(font);
+        let menu = |app: &DesignApp| {
+            let mut v: Vec<designcraft_fonts::FamilyInfo> = db.scoped(0).family_infos();
+            v.retain(|f| !f.family.starts_with('.'));
+            designcraft_fonts::sort_for_menu(&mut v, app.session.prefs.show_font_names_in_english);
+            v
+        };
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let menu = font_menu(&app);
-        let at = menu.iter().position(|f| f.family == FAMILY).unwrap();
-        assert_eq!(menu[at].group, FontGroup::Japanese);
-        assert!(menu[..at].iter().any(|f| f.family == designcraft_fonts::DEFAULT_FAMILY), "Western fonts first");
-        assert!(menu.windows(2).all(|w| w[0].group <= w[1].group), "grouped");
-        assert_eq!(font_label(&app, &menu, FAMILY), "UIテスト明朝");
-        assert_eq!(font_label(&app, &menu, designcraft_fonts::DEFAULT_FAMILY), designcraft_fonts::DEFAULT_FAMILY);
+        let entries = menu(&app);
+        let at = entries.iter().position(|f| f.family == FAMILY).unwrap();
+        assert_eq!(entries[at].group, FontGroup::Japanese);
+        assert!(entries[..at].iter().any(|f| f.family == designcraft_fonts::DEFAULT_FAMILY), "Western fonts first");
+        assert!(entries.windows(2).all(|w| w[0].group <= w[1].group), "grouped");
+        assert_eq!(font_label(&app, &entries, FAMILY), "UIテスト明朝");
+        assert_eq!(font_label(&app, &entries, designcraft_fonts::DEFAULT_FAMILY), designcraft_fonts::DEFAULT_FAMILY);
         app.run("prefs.set", json!({"showFontNamesInEnglish": true})).unwrap();
-        assert_eq!(font_label(&app, &font_menu(&app), FAMILY), FAMILY);
+        assert_eq!(font_label(&app, &menu(&app), FAMILY), FAMILY);
     }
 
     #[test]
@@ -783,6 +797,15 @@ mod font_menu_ui_tests {
             assert_eq!(count, 3, "{name}: the font fields are shown");
             for k in 0..count {
                 h.state_mut().app.run("type.char", json!({"attrs": {"fontFamily": designcraft_fonts::DEFAULT_FAMILY}})).unwrap();
+                h.run_steps(4);
+                // A short Properties group (below it, the workspace's open panel) scrolls to the field.
+                let mut nodes: Vec<_> = h
+                    .query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.value().as_deref() == Some(designcraft_fonts::DEFAULT_FAMILY))
+                    .collect();
+                nodes.sort_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y).then(a.rect().min.x.total_cmp(&b.rect().min.x)));
+                if let Some(node) = nodes.get(k) {
+                    node.scroll_to_me();
+                }
                 h.run_steps(4);
                 let at = fields(&h, designcraft_fonts::DEFAULT_FAMILY)[k];
                 search_in_menu(&mut h, at, &format!("{name}, field {k}"));

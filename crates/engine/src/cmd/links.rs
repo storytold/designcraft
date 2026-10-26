@@ -144,7 +144,7 @@ pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool
     let Some(link) = &a.link else { return false };
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::io::document_path(link, document).map_or(true, |path| !crate::io::exists(path))
+        !crate::io::document_path(link, document).is_ok_and(crate::io::exists)
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -396,8 +396,23 @@ fn reimport(d: &mut Document, sid: StoryId, path: &str, bytes: &[u8], before: Fi
 
 #[cfg(not(target_arch = "wasm32"))]
 fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
+    reload_capped(path, super::interchange::MAX_LINKED_FILE_BYTES)
+}
+
+/// A linked graphic read again from disk, and its pixel size, reading at most `cap` bytes.
+///
+/// How large a linked file is belongs to whoever wrote the document, not to whoever opens it: the
+/// path comes out of the document, and Update, Relink and Relink Folder all follow it. An
+/// unbounded `read` of a link pointing at a multi-GB file exhausted memory (#1596). The cap is
+/// the one packaging already applies to a linked file, and a file over it is refused by name
+/// rather than read.
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_capped(path: impl AsRef<Path>, cap: u64) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
-    let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+    let b = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    if b.len() as u64 > cap {
+        return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));
+    }
     if designcraft_render::is_pdf(&b) {
         designcraft_render::check_pdf_input_size(b.len()).map_err(|e| bad("links", format!("{}: {e}", path.display())))?;
     }
@@ -480,7 +495,7 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let old = std::path::PathBuf::from(a.link.clone().unwrap_or_else(|| a.name.clone()));
-        let mut name = old.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| a.name.clone().into());
+        let mut name = old.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_else(|| a.name.clone().into());
         if let Some(e) = &ext {
             name = std::path::Path::new(&name).with_extension(e).into_os_string();
         }
@@ -490,8 +505,18 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             Some(dir) => Some(dir.clone()),
             None => a.link.as_deref().and_then(|l| crate::io::document_path(l, document).ok()).and_then(|p| p.parent().map(Path::to_path_buf)),
         };
-        let plain_name = name.to_str().is_some_and(|n| !n.contains(['/', '\\']) && craft_docpath::is_local(n));
-        let cand = folder.filter(|_| plain_name).map(|f| f.join(&name));
+        let plain_name = name.to_str().filter(|n| !n.contains(['/', '\\']));
+        // A name that resolves to another file name (a `file:` URL such as `file:%2Ftmp%2Fx.png`,
+        // a drive-relative `C:x.png`) or a folder the stored-path rules read differently (`a\b`
+        // on Unix, `alias/..` through a symlink) could lead outside the folder, so only the name
+        // itself, directly in the folder as the file system resolves it, counts. The link keeps
+        // the folder as given.
+        let cand = folder.zip(plain_name).and_then(|(f, n)| {
+            let c = crate::io::folder_path(n, &f).ok()?;
+            let real = |p: &Path| crate::io::canonicalize(p).ok();
+            let same_folder = c.parent().and_then(real).is_some_and(|p| real(&f) == Some(p));
+            (c.file_name().is_some_and(|c| c == n) && same_folder).then_some(c)
+        });
         if let Some(cand) = cand.filter(|c| crate::io::exists(c)) {
             todo.push((a.id, cand));
         } else {
@@ -572,6 +597,31 @@ mod tests {
 
     fn png(w: u32, h: u32) -> Vec<u8> {
         designcraft_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
+    }
+
+    /// A linked file's size is the document's choice, so a link is read under a cap (#1596).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_linked_file_over_the_cap_is_refused_instead_of_read() {
+        let dir = std::env::temp_dir().join(format!("dc-link-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.png");
+        let bytes = png(40, 40);
+        std::fs::write(&path, &bytes).unwrap();
+
+        // Under the cap the file is read and measured as before.
+        let (read, px) = reload_capped(&path, bytes.len() as u64).expect("a file within the cap is read");
+        assert_eq!((read.len(), px), (bytes.len(), (40, 40)));
+
+        // Over it the file is refused by name, and the error says what the limit is.
+        let err = reload_capped(&path, (bytes.len() - 1) as u64).expect_err("a file over the cap is refused");
+        let msg = err.to_string();
+        assert!(msg.contains("big.png") && msg.contains("larger than"), "the error names the file and the limit: {msg}");
+
+        // The real cap is the one packaging uses, so an ordinary graphic still loads.
+        assert!(reload(&path).is_ok(), "a normal linked graphic is unaffected");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn pdf(sizes: &[(u32, u32)]) -> Vec<u8> {
@@ -808,7 +858,7 @@ mod tests {
         assert_eq!(a.pixels, Some((60, 20)));
         assert_eq!(a.mime, "application/postscript");
         assert_eq!(a.data.as_slice(), eps(30).as_bytes());
-        let moved = dir.join("new/replacement.eps");
+        let moved = dir.join("new").join("replacement.eps");
         std::fs::rename(&replacement, &moved).unwrap();
         assert_eq!(s.execute("links.relinkFolder", &json!({"dir": dir.join("new").to_string_lossy()})).unwrap()["relinked"], 1);
         assert_eq!(s.doc().unwrap().doc.assets[&aid].link.as_deref(), moved.to_str());
@@ -1118,6 +1168,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: sid,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
@@ -1163,6 +1214,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: missing,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
@@ -1199,6 +1251,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: missing,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,

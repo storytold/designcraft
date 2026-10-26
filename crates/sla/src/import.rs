@@ -1047,6 +1047,7 @@ impl<'a> Importer<'a> {
             (None, None) => return Content::Unassigned,
         };
         Content::Graphic(Graphic {
+            layer_options: None,
             asset,
             size,
             xf: gxf,
@@ -1122,6 +1123,7 @@ impl<'a> Importer<'a> {
         let title = doc.any(&["DocumentInfoTitle", "TITLE"]).map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Untitled").to_string();
         let mut d = Document {
             title,
+            file_info: Default::default(),
             settings: self.settings,
             spreads: self.spreads.into_iter().map(Arc::new).collect(),
             parents: self.parents.into_iter().map(Arc::new).collect(),

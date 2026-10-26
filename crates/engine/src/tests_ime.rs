@@ -4,7 +4,7 @@
 use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
 use serde_json::json;
 
-use super::*;
+use super::{Arc, Session, ViewInfo, ime_delete_ranges};
 
 fn session() -> Session {
     let mut s = Session::new();
@@ -28,6 +28,49 @@ fn text(s: &mut Session, sid: u64) -> String {
 
 fn steps(s: &Session) -> usize {
     s.doc().unwrap().history.undo.len()
+}
+
+/// Byte counts round inward to whole characters, cap at the text bounds, and scan from the requested count rather than the story start.
+#[test]
+fn ime_byte_deletion_rounds_inward_from_the_requested_count() {
+    // a: 0..1, é: 1..3, 😀: 3..7, b: 7..8.
+    let text = "aé😀b";
+    assert_eq!(ime_delete_ranges(text, 7, 7, 4, 0, true), Some((3..7, 7..7)), "the whole emoji");
+    assert_eq!(ime_delete_ranges(text, 7, 7, 6, 0, true), Some((1..7, 7..7)), "é and the emoji");
+    assert_eq!(ime_delete_ranges(text, 7, 7, 3, 0, true), Some((7..7, 7..7)), "a count starting inside the emoji leaves it");
+    assert_eq!(ime_delete_ranges(text, 7, 7, 100, 0, true), Some((0..7, 7..7)), "more bytes than the text takes it all");
+    // The scan starts at the requested count, not at the start of the story.
+    let long = format!("{}é", "x".repeat(20_000));
+    let end = long.len();
+    assert_eq!(ime_delete_ranges(&long, end, end, 3, 0, true), Some((end - 3..end, end..end)), "x and é");
+    assert_eq!(ime_delete_ranges(&long, end, end, 2, 0, true), Some((end - 2..end, end..end)), "the whole é");
+    assert_eq!(ime_delete_ranges(&long, end, end, 1, 0, true), Some((end..end, end..end)), "one byte inside é leaves it");
+}
+
+/// Reports exact before/after byte ranges, preserves and remaps the selection direction; no-op deletes report `None`.
+#[test]
+fn ime_delete_reports_the_ranges_it_applied() {
+    let mut s = session();
+    let sid = typing_into(&mut s, "aé😀b");
+    s.execute("text.select", &json!({"story": sid, "anchor": 1, "focus": 3})).unwrap();
+    let m = s.ime_delete_surrounding(2, 4, true).unwrap().expect("the delete changed the text");
+    assert_eq!(m.deleted_before, 0..1, "the byte before the selection");
+    assert_eq!(m.deleted_after, 3..7, "the emoji after it");
+    assert_eq!((m.anchor_before, m.focus_before), (1, 3));
+    assert_eq!((m.anchor_after, m.focus_after), (0, 2), "the selection stays selected, shifted left");
+    assert_eq!((m.text_len_before, m.text_len_after), (8, 3));
+    assert!(m.inserted.is_empty());
+    assert_eq!(text(&mut s, sid), "éb");
+    // A request that removes nothing is reported as no mutation at all.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    assert!(s.ime_delete_surrounding(0, 0, false).unwrap().is_none());
+    // A commit reports the text it typed and replaces the selection.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 2})).unwrap();
+    let m = s.ime_commit("日", ViewInfo::default()).unwrap().expect("the commit changed the text");
+    assert_eq!(m.inserted, "日");
+    assert!(m.deleted_before.is_empty() && m.deleted_after.is_empty());
+    assert_eq!((m.anchor_after, m.focus_after), (3, 3));
+    assert_eq!(text(&mut s, sid), "日b");
 }
 
 #[test]

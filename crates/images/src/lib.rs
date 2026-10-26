@@ -60,6 +60,7 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// Initialize the process-wide usvg database from the bundled and Japanese fonts, with case-aware family/PostScript resolution, fallback selection and preflighted SVG data URLs; file-backed image URLs are never read.
 fn svg_options() -> &'static usvg::Options<'static> {
     static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
     OPTS.get_or_init(|| {
@@ -77,8 +78,23 @@ fn svg_options() -> &'static usvg::Options<'static> {
         let font_resolver = usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() };
         // Images inside an SVG come only from `data:` URLs: an `href` naming a file is not read
         // (it is left out, as usvg leaves out an image it can't load).
-        let image_href_resolver =
-            usvg::ImageHrefResolver { resolve_data: usvg::ImageHrefResolver::default_data_resolver(), resolve_string: Box::new(|_, _| None) };
+        let default_data = usvg::ImageHrefResolver::default_data_resolver();
+        let image_href_resolver = usvg::ImageHrefResolver {
+            resolve_data: Box::new(move |mime, data, options| {
+                let raster = matches!(
+                    image::guess_format(&data),
+                    Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
+                );
+                if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
+                    let xml = svg_data(&data)?;
+                    svg_preflight(&xml)?;
+                    default_data(mime, Arc::new(xml.into_owned()), options)
+                } else {
+                    default_data(mime, data, options)
+                }
+            }),
+            resolve_string: Box::new(|_, _| None),
+        };
         usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
     })
 }
@@ -118,7 +134,7 @@ fn select_font() -> usvg::FontSelectionFn<'static> {
                         return Some(id);
                     }
                 }
-                // A family (or generic family) that matches: usvg's own selection.
+                // A family (or generic family) that matches: the query below.
                 _ => break,
             }
         }
@@ -207,9 +223,71 @@ fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::F
     ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
-/// The parsed SVG.
+/// Limits apply before usvg's recursive XML/SVG parsing, including SVGZ output.
+/// Ordinary SVG doctypes are accepted; internal DTD subsets are not, since entity
+/// expansion could introduce markup that the streaming depth check never sees.
+const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SVG_EVENTS: usize = 100_000;
+const MAX_SVG_DEPTH: usize = 64;
+
+/// Enforce the encoded-size cap, gunzip SVGZ data with that bound, and return the decoded content within the cap as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::io::Read;
+
+    if bytes.len() > MAX_SVG_BYTES {
+        return None;
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut xml = Vec::new();
+        flate2::read::GzDecoder::new(bytes).take(MAX_SVG_BYTES as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= MAX_SVG_BYTES).then_some(std::borrow::Cow::Owned(xml))
+    } else {
+        Some(std::borrow::Cow::Borrowed(bytes))
+    }
+}
+
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in doctype.as_ref() {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
+/// 64 nested elements. Reject internal DTD subsets before recursive conversion.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    usvg::Tree::from_data(bytes, svg_options()).ok()
+    let xml = svg_data(bytes)?;
+    svg_preflight(&xml)?;
+    usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -503,6 +581,106 @@ mod tests {
   <text x="110" y="60" font-size="20">Hi</text>
 </svg>"##;
 
+    /// Build an SVG with the requested number of nested `g` wrappers around a leaf rect.
+    fn nested_svg(groups: usize) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}<rect width="10" height="10"/>{}</svg>"#,
+            "<g opacity=\"0.99\">".repeat(groups),
+            "</g>".repeat(groups)
+        )
+    }
+
+    /// Fast-gzip helper for SVGZ tests.
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// A boundary-depth SVG parses into a tree; one level deeper and 2,000 levels are rejected by the tree, size and render APIs.
+    #[test]
+    fn svg_depth_is_checked_before_recursive_parsing() {
+        // Count the SVG root and leaf too; the boundary document still draws its path.
+        let accepted = nested_svg(MAX_SVG_DEPTH - 2);
+        let tree = svg_tree(accepted.as_bytes()).unwrap();
+        assert!(!tree.root().children().is_empty());
+        drop(tree);
+        for depth in [MAX_SVG_DEPTH - 1, 2000] {
+            let rejected = nested_svg(depth);
+            assert!(svg_tree(rejected.as_bytes()).is_none());
+            assert!(natural_size(rejected.as_bytes()).is_none());
+            assert!(render_svg(rejected.as_bytes(), 10).is_none());
+        }
+    }
+
+    /// Markup-looking text in comments, CDATA and attributes does not count as XML depth.
+    #[test]
+    fn svg_depth_ignores_markup_in_comments_cdata_and_attributes() {
+        let markup = "<g>".repeat(2000);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><!--{markup}--><desc><![CDATA[{markup}]]></desc><rect data-label="&lt;g>" width="10" height="10"/></svg>"#
+        );
+        assert!(svg_tree(svg.as_bytes()).is_some());
+    }
+
+    /// An external SVG doctype is accepted; an internal entity subset is rejected.
+    #[test]
+    fn svg_external_doctype_is_preserved_but_entity_markup_is_refused() {
+        let external =
+            format!(r#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">{}"#, nested_svg(2));
+        assert!(svg_tree(external.as_bytes()).is_some());
+        let internal = r#"<!DOCTYPE svg [<!ENTITY shape "<rect width='10' height='10'/>">]><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">&shape;</svg>"#;
+        assert!(svg_tree(internal.as_bytes()).is_none());
+    }
+
+    /// The exact 16 MiB document and 100,000-event boundaries are accepted, each one-over case rejected.
+    #[test]
+    fn svg_byte_and_event_limits_are_enforced() {
+        let mut bytes = nested_svg(0).into_bytes();
+        bytes.resize(MAX_SVG_BYTES, b' ');
+        assert!(svg_tree(&bytes).is_some());
+        bytes.push(b' ');
+        assert!(svg_tree(&bytes).is_none());
+
+        let document = |comments| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}<rect width="10" height="10"/></svg>"#,
+                "<!-- -->".repeat(comments)
+            )
+        };
+        assert!(svg_tree(document(MAX_SVG_EVENTS - 4).as_bytes()).is_some());
+        assert!(svg_tree(document(MAX_SVG_EVENTS - 3).as_bytes()).is_none());
+    }
+
+    /// SVGZ depth, decoded size and malformed gzip follow the plain-SVG limits.
+    #[test]
+    fn svgz_has_the_same_depth_and_decoded_size_limits() {
+        assert!(svg_tree(&gzip(nested_svg(2).as_bytes())).is_some());
+        assert!(svg_tree(&gzip(nested_svg(2000).as_bytes())).is_none());
+        let mut bytes = nested_svg(0).into_bytes();
+        bytes.resize(MAX_SVG_BYTES + 1, b' ');
+        let compressed = gzip(&bytes);
+        assert!(compressed.len() < MAX_SVG_BYTES);
+        assert!(svg_tree(&compressed).is_none());
+        assert!(svg_tree(b"\x1f\x8bnot gzip").is_none());
+    }
+
+    /// Deeply nested SVG data images are omitted without bypassing the depth preflight.
+    #[test]
+    fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
+        let nested = nested_svg(2000);
+        let encoded = nested.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+        for mime in ["image/svg+xml", "text/plain"] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><image width="10" height="10" href="data:{mime},{encoded}"/></svg>"#
+            );
+            // As with other unreadable data images, the parent survives without the image.
+            assert!(svg_tree(svg.as_bytes()).unwrap().root().children().is_empty());
+        }
+    }
+
     #[test]
     fn svg_sniff_size_and_render() {
         let b = SVG.as_bytes();
@@ -738,8 +916,8 @@ mod tests {
     impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {
         type Inner = u8;
         const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::RGBPalette;
-        const BITS_PER_SAMPLE: &'static [u16] = &[BITS];
-        const SAMPLE_FORMAT: &'static [tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint];
+        const BITS_PER_SAMPLE: &[u16] = &[BITS];
+        const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint];
         fn horizontal_predict(row: &[u8], result: &mut Vec<u8>) {
             result.extend_from_slice(row);
         }

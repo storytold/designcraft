@@ -182,7 +182,7 @@ fn settled(a: &[Vec<Exclusion>], b: &[Vec<Exclusion>]) -> bool {
 /// [`neighbours`]) and of its own.
 pub(crate) fn compose_among(doc: &Document, sid: StoryId, opts: &ComposeOptions, others: &[&ComposedStory]) -> ComposedStory {
     let Some(st) = doc.story(sid) else { return ComposedStory { story: sid, ..Default::default() } };
-    let mut specs = crate::frame_specs(doc, sid);
+    let mut specs = crate::frame_specs_placed(doc, sid, &opts.placed);
     if !others.is_empty() {
         let mut obs = Vec::new();
         for cs in others {

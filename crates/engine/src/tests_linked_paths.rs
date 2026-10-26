@@ -105,3 +105,73 @@ fn a_relative_link_resolves_beside_the_document() {
     assert!(seen.iter().all(|p| p.starts_with(&dir)), "{seen:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_relative_link_in_an_unsaved_document_is_missing() {
+    // With no document path there is nothing to resolve against; the working directory is not used.
+    let mut s = document_with_links(Path::new("doc.designcraft"), &["logo.png", "img/logo.png"]);
+    s.doc_mut().unwrap().path = None;
+    let (rows, seen) = crate::io::touched(|| s.execute("links.list", &json!({})).unwrap());
+    assert!(seen.is_empty(), "{seen:?}");
+    for row in rows.as_array().unwrap() {
+        assert_eq!(row["status"], "missing", "{row}");
+        assert_eq!(row["refused"], "the path is not valid", "{row}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn relink_folder_never_leaves_the_chosen_folder() {
+    // A stored name with no separator can still be a `file:` URL that decodes to a path elsewhere.
+    let dir = folder("relink-outside");
+    let chosen = dir.join("chosen");
+    std::fs::create_dir_all(&chosen).unwrap();
+    let outside = dir.join("outside.png");
+    std::fs::write(&outside, png()).unwrap();
+    let encoded = format!("file:{}", outside.to_string_lossy().replace('/', "%2F"));
+    let mut s = document_with_links(&dir.join("doc.designcraft"), &[&encoded]);
+    let (out, seen) =
+        crate::io::touched(|| s.execute("links.relinkFolder", &json!({"dir": chosen.to_string_lossy(), "missingOnly": false})).unwrap());
+    assert_eq!(out["relinked"], 0, "{out}");
+    assert!(!seen.contains(&outside), "{seen:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn relink_folder_takes_the_chosen_folder_as_one_folder() {
+    // `a\b` is one folder name on Unix; read as a stored path it would be `a/b`.
+    let dir = folder("relink-backslash");
+    let chosen = dir.join("a\\b");
+    std::fs::create_dir_all(&chosen).unwrap();
+    std::fs::create_dir_all(dir.join("a/b")).unwrap();
+    let elsewhere = dir.join("a/b/x.png");
+    std::fs::write(&elsewhere, png()).unwrap();
+    let mut s = document_with_links(&dir.join("doc.designcraft"), &["x.png"]);
+    let (out, seen) =
+        crate::io::touched(|| s.execute("links.relinkFolder", &json!({"dir": chosen.to_string_lossy(), "missingOnly": false})).unwrap());
+    assert_eq!(out["relinked"], 0, "{out}");
+    assert!(!seen.contains(&elsewhere), "{seen:?}");
+
+    // A folder given with `..` is still that folder.
+    let real = dir.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("x.png"), png()).unwrap();
+    let roundabout = real.join("..").join("real");
+    let out = s.execute("links.relinkFolder", &json!({"dir": roundabout.to_string_lossy(), "missingOnly": false})).unwrap();
+    assert_eq!(out["relinked"], 1, "{out}");
+
+    // Through a symlink, `alias/..` is the link target's parent, not the folder holding `alias`.
+    let inner = dir.join("inner");
+    std::fs::create_dir_all(inner.join("sub")).unwrap();
+    std::os::unix::fs::symlink(inner.join("sub"), dir.join("alias")).unwrap();
+    let beside_alias = dir.join("x.png");
+    std::fs::write(&beside_alias, png()).unwrap();
+    let mut s = document_with_links(&dir.join("doc.designcraft"), &["x.png"]);
+    let (out, seen) = crate::io::touched(|| {
+        s.execute("links.relinkFolder", &json!({"dir": dir.join("alias").join("..").to_string_lossy(), "missingOnly": false})).unwrap()
+    });
+    assert_eq!(out["relinked"], 0, "{out}");
+    assert!(!seen.contains(&beside_alias), "{seen:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

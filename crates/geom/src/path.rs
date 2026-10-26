@@ -281,9 +281,12 @@ impl PathData {
         for el in bp.elements() {
             match *el {
                 PathEl::MoveTo(p) => {
-                    if let Some(sp) = cur.take()
+                    if let Some(mut sp) = cur.take()
                         && !sp.anchors.is_empty()
                     {
+                        for a in &mut sp.anchors {
+                            *a = Anchor::with_handles(a.p, a.h_in, a.h_out);
+                        }
                         subpaths.push(sp);
                     }
                     cur = Some(SubPath { anchors: vec![Anchor::corner(p)], closed: false });
@@ -416,6 +419,20 @@ mod tests {
 
     fn square() -> PathData {
         PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)], true))
+    }
+
+    #[test]
+    fn from_bezpath_detects_smooth_on_every_open_subpath() {
+        let mut bp = BezPath::new();
+        for _ in 0..2 {
+            bp.move_to((0.0, 0.0));
+            bp.curve_to((0.0, 10.0), (10.0, 10.0), (10.0, 0.0));
+            bp.curve_to((10.0, -10.0), (20.0, -10.0), (20.0, 0.0));
+        }
+        let pd = PathData::from_bezpath(&bp);
+        assert_eq!(pd.subpaths.len(), 2);
+        assert_eq!(pd.subpaths[1].anchors[1].kind, AnchorKind::Smooth);
+        assert_eq!(pd.subpaths[0].anchors[1].kind, pd.subpaths[1].anchors[1].kind);
     }
 
     #[test]

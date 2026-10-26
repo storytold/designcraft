@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, has_text, has_text_or_frames, id_param, ok, point_param, str_param};
 use crate::{Result, Session};
 
+/// Build the text command registry: caret/selection movement, insertion/deletion, release, text and paragraph formatting, story queries, ruby and OpenType commands, with their parameters and enabled predicates.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "text.placeCaret", "Place Caret", [], None, "{frame, point: [x,y] (spread coords)} — converts empty frames to text frames", has_doc, |s, p| place(s, p, false)),
@@ -72,6 +73,15 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!("text.insert", "Type", [], None, "{text, raw?: bool (no typographer's quotes)} — replaces the selected text", has_text, insert),
+        cmd!(
+            "text.deleteSurrounding",
+            "Delete Surrounding Text",
+            [],
+            None,
+            "{before?: int, after?: int, bytes?: bool, commit?: string} — removes the text around the selection (an input method's delete-surrounding), keeps the selection and its direction, and with `commit` types that text over it: one undo step",
+            has_text,
+            delete_surrounding
+        ),
         cmd!("text.delete", "Delete Text", [], None, "{forward?: bool, word?: bool}", has_text, delete),
         cmd!(noundo "text.move", "Move Caret", [], None, "{dir: left|right|up|down|lineStart|lineEnd|storyStart|storyEnd, extend?, word?}", has_text, move_caret),
         cmd!(noundo "text.exitToFrame", "Select Frame", [], None, "{}", has_doc, |s, _| {
@@ -103,6 +113,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     ok()
                 })
             }
+        ),
+        cmd!(
+            "story.options",
+            "Story Options",
+            [],
+            None,
+            "{story?, frame?: a text frame of the story (default: the stories of the text selection or the selected frames), opticalMargin?: bool — Optical Margin Alignment: punctuation and letter edges hang outside the frame in every paragraph of the story except those with ignoreOpticalMargin, opticalMarginSize?: pt (0.1–1296, default 12) — the type size the hang amounts are set for} → {stories}",
+            has_doc,
+            story_options
         ),
         cmd!("story.setText", "Set Story Text", [], None, "{story, text} — replace a story's whole text", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("story.setText", "missing story"))?);
@@ -182,7 +201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
@@ -374,7 +393,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Selection Attributes",
             [],
             None,
-            "{mixed?: bool} → resolved character/paragraph attributes at the text selection; with mixed, paraMixed lists the paragraph attributes that differ across the selected paragraphs; the selection's start as `selectedText` (one line, up to 60 characters)",
+            "{mixed?: bool} → resolved character/paragraph attributes at the text selection; with mixed, paraMixed lists the paragraph attributes that differ across the selected paragraphs; the selection's start as `selectedText` (one line, up to 60 characters); `storyOptions` {opticalMargin, opticalMarginSize} of the stories story.options would change (null where they differ)",
             has_doc,
             selection_attrs
         ),
@@ -758,6 +777,71 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     result
 }
 
+/// The input method's delete-surrounding: remove `before`/`after` characters (or bytes) around
+/// the selection, keeping the selection itself and its direction, then optionally type `commit`
+/// over it. One undo step for the whole batch, through the normal command pipeline (preview
+/// restoration, panic guard, undo, auto-size and the journal), unlike a private edit.
+fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
+    let count = |key: &str| -> Result<usize> {
+        match p.get(key).and_then(Value::as_u64) {
+            Some(v) => usize::try_from(v).map_err(|_| bad("text.deleteSurrounding", format!("{key} is out of range"))),
+            None => Ok(0),
+        }
+    };
+    let before = count("before")?;
+    let after = count("after")?;
+    let bytes = p.get("bytes").and_then(Value::as_bool).unwrap_or(false);
+    let commit = designcraft_tools::ime_commit_text(p.get("commit").and_then(Value::as_str).unwrap_or(""));
+    // What the request removes, from the committed text as it is now: the ranges exclude the
+    // selection and any pre-edit (a pre-edit is only a preview, never in the story).
+    let (before_range, after_range, tracking, length_before) = {
+        let st = s.doc()?;
+        let t = st.selection.text.ok_or_else(|| bad("text.deleteSurrounding", "no text insertion point"))?;
+        let story = st.doc.text_story(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let (before_range, after_range) = crate::ime_delete_ranges(&story.text, t.anchor, t.focus, before, after, bytes)
+            .ok_or_else(|| bad("text.deleteSurrounding", "the IME text selection is not on character boundaries"))?;
+        (before_range, after_range, st.doc.settings.track_changes && t.cell.is_none(), story.text.len())
+    };
+    s.edit(|d, sel| {
+        let t = sel.text.ok_or_else(|| bad("text.deleteSurrounding", "no text insertion point"))?;
+        let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        if !after_range.is_empty() {
+            if tracking {
+                crate::cmd::changes::mark_deleted(story, after_range.clone());
+            } else {
+                story.delete(after_range.clone());
+            }
+        }
+        let mut shift = 0usize;
+        if !before_range.is_empty() {
+            if tracking {
+                // Tracked changes keep the text and mark it deleted: the selection does not move.
+                let new_end = crate::cmd::changes::mark_deleted(story, before_range.clone());
+                shift = before_range.end.saturating_sub(new_end);
+            } else {
+                shift = before_range.len();
+                story.delete(before_range.clone());
+            }
+        }
+        sel.text = Some(TextSel { anchor: t.anchor.saturating_sub(shift), focus: t.focus.saturating_sub(shift), ..t });
+        Ok(())
+    })?;
+    if !commit.is_empty() {
+        insert(s, &json!({"text": commit}))?;
+    }
+    let st = s.doc()?;
+    let (anchor, focus) = st.selection.text.map_or((0, 0), |t| (t.anchor, t.focus));
+    let length_after = st.selection.text.and_then(|t| st.doc.text_story(t.story, t.cell)).map_or(0, |story| story.text.len());
+    Ok(json!({
+        "deletedBefore": [before_range.start, before_range.end],
+        "deletedAfter": [after_range.start, after_range.end],
+        "lengthBefore": length_before,
+        "lengthAfter": length_after,
+        "anchor": anchor,
+        "focus": focus,
+    }))
+}
+
 fn smart_quotes(s: &Session, text: &str) -> String {
     if !text.contains(['"', '\'']) {
         return text.to_string();
@@ -991,11 +1075,11 @@ fn sentence_bounds(s: &str, i: usize) -> (usize, usize) {
     (pa + start, pb)
 }
 
-/// Type ▸ Story Direction.
-fn story_direction(s: &mut Session, p: &Value) -> Result<Value> {
-    let vertical = p.get("vertical").and_then(Value::as_bool).ok_or_else(|| bad("type.storyDirection", "missing vertical"))?;
+/// The stories of the text selection, the selected cells and the selected text frames.
+fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
     let st = s.doc()?;
     let mut stories: Vec<StoryId> = st.selection.text.map(|t| t.story).into_iter().chain(st.selection.cells.map(|c| c.story)).collect();
+    stories.dedup();
     for id in &st.selection.items {
         if let Some(tf) = st.doc.item(*id).and_then(|i| i.text_frame())
             && !stories.contains(&tf.story)
@@ -1003,6 +1087,71 @@ fn story_direction(s: &mut Session, p: &Value) -> Result<Value> {
             stories.push(tf.story);
         }
     }
+    Ok(stories)
+}
+
+/// Type ▸ Story: the story-wide options (Optical Margin Alignment and its size).
+fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "story.options";
+    let on = match p.get("opticalMargin") {
+        None => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| bad(CMD, "`opticalMargin` must be a bool"))?),
+    };
+    let size = match p.get("opticalMarginSize") {
+        None => None,
+        Some(v) => Some(
+            v.as_f64()
+                .and_then(designcraft_doc::OpticalMargin::clamp_size)
+                .ok_or_else(|| bad(CMD, "`opticalMarginSize` must be a finite number of points"))?,
+        ),
+    };
+    if on.is_none() && size.is_none() {
+        return Err(bad(CMD, "nothing to set: give opticalMargin or opticalMarginSize"));
+    }
+    let explicit = |key| p.get(key).filter(|v| !v.is_null());
+    let stories = if explicit("story").is_some() || explicit("frame").is_some() {
+        // Explicit targets must not silently fall back to the current selection.
+        let doc = &s.doc()?.doc;
+        for key in ["story", "frame"] {
+            if let Some(value) = explicit(key) {
+                let id = value.as_u64().ok_or_else(|| bad(CMD, format!("`{key}` must be an unsigned integer")))?;
+                let sid = if key == "story" {
+                    StoryId(id)
+                } else {
+                    let item = doc.item(ItemId(id)).ok_or_else(|| bad(CMD, format!("no such frame {id}")))?;
+                    item.text_frame().ok_or_else(|| bad(CMD, format!("frame {id} holds no text")))?.story
+                };
+                if doc.story(sid).is_none() {
+                    return Err(bad(CMD, format!("no such story {}", sid.0)));
+                }
+            }
+        }
+        vec![story_of(s, p).ok_or_else(|| bad(CMD, "no such story"))?]
+    } else {
+        selected_stories(s)?
+    };
+    if stories.is_empty() {
+        return Err(bad(CMD, "no story: select text or a text frame, or give story or frame"));
+    }
+    s.edit(|d, _| {
+        for sid in &stories {
+            let st = d.story_mut(*sid).ok_or(designcraft_doc::DocError::NoStory(*sid))?;
+            let mut om = st.optical_margin;
+            om.on = on.unwrap_or(om.on);
+            om.size = size.unwrap_or(om.size);
+            if om != st.optical_margin {
+                st.optical_margin = om;
+                st.rev = st.rev.wrapping_add(1);
+            }
+        }
+        Ok(json!({"stories": stories.len()}))
+    })
+}
+
+/// Type ▸ Story Direction.
+fn story_direction(s: &mut Session, p: &Value) -> Result<Value> {
+    let vertical = p.get("vertical").and_then(Value::as_bool).ok_or_else(|| bad("type.storyDirection", "missing vertical"))?;
+    let stories = selected_stories(s)?;
     s.edit(|d, _| {
         set_story_direction(d, &stories, vertical);
         Ok(json!({"stories": stories.len()}))
@@ -1502,11 +1651,28 @@ fn ruby_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A character fill must name a swatch of the document.
 pub(crate) fn validate_char_fill(document: &designcraft_doc::Document, attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    validate_char_size(attrs, command_id)?;
     match &attrs.fill {
         Some(fill) => super::object::known_swatch(document, fill, command_id, "fill"),
         None => Ok(()),
     }
 }
+
+/// Type size is 0.1 to 1296 pt, the range this engine already applies to a ruby annotation's
+/// size. Nothing checked it for ordinary text, so `{"size": 0}` set type with no size, a negative
+/// size was accepted as well, and 1e9 pt asked the composer for a line a million times the page.
+pub(crate) fn validate_char_size(attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    match attrs.size {
+        Some(size) if !(MIN_TYPE_SIZE..=MAX_TYPE_SIZE).contains(&size) => {
+            Err(bad(command_id, format!("size {size}: {MIN_TYPE_SIZE} to {MAX_TYPE_SIZE} pt")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Type size limits (InDesign's, and the ones `type.ruby` already uses).
+pub(crate) const MIN_TYPE_SIZE: f64 = 0.1;
+pub(crate) const MAX_TYPE_SIZE: f64 = 1296.0;
 
 /// Byte `pos` is the hidden paragraph mark of an *empty* paragraph: the only character on that
 /// line, and so the one a line-affecting attribute like leading can land on right away instead of
@@ -1819,10 +1985,28 @@ fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
         "paraOverrides": style_para.delta(&pp).count() + style_chars.delta(&base).count(),
         "charOverrides": char_delta.count(), "characterStyleOverrides": character_style_overrides,
         "selectedText": selected.trim()});
+    let mut stories = selected_stories(s)?;
+    if stories.is_empty() {
+        stories.push(sid);
+    }
+    out["storyOptions"] = story_options_of(&st.doc, &stories);
     if bool_or(p, "mixed", false) {
         out["paraMixed"] = json!(mixed_para_attrs(&st.doc, &targets));
     }
     Ok(out)
+}
+
+/// The story options of `stories`, as story.options names them; a value that differs between
+/// the stories is null.
+fn story_options_of(doc: &designcraft_doc::Document, stories: &[StoryId]) -> Value {
+    let mut values = stories.iter().filter_map(|sid| doc.story(*sid)).map(|st| st.optical_margin);
+    let Some(first) = values.next() else { return json!({"opticalMargin": null, "opticalMarginSize": null}) };
+    let (mut on, mut size) = (Some(first.on), Some(first.size));
+    for om in values {
+        on = on.filter(|v| *v == om.on);
+        size = size.filter(|v| *v == om.size);
+    }
+    json!({"opticalMargin": on, "opticalMarginSize": size})
 }
 
 /// The paragraph attributes whose resolved values differ across the paragraphs of `targets`.
@@ -2088,7 +2272,7 @@ fn open_type_features(s: &mut Session, _p: &Value) -> Result<Value> {
             continue;
         }
         let names: std::collections::BTreeSet<&String> = fonts.values().filter_map(|f| f.stylistic_sets.get(&set)).collect();
-        let name = if names.len() == 1 { names.first().map(|n| n.to_string()) } else { None };
+        let name = if names.len() == 1 { names.first().map(ToString::to_string) } else { None };
         let (applied, available) = measure(&tag);
         sets.push(json!({"set": set, "tag": tag, "name": name, "applied": applied, "available": available}));
     }
@@ -3264,6 +3448,152 @@ mod bidi_caret_tests {
 }
 
 #[cfg(test)]
+mod story_options_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_explicit_story_targets_do_not_change_the_selection() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "Selected"})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        for target in ["story", "frame"] {
+            for invalid in [json!("invalid"), json!(-1), json!(1.5), json!(true), json!({}), json!([]), json!(999_999)] {
+                let mut params = json!({"opticalMargin": true});
+                params[target] = invalid;
+                assert!(s.execute("story.options", &params).is_err(), "{params}");
+                assert!(!story(&s, sid).on, "{params} changed the selected story");
+            }
+        }
+        // Selection fallback still works when neither explicit target is supplied.
+        s.execute("story.options", &json!({"opticalMargin": true})).unwrap();
+        assert!(story(&s, sid).on);
+        s.execute("story.options", &json!({"frame": r["id"], "opticalMargin": false})).unwrap();
+        assert!(!story(&s, sid).on);
+    }
+
+    #[test]
+    fn story_options_treat_null_targets_as_absent_and_validate_both_explicit_ids() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "Explicit"})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Selected"})).unwrap();
+        let aid = StoryId(a["story"].as_u64().unwrap());
+        let bid = StoryId(b["story"].as_u64().unwrap());
+        for targets in [json!({"story": null}), json!({"frame": null}), json!({"story": null, "frame": null})] {
+            let mut p = targets;
+            p["opticalMargin"] = json!(true);
+            s.execute("story.options", &p).unwrap();
+            assert!(story(&s, bid).on);
+            assert!(!story(&s, aid).on);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(!story(&s, bid).on);
+        }
+        for targets in [json!({"story": null, "frame": a["id"]}), json!({"story": a["story"], "frame": null})] {
+            let mut p = targets;
+            p["opticalMargin"] = json!(true);
+            s.execute("story.options", &p).unwrap();
+            assert!(story(&s, aid).on);
+            assert!(!story(&s, bid).on);
+            s.execute("edit.undo", &json!({})).unwrap();
+        }
+        // Even a frame ignored by story precedence must be valid when explicitly supplied.
+        let non_text = s.execute("frame.create", &json!({"rect": [400, 0, 500, 100]})).unwrap();
+        for (targets, message) in [
+            (json!({"frame": 999_999}), "no such frame 999999".to_string()),
+            (json!({"frame": non_text["id"]}), format!("frame {} holds no text", non_text["id"])),
+            (json!({"story": 999_999}), "no such story 999999".to_string()),
+            (json!({"story": a["story"], "frame": 999_999}), "no such frame 999999".to_string()),
+        ] {
+            let mut p = targets;
+            p["opticalMargin"] = json!(true);
+            assert!(s.execute("story.options", &p).unwrap_err().to_string().contains(&message), "{p}: expected {message}");
+            assert!(!story(&s, aid).on);
+            assert!(!story(&s, bid).on);
+        }
+    }
+
+    fn first_x(s: &Session, sid: StoryId) -> f64 {
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        cs.frames[0].lines[0].glyphs[0].x
+    }
+
+    fn story(s: &Session, sid: StoryId) -> designcraft_doc::OpticalMargin {
+        s.doc().unwrap().doc.story(sid).unwrap().optical_margin
+    }
+
+    #[test]
+    fn story_options_set_optical_margin_with_one_undo_step_each() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "“Hung” words."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let flush = first_x(&s, sid);
+        // The selected frame's story.
+        s.execute("story.options", &json!({"opticalMargin": true})).unwrap();
+        assert_eq!(story(&s, sid), designcraft_doc::OpticalMargin { on: true, size: 12.0 });
+        let hung = first_x(&s, sid);
+        assert!(hung < flush - 1.0, "{hung} {flush}");
+        s.execute("story.options", &json!({"story": sid.0, "opticalMarginSize": 24})).unwrap();
+        assert_eq!(story(&s, sid).size, 24.0);
+        assert!(first_x(&s, sid) < hung - 1.0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(story(&s, sid), designcraft_doc::OpticalMargin { on: true, size: 12.0 });
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!story(&s, sid).on);
+        assert_eq!(first_x(&s, sid), flush);
+        // Hostile sizes.
+        s.execute("story.options", &json!({"story": sid.0, "opticalMarginSize": 1e9})).unwrap();
+        assert_eq!(story(&s, sid).size, designcraft_doc::OpticalMargin::MAX_SIZE);
+        for bad in [json!({"opticalMarginSize": "big"}), json!({"opticalMargin": 1}), json!({}), json!({"story": 999_999, "opticalMargin": true})] {
+            assert!(s.execute("story.options", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ignore_optical_margin_through_type_para_and_paragraph_styles() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "“Hung” words."})).unwrap();
+        let sid = StoryId(r["story"].as_u64().unwrap());
+        let flush = first_x(&s, sid);
+        s.execute("story.options", &json!({"opticalMargin": true})).unwrap();
+        assert!(first_x(&s, sid) < flush - 1.0);
+        let ignored = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().paras[0].para.ignore_optical_margin;
+        s.execute("type.para", &json!({"attrs": {"ignoreOpticalMargin": true}})).unwrap();
+        assert_eq!(ignored(&s), Some(true));
+        assert_eq!(first_x(&s, sid), flush);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(ignored(&s), None);
+        s.execute("style.paragraph.create", &json!({"name": "Flush", "para": {"ignoreOpticalMargin": true}})).unwrap();
+        let resolved = |s: &Session| s.doc().unwrap().doc.styles.resolve_para_style("Flush").0.ignore_optical_margin;
+        assert!(resolved(&s));
+        s.execute("style.paragraph.edit", &json!({"name": "Flush", "para": {"ignoreOpticalMargin": false}})).unwrap();
+        assert!(!resolved(&s));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(resolved(&s));
+        s.execute("style.paragraph.apply", &json!({"name": "Flush"})).unwrap();
+        assert_eq!(first_x(&s, sid), flush);
+    }
+
+    #[test]
+    fn selection_attrs_report_the_story_options_with_differences_as_null() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        let options = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["storyOptions"].clone();
+        assert_eq!(options(&mut s), json!({"opticalMargin": false, "opticalMarginSize": 12.0}));
+        s.execute("story.options", &json!({"story": b["story"], "opticalMargin": true, "opticalMarginSize": 18})).unwrap();
+        assert_eq!(options(&mut s), json!({"opticalMargin": true, "opticalMarginSize": 18.0}), "the selected frame's story");
+        s.execute("selection.set", &json!({"ids": [a["id"], b["id"]]})).unwrap();
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": null}));
+        s.execute("story.options", &json!({"opticalMarginSize": 18})).unwrap();
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": 18.0}));
+    }
+}
+
+#[cfg(test)]
 mod arabic_tests {
     use super::*;
     #[test]
@@ -3909,5 +4239,44 @@ mod pick_up_format_tests {
         let rect = s.execute("frame.create", &json!({"rect": [500, 500, 520, 520]})).unwrap()["id"].as_u64().unwrap();
         assert!(s.execute("type.pickUpFormat", &json!({"frame": rect, "point": [510, 510]})).is_err());
         let _ = ItemId(rect);
+    }
+}
+
+#[cfg(test)]
+mod size_bounds_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// Type size was not checked anywhere: `{"size": 0}` set type with no size at all, a negative
+    /// size was accepted the same way, and 1e9 pt asked the composer for a line a million times
+    /// the height of the page. The range is the one `type.ruby` already applies, 0.1 to 1296 pt.
+    #[test]
+    fn a_type_size_outside_the_range_is_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
+        let select = |s: &mut Session| {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+        };
+        for size in [0.0, -12.0, 0.05, 1297.0, 1e9] {
+            select(&mut s);
+            let e = s.execute("type.char", &json!({"size": size})).expect_err("refused").to_string();
+            assert!(e.contains("0.1 to 1296 pt"), "{size}: {e}");
+        }
+        // The sizes in range still apply, including the ends.
+        for size in [0.1, 12.0, 1296.0] {
+            select(&mut s);
+            s.execute("type.char", &json!({"size": size})).unwrap_or_else(|e| panic!("{size}: {e}"));
+            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["size"].as_f64(), Some(size));
+        }
+        // And the styles that carry character attributes are checked the same way.
+        for (command, params) in [
+            ("style.character.create", json!({"name": "Tiny", "chars": {"size": 0}})),
+            ("style.paragraph.create", json!({"name": "Huge", "chars": {"size": 2000}})),
+        ] {
+            let e = s.execute(command, &params).expect_err("refused").to_string();
+            assert!(e.contains("0.1 to 1296 pt"), "{command}: {e}");
+        }
     }
 }

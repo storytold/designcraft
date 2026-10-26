@@ -249,7 +249,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Tagging",
             [],
             None,
-            "{style, character?: bool, tag?: p|h1…h6|blockquote|pre|li|… (span|em|strong|code|sup|sub… for characters; \"\" = automatic), class?} → the tagging",
+            "{style, character?: bool, tag?: p|h1…h6|blockquote|pre|li|… (span|em|strong|code|sup|sub… for characters; \"\" = automatic), class?, split?: bool (paragraphs: Split Document, EPUB only)} → the tagging",
             has_doc,
             |s, p| {
                 let name = str_param(p, "style").ok_or_else(|| bad("style.exportTag", "`style` required"))?.to_string();
@@ -258,8 +258,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 if !exists {
                     return Err(bad("style.exportTag", format!("no style `{name}`")));
                 }
-                let key = format!("{}:{name}", if character { "c" } else { "p" });
+                let key = export_tag_key(!character, &name);
                 let (tag, class) = (str_param(p, "tag").map(str::to_string), str_param(p, "class").map(str::to_string));
+                let split = p.get("split").and_then(Value::as_bool);
+                if character && split == Some(true) {
+                    return Err(bad("style.exportTag", "`split` is for paragraph styles"));
+                }
                 s.edit(|d, _| {
                     let st = d.styles_mut();
                     let e = st.export_tags.entry(key.clone()).or_default();
@@ -269,8 +273,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(c) = class.clone() {
                         e.class = c;
                     }
+                    if let Some(v) = split {
+                        e.split = v;
+                    }
                     let out = serde_json::to_value(&*e).unwrap_or_default();
-                    if e.tag.is_empty() && e.class.is_empty() {
+                    if *e == designcraft_doc::ExportTag::default() {
                         st.export_tags.remove(&key);
                     }
                     Ok(out)
@@ -302,7 +309,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Paragraph Style…",
             [],
             None,
-            "{name, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, firstLineIndent, spaceBefore, spaceAfter, …; startAt?: null = continue numbering; grepStyles?: [{style, pattern}]: a pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}, fromSelection?: bool}",
+            "{name, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, firstLineIndent, spaceBefore, spaceAfter, ignoreOpticalMargin, …; startAt?: null = continue numbering; grepStyles?: [{style, pattern}]: a pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}, fromSelection?: bool}",
             has_doc,
             create_para
         ),
@@ -311,7 +318,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
+            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
             has_doc,
             edit_para
         ),
@@ -404,7 +411,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Gradient",
             [],
             None,
-            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: name (its colour, as dropped on the Gradient panel), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
+            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: a color swatch's name (as dropped on the Gradient panel: its color on screen, its inks in print), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops: [{location, color, swatch?, opacity, midpoint}]} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
             super::has_selection,
             apply_gradient
         ),
@@ -490,6 +497,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("swatch.delete", "special swatches can't be deleted"));
                 }
                 d.swatches.retain(|w| w.name != name);
+                d.forget_gradient_stop_swatch(&name);
                 for g in &mut d.color_groups {
                     g.swatches.retain(|w| *w != name);
                 }
@@ -498,13 +506,14 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(query "ink.list", "Ink Manager", [], None, "{} → {allToProcess, inks: [{name, process: bool (printed as process), alias?}]} — the spot inks", has_doc, |s, _| {
             let d = &s.doc()?.doc;
+            let inks = designcraft_pdf::inks::ink_set(d);
             let inks: Vec<Value> = d
                 .swatches
                 .iter()
                 .filter(|w| matches!(w.value, designcraft_color::swatch::SwatchValue::Color { color_type: designcraft_color::swatch::ColorType::Spot, .. }))
                 .map(|w| {
                     let alias = d.inks.aliases.iter().find(|(a, _)| *a == w.name).map(|(_, t)| t.clone());
-                    json!({"name": w.name, "process": d.inks.resolve(&w.name).1, "alias": alias})
+                    json!({"name": w.name, "process": designcraft_pdf::inks::spot_output(d, &inks, &w.name).1, "alias": alias})
                 })
                 .collect();
             Ok(json!({"allToProcess": d.inks.all_to_process, "inks": inks}))
@@ -550,6 +559,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         }
                         match alias {
                             Some(Value::String(to)) => {
+                                let mut set = designcraft_pdf::inks::ink_set(d);
+                                let ids = (set.lookup(name), set.lookup(&to));
+                                if let (Some(from), Some(target)) = ids
+                                    && !set.alias(from, target)
+                                {
+                                    return Err(bad("ink.options", format!("aliasing `{name}` to `{to}` would make a loop")));
+                                }
                                 d.inks.aliases.retain(|(a, _)| a != name);
                                 d.inks.aliases.push((name.clone(), to));
                             }
@@ -754,6 +770,48 @@ fn redefine(s: &mut Session, p: &Value, paragraph: bool) -> Result<Value> {
     result
 }
 
+/// Apply paragraph style `name` over `r` in one story; `clear` drops overrides instead of keeping
+/// only those that differ from the style (`resolved` is the style's paragraph and character attributes).
+fn apply_para_in_story(
+    st: &mut designcraft_doc::Story,
+    r: &std::ops::Range<usize>,
+    name: &str,
+    clear: bool,
+    resolved: (&designcraft_doc::ParaProps, &designcraft_doc::CharProps),
+    styles: &designcraft_doc::Styles,
+) {
+    let (style_para, style_chars) = resolved;
+    // Text selections are half-open: a selection ending at the next paragraph's
+    // start must not apply a style to that paragraph too.
+    let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
+    let (first, last) = (st.para_at(r.start), st.para_at(end));
+    st.format_paras(r.start..end, |f| {
+        f.style = name.to_string();
+        if clear {
+            f.para = ParaAttrs::default();
+            f.chars = CharAttrs::default();
+        } else {
+            f.para.retain_differences(style_para);
+            f.chars.retain_differences(style_chars);
+        }
+    });
+    for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
+        let Some(pf) = st.paras.get(pi) else { continue };
+        let (_, base) = styles.resolve_para(pf);
+        let end = range.end.saturating_add(1).min(st.len());
+        let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
+        st.format_chars(range, |f| {
+            if clear {
+                f.over = CharAttrs::default();
+            } else {
+                let mut inherited = base.clone();
+                inherited.apply(&styles.char_style_attrs(&f.style));
+                f.over.retain_differences(&inherited);
+            }
+        });
+    }
+}
+
 fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.apply", "missing name"))?.to_string();
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
@@ -765,37 +823,8 @@ fn apply_para(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let (style_para, style_chars) = styles.resolve_para_style(&name);
         for t in &targets {
-            let r = &t.range;
             if let Some(st) = d.text_story_mut(t.story, t.cell) {
-                // Text selections are half-open: a selection ending at the next paragraph's
-                // start must not apply a style to that paragraph too.
-                let end = if r.is_empty() { r.start } else { r.end.saturating_sub(1) };
-                let (first, last) = (st.para_at(r.start), st.para_at(end));
-                st.format_paras(r.start..end, |f| {
-                    f.style = name.clone();
-                    if clear {
-                        f.para = ParaAttrs::default();
-                        f.chars = CharAttrs::default();
-                    } else {
-                        f.para.retain_differences(&style_para);
-                        f.chars.retain_differences(&style_chars);
-                    }
-                });
-                for (pi, range) in st.para_ranges().into_iter().enumerate().take(last.saturating_add(1)).skip(first) {
-                    let Some(pf) = st.paras.get(pi) else { continue };
-                    let (_, base) = styles.resolve_para(pf);
-                    let end = range.end.saturating_add(1).min(st.len());
-                    let range = if clear && !r.is_empty() { range.start.max(r.start)..end.min(r.end) } else { range.start..end };
-                    st.format_chars(range, |f| {
-                        if clear {
-                            f.over = CharAttrs::default();
-                        } else {
-                            let mut inherited = base.clone();
-                            inherited.apply(&styles.char_style_attrs(&f.style));
-                            f.over.retain_differences(&inherited);
-                        }
-                    });
-                }
+                apply_para_in_story(st, &t.range, &name, clear, (&style_para, &style_chars), &styles);
             }
         }
         ok()
@@ -934,13 +963,21 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.edit", "missing name"))?.to_string();
     let chars: CharAttrs = attrs("style.paragraph.edit", "chars", p, |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
     super::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.edit")?;
-    let rename = str_param(p, "rename").map(str::to_string);
+    let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
     s.edit(|d, _| {
         if let Some(Value::String(b)) = &based
             && d.styles.para_based_on_cycles(&name, b)
         {
             return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+        }
+        if let Some(n) = &rename {
+            if n.is_empty() || n.starts_with('[') {
+                return Err(bad("style.paragraph.edit", format!("can't rename to `{n}`")));
+            }
+            if d.styles.para(n).is_some() {
+                return Err(bad("style.paragraph.edit", format!("a paragraph style named `{n}` already exists")));
+            }
         }
         // A rule object changes only the rule fields it names, over the style's resolved rule.
         let (current, _) = d.styles.resolve_para_style(&name);
@@ -964,22 +1001,33 @@ fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-/// Rename a paragraph or character style everywhere it's used.
+/// Rename a paragraph or character style everywhere it's used; its Export Tagging follows.
 fn rename_style(d: &mut designcraft_doc::Document, para: bool, from: &str, to: &str) {
+    let st = d.styles_mut();
     if para {
-        for s in &mut d.styles_mut().paragraph {
+        for s in &mut st.paragraph {
             if s.name == from {
                 s.name = to.to_string();
             }
         }
     } else {
-        for s in &mut d.styles_mut().character {
+        for s in &mut st.character {
             if s.name == from {
                 s.name = to.to_string();
             }
         }
     }
+    // An entry already under `to` belongs to no style (names are unique), so it never survives.
+    st.export_tags.remove(&export_tag_key(para, to));
+    if let Some(tag) = st.export_tags.remove(&export_tag_key(para, from)) {
+        st.export_tags.insert(export_tag_key(para, to), tag);
+    }
     redirect_style_refs(d, para, from, to);
+}
+
+/// The `Styles::export_tags` key of a paragraph (`para`) or character style.
+fn export_tag_key(para: bool, name: &str) -> String {
+    format!("{}:{name}", if para { "p" } else { "c" })
 }
 
 /// Point every reference to style `from` at `to`, except the style's own registry entry (its
@@ -1019,6 +1067,9 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
             for r in formats.filter(|r| r.as_deref() == Some(from)) {
                 *r = Some(to.to_string());
             }
+        }
+        if let designcraft_doc::EpubSplit::Style(n) = &mut d.settings.epub_split {
+            rename(n);
         }
     } else {
         let from_parent = parent_of(st.character.iter().find(|x| x.name == from).and_then(|x| x.based_on.as_ref()));
@@ -1165,8 +1216,10 @@ fn delete_style(s: &mut Session, p: &Value, para: bool) -> Result<Value> {
         for b in based.into_iter().filter(|b| b.as_deref() == Some(name.as_str())) {
             *b = parent.clone();
         }
+        // The replacement keeps its own Export Tagging.
+        st.export_tags.remove(&export_tag_key(para, &name));
         // Every other use: styles, stories, table cells, nested and GREP styles, notes, defaults.
-        rename_style(d, para, &name, &repl);
+        redirect_style_refs(d, para, &name, &repl);
         ok()
     })
 }
@@ -1220,7 +1273,7 @@ fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
         .and_then(Value::as_object)
         .map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect())
         .unwrap_or_default();
-    let rename = str_param(p, "rename").filter(|n| *n != name).map(|n| n.trim().to_string());
+    let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based: Option<Option<String>> = match p.get("basedOn") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -1237,10 +1290,13 @@ fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad("style.character.edit", "based-on would create a cycle"));
             }
         }
-        if let Some(n) = &rename
-            && (n.is_empty() || n.starts_with('[') || d.styles.char_style(n).is_some())
-        {
-            return Err(bad("style.character.edit", format!("can't rename to `{n}`")));
+        if let Some(n) = &rename {
+            if n.is_empty() || n.starts_with('[') {
+                return Err(bad("style.character.edit", format!("can't rename to `{n}`")));
+            }
+            if d.styles.char_style(n).is_some() {
+                return Err(bad("style.character.edit", format!("a character style named `{n}` already exists")));
+            }
         }
         let st = d.styles_mut().char_style_mut(&name).ok_or_else(|| bad("style.character.edit", format!("no character style `{name}`")))?;
         st.chars.merge(&chars);
@@ -1295,13 +1351,14 @@ fn create_gradient_swatch(s: &mut Session, p: &Value, g: &Value) -> Result<Value
     let doc = &s.doc()?.doc;
     let mut stops = Vec::new();
     for st in g.get("stops").and_then(Value::as_array).ok_or_else(|| bad(ID, "a gradient needs stops"))? {
-        let color = match (st.get("swatch").and_then(Value::as_str), st.get("color")) {
+        // The stop keeps the swatch, so print export writes it in that swatch's inks.
+        let (color, swatch) = match (st.get("swatch").and_then(Value::as_str), st.get("color")) {
             (Some(n), _) => match doc.swatch(n).map(|w| &w.value) {
                 Some(SwatchValue::Gradient { .. }) => return Err(bad(ID, format!("`{n}` is a gradient; a stop takes a colour"))),
-                Some(_) => doc.resolve_color(n, 1.0).ok_or_else(|| bad(ID, format!("`{n}` has no colour")))?,
+                Some(_) => (doc.resolve_color(n, 1.0).ok_or_else(|| bad(ID, format!("`{n}` has no color")))?, Some(n.to_string())),
                 None => return Err(bad(ID, format!("no swatch named `{n}`"))),
             },
-            (None, Some(c)) => parse_color(c).ok_or_else(|| bad(ID, "a stop has a bad color"))?,
+            (None, Some(c)) => (parse_color(c).ok_or_else(|| bad(ID, "a stop has a bad color"))?, None),
             (None, None) => return Err(bad(ID, "a stop needs a swatch or a color")),
         };
         let pct = |k: &str, d: f64| st.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(d).clamp(0.0, 100.0) as f32 / 100.0;
@@ -1310,6 +1367,7 @@ fn create_gradient_swatch(s: &mut Session, p: &Value, g: &Value) -> Result<Value
             color,
             opacity: pct("opacity", 100.0),
             midpoint: pct("midpoint", 50.0).clamp(0.13, 0.87),
+            swatch,
         });
     }
     if stops.len() < 2 {
@@ -1660,7 +1718,13 @@ fn gradient_json(name: &str, g: &designcraft_color::Gradient) -> Value {
     let stops: Vec<Value> = g
         .stops
         .iter()
-        .map(|s| json!({"location": (s.offset as f64 * 1000.0).round() / 10.0, "color": s.color.to_hex(), "opacity": (s.opacity * 100.0).round(), "midpoint": (s.midpoint * 100.0).round()}))
+        .map(|s| {
+            let mut v = json!({"location": (s.offset as f64 * 1000.0).round() / 10.0, "color": s.color.to_hex(), "opacity": (s.opacity * 100.0).round(), "midpoint": (s.midpoint * 100.0).round()});
+            if let (Some(o), Some(w)) = (v.as_object_mut(), &s.swatch) {
+                o.insert("swatch".into(), json!(w));
+            }
+            v
+        })
         .collect();
     json!({"swatch": name, "kind": if g.kind == designcraft_color::GradientKind::Radial { "radial" } else { "linear" }, "stops": stops})
 }
@@ -1678,13 +1742,18 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
             let doc = &s.doc()?.doc;
             let mut v = Vec::new();
             for st in a {
-                // A swatch dropped on a stop gives it the swatch's colour (a tint's mixed in).
-                let color = match st.get("swatch").and_then(Value::as_str) {
-                    Some(name) => doc
-                        .resolve_color(name, 1.0)
-                        .filter(|_| designcraft_color::swatch::resolve_gradient(&doc.swatches, name).is_none())
-                        .ok_or_else(|| bad("object.gradient", format!("`{name}` isn't a colour swatch")))?,
-                    None => st.get("color").and_then(parse_color).ok_or_else(|| bad("object.gradient", "a stop needs a color or a swatch"))?,
+                // A swatch dropped on a stop gives it the swatch's color (a tint's mixed in) and
+                // its inks for print.
+                // A stop naming a swatch that's gone keeps the color given with it.
+                let color = st.get("color").and_then(parse_color);
+                let (color, swatch) = match st.get("swatch").and_then(Value::as_str) {
+                    Some(name) => {
+                        match doc.resolve_color(name, 1.0).filter(|_| designcraft_color::swatch::resolve_gradient(&doc.swatches, name).is_none()) {
+                            Some(c) => (c, Some(name.to_string())),
+                            None => (color.ok_or_else(|| bad("object.gradient", format!("`{name}` isn't a color swatch")))?, None),
+                        }
+                    }
+                    None => (color.ok_or_else(|| bad("object.gradient", "a stop needs a color or a swatch"))?, None),
                 };
                 let pct = |k: &str, d: f64| st.get(k).and_then(Value::as_f64).unwrap_or(d).clamp(0.0, 100.0) as f32 / 100.0;
                 v.push(GradientStop {
@@ -1692,6 +1761,7 @@ fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
                     color,
                     opacity: pct("opacity", 100.0),
                     midpoint: pct("midpoint", 50.0).clamp(0.13, 0.87),
+                    swatch,
                 });
             }
             if v.len() < 2 {
@@ -2062,7 +2132,7 @@ fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     if let Some(nb) = &base {
                         if !d.swatch(nb).is_some_and(|x| matches!(x.value, SwatchValue::Color { .. })) || *nb == name {
-                            return Err(bad(ID, format!("`{nb}` isn't a colour swatch")));
+                            return Err(bad(ID, format!("`{nb}` isn't a color swatch")));
                         }
                         *b = nb.clone();
                     }
@@ -2107,6 +2177,7 @@ fn swatch_options(s: &mut Session, p: &Value) -> Result<Value> {
         let slot = d.swatches.iter_mut().find(|x| x.name == name).ok_or_else(|| bad(ID, format!("no swatch `{name}`")))?;
         *slot = w2;
         d.rename_swatch_refs(&name, &new);
+        d.refresh_gradient_stops();
         Ok(json!({"name": new}))
     })?;
     if let Some(new) = result.get("name").and_then(Value::as_str) {
@@ -2789,9 +2860,10 @@ mod ink_tests {
         let l = s.execute("ink.list", &json!({})).unwrap();
         assert_eq!(l["inks"][0]["alias"], "Pantone B");
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
-        assert!(back.inks.resolve("Pantone A").1, "IDML ConvertToProcess");
+        assert!(designcraft_pdf::inks::spot_output(&back, &designcraft_pdf::inks::ink_set(&back), "Pantone A").1, "IDML ConvertToProcess");
         assert!(back.inks.aliases.iter().any(|(a, b)| a == "Pantone A" && b == "Pantone B"), "IDML AliasInkName");
         assert!(s.execute("ink.options", &json!({"ink": "[Black]", "toProcess": true})).is_err());
+        assert!(s.execute("ink.options", &json!({"ink": "Pantone B", "alias": "Pantone A"})).is_err(), "an alias loop is refused");
     }
 }
 
@@ -2810,6 +2882,13 @@ mod export_tag_tests {
         s.execute("style.exportTag", &json!({"style": "Chapter Title", "tag": "h1", "class": "chapter"})).unwrap();
         s.execute("style.exportTag", &json!({"style": "Key Term", "character": true, "tag": "strong"})).unwrap();
         assert!(s.execute("style.exportTag", &json!({"style": "Nope"})).is_err());
+        // Split Document is for paragraph styles; it alone keeps the tagging.
+        assert!(s.execute("style.exportTag", &json!({"style": "Key Term", "character": true, "split": true})).is_err());
+        s.execute("style.paragraph.create", &json!({"name": "Part"})).unwrap();
+        assert_eq!(s.execute("style.exportTag", &json!({"style": "Part", "split": true})).unwrap()["split"], true);
+        assert!(s.doc().unwrap().doc.styles.export_tag("Part", false).is_some_and(|t| t.split));
+        s.execute("style.exportTag", &json!({"style": "Part", "split": false})).unwrap();
+        assert!(s.doc().unwrap().doc.styles.export_tag("Part", false).is_none(), "an untouched tagging goes");
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Origins\nA word"})).unwrap();
         let sid = r["story"].as_u64().unwrap();
         s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
@@ -2825,6 +2904,78 @@ mod export_tag_tests {
         let text = String::from_utf8_lossy(&pdf);
         assert!(text.contains("/S/H1") && text.contains("/S/P"), "structure elements");
         assert!(designcraft_render::pdf_page_count(&pdf) == Some(1));
+    }
+
+    #[test]
+    fn export_tagging_follows_a_renamed_style_and_goes_with_a_deleted_one() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Term"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Head", "tag": "h2", "class": "head"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Body", "tag": "p", "class": "body"})).unwrap();
+        s.execute("style.exportTag", &json!({"style": "Term", "character": true, "tag": "em", "class": "term"})).unwrap();
+        let tag = |s: &Session, name: &str, character: bool| {
+            s.doc().unwrap().doc.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone()))
+        };
+        let pair = |t: &str, c: &str| Some((t.to_string(), c.to_string()));
+        // A rename onto another style's name is refused, so neither tagging is lost.
+        assert!(s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "Body"})).is_err());
+        assert_eq!((tag(&s, "Head", false), tag(&s, "Body", false)), (pair("h2", "head"), pair("p", "body")));
+
+        s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "Title"})).unwrap();
+        s.execute("style.character.edit", &json!({"name": "Term", "rename": "Word"})).unwrap();
+        assert_eq!(tag(&s, "Title", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Head", false), None);
+        assert_eq!(tag(&s, "Word", true), pair("em", "term"));
+        assert_eq!(tag(&s, "Term", true), None);
+        // Moving a style into a group renames it to Group/Name.
+        s.execute("style.group", &json!({"kind": "paragraph", "names": ["Title"], "group": "Heads"})).unwrap();
+        assert_eq!(tag(&s, "Heads/Title", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Title", false), None);
+
+        for _ in 0..3 {
+            s.execute("edit.undo", &json!({})).unwrap();
+        }
+        assert_eq!(tag(&s, "Head", false), pair("h2", "head"));
+        assert_eq!(tag(&s, "Title", false), None);
+        assert_eq!(tag(&s, "Term", true), pair("em", "term"));
+        assert_eq!(tag(&s, "Word", true), None);
+
+        // Deleting drops the deleted style's tagging; the replacement keeps its own.
+        s.execute("style.paragraph.delete", &json!({"name": "Head", "replaceWith": "Body"})).unwrap();
+        assert_eq!(tag(&s, "Head", false), None);
+        assert_eq!(tag(&s, "Body", false), pair("p", "body"));
+        s.execute("style.character.delete", &json!({"name": "Term"})).unwrap();
+        assert_eq!(tag(&s, "Term", true), None);
+        assert!(s.doc().unwrap().doc.styles.export_tags.keys().all(|k| k == "p:Body"));
+    }
+
+    #[test]
+    fn a_rename_onto_a_taken_name_says_so_and_a_trimmed_rename_drops_a_stale_tag() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (kind, a, b) in [("paragraph", "Head", "Body"), ("character", "Term", "Word")] {
+            s.execute(&format!("style.{kind}.create"), &json!({"name": a})).unwrap();
+            s.execute(&format!("style.{kind}.create"), &json!({"name": b})).unwrap();
+            let e = s.execute(&format!("style.{kind}.edit"), &json!({"name": a, "rename": b})).unwrap_err().to_string();
+            assert!(e.contains(&format!("a {kind} style named `{b}` already exists")), "{e}");
+            let e = s.execute(&format!("style.{kind}.edit"), &json!({"name": a, "rename": "[None]"})).unwrap_err().to_string();
+            assert!(e.contains("can't rename to `[None]`"), "{e}");
+        }
+        // An entry left under a name no style has doesn't attach to a style renamed onto it.
+        s.edit(|d, _| {
+            d.styles_mut()
+                .export_tags
+                .insert("p:Title".into(), designcraft_doc::ExportTag { tag: "h6".into(), class: "stale".into(), ..Default::default() });
+            Ok(())
+        })
+        .unwrap();
+        s.execute("style.paragraph.edit", &json!({"name": "Head", "rename": "  Title "})).unwrap();
+        let st = &s.doc().unwrap().doc.styles;
+        assert!(st.para("Title").is_some(), "the new name is trimmed");
+        assert_eq!(st.export_tag("Title", false), None);
     }
 }
 
@@ -2981,6 +3132,7 @@ mod delete_tests {
             d.footnote_options.para_style = "Table Body".into();
             d.endnote_options.para_style = "Table Body".into();
             d.endnote_options.heading_style = "Table Body".into();
+            d.settings.epub_split = designcraft_doc::EpubSplit::Style("Table Body".into());
             d.toc = Some(Toc {
                 story,
                 title: "Contents".into(),
@@ -2999,6 +3151,7 @@ mod delete_tests {
         assert_eq!((sub.based_on.as_deref(), sub.next_style.as_deref()), (Some("Body"), Some("Body")));
         assert_eq!(d.styles.default_paragraph, "Body");
         assert_eq!(d.endnote_options.heading_style, "Body");
+        assert_eq!(d.settings.epub_split, designcraft_doc::EpubSplit::Style("Body".into()), "EPUB Split Document follows the replacement");
         let after = s.execute("preflight.run", &json!({})).unwrap();
         assert!(!after.to_string().contains("Table Body"), "{after}");
     }
@@ -3443,6 +3596,31 @@ mod gradient_swatch_tests {
         ] {
             assert!(s.execute("swatch.create", &json!({"gradient": bad})).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn gradient_stops_follow_their_swatch() {
+        let mut s = doc();
+        s.execute("swatch.create", &json!({"name": "Gold", "color": {"c": 0, "m": 30, "y": 90, "k": 10}, "spot": true})).unwrap();
+        s.execute(
+            "swatch.create",
+            &json!({"name": "G", "gradient": {"stops": [{"location": 0, "swatch": "Gold"}, {"location": 100, "swatch": "[Paper]"}]}}),
+        )
+        .unwrap();
+        let stops = |s: &crate::Session| match &s.doc().unwrap().doc.swatch("G").unwrap().value {
+            SwatchValue::Gradient { gradient } => gradient.stops.clone(),
+            v => panic!("{v:?}"),
+        };
+        assert_eq!(stops(&s)[0].swatch.as_deref(), Some("Gold"));
+        assert_eq!(stops(&s)[1].swatch.as_deref(), Some("[Paper]"));
+        // Renamed and edited: the stop names the new name and shows the new color.
+        s.execute("swatch.options", &json!({"name": "Gold", "to": "Gold 871", "color": {"c": 0, "m": 20, "y": 80, "k": 20}})).unwrap();
+        assert_eq!(stops(&s)[0].swatch.as_deref(), Some("Gold 871"));
+        assert_eq!(stops(&s)[0].color, designcraft_color::Color::cmyk(0.0, 0.2, 0.8, 0.2));
+        // Deleted: the stop keeps its color as a plain one.
+        s.execute("swatch.delete", &json!({"name": "Gold 871"})).unwrap();
+        assert_eq!(stops(&s)[0].swatch, None);
+        assert_eq!(stops(&s)[0].color, designcraft_color::Color::cmyk(0.0, 0.2, 0.8, 0.2));
     }
 
     #[test]

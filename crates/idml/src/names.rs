@@ -144,16 +144,37 @@ pub const TABLE_BUILTINS: &[(&str, &str)] = &[("[Basic Table]", "$ID/[Basic Tabl
 pub const OBJECT_BUILTINS: &[(&str, &str)] =
     &[("[None]", "$ID/[None]"), ("[Basic Graphics Frame]", "$ID/[Normal Graphics Frame]"), ("[Basic Text Frame]", "$ID/[Normal Text Frame]")];
 
-/// Our style name → IDML `Name` (groups: `A/B` → `A:B`).
+/// Our style name → IDML `Name` (groups: `A/B` → `A:B`; a literal `:` or `\` is escaped as `\:`
+/// or `\\`, so it is not read back as a group separator).
 pub fn style_name_out(builtins: &[(&str, &str)], name: &str) -> String {
-    builtins.iter().find(|(o, _)| *o == name).map(|(_, i)| i.to_string()).unwrap_or_else(|| name.replace('/', ":"))
+    builtins
+        .iter()
+        .find(|(o, _)| *o == name)
+        .map(|(_, i)| i.to_string())
+        .unwrap_or_else(|| name.replace('\\', "\\\\").replace(':', "\\:").replace('/', ":"))
 }
 /// IDML `Name` → our style name.
 pub fn style_name_in(builtins: &[(&str, &str)], name: &str) -> String {
     if let Some((o, _)) = builtins.iter().find(|(_, i)| *i == name) {
         return o.to_string();
     }
-    name.strip_prefix("$ID/").unwrap_or(name).replace(':', "/")
+    let name = name.strip_prefix("$ID/").unwrap_or(name);
+    let mut out = String::with_capacity(name.len());
+    let mut chars = name.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.clone().next() {
+                Some(next @ ('\\' | ':')) => {
+                    out.push(next);
+                    chars.next();
+                }
+                _ => out.push('\\'),
+            },
+            ':' => out.push('/'),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 /// `ParagraphStyle/…` Self id for one of our names.
 pub fn style_self(kind: &str, builtins: &[(&str, &str)], name: &str) -> String {

@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 designcraft-engine = { workspace = true }
 designcraft-ui-egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links", "clipboard"] }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,6 +32,7 @@ arboard = { workspace = true }
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(windows)'.dependencies]
+craft-update = { workspace = true }
 # EnumDisplayDevices (src/gpu.rs): which GPU drives the display, so the window draws on the GPU
 # that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
 # Win32 (MIT); the `user` feature is User32.dll only.
@@ -41,10 +42,12 @@ winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
 # The same winit as eframe; only the native termination opt-in is used.
 winit = { version = "0.30", default-features = false }
 muda = { version = "0.21", default-features = false }
-# The input context, to drop the IME's marked text when the Type tool ends a composition; the
-# window's `movable` flag (see `mac_window`). The versions muda uses, through safe methods.
+# The input context, to drop the IME's marked text when the Type tool ends a composition. The
+# versions muda uses, through safe methods.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSTextInputContext", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSTextInputContext"] }
+# The window's `movable` flag follows the application bar's controls.
+craft-window = { workspace = true }
 # Finder double-clicks, Open With, Dock drops and `open -a DesignCraft brochure.idml` arrive as a
 # kAEOpenDocuments Apple event, which winit 0.30 doesn't handle. This crate (also used by PhotoCraft,
 # PdfCraft and WordCraft) registers the handler behind a safe API (Objective-C interop needs unsafe,

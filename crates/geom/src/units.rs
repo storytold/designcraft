@@ -127,7 +127,10 @@ impl Unit {
         // Choose a major spacing (base × 1, 2, 5, 10…) at least ~60 px apart, or base / 2^n when zoomed in.
         let mut major = base;
         while major * zoom < 50.0 {
-            major *= if (major / base).log10().fract().abs() < 1e-9 { 2.0 } else { 2.5 };
+            let ratio = major / base;
+            let mantissa = ratio / 10f64.powf(ratio.log10().floor());
+            // 1 -> 2 -> 5 -> 10: double at mantissa 1 or 5, ×2.5 at mantissa 2.
+            major *= if (mantissa - 2.0).abs() < 1e-6 { 2.5 } else { 2.0 };
         }
         while major * zoom > 160.0 && major > base / 64.0 {
             major /= 2.0;
@@ -286,6 +289,8 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
                 whole += 1.0;
                 rest = 0.0;
             }
+            // Decide the sign from the rounded value so float noise doesn't print "-0p0".
+            let neg = neg && (whole > 0.0 || rest > 0.0);
             let sep = if unit == Unit::Picas { 'p' } else { 'c' };
             format!("{}{}{}{}", if neg { "-" } else { "" }, whole as i64, sep, trim(rest))
         }
@@ -297,11 +302,25 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ruler_major_spacing_steps_1_2_5_10() {
+        assert!(close(Unit::Points.ruler_ticks(0.1).0, 720.0));
+        assert!(close(Unit::Points.ruler_ticks(0.01).0, 7200.0));
+    }
+
     fn p(s: &str) -> f64 {
         parse_measure(s, Unit::Points).unwrap()
     }
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    /// Tiny negatives that round to zero must not print a sign.
+    #[test]
+    fn tiny_negative_picas_ciceros_have_no_sign() {
+        assert_eq!(format_measure(-0.0004, Unit::Picas), "0p0");
+        assert_eq!(format_measure(-0.0004, Unit::Ciceros), "0c0");
+        assert_eq!(format_measure(-12.0, Unit::Picas), "-1p0");
     }
 
     /// Inches show four decimals, as InDesign's fields do; other units three.

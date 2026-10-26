@@ -1651,3 +1651,108 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
+
+/// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
+/// object, and Align to Key Object leaves it in place. A second click on it drops the key.
+#[test]
+fn a_click_in_the_selection_makes_the_key_object() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    // On the part of the key object that the aligned object never covers, away from the handles.
+    let click = |s: &mut Session| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, 280.0, 160.0), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, 280.0, 160.0), v).unwrap();
+    };
+    click(&mut s);
+    assert_eq!(s.doc().unwrap().selection.items.len(), 2, "the click keeps both selected");
+    // The key is the right-hand object, so aligning left edges to the selection would move it.
+    s.execute("object.align", &json!({"edge": "left", "to": "keyObject"})).unwrap();
+    let x0 = |s: &Session, id: u64| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds().x0;
+    assert!((x0(&s, b) - 200.0).abs() < 1e-6, "the key object moved to {}", x0(&s, b));
+    assert!((x0(&s, a) - 200.0).abs() < 1e-6, "the other object is at {}", x0(&s, a));
+    // The Align panel and the Control panel send no target: the key object is the default one.
+    s.execute("object.align", &json!({"edge": "top"})).unwrap();
+    let y0 = |s: &Session, id: u64| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds().y0;
+    assert!((y0(&s, b) - 120.0).abs() < 1e-6, "the key object moved to {}", y0(&s, b));
+    assert!((y0(&s, a) - 120.0).abs() < 1e-6, "the other object is at {}", y0(&s, a));
+    click(&mut s);
+    assert_eq!(s.doc().unwrap().selection.key, None, "a click on the key object drops the key");
+}
+
+/// Dragging one of several selected objects moves them all and makes no key object.
+#[test]
+fn dragging_the_selection_makes_no_key_object() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 100.0, 260.0, 150.0], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.set_tool("selection");
+    let v = ViewInfo::at_zoom(1.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 230.0, 125.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 250.0, 135.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 250.0, 135.0), v).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+}
+
+/// Shift-clicking the key object out of the selection drops the key.
+#[test]
+fn deselecting_the_key_object_drops_the_key() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 100.0, 260.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, Some(designcraft_doc::ItemId(b)));
+    s.execute("selection.toggle", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+}
+
+/// A key object needs another object to align to: with one object selected there is nothing to key
+/// against, and the stored key would turn that object into the target as soon as a second one joins.
+#[test]
+fn a_single_selected_object_cannot_be_the_key_object() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    assert!(s.execute("selection.key", &json!({"id": a})).is_err());
+    assert_eq!(s.doc().unwrap().selection.key, None);
+    s.execute("selection.toggle", &json!({"id": b})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None, "the second object joining must not find a key already set");
+}
+
+/// With the selection down to the key object alone, Align no longer has a key object: a single
+/// object aligns to the page, as before.
+#[test]
+fn a_lone_key_object_aligns_to_the_page() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    s.execute("selection.toggle", &json!({"id": a})).unwrap();
+    assert_eq!(s.doc().unwrap().selection.key, None);
+    s.execute("object.align", &json!({"edge": "left"})).unwrap();
+    let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
+    assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
+}
+
+/// Aligning one object alone (`ids`) while it is the key object of a larger selection also takes
+/// the page.
+#[test]
+fn aligning_the_key_object_alone_takes_the_page() {
+    let mut s = session();
+    let a = s.execute("frame.create", &json!({"rect": [50.0, 100.0, 100.0, 150.0]})).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [200.0, 120.0, 300.0, 170.0]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    s.execute("selection.key", &json!({"id": b})).unwrap();
+    s.execute("object.align", &json!({"edge": "left", "ids": [b]})).unwrap();
+    let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
+    assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
+}

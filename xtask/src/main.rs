@@ -12,7 +12,7 @@ mod stats;
 mod version;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 const USAGE: &str = "\
 usage: cargo xtask <command>
@@ -21,8 +21,11 @@ commands:
   assets          check that every icon/image/font/asset is attributed in ASSETS.md
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   pdf-deps        verify the pinned PDF backend, including Krilla dependencies
-  wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
-  ci              fmt --check, clippy -D warnings, test, assets, layers, wasm (stops at first failure)
+  wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates (one call)
+  test            workspace tests (cargo nextest when installed, else cargo test), then doctests
+  i18n-report     list the interface strings each language shows in English (always passes)
+  ci              fmt --check, pdf-deps, clippy -D warnings, test, i18n-report, doctest, assets,
+                  layers, wasm (stops at first failure)
   corpus [--download]
                   show where test corpora live; --download fetches PngSuite into corpus/pngsuite
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
@@ -39,6 +42,8 @@ fn main() -> ExitCode {
         Some("layers") => cmd_layers(),
         Some("pdf-deps") => pdf_deps::run(&root()),
         Some("wasm") => cmd_wasm(),
+        Some("test") => cmd_test().and_then(|()| cmd_doctest()),
+        Some("i18n-report") => cmd_i18n_report(),
         Some("ci") => cmd_ci(),
         Some("corpus") => cmd_corpus(rest.contains(&"--download")),
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
@@ -134,21 +139,66 @@ fn wasm_set() -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// One `cargo check` for the whole set: each crate is checked once, and
+/// `--keep-going` still reports every failing crate. Features unify across the
+/// set, so each crate is checked with the union of the features the set enables.
 fn cmd_wasm() -> Result<(), String> {
     let set = wasm_set()?;
-    let mut results = Vec::new();
+    if set.is_empty() {
+        return Err("no wasm-safe crates found in the workspace metadata".into());
+    }
+    let mut c = cargo();
+    c.args(["check", "--target", "wasm32-unknown-unknown", "--keep-going"]);
     for pkg in &set {
-        let mut c = cargo();
-        c.args(["check", "--target", "wasm32-unknown-unknown", "-p", pkg]);
-        let ok = run(c, &format!("cargo check --target wasm32-unknown-unknown -p {pkg}")).is_ok();
-        results.push((pkg.clone(), ok));
+        c.args(["-p", pkg]);
     }
-    println!("\nwasm32-unknown-unknown check:");
-    for (p, ok) in &results {
-        println!("  {:<6} {p}", if *ok { "ok" } else { "FAIL" });
+    run(c, &format!("cargo check --target wasm32-unknown-unknown --keep-going -p {}", set.join(" -p ")))?;
+    println!("\nwasm32-unknown-unknown check: ok ({} crates: {})", set.len(), set.join(", "));
+    Ok(())
+}
+
+/// Test targets for the test build. Examples are left out so they aren't
+/// linked; clippy `--all-targets` still compiles them.
+const TEST_TARGETS: [&str; 4] = ["--workspace", "--lib", "--bins", "--tests"];
+
+fn nextest_available() -> bool {
+    cargo().args(["nextest", "--version"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+fn cmd_test() -> Result<(), String> {
+    let mut c = cargo();
+    let tool = if nextest_available() {
+        c.args(["nextest", "run"]);
+        "nextest run"
+    } else {
+        eprintln!("note: cargo-nextest is not installed, running cargo test (cargo install cargo-nextest --locked)");
+        c.arg("test");
+        "test"
+    };
+    c.args(TEST_TARGETS);
+    run(c, &format!("cargo {tool} {}", TEST_TARGETS.join(" ")))
+}
+
+/// Runs the ignored `missing_translations_report` test with its output shown. It takes the test
+/// step's targets, so it reuses that build.
+fn cmd_i18n_report() -> Result<(), String> {
+    const REPORT: &str = "i18n::tests::missing_translations_report";
+    let mut c = cargo();
+    if nextest_available() {
+        c.args(["nextest", "run", "--cargo-quiet"]).args(TEST_TARGETS);
+        c.args(["--run-ignored", "only", "--no-capture", "--status-level", "fail", "--final-status-level", "fail", "-E"]);
+        c.arg(format!("package(designcraft-ui-egui) & test(={REPORT})"));
+    } else {
+        c.args(["test", "-q"]).args(TEST_TARGETS).args(["--", "--ignored", "--exact", REPORT, "--nocapture"]);
     }
-    let failed = results.iter().filter(|r| !r.1).count();
-    if failed == 0 { Ok(()) } else { Err(format!("{failed} crate(s) failed the wasm check")) }
+    run(c, &format!("missing translations ({REPORT})"))
+}
+
+/// nextest does not run doctests.
+fn cmd_doctest() -> Result<(), String> {
+    let mut c = cargo();
+    c.args(["test", "--workspace", "--doc"]);
+    run(c, "cargo test --workspace --doc")
 }
 
 fn cmd_ci() -> Result<(), String> {
@@ -171,14 +221,9 @@ fn cmd_ci() -> Result<(), String> {
                 run(c, "cargo clippy --workspace --all-targets -- -D warnings")
             }),
         ),
-        (
-            "test",
-            Box::new(|| {
-                let mut c = cargo();
-                c.args(["test", "--workspace"]);
-                run(c, "cargo test --workspace")
-            }),
-        ),
+        ("test", Box::new(cmd_test)),
+        ("i18n-report", Box::new(cmd_i18n_report)),
+        ("doctest", Box::new(cmd_doctest)),
         ("assets", Box::new(|| assets::run(&root()))),
         ("layers", Box::new(cmd_layers)),
         ("wasm", Box::new(cmd_wasm)),

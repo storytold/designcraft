@@ -161,14 +161,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1, after?: page index (default: last), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page), parent?: id|\"A-Parent\"|\"A\"|null}",
             has_doc,
             |s, p| {
-                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 9999) as usize;
+                const ID: &str = "layout.pages.insert";
+                // A count that is given but is not a number of pages used to insert one page:
+                // `0`, `-1` and `1.5` all came out as 1, and 10000 was quietly capped.
+                let count = match p.get("count").filter(|v| !v.is_null()) {
+                    None => 1,
+                    Some(v) => match v.as_u64().filter(|n| (1..=9999).contains(n)).map(|n| n as usize) {
+                        Some(n) => n,
+                        None => return Err(bad(ID, format!("count {v}: 1 to 9999 pages"))),
+                    },
+                };
                 let st = s.doc()?;
                 let n = st.doc.page_count();
+                // An `after` past the last page appends, which `insert_after_u64_max_appends_at_the_end`
+                // pins deliberately.
                 let after = p.get("after").and_then(Value::as_u64).map(|v| usize::try_from(v).unwrap_or(usize::MAX)).unwrap_or(n.saturating_sub(1));
-                let parent = parent_ref("layout.pages.insert", &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
+                let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
                 s.edit(|d, _| {
                     let ids = d.insert_pages(Some(after), count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
@@ -2497,3 +2508,34 @@ mod parent_base_tests {
 #[cfg(test)]
 #[path = "parent_delete_tests.rs"]
 mod parent_delete_tests;
+
+#[cfg(test)]
+mod insert_count_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A count that is given but is not a number of pages used to insert one page anyway:
+    /// `{"count": 0}` added a page, `-1` and `1.5` added one each, and `10000` was quietly capped
+    /// to 9999. A position past the last page appends, which is deliberate.
+    #[test]
+    fn a_page_count_insert_pages_cannot_mean_is_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let total = |s: &mut Session| s.execute("layout.pages.insert", &json!({"count": 1})).unwrap()["total"].as_u64().unwrap();
+        assert_eq!(total(&mut s), 3, "one page added");
+
+        for params in [json!({"count": 0}), json!({"count": -1}), json!({"count": 1.5}), json!({"count": 10000}), json!({"count": "two"})] {
+            let e = s.execute("layout.pages.insert", &params).expect_err("refused").to_string();
+            assert!(e.contains("1 to 9999 pages"), "{params}: {e}");
+        }
+        // Nothing was inserted by any of those.
+        assert_eq!(s.doc().unwrap().doc.page_count(), 3);
+        // A position past the last page still appends, which `insert_pages_bounds.rs` pins.
+        let r = s.execute("layout.pages.insert", &json!({"after": 99})).unwrap();
+        assert_eq!((r["pages"].as_u64(), r["total"].as_u64()), (Some(1), Some(4)));
+        // The positions it does have still work: after the first page of three.
+        let r = s.execute("layout.pages.insert", &json!({"count": 2, "after": 0})).unwrap();
+        assert_eq!((r["pages"].as_u64(), r["total"].as_u64()), (Some(2), Some(6)));
+    }
+}

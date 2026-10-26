@@ -4,8 +4,11 @@
 use designcraft_compose as compose;
 use designcraft_doc::{Content, Document, GuideSel, Item, SpreadRef};
 use designcraft_engine::doc::Selection;
+use designcraft_engine::{ImeMutation, ImeTextContext};
 use designcraft_geom::{Affine, Point, Rect as DRect, Vec2 as DVec2};
 use designcraft_tools::{CanvasLayout, Cursor, Mods, Overlay, PointerEvent, PointerKind, SpreadSlot, ToolKey};
+use egui::ime_context::{CommittedText, ImeMutationStamp, ImeObservation, ImeTarget};
+use egui::output::IMESurroundingText;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -238,14 +241,79 @@ pub fn current_parent_page(app: &DesignApp) -> Option<(usize, usize)> {
     Some((pi, qi))
 }
 
-/// Scroll so absolute page `abs` is centred (keeps zoom).
+/// Scroll so absolute page `abs` is centred (keeps zoom). A jump Go Back can return from.
 pub fn go_to_page(app: &mut DesignApp, abs: usize) {
+    note_jump(app, false);
+    centre_page(app, abs);
+    note_jump(app, true);
+}
+
+fn centre_page(app: &mut DesignApp, abs: usize) {
     let Some(st) = app.session.active() else { return };
     let layout = CanvasLayout::new(&st.doc, false);
     let Some(pr) = layout.page_rect(&st.doc, abs) else { return };
     let Some(rect) = app.canvas_rect else { return };
     if let Some(v) = app.view_mut() {
         v.origin = Point::new(pr.center().x - rect.width() as f64 / 2.0 / v.zoom, pr.center().y - rect.height() as f64 / 2.0 / v.zoom);
+    }
+}
+
+/// The document's pages by id, in page order.
+fn page_ids(doc: &Document) -> Vec<designcraft_doc::ids::PageId> {
+    doc.spreads.iter().flat_map(|s| s.pages.iter().map(|p| p.id)).collect()
+}
+
+/// The page in view and the view centre's offset from that page's centre. Parent pages have none,
+/// nor has a view still waiting to be fitted (leaving parent pages for a document page).
+pub(crate) fn page_in_view(app: &DesignApp) -> Option<(designcraft_doc::ids::PageId, DVec2)> {
+    let st = app.session.active().filter(|st| !st.editing_parents)?;
+    let (v, r) = (app.view().filter(|v| v.fitted)?, app.canvas_rect?);
+    let abs = current_page(app)?;
+    let id = st.doc.page(abs)?.id;
+    let pr = CanvasLayout::new(&st.doc, false).page_rect(&st.doc, abs)?;
+    let c = Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, v.origin.y + r.height() as f64 / 2.0 / v.zoom);
+    Some((id, c - pr.center()))
+}
+
+/// Layout ▸ Go Back / Go Forward record jumps (Go to Page, the page and spread commands, the Pages
+/// panel), not scrolling: where the view is when a jump starts, and where the jump took it.
+fn note_jump(app: &mut DesignApp, to: bool) {
+    let Some((id, offset)) = page_in_view(app) else { return };
+    if let Some(h) = app.page_history_mut() {
+        if to { h.visit(id, offset) } else { h.leave(id, offset) }
+    }
+}
+
+/// Whether Layout ▸ Go Back (`step` < 0) or Go Forward has a page to go to from the view as it is.
+pub fn can_go_through_history(app: &DesignApp, step: isize) -> bool {
+    let Some(st) = app.session.active().filter(|st| !st.editing_parents) else { return false };
+    // A view still waiting to be fitted is refitted next frame, which would replace the destination.
+    if !app.view().is_some_and(|v| v.fitted) {
+        return false;
+    }
+    let ids = page_ids(&st.doc);
+    let Some(mut h) = app.page_history().cloned() else { return false };
+    if let Some((id, offset)) = page_in_view(app) {
+        h.leave(id, offset);
+    }
+    h.can_go(step, |id| ids.contains(&id))
+}
+
+/// Layout ▸ Go Back (`step` < 0) or Go Forward: show the page viewed before or after this one, where
+/// the view was on it (zoom kept).
+pub fn go_through_history(app: &mut DesignApp, step: isize) {
+    if !app.view().is_some_and(|v| v.fitted) {
+        return;
+    }
+    note_jump(app, false);
+    let Some(ids) = app.session.active().filter(|st| !st.editing_parents).map(|st| page_ids(&st.doc)) else { return };
+    let Some((id, offset)) = app.page_history_mut().and_then(|h| h.go(step, |id| ids.contains(&id))) else { return };
+    let Some(st) = app.session.active() else { return };
+    let Some(pr) = ids.iter().position(|p| *p == id).and_then(|abs| CanvasLayout::new(&st.doc, false).page_rect(&st.doc, abs)) else { return };
+    let Some(rect) = app.canvas_rect else { return };
+    let c = pr.center() + offset;
+    if let Some(v) = app.view_mut() {
+        v.origin = Point::new(c.x - rect.width() as f64 / 2.0 / v.zoom, c.y - rect.height() as f64 / 2.0 / v.zoom);
     }
 }
 
@@ -268,10 +336,29 @@ fn present_fit(app: &mut DesignApp, rect: Rect) {
 /// Centre the spread `delta` spreads after (or before) the one in view (keeps zoom); stops at the
 /// first and last spread. Parent spreads while they are being edited.
 pub fn step_spread(app: &mut DesignApp, delta: isize) {
+    // At the first or last spread only the view moves, within the spread: no jump for Go Back.
+    let jump = spread_step(app, delta).is_some_and(|(cur, to)| cur != to);
+    if jump {
+        note_jump(app, false);
+    }
+    centre_spread(app, delta);
+    if jump {
+        note_jump(app, true);
+    }
+}
+
+/// The slot in view and the one `delta` spreads after (or before) it, stopping at the ends.
+fn spread_step(app: &DesignApp, delta: isize) -> Option<(usize, usize)> {
+    let st = app.session.active()?;
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cur = current_slot(app, &layout)?;
+    Some((cur, cur.saturating_add_signed(delta).min(layout.slots.len().saturating_sub(1))))
+}
+
+fn centre_spread(app: &mut DesignApp, delta: isize) {
+    let Some((_, to)) = spread_step(app, delta) else { return };
     let Some(st) = app.session.active() else { return };
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);
-    let Some(cur) = current_slot(app, &layout) else { return };
-    let to = cur.saturating_add_signed(delta).min(layout.slots.len().saturating_sub(1));
     let Some(b) = layout.slots.get(to).map(|s| s.bounds) else { return };
     let Some(rect) = app.canvas_rect else { return };
     if let Some(v) = app.view_mut() {
@@ -296,25 +383,39 @@ pub fn set_zoom(app: &mut DesignApp, z: f64) {
     zoom_at(app, rect.center(), z / cur);
 }
 
+/// How long egui (0.37 `WheelState`) keeps a scroll action's latched modifiers after the last
+/// wheel event: 150 ms, or a second while fingers rest on a trackpad. The Alt latch below ends
+/// with the action, exactly as egui ends Ctrl/Cmd, so the rest of an ended motion scrolls for
+/// both keys and a later plain scroll is never taken for a zoom.
+const SCROLL_ACTION_TIMEOUT: f64 = 0.150;
+const RESTING_FINGER_TIMEOUT: f64 = 1.0;
+
 /// Whether the wheel motion now arriving was made with Alt down. As egui does for Ctrl/Cmd, a
 /// motion keeps its key to its end: the wheel is smoothed over a few frames, and a trackpad swipe
 /// coasts on after the key is let go.
 fn wheel_alt(ui: &egui::Ui) -> bool {
-    let id = egui::Id::new("canvas_wheel_alt");
-    // Alt, and whether a trackpad swipe is under way.
-    let (mut alt, mut swipe): (bool, bool) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let id = egui::Id::unique("canvas_wheel_alt");
+    // Alt, whether a trackpad swipe is under way, and the time of the last wheel event.
+    let (mut alt, mut swipe, mut last): (bool, bool, f64) = ui.data(|d| d.get_temp(id)).unwrap_or((false, false, f64::NEG_INFINITY));
     ui.input(|i| {
         for e in &i.events {
-            if let egui::Event::MouseWheel { phase, modifiers, .. } = e {
-                (alt, swipe) = match phase {
-                    egui::TouchPhase::Start => (modifiers.alt, true),
-                    egui::TouchPhase::Move => (modifiers.alt || (swipe && alt), swipe),
-                    egui::TouchPhase::End | egui::TouchPhase::Cancel => (false, false),
-                };
+            let egui::Event::MouseWheel { phase, modifiers, source, .. } = e else { continue };
+            // egui ends the action (and drops its latched modifiers) when a new event arrives
+            // after this pause; the Alt latch ends there too.
+            let timeout = if swipe && *source == egui::MouseWheelSource::Trackpad { RESTING_FINGER_TIMEOUT } else { SCROLL_ACTION_TIMEOUT };
+            if timeout < i.time - last {
+                alt = false;
+                swipe = false;
             }
+            last = i.time;
+            (alt, swipe) = match phase {
+                egui::TouchPhase::Start => (modifiers.alt, true),
+                egui::TouchPhase::Move => (modifiers.alt || (swipe && alt), swipe),
+                egui::TouchPhase::End | egui::TouchPhase::Cancel => (false, false),
+            };
         }
     });
-    ui.data_mut(|d| d.insert_temp(id, (alt, swipe)));
+    ui.data_mut(|d| d.insert_temp(id, (alt, swipe, last)));
     alt
 }
 
@@ -375,8 +476,9 @@ fn navigation_space(app: &mut DesignApp, ctx: &egui::Context) -> bool {
     ctx.input(|i| i.focused && i.key_down(egui::Key::Space)) && !app.session.wants_text() && !ctx.text_edit_focused()
 }
 
+/// Allow temporary Zoom only for Cmd+Space with no pointer press and no busy tool.
 fn spring_zoom_mode(app: &DesignApp, ctx: &egui::Context, space: bool) -> bool {
-    let down = ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("canvas_pointer_down", app.pane)))).unwrap_or(false);
+    let down = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(("canvas_pointer_down", app.pane)))).unwrap_or(false);
     space && ctx.input(|i| i.modifiers.command) && !down && !app.session.tool_busy()
 }
 
@@ -388,7 +490,7 @@ struct SpringZoom {
 
 /// Lend the Zoom tool the gesture; the selected tool and document selection stay intact.
 fn spring_zoom_input(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf: &Xf, active: bool) -> bool {
-    let id = egui::Id::new(("canvas_spring_zoom", app.pane));
+    let id = egui::Id::unique(("canvas_spring_zoom", app.pane));
     let mut zoom: SpringZoom = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     if !ui.input(|i| i.focused) {
         ui.data_mut(|d| d.remove::<SpringZoom>(id));
@@ -432,6 +534,7 @@ fn spring_zoom_input(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, 
     true
 }
 
+/// Lay out the canvas, scrollbars and rulers, presentation mode, fit/view state, input handling and painting.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let outer = ui.available_rect_before_wrap();
@@ -526,13 +629,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             painter.add(egui::Shape::mesh(mesh));
         }
     }
+    crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &layout.slots {
         painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
     }
     if !preview {
-        let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::new(GUIDE_DRAG)));
-        let press = ui.data(|d| d.get_temp::<GuidePress>(egui::Id::new(GUIDE_PRESS)));
+        let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG)));
+        let press = ui.data(|d| d.get_temp::<GuidePress>(egui::Id::unique(GUIDE_PRESS)));
         let moving = drag.as_ref().zip(press).and_then(|(g, press)| moving_guides(app, &xf, rect, g, press));
         draw_guides(app, &painter, &xf, &doc, &layout, &t, moving.as_ref());
         if let Some(g) = drag
@@ -582,9 +686,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     let sel_rect = draw_selection(app, &painter, &xf, &doc, &layout);
+    // Where the pointer moved on to another of the app's windows, this window's last pointer
+    // position is stale: no hover feedback or tool cursor there.
+    let elsewhere = pointer_elsewhere(app, ui.ctx());
     if !preview {
         // Content grabbers: the selected frame's and the hovered one's (Selection tool).
-        let hover = ui.ctx().pointer_hover_pos().filter(|p| screen.contains(*p)).map(|p| xf.to_canvas(p));
+        let hover = ui.ctx().pointer_hover_pos().filter(|p| screen.contains(*p) && !elsewhere).map(|p| xf.to_canvas(p));
         let vi = app.view_info();
         for c in app.session.content_grabbers(hover, vi) {
             let c = xf.to_screen(c);
@@ -593,7 +700,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     draw_tool_overlays(app, &painter, &xf);
-    ime_output(app, ui.ctx(), &xf);
+    ime_canvas_pass(app, ui.ctx(), &xf);
     if rulers {
         draw_rulers(app, ui, full, rect, &xf, &doc, &layout, &t);
         ruler_units_menus(app, &resp, full, rect, &doc);
@@ -606,13 +713,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);
     }
     // Cursor.
-    if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p)) {
+    if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p) && !elsewhere) {
         let wants_text = app.session.wants_text();
         let space = navigation_space(app, ui.ctx());
         let zoom = spring_zoom_mode(app, ui.ctx(), space);
         let middle = ui.input(|i| i.pointer.middle_down());
-        let alt_hand: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_alt_hand", app.pane)))).unwrap_or(false);
-        let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_pointer_down", app.pane)))).unwrap_or(false);
+        let alt_hand: bool = ui.data(|d| d.get_temp(egui::Id::unique(("canvas_alt_hand", app.pane)))).unwrap_or(false);
+        let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::unique(("canvas_pointer_down", app.pane)))).unwrap_or(false);
         let alt_text = wants_text && !tool_drag && ui.input(|i| i.modifiers.alt);
         let c = if middle || alt_hand {
             Cursor::HandGrab
@@ -624,7 +731,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.session.cursor(xf.to_canvas(p), ui.input(|i| mods(i, false)), app.view_info())
         };
         // A column guide that a press would drag, or one being dragged: a resize cursor across it.
-        let dragging = ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::new((COLUMN_DRAG, app.pane)))).map(|g| g.spread);
+        let dragging = ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::unique((COLUMN_DRAG, app.pane)))).map(|g| g.spread);
         let column = dragging.or_else(|| {
             let menu_open = context_menu_open(ui.ctx());
             (!space && !zoom && !middle && !alt_hand && !tool_drag && !menu_open && xf.rot == 0)
@@ -640,6 +747,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.ctx().set_cursor_icon(icon);
         draw_cursor_badge(&painter, p, c, &t);
     }
+    // A second viewport has no panels, dialogs or Quick Apply after its canvas: observe here,
+    // once, as the end of its pass. The root viewport observes at the end of `DesignApp::ui`.
+    if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+        ime_observe(app, ui.ctx());
+    }
+}
+
+/// Whether the pointer this canvas's window last saw is in another of the app's windows: a
+/// floating panel's OS window, or the other window of New Window.
+fn pointer_elsewhere(app: &DesignApp, ctx: &egui::Context) -> bool {
+    let mut others = crate::panel_docking::native_viewports(app, ctx);
+    if app.second_window && !ctx.embed_viewports() {
+        others.extend([egui::ViewportId::ROOT, crate::second_window_viewport()]);
+    }
+    crate::cursors::pointer_elsewhere(ctx, &others)
 }
 
 /// The loaded text cursor's badge beside the system cursor: lines of text, a closed chain
@@ -682,7 +804,6 @@ fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bool, ppp: f6
         note_indicators: !preview && app.session.prefs.show_note_anchors,
         change_markup: !preview && app.session.prefs.show_added_text,
         tag_markers: !preview && app.ui.tag_markers,
-        plate: app.ui.separation,
         highlight_keeps: !preview && app.session.prefs.highlight_keeps,
         highlight_custom_tracking: !preview && app.session.prefs.highlight_custom_tracking,
         quality: app.ui.display_quality,
@@ -715,7 +836,6 @@ fn grid_areas(layout: &CanvasLayout) -> Vec<(designcraft_doc::SpreadRef, DRect)>
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DisplayKey {
     quality: designcraft_render::DisplayQuality,
-    separation: Option<u8>,
     rich_black: bool,
     overprint_preview: bool,
     proof_colors: bool,
@@ -733,7 +853,6 @@ fn display_key(app: &DesignApp) -> DisplayKey {
     let (ui, prefs) = (&app.ui, &app.session.prefs);
     DisplayKey {
         quality: ui.display_quality,
-        separation: ui.separation,
         rich_black: ui.rich_black,
         overprint_preview: ui.overprint_preview,
         proof_colors: ui.proof_colors,
@@ -942,10 +1061,6 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
     if app.ui.proof_colors {
         designcraft_render::proof_view(&mut img, &app.ui.proof_setup);
     }
-    // Plates render from source colours; the ink limit is estimated from the composite.
-    if app.ui.separation.is_none() && app.ui.ink_limit.is_some() {
-        designcraft_render::separation_view(&mut img, None, app.ui.ink_limit);
-    }
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {
@@ -962,7 +1077,8 @@ fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, dash: f32, 
 const MAX_BASELINES: usize = 216 * 72;
 
 /// Baseline grid lines inside a page, measured from its top: `start + n * increment` for n >= 0 (the bottom
-/// edge is not a line). Lines above the page are skipped without walking them, however far up the start is.
+/// edge is not a line), `start` from [`BaselineGrid::origin`](designcraft_doc::BaselineGrid::origin). Lines
+/// above the page are skipped without walking them, however far up the start is.
 fn baseline_grid_lines(start: f64, increment: f64, height: f64) -> impl Iterator<Item = f64> {
     let step = increment.max(1.0);
     let first = if start < 0.0 { start.rem_euclid(step) } else { start };
@@ -985,104 +1101,153 @@ fn shown_area(app: &DesignApp, doc: &Document, xf: &Xf, slot: &SpreadSlot) -> Re
 
 /// `moving`: guides being dragged, drawn where they would be dropped instead of where they are.
 fn draw_guides(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens, moving: Option<&MovingGuides>) {
-    let s = &doc.settings;
     let selection: std::collections::HashSet<GuideSel> =
         app.session.active().map(|st| st.selection.guides.iter().copied().collect()).unwrap_or_default();
     for slot in &layout.slots {
         let Some(sp) = doc.spread(slot.spread) else { continue };
-        // Everything below is in spread coordinates, placed through the slot (which may be turned).
-        let m = slot.xf;
-        let pt = |p: Point| xf.to_screen(m * p);
-        let rect = |r: DRect| xf.rect(m.transform_rect_bbox(r));
-        // Bleed, then slug: one rectangle each around the spread (the inside offset only applies
-        // at the spread's outer edges).
         if app.ui.guides {
-            for (r, color) in [(sp.bleed_rect(s.bleed), s.bleed_color), (sp.slug_rect(s.slug), s.slug_color)] {
-                if let Some(r) = r {
-                    painter.rect_stroke(rect(r), 0.0, Stroke::new(hair(painter), c32(color)), StrokeKind::Middle);
-                }
-            }
+            draw_bleed_and_slug(painter, xf, doc, slot, sp);
         }
-        let pasteboard = m.inverse().transform_rect_bbox(layout.pasteboard);
+        let pasteboard = slot.xf.inverse().transform_rect_bbox(layout.pasteboard);
         for (pi, p) in sp.pages.iter().enumerate() {
             let pr = p.bounds();
-            // Page tool › Show Parent Page Overlay: the parent page's size over the page.
-            if p.show_parent_overlay
-                && let SpreadRef::Doc(si) = slot.spread
-                && let Some((ppi, ppg)) = doc.parent_page_for(doc.first_page_of_spread(si) + pi)
-                && let Some(pp) = doc.parents.get(ppi).and_then(|ps| ps.pages.get(ppg))
-            {
-                let r = rect(DRect::new(pr.x0, pr.y0, pr.x0 + pp.width, pr.y0 + pp.height));
-                painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(110, 110, 230, 28));
-                painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(110, 110, 230)), StrokeKind::Middle);
-            }
+            draw_parent_overlay(painter, xf, doc, slot, pi, p, pr);
             if !app.ui.guides {
                 continue;
             }
-            // Baseline grid.
-            if app.ui.baseline_grid && xf.zoom >= s.baseline_grid.view_threshold {
-                let g = &s.baseline_grid;
-                for y in baseline_grid_lines(g.start, g.increment, p.height) {
-                    painter.line_segment(
-                        [pt(Point::new(pr.x0, pr.y0 + y)), pt(Point::new(pr.x1, pr.y0 + y))],
-                        Stroke::new(hair(painter), c32(g.color).gamma_multiply(0.8)),
-                    );
-                }
-            }
-            // Margins (magenta) and columns (violet).
-            painter.rect_stroke(rect(p.margin_rect()), 0.0, Stroke::new(hair(painter), c32(s.margin_color)), StrokeKind::Middle);
-            let cols = p.column_rects();
-            if cols.len() > 1 {
-                for (i, c) in cols.iter().enumerate() {
-                    let col = Stroke::new(hair(painter), c32(s.column_color));
-                    if i > 0 {
-                        painter.line_segment([pt(Point::new(c.x0, c.y0)), pt(Point::new(c.x0, c.y1))], col);
-                    }
-                    if i + 1 < cols.len() {
-                        painter.line_segment([pt(Point::new(c.x1, c.y0)), pt(Point::new(c.x1, c.y1))], col);
-                    }
-                }
-            }
-            // The page's own guides, then those it shows from its parent page. Selected guides are
-            // drawn thicker, in their layer's color.
-            let own = p.guides.len();
-            for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| g.visible_in(doc)) {
-                let key = GuideSel { spread: slot.spread, page: pi, index: gi };
-                let selected = gi < own && selection.contains(&key);
-                if gi < own
-                    && let Some(m) = moving
-                    && m.guides.contains(&key)
-                {
-                    g.position += match g.orientation {
-                        designcraft_doc::Orientation::Vertical => m.dx,
-                        designcraft_doc::Orientation::Horizontal => m.dy,
-                    };
-                }
-                // Spread guides cross the pasteboard; page guides their page.
-                let span = if g.spread { pasteboard } else { pr };
-                let (a, bb) = match g.orientation {
-                    designcraft_doc::Orientation::Horizontal => (Point::new(span.x0, g.position), Point::new(span.x1, g.position)),
-                    designcraft_doc::Orientation::Vertical => {
-                        let span = if g.spread { sp.bounds().inflate(0.0, 36.0) } else { pr };
-                        (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
-                    }
-                };
-                let stroke = if selected {
-                    let color = g.layer.and_then(|l| doc.layer(l)).map_or(Color32::from_rgb(79, 153, 255), |l| c32(l.color));
-                    Stroke::new(2.0, color)
-                } else {
-                    Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255))
-                };
-                if g.liquid {
-                    // Liquid guides are dashed.
-                    painter.extend(egui::Shape::dashed_line(&[pt(a), pt(bb)], stroke, 6.0, 3.0));
-                } else {
-                    painter.line_segment([pt(a), pt(bb)], stroke);
-                }
-            }
+            draw_page_grids(painter, xf, doc, slot, p, pr, app.ui.baseline_grid);
+            draw_page_guides(painter, xf, doc, slot, sp, pi, p, pr, pasteboard, moving, &selection);
         }
     }
     let _ = t;
+}
+
+/// The bleed and slug outlines of a spread, in their own colours.
+fn draw_bleed_and_slug(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, sp: &designcraft_doc::Spread) {
+    let s = &doc.settings;
+    let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
+    // Bleed, then slug: one rectangle each around the spread (the inside offset only applies
+    // at the spread's outer edges).
+    for (r, color) in [(sp.bleed_rect(s.bleed), s.bleed_color), (sp.slug_rect(s.slug), s.slug_color)] {
+        if let Some(r) = r {
+            painter.rect_stroke(rect(r), 0.0, Stroke::new(hair(painter), c32(color)), StrokeKind::Middle);
+        }
+    }
+}
+
+/// Page tool › Show Parent Page Overlay: the parent page's size over the page.
+fn draw_parent_overlay(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, pi: usize, p: &designcraft_doc::Page, pr: DRect) {
+    let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
+    if p.show_parent_overlay
+        && let SpreadRef::Doc(si) = slot.spread
+        && let Some((ppi, ppg)) = doc.parent_page_for(doc.first_page_of_spread(si) + pi)
+        && let Some(pp) = doc.parents.get(ppi).and_then(|ps| ps.pages.get(ppg))
+    {
+        let r = rect(DRect::new(pr.x0, pr.y0, pr.x0 + pp.width, pr.y0 + pp.height));
+        painter.rect_filled(r, 0.0, Color32::from_rgba_unmultiplied(110, 110, 230, 28));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(110, 110, 230)), StrokeKind::Middle);
+    }
+}
+
+/// A page's baseline grid (when `baseline` is on and the view is zoomed in far enough), margins
+/// and columns.
+fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, p: &designcraft_doc::Page, pr: DRect, baseline: bool) {
+    let s = &doc.settings;
+    let pt = |q: Point| xf.to_screen(slot.xf * q);
+    let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
+    // Baseline grid.
+    if baseline && xf.zoom >= s.baseline_grid.view_threshold {
+        let g = &s.baseline_grid;
+        for y in baseline_grid_lines(g.origin(p), g.increment, p.height) {
+            painter.line_segment(
+                [pt(Point::new(pr.x0, pr.y0 + y)), pt(Point::new(pr.x1, pr.y0 + y))],
+                Stroke::new(hair(painter), c32(g.color).gamma_multiply(0.8)),
+            );
+        }
+    }
+    // Margins (magenta) and columns (violet).
+    painter.rect_stroke(rect(p.margin_rect()), 0.0, Stroke::new(hair(painter), c32(s.margin_color)), StrokeKind::Middle);
+    let cols = p.column_rects();
+    if cols.len() > 1 {
+        for (i, c) in cols.iter().enumerate() {
+            let col = Stroke::new(hair(painter), c32(s.column_color));
+            if i > 0 {
+                painter.line_segment([pt(Point::new(c.x0, c.y0)), pt(Point::new(c.x0, c.y1))], col);
+            }
+            if i + 1 < cols.len() {
+                painter.line_segment([pt(Point::new(c.x1, c.y0)), pt(Point::new(c.x1, c.y1))], col);
+            }
+        }
+    }
+}
+
+/// The page's own guides, then those it shows from its parent page. `moving` draws dragged
+/// guides where they would be dropped.
+fn draw_page_guides(
+    painter: &egui::Painter,
+    xf: &Xf,
+    doc: &Document,
+    slot: &SpreadSlot,
+    sp: &designcraft_doc::Spread,
+    pi: usize,
+    p: &designcraft_doc::Page,
+    pr: DRect,
+    pasteboard: DRect,
+    moving: Option<&MovingGuides>,
+    selection: &std::collections::HashSet<GuideSel>,
+) {
+    let own = p.guides.len();
+    for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| g.visible_in(doc)) {
+        let key = GuideSel { spread: slot.spread, page: pi, index: gi };
+        // Selected guides are drawn thicker, in their layer's color.
+        let selected = gi < own && selection.contains(&key);
+        if gi < own
+            && let Some(m) = moving
+            && m.guides.contains(&key)
+        {
+            g.position += match g.orientation {
+                designcraft_doc::Orientation::Vertical => m.dx,
+                designcraft_doc::Orientation::Horizontal => m.dy,
+            };
+        }
+        draw_guide(painter, xf, doc, slot, sp, pr, pasteboard, &g, selected);
+    }
+}
+
+/// One guide as a line: across the pasteboard for a spread guide, across its page otherwise.
+fn draw_guide(
+    painter: &egui::Painter,
+    xf: &Xf,
+    doc: &Document,
+    slot: &SpreadSlot,
+    sp: &designcraft_doc::Spread,
+    pr: DRect,
+    pasteboard: DRect,
+    g: &designcraft_doc::Guide,
+    selected: bool,
+) {
+    let pt = |q: Point| xf.to_screen(slot.xf * q);
+    // Spread guides cross the pasteboard; page guides their page.
+    let span = if g.spread { pasteboard } else { pr };
+    let (a, bb) = match g.orientation {
+        designcraft_doc::Orientation::Horizontal => (Point::new(span.x0, g.position), Point::new(span.x1, g.position)),
+        designcraft_doc::Orientation::Vertical => {
+            let span = if g.spread { sp.bounds().inflate(0.0, 36.0) } else { pr };
+            (Point::new(g.position, span.y0), Point::new(g.position, span.y1))
+        }
+    };
+    let stroke = if selected {
+        let color = g.layer.and_then(|l| doc.layer(l)).map_or(Color32::from_rgb(79, 153, 255), |l| c32(l.color));
+        Stroke::new(2.0, color)
+    } else {
+        Stroke::new(hair(painter), Color32::from_rgb(74, 227, 255))
+    };
+    if g.liquid {
+        // Liquid guides are dashed.
+        painter.extend(egui::Shape::dashed_line(&[pt(a), pt(bb)], stroke, 6.0, 3.0));
+    } else {
+        painter.line_segment([pt(a), pt(bb)], stroke);
+    }
 }
 
 /// Spread-space → canvas transform for an item at `loc`.
@@ -1251,6 +1416,9 @@ fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Docum
         if sel.items.len() == 1 && sel.text.is_none() {
             // InDesign draws a 1 pt bounding box around the selection.
             painter.rect_stroke(xf.rect(a.transform_rect_bbox(it.bounds())), 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
+        } else if sel.key == Some(*id) {
+            // The key object for Align: a thicker bounding box, as in InDesign.
+            painter.rect_stroke(xf.rect(a.transform_rect_bbox(it.bounds())), 0.0, Stroke::new(3.0, color), StrokeKind::Middle);
         }
         let b = xf.rect(a.transform_rect_bbox(it.bounds()));
         union = Some(union.map_or(b, |u| u.union(b)));
@@ -1575,7 +1743,7 @@ fn draw_text_selection(
 /// A text field had keyboard focus when this frame began, per window: egui keeps one focus per
 /// viewport, so a field focused in the main window must not mute the second window's canvas.
 fn field_focused_id(ctx: &egui::Context) -> egui::Id {
-    egui::Id::new("canvas_field_focused").with(ctx.viewport_id())
+    egui::Id::unique("canvas_field_focused").with(ctx.viewport_id())
 }
 
 /// Called before the panels draw. A panel field gives up focus on Enter or Tab while it draws,
@@ -1583,6 +1751,21 @@ fn field_focused_id(ctx: &egui::Context) -> egui::Id {
 pub fn begin_frame(ctx: &egui::Context) {
     let (id, focused) = (field_focused_id(ctx), ctx.text_edit_focused());
     ctx.data_mut(|d| d.insert_temp(id, focused));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let now = ctx.input(|i| i.modifiers);
+        // The modifiers last frame ended with are the ones this frame's events began with.
+        ctx.data_mut(|d| {
+            let (_, end) = d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id()).unwrap_or((now, now));
+            d.insert_temp(modifiers_id(), (end, now));
+        });
+    }
+}
+
+/// (held when this frame's events began, held after them).
+#[cfg(not(target_arch = "wasm32"))]
+fn modifiers_id() -> egui::Id {
+    egui::Id::unique("canvas-frame-modifiers")
 }
 
 /// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
@@ -1674,10 +1857,10 @@ fn draw_inverse_highlight(
     );
     let (w, h) = (((bbox.width() * ppp).round() as u32).clamp(1, 8192), ((bbox.height() * ppp).round() as u32).clamp(1, 8192));
     let Some(st) = app.session.active() else { return };
-    let key = egui::Id::new(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
+    let key = egui::Id::unique(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
         .with((runs.iter().map(|r| r.2.len() + r.3.len() * 7919).sum::<usize>(), w, h))
         .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus))));
-    let cache_id = egui::Id::new("inverse_sel_tex");
+    let cache_id = egui::Id::unique("inverse_sel_tex");
     let cached: Option<(egui::Id, egui::TextureHandle)> = ctx.data(|d| d.get_temp(cache_id));
     let tex = match cached {
         Some((k, t)) if k == key => t,
@@ -1899,7 +2082,7 @@ fn draw_content_ghost(painter: &egui::Painter, xf: &Xf, doc: &Document, layout: 
 /// A screen-resolution proxy of a placed graphic for the ghost, cached per asset.
 fn ghost_texture(ctx: &egui::Context, doc: &Document, g: &designcraft_doc::Graphic) -> Option<egui::TextureHandle> {
     let asset = doc.assets.get(&g.asset)?;
-    let key = egui::Id::new(("content_ghost", std::sync::Arc::as_ptr(&asset.data) as usize, asset.data.len(), asset.page));
+    let key = egui::Id::unique(("content_ghost", std::sync::Arc::as_ptr(&asset.data) as usize, asset.data.len(), asset.page));
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         return Some(t);
     }
@@ -1959,6 +2142,7 @@ fn draw_liquid_pins(painter: &egui::Painter, o: Rect, page: Rect, pins: [bool; 4
     }
 }
 
+/// Paint ruler bands and ticks, the zero-point crosshair, guide previews, and ticks restarted at each page origin.
 #[allow(clippy::too_many_arguments)]
 fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, doc: &Document, layout: &CanvasLayout, t: &Tokens) {
     let painter = ui.painter_at(full);
@@ -1976,7 +2160,7 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
     // While the zero point is dragged out of the corner, the rulers measure from where it would
     // land (kept on the pasteboard, as the engine keeps it) and crosshair lines show the spot.
     // Cmd-dragged, the lines are the two guides it makes; locked, a plain drag does nothing.
-    let dragged = ui.data(|d| d.get_temp::<Pos2>(egui::Id::new((ZERO_POINT_DRAG, app.pane)))).filter(|p| !corner.contains(*p));
+    let dragged = ui.data(|d| d.get_temp::<Pos2>(egui::Id::unique((ZERO_POINT_DRAG, app.pane)))).filter(|p| !corner.contains(*p));
     let guides = ui.input(|i| i.modifiers.command);
     let moving = dragged.filter(|_| !guides && !doc.settings.zero_point_locked).and_then(|p| zero_point_at(app, xf, p));
     let cross = if guides { dragged } else { moving.map(|(_, c)| xf.to_screen(c)) };
@@ -2056,7 +2240,7 @@ fn draw_rulers(app: &DesignApp, ui: &egui::Ui, full: Rect, rect: Rect, xf: &Xf, 
         k += 1;
     }
     // Pointer position markers.
-    if let Some(p) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)) {
+    if let Some(p) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p) && !pointer_elsewhere(app, ui.ctx())) {
         let m = Stroke::new(1.0, t.text_dim);
         dashed(&painter, pos2(p.x, top.min.y), pos2(p.x, top.max.y), m, 1.5, 1.5);
         dashed(&painter, pos2(left.min.x, p.y), pos2(left.max.x, p.y), m, 1.5, 1.5);
@@ -2180,7 +2364,7 @@ struct MenuRequest {
 
 /// The popup id of the canvas context menu in split-view pane `pane`.
 fn context_menu_id(pane: u8) -> egui::Id {
-    egui::Id::new(("canvas_context_menu", pane))
+    egui::Id::unique(("canvas_context_menu", pane))
 }
 
 /// Was a canvas context menu open (in either pane of this window) when this frame began?
@@ -2188,7 +2372,7 @@ fn context_menu_id(pane: u8) -> egui::Id {
 /// click or key still belongs to the menu. Popups are per window (viewport), and so is input.
 pub fn context_menu_open(ctx: &egui::Context) -> bool {
     let pass = ctx.cumulative_pass_nr();
-    let key = egui::Id::new("canvas_context_menu_open").with(ctx.viewport_id());
+    let key = egui::Id::unique("canvas_context_menu_open").with(ctx.viewport_id());
     if let Some((p, open)) = ctx.data(|d| d.get_temp::<(u64, bool)>(key))
         && p == pass
     {
@@ -2310,6 +2494,26 @@ fn scrollbar_rects(outer: Rect, screen: Rect, content: Rect, vertical: bool) -> 
     }
 }
 
+/// How far a scrollbar interaction pans the view along its axis: a thumb drag follows the pointer,
+/// a click on the track beside the thumb pages by one view.
+fn scrollbar_move(resp: &egui::Response, grabbed: bool, vertical: bool, thumb: Rect, page: f32, k: f32) -> f32 {
+    if grabbed {
+        let d = resp.drag_delta();
+        return -(if vertical { d.y } else { d.x }) * k;
+    }
+    if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let (p, a, b) = if vertical { (p.y, thumb.min.y, thumb.max.y) } else { (p.x, thumb.min.x, thumb.max.x) };
+        if p < a {
+            return page;
+        } else if p > b {
+            return -page;
+        }
+    }
+    0.0
+}
+
 /// The view's scrollbars, on the right and bottom edges of `outer`: they span the pasteboard;
 /// dragging a thumb pans, clicking the track pages by one view.
 fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect, rect: Rect, t: &Tokens) {
@@ -2324,7 +2528,7 @@ fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect,
     let mut hot = [false; 2];
     for (n, vertical) in [true, false].into_iter().enumerate() {
         let (track, thumb, k) = scrollbar_rects(outer, screen, cb, vertical);
-        let id = egui::Id::new(("canvas_scrollbar", app.pane, vertical));
+        let id = egui::Id::unique(("canvas_scrollbar", app.pane, vertical));
         let resp = ui.interact(track, id, Sense::click_and_drag());
         let grab_id = id.with("grab");
         if resp.drag_started() {
@@ -2335,21 +2539,8 @@ fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect,
         if !resp.dragged() {
             ui.data_mut(|d| d.remove::<bool>(grab_id));
         }
-        let along = |p: egui::Vec2| if vertical { p.y } else { p.x };
-        let page = along(screen.size());
-        let mut moved = 0.0;
-        if grabbed {
-            moved = -along(resp.drag_delta()) * k;
-        } else if resp.clicked()
-            && let Some(p) = resp.interact_pointer_pos()
-        {
-            let (p, a, b) = if vertical { (p.y, thumb.min.y, thumb.max.y) } else { (p.x, thumb.min.x, thumb.max.x) };
-            if p < a {
-                moved = page;
-            } else if p > b {
-                moved = -page;
-            }
-        }
+        let page = if vertical { screen.size().y } else { screen.size().x };
+        let moved = scrollbar_move(&resp, grabbed, vertical, thumb, page, k);
         if moved != 0.0 && moved.is_finite() {
             pan(app, &xf, if vertical { vec2(0.0, moved) } else { vec2(moved, 0.0) });
         }
@@ -2371,6 +2562,7 @@ fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, screen: Rect,
     }
 }
 
+/// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
 fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
     // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
     let menu_open = context_menu_open(ui.ctx());
@@ -2408,10 +2600,10 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     // see the primary button.
     // A column guide drag keeps the pointer until the button is up, whatever Space or a menu does
     // meanwhile.
-    if ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::new((COLUMN_DRAG, app.pane)))).is_some() && column_guide_drag(app, ui, resp, rect, &xf) {
+    if ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::unique((COLUMN_DRAG, app.pane)))).is_some() && column_guide_drag(app, ui, resp, rect, &xf) {
         return;
     }
-    let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::new(("canvas_pointer_down", app.pane)))).unwrap_or(false);
+    let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::unique(("canvas_pointer_down", app.pane)))).unwrap_or(false);
     let hand = space && !ui.input(|i| i.modifiers.command);
     if !tool_drag && ((hand && resp.dragged()) || resp.dragged_by(egui::PointerButton::Middle)) {
         let d = xf.unrotate_delta(resp.drag_delta());
@@ -2422,7 +2614,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     }
     // Editing text (Space types a space): Alt held at the press gives the Hand tool until the
     // button is released, and the caret stays. Alt pressed later in a text drag copies the text.
-    let alt_hand_id = egui::Id::new(("canvas_alt_hand", app.pane));
+    let alt_hand_id = egui::Id::unique(("canvas_alt_hand", app.pane));
     let mut alt_hand: bool = ui.data(|d| d.get_temp(alt_hand_id)).unwrap_or(false);
     let (press, alt, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt, i.pointer.primary_down()));
     if press && alt && wants_text && !tool_drag && !menu_open && resp.hovered() {
@@ -2453,11 +2645,25 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     let vi = app.view_info();
     let pos = |p: Pos2| xf.to_canvas(p);
     let mut events: Vec<PointerEvent> = Vec::new();
-    let down_id = egui::Id::new(("canvas_pointer_down", app.pane));
+    let down_id = egui::Id::unique(("canvas_pointer_down", app.pane));
     let mut down: bool = ui.data(|d| d.get_temp(down_id)).unwrap_or(false);
-    let clicks_id = egui::Id::new(("canvas_clicks", app.pane));
+    let clicks_id = egui::Id::unique(("canvas_clicks", app.pane));
     let (pressed, released, origin, latest, now) =
         ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos(), i.time));
+    // A complete click can arrive in one pass: release clears egui's held origin.
+    // Recover the actual primary press position, preserving the origin for held gestures.
+    let origin = origin.or_else(|| {
+        ui.input(|i| {
+            i.events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                    _ => None,
+                })
+                .filter(|pos| pos.is_finite())
+        })
+    });
     let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
     if pressed
         && !space
@@ -2480,7 +2686,7 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
         events.push(PointerEvent { kind: PointerKind::Drag, pos: pos(p), mods: m, clicks: 1 });
     }
     // Power Zoom: holding the Hand tool still for half a second turns the press into one.
-    let hold_id = egui::Id::new(("canvas_hold", app.pane));
+    let hold_id = egui::Id::unique(("canvas_hold", app.pane));
     if down && !released && app.session.tool_id() == "hand" && !m.alt {
         let (now, origin_pos) = ui.input(|i| (i.time, i.pointer.press_origin()));
         let (start, fired): (f64, bool) = ui.data(|d| d.get_temp(hold_id)).unwrap_or((now, false));
@@ -2546,10 +2752,24 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
     // text must not delete the character before it).
     let composing_at_start = app.session.tool_composing();
     let evs = ui.input(|i| i.events.clone());
+    // Native only: egui-winit sends a ⌘+V chord as a paste without its key press, so the modifiers
+    // held at the paste tell Paste in Place from Paste. The web also gets the key press, and the
+    // shortcut table has already run the command. A chord's modifiers may be released in the same
+    // frame, hence the modifiers held at each event.
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut held =
+        ui.data(|d| d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id())).map_or_else(|| ui.input(|i| i.modifiers), |(start, _)| start);
     for e in evs {
+        #[cfg(not(target_arch = "wasm32"))]
+        let chord = {
+            if let egui::Event::ModifiersChanged(m) = &e {
+                held = *m;
+            }
+            if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, held) } else { None }
+        };
         let composing = composing_at_start || app.session.tool_composing();
         match e {
-            egui::Event::Ime(ime) if wants_text => ime_event(app, ime, vi),
+            egui::Event::Ime(ime) if wants_text => ime_event(app, ui.ctx(), ime, vi),
             // Keys the IME passes through come as text only while nothing is marked.
             egui::Event::Text(t) if wants_text && !composing => {
                 let _ = app.run("text.insert", json!({"text": t}));
@@ -2568,6 +2788,15 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                 let id = if matches!(e, egui::Event::Cut) { "edit.cut" } else { "edit.copy" };
                 let _ = app.run(id, json!({}));
             }
+            // Paste in Place's chord (⌘⌥⇧V unless rebound) arrives as a paste too.
+            #[cfg(not(target_arch = "wasm32"))]
+            egui::Event::Paste(_) if chord.is_some() => {
+                if let Some(id) = chord
+                    && crate::menus::enabled(app, id)
+                {
+                    crate::menus::activate(app, id, &serde_json::Value::Null);
+                }
+            }
             // Without a native menu bar the copy and paste keys arrive only as these events.
             egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) if !app.native_menu => {
                 let (id, params) = match e {
@@ -2580,34 +2809,72 @@ fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, r
                     crate::menus::activate(app, id, &params);
                 }
             }
-            egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                let k = match key {
-                    egui::Key::ArrowLeft => Some(ToolKey::Left),
-                    egui::Key::ArrowRight => Some(ToolKey::Right),
-                    egui::Key::ArrowUp => Some(ToolKey::Up),
-                    egui::Key::ArrowDown => Some(ToolKey::Down),
-                    egui::Key::Enter => Some(ToolKey::Enter),
-                    egui::Key::Escape => Some(ToolKey::Escape),
-                    egui::Key::Backspace => Some(ToolKey::Backspace),
-                    egui::Key::Delete => Some(ToolKey::Delete),
-                    egui::Key::Tab => Some(ToolKey::Tab),
-                    egui::Key::Home => Some(ToolKey::Home),
-                    egui::Key::End => Some(ToolKey::End),
-                    _ => None,
-                };
-                if let Some(k) = k {
-                    let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
-                    let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
-                    if !handled && k == ToolKey::Escape {
-                        let _ = app.run("edit.deselectAll", json!({}));
-                    }
-                    app.after_engine();
-                }
-            }
+            egui::Event::Key { key, pressed: true, modifiers, .. } => tool_key(app, key, modifiers, vi),
             _ => {}
         }
     }
+    finish_pending_ime_delete(app, ui.ctx());
     let _ = DVec2::ZERO;
+}
+
+/// A key for the active tool (caret movement, nudging, Backspace); Escape it leaves alone
+/// deselects.
+fn tool_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, vi: designcraft_engine::ViewInfo) {
+    let k = match key {
+        egui::Key::ArrowLeft => ToolKey::Left,
+        egui::Key::ArrowRight => ToolKey::Right,
+        egui::Key::ArrowUp => ToolKey::Up,
+        egui::Key::ArrowDown => ToolKey::Down,
+        egui::Key::Enter => ToolKey::Enter,
+        egui::Key::Escape => ToolKey::Escape,
+        egui::Key::Backspace => ToolKey::Backspace,
+        egui::Key::Delete => ToolKey::Delete,
+        egui::Key::Tab => ToolKey::Tab,
+        egui::Key::Home => ToolKey::Home,
+        egui::Key::End => ToolKey::End,
+        _ => return,
+    };
+    let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
+    let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
+    if !handled && k == ToolKey::Escape {
+        let _ = app.run("edit.deselectAll", json!({}));
+    }
+    app.after_engine();
+}
+
+/// The keys a floating panel's own OS window left over once the shortcuts took theirs: the
+/// clipboard and the active tool's keys, as the canvas handles them while no text is edited.
+/// `modifiers` are those held in that window; egui-winit sends ⌘C, ⌘X and ⌘V as `Copy`, `Cut`
+/// and `Paste` without their key press.
+pub(crate) fn forwarded_keys(app: &mut DesignApp, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+    if !keyboard_pane(app) || modal_open(app) || app.session.wants_text() || app.session.tool_composing() {
+        return;
+    }
+    let vi = app.view_info();
+    for e in events {
+        #[cfg(not(target_arch = "wasm32"))]
+        let chord = if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, modifiers) } else { None };
+        // The web keeps floating panels in the page, so nothing is forwarded there.
+        #[cfg(target_arch = "wasm32")]
+        let chord: Option<&str> = {
+            let _ = modifiers;
+            None
+        };
+        let (id, params) = match (e, chord) {
+            (egui::Event::Paste(_), Some(id)) => (id, serde_json::Value::Null),
+            (egui::Event::Copy, _) if !app.native_menu => ("edit.copy", serde_json::Value::Null),
+            (egui::Event::Cut, _) if !app.native_menu => ("edit.cut", serde_json::Value::Null),
+            (egui::Event::Paste(t), _) if !app.native_menu => ("edit.paste", json!({"text": t})),
+            (egui::Event::Key { key, pressed: true, modifiers, .. }, _) => {
+                tool_key(app, key, modifiers, vi);
+                continue;
+            }
+            _ => continue,
+        };
+        if crate::menus::enabled(app, id) {
+            crate::menus::activate(app, id, &params);
+        }
+    }
 }
 
 /// A dialog or Quick Apply has the keyboard. The canvas keeps egui's focus behind a modal, and it
@@ -2622,28 +2889,77 @@ fn keyboard_pane(app: &DesignApp) -> bool {
     app.pane == app.focus_pane
 }
 
+/// Has the composition these events belong to already ended outside the IME in this batch?
+///
+/// A pointer press and a document switch end the composition and type its marked text where the
+/// caret then is, but the system IME still sends the Commit (or a delete) for the copy it holds.
+/// Applying those at the new caret would type the text twice, put it in another story or document,
+/// or delete text there, so they are dropped and the IME is told to drop its copy.
+fn ime_composition_ended(app: &DesignApp) -> bool {
+    app.ime_marked.is_some() && !app.session.tool_composing()
+}
+
+/// Did the composition move to another owner (another story, cell or document state) since it
+/// began? A late commit then belongs to the old one, not the caret that is there now.
+fn ime_composition_moved(app: &DesignApp) -> bool {
+    let Some(recorded) = app.ime_target else { return false };
+    app.session.ime_text_context().is_some_and(|context| ime_target(&context) != recorded)
+}
+
+/// Drop events for a composition that already ended or moved, keeping what was typed.
+fn drop_stale_ime_events(app: &mut DesignApp) {
+    app.ime_marked = None;
+    app.ime_target = None;
+    app.pending_ime_delete = None;
+    app.ime_discard = true;
+    // The host must interrupt the system IME's copy in this pass too, as for a click away.
+    app.ime_interrupt = true;
+}
+
 /// One input method event for the text caret: marked text previews in the story, a commit types.
-fn ime_event(app: &mut DesignApp, e: egui::ImeEvent, vi: designcraft_engine::ViewInfo) {
+fn ime_event(app: &mut DesignApp, ctx: &egui::Context, e: egui::ImeEvent, vi: designcraft_engine::ViewInfo) {
     let r = match e {
         egui::ImeEvent::Preedit { text, active_range_chars } => {
-            app.ime_marked = Some(text.clone()).filter(|t| !t.is_empty());
+            if text.is_empty() {
+                app.ime_marked = None;
+                app.ime_target = None;
+            } else {
+                // The composition's owner at its first marked text: a commit may only land there.
+                if app.ime_marked.is_none() {
+                    app.ime_target = app.session.ime_text_context().map(|c| ime_target(&c));
+                }
+                app.ime_marked = Some(text.clone());
+            }
             app.session.tool_preedit(&text, active_range_chars, vi).map_err(|e| e.to_string())
+        }
+        // A composition that already ended or moved in this batch owns nothing any more.
+        egui::ImeEvent::Commit(_) | egui::ImeEvent::DeleteSurrounding { .. } | egui::ImeEvent::DeleteSurroundingBytes { .. }
+            if app.ime_interrupt || ime_composition_ended(app) || ime_composition_moved(app) =>
+        {
+            // Dropping a stale delete clears the marked target. Keep the pass's interrupt latch
+            // authoritative so the commit following that delete cannot become a fresh insertion.
+            drop_stale_ime_events(app);
+            Ok(())
         }
         // A bare line break confirms the composition (Enter with some IMEs): the marked text, not
         // a new paragraph.
         egui::ImeEvent::Commit(t) if t == "\n" || t == "\r" => {
+            finish_pending_ime_delete(app, ctx);
             keep_marked_text(app);
             Ok(())
         }
-        egui::ImeEvent::Commit(t) => {
-            app.ime_marked = None;
-            app.session.tool_ime_commit(&t, vi).map_err(|e| e.to_string())
-        }
+        egui::ImeEvent::Commit(t) => ime_commit(app, ctx, &t, vi),
         // The web text agent's corrections and mobile Backspace: characters around the caret go.
-        egui::ImeEvent::DeleteSurrounding { before_chars, after_chars } if !app.session.tool_composing() => {
-            delete_surrounding(app, before_chars, after_chars)
+        // These are held for the Commit in the same batch so both mutations are one undo step.
+        egui::ImeEvent::DeleteSurrounding { before_chars, after_chars } => {
+            app.pending_ime_delete = Some((before_chars, after_chars, false));
+            Ok(())
         }
-        // `Enabled` and `Disabled` carry nothing: the IME is on while `ime_output` sets `ime`.
+        egui::ImeEvent::DeleteSurroundingBytes { before_bytes, after_bytes } => {
+            app.pending_ime_delete = Some((before_bytes, after_bytes, true));
+            Ok(())
+        }
+        // `Enabled` and `Disabled` carry nothing: the IME is on while the observation sets `ime`.
         _ => Ok(()),
     };
     if let Err(e) = r {
@@ -2652,15 +2968,249 @@ fn ime_event(app: &mut DesignApp, e: egui::ImeEvent, vi: designcraft_engine::Vie
     app.after_engine();
 }
 
-/// Delete `before` characters before the caret and `after` after it (sizes come from the browser:
-/// a correction never deletes more than a word's worth).
-fn delete_surrounding(app: &mut DesignApp, before: usize, after: usize) -> Result<(), String> {
-    for (n, forward) in [(before, false), (after, true)] {
-        for _ in 0..n.min(64) {
-            app.run("text.delete", json!({"forward": forward}))?;
-        }
+/// The bounded committed snapshot and stable target just before an IME mutation.
+struct ImeBefore {
+    target: ImeTarget,
+    stamp: ImeMutationStamp,
+    snapshot: IMESurroundingText,
+    document_uid: u64,
+    document_epoch: u64,
+    story: designcraft_doc::StoryId,
+    cell: Option<designcraft_doc::CellAddr>,
+    anchor: usize,
+    focus: usize,
+}
+
+/// Build a stable owner from the document uid, story and cell identity, plus the document epoch.
+fn ime_target(context: &ImeTextContext<'_>) -> ImeTarget {
+    let owner = egui::Id::unique(("designcraft-ime", context.document_uid, context.story.0, context.cell.map(|c| (c.table, c.row, c.col))));
+    ImeTarget::new(owner, context.document_epoch)
+}
+
+/// Capture the bounded committed surrounding text, mutation stamp, target and selection identity before an IME edit.
+fn capture_ime_before(app: &DesignApp) -> Option<ImeBefore> {
+    let context = app.session.ime_text_context()?;
+    let snapshot = IMESurroundingText::from_text(context.text, context.focus, context.anchor, None);
+    let stamp = ImeMutationStamp::from_surrounding_text(snapshot.clone());
+    Some(ImeBefore {
+        target: ime_target(&context),
+        stamp,
+        snapshot,
+        document_uid: context.document_uid,
+        document_epoch: context.document_epoch,
+        story: context.story,
+        cell: context.cell,
+        anchor: context.anchor,
+        focus: context.focus,
+    })
+}
+
+/// Fold a pending delete-surrounding plus commit into one engine operation, clear marked/target state and record the change.
+fn ime_commit(app: &mut DesignApp, ctx: &egui::Context, text: &str, vi: designcraft_engine::ViewInfo) -> Result<(), String> {
+    let pending = app.pending_ime_delete.take();
+    let before = capture_ime_before(app);
+    let r = if let Some((before_bytes, after_bytes, bytes)) = pending {
+        app.session.ime_commit_after_delete(text, vi, before_bytes, after_bytes, bytes)
+    } else {
+        app.session.ime_commit(text, vi)
+    };
+    app.ime_marked = None;
+    app.ime_target = None;
+    let r = r.map_err(|e| e.to_string());
+    if let Ok(mutation) = &r {
+        note_ime_change(app, ctx, before, mutation.as_ref(), pending);
     }
-    Ok(())
+    r.map(|_| ())
+}
+
+/// Apply a pending IME delete unless its composition ended or moved; record the mutation and drop stale marked text.
+fn finish_pending_ime_delete(app: &mut DesignApp, ctx: &egui::Context) {
+    let Some((before_bytes, after_bytes, bytes)) = app.pending_ime_delete.take() else { return };
+    if ime_composition_ended(app) || ime_composition_moved(app) {
+        // The composition ended earlier in this batch: its delete belongs to the copy the system
+        // IME still holds, not to the caret that is there now.
+        drop_stale_ime_events(app);
+        return;
+    }
+    let before = capture_ime_before(app);
+    match app.session.ime_delete_surrounding(before_bytes, after_bytes, bytes) {
+        Ok(mutation) => {
+            // The delete drops the composition (its marked text is not typed): the IME's copy goes.
+            if !app.session.tool_composing() && app.ime_marked.take().is_some() {
+                app.ime_discard = true;
+            }
+            if !app.session.tool_composing() {
+                app.ime_target = None;
+            }
+            note_ime_change(app, ctx, before, mutation.as_ref(), Some((before_bytes, after_bytes, bytes)));
+        }
+        Err(e) => app.status(e.to_string()),
+    }
+    app.after_engine();
+}
+
+/// Record the origin of a successful IME mutation.
+///
+/// A receipt is earned only when the engine reported the exact mutation it applied and the bounded
+/// committed snapshot agrees with it. Smart quotes, autocorrect, tracked changes and any other
+/// application transformation therefore report `Other`, as do failed, stale and no-op mutations.
+fn note_ime_change(
+    app: &mut DesignApp,
+    ctx: &egui::Context,
+    before: Option<ImeBefore>,
+    mutation: Option<&ImeMutation>,
+    delete: Option<(usize, usize, bool)>,
+) {
+    let Some(before) = before else { return };
+    let Some(after) = app.session.ime_text_context() else {
+        let viewport = ctx.viewport_id();
+        app.ime_tracker.note_application_change(viewport, ctx.cumulative_frame_nr_for(viewport), before.target);
+        return;
+    };
+    if ime_target(&after) != before.target {
+        return;
+    }
+    let after_snapshot = IMESurroundingText::from_text(after.text, after.focus, after.anchor, None);
+    if &after_snapshot == before.stamp.surrounding_text() {
+        return;
+    }
+    let after_stamp = ImeMutationStamp::from_surrounding_text(after_snapshot.clone());
+    let viewport = ctx.viewport_id();
+    let frame_nr = ctx.cumulative_frame_nr_for(viewport);
+    if mutation.is_some_and(|m| ime_change_is_exact(&before, &after_snapshot, m, delete)) {
+        app.ime_tracker.note_input_method_apply(viewport, frame_nr, before.target, before.stamp, after_stamp);
+    } else {
+        app.ime_tracker.note_application_change(viewport, frame_nr, before.target);
+    }
+}
+
+/// Does the bounded post-mutation snapshot agree with the mutation the engine applied?
+///
+/// The expected result is built from the reported ranges and typed text — absolute byte offsets in
+/// the whole story, not the truncated outgoing window — so a delete that reaches past the window
+/// still matches. Every visible byte of the after window must agree with it, but a mutation the
+/// after window does not overlap at all (a delete longer than the window) rests on the engine's
+/// report alone, which is exact because the engine computed it from the whole story. A rewrite,
+/// tracked changes or a replaced story is not a receipt.
+fn ime_change_is_exact(before: &ImeBefore, after: &IMESurroundingText, m: &ImeMutation, delete: Option<(usize, usize, bool)>) -> bool {
+    // The same target, selection and text the receipt was captured around.
+    if m.document_uid != before.document_uid
+        || m.document_epoch != before.document_epoch
+        || m.story != before.story
+        || m.cell != before.cell
+        || m.anchor_before != before.anchor
+        || m.focus_before != before.focus
+    {
+        return false;
+    }
+    let (Some(before_payload), Some(after_payload)) = (before.snapshot.available(), after.available()) else { return false };
+    let before_text = before_payload.text.as_str();
+    let after_text = after_payload.text.as_str();
+    let selection = m.anchor_before.min(m.focus_before)..m.anchor_before.max(m.focus_before);
+    // The reported deletion adjoins the selection, is inside the text, and exists only for a
+    // delete-surrounding event. Its exact extent is the engine's: it computes the ranges from the
+    // whole story with the requested counts.
+    if m.deleted_before.end != selection.start
+        || m.deleted_after.start != selection.end
+        || m.deleted_before.start > selection.start
+        || m.deleted_after.end > m.text_len_before
+    {
+        return false;
+    }
+    if delete.is_none() && (!m.deleted_before.is_empty() || !m.deleted_after.is_empty()) {
+        return false;
+    }
+    // The story changed by exactly the removed bytes, the replaced selection and the typed text:
+    // tracked changes and an inserted paragraph return (a table anchor) break this identity.
+    let replaced = if m.inserted.is_empty() { 0 } else { selection.len() };
+    let expected_len = m
+        .text_len_before
+        .saturating_sub(m.deleted_before.len())
+        .saturating_sub(m.deleted_after.len())
+        .saturating_sub(replaced)
+        .saturating_add(m.inserted.len());
+    if m.text_len_after != expected_len {
+        return false;
+    }
+    // A commit collapses the caret after the typed text; a delete keeps the selection, shifted.
+    let (want_anchor, want_focus) = if m.inserted.is_empty() {
+        (m.anchor_before.saturating_sub(m.deleted_before.len()), m.focus_before.saturating_sub(m.deleted_before.len()))
+    } else {
+        let at = m.deleted_before.start + m.inserted.len();
+        (at, at)
+    };
+    if m.anchor_after != want_anchor || m.focus_after != want_focus {
+        return false;
+    }
+    // The text around the caret, rebuilt from the reported mutation. A snapshot's window starts
+    // before its selection's start by the selection's own offset in that window.
+    let before_win = selection.start.saturating_sub(before_payload.cursor.min(before_payload.anchor));
+    let after_selection = m.anchor_after.min(m.focus_after)..m.anchor_after.max(m.focus_after);
+    let after_win = after_selection.start.saturating_sub(after_payload.cursor.min(after_payload.anchor));
+    if after_win.saturating_add(after_payload.cursor) != m.focus_after || after_win.saturating_add(after_payload.anchor) != m.anchor_after {
+        return false;
+    }
+    let before_end = before_win.saturating_add(before_text.len());
+    let after_end = after_win.saturating_add(after_text.len());
+    if before_end > m.text_len_before || after_end > m.text_len_after {
+        return false;
+    }
+    let kept = if m.inserted.is_empty() { selection.len() } else { 0 };
+    let inserted_post = m.deleted_before.start + kept;
+    let tail_post = inserted_post + m.inserted.len();
+    let compared = (|| -> Option<usize> {
+        let mut n = 0usize;
+        n += ime_compare_kept(before_text, before_win..before_end, 0..m.deleted_before.start, 0, after_text, after_win..after_end)?;
+        if kept > 0 {
+            n += ime_compare_kept(before_text, before_win..before_end, selection.clone(), m.deleted_before.start, after_text, after_win..after_end)?;
+        }
+        n += ime_compare_window(after_text, after_win..after_end, &(inserted_post..tail_post), &m.inserted)?;
+        n += ime_compare_kept(
+            before_text,
+            before_win..before_end,
+            m.deleted_after.end..m.text_len_before,
+            tail_post,
+            after_text,
+            after_win..after_end,
+        )?;
+        Some(n)
+    })();
+    compared.is_some()
+}
+
+/// Compare one unchanged piece of the story: the pre-mutation bytes `pre` (absolute) appear at
+/// post-mutation offset `post_start`. Returns the number of bytes compared, or `None` on a
+/// mismatch. Bytes outside the bounded before window cannot be checked and are skipped.
+fn ime_compare_kept(
+    before_text: &str,
+    before_win: std::ops::Range<usize>,
+    pre: std::ops::Range<usize>,
+    post_start: usize,
+    after_text: &str,
+    after_win: std::ops::Range<usize>,
+) -> Option<usize> {
+    let from = pre.start.max(before_win.start);
+    let to = pre.end.min(before_win.end);
+    if from >= to {
+        return Some(0);
+    }
+    let expected = before_text.get(from - before_win.start..to - before_win.start)?;
+    let post = post_start + (from - pre.start)..post_start + (to - pre.start);
+    ime_compare_window(after_text, after_win, &post, expected)
+}
+
+/// Compare `expected`, which begins at absolute post-mutation offset `post.start`, with what the
+/// after window shows of it. Returns the number of bytes compared; `None` when they differ.
+fn ime_compare_window(after_text: &str, after_win: std::ops::Range<usize>, post: &std::ops::Range<usize>, expected: &str) -> Option<usize> {
+    let from = post.start.max(after_win.start);
+    let to = post.end.min(after_win.end);
+    if from >= to {
+        return Some(0);
+    }
+    let actual = after_text.get(from - after_win.start..to - after_win.start)?;
+    let skip = from - post.start;
+    let want = expected.get(skip..skip + (to - from))?;
+    (actual == want).then_some(to - from)
 }
 
 /// End a composition outside the IME (a click away, the canvas losing the keyboard): the marked
@@ -2669,6 +3219,7 @@ pub(crate) fn keep_marked_text(app: &mut DesignApp) {
     if app.ime_marked.take().is_some() {
         app.ime_discard = true;
     }
+    app.ime_target = None;
     if app.session.tool_composing() {
         if let Err(e) = app.session.end_composition() {
             app.status(e.to_string());
@@ -2677,31 +3228,83 @@ pub(crate) fn keep_marked_text(app: &mut DesignApp) {
     }
 }
 
+/// What the canvas found for this viewport pass, observed once at the end of the pass.
+pub(crate) struct CanvasIme {
+    /// The viewport it was found in: the second window's canvas runs inside the root's pass and
+    /// must not consume the root's observation.
+    viewport: egui::ViewportId,
+    /// The caret's screen rectangle, when the canvas owns the text caret this pass.
+    caret: Option<Rect>,
+}
+
 /// While the text caret is in the canvas, let the system IME compose (egui-winit allows it only in
 /// frames that set `ime`; the web build focuses its hidden text input then) and keep the candidate
 /// window at the caret, through zoom, scrolling, view rotation and vertical text.
-fn ime_output(app: &mut DesignApp, ctx: &egui::Context, xf: &Xf) {
+///
+/// The caret is only recorded here: the observation waits for the end of the viewport's pass, so
+/// a command or a field that takes the keyboard in a later section of the UI is included.
+fn ime_canvas_pass(app: &mut DesignApp, ctx: &egui::Context, xf: &Xf) {
     if !keyboard_pane(app) {
+        // Both panes see the same viewport and events. The focused pane owns this viewport's one
+        // observation; observing for the other would reset the context every split-window frame.
         return;
     }
     // A text field, dialog or Quick Apply has the keyboard: egui's own text editing serves the IME.
     let ours = app.session.wants_text() && !ctx.text_edit_focused() && !modal_open(app);
     let caret = if ours { app.session.tool_ime_caret(app.view_info()) } else { None };
-    let Some((a, b)) = caret else {
+    let caret = caret.map(|(a, b)| Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)).expand(1.0));
+    app.canvas_ime = caret.is_some();
+    app.ime_canvas = Some(CanvasIme { viewport: ctx.viewport_id(), caret });
+}
+
+/// Observe the IME once for this viewport pass, after every command and focus change it applied.
+pub(crate) fn ime_observe(app: &mut DesignApp, ctx: &egui::Context) {
+    let viewport = ctx.viewport_id();
+    if app.ime_canvas.as_ref().is_none_or(|canvas| canvas.viewport != viewport) {
+        return;
+    }
+    let Some(canvas) = app.ime_canvas.take() else { return };
+    // A text field, dialog or Quick Apply that took the keyboard later in the pass owns the IME.
+    let ours = canvas.caret.is_some() && !ctx.text_edit_focused() && !modal_open(app);
+    let Some(r) = canvas.caret.filter(|_| ours) else {
         // The IME goes away with its marked text: keep that text as typed, like a click away.
         keep_marked_text(app);
+        app.ime_tracker.observe(viewport, None);
         return;
     };
-    let r = Rect::from_two_pos(xf.to_screen(a), xf.to_screen(b)).expand(1.0);
     // The composition ended outside the IME (a click, a command): the IME drops what it has marked.
-    let interrupt = app.ime_marked.is_some() && !app.session.tool_composing();
+    let interrupt = app.ime_interrupt || (app.ime_marked.is_some() && !app.session.tool_composing());
+    app.ime_interrupt = false;
     if interrupt {
         app.ime_marked = None;
+        app.ime_target = None;
         app.ime_discard = true;
     }
     app.canvas_ime = true;
+    // One observation per viewport pass, after this pass's events and commands. The committed
+    // text excludes any active pre-edit, and the tracker copies only the bounded IME window.
+    let update = match app.session.ime_text_context() {
+        Some(context) => {
+            let observation = ImeObservation::new(ctx.cumulative_frame_nr_for(viewport), ctx.cumulative_pass_nr_for(viewport), ime_target(&context))
+                .purpose(egui::IMEPurpose::Normal)
+                .committed(Some(CommittedText::new(context.text, context.focus, context.anchor)));
+            app.ime_tracker.observe(viewport, Some(observation))
+        }
+        None => app.ime_tracker.observe(viewport, None),
+    };
+    let Some(update) = update else { return };
     ctx.output_mut(|o| {
-        o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect: r, cursor_rect: r, should_interrupt_composition: interrupt });
+        o.ime = Some(egui::output::IMEOutput {
+            owner: update.owner,
+            context_generation: update.context_generation,
+            purpose: update.purpose,
+            rect: r,
+            cursor_rect: r,
+            should_interrupt_composition: interrupt,
+            reset_request: None,
+            change_cause: update.change_cause,
+            surrounding_text: update.surrounding_text,
+        });
     });
 }
 
@@ -2716,31 +3319,45 @@ fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
             for l in &ft.lines {
                 let size = (l.ascent * 0.75 * xf.zoom).clamp(6.0, 40.0) as f32;
                 let font = egui::FontId::proportional(size);
-                for g in &l.glyphs {
-                    if g.len == 0 {
-                        continue;
-                    }
-                    let ch = story.text[g.byte.min(story.text.len())..].chars().next().unwrap_or(' ');
-                    let mark = match ch {
-                        ' ' => "·",
-                        '\t' => "»",
-                        '\u{2028}' => "¬",
-                        '\u{A0}' => "°",
-                        _ => continue,
-                    };
-                    let p = xf.to_screen(m * Point::new(g.x + if ch == ' ' { g.adv / 2.0 } else { 0.0 }, l.baseline));
-                    let align = if ch == ' ' { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
+                for (x, mark, centered) in hidden_marks(&story.text, l) {
+                    let p = xf.to_screen(m * Point::new(x, l.baseline));
+                    let align = if centered { egui::Align2::CENTER_BOTTOM } else { egui::Align2::LEFT_BOTTOM };
                     painter.text(p, align, mark, font.clone(), col);
-                }
-                if l.last_in_para {
-                    let end = l.range.end;
-                    let mark = if end >= story.text.len() { "#" } else { "¶" };
-                    let p = xf.to_screen(m * Point::new(l.end_x + 1.0, l.baseline));
-                    painter.text(p, egui::Align2::LEFT_BOTTOM, mark, font.clone(), col);
                 }
             }
         }
     }
+}
+
+/// The hidden-character marks on line `l` of a story with text `text`: frame-space x, mark, and
+/// whether the mark is centered on x (spaces) or starts at it.
+fn hidden_marks(text: &str, l: &compose::Line) -> Vec<(f64, &'static str, bool)> {
+    let mut out = Vec::new();
+    for g in &l.glyphs {
+        if g.len == 0 {
+            continue;
+        }
+        let Some(ch) = text.get(g.byte..).and_then(|t| t.chars().next()) else { continue };
+        let mark = match ch {
+            ' ' => "·",
+            '\t' => "»",
+            '\u{2028}' => "¬",
+            '\u{A0}' => "°",
+            _ => continue,
+        };
+        if ch == ' ' {
+            out.push((g.x + g.adv / 2.0, mark, true));
+        } else {
+            out.push((g.x, mark, false));
+        }
+    }
+    if l.last_in_para {
+        // The spaces trimmed off the line's end sit past `end_x`; the paragraph mark follows them.
+        let end = l.glyphs.iter().filter(|g| g.len > 0 && !g.visible && g.x >= l.end_x - 1e-9).map(|g| g.x + g.adv).fold(l.end_x, f64::max);
+        let mark = if l.range.end >= text.len() { "#" } else { "¶" };
+        out.push((end + 1.0, mark, false));
+    }
+    out
 }
 
 /// View › Flattener Preview: red over every object that involves transparency (opacity, blend
@@ -2763,7 +3380,7 @@ fn draw_flattener_preview(painter: &egui::Painter, xf: &Xf, doc: &Document, layo
 /// story version).
 fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     for story in doc.stories.values() {
-        let key = egui::Id::new(("dyn_spell", std::sync::Arc::as_ptr(story) as usize, doc.user_words.len()));
+        let key = egui::Id::unique(("dyn_spell", std::sync::Arc::as_ptr(story) as usize, doc.user_words.len()));
         let bad: std::sync::Arc<Vec<std::ops::Range<usize>>> = match ctx.data(|d| d.get_temp(key)) {
             Some(v) => v,
             None => {
@@ -2823,7 +3440,7 @@ const ZERO_POINT_DRAG: &str = "canvas_zero_point_drag";
 /// Cmd-dragged (Ctrl elsewhere), it makes a horizontal and a vertical guide instead.
 /// Holds the pointer position while dragging; returns true while it owns the pointer.
 fn zero_point_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
-    let id = egui::Id::new((ZERO_POINT_DRAG, app.pane));
+    let id = egui::Id::unique((ZERO_POINT_DRAG, app.pane));
     let corner = Rect::from_min_max(resp.rect.min, rect.min);
     let (pressed, released, down, origin, latest, dbl, command) = ui.input(|i| {
         (
@@ -3119,43 +3736,49 @@ fn guide_at(app: &DesignApp, xf: &Xf, p: Pos2) -> Option<(designcraft_doc::Sprea
     None
 }
 
+/// A primary press at `o` on a ruler starts a new guide; on a guide it selects and grabs it.
+fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf, o: Pos2) -> Option<GuideDrag> {
+    let full = resp.rect;
+    if full.contains(o) && !rect.contains(o) {
+        // In a ruler (not the corner).
+        let orientation = if o.y < rect.min.y && o.x >= rect.min.x {
+            Some(designcraft_doc::Orientation::Horizontal)
+        } else if o.x < rect.min.x && o.y >= rect.min.y {
+            Some(designcraft_doc::Orientation::Vertical)
+        } else {
+            None
+        };
+        if let Some(orientation) = orientation {
+            return Some(GuideDrag { orientation, from: None, at: Some(o), mods: egui::Modifiers::NONE });
+        }
+    } else if rect.contains(o)
+        && matches!(app.session.tool_id(), "selection" | "directSelection")
+        && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
+    {
+        let shift = ui.input(|i| i.modifiers.shift);
+        // A press on a guide selects it (Shift: on release, as a click adds or removes it).
+        let selected = app.session.active().is_some_and(|st| st.selection.guides.contains(&GuideSel { spread: r, page: pi, index: gi }));
+        if !shift && !selected {
+            let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi}));
+        }
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique(GUIDE_PRESS), GuidePress { origin: o, shift }));
+        return Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o), mods: egui::Modifiers::NONE });
+    }
+    None
+}
+
 /// Ruler guides: drag one out of a ruler, drag an existing one (Selection tools) to move it, drop
 /// it back on a ruler to delete it. A press near an unlocked guide takes it even over an object:
 /// the guide is selected and the object is not. Returns true from the press to the release, so
 /// the tools never see that press.
 fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
-    let id = egui::Id::new(GUIDE_DRAG);
+    let id = egui::Id::unique(GUIDE_DRAG);
     let (pressed, released, origin, latest) =
         ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos()));
     let mut drag: Option<GuideDrag> = ui.data(|d| d.get_temp(id));
     if drag.is_none() && pressed && resp.hovered() && app.ui.guides && !app.ui.guides_locked {
         let Some(o) = origin else { return false };
-        let full = resp.rect;
-        if full.contains(o) && !rect.contains(o) {
-            // In a ruler (not the corner).
-            let orientation = if o.y < rect.min.y && o.x >= rect.min.x {
-                Some(designcraft_doc::Orientation::Horizontal)
-            } else if o.x < rect.min.x && o.y >= rect.min.y {
-                Some(designcraft_doc::Orientation::Vertical)
-            } else {
-                None
-            };
-            if let Some(orientation) = orientation {
-                drag = Some(GuideDrag { orientation, from: None, at: Some(o), mods: egui::Modifiers::NONE });
-            }
-        } else if rect.contains(o)
-            && matches!(app.session.tool_id(), "selection" | "directSelection")
-            && let Some((r, pi, gi, orientation)) = guide_at(app, xf, o)
-        {
-            let shift = ui.input(|i| i.modifiers.shift);
-            // A press on a guide selects it (Shift: on release, as a click adds or removes it).
-            let selected = app.session.active().is_some_and(|st| st.selection.guides.contains(&GuideSel { spread: r, page: pi, index: gi }));
-            if !shift && !selected {
-                let _ = app.run("guide.select", json!({"spread": r, "page": pi, "index": gi}));
-            }
-            ui.data_mut(|d| d.insert_temp(egui::Id::new(GUIDE_PRESS), GuidePress { origin: o, shift }));
-            drag = Some(GuideDrag { orientation, from: Some((r, pi, gi)), at: Some(o), mods: egui::Modifiers::NONE });
-        }
+        drag = begin_guide_drag(app, ui, resp, rect, xf, o);
     }
     let Some(mut g) = drag else { return false };
     if let Some(p) = latest {
@@ -3172,8 +3795,8 @@ fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rec
     }
     ui.data_mut(|d| d.remove::<GuideDrag>(id));
     let press: Option<GuidePress> = ui.data_mut(|d| {
-        let press = d.get_temp(egui::Id::new(GUIDE_PRESS));
-        d.remove::<GuidePress>(egui::Id::new(GUIDE_PRESS));
+        let press = d.get_temp(egui::Id::unique(GUIDE_PRESS));
+        d.remove::<GuidePress>(egui::Id::unique(GUIDE_PRESS));
         press
     });
     let Some(p) = g.at else { return true };
@@ -3435,7 +4058,7 @@ fn snap_gutter(app: &DesignApp, g: &ColumnDrag, want: f64, shift: bool, zoom: f6
 /// move its gutter, both guides together; Escape puts it back. One undo step per drag. Returns
 /// true while it owns the pointer.
 fn column_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
-    let id = egui::Id::new((COLUMN_DRAG, app.pane));
+    let id = egui::Id::unique((COLUMN_DRAG, app.pane));
     let (pressed, released, origin, latest, shift, escape) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
@@ -3665,8 +4288,16 @@ mod tests {
         }
     }
 
+    /// Build the four-fps app harness used by canvas tests.
     fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+        harness_with_step(app, 1.0 / 4.0)
+    }
+
+    /// A window whose frames last `step_dt` seconds. Wheel motion is tested at a realistic frame
+    /// rate: egui ends a scroll action after 150 ms without wheel events, so quarter-second
+    /// frames would split every motion into separate actions.
+    fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp> {
+        let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(step_dt).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -3882,12 +4513,20 @@ mod tests {
         harness(app)
     }
 
+    /// [`new_document`] at 60 frames a second, the cadence a wheel motion really arrives at.
+    fn new_document_60fps() -> Harness<'static, DesignApp> {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        harness_with_step(app, 1.0 / 60.0)
+    }
+
     fn held(modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::ModifiersChanged(modifiers)
     }
 
+    /// Construct a point-unit vertical mouse-wheel event with an unknown source.
     fn wheel(phase: egui::TouchPhase, up: f32, modifiers: egui::Modifiers) -> egui::Event {
-        egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, up), phase, modifiers }
+        egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, up), phase, modifiers, source: egui::MouseWheelSource::Unknown }
     }
 
     // Plays `events` with the pointer at `at`, a frame each, and lets the motion settle.
@@ -3945,7 +4584,7 @@ mod tests {
             |key| vec![vec![held(key | Modifiers::SHIFT), wheel(Move, 100.0, key | Modifiers::SHIFT)]],
         ];
         for (i, motion) in motions.iter().enumerate() {
-            let (mut with_alt, mut with_command) = (new_document(), new_document());
+            let (mut with_alt, mut with_command) = (new_document_60fps(), new_document_60fps());
             let at = with_alt.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
             let start = *with_alt.state().view().unwrap();
             for (alt, command) in motion(Modifiers::ALT).iter().zip(motion(Modifiers::COMMAND)) {
@@ -3969,14 +4608,15 @@ mod tests {
         app
     }
 
+    /// Run one app frame with the supplied modifiers, install fonts, draw the canvas when ready and return the cursor icon.
     fn canvas_frame(app: &mut DesignApp, ctx: &egui::Context, m: egui::Modifiers, mut events: Vec<egui::Event>) -> egui::CursorIcon {
         events.insert(0, egui::Event::ModifiersChanged(m));
         let mut output = ctx.run_ui(
             egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), events, ..Default::default() },
             |ui| {
                 app.logic(ui.ctx());
-                // Fonts installed by logic become available at the start of the next frame,
-                // just as in the full application UI.
+                // Fonts are installed by the first real UI pass, just as in the full application.
+                app.ui_setup(ui.ctx());
                 if app.fonts_ready {
                     show(app, ui);
                 }
@@ -4262,6 +4902,39 @@ mod tests {
         // Centred where text from another app would go: the middle of the view.
         let (_, centre) = view_centre(app).unwrap();
         assert!((it.bounds().center() - centre).hypot() < 0.01, "{:?} vs {centre:?}", it.bounds());
+    }
+
+    #[test]
+    fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let original = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds();
+        app.run("edit.copy", json!({})).unwrap();
+        let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
+        let mut h = harness(app);
+        let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
+            // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+            // modifiers are released within the same frame.
+            let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
+            let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
+            h.input_mut().events.extend([egui::Event::ModifiersChanged(modifiers), egui::Event::Paste(clip.clone()), release, none]);
+            h.run_steps(2);
+            let st = h.state().session.doc().unwrap();
+            let pasted = *st.selection.items.first().expect("the copy is selected");
+            assert_ne!(pasted.0, id);
+            st.doc.item(pasted).unwrap().bounds()
+        };
+        let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
+        assert_eq!(paste(&mut h, linux), original, "Paste in Place");
+        let moved = paste(&mut h, egui::Modifiers::COMMAND);
+        assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
+        // The modifiers went down in an earlier frame than the paste.
+        h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+        h.run_steps(2);
+        let st = h.state().session.doc().unwrap();
+        let pasted = *st.selection.items.first().expect("the copy is selected");
+        assert_eq!(st.doc.item(pasted).unwrap().bounds(), original);
     }
 
     #[test]
@@ -4741,7 +5414,7 @@ mod tests {
         primary(&mut h, ruler, true);
         h.event(egui::Event::PointerMoved(dest));
         h.run_steps(2);
-        let g = h.ctx.data(|d| d.get_temp::<GuideDrag>(egui::Id::new(GUIDE_DRAG))).expect("dragging");
+        let g = h.ctx.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG))).expect("dragging");
         assert_eq!(g.orientation, designcraft_doc::Orientation::Horizontal);
         assert!(guide_readout(h.state(), &xf, &g).is_some_and(|t| t.starts_with("Y: ")));
         primary(&mut h, dest, false);
@@ -5229,16 +5902,19 @@ mod tests {
             let out = &h.output().platform_output;
             (out.cursor_icon, out.cursor_image.clone())
         };
-        let (pen, direct, text) = (shown("pen"), shown("directSelection"), shown("type"));
+        let (pen, direct, text, selection) = (shown("pen"), shown("directSelection"), shown("type"), shown("selection"));
         let ppp = h.ctx.pixels_per_point();
         let images = &mut h.state_mut().cursors;
-        match crate::cursors::MODE {
+        match crate::cursors::mode() {
             crate::cursors::Mode::Os => {
                 assert_eq!(pen.1, images.get(Cursor::Pen, ppp), "Pen");
                 assert_eq!(direct.1, images.get(Cursor::ArrowHollow, ppp), "Direct Selection");
+                assert_eq!(selection.1, images.get(Cursor::Arrow, ppp), "Selection");
                 assert_eq!(text, (egui::CursorIcon::Text, None), "the I-beam stays a system cursor");
             }
-            crate::cursors::Mode::Painted => assert_eq!((pen.0, direct.0), (egui::CursorIcon::None, egui::CursorIcon::None)),
+            crate::cursors::Mode::Painted => {
+                assert_eq!((pen.0, direct.0, selection.0), (egui::CursorIcon::None, egui::CursorIcon::None, egui::CursorIcon::None));
+            }
             crate::cursors::Mode::System => assert_eq!(pen, (egui::CursorIcon::Crosshair, None)),
         }
     }
@@ -5412,6 +6088,441 @@ mod tests {
         egui::Event::Ime(egui::ImeEvent::Preedit { text: t.into(), active_range_chars: Some(c..c) })
     }
 
+    /// Extract `(surrounding text, cursor, anchor)` from an IME output.
+    fn ime_payload(ime: &egui::output::IMEOutput) -> Option<(&str, usize, usize)> {
+        ime.surrounding_text.available().map(|p| (p.text.as_str(), p.cursor, p.anchor))
+    }
+
+    /// Set an engine text selection for a test fixture.
+    fn text_selection(app: &mut DesignApp, sid: &Value, anchor: usize, focus: usize) {
+        app.session.execute("text.select", &json!({"story": sid, "anchor": anchor, "focus": focus})).unwrap();
+    }
+
+    struct NativeClickFixture {
+        app: DesignApp,
+        ctx: egui::Context,
+        target: Value,
+        old: Value,
+        at: Pos2,
+        focus: usize,
+    }
+
+    /// Build the old and target stories, measure an interior target caret, and leave the old story selected before the click.
+    fn native_gui_click_fixture() -> NativeClickFixture {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let old = typing_app(&mut app, &ctx, "Old story");
+        let frame = app.run("frame.create", json!({"rect": [36, 280, 300, 400], "content": "text", "text": "Target story"})).unwrap();
+        let target = frame["story"].clone();
+        // Measure an interior first-word caret through the engine, rather than guessing a
+        // font-dependent screen pixel or clicking the frame's resize border.
+        let (point, focus) = (50..180)
+            .find_map(|x| {
+                app.run("text.placeCaret", json!({"frame": frame["id"], "point": [x, 290]})).unwrap();
+                let sel = app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!(sel.story.0, target.as_u64().unwrap());
+                (1..5).contains(&sel.focus).then_some((Point::new(f64::from(x), 290.0), sel.focus))
+            })
+            .expect("an interior point in the target's first word");
+        text_selection(&mut app, &old, "Old story".len(), "Old story".len());
+        for _ in 0..4 {
+            ime_frame(&mut app, &ctx, vec![]);
+        }
+        let at = on_screen(&app, point);
+        assert!(app.canvas_rect.unwrap().contains(at));
+        ime_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(at)]);
+        assert_eq!(app.session.doc().unwrap().selection.text.unwrap().story.0, old.as_u64().unwrap());
+        NativeClickFixture { app, ctx, target, old, at, focus }
+    }
+
+    /// Build a primary pointer press or release event at a position.
+    fn native_gui_button(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    /// The 37-byte Devanagari line the native run had in the previous story.
+    const NATIVE_GUI_OLD_DEVANAGARI: &str = "नमस्ते दुनिया";
+
+    /// The click fixture with the non-empty selection in the previous story that the native
+    /// Windows run had (37-byte Devanagari, 0..37). A non-empty selection shows the contextual
+    /// task bar; keep it present but clear of the target click.
+    fn native_gui_selected_old_click_fixture() -> NativeClickFixture {
+        let mut f = native_gui_click_fixture();
+        text_selection(&mut f.app, &f.old, 0, "Old story".len());
+        f.app.run("text.insert", json!({"text": NATIVE_GUI_OLD_DEVANAGARI})).unwrap();
+        text_selection(&mut f.app, &f.old, 0, NATIVE_GUI_OLD_DEVANAGARI.len());
+        for _ in 0..4 {
+            ime_frame(&mut f.app, &f.ctx, vec![]);
+        }
+        let sel = f.app.session.doc().unwrap().selection.text.unwrap();
+        assert_eq!((sel.story.0, sel.anchor, sel.focus), (f.old.as_u64().unwrap(), 0, NATIVE_GUI_OLD_DEVANAGARI.len()));
+        assert_eq!(NATIVE_GUI_OLD_DEVANAGARI.len(), 37, "the native fixture's Devanagari line was 37 UTF-8 bytes");
+        assert!(!sel.is_caret(), "the previous story's selection is non-empty");
+        assert!(!context_menu_open(&f.ctx), "no context menu owns this frame's keys");
+        assert!(f.app.ui.dialog.is_none() && f.app.ui.palette.is_none(), "no modal owns the keyboard");
+        assert!(!f.ctx.text_edit_focused(), "no text field owns the keyboard");
+        assert_eq!(f.app.pane, f.app.focus_pane, "the canvas pane takes the keyboard");
+        let task_bar = egui::Id::unique(("task_bar", f.ctx.viewport_id(), f.app.pane));
+        let bar = f.ctx.memory(|m| m.area_rect(task_bar)).expect("the old selection shows the floating task bar");
+        assert!(!bar.contains(f.at), "the floating task bar does not cover the target click at {bar:?}");
+        f
+    }
+
+    /// Run one raw event batch, optionally force a discarded pass, and return the pointer edges observed by each pass.
+    fn native_gui_input(f: &mut NativeClickFixture, events: Vec<egui::Event>, discard: bool) -> Vec<(bool, bool, bool)> {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))), events, ..Default::default() };
+        let mut edges = Vec::new();
+        let mut out = f.ctx.run_ui(raw, |ui| {
+            edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
+            f.app.logic(ui.ctx());
+            f.app.ui(ui);
+            if discard && edges.len() == 1 {
+                ui.ctx().request_discard("native same-batch click exactly-once regression");
+            }
+        });
+        if discard {
+            assert_eq!(out.platform_output.num_completed_passes, 2, "the requested discarded pass actually ran");
+        }
+        out.textures_delta.clear();
+        edges
+    }
+
+    /// Assert that the primary button, canvas press state and tool gesture are all released.
+    fn native_gui_released(f: &NativeClickFixture) {
+        assert!(!f.ctx.input(|i| i.pointer.primary_down()), "the native primary button is up");
+        let down = f.ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(("canvas_pointer_down", f.app.pane)))).unwrap_or(false);
+        assert!(!down, "the canvas retained a released pointer");
+        assert!(!f.app.session.tool_busy(), "a released click must not leave a tool gesture");
+    }
+
+    /// Create an independently measured second-story caret farther apart than the double-click distance.
+    fn native_gui_second_click_target(f: &mut NativeClickFixture) -> (Value, Pos2, usize) {
+        let frame = f.app.run("frame.create", json!({"rect": [330, 280, 575, 400], "content": "text", "text": "Second story"})).unwrap();
+        let story = frame["story"].clone();
+        let (point, focus) = (345..465)
+            .find_map(|x| {
+                f.app.run("text.placeCaret", json!({"frame": frame["id"], "point": [x, 290]})).unwrap();
+                let sel = f.app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!(sel.story.0, story.as_u64().unwrap());
+                (1..5).contains(&sel.focus).then_some((Point::new(f64::from(x), 290.0), sel.focus))
+            })
+            .expect("an independently measured interior caret in the second story");
+        text_selection(&mut f.app, &f.old, "Old story".len(), "Old story".len());
+        for _ in 0..4 {
+            ime_frame(&mut f.app, &f.ctx, vec![]);
+        }
+        let at = on_screen(&f.app, point);
+        assert!(f.app.canvas_rect.unwrap().contains(f.at));
+        assert!(f.app.canvas_rect.unwrap().contains(at));
+        let max_click_dist = f.ctx.options(|o| o.input_options.max_click_dist);
+        assert!((at - f.at).length() > max_click_dist, "the two target presses must not form a double click");
+        (story, at, focus)
+    }
+
+    /// Two completed clicks in one batch use the last press once, emit one caret/release pair, add no history, and type at the final caret.
+    #[test]
+    fn native_gui_two_completed_clicks_use_last_primary_press_once() {
+        for reverse in [false, true] {
+            for discard in [false, true] {
+                let mut f = native_gui_click_fixture();
+                let (second, second_at, second_focus) = native_gui_second_click_target(&mut f);
+                let (first_at, last_at, final_story, final_focus) =
+                    if reverse { (second_at, f.at, f.target.clone(), f.focus) } else { (f.at, second_at, second.clone(), second_focus) };
+                let initial = f.app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!((initial.story.0, initial.anchor, initial.focus), (f.old.as_u64().unwrap(), "Old story".len(), "Old story".len()));
+                let undo = f.app.session.doc().unwrap().history.undo.len();
+                let journal = f.app.session.journal.len();
+                let edges = native_gui_input(
+                    &mut f,
+                    vec![
+                        egui::Event::PointerMoved(first_at),
+                        native_gui_button(first_at, true),
+                        native_gui_button(first_at, false),
+                        egui::Event::PointerMoved(last_at),
+                        native_gui_button(last_at, true),
+                        native_gui_button(last_at, false),
+                    ],
+                    discard,
+                );
+                assert_eq!(edges[0], (true, true, false), "both completed clicks leave no held origin");
+                assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay either press");
+                let sel = f.app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!(
+                    (sel.story.0, sel.anchor, sel.focus),
+                    (final_story.as_u64().unwrap(), final_focus, final_focus),
+                    "reverse={reverse}, discard={discard}"
+                );
+                let commands = &f.app.session.journal[journal..];
+                assert_eq!(
+                    commands.iter().filter(|(id, _)| id == "text.placeCaret").count(),
+                    1,
+                    "one aggregate canvas selection, reverse={reverse}, discard={discard}"
+                );
+                assert_eq!(
+                    commands.iter().filter(|(id, _)| id == "text.release").count(),
+                    1,
+                    "one corresponding release, reverse={reverse}, discard={discard}"
+                );
+                let clicks =
+                    f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("one recovered canvas press");
+                assert_eq!(clicks.n, 1, "separated clicks and discarded passes must not select a word");
+                assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo, "pointer selection adds no document history");
+                native_gui_released(&f);
+                native_gui_input(&mut f, vec![egui::Event::Text("!".into())], false);
+                let mut target_text = "Target story".to_owned();
+                let mut second_text = "Second story".to_owned();
+                if reverse {
+                    target_text.insert(final_focus, '!');
+                } else {
+                    second_text.insert(final_focus, '!');
+                }
+                assert_eq!(story_text(&mut f.app, &f.target), target_text);
+                assert_eq!(story_text(&mut f.app, &second), second_text);
+                assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+                assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo + 1, "typing at the final caret is one edit");
+                native_gui_released(&f);
+            }
+        }
+    }
+
+    /// A non-finite final press rejects the click instead of reviving an earlier valid press; later motion cannot drag.
+    #[test]
+    fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
+        for discard in [false, true] {
+            let mut f = native_gui_click_fixture();
+            let at = f.at;
+            let initial = f.app.session.doc().unwrap().selection.text;
+            let undo = f.app.session.doc().unwrap().history.undo.len();
+            let journal = f.app.session.journal.len();
+            let edges = native_gui_input(
+                &mut f,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    native_gui_button(at, true),
+                    native_gui_button(at, false),
+                    native_gui_button(pos2(f32::NAN, at.y), true),
+                    egui::Event::PointerMoved(at),
+                    native_gui_button(at, false),
+                ],
+                discard,
+            );
+            assert_eq!(edges[0], (true, true, false));
+            assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay malformed input");
+            assert_eq!(
+                f.app.session.doc().unwrap().selection.text,
+                initial,
+                "discard={discard}: reject the last press instead of reviving an earlier valid one"
+            );
+            assert!(f.app.session.journal[journal..].iter().all(|(id, _)| id != "text.placeCaret" && id != "text.release"));
+            assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo);
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+            native_gui_released(&f);
+            native_gui_input(&mut f, vec![egui::Event::PointerMoved(at + vec2(90.0, 0.0))], false);
+            assert_eq!(f.app.session.doc().unwrap().selection.text, initial, "motion after the invalid released press cannot drag");
+            native_gui_released(&f);
+        }
+    }
+
+    /// A same-batch click switches story exactly once; typing, undo and redo affect only the target story, including discarded-pass runs.
+    #[test]
+    fn native_gui_same_batch_click_switches_story_once_before_typing() {
+        for discard in [false, true] {
+            let mut f = native_gui_click_fixture();
+            let undo = f.app.session.doc().unwrap().history.undo.len();
+            let at = f.at;
+            let edges =
+                native_gui_input(&mut f, vec![egui::Event::PointerMoved(at), native_gui_button(at, true), native_gui_button(at, false)], discard);
+            assert_eq!(edges[0], (true, true, false), "the real input consumed both edges and cleared the origin");
+            assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "a discarded pass must not replay the press");
+            let selection = f.app.session.doc().unwrap().selection.text.unwrap();
+            assert_eq!((selection.story.0, selection.anchor, selection.focus), (f.target.as_u64().unwrap(), f.focus, f.focus), "discard={discard}");
+            let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("one actual canvas click");
+            assert_eq!(clicks.n, 1, "discard={discard}: replay must not turn a caret into word selection");
+            native_gui_released(&f);
+            assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo, "a click is not a document edit");
+            let end = |pressed| egui::Event::Key { key: egui::Key::End, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+            native_gui_input(&mut f, vec![end(true), end(false)], false);
+            let caret = f.app.session.doc().unwrap().selection.text.unwrap();
+            assert_eq!((caret.story.0, caret.focus), (f.target.as_u64().unwrap(), "Target story".len()));
+            native_gui_input(&mut f, vec![egui::Event::Text("!".into())], false);
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story!");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+            assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo + 1, "one typed edit, including discarded-pass control");
+            f.app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+            f.app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story!");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+            native_gui_released(&f);
+        }
+    }
+
+    /// The native Windows failure: with a non-empty selection in another story, a click that
+    /// switches stories followed by End in the same job left the new story's caret at the click
+    /// point. End in a later job worked. Drive the actual app UI and actual pointer/key events in
+    /// one batch, in split batches, and with End while the press is still held; discard a pass to
+    /// cover replay. The End press must reach the type tool once and win over the click, wherever
+    /// the pointer release falls, and typing must go there once.
+    #[test]
+    fn native_gui_click_then_end_in_one_batch_keeps_the_target_caret_at_the_story_end() {
+        let names = ["same batch, click events first", "click batch then End batch", "End while the press is held"];
+        for (layout, name) in names.into_iter().enumerate() {
+            for discard in [false, true] {
+                let mut f = native_gui_selected_old_click_fixture();
+                let (at, target, old) = (f.at, f.target.clone(), f.old.clone());
+                let undo = f.app.session.doc().unwrap().history.undo.len();
+                let journal = f.app.session.journal.len();
+                let moved = || egui::Event::PointerMoved(at);
+                let down = || native_gui_button(at, true);
+                let up = || native_gui_button(at, false);
+                let end =
+                    |pressed| egui::Event::Key { key: egui::Key::End, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+                let batches: Vec<Vec<egui::Event>> = match layout {
+                    0 => vec![vec![moved(), down(), up(), end(true), end(false)]],
+                    1 => vec![vec![moved(), down(), up()], vec![end(true), end(false)]],
+                    _ => vec![vec![moved(), down()], vec![end(true)], vec![up(), end(false)]],
+                };
+                for events in batches {
+                    native_gui_input(&mut f, events, discard);
+                }
+                let selection = f.app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!(
+                    (selection.story.0, selection.anchor, selection.focus),
+                    (target.as_u64().unwrap(), "Target story".len(), "Target story".len()),
+                    "{name}, discard={discard}: End must win after the click, wherever the release falls"
+                );
+                let commands = &f.app.session.journal[journal..];
+                assert_eq!(
+                    commands.iter().filter(|(id, _)| id == "text.move").count(),
+                    1,
+                    "{name}, discard={discard}: the End press reached the type tool once"
+                );
+                let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("one actual canvas click");
+                assert_eq!(clicks.n, 1, "{name}, discard={discard}: a discarded pass must not replay the press as a word selection");
+                native_gui_released(&f);
+                native_gui_input(&mut f, vec![egui::Event::Text("!".into())], discard);
+                assert_eq!(story_text(&mut f.app, &target), "Target story!", "{name}, discard={discard}: typing lands at the End caret once");
+                assert_eq!(story_text(&mut f.app, &old), NATIVE_GUI_OLD_DEVANAGARI);
+                assert_eq!(
+                    f.app.session.journal[journal..].iter().filter(|(id, _)| id == "text.insert").count(),
+                    1,
+                    "{name}, discard={discard}: the text event is not replayed"
+                );
+                assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo + 1, "{name}, discard={discard}: one edit");
+            }
+        }
+    }
+
+    /// Pointer ownership survives a split press/move/release; a real drag selects, release ends it, and later motion cannot continue it.
+    #[test]
+    fn native_gui_split_click_and_drag_release_keep_pointer_ownership() {
+        for drag in [false, true] {
+            let mut f = native_gui_click_fixture();
+            let at = f.at;
+            native_gui_input(&mut f, vec![native_gui_button(at, true)], false);
+            let sel = f.app.session.doc().unwrap().selection.text.unwrap();
+            assert_eq!((sel.story.0, sel.focus), (f.target.as_u64().unwrap(), f.focus));
+            assert!(f.ctx.input(|i| i.pointer.primary_down()));
+            assert!(f.ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(("canvas_pointer_down", f.app.pane)))).unwrap());
+            if drag {
+                let moved = at + vec2(60.0, 0.0);
+                native_gui_input(&mut f, vec![egui::Event::PointerMoved(moved)], false);
+                let sel = f.app.session.doc().unwrap().selection.text.unwrap();
+                assert_eq!(sel.story.0, f.target.as_u64().unwrap());
+                assert!(!sel.is_caret(), "a real held drag selects text");
+            }
+            let release = if drag { pos2(-20.0, at.y) } else { at };
+            native_gui_input(&mut f, vec![egui::Event::PointerMoved(release), native_gui_button(release, false)], false);
+            native_gui_released(&f);
+            let selection = f.app.session.doc().unwrap().selection.text;
+            native_gui_input(&mut f, vec![egui::Event::PointerMoved(at + vec2(90.0, 0.0))], false);
+            assert_eq!(f.app.session.doc().unwrap().selection.text, selection, "motion after release cannot continue the old drag");
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+        }
+    }
+
+    /// An unowned outside press, and a press that dismisses an open menu, cannot move the selection or edit either story.
+    #[test]
+    fn native_gui_outside_press_and_open_menu_do_not_click_through() {
+        for menu in [false, true] {
+            let mut f = native_gui_click_fixture();
+            let at = f.at;
+            let selection = f.app.session.doc().unwrap().selection.text;
+            if menu {
+                let blank = f.app.canvas_rect.unwrap().max - vec2(30.0, 30.0);
+                for pressed in [true, false] {
+                    let event =
+                        egui::Event::PointerButton { pos: blank, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() };
+                    native_gui_input(&mut f, vec![egui::Event::PointerMoved(blank), event], false);
+                }
+                assert!(context_menu_open(&f.ctx), "the actual secondary click opened the canvas menu");
+                assert_eq!(f.app.session.doc().unwrap().selection.text, selection);
+                native_gui_input(&mut f, vec![egui::Event::PointerMoved(at), native_gui_button(at, true), native_gui_button(at, false)], false);
+            } else {
+                let outside = pos2(-20.0, -20.0);
+                assert!(!f.app.canvas_rect.unwrap().contains(outside));
+                native_gui_input(
+                    &mut f,
+                    vec![
+                        egui::Event::PointerMoved(outside),
+                        native_gui_button(outside, true),
+                        egui::Event::PointerMoved(at),
+                        native_gui_button(at, false),
+                    ],
+                    false,
+                );
+            }
+            assert_eq!(f.app.session.doc().unwrap().selection.text, selection, "menu={menu}: an unowned press cannot move the old caret");
+            assert_eq!(story_text(&mut f.app, &f.target), "Target story");
+            assert_eq!(story_text(&mut f.app, &f.old), "Old story");
+            native_gui_released(&f);
+        }
+    }
+
+    /// Font inventory distinguishes exact bundled faces, missing styles and missing families without accepting installed or injected substitutes.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_gui_font_inventory_keeps_exact_regular_and_missing_style_diagnostics() {
+        if designcraft_fonts::CRAFT_FONTS.is_empty() {
+            assert!(std::env::var_os("CRAFT_FONTS_REQUIRED").is_none(), "required canonical fonts were not embedded");
+            return; // The supported optional-input build has no central document fonts.
+        }
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        for (family, text) in [("Noto Sans Hebrew", "שלום"), ("Noto Sans Devanagari", "नमस्ते")] {
+            assert!(designcraft_fonts::CRAFT_FONTS.iter().any(|f| f.family == family && f.style == "Regular"), "canonical {family} Regular absent");
+            for style in ["Regular", "Unavailable Native GUI Style"] {
+                let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
+                app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": text.len()})).unwrap();
+                app.run("type.char", json!({"fontFamily": family, "fontStyle": style})).unwrap();
+            }
+        }
+        let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Missing"})).unwrap();
+        app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 7})).unwrap();
+        app.run("type.char", json!({"fontFamily": "Unavailable Native GUI Family", "fontStyle": "Regular"})).unwrap();
+        let inventory = app.run("font.list", json!({})).unwrap();
+        let rows = inventory.as_array().unwrap();
+        assert_eq!(rows.len(), 5, "{inventory}");
+        for family in ["Noto Sans Hebrew", "Noto Sans Devanagari"] {
+            for style in ["Regular", "Unavailable Native GUI Style"] {
+                let row = rows.iter().find(|r| r["family"] == family && r["style"] == style).unwrap();
+                assert_eq!(row["missing"], false, "{row}");
+                assert_eq!(row["styleMissing"], style != "Regular", "{row}");
+                assert_eq!(row["matchStatus"], if style == "Regular" { "exact" } else { "styleSubstitute" }, "{row}");
+                assert_eq!(row["resolvedFamily"], family, "{row}");
+                assert_eq!(row["resolvedStyle"], "Regular", "{row}");
+                assert_eq!(row["source"], "bundled", "an installed or injected face cannot satisfy this production contract: {row}");
+            }
+        }
+        let missing = rows.iter().find(|r| r["family"] == "Unavailable Native GUI Family").unwrap();
+        assert_eq!(missing["missing"], true, "{missing}");
+        assert_eq!(missing["matchStatus"], "missing", "{missing}");
+        assert!(missing["source"].is_null(), "{missing}");
+    }
+
     #[test]
     #[allow(deprecated)] // `ImeEvent::Enabled` / `Disabled`: egui no longer sends them, other integrations may.
     fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
@@ -5494,6 +6605,321 @@ mod tests {
         assert_eq!(story_text(&mut app, &sid), "abde日");
     }
 
+    /// Surrounding text is committed text only, preserves reversed selection direction, and a commit keeps owner/generation while reporting `InputMethod`.
+    #[test]
+    fn ime_reports_the_committed_story_and_excludes_the_pre_edit() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "a😀b");
+        let len = "a😀b".len();
+        text_selection(&mut app, &sid, 0, len);
+        let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("a😀b", len, 0)), "reversed selection keeps its direction");
+        let owner = (ime.owner, ime.context_generation);
+        // Marked text previews in the document but is not committed surrounding text.
+        let ime = ime_frame(&mut app, &ctx, vec![preedit("に", 1)]).expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("a😀b", len, 0)));
+        assert_eq!(ime.owner, owner.0);
+        let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into()))]).expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("日", 3, 3)));
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
+        assert_eq!(story_text(&mut app, &sid), "日");
+        assert_eq!(ime.owner, owner.0);
+        assert_eq!(ime.context_generation, owner.1, "a commit is not a new context");
+        let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("日", 3, 3)), "a later pass reports the same committed text");
+        assert_eq!((ime.owner, ime.context_generation), owner, "an unchanged pass keeps the context");
+    }
+
+    /// An empty story provides `("",0,0)`; long text is bounded and an out-of-window selection is explicitly unavailable.
+    #[test]
+    fn ime_empty_story_is_available_and_wide_text_is_bounded() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        typing_app(&mut app, &ctx, "");
+        let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("", 0, 0)), "an empty document is available, not unavailable");
+        assert!(!app.session.tool_composing());
+
+        let long = "a".repeat(5000);
+        let sid = typing_app(&mut app, &ctx, &long);
+        let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        let (text, _, _) = ime_payload(&ime).expect("a long document still has surrounding text");
+        assert!(text.len() <= egui::output::MAX_IME_SURROUNDING_TEXT_BYTES, "{}", text.len());
+        text_selection(&mut app, &sid, 0, 5000);
+        let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert!(ime.surrounding_text.available().is_none(), "a selection beyond the bound is explicitly unavailable");
+    }
+
+    /// Caret movement preserves owner; changing story or document changes owner and generation.
+    #[test]
+    fn ime_owner_follows_the_story_and_the_document() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        typing_app(&mut app, &ctx, "ab");
+        let first = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        app.session.execute("text.move", &json!({"dir": "left"})).unwrap();
+        let moved = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_eq!((moved.owner, moved.context_generation), (first.owner, first.context_generation), "a caret move keeps the context");
+
+        let other = app.run("frame.create", json!({"rect": [400, 36, 200, 100], "content": "text", "text": "xy"})).unwrap();
+        let other_sid = other["story"].clone();
+        text_selection(&mut app, &other_sid, 2, 2);
+        let second = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_ne!(second.owner, first.owner, "another story is another owner");
+        assert_ne!(second.context_generation, first.context_generation);
+
+        app.run("file.new", json!({})).unwrap();
+        let doc = app.run("frame.create", json!({"rect": [36, 36, 200, 100], "content": "text", "text": "z"})).unwrap();
+        text_selection(&mut app, &doc["story"], 1, 1);
+        let replaced = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
+        assert_ne!(replaced.owner, second.owner, "a new document is another owner");
+        assert_eq!(ime_payload(&replaced), Some(("z", 1, 1)));
+    }
+
+    /// Pure commits report `InputMethod`; typing before or after a commit in one pass makes the cause `Other`.
+    #[test]
+    fn ime_cause_distinguishes_commits_from_application_edits() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        typing_app(&mut app, &ctx, "a");
+        let committed = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into()))]).expect("a text caret");
+        assert_eq!(committed.change_cause, egui::output::ImeChangeCause::InputMethod);
+        let typed = ime_frame(&mut app, &ctx, vec![egui::Event::Text("!".into())]).expect("a text caret");
+        assert_eq!(typed.change_cause, egui::output::ImeChangeCause::Other, "ordinary typing is an application edit");
+        assert_eq!(ime_payload(&typed), Some(("a日!", 5, 5)));
+
+        // An application edit before the commit in one pass breaks the receipt chain.
+        let mut before = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        typing_app(&mut before, &ctx, "a");
+        let mixed = ime_frame(&mut before, &ctx, vec![egui::Event::Text("x".into()), egui::Event::Ime(egui::ImeEvent::Commit("日".into()))])
+            .expect("a text caret");
+        assert_eq!(mixed.change_cause, egui::output::ImeChangeCause::Other);
+        assert_eq!(ime_payload(&mixed), Some(("ax日", 5, 5)));
+
+        // An application edit after the commit in one pass also dominates.
+        let mut after = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        typing_app(&mut after, &ctx, "a");
+        let mixed = ime_frame(&mut after, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into())), egui::Event::Text("!".into())])
+            .expect("a text caret");
+        assert_eq!(mixed.change_cause, egui::output::ImeChangeCause::Other);
+        assert_eq!(ime_payload(&mixed), Some(("a日!", 5, 5)));
+    }
+
+    /// The settled multipass result rebuilds the current surrounding text while retaining the accepted commit cause.
+    #[test]
+    fn ime_cause_and_context_survive_a_discarded_pass() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        typing_app(&mut app, &ctx, "a");
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            events: vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into()))],
+            ..Default::default()
+        };
+        let mut passes = 0;
+        let mut out = ctx.run_ui(raw, |ui| {
+            passes += 1;
+            if passes == 1 {
+                ui.ctx().request_discard("IME multipass regression");
+            }
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        assert_eq!(out.platform_output.num_completed_passes, 2, "the frame really was multipass");
+        let ime = out.platform_output.ime.expect("a text caret");
+        assert_eq!(ime_payload(&ime), Some(("a日", 4, 4)), "the second pass rebuilds the current text");
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod, "the discarded pass keeps the accepted commit's cause");
+    }
+
+    /// Autocorrected commit text is an application edit with cause `Other`.
+    #[test]
+    fn ime_autocorrect_is_not_an_input_method_cause() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        app.session.prefs.autocorrect = true;
+        let sid = typing_app(&mut app, &ctx, "teh");
+        let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit(" ".into()))]).expect("a text caret");
+        assert_eq!(story_text(&mut app, &sid), "the ");
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::Other);
+    }
+
+    /// The selection stays selected and directed; byte partials leave whole characters; the deletion is one undo step.
+    #[test]
+    fn ime_delete_surrounding_excludes_the_selection_and_rounds_bytes_inward() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "aé😀b");
+        // Select é, which keeps its bytes and direction; 'a' before and 😀 after go.
+        text_selection(&mut app, &sid, 1, 3);
+        ime_frame(&mut app, &ctx, vec![]);
+        let steps = app.session.doc().unwrap().history.undo.len();
+        let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 2, after_bytes: 4 })])
+            .expect("a text caret");
+        assert_eq!(story_text(&mut app, &sid), "éb");
+        let sel = app.session.doc().unwrap().selection.text.unwrap();
+        assert_eq!((sel.anchor, sel.focus), (0, 2), "the selected text stays selected and directed");
+        assert_eq!(ime_payload(&ime), Some(("éb", 2, 0)));
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), steps + 1, "one deletion is one undo step");
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(story_text(&mut app, &sid), "aé😀b");
+        ime_frame(&mut app, &ctx, vec![]);
+        // The same deletion with a reversed selection keeps anchor > focus.
+        text_selection(&mut app, &sid, 3, 1);
+        ime_frame(&mut app, &ctx, vec![]);
+        let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 2, after_bytes: 4 })])
+            .expect("a text caret");
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
+        let sel = app.session.doc().unwrap().selection.text.unwrap();
+        assert_eq!(story_text(&mut app, &sid), "éb");
+        assert_eq!((sel.anchor, sel.focus), (2, 0), "reversed selection stays reversed");
+
+        // One byte of a two-byte character leaves the whole character.
+        let partial = typing_app(&mut app, &ctx, "aé");
+        text_selection(&mut app, &partial, 1, 1);
+        ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 0, after_bytes: 1 })]);
+        assert_eq!(story_text(&mut app, &partial), "aé");
+        // A preceding count that lands inside the four-byte emoji leaves it whole too.
+        let partial = typing_app(&mut app, &ctx, "a😀");
+        ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 2, after_bytes: 0 })]);
+        assert_eq!(story_text(&mut app, &partial), "a😀");
+    }
+
+    /// A 200-character request deletes the whole 100-character story.
+    #[test]
+    fn ime_delete_surrounding_has_no_sixty_four_character_cap() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, &"x".repeat(100));
+        ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars: 200, after_chars: 0 })]);
+        assert_eq!(story_text(&mut app, &sid), "");
+    }
+
+    /// Delete plus commit in one IME batch produces one undoable edit and reports the final surrounding text.
+    #[test]
+    fn ime_delete_and_commit_are_one_undo_step() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "ab");
+        text_selection(&mut app, &sid, 1, 2);
+        ime_frame(&mut app, &ctx, vec![]);
+        let steps = app.session.doc().unwrap().history.undo.len();
+        let ime = ime_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars: 1, after_chars: 0 }),
+                egui::Event::Ime(egui::ImeEvent::Commit("X".into())),
+            ],
+        )
+        .expect("a text caret");
+        assert_eq!(story_text(&mut app, &sid), "X");
+        assert_eq!(ime_payload(&ime), Some(("X", 1, 1)));
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), steps + 1, "the IME batch is one undo step");
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(story_text(&mut app, &sid), "ab");
+    }
+
+    /// The input method's Commit for a composition a click ended earlier in the same event batch
+    /// must not type the marked text again at the clicked caret.
+    #[test]
+    fn a_commit_after_a_click_in_the_same_batch_is_not_typed_twice() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, "ab");
+        ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
+        assert_eq!(story_text(&mut app, &sid), "abい");
+        let p = on_screen(&app, Point::new(150.0, 120.0));
+        let press = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        ime_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p), press(true), egui::Event::Ime(egui::ImeEvent::Commit("い".into()))])
+            .expect("still at a text caret");
+        let typed = story_text(&mut app, &sid);
+        assert_eq!(typed.matches('い').count(), 1, "the click typed the marked text once: {typed:?}");
+        assert!(typed.starts_with("ab"), "{typed:?}");
+        assert!(!app.session.tool_composing());
+        assert!(app.take_ime_discard(), "the system IME is told to drop its copy");
+        ime_frame(&mut app, &ctx, vec![press(false)]);
+    }
+
+    /// A delete-surrounding and its commit from the same ended composition must not edit the
+    /// clicked caret's text either.
+    #[test]
+    fn a_delete_and_commit_after_a_click_in_the_same_batch_are_dropped() {
+        for delete in [
+            egui::ImeEvent::DeleteSurrounding { before_chars: 1, after_chars: 0 },
+            egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 1, after_bytes: 0 },
+        ] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            let ctx = egui::Context::default();
+            let sid = typing_app(&mut app, &ctx, "ab");
+            ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
+            let p = on_screen(&app, Point::new(150.0, 120.0));
+            let press = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            ime_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(p), press(true), egui::Event::Ime(delete), egui::Event::Ime(egui::ImeEvent::Commit("い".into()))],
+            )
+            .expect("still at a text caret");
+            let typed = story_text(&mut app, &sid);
+            assert_eq!(typed.matches('い').count(), 1, "the late commit is dropped: {typed:?}");
+            assert!(typed.contains("ab"), "the click's text was not deleted: {typed:?}");
+            assert!(app.take_ime_discard());
+            ime_frame(&mut app, &ctx, vec![press(false)]);
+        }
+    }
+
+    /// A byte-count delete that reaches past the bounded IME window is still exactly the requested
+    /// input method mutation: the engine reports the ranges from the whole story.
+    #[test]
+    fn a_delete_beyond_the_surrounding_window_is_still_an_input_method_cause() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let sid = typing_app(&mut app, &ctx, &"x".repeat(5000));
+        let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 4500, after_bytes: 0 })])
+            .expect("a text caret");
+        assert_eq!(story_text(&mut app, &sid).len(), 500);
+        assert_eq!(ime.change_cause, egui::output::ImeChangeCause::InputMethod);
+        assert_eq!(ime_payload(&ime).map(|(text, cursor, anchor)| (text.len(), cursor, anchor)), Some((500, 500, 500)));
+    }
+
+    /// The pass's IME observation comes after the later UI sections: a click into the Story
+    /// Editor's field takes the keyboard from the canvas in the same pass, so the composition
+    /// ends there and the canvas reports no IME.
+    #[test]
+    fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap();
+        let sid = f["story"].clone();
+        app.select_tool("type");
+        app.run("text.select", json!({"story": sid, "anchor": 2, "focus": 2})).unwrap();
+        app.run("app.storyEditor", json!({"story": sid})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        h.event(preedit("い", 1));
+        h.run_steps(2);
+        assert!(h.state().app.session.tool_composing());
+        let canvas_owner = h.output().platform_output.ime.as_ref().expect("the canvas owns the composition").owner;
+        let field = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field");
+        field.click();
+        h.run_steps(2);
+        assert!(!h.state().app.session.tool_composing(), "the composition ended where the field took the keyboard");
+        assert!(h.state_mut().app.take_ime_discard());
+        assert!(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().unwrap().is_focused(), "the field has the keyboard");
+        let ime = h.output().platform_output.ime.as_ref().expect("the focused Story Editor publishes its IME context");
+        assert_ne!(ime.owner, canvas_owner, "the field owns the IME, not the canvas");
+        let typed = story_text(&mut h.state_mut().app, &sid);
+        assert!(typed.contains('い'), "the marked text stays as typed: {typed:?}");
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit("X".into())));
+        h.run_steps(2);
+        let edited = story_text(&mut h.state_mut().app, &sid);
+        assert_eq!(edited.matches('X').count(), 1, "the field's next commit is applied once: {edited:?}");
+        assert_eq!(edited.matches('い').count(), 1, "the old canvas composition is not replayed: {edited:?}");
+    }
+
     #[test]
     fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -5558,6 +6984,29 @@ mod tests {
             assert_eq!(text, "Hello", "{key:?} confirms the field and leaves the story alone");
             let size = crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["size"].clone();
             assert_eq!(size, 18.0, "{key:?} applies the typed size");
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_show_dots_before_the_paragraph_mark() {
+        let text = "ab  \ncd  ";
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = d.default_layer();
+        let rect = DRect::new(0.0, 0.0, 300.0, 100.0);
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, text, Default::default()).unwrap();
+        let cs = compose::compose_story(&d, sid, &compose::ComposeOptions::default());
+        let lines: Vec<_> = cs.frames.iter().flat_map(|f| &f.lines).collect();
+        assert_eq!(lines.len(), 2);
+        for (l, end_mark) in lines.iter().zip(["¶", "#"]) {
+            let marks = hidden_marks(text, l);
+            let dots: Vec<f64> = marks.iter().filter(|m| m.1 == "·").map(|m| m.0).collect();
+            assert_eq!(dots.len(), 2, "a dot for each trailing space: {marks:?}");
+            let &(para_x, mark, _) = marks.last().unwrap();
+            assert_eq!(mark, end_mark);
+            // The dots sit past the last letter, and the mark comes after both spaces.
+            let space = l.glyphs.iter().rev().find(|g| g.len > 0).unwrap();
+            assert!(dots.iter().all(|&x| x > l.end_x && x < para_x), "{dots:?} then {mark} at {para_x}");
+            assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
         }
     }
 }
@@ -5665,12 +7114,13 @@ mod scrollbar_tests {
         h.run_steps(3);
     }
 
+    /// Scrollbars sit immediately outside the view, have non-full-size thumbs and use a positive content scale.
     #[test]
     fn document_views_have_scrollbars_beside_the_view() {
         let h = window();
         let rect = h.state().app.canvas_rect.unwrap();
         for vertical in [true, false] {
-            let r = h.ctx.read_response(egui::Id::new(("canvas_scrollbar", 0u8, vertical))).expect("scrollbar").rect;
+            let r = h.ctx.read_response(egui::Id::unique(("canvas_scrollbar", 0u8, vertical))).expect("scrollbar").rect;
             let (track, thumb, k) = bar(&h, vertical);
             assert_eq!(r, track);
             assert!(k > 0.0, "the zoomed-in view scrolls");
@@ -5712,6 +7162,7 @@ mod scrollbar_tests {
         assert!((next.y - paged.y - view).abs() < 0.01, "{next:?} → {paged:?}, want -{view}");
     }
 
+    /// Wheel scrolling moves both thumbs and keeps the painted scrollbar rect in sync.
     #[test]
     fn scrolling_the_view_moves_the_thumbs() {
         let mut h = window();
@@ -5722,7 +7173,7 @@ mod scrollbar_tests {
         let (_, v1, _) = bar(&h, true);
         let (_, h1, _) = bar(&h, false);
         assert!(v1.min.y > v0.min.y && h1.min.x > h0.min.x, "{v0:?} → {v1:?}, {h0:?} → {h1:?}");
-        let r = h.ctx.read_response(egui::Id::new(("canvas_scrollbar", 0u8, true))).expect("scrollbar");
+        let r = h.ctx.read_response(egui::Id::unique(("canvas_scrollbar", 0u8, true))).expect("scrollbar");
         assert_eq!(r.rect, bar(&h, true).0);
     }
 

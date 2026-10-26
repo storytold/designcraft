@@ -1,6 +1,7 @@
 //! Selection tool (V) and Direct Selection tool (A).
 //!
-//! Click selects the frontmost item (Shift toggles), drag moves (Alt duplicates, Shift constrains),
+//! Click selects the frontmost item (Shift toggles; a click on one of several selected items makes
+//! it the key object for Align, a second click drops it), drag moves (Alt duplicates, Shift constrains),
 //! the 8 bounding-box handles resize (Shift keeps proportions, Alt from centre, Cmd scales content),
 //! empty-canvas drags make a marquee (it selects the ruler guides it crosses when it touches no
 //! object), double-clicking a text frame switches to the Type tool and
@@ -223,6 +224,9 @@ pub struct SelectionTool {
     guides: Vec<Overlay>,
     /// Selected item to toggle if this Shift press never becomes a drag.
     shift_release: Option<u64>,
+    /// One of several selected items to make (or stop being) the key object for Align if this
+    /// press never becomes a drag.
+    key_release: Option<u64>,
     /// The loaded text cursor.
     loaded: Option<Loaded>,
     /// Frame whose live corners are being edited (diamonds shown).
@@ -231,7 +235,7 @@ pub struct SelectionTool {
 
 impl SelectionTool {
     pub fn new(direct: bool) -> Self {
-        Self { direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None, loaded: None, live: None }
+        Self { direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None, key_release: None, loaded: None, live: None }
     }
 
     /// [`bracket_at`] for this tool. With Direct Selection an anchor under the pointer wins: the
@@ -566,8 +570,7 @@ fn finish_snapped_resize(
     proposed: Rect,
     mods: Mods,
     driver_x: bool,
-    x_edges: [bool; 3],
-    y_edges: [bool; 3],
+    (x_edges, y_edges): ([bool; 3], [bool; 3]),
     hit: &crate::Snap,
 ) -> Rect {
     if !mods.alt {
@@ -735,6 +738,7 @@ impl Tool for SelectionTool {
             }
             PointerKind::Down => {
                 self.shift_release = None;
+                self.key_release = None;
                 // Type on a path: a bracket moves where the text starts or ends.
                 if !ev.mods.shift
                     && let Some((id, end)) = self.bracket_at(cx, p)
@@ -825,6 +829,10 @@ impl Tool for SelectionTool {
                             }
                         } else if !cx.selection.contains(id) || (self.direct && !cx.selection.content) {
                             out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
+                        } else if !self.direct && cx.selection.items.len() > 1 {
+                            // InDesign: a click on one of several selected objects makes it the
+                            // key object, on release so that a drag still moves them all.
+                            self.key_release = Some(id.0);
                         }
                         let content = self.direct || on_selected_content(cx, p);
                         self.drag = Drag::Pending { start: p, hit: true, content };
@@ -852,6 +860,7 @@ impl Tool for SelectionTool {
                         return vec![];
                     }
                     self.shift_release = None;
+                    self.key_release = None;
                     if hit && !cx.selection.items.is_empty() {
                         // Direct Selection on items without content moves (or duplicates) them whole.
                         let content = content && cx.selection.items.iter().any(|i| cx.doc.item(*i).is_some_and(holds_content));
@@ -1011,7 +1020,7 @@ impl Tool for SelectionTool {
                                 pointer,
                             },
                         );
-                        to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, x_edges, y_edges, &hit);
+                        to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, (x_edges, y_edges), &hit);
                         crate::snap::lay_dimension_guides(&mut hit.guides, cx.layout.xf(spread), proposed, to, x_edges, y_edges, hit.length_delta);
                         self.guides = hit.guides;
                     }
@@ -1124,6 +1133,7 @@ impl Tool for SelectionTool {
             PointerKind::Up => {
                 self.guides.clear();
                 let release = self.shift_release.take();
+                let key = self.key_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
                     Drag::Move { .. }
@@ -1135,9 +1145,10 @@ impl Tool for SelectionTool {
                     | Drag::Bracket { .. } => {
                         vec![Action::Commit]
                     }
-                    Drag::Pending { .. } => match release {
-                        Some(id) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
-                        None => vec![],
+                    Drag::Pending { .. } => match (release, key) {
+                        (Some(id), _) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
+                        (None, Some(id)) => vec![Action::Exec("selection.key".into(), json!({"id": id}))],
+                        (None, None) => vec![],
                     },
                     Drag::Marquee { start, cur } => {
                         let r = Rect::from_points(start, cur);

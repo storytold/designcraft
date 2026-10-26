@@ -17,7 +17,7 @@ pub mod lab;
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -201,7 +201,7 @@ static USER: RwLock<Vec<Arc<IccProfile>>> = RwLock::new(Vec::new());
 
 fn builtin_rgb_cache(name: &str) -> Option<Arc<IccProfile>> {
     static CACHE: Mutex<Vec<Arc<IccProfile>>> = Mutex::new(Vec::new());
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(p) = c.iter().find(|p| p.name == name) {
         return Some(p.clone());
     }
@@ -211,7 +211,7 @@ fn builtin_rgb_cache(name: &str) -> Option<Arc<IccProfile>> {
 }
 
 fn user_profile(name: &str) -> Option<Arc<IccProfile>> {
-    USER.read().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.name == name).cloned()
+    USER.read().unwrap_or_else(PoisonError::into_inner).iter().find(|p| p.name == name).cloned()
 }
 
 /// The default CMYK space: Coated FOGRA39, or Generic CMYK should that profile be unusable.
@@ -255,7 +255,7 @@ pub fn profiles() -> Vec<ProfileInfo> {
         .map(|n| ProfileInfo { name: (*n).into(), kind: ProfileKind::Rgb, builtin: true })
         .chain([COATED_FOGRA39, GENERIC_CMYK, DEVICE_CMYK].iter().map(|n| ProfileInfo { name: (*n).into(), kind: ProfileKind::Cmyk, builtin: true }))
         .collect();
-    for p in USER.read().unwrap_or_else(|e| e.into_inner()).iter() {
+    for p in USER.read().unwrap_or_else(PoisonError::into_inner).iter() {
         v.push(ProfileInfo { name: p.name.clone(), kind: p.kind, builtin: false });
     }
     v
@@ -275,7 +275,7 @@ pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, C
         return Err(CmsError::Unsupported(format!("{}: no usable transform to/from sRGB", p.name)));
     }
     let info = ProfileInfo { name: p.name.clone(), kind: p.kind, builtin: false };
-    let mut u = USER.write().unwrap_or_else(|e| e.into_inner());
+    let mut u = USER.write().unwrap_or_else(PoisonError::into_inner);
     u.retain(|x| x.name != info.name);
     u.push(Arc::new(p));
     drop(u);
@@ -522,7 +522,7 @@ impl Cms {
     /// A cached 3-D lookup table implementing [`Cms::proof_srgb`] for 8-bit pixels.
     pub fn proof_lut(&self, proof: &ProofSetup) -> Arc<ProofLut> {
         let key = format!("{:?}|{:?}|{:?}|{}", self.settings, proof.target, proof.intent, proof.simulate_paper);
-        let mut cache = PROOF_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = PROOF_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((_, l)) = cache.iter().find(|(k, _)| *k == key) {
             return l.clone();
         }
@@ -538,7 +538,7 @@ impl Cms {
 static PROOF_CACHE: Mutex<Vec<(String, Arc<ProofLut>)>> = Mutex::new(Vec::new());
 
 fn clear_proof_cache() {
-    PROOF_CACHE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    PROOF_CACHE.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
 fn cmyk4(v: Option<Vec<f32>>) -> Option<[f32; 4]> {
@@ -704,10 +704,10 @@ pub fn generation() -> u64 {
 
 /// The active colour-management context (Edit → Color Settings).
 pub fn active() -> Arc<Cms> {
-    if let Some(c) = ACTIVE.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(c) = ACTIVE.read().unwrap_or_else(PoisonError::into_inner).as_ref() {
         return c.clone();
     }
-    let mut w = ACTIVE.write().unwrap_or_else(|e| e.into_inner());
+    let mut w = ACTIVE.write().unwrap_or_else(PoisonError::into_inner);
     w.get_or_insert_with(|| Arc::new(Cms::default())).clone()
 }
 
@@ -721,7 +721,7 @@ pub fn set_active(settings: &ColorSettings) -> Result<(), CmsError> {
     let changed = active().settings != *settings;
     RGB_IS_SRGB.store(cms.rgb_is_srgb(), Ordering::Relaxed);
     CMYK_IS_DEVICE.store(matches!(cms.cmyk, CmykSpace::Device), Ordering::Relaxed);
-    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(cms));
+    *ACTIVE.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(cms));
     if changed {
         GENERATION.fetch_add(1, Ordering::Relaxed);
     }

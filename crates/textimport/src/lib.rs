@@ -114,7 +114,7 @@ pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
     if l.ends_with(".doc") {
         return Err(ImportError::Unsupported("legacy Word .doc (save it as .docx)".into()));
     }
-    Ok(plain(&String::from_utf8_lossy(bytes)))
+    Ok(plain(&tagged::decode(bytes)))
 }
 
 /// Plain text: line breaks become paragraphs (CRLF / CR normalised).
@@ -135,5 +135,15 @@ mod tests {
         assert_eq!(i.story.paras.len(), 3);
         assert!(is_text_file("Report.DOCX") && !is_text_file("a.png"));
         assert!(matches!(import("x.doc", b"\xD0\xCF"), Err(ImportError::Unsupported(_))));
+    }
+
+    #[test]
+    fn plain_text_utf16() {
+        let mut le = vec![0xFF, 0xFE];
+        le.extend("Hi there".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(import("a.txt", &le).unwrap().story.text, "Hi there");
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("Hi there".encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(import("a.txt", &be).unwrap().story.text, "Hi there");
     }
 }

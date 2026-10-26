@@ -31,6 +31,29 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Ausschneiden"),
     ("Copy", "Kopieren"),
     ("Paste", "Einfügen"),
+    ("Restart Numbering", "Nummerierung neu beginnen"),
+    ("Continue Numbering", "Nummerierung fortführen"),
+    ("Keep Options…", "Umbruchoptionen …"),
+    ("Space Between Paragraphs Using Same Style", "Abstand zwischen Absätzen mit gleichem Format"),
+    ("Ignore", "Ignorieren"),
+    ("Do Not Align to Baseline Grid", "Nicht am Grundlinienraster ausrichten"),
+    ("Only Align First Line to Grid", "Nur erste Zeile am Raster ausrichten"),
+    ("Balance Ragged Lines", "Unausgeglichene Zeilen ausgleichen"),
+    ("Drop Caps and Nested Styles…", "Initialen und verschachtelte Formate …"),
+    ("GREP Styles…", "GREP-Stile …"),
+    ("Restart/Continue Numbering", "Nummerierung neu beginnen/fortführen"),
+    ("Convert Bullets and Numbering to Text", "Aufzählungszeichen und Nummerierung in Text konvertieren"),
+    ("Hyphenation…", "Silbentrennung …"),
+    ("Hyphenation Settings", "Silbentrennungseinstellungen"),
+    ("hyphens", "Trennstriche"),
+    ("Hyphenation Zone:", "Silbentrennungsbereich:"),
+    ("Better Spacing", "Bessere Abstände"),
+    ("Fewer Hyphens", "Weniger Trennstriche"),
+    ("Hyphenate Capitalized Words", "Großgeschriebene Wörter trennen"),
+    ("Hyphenate Last Word", "Letztes Wort trennen"),
+    ("Hyphenate Across Column", "Über Spalten trennen"),
+    ("Apply Bullets", "Aufzählungszeichen anwenden"),
+    ("Apply Numbers", "Nummerierung anwenden"),
     ("Inches Decimal", "Zoll dezimal"),
     ("Back", "Zurück"),
     ("Warning", "Warnung"),
@@ -521,6 +544,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Convert Text to Table", "Text in Tabelle umwandeln"),
     ("Convert to Button", "In Schaltfläche umwandeln"),
     ("Convert to Form Field", "In Formularfeld umwandeln"),
+    ("Convert to Note", "In Notiz umwandeln"),
     ("Conveyor", "Förderband"),
     ("Copy Link(s) To…", "Verknüpfung(en) kopieren nach …"),
     ("Corner Options…", "Eckenoptionen …"),
@@ -611,6 +635,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Insert Math Expression…", "Mathematischen Ausdruck einfügen …"),
     ("Insert Pages…", "Seiten einfügen …"),
     ("Insert Variable", "Variable einfügen"),
+    ("Convert Variable to Text", "Variable in Text konvertieren"),
     ("Inspect Document", "Dokument untersuchen"),
     ("Interface Color Theme", "Farbschema der Oberfläche"),
     ("Join the ArtCraft Discord…", "Dem ArtCraft-Discord beitreten …"),
@@ -646,6 +671,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Table Style…", "Neues Tabellenformat …"),
     ("Next Cell", "Nächste Zelle"),
     ("Next Document", "Nächstes Dokument"),
+    ("Next Note", "Nächste Notiz"),
     ("Next Object Above", "Nächstes Objekt darüber"),
     ("Next Object Below", "Nächstes Objekt darunter"),
     ("Next Object in Group", "Nächstes Objekt in der Gruppe"),
@@ -679,6 +705,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Preflight Document", "Preflight für Dokument"),
     ("Previous Cell", "Vorherige Zelle"),
     ("Previous Document", "Vorheriges Dokument"),
+    ("Previous Note", "Vorherige Notiz"),
     ("Previous Object in Group", "Vorheriges Objekt in der Gruppe"),
     ("Primary Text Frame", "Primärer Textrahmen"),
     ("Print Booklet…", "Broschüre drucken …"),
@@ -731,6 +758,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Sort", "Sortieren"),
     ("Split Cell Horizontally", "Zelle horizontal teilen"),
     ("Split Cell Vertically", "Zelle vertikal teilen"),
+    ("Split Note", "Notiz teilen"),
     ("Split Path", "Pfad teilen"),
     ("Step and Repeat…", "Duplizieren und versetzt einfügen …"),
     ("Stroke Styles", "Konturformate"),
@@ -1728,6 +1756,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "Einzug bis hierhin"),
     ("Ink Limit 300%", "Farbauftrag max. 300 %"),
+    ("All Inks", "Alle Druckfarben"),
     ("Internet Standard RGB (sRGB)", "Internet-Standard-RGB (sRGB)"),
     ("Left:", "Links:"),
     ("Legacy Macintosh RGB", "Älteres Macintosh-RGB"),
@@ -2037,7 +2066,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Print Layer", "Ebene drucken"),
     ("Suppress Text Wrap When Layer is Hidden", "Textumfluss bei ausgeblendeter Ebene unterdrücken"),
     // Remaining interface strings.
-    ("A custom name", "Ein eigener Name"),
     ("Close Panel", "Bedienfeld schließen"),
     ("Default Fill and Stroke", "Standardfläche und -kontur"),
     ("Distribute Rows Evenly", "Zeilen gleichmäßig verteilen"),
@@ -2076,55 +2104,3 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Update Data Source", "Datenquelle aktualisieren"),
     ("Validate from Root Element", "Ab Stammelement prüfen"),
 ];
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::TABLE;
-    use crate::i18n::tr;
-
-    fn placeholders(text: &str) -> Vec<&str> {
-        let mut found = Vec::new();
-        let mut rest = text;
-        while let Some(start) = rest.find('{') {
-            let Some(len) = rest[start..].find('}') else { break };
-            found.push(&rest[start..start + len + 1]);
-            rest = &rest[start + len + 1..];
-        }
-        found.sort_unstable();
-        found
-    }
-
-    #[test]
-    fn rows_are_unique_and_complete() {
-        let mut seen = HashSet::new();
-        for (en, de) in TABLE {
-            assert!(seen.insert(*en), "duplicate {en}");
-            assert!(!de.is_empty(), "{en}");
-        }
-    }
-
-    #[test]
-    fn rows_keep_placeholders_padding_and_endings() {
-        let ellipsis = |text: &str| text.trim_end().ends_with('…') || text.trim_end().ends_with("...");
-        for (en, de) in TABLE {
-            assert_eq!(placeholders(en), placeholders(de), "placeholders of {en}");
-            assert_eq!(en.len() - en.trim_start().len(), de.len() - de.trim_start().len(), "leading space of {en}");
-            assert_eq!(en.len() - en.trim_end().len(), de.len() - de.trim_end().len(), "trailing space of {en}");
-            assert_eq!(ellipsis(en), ellipsis(de), "ellipsis of {en}");
-            // The numbering samples (`a, b, c, d...`) stay as they are; everything else uses `…`.
-            assert!(!de.contains("...") || de == en, "ASCII ellipsis in {en}");
-            assert_eq!(en.trim_end().ends_with(':'), de.trim_end().ends_with(':'), "colon of {en}");
-        }
-    }
-
-    #[test]
-    fn lookup_uses_this_table_and_leaves_unknown_text_alone() {
-        assert_eq!(tr("de", "File"), "Datei");
-        assert_eq!(tr("de", "Cancel"), "Abbrechen");
-        assert_eq!(tr("de", "{count} glyphs — click to insert at the text cursor").matches("{count}").count(), 1);
-        let unknown = String::from("A user-defined untranslated label");
-        assert!(std::ptr::eq(tr("de", &unknown), unknown.as_str()));
-    }
-}

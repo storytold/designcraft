@@ -21,7 +21,7 @@ struct State {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let id = egui::Id::new("glyphs_panel");
+    let id = egui::Id::unique("glyphs_panel");
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     // Default to the font at the text cursor.
     if st.family.is_empty() {
@@ -38,13 +38,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
             st.family = f.family;
         }
-        egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
             for s in db.styles(&st.family) {
                 if ui.selectable_label(s == st.style, &s).clicked() {
                     st.style = s;
                 }
             }
         });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Font Style"));
     });
     ui.add(
         egui::TextEdit::singleline(&mut st.query)
@@ -120,7 +121,7 @@ pub fn grid(
     let max_rows = (ui.ctx().input(|i| i.max_texture_side) as u32 / cell_px).max(1);
     chars.truncate((max_rows * cols) as usize);
     let ink = t.text_strong;
-    let key = egui::Id::new(("glyph_grid", family, style, scope, q, cols, cell_px, ink.to_array()));
+    let key = egui::Id::unique(("glyph_grid", family, style, scope, q, cols, cell_px, ink.to_array()));
     let tex: egui::TextureHandle = match ui.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
         Some(t) => t,
         None => {

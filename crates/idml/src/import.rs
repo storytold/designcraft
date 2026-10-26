@@ -295,6 +295,10 @@ struct Importer<'r> {
     parents: Vec<Spread>,
     /// Things read but not kept as they were, for the import report.
     warnings: Vec<String>,
+    /// Cells whose text is rotated (Cell Options › Text › Rotation): the angle is kept and
+    /// written back, but only 0 is composed, so a narrow header column of vertical labels comes
+    /// in horizontal and wraps mid-word (#1468).
+    rotated_cells: usize,
     parent_ids: HashMap<String, SpreadId>,
     spreads: Vec<Spread>,
     page_index: HashMap<String, usize>,
@@ -387,13 +391,10 @@ fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> {
     Ok(row)
 }
 
+/// The numbers in a whitespace-separated list; empty when any number is NaN or infinite (JSON
+/// can't store them, and dropping just those would shift the rest).
 fn nums(s: &str) -> Vec<f64> {
-    s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
-}
-
-/// Like [`nums`], but empty when any number is NaN or infinite.
-fn finite_nums(s: &str) -> Vec<f64> {
-    let v = nums(s);
+    let v: Vec<f64> = s.split_whitespace().filter_map(|v| v.parse().ok()).collect();
     if v.iter().all(|x| x.is_finite()) { v } else { Vec::new() }
 }
 
@@ -536,6 +537,7 @@ impl<'r> Importer<'r> {
             story_ids: HashMap::new(),
             parents: Vec::new(),
             warnings: Vec::new(),
+            rotated_cells: 0,
             parent_ids: HashMap::new(),
             spreads: Vec::new(),
             page_index: HashMap::new(),
@@ -680,6 +682,9 @@ impl<'r> Importer<'r> {
         if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
             self.footnote_option(e);
         }
+        if let Some(e) = top.iter().find(|e| e.local() == "EPubExportPreference") {
+            self.epub_split(e);
+        }
         for e in top.iter().filter(|e| e.local() == "Layer") {
             let id = LayerId(self.alloc());
             let color = match e.prop_el("LayerColor") {
@@ -791,6 +796,12 @@ impl<'r> Importer<'r> {
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
             });
         }
+        if self.rotated_cells > 0 {
+            let n = self.rotated_cells;
+            self.warnings.push(format!(
+                "{n} table cell(s) have rotated text (Cell Options › Text › Rotation): the angle is kept and written back, but the text is composed horizontally"
+            ));
+        }
         self.sections.sort_by_key(|s| s.start);
         self.sections.dedup_by_key(|s| s.start);
         if self.sections.first().is_none_or(|s| s.start != 0) {
@@ -895,8 +906,56 @@ impl<'r> Importer<'r> {
             _ if v.len() >= 4 => Color::cmyk((v[0] / 100.0) as f32, (v[1] / 100.0) as f32, (v[2] / 100.0) as f32, (v[3] / 100.0) as f32),
             _ => return None,
         };
+        // Huge values (1e300) overflow `f32` to infinity.
+        let parts = match c {
+            Color::Rgb { r, g, b } => [r, g, b, 0.0],
+            Color::Cmyk { c, m, y, k } => [c, m, y, k],
+            Color::Gray { k } => [k, 0.0, 0.0, 0.0],
+        };
+        if !parts.iter().all(|v| v.is_finite()) {
+            return None;
+        }
         let ty = if e.get("Model") == Some("Spot") { ColorType::Spot } else { ColorType::Process };
         Some((c, ty))
+    }
+
+    /// Custom stroke styles.
+    fn read_stroke_styles(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
+            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
+            let kind = match e.local() {
+                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
+                    bands: nums(e.get("StripeArray").unwrap_or(""))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
+                        .collect(),
+                },
+                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: nums(e.get("DashArray").unwrap_or("")) },
+                _ => designcraft_doc::StrokeType::Dotted,
+            };
+            let _ = id;
+            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
+        }
+    }
+
+    /// Ink Manager settings: inks converted to process and ink aliases.
+    fn read_inks(&mut self, top: &[El]) {
+        for e in top.iter().filter(|e| e.local() == "Ink") {
+            let Some(name) = e
+                .get("Name")
+                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
+            else {
+                continue;
+            };
+            if e.get("ConvertToProcess") == Some("true") {
+                self.inks.to_process.push(name.to_string());
+            }
+            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
+                self.inks.aliases.push((name.to_string(), a.to_string()));
+            }
+        }
     }
 
     fn graphics(&mut self, top: &[El]) {
@@ -942,49 +1001,23 @@ impl<'r> Importer<'r> {
                 Swatch { name, value: SwatchValue::Tint { base, tint: (t / 100.0) as f32 }, locked: false, named: true, hidden: false },
             ));
         }
-        // Custom stroke styles.
-        for e in top.iter().filter(|e| matches!(e.local(), "StripedStrokeStyle" | "DashedStrokeStyle" | "DottedStrokeStyle")) {
-            let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
-            let kind = match e.local() {
-                "StripedStrokeStyle" => designcraft_doc::StrokeType::Stripes {
-                    bands: finite_nums(e.get("StripeArray").unwrap_or(""))
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| (c[0] / 100.0, (c[1] - c[0]) / 100.0))
-                        .collect(),
-                },
-                "DashedStrokeStyle" => designcraft_doc::StrokeType::Dashed { pattern: finite_nums(e.get("DashArray").unwrap_or("")) },
-                _ => designcraft_doc::StrokeType::Dotted,
-            };
-            let _ = id;
-            self.stroke_styles.push(designcraft_doc::StrokeStyleDef { name: name.to_string(), kind });
-        }
-        // Ink Manager.
-        for e in top.iter().filter(|e| e.local() == "Ink") {
-            let Some(name) = e
-                .get("Name")
-                .filter(|n| !n.starts_with("$ID/") && !["Process Cyan", "Process Magenta", "Process Yellow", "Process Black"].contains(n))
-            else {
-                continue;
-            };
-            if e.get("ConvertToProcess") == Some("true") {
-                self.inks.to_process.push(name.to_string());
-            }
-            if let Some(a) = e.get("AliasInkName").filter(|a| !a.is_empty() && *a != name && !a.starts_with("$ID/")) {
-                self.inks.aliases.push((name.to_string(), a.to_string()));
-            }
-        }
+        self.read_stroke_styles(top);
+        self.read_inks(top);
         for e in top.iter().filter(|e| e.local() == "Gradient") {
             let Some(id) = e.get("Self") else { continue };
             let mut stops: Vec<GradientStop> = Vec::new();
             for s in e.find_all("GradientStop") {
-                let c = s.get("StopColor").map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                let r = s.get("StopColor");
+                let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
+                // unnamed colors stay plain. The id becomes the swatch's name below, once
+                // repeated names are numbered.
+                let swatch = r.filter(|r| self.swatch_names.get(*r).is_some_and(|n| n != swatch::NONE)).map(str::to_string);
                 let loc = s.num("Location").unwrap_or(0.0) / 100.0;
                 if let (Some(prev), Some(m)) = (stops.last_mut(), s.num("Midpoint")) {
                     prev.midpoint = (m / 100.0) as f32;
                 }
-                stops.push(GradientStop { offset: loc as f32, color: c, opacity: 1.0, midpoint: 0.5 });
+                stops.push(GradientStop { swatch, ..GradientStop::new(loc as f32, c) });
             }
             let kind = if e.get("Type") == Some("Radial") { GradientKind::Radial } else { GradientKind::Linear };
             let unnamed = e.get("Visible") == Some("false") || e.get("Name").is_none_or(|n| n.is_empty() || n == "$ID/");
@@ -1009,6 +1042,7 @@ impl<'r> Importer<'r> {
             order.sort_by_key(|(id, _)| group_order.iter().position(|g| g == id).unwrap_or(usize::MAX));
         }
         let mut names: HashSet<String> = self.swatches.iter().map(|s| s.name.clone()).collect();
+        let first_new = self.swatches.len();
         for (id, mut s) in order {
             if names.contains(&s.name) {
                 let base = s.name.clone();
@@ -1017,6 +1051,16 @@ impl<'r> Importer<'r> {
             }
             names.insert(s.name.clone());
             self.swatches.push(s);
+        }
+        let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
+            for stop in stops {
+                stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
+            }
+        };
+        for s in self.swatches.iter_mut().skip(first_new).chain(self.hidden_swatches.values_mut()) {
+            if let SwatchValue::Gradient { gradient } = &mut s.value {
+                stop_names(&mut gradient.stops, &self.swatch_names);
+            }
         }
         // Colour groups other than the root one become Swatches panel folders.
         for g in top.iter().filter(|e| e.local() == "ColorGroup" && e.get("IsRootColorGroup") != Some("true")) {
@@ -1169,6 +1213,14 @@ impl<'r> Importer<'r> {
             match self.styles.para_mut(&name) {
                 Some(slot) => *slot = s,
                 None => self.styles.paragraph.push(s),
+            }
+            // Split Document (EPUB only): on the style, and on its EPUB export tag map. Files write
+            // `false` on every style, so either place saying `true` turns it on.
+            let split = e.get("SplitDocument") == Some("true")
+                || e.elements()
+                    .any(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB") && m.get("SplitDocument") == Some("true"));
+            if split {
+                self.styles.export_tags.entry(format!("p:{name}")).or_default().split = true;
             }
         }
         for (_, e) in &chars {
@@ -1444,6 +1496,21 @@ impl<'r> Importer<'r> {
         }
     }
 
+    /// Preferences › `EPubExportPreference`: Split Document (after styles: it can name one). An
+    /// empty style name splits on the styles' export tags; a style the file lacks splits nothing.
+    fn epub_split(&mut self, e: &El) {
+        if e.boolean("BreakDocument") != Some(true) {
+            return;
+        }
+        let name = e.get("ParagraphStyleName").unwrap_or("$ID/NormalParagraphStyle");
+        self.settings.epub_split = if name.trim().is_empty() {
+            designcraft_doc::EpubSplit::ExportTags
+        } else {
+            let style = self.para_style_ref(name);
+            if self.styles.para(&style).is_some() { designcraft_doc::EpubSplit::Style(style) } else { designcraft_doc::EpubSplit::Off }
+        };
+    }
+
     /// Preferences › `FootnoteOption` (after styles: it names the footnote text and marker styles).
     fn footnote_option(&mut self, e: &El) {
         let mut o = designcraft_doc::FootnoteOptions::default();
@@ -1624,28 +1691,7 @@ impl<'r> Importer<'r> {
                 a.strikethrough_tint = tint;
             }
         }
-        // OpenType features (only when the element sets any).
-        let mut otf_list: Vec<String> = Vec::new();
-        let mut any = false;
-        for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
-            if let Some(on) = e.boolean(attr) {
-                designcraft_doc::otf::set(&mut otf_list, tag, on);
-                any = true;
-            }
-        }
-        if let Some(fig) = e.prop("OTFFigureStyle")
-            && let Some((id, ..)) = designcraft_doc::otf::FIGURES.iter().find(|f| f.3 == fig.trim())
-        {
-            designcraft_doc::otf::set_figures(&mut otf_list, id);
-            any = true;
-        }
-        if let Some(m) = e.num("OTFStylisticSets") {
-            designcraft_doc::otf::set_stylistic_sets(&mut otf_list, m.max(0.0) as u32);
-            any = true;
-        }
-        if any {
-            a.otf_features = Some(otf_list);
-        }
+        read_otf_features(e, &mut a);
         a.glyph_form = e.prop("GlyphForm");
         a.no_break = e.boolean("NoBreak");
         a.tate_chu_yoko = e.boolean("Tatechuyoko");
@@ -1824,6 +1870,7 @@ impl<'r> Importer<'r> {
         a.single_word_justify = e.prop("SingleWordJustification").and_then(|v| names::align_in(v.trim()));
         a.keep_with_next = u("KeepWithNext");
         a.keep_lines_together = e.boolean("KeepLinesTogether");
+        a.ignore_optical_margin = e.boolean("IgnoreEdgeAlignment");
         a.keep_all_lines = e.boolean("KeepAllLinesTogether");
         a.keep_first = u("KeepFirstLines");
         a.keep_last = u("KeepLastLines");
@@ -2099,6 +2146,14 @@ impl<'r> Importer<'r> {
             let format = self.xref_format_names.get(&fmt).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
             xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format }));
         }
+        let pref = e.find("StoryPreference");
+        let optical_margin = designcraft_doc::OpticalMargin {
+            on: pref.and_then(|p| p.boolean("OpticalMarginAlignment")).unwrap_or(false),
+            size: pref
+                .and_then(|p| p.num("OpticalMarginSize"))
+                .and_then(designcraft_doc::OpticalMargin::clamp_size)
+                .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+        };
         let mut st = Story {
             id,
             text,
@@ -2111,6 +2166,7 @@ impl<'r> Importer<'r> {
                 designcraft_doc::TextDirection::LeftToRight
             },
             vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
+            optical_margin,
             rev: 0,
             tables,
             notes,
@@ -2170,9 +2226,12 @@ impl<'r> Importer<'r> {
         }
         // Table-local options override the named table style. Cell styles are already
         // materialized independently, so their edges retain their higher precedence.
+        let mut border_unset = style.border.is_none() && style.borders.iter().all(|b| b.is_empty());
         let mut borders = std::array::from_fn::<_, 4, _>(|i| t.options.border_for(i).clone());
         for (side, border) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&mut borders) {
-            self.cell_stroke_attrs(e, side).apply_to(border);
+            let attrs = self.cell_stroke_attrs(e, side);
+            border_unset &= attrs.is_empty();
+            attrs.apply_to(border);
         }
         t.options.border = borders[0].clone();
         t.options.borders = borders.map(Some);
@@ -2214,36 +2273,7 @@ impl<'r> Importer<'r> {
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), ce, default_para);
-            if let Some(fc) = ce.get("FillColor") {
-                cell.fill = self.swatch_ref(fc);
-            }
-            if let Some(tint) = tint(ce.num("FillTint")) {
-                cell.fill_tint = tint;
-            }
-            for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
-                if let Some(v) = ce.num(k) {
-                    cell.insets[i] = v.max(0.0);
-                }
-            }
-            if let Some(vj) = ce.get("VerticalJustification") {
-                cell.vj = names::vj_in(vj);
-            }
-            if let Some(fb) = ce.get("FirstBaselineOffset") {
-                cell.first_baseline = names::first_baseline_in(fb);
-            }
-            if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
-                cell.first_baseline_min = min.clamp(0.0, 8640.0);
-            }
-            cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
-            for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
-                let attrs = self.cell_stroke_attrs(ce, side);
-                attrs.apply_to(&mut cell.strokes[i]);
-                cell.stroke_defined[i] |= !attrs.is_empty();
-                let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
-                cell.stroke_priorities[i] = priority;
-                // Preserve style-defined edges and #102's positive-priority local overrides.
-                cell.border_overrides[i] |= priority > 0;
-            }
+            self.read_cell_attrs(&mut cell, ce, border_unset);
             if let Some(slot) = t.cell_mut(r, c) {
                 *slot = cell;
             }
@@ -2255,6 +2285,47 @@ impl<'r> Importer<'r> {
             let _ = t.merge(rg);
         }
         t
+    }
+
+    /// A cell's local fill, insets, alignment, rotation and edge strokes.
+    fn read_cell_attrs(&mut self, cell: &mut designcraft_doc::Cell, ce: &El, border_unset: bool) {
+        if let Some(fc) = ce.get("FillColor") {
+            cell.fill = self.swatch_ref(fc);
+        }
+        if let Some(tint) = tint(ce.num("FillTint")) {
+            cell.fill_tint = tint;
+        }
+        for (i, k) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().enumerate() {
+            if let Some(v) = ce.num(k) {
+                cell.insets[i] = v.max(0.0);
+            }
+        }
+        if let Some(vj) = ce.get("VerticalJustification") {
+            cell.vj = names::vj_in(vj);
+        }
+        if let Some(fb) = ce.get("FirstBaselineOffset") {
+            cell.first_baseline = names::first_baseline_in(fb);
+        }
+        if let Some(min) = ce.num("MinimumFirstBaselineOffset").filter(|v| v.is_finite()) {
+            cell.first_baseline_min = min.clamp(0.0, 8640.0);
+        }
+        cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+        if cell.rotation != 0.0 {
+            self.rotated_cells += 1;
+        }
+        for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
+            let attrs = self.cell_stroke_attrs(ce, side);
+            attrs.apply_to(&mut cell.strokes[i]);
+            cell.stroke_defined[i] |= !attrs.is_empty();
+            let priority = ce.prop(&format!("{side}StrokePriority")).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+            cell.stroke_priorities[i] = priority;
+            // Preserve style-defined edges and #102's positive-priority local overrides.
+            cell.border_overrides[i] |= priority > 0;
+            // No table or table style border is given anywhere, so the built-in 1 pt default must not
+            // draw over an outer edge the cell explicitly hides (weight 0 or the None swatch), as InDesign draws nothing.
+            let hidden = attrs.weight == Some(0.0) || attrs.color.as_deref() == Some(swatch::NONE);
+            cell.border_overrides[i] |= border_unset && hidden;
+        }
     }
 
     /// The format of the text in a `CharacterStyleRange`: its style, and its local attributes over
@@ -2422,6 +2493,7 @@ impl<'r> Importer<'r> {
                                         object_point: names::anchor_in(s("AnchorPoint")),
                                         ref_point: row * 3 + col,
                                         keep_within_column: s("PinPosition") == "true",
+                                        spine_relative: s("SpineRelative") == "true",
                                     }
                                 }
                                 _ => designcraft_doc::AnchorPosition::Inline { y_offset: get("AnchorYoffset") },
@@ -2487,10 +2559,9 @@ impl<'r> Importer<'r> {
             .collect()
     }
 
-    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
-        let facing = self.settings.facing_pages;
-        // Page rectangles in IDML spread coordinates.
-        let mut pages: Vec<(Rect, &El)> = Vec::new();
+    /// The page rectangles of a spread element, in IDML spread coordinates.
+    fn page_rects<'a>(&self, e: &'a El) -> Vec<(Rect, &'a El)> {
+        let mut pages: Vec<(Rect, &'a El)> = Vec::new();
         for p in e.find_all("Page") {
             let gb = nums(p.get("GeometricBounds").unwrap_or(""));
             let (t, l, bt, r) =
@@ -2500,6 +2571,40 @@ impl<'r> Importer<'r> {
             let c = xf * Point::new(r, bt);
             pages.push((Rect::from_points(a, c), p));
         }
+        pages
+    }
+
+    /// A page's margins and columns, and whether they are local (differ from its parent page's).
+    fn page_margins(&self, p: &El, r: &Rect, master: bool, parent: Option<SpreadId>, side: PageSide) -> (Margins, Columns, bool) {
+        // A document page's margins are local when they differ from its parent page's; a
+        // page without its own takes the parent page's.
+        let from_parent = if master {
+            None
+        } else {
+            parent
+                .and_then(|id| self.parents.iter().find(|sp| sp.id == id))
+                .and_then(|sp| sp.pages.get(sp.parent_page_for_side(side)?))
+                .map(|q| (q.margins, q.columns.clone()))
+        };
+        let (margins, columns) = match (p.find("MarginPreference"), &from_parent) {
+            (Some(m), _) => {
+                let (margins, columns) = margins_of(m);
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+            (None, Some(own)) => own.clone(),
+            (None, None) => {
+                let (margins, columns) = self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default()));
+                (margins, fit_columns(columns, &margins, r.width()))
+            }
+        };
+        let local_margins = from_parent.is_some_and(|(m, c)| m != margins || c != columns);
+        (margins, columns, local_margins)
+    }
+
+    fn spread(&mut self, e: &El, id: SpreadId, master: bool) -> Spread {
+        let facing = self.settings.facing_pages;
+        // Page rectangles in IDML spread coordinates.
+        let pages = self.page_rects(e);
         let min_x = pages.iter().map(|(r, _)| r.x0).fold(f64::INFINITY, f64::min);
         let min_y = pages.iter().map(|(r, _)| r.y0).fold(f64::INFINITY, f64::min);
         let (min_x, min_y) = if min_x.is_finite() { (min_x, min_y) } else { (0.0, 0.0) };
@@ -2526,28 +2631,7 @@ impl<'r> Importer<'r> {
                 PageSide::Right
             };
             let parent = p.get("AppliedMaster").and_then(|m| self.parent_ids.get(m)).copied();
-            // A document page's margins are local when they differ from its parent page's; a
-            // page without its own takes the parent page's.
-            let from_parent = if master {
-                None
-            } else {
-                parent
-                    .and_then(|id| self.parents.iter().find(|sp| sp.id == id))
-                    .and_then(|sp| sp.pages.get(sp.parent_page_for_side(side)?))
-                    .map(|q| (q.margins, q.columns.clone()))
-            };
-            let (margins, columns) = match (p.find("MarginPreference"), &from_parent) {
-                (Some(m), _) => {
-                    let (margins, columns) = margins_of(m);
-                    (margins, fit_columns(columns, &margins, r.width()))
-                }
-                (None, Some(own)) => own.clone(),
-                (None, None) => {
-                    let (margins, columns) = self.default_margins.clone().unwrap_or((Margins::uniform(36.0), Columns::default()));
-                    (margins, fit_columns(columns, &margins, r.width()))
-                }
-            };
-            let local_margins = from_parent.is_some_and(|(m, c)| m != margins || c != columns);
+            let (margins, columns, local_margins) = self.page_margins(p, r, master, parent, side);
             out_pages.push(Page {
                 id: pid,
                 width: r.width(),
@@ -2856,7 +2940,7 @@ impl<'r> Importer<'r> {
             {
                 it.fill.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| finite_nums(&s));
+            let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
                 && len > 0.0
             {
@@ -2874,7 +2958,7 @@ impl<'r> Importer<'r> {
             {
                 it.stroke.gradient_angle = Some(a);
             }
-            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| finite_nums(&s));
+            let start: Option<Vec<f64>> = e.prop("GradientStrokeStart").map(|s| nums(&s));
             if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientStrokeLength"))
                 && len > 0.0
             {
@@ -2967,8 +3051,11 @@ impl<'r> Importer<'r> {
                 if let Some(g) = self.with_style(e, "BaselineFrameGridOption")
                     && g.get("UseCustomBaselineFrameGrid") == Some("true")
                 {
-                    options.baseline_grid =
-                        Some((g.num("StartingOffsetForBaselineFrameGrid").unwrap_or(0.0), g.num("BaselineFrameGridIncrement").unwrap_or(12.0)));
+                    options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid {
+                        start: g.num("StartingOffsetForBaselineFrameGrid").unwrap_or(0.0),
+                        increment: g.num("BaselineFrameGridIncrement").unwrap_or(12.0),
+                        relative_to: g.get("BaselineFrameGridRelativeOption").map(frame_grid_relative).unwrap_or_default(),
+                    });
                 }
                 it.content = Content::Text(TextFrame { story, options });
                 self.ctx.threads.push((
@@ -3036,6 +3123,26 @@ impl<'r> Importer<'r> {
     }
 
     fn graphic(&mut self, g: &El) -> Content {
+        let layer_options = g.find("GraphicLayerOption").map(|options| {
+            let attrs = |e: &El| e.attrs.iter().filter(|(key, _)| key != "Self").cloned().collect();
+            let mut out = designcraft_doc::GraphicLayerOptions { attributes: attrs(options), ..Default::default() };
+            let mut pending: Vec<_> = options.find_all("GraphicLayer").map(|e| (e, None)).collect();
+            pending.reverse();
+            while let Some((layer, parent)) = pending.pop() {
+                let index = out.layers.len();
+                out.layers.push(attrs(layer));
+                out.parents.push(parent);
+                let children: Vec<_> = layer.find_all("GraphicLayer").collect();
+                pending.extend(children.into_iter().rev().map(|e| (e, Some(index))));
+            }
+            if out.parents.iter().all(Option::is_none) {
+                out.parents.clear();
+            }
+            out
+        });
+        if layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides) {
+            self.warnings.push(format!("graphic {}: {}", g.get("Self").unwrap_or("(unnamed)"), designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING));
+        }
         let gxf = parse_affine(g.get("ItemTransform"));
         let (l, t, r, b) = match g.prop_el("GraphicBounds") {
             Some(gb) => {
@@ -3052,6 +3159,7 @@ impl<'r> Importer<'r> {
         let uri = link.and_then(|k| k.get("LinkResourceURI")).map(uri_to_path);
         let graphic = |asset, size| {
             Content::Graphic(designcraft_doc::Graphic {
+                layer_options: layer_options.clone(),
                 asset,
                 size,
                 xf: gxf * Affine::translate((l, t)),
@@ -3221,6 +3329,7 @@ impl<'r> Importer<'r> {
         // Make sure built-in paragraph styles exist and are first.
         let mut d = Document {
             title,
+            file_info: Default::default(),
             settings: self.settings.clone(),
             spreads: std::mem::take(&mut self.spreads).into_iter().map(Arc::new).collect(),
             parents: std::mem::take(&mut self.parents).into_iter().map(Arc::new).collect(),
@@ -3509,6 +3618,19 @@ fn fit_columns(mut columns: Columns, margins: &Margins, page_width: f64) -> Colu
     columns
 }
 
+/// A `BaselineFrameGridRelativeOption` value (`TopOfInsetOfBaselineFrameGridRelativeOption`, or a
+/// short form such as `TopOfInset`); unknown values measure from the top of the page.
+fn frame_grid_relative(v: &str) -> designcraft_doc::FrameGridRelative {
+    use designcraft_doc::FrameGridRelative as R;
+    let v = v.strip_suffix("OfBaselineFrameGridRelativeOption").unwrap_or(v);
+    match v {
+        "TopOfMargin" | "TopMargin" => R::TopMargin,
+        "TopOfFrame" => R::TopOfFrame,
+        "TopOfInset" | "TopInset" => R::TopInset,
+        _ => R::TopOfPage,
+    }
+}
+
 /// Text Frame Options from `TextFramePreference` elements: each attribute from the first that sets it.
 fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
     let e = Prefs(prefs);
@@ -3702,6 +3824,11 @@ fn path_capped(pg: &El, max: usize) -> PathData {
         let closed = g.get("PathOpen") != Some("true");
         let mut anchors = Vec::new();
         if let Some(arr) = g.find("PathPointArray") {
+            // A NaN or infinite point drops its subpath (JSON can't store it).
+            let non_finite = |s: Option<&str>| s.is_some_and(|s| s.split_whitespace().any(|v| v.parse::<f64>().is_ok_and(|x| !x.is_finite())));
+            if arr.find_all("PathPointType").take(left).any(|p| ["Anchor", "LeftDirection", "RightDirection"].iter().any(|k| non_finite(p.get(k)))) {
+                continue;
+            }
             for p in arr.find_all("PathPointType").take(left) {
                 let Some(a) = parse_point(p.get("Anchor")) else { continue };
                 let hin = parse_point(p.get("LeftDirection")).unwrap_or(a);
@@ -3853,6 +3980,31 @@ impl Importer<'_> {
         a.shatai_angle = finite("ShataiDegreeAngle").map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
         a.shatai_adjust_rotation = e.boolean("ShataiAdjustRotation");
         a.shatai_adjust_tsume = e.boolean("ShataiAdjustTsume");
+    }
+}
+
+/// OpenType features (only when the element sets any).
+fn read_otf_features(e: &El, a: &mut CharAttrs) {
+    let mut otf_list: Vec<String> = Vec::new();
+    let mut any = false;
+    for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
+        if let Some(on) = e.boolean(attr) {
+            designcraft_doc::otf::set(&mut otf_list, tag, on);
+            any = true;
+        }
+    }
+    if let Some(fig) = e.prop("OTFFigureStyle")
+        && let Some((id, ..)) = designcraft_doc::otf::FIGURES.iter().find(|f| f.3 == fig.trim())
+    {
+        designcraft_doc::otf::set_figures(&mut otf_list, id);
+        any = true;
+    }
+    if let Some(m) = e.num("OTFStylisticSets") {
+        designcraft_doc::otf::set_stylistic_sets(&mut otf_list, m.max(0.0) as u32);
+        any = true;
+    }
+    if any {
+        a.otf_features = Some(otf_list);
     }
 }
 

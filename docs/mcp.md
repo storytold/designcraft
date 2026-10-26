@@ -88,6 +88,8 @@ claude mcp add designcraft -- designcraft-cli mcp
 
 ```sh
 designcraft-cli mcp --automation-read-root /work/project --automation-write-root /work/project/out
+designcraft-cli mcp --automation-read-root /work/project --automation-read-root /work/shared-assets \
+  --automation-write-root /work/project/out --automation-write-root /tmp/scratch
 ```
 
 ```json
@@ -98,16 +100,16 @@ designcraft-cli mcp --automation-read-root /work/project --automation-write-root
 The two flags (VectorCraft, PhotoCraft and the other Craft apps take the same ones, so one client
 config works across the suite) keep the agent to the folders you give it:
 
-- Every file a command reads must lie inside the **read root**: `open_document`, `file.open`,
+- Every file a command reads must lie inside a **read root**: `open_document`, `file.open`,
   `file.openIdml`, `place_image` and `file.place` / `place.load` / `media.options` with a `path`,
   `links.relink`, `links.relinkFolder`, `color.loadProfile`, `swatch.load`, `library.open`,
   `book.open`, `data.source.select`, `data.merge` and `file.importXml` / `xml.loadDtd` with a `path`,
   and `file.recovery.list` / `file.recovery.open` with a `dir`. A DesignCraft document names more
   files than the agent does: linked images, data sources, book chapters, the `Document Fonts` folder
   beside a document, an IDML package's linked images and the files an image cell of a merge names.
-  Those are read through the same checks, so a path in a document that leads outside the read root
+  Those are read through the same checks, so a path in a document that leads outside the read roots
   reads as a file that isn't there.
-- Every file a command writes must lie inside the **write root**: `save_document`, `export_png`,
+- Every file a command writes must lie inside a **write root**: `save_document`, `export_png`,
   `render_page` with a `path`, `file.save`, `file.saveAs`, `file.saveACopy`, `file.exportPdf`,
   `file.exportEpub`, `file.exportFixedEpub`, `file.exportHtml`, `file.exportText`, `file.exportXml`,
   `file.exportIdml`, `file.printBooklet`, `snippet.export`, `swatch.save`, `library.new` and the
@@ -115,21 +117,26 @@ config works across the suite) keep the agent to the folders you give it:
   `file.package`, `links.copyTo` and `file.recovery.save` / `file.recovery.open` with a `dir`
   (reopening removes the entries it read). `file.package` and `links.copyTo` check their folder
   before they create anything.
-- Read and write access are separate. Give the same folder twice for both. A root left out grants
-  none of its access: with only `--automation-read-root` nothing can be written to disk. Without
-  either flag nothing changes.
+- Each flag may be given more than once (#1552): a path inside any of the read roots may be read,
+  one inside any of the write roots written, so one session can read a project folder and a shared
+  assets folder, or write to an output folder and a scratch folder, without widening a root to
+  their common parent (which the roots don't grant). A folder given twice counts once.
+- Read and write access are separate. Give the same folder to both flags for both. A kind left out
+  grants none of its access: with only `--automation-read-root` nothing can be written to disk.
+  Without either flag nothing changes.
 - A path is made absolute against the server's working directory, then its links are followed: a
-  file (or folder) link that leads out of a root is outside it. For a file that doesn't exist yet,
+  file (or folder) link that leads out of the roots is outside them. For a file that doesn't exist yet,
   its nearest existing folder's links are followed and the rest must be plain names, so `..` below a
   folder that doesn't exist is refused, as is a link that leads nowhere (writing through it would
-  create its target). The result is compared with the root by whole folder names: `/work2/x` is not
+  create its target). The result is compared with each root by whole folder names: `/work2/x` is not
   inside `/work`. On Windows case is ignored, UNC paths (`\\server\share\...`) are resolved like
   drive-letter ones, and device names (`CON`, `NUL`, `COM1`...) are refused.
 - A refused path is an ordinary tool error the agent can read and correct, for example
-  `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` or
+  `automation path rejected: outside the write root /work/project/out: /etc/x.designcraft` (with
+  several, `outside the write roots /work/project/out, /tmp/scratch: ...`) or
   `automation filesystem access is not granted: write authority is absent: /work/project/out/x.designcraft`.
-- The roots must be existing folders; a missing one stops the server with an error. Each flag is
-  given once (`--flag <dir>` or `--flag=<dir>`).
+- The roots must be existing folders; a missing one stops the server with an error. Each flag takes
+  one folder per use (`--flag <dir>` or `--flag=<dir>`) and may be used again for more.
 
 The flags confine the in-process server, so `--connect` together with them is an error: the server
 would otherwise talk to an app that isn't confined. DesignCraft's desktop app has no equivalent flags
@@ -182,7 +189,9 @@ and `text.move` return, a story's `length` in `get_story` and `inspect_document`
 `get_story`. A character outside ASCII takes 2 to 4 bytes (é 2, — and は 3), so the story `はただ商店` has length 15
 and its second character starts at 3. An offset inside a character snaps back to the start of that character, except
 in `story.replaceRange`: there an offset inside a character, an `end` past the end of the story or a `start` after `end`
-is an error that gives the story length in bytes, and the story is left unchanged.
+is an error that gives the story length in bytes, and the story is left unchanged. A `find.find` or `find.next` match
+that has a `cell` (`{table, row, col}`) is in that table cell's text, and its `start` / `end` count from the start of
+the cell.
 
 ## Text and image fitting
 

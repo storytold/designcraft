@@ -72,7 +72,7 @@ pub(crate) struct Notes {
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
     /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64), (Arc<ComposedStory>, NoteMetrics)>,
+    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -130,7 +130,7 @@ impl Notes {
                 self.num = o.start_at;
             }
             self.numbers[k] = self.num;
-            self.num += 1;
+            self.num = self.num.saturating_add(1);
             sub.notes.insert(self.refs[k], o.label(self.numbers[k], false));
         }
         sub.note_position = o.ref_position;
@@ -153,7 +153,8 @@ impl Notes {
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
         let o = &doc.footnote_options;
         let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
-        let key = (k, label.clone(), w.to_bits());
+        // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
+        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -169,6 +170,7 @@ impl Notes {
             page: f.page,
             grid: None,
             left_page: f.left_page,
+            right_page: f.right_page,
             page_rect: None,
         };
         let nopts = ComposeOptions {
@@ -178,6 +180,7 @@ impl Notes {
             running: opts.running.clone(),
             label: Some(label),
             xrefs: opts.xrefs.clone(),
+            placed: Vec::new(),
         };
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();

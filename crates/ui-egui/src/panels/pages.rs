@@ -28,7 +28,7 @@ const MAX_THUMB_W: f64 = 1024.0;
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
     let key = (st.uid, st.revision, of, h.round() as u32);
-    let mut g = THUMBS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = g.get_or_insert_with(HashMap::new);
     if let Some(t) = map.get(&key) {
         return Some(t.clone());
@@ -366,7 +366,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             t.text_strong,
                         );
                     }
-                    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label));
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, label));
                     let resp = if opts.parents_vertical { resp } else { resp.on_hover_text(label) };
                     resp.dnd_set_drag_payload(PageDrag::Parent(row.parent.map(|(_, id)| id)));
                     if resp.double_clicked()
@@ -448,11 +448,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         let abs = first + pi;
                         let x0 = row.min.x + center + (p.x as f32 - spine) * scale;
                         let pr = egui::Rect::from_min_size(egui::pos2(x0, top), vec2(p.width as f32 * scale, p.height as f32 * scale));
-                        let resp = ui.interact(pr, ui.id().with(("page", abs)), Sense::click_and_drag());
+                        let resp = ui.interact(pr, ui.scope_id().with(("page", abs)), Sense::click_and_drag());
                         let selected = abs == cur && !editing_parents;
                         // Screen readers hear "Page 3".
                         resp.widget_info(|| {
-                            egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
+                            egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                         });
                         let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
                         match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
@@ -547,7 +547,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             let dy = dresp.drag_delta().y * if opts.pages_on_top { -1.0 } else { 1.0 };
             app.ui.pages_parents_height = Some([(parents_h + dy).clamp(parents_min, parents_max), space]);
         }
-        dresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Parents and pages divider"));
+        dresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, "Parents and pages divider"));
     };
     if opts.pages_on_top {
         pages_part(app, ui);
@@ -771,7 +771,7 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
 /// A small label following the pointer while dragging.
 pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
     let Some(p) = ui.ctx().pointer_interact_pos() else { return };
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("page_drag")));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("page_drag")));
     let g = painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), t.text_strong);
     let r = egui::Rect::from_min_size(p + vec2(10.0, 8.0), g.size() + vec2(10.0, 6.0));
     painter.rect(r, 2.0, t.panel_darker, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
@@ -857,7 +857,7 @@ mod tests {
     fn sized_harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
         let mut h = Harness::builder().with_size(size).build_ui_state(
             |ui, app: &mut DesignApp| {
-                let key = egui::Id::new("test_fonts");
+                let key = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(key, true));
@@ -886,7 +886,7 @@ mod tests {
     fn menu_harness(app: DesignApp, abs: usize, si: usize) -> Harness<'static, DesignApp> {
         let mut h = Harness::builder().with_size(vec2(320.0, 600.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
-                let key = egui::Id::new("test_fonts");
+                let key = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(key, true));
@@ -988,7 +988,9 @@ mod tests {
             assert!(window.contains_rect(h.get_by_label(label).rect()), "{label} is on screen");
         }
         // Seven parent rows: four and a half show at first; the rest scroll.
-        let divider = h.get_by_label("Parents and pages divider").rect();
+        let divider_node = h.get_by_label("Parents and pages divider");
+        assert_eq!(divider_node.accesskit_node().role(), egui::accesskit::Role::Splitter, "the divider is a splitter, not an unknown node");
+        let divider = divider_node.rect();
         let before = divider.center().y;
         assert!(h.query_by_label("G-Parent").is_none_or(|n| n.rect().top() > divider.top()), "the last parent is scrolled away");
         let (a, b) = (divider.center(), divider.center() + vec2(0.0, 80.0));

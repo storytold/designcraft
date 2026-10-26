@@ -95,6 +95,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     stack.push(top);
                 }
                 first = false;
+                // A group is not a character: the `\uN` fallback skip ends here too.
+                pending = 0;
                 // `{\*\dest …}`: an ignorable destination.
                 if chars.get(i + 1) == Some(&'\\')
                     && chars.get(i + 2) == Some(&'*')
@@ -134,6 +136,11 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 }
                 if !next.is_ascii_alphabetic() {
                     // Control symbols: \\ \{ \} \~ (nbsp) \- (soft hyphen) \_ (nb hyphen).
+                    i += 2;
+                    if pending > 0 {
+                        pending -= 1;
+                        continue;
+                    }
                     let skip = stack.last().is_some_and(|s| s.skip);
                     if !skip {
                         match next {
@@ -149,7 +156,6 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                             _ => {}
                         }
                     }
-                    i += 2;
                     continue;
                 }
                 // A control word with an optional numeric parameter and one delimiting space.
@@ -172,6 +178,11 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     k += 1;
                 }
                 i = k;
+                // A control word is one character of the `\uN` fallback (a following `\u` is not).
+                if pending > 0 && word != "u" {
+                    pending -= 1;
+                    continue;
+                }
                 let skip = stack.last().is_some_and(|s| s.skip);
                 if SKIP.contains(&word.as_str()) {
                     flush(&mut st, &mut buf, &fmt);
@@ -218,7 +229,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "strike" => restyle(&|s| s.strike = on),
                     // Half-points; sizes outside the engine's 0.1–1296 pt range fall back to the default.
                     "fs" => restyle(&|s| {
-                        s.size = param.map(|p| p as f64 / 2.0).filter(|pt| (0.1..=1296.0).contains(pt));
+                        s.size = param.map(|p| p as f64 / 2.0).and_then(designcraft_doc::attrs::imported_type_size);
                     }),
                     "plain" => restyle(&|s| {
                         s.bold = false;
@@ -234,9 +245,12 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     }
                     "u" => {
                         if let Some(n) = param {
-                            let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
-                            if let Some(ch) = units.push(unit) {
-                                buf.push(ch);
+                            // RTF allows -32768..=65535; anything else is dropped.
+                            if (-32768..=65535).contains(&n) {
+                                let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
+                                if let Some(ch) = units.push(unit) {
+                                    buf.push(ch);
+                                }
                             }
                             pending = stack.last().map_or(1, |s| s.uc);
                         }
@@ -283,6 +297,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn out_of_range_unicode_escape_is_dropped() {
+        assert_eq!(import(br"{\rtf1 a\u4294967361?b}").unwrap().story.text, "ab");
+        assert_eq!(import(br"{\rtf1 a\u-4294967231?b}").unwrap().story.text, "ab");
+    }
+
+    #[test]
     fn imports_rtf_text_and_formatting() {
         let rtf = br"{\rtf1\ansi{\fonttbl{\f0 Times;}}{\colortbl;\red0\green0\blue0;}{\*\generator Test;}
 \f0\fs24 Hello {\b bold} and {\i italic\i0  plain}\par
@@ -318,6 +338,18 @@ Caf\'e9 \u8364? price\tab tab\line next\par
     fn hyphen_after_control_word_without_digits_is_text() {
         let i = import(br"{\rtf1\ansi Rock\emdash-roll, x\tab-y, a\li-720 b}").unwrap();
         assert_eq!(i.story.text, "Rock\u{2014}-roll, x\t-y, ab");
+    }
+
+    /// A control word or control symbol is one character of the `\uN` fallback, so it is skipped
+    /// like a plain character and does not eat the text after it.
+    #[test]
+    fn control_fallback_after_unicode_is_skipped() {
+        let i = import(br"{\rtf1 \u8220\ldblquote Hi\u8221\rdblquote  x\u8212\emdash y}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi\u{201D} x\u{2014}y");
+        let i = import(br"{\rtf1 \u8220\{Hi}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi");
+        let i = import(br"{\rtf1 \u8220{\b Hi}}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi");
     }
 
     /// Characters past U+FFFF are written as two `\uN` words, a UTF-16 surrogate pair (the form

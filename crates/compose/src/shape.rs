@@ -950,10 +950,10 @@ static WORD_CACHE: RwLock<Vec<(WordKey, Arc<RwLock<WordMap>>)>> = RwLock::new(Ve
 const WORD_CACHE_MAX: usize = 50_000;
 
 fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
-    if let Some((_, m)) = WORD_CACHE.read().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == key) {
+    if let Some((_, m)) = WORD_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == key) {
         return m.clone();
     }
-    let mut w = WORD_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    let mut w = WORD_CACHE.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, m)) = w.iter().find(|e| e.0 == key) {
         return m.clone();
     }
