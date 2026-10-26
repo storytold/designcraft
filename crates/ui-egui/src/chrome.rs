@@ -670,6 +670,27 @@ fn control_character(
     para: &serde_json::Value,
     tr: &dyn Fn(&str) -> String,
 ) {
+    // The text's Fill and Stroke, as the Control panel shows them for type: any swatch, a gradient
+    // swatch too (its direction: the Gradient Swatch tool).
+    rows(ui, |ui, row| {
+        let stroke = row == 1;
+        let key = if stroke { "stroke" } else { "fill" };
+        let resp = panels::swatch_picker(
+            app,
+            ui,
+            if stroke { "ctl_text_stroke" } else { "ctl_text_fill" },
+            chars[key].as_str().map(str::to_string),
+            |app, name| {
+                let _ = app.run("type.char", json!({"attrs": {key: name}}));
+            },
+        );
+        if let Some(resp) = resp {
+            let label = tr(if stroke { "Text Stroke" } else { "Text Fill" });
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+            resp.on_hover_text(label);
+        }
+    });
+    vsep(ui);
     ui.vertical(|ui| {
         let fam = chars["fontFamily"].as_str().unwrap_or("").to_string();
         let sty = chars["fontStyle"].as_str().unwrap_or("").to_string();

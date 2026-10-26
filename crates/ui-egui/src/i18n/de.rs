@@ -1709,6 +1709,9 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("A, B, C, D...", "A, B, C, D..."),
     ("Alpha Channel", "Alphakanal"),
     ("Black", "Schwarz"),
+    ("Text Fill", "Textfläche"),
+    ("Text Stroke", "Textkontur"),
+    ("Stroke:", "Kontur:"),
     // Document Setup
     ("Page Size:", "Seitenformat:"),
     ("Inside:", "Innen:"),

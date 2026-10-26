@@ -2947,6 +2947,40 @@ mod text_color_tests {
         assert_eq!(story.format_after(0).over.stroke.as_deref(), r["swatch"].as_str());
         assert_eq!(s.doc().unwrap().history.undo.len(), 3, "the frame, then one undo step per colour");
     }
+
+    /// `object.gradient` on selected text gives the selected characters a gradient fill (the frame
+    /// keeps its own); a later edit starts from the text's gradient.
+    #[test]
+    fn a_gradient_goes_to_the_selected_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "colour me", "caret": false})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        let frame_fill = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+        let before = frame_fill(&s);
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 6})).unwrap();
+        let stops = json!([{"location": 0, "color": "#ff0000"}, {"location": 100, "color": "#0000ff"}]);
+        let r = s.execute("object.gradient", &json!({"stops": stops})).unwrap();
+        let name = r["swatch"].as_str().unwrap().to_string();
+        let d = &s.doc().unwrap().doc;
+        assert!(designcraft_color::swatch::resolve_gradient(&d.swatches, &name).is_some(), "{name} is a gradient");
+        let story = d.story(designcraft_doc::StoryId(sid)).unwrap();
+        assert_eq!(story.format_after(0).over.fill.as_deref(), Some(name.as_str()), "the selected characters");
+        assert_ne!(story.format_after(7).over.fill.as_deref(), Some(name.as_str()), "not the rest");
+        assert_eq!(frame_fill(&s), before, "the frame keeps its fill");
+        // Radial from the panel: the same stops, now radial, still on the text.
+        let r = s.execute("object.gradient", &json!({"kind": "radial"})).unwrap();
+        assert_eq!(r["kind"], "radial");
+        assert_eq!(r["stops"].as_array().unwrap().len(), 2, "the text's stops are kept");
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+        assert_eq!(story.format_after(0).over.fill.as_deref(), r["swatch"].as_str());
+        // A frame selected with `text`: the whole story.
+        s.execute("selection.set", &json!({"ids": [fid]})).unwrap();
+        let r = s.execute("object.gradient", &json!({"stops": stops, "target": "stroke", "text": true})).unwrap();
+        let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+        assert_eq!(story.format_after(8).over.stroke.as_deref(), r["swatch"].as_str());
+        assert_eq!(frame_fill(&s), before);
+    }
 }
 
 #[cfg(test)]

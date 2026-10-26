@@ -694,12 +694,18 @@ fn set_stop(stops: &mut [serde_json::Value], i: usize, key: &str, v: serde_json:
 pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
+    // Selected text (or Formatting Affects Text): the gradient of the text's fill or stroke.
+    let text = super::colors_affect_text(app);
+    let stroke_front = app.ui.stroke_front;
+    let text_paint = if text { super::color_target(app).map(|(fill, _, stroke, _)| if stroke_front { stroke } else { fill }) } else { None };
     let Some(st) = app.session.active() else { return };
     let item = st.selection.items.first().and_then(|i| st.doc.item(*i));
-    let has_item = item.is_some();
+    let has_item = item.is_some() || text_paint.is_some();
     // The fill's gradient, or the stroke's when the toolbox's Stroke box is in front.
-    let stroke_front = app.ui.stroke_front;
-    let fill = item.map(|it| if stroke_front { it.stroke.as_fill() } else { it.fill.clone() }).unwrap_or_default();
+    let fill = match &text_paint {
+        Some(swatch) => designcraft_doc::Fill { swatch: swatch.clone(), ..Default::default() },
+        None => item.map(|it| if stroke_front { it.stroke.as_fill() } else { it.fill.clone() }).unwrap_or_default(),
+    };
     let cur = designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned();
     let is_gradient = cur.is_some();
     let g = cur.unwrap_or_default();
@@ -772,7 +778,8 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::widgets::caption(ui, crate::i18n::tr(&lang, "Angle:"));
                     let angle =
                         fill.gradient_vector.map(|[x0, y0, x1, y1]| (-(y1 - y0)).atan2(x1 - x0).to_degrees()).or(fill.gradient_angle).unwrap_or(0.0);
-                    ui.add_enabled_ui(is_gradient && !radial, |ui| {
+                    // Text takes its direction from the Gradient Swatch tool.
+                    ui.add_enabled_ui(is_gradient && !radial && !text, |ui| {
                         if let Some(v) = crate::widgets::number(ui, "grad_angle", is_gradient.then_some(angle), "°", 44.0, 1) {
                             send = Some(json!({"angle": v}));
                         }
@@ -993,6 +1000,9 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(mut p) = send {
         if let Some(o) = p.as_object_mut() {
             o.insert("target".to_string(), json!(if stroke_front { "stroke" } else { "fill" }));
+            if text {
+                o.insert("text".to_string(), json!(true));
+            }
         }
         let _ = app.run("object.gradient", p);
     }

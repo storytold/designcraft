@@ -598,11 +598,10 @@ pub(crate) fn apply_gradient(app: &mut DesignApp) -> Result<Value, String> {
     if let Some(sw) = known {
         return crate::panels::apply_swatch(app, stroke, &sw, None);
     }
-    if crate::panels::colors_affect_text(app) {
-        return Err("no gradient to apply yet: make one in the Gradient panel".into());
-    }
+    // A new white-to-black gradient, on the text when colour edits go to the text.
+    let text = crate::panels::colors_affect_text(app);
     let stops = json!([{"location": 0, "color": "#ffffff"}, {"location": 100, "color": "#000000"}]);
-    let r = app.run("object.gradient", json!({"stops": stops, "target": if stroke { "stroke" } else { "fill" }}))?;
+    let r = app.run("object.gradient", json!({"stops": stops, "target": if stroke { "stroke" } else { "fill" }, "text": text}))?;
     if let Some(sw) = r["swatch"].as_str() {
         app.ui.last_gradient = Some(sw.to_string());
     }
@@ -869,6 +868,25 @@ mod tests {
         for (id, sc) in [("color.applyColor", ","), ("color.applyGradient", ".")] {
             assert_eq!(crate::menus::ui_label(id).and_then(|c| c.1), Some(sc));
         }
+    }
+
+    /// Apply Gradient with text selected and no gradient yet: a new white-to-black gradient on the
+    /// text, not on its frame.
+    #[test]
+    fn apply_gradient_with_text_selected_colours_the_text() {
+        use serde_json::json;
+        let mut app = app(true);
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "gradient", "caret": false})).unwrap();
+        let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": 8})).unwrap();
+        let frame_before = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+        app.run("color.applyGradient", json!({})).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        let fill = doc.story(designcraft_doc::StoryId(sid)).unwrap().format_after(0).over.fill.clone().expect("the text's fill");
+        let grad = designcraft_color::swatch::resolve_gradient(&doc.swatches, &fill).expect("a gradient on the text");
+        assert_eq!((grad.stops[0].color.to_rgb(), grad.stops[1].color.to_rgb()), ([1.0; 3], [0.0; 3]));
+        assert_eq!(doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch, frame_before, "the frame keeps its fill");
     }
 
     /// A new default gradient on the stroke in front is one undo step; the fill keeps its swatch and tint.
