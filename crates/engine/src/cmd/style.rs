@@ -227,8 +227,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Gradient",
             [],
             None,
-            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: a color swatch's name (as dropped on the Gradient panel: its color on screen, its inks in print), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops: [{location, color, swatch?, opacity, midpoint}]} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
-            super::has_selection,
+            "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: a color swatch's name (as dropped on the Gradient panel: its color on screen, its inks in print), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, text?: bool, ids?} → {swatch, kind, stops: [{location, color, swatch?, opacity, midpoint}]} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch); on selected text, or with `text` on the text of the selected frames, the characters' gradient",
+            has_text_or_selection,
             apply_gradient
         ),
         cmd!(

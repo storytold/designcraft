@@ -66,41 +66,22 @@ pub(super) fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
         Some(t) => return Err(bad("object.gradient", format!("unknown target {t}"))),
     };
     let (from, to) = (crate::cmd::point_param(p, "from"), crate::cmd::point_param(p, "to"));
+    let edit = GradientEdit { kind, stops, reverse };
+    // Selected text (or a text frame with `text`): the gradient goes on the characters, as a
+    // colour does with `object.color`.
+    let named = p.get("ids").is_some() || p.get("id").is_some();
+    let text = !named
+        && (p.get("text").and_then(Value::as_bool).unwrap_or(false) || s.doc()?.selection.text.is_some() || s.doc()?.selection.cells.is_some());
+    if text {
+        return text_gradient(s, &edit, stroke);
+    }
     let ids = crate::cmd::targets(s, p)?;
     s.edit(|d, _| {
         let mut out = Value::Null;
         for id in &ids {
             let Some(it) = d.item(*id) else { continue };
             let cur_name = if stroke { it.stroke.swatch.clone() } else { it.fill.swatch.clone() };
-            let cur = designcraft_color::swatch::resolve_gradient(&d.swatches, &cur_name).cloned();
-            let mut g = cur.clone().unwrap_or_default();
-            if let Some(k) = kind {
-                g.kind = k;
-            }
-            if let Some(st) = &stops {
-                g.stops = st.clone();
-                g.sort();
-            }
-            if reverse {
-                g.reverse();
-            }
-            // Keep the swatch while the gradient is unchanged, else reuse an equal gradient swatch
-            // or add an unnamed one.
-            let name = if cur.as_ref() == Some(&g) {
-                cur_name
-            } else if let Some(w) = d.swatches.iter().find(|w| matches!(&w.value, SwatchValue::Gradient { gradient } if *gradient == g)) {
-                w.name.clone()
-            } else {
-                let name = Styles::unique_name(|n| d.swatch(n).is_some(), "Gradient");
-                d.swatches.push(Swatch {
-                    name: name.clone(),
-                    value: SwatchValue::Gradient { gradient: g.clone() },
-                    locked: false,
-                    named: false,
-                    hidden: true,
-                });
-                name
-            };
+            let (name, g) = edit.apply(d, cur_name);
             let inv = d.find(*id).map(|l| d.parent_xf(&l)).zip(d.item(*id).map(|i| i.xf)).map(|(pxf, xf)| (pxf * xf).inverse());
             let Some(it) = d.item_mut(*id) else { continue };
             // The fill's or the stroke's paint: swatch, tint, angle, vector.
@@ -127,6 +108,82 @@ pub(super) fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(out)
     })
+}
+
+/// What `object.gradient` changes in a gradient: its kind, its stops, its direction.
+struct GradientEdit {
+    kind: Option<designcraft_color::GradientKind>,
+    stops: Option<Vec<designcraft_color::GradientStop>>,
+    reverse: bool,
+}
+
+impl GradientEdit {
+    /// The gradient of the paint `cur_name` (a new one when it is no gradient) with the edit made,
+    /// and the swatch that holds it: `cur_name` while the gradient is unchanged, else an equal
+    /// gradient swatch, else a new unnamed one.
+    fn apply(&self, d: &mut designcraft_doc::Document, cur_name: String) -> (String, designcraft_color::Gradient) {
+        let cur = designcraft_color::swatch::resolve_gradient(&d.swatches, &cur_name).cloned();
+        let mut g = cur.clone().unwrap_or_default();
+        if let Some(k) = self.kind {
+            g.kind = k;
+        }
+        if let Some(st) = &self.stops {
+            g.stops = st.clone();
+            g.sort();
+        }
+        if self.reverse {
+            g.reverse();
+        }
+        let name = if cur.as_ref() == Some(&g) {
+            cur_name
+        } else if let Some(w) = d.swatches.iter().find(|w| matches!(&w.value, SwatchValue::Gradient { gradient } if *gradient == g)) {
+            w.name.clone()
+        } else {
+            let name = Styles::unique_name(|n| d.swatch(n).is_some(), "Gradient");
+            d.swatches.push(Swatch {
+                name: name.clone(),
+                value: SwatchValue::Gradient { gradient: g.clone() },
+                locked: false,
+                named: false,
+                hidden: true,
+            });
+            name
+        };
+        (name, g)
+    }
+}
+
+/// `object.gradient` on the selected text: the gradient of the first selected character's fill
+/// (or stroke), edited, on every selected character; with a caret, on the next typing.
+fn text_gradient(s: &mut Session, edit: &GradientEdit, stroke: bool) -> Result<Value> {
+    let texts = crate::cmd::text::format_targets_pub(s);
+    let Some(first) = texts.first() else { return Err(bad("object.gradient", "select the text to colour")) };
+    let cur_name = {
+        let st = s.doc()?;
+        let story = st.doc.text_story(first.story, first.cell).ok_or(designcraft_doc::DocError::NoStory(first.story))?;
+        let pf = story.paras.get(story.para_at(first.range.start)).ok_or_else(|| bad("object.gradient", "no paragraph at the selection"))?;
+        let (_, base) = st.doc.styles.resolve_para(pf);
+        let cp = st.doc.styles.resolve_char(&base, &crate::cmd::text::effective_char_format(s, first)?);
+        if stroke { cp.stroke } else { cp.fill }
+    };
+    let caret = matches!(texts.as_slice(), [t] if t.range.is_empty());
+    let r = s.edit(|d, _| {
+        let (name, g) = edit.apply(d, cur_name);
+        if !caret {
+            let a = if stroke {
+                CharAttrs { stroke: Some(name.clone()), stroke_tint: Some(1.0), ..Default::default() }
+            } else {
+                CharAttrs { fill: Some(name.clone()), fill_tint: Some(1.0), ..Default::default() }
+            };
+            crate::cmd::text::apply_char_attrs(d, &texts, &a, &[]);
+        }
+        Ok(gradient_json(&name, &g))
+    })?;
+    if caret && let Some(name) = r.get("swatch").cloned() {
+        let attrs = if stroke { json!({"stroke": name, "strokeTint": 1.0}) } else { json!({"fill": name, "fillTint": 1.0}) };
+        crate::cmd::text::format_chars(s, &attrs)?;
+    }
+    Ok(r)
 }
 
 pub(super) fn apply_color(s: &mut Session, p: &Value) -> Result<Value> {

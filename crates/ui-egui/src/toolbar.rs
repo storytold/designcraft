@@ -676,11 +676,10 @@ pub(crate) fn apply_gradient(app: &mut DesignApp) -> Result<Value, String> {
     if let Some(sw) = known {
         return crate::panels::apply_swatch(app, stroke, &sw, None);
     }
-    if crate::panels::colors_affect_text(app) {
-        return Err("no gradient to apply yet: make one in the Gradient panel".into());
-    }
+    // A new white-to-black gradient, on the text when colour edits go to the text.
+    let text = crate::panels::colors_affect_text(app);
     let stops = json!([{"location": 0, "color": "#ffffff"}, {"location": 100, "color": "#000000"}]);
-    let r = app.run("object.gradient", json!({"stops": stops, "target": if stroke { "stroke" } else { "fill" }}))?;
+    let r = app.run("object.gradient", json!({"stops": stops, "target": if stroke { "stroke" } else { "fill" }, "text": text}))?;
     if let Some(sw) = r["swatch"].as_str() {
         app.ui.last_gradient = Some(sw.to_string());
     }
