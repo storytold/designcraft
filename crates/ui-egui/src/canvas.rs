@@ -3659,6 +3659,7 @@ fn guide_spot(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<GuideSpot> {
         snap: app.ui.snap_view(),
         unit: app.ui.units,
         stroke_in_front: false,
+        affects_text: false,
     };
     let s = designcraft_tools::snap::snap(
         &cx,
@@ -3923,6 +3924,7 @@ fn over_item(app: &DesignApp, xf: &Xf, p: Pos2) -> bool {
         snap: app.ui.snap_view(),
         unit: app.ui.units,
         stroke_in_front: false,
+        affects_text: false,
     };
     cx.hit(xf.to_canvas(p)).is_some()
 }
@@ -4031,6 +4033,7 @@ fn snap_gutter(app: &DesignApp, g: &ColumnDrag, want: f64, shift: bool, zoom: f6
         snap: designcraft_tools::SnapView { smart_dimensions: false, smart_spacing: false, ..app.ui.snap_view() },
         unit: app.ui.units,
         stroke_in_front: false,
+        affects_text: false,
     };
     let rect = DRect::new(want, m.y0, want + width, m.y1);
     let s = designcraft_tools::snap::snap(
@@ -5940,6 +5943,7 @@ mod tests {
             snap: SnapView { snap_to_document_grid: true, zone_px: 20.0, ..SnapView::OFF },
             unit: Unit::Points,
             stroke_in_front: false,
+            affects_text: false,
         };
         let (snapped, _) = designcraft_tools::snap::snap_point(&cx, sr, Point::new(page.x0 + 31.3, page.y0 + 47.9));
         assert_eq!((snapped.x - page.x0, snapped.y - page.y0), (27.0, 45.0));

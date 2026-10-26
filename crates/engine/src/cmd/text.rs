@@ -179,6 +179,15 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("type.fillWithPlaceholder", "Fill with Placeholder Text", ["Type"], None, "{frame?, story?}", has_text_or_frames, fill_placeholder),
         cmd!(
+            "type.gradient",
+            "Gradient",
+            [],
+            None,
+            "{from: [x,y], to: [x,y] (spread coords: the Gradient Swatch tool's drag), reset?: bool} — where the selected text's gradient fill starts and ends (reset: across the frame again); sets the character attribute fillGradient. With text frames selected instead, their whole text",
+            super::has_text_or_frames,
+            text_gradient
+        ),
+        cmd!(
             "type.char",
             "Character Formatting",
             [],
@@ -1680,6 +1689,51 @@ pub(crate) const MAX_TYPE_SIZE: f64 = 1296.0;
 fn empty_para_mark(story: &designcraft_doc::Story, pos: usize) -> bool {
     let ranges = story.para_ranges();
     ranges.get(story.para_at(pos)).is_some_and(|r| r.start == pos && r.end == pos) && story.text.as_bytes().get(pos) == Some(&b'\n')
+}
+
+/// The Gradient Swatch tool on selected text: its drag (spread space) as the characters' gradient
+/// vector in the text space of the frame the text is in.
+fn text_gradient(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "type.gradient";
+    if p.get("reset").and_then(Value::as_bool) == Some(true) {
+        // An explicit "no vector" on the selected characters, so a vector their character style
+        // sets doesn't come back; at a caret, the next typing drops its own.
+        let targets = format_targets(s);
+        if targets.iter().any(|t| !t.range.is_empty()) {
+            let a = CharAttrs { fill_gradient: Some(None), ..Default::default() };
+            return s.edit(|d, _| {
+                apply_char_attrs(d, &targets, &a, &[]);
+                ok()
+            });
+        }
+        return format_chars(s, &json!({"fillGradient": null}));
+    }
+    let (Some(from), Some(to)) = (super::point_param(p, "from"), super::point_param(p, "to")) else {
+        return Err(bad(ID, "give `from` and `to`, or `reset`"));
+    };
+    let st = s.doc()?;
+    let d = &st.doc;
+    // The selected text's frame, else the first selected text frame (its whole story).
+    let frame = match st.selection.text {
+        Some(t) => {
+            t.frame.or_else(|| d.story(t.story).and_then(|story| story.frames.first().copied())).ok_or_else(|| bad(ID, "the text has no frame"))?
+        }
+        None => {
+            st.selection.items.iter().copied().find(|i| d.item(*i).is_some_and(|it| it.is_text_frame())).ok_or_else(|| bad(ID, "no text selected"))?
+        }
+    };
+    let loc = d.find(frame).ok_or_else(|| bad(ID, "no such frame"))?;
+    let it = d.item(frame).ok_or_else(|| bad(ID, "no such frame"))?;
+    let to_text = d.parent_xf(&loc) * d.text_xf(it);
+    if to_text.determinant().abs() < 1e-12 {
+        return Err(bad(ID, "the frame is flattened"));
+    }
+    let inv = to_text.inverse();
+    let (a, b) = (inv * from, inv * to);
+    if ![a.x, a.y, b.x, b.y].iter().all(|v| v.is_finite()) || (b - a).hypot() < 1e-6 {
+        return Err(bad(ID, "the gradient needs two different points"));
+    }
+    format_chars(s, &json!({"fillGradient": [a.x, a.y, b.x, b.y]}))
 }
 
 pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {

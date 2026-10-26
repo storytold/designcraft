@@ -1187,6 +1187,11 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.fill_tint {
             el.set("FillTint", pct(v as f64));
         }
+        if let Some(Some([x0, y0, x1, y1])) = a.fill_gradient {
+            el.set("GradientFillStart", format!("{} {}", num(x0), num(y0)));
+            el.set("GradientFillLength", num((x1 - x0).hypot(y1 - y0)));
+            el.set("GradientFillAngle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+        }
         if let Some(v) = &a.stroke {
             el.set("StrokeColor", self.sw(v));
         }

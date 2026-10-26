@@ -28,9 +28,15 @@ enum TextPaint {
 }
 
 impl TextPaint {
-    fn of(doc: &designcraft_doc::Document, swatch: &str, tint: f32) -> Option<Self> {
+    /// `vector`: where a gradient starts and ends (text space), else across the frame's box.
+    fn of(doc: &designcraft_doc::Document, swatch: &str, tint: f32, vector: Option<[f64; 4]>) -> Option<Self> {
         if designcraft_color::swatch::resolve_gradient(&doc.swatches, swatch).is_some() {
-            return Some(TextPaint::Gradient(designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() }));
+            return Some(TextPaint::Gradient(designcraft_doc::Fill {
+                swatch: swatch.into(),
+                tint,
+                gradient_vector: vector,
+                ..designcraft_doc::Fill::none()
+            }));
         }
         doc.resolve_color(swatch, tint).map(|c| TextPaint::Solid(color_of(&c, 1.0)))
     }
@@ -414,7 +420,7 @@ impl Renderer {
                 fills[si as usize]
                     .get_or_insert_with(|| {
                         let st = &cs.styles[si as usize];
-                        TextPaint::of(doc, &st.fill, st.fill_tint)
+                        TextPaint::of(doc, &st.fill, st.fill_tint, st.fill_gradient)
                     })
                     .clone()
             };
@@ -527,7 +533,7 @@ fn stroke_of(doc: &designcraft_doc::Document, st: &designcraft_compose::RunStyle
     if st.stroke == designcraft_color::swatch::NONE {
         return None;
     }
-    TextPaint::of(doc, &st.stroke, st.stroke_tint)
+    TextPaint::of(doc, &st.stroke, st.stroke_tint, None)
 }
 
 /// Run `paint` in a Multiply layer when `overprint` is set.
@@ -634,7 +640,7 @@ impl Renderer {
         let area = path.bounding_box();
         for (si, bp) in designcraft_compose::path_glyphs(cs, ft, path, pt) {
             let st = &cs.styles[si as usize];
-            let fill = TextPaint::of(doc, &st.fill, st.fill_tint).map(|c| (c, false));
+            let fill = TextPaint::of(doc, &st.fill, st.fill_tint, st.fill_gradient).map(|c| (c, false));
             paint_glyphs(ctx, doc, area, &bp, fill, stroke_of(doc, st).map(|c| (c, false)), st.stroke_weight, st.stroke_behind_fill);
             self.stats.glyphs += 1;
         }

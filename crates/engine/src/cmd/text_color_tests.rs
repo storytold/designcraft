@@ -179,3 +179,71 @@ fn integration_color_swap_validates_new_fill_before_any_edit() {
     assert_eq!(s.doc().unwrap().history.undo.len(), before.history.undo.len());
     assert_eq!(s.journal, journal);
 }
+
+/// The Gradient Swatch tool on selected text sets the characters' gradient vector, in the text
+/// space of their frame, and leaves the frame's fill alone; reset lays it across the frame again.
+#[test]
+fn a_gradient_dragged_across_selected_text_sets_the_texts_vector() {
+    let (mut s, sid) = setup("hello world");
+    let frame = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().frames[0];
+    // The frame moved: the vector is in its text space, not the spread's.
+    s.execute("transform.move", &json!({"ids": [frame.0], "dx": 100, "dy": 50})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    let frame_fill = s.doc().unwrap().doc.item(frame).unwrap().fill.clone();
+    s.execute("type.gradient", &json!({"from": [146, 100], "to": [246, 100]})).unwrap();
+    let a = attrs(&mut s);
+    let v: Vec<f64> = a["fillGradient"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    let d = &s.doc().unwrap().doc;
+    let it = d.item(frame).unwrap();
+    let to_text = (d.parent_xf(&d.find(frame).unwrap()) * d.text_xf(it)).inverse();
+    let (a0, b0) = (to_text * designcraft_geom::Point::new(146.0, 100.0), to_text * designcraft_geom::Point::new(246.0, 100.0));
+    assert!((v[0] - a0.x).abs() < 1e-6 && (v[2] - b0.x).abs() < 1e-6 && (v[1] - a0.y).abs() < 1e-6, "{v:?}");
+    assert_eq!(d.item(frame).unwrap().fill, frame_fill, "the frame's fill is untouched");
+    // Only the selected characters.
+    s.execute("text.select", &json!({"story":sid,"anchor":7,"focus":9})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null());
+    // Reset, and refusals.
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("type.gradient", &json!({"reset": true})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null());
+    assert!(s.execute("type.gradient", &json!({"from": [1, 1], "to": [1, 1]})).is_err());
+    assert!(s.execute("type.gradient", &json!({})).is_err());
+}
+
+/// Switching from the Type tool to the Gradient Swatch tool keeps the text selected (any other
+/// tool selects its frame instead); with the frame selected, `type.gradient` sets the vector on its
+/// whole text.
+#[test]
+fn the_gradient_swatch_tool_keeps_the_text_and_takes_a_whole_frame() {
+    let (mut s, sid) = setup("hello world");
+    let frame = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().frames[0];
+    s.execute("tool.select", &json!({"tool": "type"})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("tool.select", &json!({"tool": "gradientSwatch"})).unwrap();
+    assert!(s.doc().unwrap().selection.text.is_some(), "the text stays selected");
+    s.execute("tool.select", &json!({"tool": "selection"})).unwrap();
+    assert!(s.doc().unwrap().selection.text.is_none());
+    assert_eq!(s.doc().unwrap().selection.items, vec![frame], "the frame instead");
+    // The frame selected: the whole story.
+    s.execute("type.gradient", &json!({"from": [0, 0], "to": [100, 0]})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":6,"focus":11})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_array(), "the last word too");
+}
+
+/// Reset lays the gradient across the frame again even when the character style sets a vector:
+/// the characters get an explicit "no vector", which also survives saving.
+#[test]
+fn reset_overrides_a_character_styles_gradient_vector() {
+    let (mut s, sid) = setup("hello world");
+    s.execute("style.character.create", &json!({"name": "Swept", "chars": {"fillGradient": [0, 0, 50, 0]}})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("style.character.apply", &json!({"name": "Swept"})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_array(), "the style's vector");
+    s.execute("type.gradient", &json!({"reset": true})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null(), "reset wins over the style");
+    let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+    let over = story.format_after(0).over.clone();
+    assert_eq!(over.fill_gradient, Some(None));
+    let back: designcraft_doc::CharAttrs = serde_json::from_value(serde_json::to_value(&over).unwrap()).unwrap();
+    assert_eq!(back.fill_gradient, Some(None), "kept through saving");
+}

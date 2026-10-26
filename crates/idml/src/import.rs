@@ -1656,6 +1656,17 @@ impl<'r> Importer<'r> {
             a.fill = Some(self.swatch_ref(r.trim()));
         }
         a.fill_tint = tint(e.num("FillTint"));
+        // The Gradient Swatch tool on text: start, length and angle (text space).
+        let start: Option<Vec<f64>> = e.prop("GradientFillStart").map(|s| nums(&s));
+        if let (Some([x, y]), Some(len)) = (start.as_deref().and_then(|v| <[f64; 2]>::try_from(v).ok()), e.num("GradientFillLength"))
+            && len > 0.0
+            && x.is_finite()
+            && y.is_finite()
+            && len.is_finite()
+        {
+            let angle = e.num("GradientFillAngle").filter(|v| v.is_finite()).unwrap_or(0.0).to_radians();
+            a.fill_gradient = Some(Some([x, y, x + len * angle.cos(), y - len * angle.sin()]));
+        }
         if let Some(r) = e.prop("StrokeColor") {
             a.stroke = Some(self.swatch_ref(r.trim()));
         }

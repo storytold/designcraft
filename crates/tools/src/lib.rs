@@ -232,6 +232,8 @@ pub struct ToolContext<'a> {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
     pub stroke_in_front: bool,
+    /// Formatting Affects Text (J): colour tools act on the text of selected text frames.
+    pub affects_text: bool,
 }
 
 impl ToolContext<'_> {

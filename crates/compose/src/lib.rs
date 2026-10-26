@@ -60,6 +60,8 @@ pub use crate::table::{BorderHit, PlacedCell, StrokeSeg, TableFrag, cell_caret, 
 pub struct RunStyle {
     pub fill: String,
     pub fill_tint: f32,
+    /// A gradient fill's start and end in the frame's text space (see `CharProps::fill_gradient`).
+    pub fill_gradient: Option<[f64; 4]>,
     pub stroke: String,
     pub stroke_tint: f32,
     pub stroke_weight: f64,

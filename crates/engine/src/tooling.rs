@@ -39,11 +39,13 @@ pub struct ViewInfo {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front (X): colour tools apply to strokes.
     pub stroke_in_front: bool,
+    /// Formatting Affects Text (J): colour tools apply to the text of selected text frames.
+    pub affects_text: bool,
 }
 
 impl ViewInfo {
     pub const fn at_zoom(zoom: f64) -> Self {
-        Self { zoom, snap: SnapView::FACTORY, unit: Unit::Points, stroke_in_front: false }
+        Self { zoom, snap: SnapView::FACTORY, unit: Unit::Points, stroke_in_front: false, affects_text: false }
     }
 }
 
@@ -75,8 +77,9 @@ impl Session {
         if id != "placeGun" {
             self.loaded = None;
         }
-        // Leaving the Type tool keeps the text frame selected.
-        if id != "type"
+        // Leaving the Type tool keeps the text frame selected; the Gradient Swatch tool keeps the
+        // text itself, as its drag positions the text's gradient.
+        if !matches!(id, "type" | "gradientSwatch")
             && let Some(st) = self.active_mut()
             && let Some(t) = st.selection.text.take()
             && let Some(f) = t.frame.or_else(|| st.doc.story(t.story).and_then(|s| s.frames.first().copied()))
@@ -110,6 +113,7 @@ impl Session {
             snap: view.snap,
             unit: view.unit,
             stroke_in_front: view.stroke_in_front,
+            affects_text: view.affects_text,
         };
         Some(f(self, &cx))
     }

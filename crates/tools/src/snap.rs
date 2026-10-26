@@ -1435,6 +1435,7 @@ mod tests {
             snap: SnapView::FACTORY,
             unit: Unit::Points,
             stroke_in_front: false,
+            affects_text: false,
         }
     }
 

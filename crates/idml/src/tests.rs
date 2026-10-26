@@ -1649,6 +1649,31 @@ fn text_stroke_alignment_imports_as_stroke_behind_fill_and_round_trips() {
     assert_eq!(flags(&back), want);
 }
 
+/// A gradient positioned on text with the Gradient Swatch tool (start, length, angle on the
+/// character range) imports as the characters' gradient vector and round-trips.
+#[test]
+fn a_text_gradient_vector_imports_and_round_trips() {
+    let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" GradientFillStart="10 20" GradientFillLength="100" GradientFillAngle="0"><Content>Ramp</Content></CharacterStyleRange>
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Plain</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#;
+    let vectors = |d: &Document| -> Vec<(String, Option<Option<[f64; 4]>>)> {
+        let st = d.stories.values().find(|s| s.text.contains("Ramp")).unwrap();
+        st.runs().map(|(r, f)| (st.text[r].to_string(), f.over.fill_gradient)).filter(|(t, _)| !t.trim().is_empty()).collect()
+    };
+    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let got = vectors(&doc);
+    let v = got[0].1.flatten().unwrap();
+    assert!((v[0] - 10.0).abs() < 1e-9 && (v[1] - 20.0).abs() < 1e-9 && (v[2] - 110.0).abs() < 1e-9 && (v[3] - 20.0).abs() < 1e-9, "{v:?}");
+    assert_eq!(got[1].1, None);
+    let back = import_idml(&export_idml(&doc)).unwrap();
+    let again = vectors(&back);
+    let w = again[0].1.flatten().unwrap();
+    assert!(v.iter().zip(w).all(|(a, b)| (a - b).abs() < 1e-6), "{v:?} → {w:?}");
+    assert_eq!(again[1].1, None);
+}
+
 #[test]
 fn warichu_imports_from_idml_and_round_trips() {
     let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">

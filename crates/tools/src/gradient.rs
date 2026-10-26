@@ -11,7 +11,8 @@ use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, Tool
 pub struct GradientTool {
     /// Gradient Feather tool (Shift+G): the drag sets the fade instead of the fill gradient.
     pub feather: bool,
-    /// Canvas start point, spread-space start point and the target ids, and the spread.
+    /// Canvas start point, spread-space start point and the target ids (none: the selected
+    /// text), and the spread.
     drag: Option<(Point, Point, Vec<u64>, SpreadRef)>,
     end: Option<Point>,
 }
@@ -46,7 +47,15 @@ impl Tool for GradientTool {
                     cx.selection.items.iter().map(|i| i.0).collect()
                 };
                 let Some((spread, sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
-                if ids.is_empty() {
+                // Selected text, or with Formatting Affects Text the text of the selected text
+                // frames: its own gradient (a fill gradient; feathering is the frame's).
+                let text = !self.feather
+                    && (cx.selection.text.is_some()
+                        || (cx.affects_text
+                            && !cx.selection.items.is_empty()
+                            && cx.selection.items.iter().all(|i| cx.doc.item(*i).is_some_and(|it| it.is_text_frame()))));
+                let ids = if text { Vec::new() } else { ids };
+                if ids.is_empty() && !text {
                     return vec![];
                 }
                 self.drag = Some((ev.pos, sp, ids, spread));
@@ -61,6 +70,9 @@ impl Tool for GradientTool {
                     return vec![];
                 }
                 let to = *sp + cx.layout.delta_to_spread(*spread, end - *start);
+                if ids.is_empty() {
+                    return vec![Action::Preview("type.gradient".into(), json!({"from": [sp.x, sp.y], "to": [to.x, to.y]}))];
+                }
                 let cmd = if self.feather { "object.gradientFeather" } else { "object.gradient" };
                 vec![Action::Preview(cmd.into(), json!({"ids": ids, "from": [sp.x, sp.y], "to": [to.x, to.y]}))]
             }
