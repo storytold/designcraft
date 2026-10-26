@@ -451,6 +451,50 @@ pub fn paint(p: &Painter, r: Rect, name: &str, c: Color32) {
             pen.closed(&[(3.0, 9.0), (10.0, 3.0), (17.0, 9.0), (17.0, 17.0), (3.0, 17.0)]);
             pen.rect(8.0, 11.0, 12.0, 17.0);
         }
+        // Links panel: Show in Folder, Copy Path, Go To, the more-actions menu and a warning.
+        "folder-open" => {
+            pen.line(&[(3.0, 15.5), (3.0, 4.5), (8.0, 4.5), (9.5, 6.5), (15.0, 6.5), (15.0, 9.0)]);
+            pen.closed(&[(3.0, 15.5), (5.5, 9.0), (18.0, 9.0), (15.5, 15.5)]);
+        }
+        // Two chain links on the diagonal (Links panel: the source path, Relink).
+        "chain" => {
+            let stadium = |cx: f32, cy: f32| -> Vec<(f32, f32)> {
+                let (half, r) = (2.6_f32, 2.6_f32);
+                let (ux, uy) = (std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2);
+                let mut pts = Vec::with_capacity(26);
+                for (end, from) in [(1.0_f32, -std::f32::consts::FRAC_PI_2), (-1.0, std::f32::consts::FRAC_PI_2)] {
+                    for i in 0..=12 {
+                        let a = from + i as f32 / 12.0 * std::f32::consts::PI;
+                        let (lx, ly) = (end * half + r * a.cos(), r * a.sin());
+                        pts.push((cx + lx * ux - ly * uy, cy + lx * uy + ly * ux));
+                    }
+                }
+                pts
+            };
+            pen.closed(&stadium(7.4, 12.6));
+            pen.closed(&stadium(12.6, 7.4));
+        }
+        "copy" => {
+            pen.rect(7.0, 7.0, 16.0, 17.0);
+            pen.line(&[(4.0, 13.0), (4.0, 3.0), (13.0, 3.0)]);
+        }
+        "go-to" => {
+            pen.circle(10.0, 10.0, 5.5);
+            pen.fcircle(10.0, 10.0, 1.6);
+            for (a, b) in [((10.0, 1.5), (10.0, 4.5)), ((10.0, 15.5), (10.0, 18.5)), ((1.5, 10.0), (4.5, 10.0)), ((15.5, 10.0), (18.5, 10.0))] {
+                pen.line(&[a, b]);
+            }
+        }
+        "more" => {
+            for x in [5.0, 10.0, 15.0] {
+                pen.fcircle(x, 10.0, 1.4);
+            }
+        }
+        "warning" => {
+            pen.closed(&[(10.0, 3.0), (18.0, 17.0), (2.0, 17.0)]);
+            pen.line(&[(10.0, 8.0), (10.0, 12.5)]);
+            pen.fcircle(10.0, 14.8, 0.9);
+        }
         "search" => {
             pen.circle(8.5, 8.5, 5.0);
             pen.line(&[(12.5, 12.5), (17.0, 17.0)]);

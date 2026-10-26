@@ -40,6 +40,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
     ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
+    (
+        "links.reveal",
+        "Show in Folder",
+        None,
+        "{asset}|{story} — open the folder of a linked file in the system file manager, with the file selected (desktop only)",
+    ),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
@@ -1253,6 +1259,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
+        "links.reveal" => crate::panels::properties::reveal_link(app, p),
         "app.packageDialog" => {
             let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
             match app.pick_save(&name) {
@@ -3498,6 +3505,8 @@ pub fn quick_apply_items(session: &designcraft_engine::Session, query: &str, cjk
 /// dialog to ask for it, or without one they reset a setting. Each stays in the menu, panel or
 /// dialog that gives it the value (the workspace menus, Keyboard Shortcuts, Preferences…).
 const NOT_SEARCHED: &[&str] = &[
+    // The link to show: the Links panel names it.
+    "links.reveal",
     // The workspace to switch to or delete.
     "window.workspace",
     "window.deleteWorkspace",

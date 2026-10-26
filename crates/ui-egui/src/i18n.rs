@@ -4711,6 +4711,50 @@ const TABLE: &[(&str, [&str; 5])] = &[
             "按字母顺序排列条目",
         ],
     ),
+    // Links panel.
+    ("Show in Folder", ["Im Ordner zeigen", "Afficher dans le dossier", "Mostrar en la carpeta", "フォルダーに表示", "在文件夹中显示"]),
+    ("Copy Path", ["Pfad kopieren", "Copier le chemin", "Copiar ruta", "パスをコピー", "复制路径"]),
+    ("Path copied", ["Pfad kopiert", "Chemin copié", "Ruta copiada", "パスをコピーしました", "已复制路径"]),
+    ("{count} files", ["{count} Dateien", "{count} fichiers", "{count} archivos", "{count} 個のファイル", "{count} 个文件"]),
+    ("{count} modified", ["{count} geändert", "{count} modifié(s)", "{count} modificado(s)", "{count} 個が変更済み", "{count} 个已修改"]),
+    ("{count} missing", ["{count} fehlend", "{count} manquant(s)", "{count} no encontrado(s)", "{count} 個が見つかりません", "{count} 个缺失"]),
+    ("Name or folder", ["Name oder Ordner", "Nom ou dossier", "Nombre o carpeta", "名前またはフォルダー", "名称或文件夹"]),
+    (
+        "No links match.",
+        ["Keine passende Verknüpfung.", "Aucun lien ne correspond.", "Ningún vínculo coincide.", "一致するリンクはありません。", "没有匹配的链接。"],
+    ),
+    ("File Information", ["Dateiinformationen", "Informations sur le fichier", "Información del archivo", "ファイル情報", "文件信息"]),
+    (
+        "Missing: moved, renamed or deleted",
+        [
+            "Fehlt: verschoben, umbenannt oder gelöscht",
+            "Manquant : déplacé, renommé ou supprimé",
+            "No encontrado: movido, renombrado o eliminado",
+            "見つかりません：移動、名前変更、または削除されました",
+            "缺失：已移动、重命名或删除",
+        ],
+    ),
+    (
+        "Changed since it was placed",
+        ["Geändert seit dem Platzieren", "Modifié depuis l'importation", "Modificado desde que se colocó", "配置後に変更されました", "置入后已更改"],
+    ),
+    (
+        "Embedded in the document",
+        ["Im Dokument eingebettet", "Incorporé au document", "Incrustado en el documento", "ドキュメントに埋め込み済み", "已嵌入文档"],
+    ),
+    ("Up to date", ["Aktuell", "À jour", "Actualizado", "最新", "最新"]),
+    (
+        "Edited in the layout",
+        ["Im Layout bearbeitet", "Modifié dans la mise en page", "Editado en el diseño", "レイアウトで編集済み", "已在版面中编辑"],
+    ),
+    ("Effective PPI", ["Effektive ppi", "ppi effectif", "ppp efectivos", "有効 ppi", "有效 ppi"]),
+    ("low for print", ["zu niedrig für Druck", "faible pour l'impression", "baja para impresión", "印刷には低すぎます", "打印分辨率偏低"]),
+    ("Pixels", ["Pixel", "Pixels", "Píxeles", "ピクセル", "像素"]),
+    ("More", ["Mehr", "Plus", "Más", "その他", "更多"]),
+    (
+        "Update All Links",
+        ["Alle Verknüpfungen aktualisieren", "Mettre à jour tous les liens", "Actualizar todos los vínculos", "すべてのリンクを更新", "更新所有链接"],
+    ),
 ];
 
 /// Interface direction; independent of document binding and paragraph direction.
@@ -5159,6 +5203,27 @@ mod tests {
         // Docking chrome labels reach `tr` through craft-ui's localizer.
         keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
         // UI labels passed to `tr` that no other catalog has yet.
+        // The Links panel's labels and status texts.
+        keys.extend([
+            "Changed since it was placed",
+            "Copy Path",
+            "Edited in the layout",
+            "Effective PPI",
+            "Embedded in the document",
+            "File Information",
+            "Missing: moved, renamed or deleted",
+            "More",
+            "Name or folder",
+            "No links match.",
+            "Path copied",
+            "Pixels",
+            "Up to date",
+            "Update All Links",
+            "low for print",
+            "{count} files",
+            "{count} missing",
+            "{count} modified",
+        ]);
         keys.extend([
             "(any)",
             "(unchanged)",
