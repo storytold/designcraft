@@ -360,7 +360,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Table Options",
             [],
             None,
-            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            "{direction?: leftToRight|rightToLeft, border?: {weight?, color?, tint?, type?, gapColor?, gapTint?}, spaceBefore?, spaceAfter?, headerRows?, footerRows?, repeatHeader?, repeatFooter?, altRows?: {first, firstColor, firstTint, next, nextColor, nextTint, skipFirst, skipLast} | null, altCols?: … | null, fitToFrame?: bool (columns scale in proportion to fill the text column and follow its width), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
             in_table,
             options
         ),
@@ -1459,6 +1459,9 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(v) = p.get("altCols") {
             o.alt_cols = parse_alt(v);
+        }
+        if let Some(v) = p.get("fitToFrame") {
+            o.fit_to_frame = v.as_bool().ok_or_else(|| bad("table.options", "fitToFrame must be true or false"))?;
         }
         // At most 100 of each, as in `table.insert`: the rows the table lacks are added below.
         let h = p.get("headerRows").and_then(Value::as_u64).map(|v| v.min(100) as usize);

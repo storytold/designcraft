@@ -228,6 +228,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     if ui.checkbox(&mut rep, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Repeat Header Rows"))).changed() {
         run(app, "table.options", json!({"repeatHeader": rep}));
     }
+    let mut fit = info["options"]["fitToFrame"].as_bool().unwrap_or(false);
+    if ui
+        .checkbox(&mut fit, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Fit to Frame Width")))
+        .on_hover_text("Columns scale in proportion to fill the text column and follow its width when the frame is resized.")
+        .changed()
+    {
+        run(app, "table.options", json!({"fitToFrame": fit}));
+    }
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Header Rows"));
         if let Some(v) = number(ui, "tp_hdr", info["headerRows"].as_f64(), "", 40.0, 0) {
@@ -239,3 +247,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
 }
+
+#[cfg(test)]
+#[path = "table_fit_tests.rs"]
+mod fit_tests;

@@ -181,10 +181,10 @@ pub(crate) fn place_table(
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
     let mut col = col_rect(cur);
-    // Column widths: scaled to fit the measure.
+    // Column widths: scaled down to fit the measure, or to fill it with Fit to Frame Width.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
     let natural = table.width();
-    let k = if natural > avail && natural > 0.0 { avail / natural } else { 1.0 };
+    let k = if (natural > avail || table.options.fit_to_frame) && natural > 0.0 { avail / natural } else { 1.0 };
     let widths: Vec<f64> = table.columns.iter().map(|c| c.width * k).collect();
     let total_w: f64 = widths.iter().sum();
     let x_off = pp.left_indent
