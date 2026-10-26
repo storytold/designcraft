@@ -617,15 +617,21 @@ impl Document {
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
     /// Frames hit by area if they have a fill or are text/graphic frames; otherwise near the outline.
     pub fn hit_item(&self, si: usize, p: Point, tol: f64) -> Option<ItemId> {
+        self.hit_item_where(si, p, tol, |_| true)
+    }
+
+    /// [`Self::hit_item`] among the objects `take` accepts: the frontmost of those under `p`,
+    /// whatever lies above it (a click passes through locked objects to select what is behind).
+    pub fn hit_item_where(&self, si: usize, p: Point, tol: f64, take: impl Fn(&Item) -> bool) -> Option<ItemId> {
         let sp = self.spreads.get(si)?;
         let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
         items.sort_by_key(|i| self.layer_rank(i.layer));
         for it in items.into_iter().rev() {
             let layer = self.layer(it.layer);
-            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) {
+            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) || !take(it) {
                 continue;
             }
-            if item_hit(it, p, tol) {
+            if item_hit_where(it, p, tol, &take) {
                 return Some(it.id);
             }
         }
@@ -868,9 +874,15 @@ fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool
 
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
+    item_hit_where(it, p, tol, &|_| true)
+}
+
+/// [`item_hit`] counting only the parts of a group that `take` accepts: a group whose locked
+/// child lies under `p` is not hit there, so the click reaches what is behind it.
+pub fn item_hit_where(it: &Item, p: Point, tol: f64, take: &dyn Fn(&Item) -> bool) -> bool {
     if let Content::Group { items } = &it.content {
         let inner = it.xf.inverse() * p;
-        return items.iter().any(|c| item_hit(c, inner, tol));
+        return items.iter().any(|c| take(c) && item_hit_where(c, inner, tol, take));
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();

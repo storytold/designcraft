@@ -856,7 +856,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
                 let f = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
                 let (hide, lock, show, unlock) = (f("hide"), f("lock"), f("show"), f("unlock"));
-                s.edit(|d, _| {
+                s.edit(|d, sel| {
                     for l in &mut d.layers {
                         if show {
                             l.visible = true;
@@ -872,6 +872,11 @@ pub fn specs() -> Vec<CommandSpec> {
                                 l.locked = true;
                             }
                         }
+                    }
+                    // As locking or hiding one layer does.
+                    if hide || lock {
+                        let others: Vec<LayerId> = d.layers.iter().map(|l| l.id).filter(|l| *l != id).collect();
+                        deselect_on_layers(d, sel, &others);
                     }
                     ok()
                 })
@@ -1331,7 +1336,7 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (visible, locked, printable) = (flag("visible")?, flag("locked")?, flag("printable")?);
     let (guides, wrap) = (flag("showGuides")?, flag("suppressWrapWhenHidden")?);
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         if let Some(n) = &name
             && d.layers.iter().any(|l| l.id != id && l.name == *n)
         {
@@ -1355,8 +1360,55 @@ fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 *slot = v;
             }
         }
+        // Locking or hiding a layer deselects its objects: they can't be selected or edited.
+        if locked == Some(true) || visible == Some(false) {
+            deselect_on_layers(d, sel, &[id]);
+        }
         ok()
     })
+}
+
+/// Drop the objects on `layers` (nested ones too) from the selection: those layers were just
+/// locked or hidden, and their objects can't be selected or edited.
+fn deselect_on_layers(d: &designcraft_doc::Document, sel: &mut designcraft_doc::Selection, layers: &[LayerId]) {
+    // An object is on such a layer by its own layer or a group's around it (a group may hold
+    // objects of other layers).
+    fn collect(
+        it: &designcraft_doc::Item,
+        layers: &[LayerId],
+        inside: bool,
+        out: &mut std::collections::HashSet<designcraft_doc::ItemId>,
+        depth: usize,
+    ) {
+        let on = inside || layers.contains(&it.layer);
+        if on {
+            out.insert(it.id);
+        }
+        if depth < 64 {
+            for c in it.children() {
+                collect(c, layers, on, out, depth + 1);
+            }
+        }
+    }
+    let mut on_layer = std::collections::HashSet::new();
+    for sp in d.spreads.iter().chain(d.parents.iter()) {
+        for it in &sp.items {
+            collect(it, layers, false, &mut on_layer, 0);
+        }
+    }
+    sel.items.retain(|i| !on_layer.contains(i));
+    sel.anchors.retain(|(i, _, _)| !on_layer.contains(i));
+    if sel.items.is_empty() {
+        sel.content = false;
+    }
+    // A caret or text, or table cells, in a frame on those layers: typing would still edit it.
+    let story_there = |sid: designcraft_doc::StoryId| d.story(sid).is_some_and(|st| st.frames.iter().any(|f| on_layer.contains(f)));
+    if sel.text.is_some_and(|t| t.frame.map_or_else(|| story_there(t.story), |f| on_layer.contains(&f))) {
+        sel.text = None;
+    }
+    if sel.cells.as_ref().is_some_and(|c| story_there(c.story)) {
+        sel.cells = None;
+    }
 }
 
 #[cfg(test)]
@@ -2110,6 +2162,127 @@ mod layer_options_tests {
         assert_eq!(s.doc().unwrap().doc.layers, before);
         // Keeping its own name is fine.
         s.execute("layer.set", &json!({"id": id, "name": "Art", "color": [1, 2, 3]})).unwrap();
+    }
+
+    /// Locking or hiding a layer deselects the objects on it, nested ones too.
+    #[test]
+    fn locking_or_hiding_a_layer_deselects_its_objects() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.group", &json!({"ids": [a, b]})).unwrap();
+        let other = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let c = s.execute("frame.create", &json!({"rect": [40, 0, 50, 10]})).unwrap()["id"].as_u64().unwrap();
+        let sel = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        s.execute("selection.set", &json!({"ids": [a, c]})).unwrap();
+        s.execute("layer.set", &json!({"id": first, "locked": true})).unwrap();
+        assert_eq!(sel(&s), [c], "the group member on the locked layer is deselected");
+        s.execute("layer.set", &json!({"id": other, "visible": false})).unwrap();
+        assert!(sel(&s).is_empty(), "hiding deselects too");
+    }
+
+    /// Lock Others and Hide Others deselect what they lock or hide, and Object › Lock deselects
+    /// the object it locks.
+    #[test]
+    fn lock_others_hide_others_and_object_lock_deselect() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let other = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        let sel = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        for others in [json!({"id": other, "lock": true}), json!({"id": other, "hide": true})] {
+            s.execute("layer.others", &json!({"id": other, "show": true, "unlock": true})).unwrap();
+            s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+            s.execute("layer.others", &others).unwrap();
+            assert_eq!(sel(&s), [b], "{others}: the object on the other layer is deselected");
+        }
+        s.execute("layer.others", &json!({"id": first, "show": true, "unlock": true})).unwrap();
+        s.execute("selection.set", &json!({"ids": [b]})).unwrap();
+        s.execute("object.lock", &json!({})).unwrap();
+        assert!(sel(&s).is_empty(), "Object › Lock deselects");
+    }
+
+    /// Locking or hiding a layer ends a caret or text selection in a text frame on it, so typing
+    /// no longer edits its story; Lock Others the same for the other layers.
+    #[test]
+    fn locking_or_hiding_a_layer_ends_typing_in_its_text_frames() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let layer = s.doc().unwrap().doc.layers[0].id.0;
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 200, 100], "content": "text", "text": "Hello"})).unwrap();
+        let caret = |s: &mut crate::Session| {
+            s.execute("text.select", &json!({"story": f["story"], "anchor": 2, "focus": 2})).unwrap();
+            assert!(s.doc().unwrap().selection.text.is_some());
+        };
+        for change in [json!({"id": layer, "locked": true}), json!({"id": layer, "visible": false})] {
+            s.execute("layer.set", &json!({"id": layer, "locked": false, "visible": true})).unwrap();
+            caret(&mut s);
+            s.execute("layer.set", &change).unwrap();
+            assert!(s.doc().unwrap().selection.text.is_none(), "{change}: the caret is gone");
+            assert!(s.execute("text.insert", &json!({"text": "x"})).is_err(), "{change}: nothing to type into");
+        }
+        s.execute("layer.set", &json!({"id": layer, "locked": false, "visible": true})).unwrap();
+        let other = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        caret(&mut s);
+        s.execute("layer.others", &json!({"id": other, "lock": true})).unwrap();
+        assert!(s.doc().unwrap().selection.text.is_none(), "Lock Others ends the caret on the first layer");
+    }
+
+    /// A group may hold objects of other layers: locking a layer deselects the objects on it by
+    /// their own layer or the group's around them.
+    #[test]
+    fn locking_a_layer_deselects_the_objects_of_a_group_on_it() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.doc().unwrap().doc.layers[0].id.0;
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let art = s.execute("layer.new", &json!({"name": "Art"})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let layer_of = |s: &crate::Session, id: u64| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().layer.0;
+        let sel = |s: &crate::Session| s.doc().unwrap().selection.items.iter().map(|i| i.0).collect::<Vec<_>>();
+        let unlock = |s: &mut crate::Session| {
+            for l in [first, art] {
+                s.execute("layer.set", &json!({"id": l, "locked": false})).unwrap();
+            }
+        };
+        // The objects keep their own layers inside the group.
+        assert_eq!((layer_of(&s, a), layer_of(&s, b)), (first, art));
+        // Locking an object's own layer deselects it, whatever the group's layer.
+        for (obj, layer) in [(a, first), (b, art)] {
+            unlock(&mut s);
+            s.execute("selection.set", &json!({"ids": [obj], "content": true})).unwrap();
+            s.execute("layer.set", &json!({"id": layer, "locked": true})).unwrap();
+            assert!(sel(&s).is_empty(), "{obj} on its locked layer stays selected");
+        }
+        // Locking the group's layer deselects every object in it, of any layer.
+        let group_layer = layer_of(&s, g);
+        unlock(&mut s);
+        s.execute("selection.set", &json!({"ids": [a, b], "content": true})).unwrap();
+        s.execute("layer.set", &json!({"id": group_layer, "locked": true})).unwrap();
+        assert!(sel(&s).is_empty(), "the group's layer locked: {:?}", sel(&s));
+    }
+
+    /// A click passes over a group's locked object to an unlocked one behind it: the group is not
+    /// hit where only its locked part lies.
+    #[test]
+    fn a_click_passes_over_a_groups_locked_object() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let behind = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        let locked = s.execute("frame.create", &json!({"rect": [20, 20, 80, 80]})).unwrap()["id"].as_u64().unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [200, 0, 220, 20]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [behind, locked, other], "swatch": "[Black]"})).unwrap();
+        let group = s.execute("object.group", &json!({"ids": [locked, other]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.lock", &json!({"ids": [locked]})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let p = designcraft_geom::Point::new(50.0, 50.0);
+        assert_eq!(d.hit_item_where(0, p, 1.0, |it| !it.locked).map(|i| i.0), Some(behind), "the unlocked object behind");
+        assert_eq!(d.hit_item(0, p, 1.0).map(|i| i.0), Some(group), "without the filter the group is hit");
     }
 }
 

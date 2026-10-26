@@ -344,7 +344,7 @@ pub fn grabbers(cx: &ToolContext, hover: Option<Point>) -> Vec<(ItemId, Point)> 
     {
         ids.push(*one);
     }
-    if let Some((_, id)) = hover.and_then(|p| cx.hit(p)) {
+    if let Some((_, id)) = hover.and_then(|p| cx.hit_unlocked(p)) {
         let id = cx.doc.top_level_of(id).unwrap_or(id);
         if !ids.contains(&id) {
             ids.push(id);
@@ -364,7 +364,7 @@ pub fn grabber_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
 /// hand over it.
 fn on_selected_content(cx: &ToolContext, p: Point) -> bool {
     cx.selection.content
-        && cx.hit(p).is_some_and(|(_, id)| {
+        && cx.hit_unlocked(p).is_some_and(|(_, id)| {
             let id = cx.doc.top_level_of(id).unwrap_or(id);
             cx.selection.contains(id) && cx.doc.item(id).is_some_and(holds_content)
         })
@@ -724,7 +724,7 @@ impl Tool for SelectionTool {
         if !self.direct
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
-            && let Some(id) = cx.hit(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
+            && let Some(id) = cx.hit_unlocked(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
             && cx.doc.item(id).is_some_and(holds_content)
         {
             self.drag = Drag::None;
@@ -810,13 +810,13 @@ impl Tool for SelectionTool {
                 // Cmd+Shift-click a parent item on a page: override it there and select the copy.
                 if ev.mods.cmd
                     && ev.mods.shift
-                    && cx.hit(p).is_none()
+                    && cx.hit_unlocked(p).is_none()
                     && let Some((page, id)) = cx.hit_parent_on_page(p)
                 {
                     self.drag = Drag::Pending { start: p, hit: true, content: false };
                     return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
                 }
-                match cx.hit(p) {
+                match cx.hit_unlocked(p) {
                     Some((sr, id)) => {
                         let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
                         let mut out = vec![];
@@ -1265,7 +1265,7 @@ impl Tool for SelectionTool {
         if self.direct {
             let over_content = matches!(self.drag, Drag::None)
                 && anchor_at(cx, p).is_none()
-                && cx.hit(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
+                && cx.hit_unlocked(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
             return if over_content { Cursor::Hand } else { Cursor::ArrowHollow };
         }
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
@@ -1326,7 +1326,7 @@ fn handle_cursor(h: usize) -> Cursor {
 
 /// Switch to the Type tool with the caret at `p` when it is over a text frame.
 fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
-    let (_, id) = cx.hit(p)?;
+    let (_, id) = cx.hit_unlocked(p)?;
     if !cx.doc.item(id).is_some_and(|i| i.is_text_frame()) {
         return None;
     }
