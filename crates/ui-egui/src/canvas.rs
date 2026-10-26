@@ -1822,9 +1822,57 @@ fn draw_cell_selection(
     }
 }
 
-/// InDesign draws selected text inverted: a black highlight with the selected glyphs in the
-/// inverse of their colour (white for black text). The highlight and glyph outlines are
-/// rasterised with `vello_cpu` into a small screen-space texture over the selection.
+/// The average colour actually painted under the selection: the page is rendered off-screen at
+/// low resolution and sampled within the selection bounds, so any background — the frame's own
+/// fill, a gradient, an image, or items painted below the frame — inverts correctly. Falls back
+/// to the paper where the page cannot be rendered.
+fn sampled_background(app: &DesignApp, xf: &Xf, bbox: Rect) -> designcraft_color::Color {
+    let paper = designcraft_color::Color::WHITE;
+    let Some(st) = app.session.active() else { return paper };
+    let Some(page) = current_page(app) else { return paper };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let Some(pr) = layout.page_rect(&st.doc, page) else { return paper };
+    let scale = 0.5;
+    let tl = xf.to_canvas(bbox.min);
+    let br = xf.to_canvas(bbox.max);
+    let mut renderer = designcraft_render::Renderer::new();
+    let Some(img) = renderer.render_page(&st.doc, &app.session.cache, page, scale, false, &designcraft_render::RenderOptions::default()) else {
+        return paper;
+    };
+    // Sample the selection bounds mapped into page pixels; transparent pixels show the paper.
+    let x0 = (((tl.x - pr.x0) * scale).floor().max(0.0) as u32).min(img.width.saturating_sub(1));
+    let y0 = (((tl.y - pr.y0) * scale).floor().max(0.0) as u32).min(img.height.saturating_sub(1));
+    let x1 = (((br.x - pr.x0) * scale).ceil().max(0.0) as u32).min(img.width);
+    let y1 = (((br.y - pr.y0) * scale).ceil().max(0.0) as u32).min(img.height);
+    if x1 <= x0 || y1 <= y0 {
+        return paper;
+    }
+    let (mut sr, mut sg, mut sb, mut n) = (0_u64, 0_u64, 0_u64, 0_u64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = ((y as u64 * img.width as u64 + x as u64) * 4) as usize;
+            let (r, g, b) = if img.pixels.len() >= i + 4 && img.pixels[i + 3] >= 128 {
+                (img.pixels[i], img.pixels[i + 1], img.pixels[i + 2])
+            } else {
+                (255, 255, 255)
+            };
+            sr += r as u64;
+            sg += g as u64;
+            sb += b as u64;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return paper;
+    }
+    designcraft_color::Color::rgb8((sr / n) as u8, (sg / n) as u8, (sb / n) as u8)
+}
+
+/// InDesign draws selected text inverted: the highlight shows the inverse of the colour painted
+/// under the selected text (sampled from a low-resolution page render, see `sampled_background`),
+/// with the selected glyphs in the inverse of their colour — so white-on-black text selects as
+/// black-on-white and stays visible. The highlight and glyph outlines are rasterised with
+/// `vello_cpu` into a small screen-space texture over the selection.
 fn draw_inverse_highlight(
     app: &DesignApp,
     painter: &egui::Painter,
@@ -1867,8 +1915,13 @@ fn draw_inverse_highlight(
         _ => {
             let view = xf.affine(ppp as f64, bbox.min);
             let mut rc = vello_cpu::RenderContext::new_with(w as u16, h as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-            rc.set_paint(peniko::Color::from_rgba8(0, 0, 0, 255));
+            // The highlight is the inverse of the colour actually painted under the selection
+            // (sampled from a low-resolution page render), so the glyphs — drawn below in their
+            // inverse colour — always contrast with it.
+            let under = sampled_background(app, xf, bbox);
+            let [ur, ug, ub, _] = under.to_rgba8(1.0);
             for (_, m, quads, _) in runs {
+                rc.set_paint(peniko::Color::from_rgba8(255 - ur, 255 - ug, 255 - ub, 255));
                 rc.set_transform(view * *m);
                 for q in quads {
                     let mut bp = kurbo::BezPath::new();
