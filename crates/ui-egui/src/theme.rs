@@ -266,7 +266,7 @@ impl Tokens {
 /// installed without waiting, and the caller installs again once they are (see
 /// [`system_fonts_ready`]) to add the installed faces for the scripts they lack.
 pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new("taiwan-ui-text"), cjk_script(lang) == "Hant"));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("taiwan-ui-text"), cjk_script(lang) == "Hant"));
     let craft = designcraft_fonts::CRAFT_FONTS;
     let mut defs = font_definitions(craft, lang);
     let system = system_ui_fonts(craft);
@@ -538,7 +538,7 @@ pub fn semibold(size: f32) -> FontId {
 
 pub fn apply(ctx: &egui::Context, t: &Tokens) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, *t));
-    let traditional = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("taiwan-ui-text")).unwrap_or(false));
+    let traditional = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("taiwan-ui-text")).unwrap_or(false));
     let (small, body, mono) = if traditional { (12.0, 13.0, 13.0) } else { (10.0, 11.0, 11.5) };
     let text_styles: std::collections::BTreeMap<TextStyle, FontId> = [
         (TextStyle::Small, FontId::proportional(small)),
