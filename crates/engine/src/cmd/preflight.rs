@@ -274,8 +274,9 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                         page,
                     }),
                     Some(a) => {
-                        // Placed PDF and SVG pages export as vectors; `pixels` is only the preview's.
-                        let vector = designcraft_images::is_pdf(&a.data) || designcraft_images::is_svg(&a.data);
+                        // Placed PDF, SVG and WMF pages export as vectors; `pixels` is only the preview's.
+                        let vector =
+                            designcraft_images::is_pdf(&a.data) || designcraft_images::is_svg(&a.data) || designcraft_images::is_wmf(&a.data);
                         if let Some((pw, ph)) = a.pixels.filter(|_| !vector) {
                             // Measure each image axis in points, not its rotated bounding box or
                             // cropped frame. Either axis can fall below the minimum resolution.

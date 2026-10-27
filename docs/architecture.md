@@ -19,7 +19,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L1 | `doc` | the document model: spreads, pages, parents, layers, items, stories (text + run lists), tables, notes, styles of five kinds, swatches, sections, variables, CJK and Arabic attributes | 10.2k |
 | L1 | `fonts` | font database (bundled OFL fonts, system fonts, document fonts, optional craft-fonts), metrics, outlines (skrifa), shaping (harfrust), variable instances, font classification for menus | 3.5k |
 | L2 | `compose` | the text engine: style resolution, shaping, Knuth–Plass and single-line breaking, Liang hyphenation, justification, tabs, keeps, columns, span/split, baseline grid, vertical justification, wrap, threading, overset, anchored objects, footnotes, tables, bidi, CJK (ruby, warichu, kinsoku), caret and hit testing | 11.7k |
-| L2 | `images` | decoding placed graphics (PNG, JPEG, GIF, WebP, TIFF incl. CMYK, BMP, PSD composite, EPS preview) | 1.6k |
+| L2 | `images` | decoding placed graphics (PNG, JPEG, GIF, WebP, TIFF incl. CMYK, BMP, PCX, WMF to SVG, PSD composite, EPS preview) | 1.6k |
 | L3 | `render` | document to pixels with vello_cpu (SIMD, multithreaded): items, composed text, images with mips, gradients, effects, damage regions, placed PDF via hayro | 3.5k |
 | L3 | `pdf` | PDF export through craft-pdf with Krilla: real text with subset fonts, CMYK and spot, bleed and marks, tagged PDF, links, forms, transitions, PDF/X-4 and PDF/A-2b | 5.0k |
 | L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |

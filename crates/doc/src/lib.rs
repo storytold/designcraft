@@ -637,11 +637,11 @@ impl PdfCrop {
 }
 
 impl Asset {
-    /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD), as opposed to a PDF, EPS or SVG.
+    /// A raster image (PNG, JPEG, GIF, WebP, TIFF, BMP, PCX, PSD), as opposed to a PDF, EPS or SVG.
     pub fn is_raster(&self) -> bool {
         matches!(
             self.mime.as_str(),
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/tiff" | "image/bmp" | "image/vnd.adobe.photoshop"
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/tiff" | "image/bmp" | "image/pcx" | "image/vnd.adobe.photoshop"
         )
     }
 }

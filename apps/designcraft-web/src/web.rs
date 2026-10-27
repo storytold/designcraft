@@ -16,6 +16,8 @@ const IMAGE_EXTS: &[&str] = &[
     "tif",
     "tiff",
     "bmp",
+    "pcx",
+    "wmf",
     "psd",
     "svg",
     "pdf",

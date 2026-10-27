@@ -335,8 +335,8 @@ fn list(d: &Document, cache: &Cache, document: Option<&Path>, checks: &mut TextC
                     // Effective resolution: image pixels over the size it is shown at.
                     let ppi = (|| {
                         let Content::Graphic(g) = &it.content else { return None };
-                        // Vector (placed PDF or SVG): no effective resolution.
-                        if a.mime == "application/pdf" || a.mime == "image/svg+xml" {
+                        // Vector (placed PDF, SVG or WMF): no effective resolution.
+                        if a.mime == "application/pdf" || a.mime == "image/svg+xml" || a.mime == "image/x-wmf" {
                             return None;
                         }
                         let (pw, _) = a.pixels?;

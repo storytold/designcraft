@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::chapters::{CHAPTER_MARK, heading_level, starts_chapter};
 use super::css::{char_classes, export_mapping, override_css, para_classes};
 use super::html::asset_path;
@@ -42,7 +44,7 @@ pub(crate) struct StoryWriter<'a, 'f> {
     /// it, anchored objects are left out.
     img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>,
     /// Images, video and sound met so far, by package name.
-    pub(crate) images: BTreeMap<String, (&'a str, &'a [u8])>,
+    pub(crate) images: BTreeMap<String, (&'a str, Cow<'a, [u8]>)>,
     /// Asset names of the images written without alt text (decorative).
     pub(crate) no_alt: Vec<String>,
     /// Prefix of the `id`s the current story's headings get (`{prefix}-p{paragraph index}`, the
@@ -270,7 +272,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         // Video and sound: an HTML5 player (with the poster, when there is one).
         if let Some(kind) = designcraft_doc::media_kind(mime) {
             let name = asset_path("media", a, mime);
-            self.images.insert(name.clone(), (mime, a.data.as_slice()));
+            self.images.insert(name.clone(), (mime, Cow::Borrowed(a.data.as_slice())));
             let m = it.media.clone().unwrap_or_default();
             let mut attrs = String::new();
             for (on, attr) in [(m.controls, " controls=\"controls\""), (m.play_on_page_load, " autoplay=\"autoplay\""), (m.looping, " loop=\"loop\"")]
@@ -282,7 +284,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p)) {
                 let poster_mime = safe_mime(&pa.mime);
                 let pn = asset_path("images", pa, poster_mime);
-                self.images.insert(pn.clone(), (poster_mime, pa.data.as_slice()));
+                self.images.insert(pn.clone(), (poster_mime, Cow::Borrowed(pa.data.as_slice())));
                 if kind == "video" {
                     attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, &pa.data))));
                 }
@@ -290,14 +292,24 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             let markup = format!("<{kind} src=\"{}\"{attrs}>{}</{kind}>", xml_attr(&img_src(&name, mime, &a.data)), xml_text(&a.name));
             return Some((markup, true));
         }
+        // A WMF is a vector: replay it as SVG, which EPUB readers draw natively. Refusing one we
+        // can't draw keeps a broken image out of the book, as the screen also refuses it.
+        let mut mime = safe_mime(&a.mime);
+        let mut data = Cow::Borrowed(a.data.as_slice());
+        if designcraft_images::is_wmf(&a.data) {
+            let svg = designcraft_images::wmf_svg(&a.data)?;
+            mime = "image/svg+xml";
+            data = Cow::Owned(svg.into_bytes());
+        }
         let name = asset_path("images", a, mime);
-        self.images.insert(name.clone(), (mime, a.data.as_slice()));
+        let src = img_src(&name, mime, data.as_ref());
+        self.images.insert(name, (mime, data));
         // Alt text from Object Export Options; without one the image counts as decorative
         // (`alt=""`): a file name read aloud helps nobody.
         if it.alt_text.trim().is_empty() {
             self.no_alt.push(a.name.clone());
         }
-        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&img_src(&name, mime, &a.data)), xml_attr(&it.alt_text)), false))
+        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&src), xml_attr(&it.alt_text)), false))
     }
 
     /// The footnote whose reference is at byte `pos` of `st`: a note reference in `out`, the note

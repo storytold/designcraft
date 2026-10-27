@@ -127,7 +127,7 @@ pub(crate) fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
-/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PDF, EPS).
+/// Sniff an image's MIME type and pixel size (PNG, JPEG, GIF, WebP, TIFF, PCX, WMF, PDF, EPS).
 pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>) {
     if designcraft_images::is_eps(b) {
         return (Some("application/postscript"), designcraft_images::eps_pixel_size(b));
@@ -162,6 +162,12 @@ pub(crate) fn sniff_image(b: &[u8]) -> (Option<&'static str>, Option<(u32, u32)>
     }
     if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
         return (Some("image/tiff"), None);
+    }
+    if designcraft_images::is_pcx(b) {
+        return (Some("image/pcx"), designcraft_images::pixel_size(b));
+    }
+    if designcraft_images::is_wmf(b) {
+        return (Some("image/x-wmf"), designcraft_images::pixel_size(b));
     }
     if b.starts_with(b"%PDF") {
         return (Some("application/pdf"), None);

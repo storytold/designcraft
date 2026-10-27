@@ -11,6 +11,8 @@ pub(crate) fn mime_for(name: &str) -> &'static str {
     match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
+        Some("pcx") => "image/pcx",
+        Some("wmf") => "image/x-wmf",
         Some("pdf") => "application/pdf",
         Some("designcraft") => designcraft_format::MIME,
         Some("idml") => "application/vnd.adobe.indesign-idml-package",

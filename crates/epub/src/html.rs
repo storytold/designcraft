@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::chapters::toc_entries;
 use super::css::stylesheet_with;
 use super::markup::{language_tag, xml_attr, xml_text};
@@ -94,6 +96,9 @@ fn ext(mime: &str) -> &'static str {
         "image/jpeg" => "jpg",
         "image/gif" => "gif",
         "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "image/pcx" => "pcx",
+        "image/x-wmf" => "wmf",
         "image/svg+xml" => "svg",
         "video/mp4" => "mp4",
         "video/quicktime" => "mov",
@@ -112,7 +117,7 @@ fn ext(mime: &str) -> &'static str {
 pub(crate) struct Body<'a> {
     pub(crate) html: String,
     /// Images, video and sound by package name: (media type, bytes).
-    pub(crate) images: BTreeMap<String, (&'a str, &'a [u8])>,
+    pub(crate) images: BTreeMap<String, (&'a str, Cow<'a, [u8]>)>,
     /// Table of contents: (element id, label, level).
     pub(crate) toc: Vec<(String, String, u8)>,
     /// Asset names of the images written without alt text.

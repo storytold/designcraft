@@ -14,6 +14,8 @@ const ASSET_EXT: &[&str] = &[
     "gif",
     "webp",
     "bmp",
+    "pcx",
+    "wmf",
     "tif",
     "tiff",
     "ico",

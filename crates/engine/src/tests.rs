@@ -487,6 +487,111 @@ fn place_gun_click_drag_and_into_frame() {
 }
 
 #[test]
+fn place_a_pcx_image() {
+    let mut s = session();
+    // A 2×2 8-bit paletted PCX: red, green / blue, black.
+    let mut pcx = vec![0u8; 128];
+    pcx[0] = 0x0A;
+    pcx[1] = 5;
+    pcx[2] = 1;
+    pcx[3] = 8;
+    pcx[8..10].copy_from_slice(&1u16.to_le_bytes());
+    pcx[10..12].copy_from_slice(&1u16.to_le_bytes());
+    pcx[65] = 1;
+    pcx[66..68].copy_from_slice(&2u16.to_le_bytes());
+    pcx.extend([1, 2, 3, 0]);
+    pcx.push(0x0C);
+    let mut palette = [[0u8; 3]; 256];
+    palette[1] = [255, 0, 0];
+    palette[2] = [0, 255, 0];
+    palette[3] = [0, 0, 255];
+    for colour in palette {
+        pcx.extend(colour);
+    }
+    assert_eq!(designcraft_images::mime(&pcx), "image/pcx");
+    let r = s.execute("file.place", &json!({"base64": cmd::base64_encode(&pcx), "name": "art.pcx", "x": 36, "y": 36, "width": 72})).unwrap();
+    let st = s.doc().unwrap();
+    let it = st.doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap();
+    let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("not a graphic") };
+    assert_eq!(g.size, (2.0, 2.0), "PCX rasters are 72 ppi");
+    assert_eq!(it.bounds(), designcraft_geom::Rect::new(36.0, 36.0, 108.0, 108.0));
+    let asset = st.doc.assets.get(&g.asset).expect("asset");
+    assert_eq!((asset.mime.as_str(), asset.pixels), ("image/pcx", Some((2, 2))));
+    assert!(asset.is_raster(), "a PCX can be colourised and exported like any raster");
+    // The placed image reaches PDF export and decodes there.
+    let pdf = s.execute("file.exportPdf", &json!({})).unwrap();
+    assert!(!cmd::base64_decode(pdf["base64"].as_str().unwrap()).is_empty());
+}
+
+#[test]
+fn place_a_wmf_image() {
+    fn record(function: u16, params: &[u8]) -> Vec<u8> {
+        let words = (6 + params.len()).div_ceil(2);
+        let mut r = Vec::new();
+        r.extend(u32::try_from(words).unwrap().to_le_bytes());
+        r.extend(function.to_le_bytes());
+        r.extend(params);
+        if params.len() % 2 == 1 {
+            r.push(0);
+        }
+        r
+    }
+    // A placeable 96×96 WMF at 96 units per inch (72×72 pt) with one blue polygon.
+    fn wmf(body: &[Vec<u8>]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend(0x9AC6_CDD7u32.to_le_bytes());
+        b.extend(0u16.to_le_bytes());
+        for v in [0i16, 0, 96, 96] {
+            b.extend(v.to_le_bytes());
+        }
+        b.extend(96u16.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u16.to_le_bytes());
+        let body: Vec<u8> = body.concat();
+        let words = (22 + 18 + body.len()) / 2;
+        b.extend(1u16.to_le_bytes());
+        b.extend(9u16.to_le_bytes());
+        b.extend(0x0300u16.to_le_bytes());
+        b.extend(u32::try_from(words).unwrap().to_le_bytes());
+        b.extend(0u16.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u16.to_le_bytes());
+        b.extend(body);
+        b
+    }
+    let mut brush = Vec::new();
+    brush.extend(0u16.to_le_bytes());
+    brush.extend(0x00FF_0000u32.to_le_bytes()); // blue
+    brush.extend(0u16.to_le_bytes());
+    let mut polygon = Vec::new();
+    polygon.extend(3u16.to_le_bytes());
+    for (x, y) in [(10i16, 10i16), (90, 10), (50, 90)] {
+        polygon.extend(x.to_le_bytes());
+        polygon.extend(y.to_le_bytes());
+    }
+    let art = wmf(&[record(0x02FC, &brush), record(0x012D, &0u16.to_le_bytes()), record(0x0324, &polygon), record(0, &[])]);
+    assert_eq!(designcraft_images::mime(&art), "image/x-wmf");
+    let mut s = session();
+    let r = s.execute("file.place", &json!({"base64": cmd::base64_encode(&art), "name": "art.wmf", "x": 36, "y": 36, "width": 72})).unwrap();
+    let st = s.doc().unwrap();
+    let it = st.doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap();
+    let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("not a graphic") };
+    assert_eq!(g.size, (72.0, 72.0), "bbox 96 at 96 units per inch");
+    assert_eq!(it.bounds(), designcraft_geom::Rect::new(36.0, 36.0, 108.0, 108.0));
+    let asset = st.doc.assets.get(&g.asset).expect("asset");
+    assert_eq!((asset.mime.as_str(), asset.pixels), ("image/x-wmf", Some((72, 72))));
+    assert!(!asset.is_raster(), "a WMF stays a vector: PDF export draws it as paths");
+    let pdf = s.execute("file.exportPdf", &json!({})).unwrap();
+    assert!(!cmd::base64_decode(pdf["base64"].as_str().unwrap()).is_empty());
+    assert!(!pdf["warnings"].to_string().contains("art.wmf"), "the WMF draws: {}", pdf["warnings"]);
+
+    // A WMF we can't draw faithfully is refused, not placed as an empty frame.
+    let text = wmf(&[record(0x0521, &[0; 8]), record(0, &[])]);
+    let err = s.execute("file.place", &json!({"base64": cmd::base64_encode(&text), "name": "text.wmf", "x": 36, "y": 36})).unwrap_err();
+    assert!(err.to_string().contains("unsupported or corrupt image"), "{err}");
+}
+
+#[test]
 fn preflight_reports_overset_and_missing_fonts() {
     let mut s = session();
     s.execute("frame.create", &json!({"rect": [36, 36, 100, 50], "content": "text", "text": "This text will not fit in such a tiny frame at all."}))

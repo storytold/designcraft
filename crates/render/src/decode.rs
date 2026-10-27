@@ -14,8 +14,18 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     if is_pdf(bytes) {
         return render_pdf_page(bytes, page as usize, 3000);
     }
-    if designcraft_images::is_svg(bytes) {
-        let (px, w, h) = designcraft_images::render_svg(bytes, 3000)?;
+    // A WMF is replayed as SVG; both draw as vectors with a transparent background.
+    let wmf_svg;
+    let svg = if designcraft_images::is_wmf(bytes) {
+        wmf_svg = designcraft_images::wmf_svg(bytes)?;
+        Some(wmf_svg.as_bytes())
+    } else if designcraft_images::is_svg(bytes) {
+        Some(bytes)
+    } else {
+        None
+    };
+    if let Some(svg) = svg {
+        let (px, w, h) = designcraft_images::render_svg(svg, 3000)?;
         let data = px.as_chunks::<4>().0.iter().map(|p| vello_cpu::color::PremulRgba8 { r: p[0], g: p[1], b: p[2], a: p[3] }).collect();
         return Some(Pixmap::from_parts(data, w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16));
     }

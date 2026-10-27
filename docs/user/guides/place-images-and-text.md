@@ -20,7 +20,7 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 
 | Kind     | Extensions                                                                      |
 |----------|---------------------------------------------------------------------------------|
-| Images   | png, jpg, jpeg, gif, webp, tif, tiff, bmp, psd, svg                             |
+| Images   | png, jpg, jpeg, gif, webp, tif, tiff, bmp, pcx, wmf, psd, svg                   |
 | Vector   | pdf, ai, eps                                                                    |
 | Text     | txt, docx, rtf, md                                                              |
 | Table    | xlsx (placed as a table)                                                        |
@@ -28,6 +28,8 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 | Media    | mp4, m4v, mov, webm, mp3, m4a, wav, ogg (placed in a media frame)               |
 
 The same dialog has separate filters for **Graphics**, **Text (Word, RTF, plain, Excel)** and **Video and sound**.
+
+A 1-bit PCX places like a bitmap image: white pixels let the page show through and black pixels cover it. A WMF (Windows Metafile) places as vector artwork, so it stays sharp when you enlarge it and exports to PDF as paths; its background is transparent. If a WMF contains something DesignCraft cannot draw faithfully, such as text or an embedded bitmap, it shows an alert instead of placing a blank frame.
 
 ## Place a page of a PDF
 

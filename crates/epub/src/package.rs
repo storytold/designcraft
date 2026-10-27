@@ -226,7 +226,7 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let css = stylesheet_with(doc, &opts.generic_families, &opts.fonts);
     let mut entries: Vec<(String, &[u8], bool)> = vec![("OEBPS/style.css".into(), css.as_bytes(), false)];
     entries.extend(chapters.iter().enumerate().map(|(k, c)| (format!("OEBPS/{}", chapter_file(k)), c.as_bytes(), false)));
-    entries.extend(images.iter().map(|(name, (_, data))| (format!("OEBPS/{name}"), *data, true)));
+    entries.extend(images.iter().map(|(name, (_, data))| (format!("OEBPS/{name}"), data.as_ref(), true)));
     entries.extend(opts.fonts.iter().enumerate().map(|(k, f)| (format!("OEBPS/{}", font_file(k, f).0), f.data.as_slice(), false)));
     let cover_xhtml = opts.cover.as_ref().map(|c| {
         format!(
