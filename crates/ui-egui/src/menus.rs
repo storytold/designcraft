@@ -1249,7 +1249,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.qrCode" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", json!({})));
+            // Editing a code: the dialog starts from what it holds, its style and its colours.
+            let fields = app
+                .session
+                .active()
+                .and_then(|st| st.selection.items.first().and_then(|i| designcraft_engine::cmd::qr::edit_fields(&st.doc, *i)))
+                .unwrap_or_else(|| json!({}));
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", fields));
             Ok(Value::Null)
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),

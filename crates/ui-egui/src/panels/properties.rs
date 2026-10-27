@@ -136,6 +136,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
     appearance_section(app, ui, &i);
     divider(ui);
+    let qr = (i.count == 1)
+        .then(|| app.session.active().and_then(|st| st.selection.items.first().and_then(|id| designcraft_engine::cmd::qr::parts(&st.doc, *id))))
+        .flatten();
+    if let Some(parts) = qr {
+        section(ui, crate::i18n::tr(&app.ui.language, "QR Code"), true);
+        qr_section(app, ui, parts);
+        divider(ui);
+    }
     if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Character"), true);
         character_section(app, ui);
@@ -904,6 +912,91 @@ fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
         }
         if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
             let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
+        }
+    });
+}
+
+/// Properties › QR Code: the colours of a code's own objects (Fill and Stroke above are its frame's:
+/// the background and an outline), selecting the code to use any tool on it, and Edit QR Code.
+fn qr_section(app: &mut DesignApp, ui: &mut Ui, parts: designcraft_engine::cmd::qr::Parts) {
+    let t = Tokens::get(ui.ctx());
+    let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+    let lang = app.ui.language.clone();
+    let fill_of = |id: designcraft_doc::ItemId| doc.item(id).map(|i| i.fill.swatch.clone()).unwrap_or_default();
+    let code = fill_of(parts.code);
+    let finders = parts.finders.map(fill_of);
+    // (label, swatch shown, the object it colours, if it is one of its own)
+    let rows = [("Code", code.clone(), Some(parts.code)), ("Corner Patterns", finders.clone().unwrap_or_else(|| code.clone()), parts.finders)];
+    for (label, cur, target) in rows {
+        let b = block(ui, FIELD_H);
+        let (c, g) = widgets::swatch_colors(&doc, &cur, 1.0);
+        let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
+        widgets::paint_chip(ui.painter(), chip, c, g);
+        ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+        let resp = ui
+            .interact(chip, ui.scope_id().with(("qrchip", label)), Sense::click())
+            .on_hover_text(format!("{}: {cur}", crate::i18n::tr(&lang, label)));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("QR {label} swatch")));
+        let mut picked = None;
+        egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            picked = super::swatch_list(ui, &doc, &cur);
+        });
+        let shown = if target.is_none() && label == "Corner Patterns" { crate::i18n::tr(&lang, "Same as Code").to_string() } else { cur.clone() };
+        crate::rtl::paint(
+            ui.painter(),
+            b.min + vec2(34.0, FIELD_H / 2.0),
+            egui::Align2::LEFT_CENTER,
+            crate::i18n::tr(&lang, label),
+            egui::FontId::proportional(11.5),
+            t.text,
+        );
+        crate::rtl::paint(
+            ui.painter(),
+            b.min + vec2(130.0, FIELD_H / 2.0),
+            egui::Align2::LEFT_CENTER,
+            &shown,
+            egui::FontId::proportional(11.0),
+            t.text_dim,
+        );
+        let Some(name) = picked else { continue };
+        let corners_none = label == "Corner Patterns" && name == designcraft_color::swatch::NONE;
+        match target {
+            // [None] for corner patterns of their own: back to the code's colour ("Same as Code"),
+            // rather than invisible patterns no scanner finds.
+            Some(_) if corners_none => {
+                if let Some(mut p) = designcraft_engine::cmd::qr::edit_fields(&doc, parts.code) {
+                    p["finderColor"] = json!("none");
+                    let _ = app.run("selection.set", json!({"ids": [parts.frame.unwrap_or(parts.code).0]}));
+                    let _ = app.run("object.qrCode", p);
+                }
+            }
+            // An object of its own: filled as any object is.
+            Some(id) => {
+                let _ = app.run("object.fill", json!({"ids": [id.0], "swatch": name}));
+            }
+            // Corner patterns with the code: they become an object of their own in that colour.
+            None if corners_none => {}
+            None => {
+                if let Some(mut p) = designcraft_engine::cmd::qr::edit_fields(&doc, parts.code) {
+                    p["finderColor"] = json!(name);
+                    let _ = app.run("selection.set", json!({"ids": [parts.frame.unwrap_or(parts.code).0]}));
+                    let _ = app.run("object.qrCode", p);
+                }
+            }
+        }
+        ui.add_space(4.0);
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .button(crate::i18n::tr(&lang, "Select Code"))
+            .on_hover_text(crate::i18n::tr(&lang, "Select the code inside its frame, to colour it with any tool (a gradient too)"))
+            .clicked()
+        {
+            let _ = app.run("tool.select", json!({"tool": "directSelection"}));
+            let _ = app.run("selection.set", json!({"ids": [parts.code.0], "content": true}));
+        }
+        if ui.button(crate::i18n::tr(&lang, "Edit QR Code…")).clicked() {
+            crate::menus::activate(app, "app.qrCode", &Value::Null);
         }
     });
 }

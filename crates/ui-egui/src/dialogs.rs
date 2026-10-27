@@ -33,7 +33,9 @@ impl Dialog {
             "newDocument" => crate::new_document::defaults(),
             "goToPage" => json!({"page": "1"}),
             "epubExport" => json!({"split": false, "mode": "style", "style": designcraft_doc::BASIC_PARAGRAPH}),
-            "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
+            "qrCode" => {
+                json!({"type": "url", "content": "https://", "color": "[Black]", "finderColor": "", "background": "[Paper]", "ecc": "medium", "modules": "square", "finder": "square", "roundness": 1.0, "moduleSize": 1.0, "logoSize": 0.0, "logo": ""})
+            }
             "insertTable" => json!({"bodyRows": 4, "columns": 4, "headerRows": 0, "footerRows": 0}),
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
@@ -2242,6 +2244,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "loadStyles" => crate::i18n::tr(&app.ui.language, "Load Styles"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
+        "qrCode" if d.fields.get("editing").and_then(Value::as_bool).unwrap_or(false) => crate::i18n::tr(&app.ui.language, "Edit QR Code"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
@@ -2931,10 +2934,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 text_field(ui, &mut d, k, 260.0);
                                 ui.end_row();
                             }
-                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Color:"));
-                            text_field(ui, &mut d, "color", 160.0);
-                            ui.end_row();
                         });
+                        qr_style_ui(app, ui, &mut d);
                     }
                     "polygonSettings" => {
                         egui::Grid::new("poly").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -3771,6 +3772,12 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         }
         "qrCode" => {
             let mut p = Value::Object(d.fields.clone());
+            // No logo file chosen: no logo (the clear area stays as set).
+            if d.s("logo").is_empty()
+                && let Some(m) = p.as_object_mut()
+            {
+                m.remove("logo");
+            }
             // Nothing selected: a 2-inch code at the top left of the page in view.
             if let Some(st) = app.session.active().filter(|s| s.selection.items.is_empty()) {
                 let abs = crate::canvas::current_page(app).unwrap_or(0);
@@ -6001,6 +6008,126 @@ fn delete_character_style(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog
         });
 }
 
+/// Generate QR Code › the code's look: error correction, module and corner pattern shapes, and a
+/// logo in the middle, with what each choice means for reading the code.
+fn qr_style_ui(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    ui.add_space(6.0);
+    crate::rtl::label(ui, egui::RichText::new(tr("Style")).strong());
+    let slider = |ui: &mut egui::Ui, d: &mut Dialog, key: &str, range: std::ops::RangeInclusive<f64>, enabled: bool| {
+        let mut v = d.n(key).unwrap_or(0.0) * 100.0;
+        let r = egui::Slider::new(&mut v, range.start() * 100.0..=range.end() * 100.0).step_by(1.0).suffix("%");
+        if ui.add_enabled(enabled, r).changed() {
+            d.fields.insert(key.into(), json!(v / 100.0));
+        }
+    };
+    // Colours: any swatch, gradient swatches too. Corner patterns may follow the code; the
+    // background may be left out.
+    let doc = app.session.active().map(|st| st.doc.clone());
+    let colour = |ui: &mut egui::Ui, d: &mut Dialog, key: &str, empty: Option<&str>| {
+        let Some(doc) = &doc else { return };
+        let cur = d.s(key);
+        let shown = if cur.is_empty() { empty.unwrap_or_default().to_string() } else { cur.clone() };
+        egui::ComboBox::from_id_salt(("qr_colour", key.to_string())).selected_text(crate::rtl::widget(ui, &shown)).width(170.0).show_ui(ui, |ui| {
+            if let Some(e) = empty
+                && ui.selectable_label(cur.is_empty(), crate::rtl::widget(ui, e)).clicked()
+            {
+                d.fields.insert(key.into(), json!(""));
+            }
+            for w in doc.swatches.iter().filter(|w| !w.hidden && w.name != designcraft_color::swatch::NONE) {
+                let (c, g) = crate::widgets::swatch_colors(doc, &w.name, 1.0);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    crate::widgets::paint_chip(ui.painter(), r, c, g);
+                    if ui.selectable_label(w.name == cur, &w.name).clicked() {
+                        d.fields.insert(key.into(), json!(w.name));
+                    }
+                });
+            }
+        });
+    };
+    let same = tr("Same as Code");
+    let none = tr("None");
+    egui::Grid::new("qr_colours").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Code Color:"));
+        colour(ui, d, "color", None);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Corner Pattern Color:"));
+        colour(ui, d, "finderColor", Some(&same));
+        ui.end_row();
+        crate::rtl::label(ui, tr("Background:"));
+        colour(ui, d, "background", Some(&none));
+        ui.end_row();
+    });
+    let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
+    crate::rtl::label(
+        ui,
+        egui::RichText::new(tr("The code sits in a frame: its fill is the background, its stroke an outline. Select the code inside with Direct Selection to colour it with any tool.")).color(dim),
+    );
+    egui::Grid::new("qr_style").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, tr("Error Correction:"));
+        translated_combo(
+            &lang,
+            ui,
+            d,
+            "ecc",
+            &[("low", "Low (7%)"), ("medium", "Medium (15%)"), ("quartile", "Quartile (25%)"), ("high", "High (30%)")],
+        );
+        ui.end_row();
+        crate::rtl::label(ui, tr("Modules:"));
+        translated_combo(
+            &lang,
+            ui,
+            d,
+            "modules",
+            &[("square", "Squares"), ("rounded", "Rounded Squares"), ("dots", "Dots"), ("connected", "Connected")],
+        );
+        ui.end_row();
+        let rounds = matches!(d.s("modules").as_str(), "rounded" | "connected");
+        crate::rtl::label(ui, tr("Roundness:"));
+        slider(ui, d, "roundness", 0.0..=1.0, rounds);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Module Size:"));
+        slider(ui, d, "moduleSize", 0.5..=1.0, true);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Corner Patterns:"));
+        translated_combo(&lang, ui, d, "finder", &[("square", "Square"), ("rounded", "Rounded"), ("circle", "Circle")]);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Logo Area:"));
+        slider(ui, d, "logoSize", 0.0..=designcraft_geom::qr::MAX_LOGO, true);
+        ui.end_row();
+        crate::rtl::label(ui, tr("Logo:"));
+        ui.horizontal(|ui| {
+            let file = d.s("logo");
+            let shown = std::path::Path::new(&file).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if ui.button(tr("Choose…")).clicked()
+                && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place"))
+            {
+                d.fields.insert("logo".into(), json!(path));
+                // Room for it, at the error correction that reads around it.
+                if d.n("logoSize").unwrap_or(0.0) <= 0.0 {
+                    d.fields.insert("logoSize".into(), json!(0.25));
+                }
+                d.fields.insert("ecc".into(), json!("high"));
+            }
+            if !shown.is_empty() {
+                crate::rtl::label(ui, shown);
+                if ui.small_button("×").on_hover_text(tr("No logo")).clicked() {
+                    d.fields.insert("logo".into(), json!(""));
+                }
+            }
+        });
+        ui.end_row();
+    });
+    if d.n("logoSize").unwrap_or(0.0) > 0.0 && d.s("ecc") != "high" {
+        crate::rtl::label(ui, egui::RichText::new(tr("A logo area needs High error correction to stay readable.")).color(dim));
+    }
+    if d.s("finder") != "square" {
+        crate::rtl::label(ui, egui::RichText::new(tr("Round corner patterns read on phones; a few simple readers need square ones.")).color(dim));
+    }
+}
+
 fn combo(ui: &mut egui::Ui, d: &mut Dialog, key: &str, opts: &[(&str, &str)]) {
     let cur = d.s(key);
     let shown = opts.iter().find(|o| o.0 == cur).map_or(cur.as_str(), |o| o.1).to_string();
@@ -7402,6 +7529,32 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Generate QR Code makes a styled code, and opened on that code it starts from its style.
+    #[test]
+    fn the_qr_dialog_makes_a_styled_code_and_reopens_with_its_style() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.ui.dialog = Some(Dialog::new(
+            "qrCode",
+            json!({"content": "https://example.com", "modules": "dots", "finder": "circle", "ecc": "high", "logoSize": 0.2}),
+        ));
+        let r = confirm(&mut app).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        // A paper background by default: the fill of the code's frame.
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.item(id).unwrap().fill.swatch, "[Paper]");
+        let q = d.item(id).unwrap().children().iter().find_map(|c| c.qr).unwrap();
+        use designcraft_geom::qr::{Ecc, Finder, Modules};
+        assert_eq!((q.modules, q.finder, q.ecc), (Modules::Dots, Finder::Circle, Ecc::High));
+        assert!((q.logo - 0.2).abs() < 1e-9);
+        // Reopened on the code: its style, not the defaults.
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        crate::menus::activate(&mut app, "app.qrCode", &Value::Null);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!((d.s("modules"), d.s("finder"), d.s("ecc")), ("dots".to_string(), "circle".to_string(), "high".to_string()));
+        assert_eq!((d.s("type"), d.s("content"), d.s("background")), ("url".to_string(), "https://example.com".to_string(), "[Paper]".to_string()));
+    }
 
     #[test]
     fn paragraph_style_settings_show_captured_color_and_pending_spacing_without_changing_the_document() {
