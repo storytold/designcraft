@@ -890,3 +890,41 @@ fn a_swatch_colours_a_greyscale_image() {
     let (s, _) = export(&rgb, Some("PANTONE Test"));
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }
+
+/// All Caps paragraphs (#1898): each letter's text is the capital it is drawn as, so no
+/// ActualText span opens inside the paragraph's tagged span (poppler drops the text before one).
+#[test]
+fn all_caps_text_maps_without_nested_actual_text() {
+    use designcraft_doc::Capitalization;
+    use hayro_syntax::content::ops::TypedInstruction;
+    use hayro_syntax::object::Object;
+    let text = "Personal Information\nLanguages\nSkills";
+    for tracking in [50.0, 0.0] {
+        let mut d = doc_with_text(text);
+        let sid = *d.stories.keys().next().unwrap();
+        d.story_mut(sid).unwrap().format_paras(0..text.len(), |f| {
+            f.chars.capitalization = Some(Capitalization::AllCaps);
+            f.chars.tracking = Some(tracking);
+        });
+        for tagged in [false, true] {
+            let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged, ..PdfOptions::default() }).unwrap();
+            let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("parse");
+            let (mut depth, mut nested) = (0usize, 0usize);
+            let mut ops = pdf.pages()[0].typed_operations();
+            while let Some(op) = ops.next() {
+                match op {
+                    TypedInstruction::BeginMarkedContentWithProperties(op) => {
+                        nested += usize::from(depth > 0 && matches!(op.1, Object::Dict(d) if d.contains_key(b"ActualText")));
+                        depth += 1;
+                    }
+                    TypedInstruction::BeginMarkedContent(_) => depth += 1,
+                    TypedInstruction::EndMarkedContent(_) => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            assert_eq!(nested, 0, "tracking {tracking}, tagged {tagged}");
+            let got: String = extract_text(&bytes)[0].split_whitespace().collect();
+            assert_eq!(got, "PERSONALINFORMATIONLANGUAGESSKILLS", "tracking {tracking}, tagged {tagged}");
+        }
+    }
+}
