@@ -26,7 +26,7 @@ pub mod warp;
 pub use kurbo;
 pub use kurbo::{Affine, BezPath, CubicBez, Line, ParamCurve, PathEl, PathSeg, Point, Rect, Shape, Size, Vec2};
 pub use path::{Anchor, AnchorKind, FillRule, PathData, SubPath};
-pub use units::{Unit, format_measure, parse_measure};
+pub use units::{Unit, decimal_comma, format_measure, parse_measure};
 
 /// Tolerance used when comparing handle positions to anchor positions.
 pub const EPS: f64 = 1e-9;

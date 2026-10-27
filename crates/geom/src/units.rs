@@ -159,6 +159,7 @@ pub fn parse_measure_rel(input: &str, default: Unit, percent_base: Option<f64>) 
     if s.is_empty() {
         return Err(err());
     }
+    let s = decimal_comma(&s);
     // Tokenize into terms separated by + and - (a leading sign belongs to the first term).
     let mut terms: Vec<(f64, String)> = Vec::new();
     let mut sign = 1.0;
@@ -182,6 +183,29 @@ pub fn parse_measure_rel(input: &str, default: Unit, percent_base: Option<f64>) 
         total += sign * parse_product(&term, default, percent_base).ok_or_else(err)?;
     }
     if total.is_finite() { Ok(total) } else { Err(err()) }
+}
+
+/// A comma between two digits read as a decimal point (`0,5 cm`, `12,75`), as typed in most
+/// European languages, when the text has no dot of its own (so `1.000,5` isn't guessed at). A
+/// comma before exactly three digits (`1,000`, `2,500 mm`) could be English thousands and stays,
+/// so the field refuses it rather than reading a thousand as one.
+pub fn decimal_comma(s: &str) -> String {
+    if s.contains('.') {
+        return s.to_string();
+    }
+    let c: Vec<char> = s.chars().collect();
+    let digit = |j: Option<usize>| j.and_then(|j| c.get(j)).is_some_and(|d| d.is_ascii_digit());
+    c.iter()
+        .enumerate()
+        .map(|(i, &ch)| {
+            if ch != ',' || !digit(i.checked_sub(1)) || !digit(Some(i + 1)) {
+                return ch;
+            }
+            // Only whether exactly three digits follow: four are enough to tell.
+            let after = c.iter().skip(i + 1).take(4).take_while(|d| d.is_ascii_digit()).count();
+            if after != 3 { '.' } else { ch }
+        })
+        .collect()
 }
 
 /// `a*b/c`: the first factor carries the unit; later factors are plain numbers (or measurements,
@@ -321,6 +345,31 @@ mod tests {
         assert_eq!(format_measure(-0.0004, Unit::Picas), "0p0");
         assert_eq!(format_measure(-0.0004, Unit::Ciceros), "0c0");
         assert_eq!(format_measure(-12.0, Unit::Picas), "-1p0");
+    }
+
+    /// A decimal comma, as German, French or Spanish keyboards type it, reads as a decimal point
+    /// (it was rejected, so the field quietly kept its old value).
+    #[test]
+    fn a_decimal_comma_reads_as_a_decimal_point() {
+        let cm = Unit::Centimeters.to_pt(1.0);
+        assert!((parse_measure("0,1", Unit::Centimeters).unwrap() - 0.1 * cm).abs() < 1e-9);
+        assert!((parse_measure("0,5 cm", Unit::Points).unwrap() - 0.5 * cm).abs() < 1e-9);
+        assert!((parse_measure("1,5+0,25", Unit::Points).unwrap() - 1.75).abs() < 1e-9);
+        assert!((parse_measure("12,5mm", Unit::Points).unwrap() - Unit::Millimeters.to_pt(12.5)).abs() < 1e-9);
+        // With a dot of its own the text isn't guessed at, and a comma without digits on both
+        // sides stays an error.
+        assert!(parse_measure("1.000,5", Unit::Points).is_err());
+        assert!(parse_measure(",5", Unit::Points).is_err());
+        assert!(parse_measure("5,", Unit::Points).is_err());
+        // Before exactly three digits a comma may be English thousands: refused, not guessed.
+        assert!(parse_measure("1,000", Unit::Points).is_err());
+        // Each comma looks at most four digits ahead: a very long number stays quick.
+        let long = format!("1,{}", "5".repeat(50_000));
+        let t = std::time::Instant::now();
+        assert_eq!(decimal_comma(&long).chars().nth(1), Some('.'));
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+        assert!(parse_measure("2,500 mm", Unit::Points).is_err());
+        assert!((parse_measure("48,25", Unit::Points).unwrap() - 48.25).abs() < 1e-9);
     }
 
     /// Inches show four decimals, as InDesign's fields do; other units three.
