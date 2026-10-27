@@ -49,14 +49,14 @@ pub fn default_shortcut(id: &str) -> Option<&'static str> {
 
 /// The shortcut in effect for a command (the user's, else the default), as stored ("Cmd+Alt+K").
 pub fn shortcut_of(app: &DesignApp, id: &str) -> Option<String> {
-    crate::keys::shortcut(&app.keymap, &craft_keymap::CommandRef::new(id))
+    crate::keys::effective_shortcut(&app.keymap, &craft_keymap::CommandRef::new(id), crate::cjk_features(app))
 }
 
 /// The shortcut a menu row shows: its own binding (a panel's), else its command's.
 pub fn shortcut_label(app: &DesignApp, id: &str, params: &Value) -> Option<String> {
     let cmd = crate::keys::command_ref(id, params);
     let cmd = if app.keymap.bindable(&cmd).is_some() { cmd } else { craft_keymap::CommandRef::new(id) };
-    crate::keys::shortcut_display(&app.keymap, &cmd)
+    crate::keys::effective_shortcut_display(&app.keymap, &cmd, crate::cjk_features(app))
 }
 
 /// The shortcut of a tool, for its button's tooltip.
@@ -100,6 +100,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.smartGuides" => app.ui.smart_guides,
         "view.baselineGrid" => app.ui.baseline_grid,
         "view.documentGrid" => app.ui.document_grid,
+        "view.frameGrids" => app.ui.frame_grids,
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,

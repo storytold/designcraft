@@ -57,6 +57,10 @@ impl DesignApp {
         crate::keys::note_platform(ctx);
         self.sync_keymap();
         self.window_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        // Engine defaults that follow the interface language (the grid font of new frame grids).
+        if self.session.prefs.interface_language != self.ui.language {
+            self.session.prefs.interface_language.clone_from(&self.ui.language);
+        }
         self.apply_saved_color_settings();
         let scale = self.ui.ui_scale.clamp(0.5, 3.0);
         if (ctx.zoom_factor() - scale).abs() > 1e-3 {

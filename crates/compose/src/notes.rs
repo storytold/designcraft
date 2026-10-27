@@ -172,6 +172,7 @@ impl Notes {
             left_page: f.left_page,
             right_page: f.right_page,
             page_rect: None,
+            frame_grid: None,
         };
         let nopts = ComposeOptions {
             page_name: opts.page_name.clone(),

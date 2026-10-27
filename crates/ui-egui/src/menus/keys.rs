@@ -88,8 +88,18 @@ struct Keys {
 /// presses.
 fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) -> Keys {
     let presentation = if app.ui.screen_mode == ScreenMode::Presentation { presentation_keys(input) } else { Vec::new() };
-    let contexts: &[&str] = if typing { &[crate::keys::TEXT_CONTEXT] } else { &[] };
-    let active = craft_keymap::Active { panel: None, contexts, typing };
+    let cjk = crate::cjk_features(app);
+    let contexts: Vec<&str> =
+        [(typing, crate::keys::TEXT_CONTEXT), (cjk, crate::keys::CJK_CONTEXT)].into_iter().filter(|(on, _)| *on).map(|(_, c)| c).collect();
+    let active = craft_keymap::Active { panel: None, contexts: &contexts, typing };
+    // A hidden CJK command or tool: its menu item or tool button isn't there, nor is its key.
+    let hidden = |c: &craft_keymap::CommandRef| {
+        !cjk && if c.id == crate::keys::TOOL_COMMAND {
+            c.params.get("tool").and_then(Value::as_str).is_some_and(|t| super::ui_commands::CJK_TOOLS.contains(&t))
+        } else {
+            CJK_ONLY.contains(&c.id.as_str())
+        }
+    };
     let native = &app.native_shortcuts;
     // Presses the dispatcher leaves alone: Clear (the active tool deletes) and the keys the
     // native menu's accelerators already handled. An item holds one key equivalent, its
@@ -102,7 +112,7 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
         let on_bar =
             || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);
         let leave = hit.exact && hit.cycle.is_empty() && (c.id == "edit.clear" || on_bar());
-        !leave
+        !leave && !hidden(c) && !(!hit.cycle.is_empty() && hit.cycle.iter().all(hidden))
     };
     let hits = app.key_dispatcher.dispatch_filtered(input, &app.keymap, &active, accept);
     let escape = input.events.iter().any(

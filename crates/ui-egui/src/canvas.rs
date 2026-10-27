@@ -271,6 +271,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
         draw_frames(app, &painter, &xf, &doc, &layout);
+        if app.ui.frame_grids && !preview {
+            text_overlay::draw_frame_grids(app, &painter, &xf, &doc, &layout);
+        }
         if app.ui.hidden_characters {
             draw_hidden_characters(app, &painter, &xf, &doc, &layout);
         }

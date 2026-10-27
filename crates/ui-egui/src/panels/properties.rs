@@ -36,7 +36,8 @@ use object_panels::pathfinder_row;
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
 use text::{
-    bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_style_section,
+    bullets_section, character_section, grid_sections, paragraph_section, quick_actions_text, selected_grid, text_appearance_section,
+    text_frame_section, text_style_section,
 };
 pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_panel, show_typography_panel};
 #[cfg(test)]
@@ -93,7 +94,16 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
         None => crate::i18n::tr(&app.ui.language, "No Selection").into(),
         Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
         Some(i) => match i.kind {
-            "<text frame>" => crate::i18n::tr(&app.ui.language, "Text Frame").into(),
+            "<text frame>" => {
+                let grid = st
+                    .selection
+                    .items
+                    .first()
+                    .and_then(|id| st.doc.item(*id))
+                    .and_then(|it| it.text_frame())
+                    .is_some_and(|t| t.options.frame_grid.is_some());
+                crate::i18n::tr(&app.ui.language, if grid { "Frame Grid" } else { "Text Frame" }).into()
+            }
             "<group>" => crate::i18n::tr_context(&app.ui.language, "Group", "selection").into(),
             "<image>" => crate::i18n::tr(&app.ui.language, "Image").into(),
             "<rectangle>" => crate::i18n::tr(&app.ui.language, "Rectangle").into(),
@@ -163,7 +173,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
     appearance_section(app, ui, &i);
     divider(ui);
-    if i.is_text && i.count == 1 {
+    // A frame grid shows its own format, alignment and counts instead of the text's.
+    let grid = if i.is_text && i.count == 1 { selected_grid(app) } else { None };
+    if let Some(g) = &grid {
+        grid_sections(app, ui, g);
+    } else if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Character"), true);
         character_section(app, ui);
         divider(ui);
@@ -182,7 +196,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         pathfinder_row(app, ui);
         divider(ui);
     }
-    if i.is_text && i.count == 1 {
+    if grid.is_some() {
+        // (Columns and gutter are in Lines and Columns.)
+    } else if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Text Frame"), true);
         text_frame_section(app, ui);
         divider(ui);

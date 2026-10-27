@@ -15,6 +15,20 @@ use crate::menus::{self, Item};
 /// The context bindings such as `Text: Cmd+B` name; active while text is being typed on the canvas.
 pub const TEXT_CONTEXT: &str = "Text";
 
+/// The context active with [`crate::cjk_features`]: its bindings take their keys from the
+/// application's, as the CJK editions of InDesign give ⌥⌘E to Apply Grid Format and leave Fit
+/// Content to Frame without a shortcut.
+pub const CJK_CONTEXT: &str = "CJK";
+
+/// Whether `cmd`'s default keys are in [`CJK_CONTEXT`]: the CJK-only commands and tools, which
+/// have no menu item or button without CJK features (see [`menus::CJK_ONLY`]).
+fn cjk_scoped(cmd: &CommandRef) -> bool {
+    if cmd.id == TOOL_COMMAND {
+        return cmd.params.get("tool").and_then(Value::as_str).is_some_and(|t| menus::CJK_TOOLS.contains(&t));
+    }
+    cmd.params.is_null() && menus::CJK_ONLY.contains(&cmd.id.as_str())
+}
+
 /// The command that opens a panel; a binding on it carries the panel id.
 pub const PANEL_COMMAND: &str = "window.panel";
 /// The command that selects a tool; a binding on it carries the tool id.
@@ -136,7 +150,7 @@ pub fn new_keymap(overrides: Overrides) -> Keymap {
 /// The keymap for `platform`: the system's own chords are reserved, so neither a user edit nor an
 /// imported set can take them.
 pub fn keymap_for(platform: Platform, overrides: Overrides) -> Keymap {
-    Keymap::new(catalog().to_vec(), Scopes::new().with_context(TEXT_CONTEXT), platform)
+    Keymap::new(catalog().to_vec(), Scopes::new().with_context(TEXT_CONTEXT).with_context(CJK_CONTEXT), platform)
         .with_reserved(craft_keymap::reserved::system(platform))
         .with_overrides(overrides)
 }
@@ -194,7 +208,9 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         .collect();
     let mut internal = HashSet::new();
     for c in designcraft_engine::command_specs() {
-        let shortcut = c.shortcut.filter(|d| Binding::parse(d).is_ok_and(|b| !ui_keys.contains(&b.trigger)));
+        // A CJK command's key is in its own context, where it takes the key from the UI command.
+        let cjk = menus::CJK_ONLY.contains(&c.id);
+        let shortcut = c.shortcut.filter(|d| Binding::parse(d).is_ok_and(|b| cjk || !ui_keys.contains(&b.trigger)));
         if c.menu.is_empty() && shortcut.is_none() && !paths.contains_key(c.id) {
             internal.insert(c.id);
         }
@@ -223,6 +239,15 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         // Shortcut sets file tools under Tools, which is no menu here.
         if matches!(b.kind, Kind::Tool { .. }) {
             b.import_paths.push(vec!["Tools".into(), b.label.clone()]);
+        }
+        if cjk_scoped(&b.command)
+            && let Some(cjk) = Scope::new(CJK_CONTEXT)
+        {
+            for d in &mut b.defaults {
+                if d.scope.is_none() {
+                    d.scope = Some(cjk.clone());
+                }
+            }
         }
         if !b.command.params.is_null() {
             continue;
@@ -271,6 +296,34 @@ fn menu_paths() -> HashMap<String, Vec<Vec<String>>> {
 fn shown_binding(keymap: &Keymap, cmd: &CommandRef) -> Option<Binding> {
     let bindings = keymap.bindings(cmd);
     bindings.iter().find(|b| b.scope.is_none()).or_else(|| bindings.first()).cloned()
+}
+
+/// The binding a command shows in an interface with or without CJK features (`cjk`): a binding in
+/// the CJK context counts only with them, as one in its home scope, and a key a CJK binding takes
+/// from the command is not shown there.
+fn effective_binding(keymap: &Keymap, cmd: &CommandRef, cjk: bool) -> Option<Binding> {
+    let context = Scope::new(CJK_CONTEXT)?;
+    let in_cjk = |b: &Binding| b.scope.as_ref() == Some(&context);
+    let bindings = keymap.bindings(cmd);
+    if cjk && let Some(b) = bindings.iter().find(|b| in_cjk(b)) {
+        return Some(Binding::new(b.trigger));
+    }
+    let active = craft_keymap::Active { panel: None, contexts: &[CJK_CONTEXT], typing: false };
+    let taken = |b: &Binding| cjk && matches!(keymap.lookup(&b.trigger.chord, b.trigger.double, &active), craft_keymap::Lookup::Run(c) if c != *cmd);
+    let usable: Vec<&Binding> = bindings.iter().filter(|b| !in_cjk(b) && !taken(b)).collect();
+    usable.iter().find(|b| b.scope.is_none()).or_else(|| usable.first()).map(|b| (*b).clone())
+}
+
+/// [`shortcut`] for an interface with or without CJK features.
+pub fn effective_shortcut(keymap: &Keymap, cmd: &CommandRef, cjk: bool) -> Option<String> {
+    let b = effective_binding(keymap, cmd, cjk)?;
+    let home = keymap.bindable(cmd).map_or_else(Scope::app, |c| c.scope.clone());
+    Some(b.text(&home))
+}
+
+/// [`shortcut_display`] for an interface with or without CJK features.
+pub fn effective_shortcut_display(keymap: &Keymap, cmd: &CommandRef, cjk: bool) -> Option<String> {
+    effective_binding(keymap, cmd, cjk).map(|b| b.trigger.display(keymap.platform()))
 }
 
 /// The shortcut in effect for a command, as stored and sent ("Cmd+Alt+K", "Text: F7").

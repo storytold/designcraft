@@ -2,12 +2,43 @@ use super::*;
 
 /// Menu and Quick Apply entries that only CJK typesetting uses: hidden unless
 /// [`crate::cjk_features`]. The commands still run from scripts, the control channel and MCP.
-pub const CJK_ONLY: &[&str] = &["type.tateChuYoko", "app.rubyDialog", "type.kenten", "type.warichu"];
+pub const CJK_ONLY: &[&str] = &[
+    "type.tateChuYoko",
+    "app.rubyDialog",
+    "type.kenten",
+    "type.warichu",
+    // Frame grids: Object › Frame Grid Options and Frame Type, Edit › Apply Grid Format,
+    // View › Grids & Guides › Show/Hide Frame Grids.
+    "object.frameGridOptions",
+    "object.frameType",
+    "type.applyGridFormat",
+    "view.frameGrids",
+];
+
+/// Tools that only CJK typesetting uses: off the Tools panel and their shortcuts unless
+/// [`crate::cjk_features`]. `tool.select` still selects them.
+pub const CJK_TOOLS: &[&str] = &["horizontalGrid", "verticalGrid"];
 
 /// Whether command `id` has a menu item or Quick Apply entry in the current interface (CJK-only
 /// ones need [`crate::cjk_features`]).
 pub fn shown(app: &DesignApp, id: &str) -> bool {
     !CJK_ONLY.contains(&id) || crate::cjk_features(app)
+}
+
+/// Whether tool `id` is on the Tools panel and its shortcut selects it (see [`CJK_TOOLS`]).
+pub fn tool_shown(app: &DesignApp, id: &str) -> bool {
+    !CJK_TOOLS.contains(&id) || crate::cjk_features(app)
+}
+
+/// Whether a submenu shows: one whose items are all hidden CJK commands (Object › Frame Type) is
+/// left out. Submenus filled as they open (Open Recent) start empty and show.
+pub fn sub_shown(app: &DesignApp, children: &[Item]) -> bool {
+    children.is_empty()
+        || children.iter().any(|i| match i {
+            Item::Sep => false,
+            Item::Sub(_, c) => sub_shown(app, c),
+            Item::Cmd { id, .. } => shown(app, id),
+        })
 }
 
 /// UI commands: (id, label, shortcut, params).
@@ -229,6 +260,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
     ("view.documentGrid", "Show/Hide Document Grid", Some("Cmd+'"), "{}"),
+    ("view.frameGrids", "Show/Hide Frame Grids", Some("Cmd+Shift+E"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),

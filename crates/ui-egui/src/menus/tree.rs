@@ -183,6 +183,7 @@ pub(super) fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item],
             Item::Sep => {
                 ui.separator();
             }
+            Item::Sub(_, children) if !sub_shown(app, children) => {}
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
                 let shown = crate::i18n::tr(&app.ui.language, name).to_owned();

@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (frame grids) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -45,13 +45,14 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Kenten | the kinds and a custom mark (up to 8 characters) in its own font; size, x/y scale, distance, above/right or below/left, centred or at the character's start; fill, stroke, tints, weight, and overprint in Overprint Preview (`type.kenten`, IDML `Kenten*`). The character set (input mode) is kept, not converted; PDF export writes no overprint |
 | Shatai | magnification, angle, adjust rotation and adjust tsume on screen, in PDF, outlines and type on a path (`type.shatai`, IDML `Shatai*`) |
 | Rotate roman, roman word break | half-width characters upright in vertical text (`type.rotateRoman`, IDML `RotateSingleByteCharacters`); breaks between Latin, Greek or Cyrillic letters without a hyphen (`type.romanWordBreak`, IDML `AllowArbitraryHyphenation`) |
-| Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). No frame grid; vertical frames have no baseline grid |
+| Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). In a frame grid its rows take the baseline grid's place (see Frame grids); vertical frames have no baseline grid |
 | Composite fonts | done: model, `style.compositeFont.*`, shaping, IDML, font list, replace and Preflight; no dialog |
 | Languages | Japanese, Korean, Simplified and Traditional Chinese reach the shaper (`locl`), font fallback, line breaking and typographer's quotes; IDML language names are kept as written; locale codes (`ja_JP`, `ko-KR`, `de_DE_2006`) are their language and region, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`) |
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
 | CJK fonts | Japanese faces (Shippori Mincho first) from the optional craft-fonts build input, in the font menus for users to apply; fallback by language (with fallback fonts on) (Japanese: the craft-fonts faces, then system fonts; Simplified and Traditional Chinese, Korean: system fonts); document fonts: the fonts of a `Document Fonts` folder beside an opened file belong to that document (composition, export, font menus), ahead of installed fonts of the same name, and are forgotten when it closes; Package copies every font file that draws text, fallback fonts included (licence permitting). Font files stay in memory for the session (reopening a document reuses them) and aren't read on the web |
-| Interface | Preferences › Type › Show CJK Features (`cjkFeatures`; until set, on for a Japanese, Chinese or Korean interface) shows the CJK-only menu items (Type › Tate-Chu-Yoko, Ruby…, Kenten, Warichu); layout, IDML and commands work either way |
+| Interface | Preferences › Type › Show CJK Features (`cjkFeatures`; until set, on for a Japanese, Chinese or Korean interface) shows the CJK-only menu items (Type › Tate-Chu-Yoko, Ruby…, Kenten, Warichu; the frame grid items of the Object, Edit and View menus) and the frame grid tools; layout, IDML and commands work either way |
+| Frame grids | Chinese, Japanese and Korean text frames set in a grid of character cells (`TextFrameOptions.frameGrid`): cell = size × scale, character and line aki, rows with gyōdori, grid and character alignment (em box, ICF, Roman baseline), line alignment override, horizontal and vertical; whole-cell resizing; Horizontal / Vertical Grid tools, Object › Frame Grid Options, Frame Type, Edit › Apply Grid Format (⌥⌘E with CJK features on, as in the Japanese edition; Fit Content to Frame then has no shortcut), View › Show Frame Grids (cells with every n-th one shaded, N/Z or outline view, character count), Properties sections for a selected grid; menus and tools with Show CJK Features. Text in a grid takes its paragraph's mojikumi set (with none, every mark takes a cell). A new grid's font is the serif face of the interface language (Mincho, Song, Ming, Myeongjo). No IDML attributes, named grids or layout grid yet |
 | Everything else below | missing |
 
 Known bugs to fix first:
@@ -152,6 +153,24 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
   and lines, alignment, view options), grid alignment of paragraphs (em-box centre, ICF top/bottom,
   roman baseline, gyoudori: lines spanning N grid lines), grid tracking.
 - Frame Grid tools (horizontal and vertical) and Object › Frame Type (text frame ↔ frame grid).
+
+What is built (`doc::framegrid`, `compose::framegrid`, `engine::cmd::grids`): the grid of a frame
+(font, size, scales, character and line aki, line alignment override, grid and character
+alignment, count position and size, view, the cell shaded every n-th), `DocSettings.frame_grid`
+for new grids (its font, left at the default, is the serif face of the interface language: Noto
+Serif CJK JP / SC / TC / KR where installed, else the first installed Mincho, Song, Ming or
+Myeongjo the system ships, e.g. Hiragino Mincho ProN, Songti SC, PMingLiU, Batang; Japanese for
+other interface languages). Character and line counts are not stored: they follow from the frame
+size.
+Composition puts full-width characters of the grid's size one to a cell, a character pitch
+apart; Western text and other sizes keep their widths. A line takes as many rows as its em box
+needs and is placed in them by the grid alignment. Changing a grid's size keeps its counts and
+resizes the frame; the text that follows the grid takes the new format, characters with their
+own keep it (`applyFormat: true` gives it to all). Commands: `frame.create {grid}`,
+`object.frameGridOptions`, `object.frameGridInfo`, `object.frameType`, `type.applyGridFormat`,
+`document.frameGridDefaults`. Text in a grid takes its paragraph's mojikumi set, as text anywhere
+else does: with none, every character and mark takes a cell; with a set, half-width marks and
+bracket aki move the characters after them off the cells.
 
 ### Fonts
 
@@ -292,6 +311,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | minor | Frame grids: model, composition, commands, tools and interface (behind Show CJK Features); the grid font follows the interface language |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |

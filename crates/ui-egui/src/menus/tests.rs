@@ -1344,6 +1344,63 @@ fn presentation_shows_one_spread_and_goes_through_them_with_keys_and_clicks() {
     assert_ne!(app.session.active().unwrap().doc.item(id).unwrap().bounds(), bounds);
 }
 
+/// Frame grids are a CJK feature (docs/cjk.md, Decision 1): their menu items, the Frame Type
+/// submenu, the grid tools and their shortcuts show with Show CJK Features only. Hidden, the
+/// commands and tools still run.
+#[test]
+fn frame_grid_menus_and_tools_follow_show_cjk_features() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let press_y = |app: &mut crate::DesignApp| {
+        let _ = app.run("tool.select", json!({"tool": "selection"}));
+        let key = |pressed| egui::Event::Key { key: egui::Key::Y, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events: vec![key(true), key(false)],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        app.session.tool_id().to_string()
+    };
+    let object = menu_tree().into_iter().find(|(m, _)| *m == "Object").unwrap().1;
+    let frame_type = object
+        .iter()
+        .find_map(|i| match i {
+            Item::Sub(name, c) if name == "Frame Type" => Some(c.clone()),
+            _ => None,
+        })
+        .unwrap();
+    for (lang, on) in [("", false), ("de", false), ("ja", true), ("zh", true), ("zh-hant", true), ("ko", true)] {
+        app.ui.language = lang.into();
+        for id in ["object.frameGridOptions", "object.frameType", "type.applyGridFormat", "view.frameGrids"] {
+            assert_eq!(shown(&app, id), on, "{lang}: {id}");
+        }
+        assert_eq!(sub_shown(&app, &frame_type), on, "{lang}: Frame Type");
+        assert_eq!(tool_shown(&app, "horizontalGrid") && tool_shown(&app, "verticalGrid"), on, "{lang}");
+        assert!(tool_shown(&app, "verticalType"), "the vertical type tool is in every edition");
+        assert_eq!(press_y(&mut app) == "horizontalGrid", on, "{lang}: Y");
+        // ⌥⌘E: Apply Grid Format with CJK features, else Fit Content to Frame; never both.
+        let keys = |id| shortcut_of(&app, id);
+        assert_eq!(keys("type.applyGridFormat").as_deref(), on.then_some("Cmd+Alt+E"), "{lang}");
+        assert_eq!(keys("fit.contentToFrame").as_deref(), (!on).then_some("Cmd+Alt+E"), "{lang}");
+        assert_eq!(effective_shortcuts(&app).iter().filter(|(_, s)| s == "Cmd+Alt+E").count(), 1, "{lang}");
+    }
+    app.ui.language = String::new();
+    app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+    assert!(shown(&app, "object.frameGridOptions") && press_y(&mut app) == "horizontalGrid", "on in an English interface");
+    app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+    // Hidden, not removed.
+    app.run("tool.select", json!({"tool": "horizontalGrid"})).unwrap();
+    assert_eq!(app.session.tool_id(), "horizontalGrid");
+    assert!(app.session.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "grid": true})).is_ok());
+    assert!(sub_shown(&app, &[]), "submenus filled as they open (Open Recent) show");
+}
+
 #[test]
 fn tool_shortcuts_work_after_drawing_on_the_canvas() {
     // Clicking the canvas gives it keyboard focus; single-key tool shortcuts must still switch

@@ -74,6 +74,13 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_margins_and_columns(app);
         return;
     }
+    // Text Frame Options (⌘B) on a frame grid is Frame Grid Options, as in InDesign.
+    let mut on_grid =
+        || app.session.execute("object.frameGridInfo", &json!({})).ok().is_some_and(|v| v["grids"].as_array().is_some_and(|a| !a.is_empty()));
+    if params.is_null() && (id == "object.frameGridOptions" || (id == "object.textFrameOptions" && on_grid())) {
+        crate::dialogs::open_frame_grid_options(app);
+        return;
+    }
     if params.is_null() && id == "object.textFrameOptions" {
         app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         return;

@@ -587,6 +587,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.canvas.shown = None;
             flag(&mut app.ui.document_grid)
         }
+        "view.frameGrids" => flag(&mut app.ui.frame_grids),
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
