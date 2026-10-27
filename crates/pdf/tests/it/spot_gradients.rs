@@ -63,7 +63,12 @@ struct Shading {
 }
 
 fn export(d: &Document, standard: Standard) -> (Vec<Shading>, Vec<String>) {
-    let report = export_pdf_with_report(d, &Cache::new(), &PdfOptions { standard, compress: false, ..Default::default() }).unwrap();
+    export_with(d, PdfOptions { standard, ..Default::default() })
+}
+
+/// [`export`] with any options.
+fn export_with(d: &Document, opts: PdfOptions) -> (Vec<Shading>, Vec<String>) {
+    let report = export_pdf_with_report(d, &Cache::new(), &PdfOptions { compress: false, ..opts }).unwrap();
     let pdf = Pdf::new(report.bytes).unwrap();
     let patterns = &pdf.pages()[0].resources().patterns;
     let mut out = Vec::new();
@@ -214,4 +219,25 @@ fn plain_color_stops_keep_their_device_space() {
     no_conversion(&warnings);
     assert_eq!(shadings[0].family, "DeviceCMYK");
     assert!(close(&shadings[0].start, &[0.0, 0.3, 0.9, 0.1]));
+}
+
+/// Output › Color Conversion reaches gradients shaded in their inks too: the process stop of a
+/// spot-to-cyan gradient is re-separated for another CMYK destination, and kept with Preserve
+/// Numbers.
+#[test]
+fn ink_gradients_follow_the_output_color_conversion() {
+    use designcraft_pdf::{ColorConversion, OutputColor};
+    let d = document(&[(Ok("Gold"), 0.0), (Ok(CYAN), 1.0)], 0.5);
+    let with = |conversion| {
+        let output = OutputColor { conversion, destination: Some(designcraft_color::cms::GENERIC_CMYK.into()), include_profile: false, intent: None };
+        let (shadings, _) = export_with(&d, PdfOptions { standard: Standard::PdfX4, output, ..Default::default() });
+        let s = shadings.into_iter().next().unwrap();
+        assert_eq!(s.family, "DeviceN");
+        s.end
+    };
+    let (plain, _) = export(&d, Standard::PdfX4);
+    let kept = with(ColorConversion::PreserveNumbers);
+    assert!(close(&kept, &plain[0].end), "{kept:?} vs {:?}", plain[0].end);
+    let converted = with(ColorConversion::ToDestination);
+    assert!(!close(&converted, &plain[0].end), "the cyan stop is re-separated: {converted:?}");
 }
