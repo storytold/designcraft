@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::DesignApp;
-use crate::app::file_dialogs::{Bound, with_path};
+use crate::app::file_dialogs::Bound;
 use crate::theme::semibold;
 
 mod options;
+pub(crate) mod pdf_export;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
 
@@ -45,22 +46,7 @@ impl Dialog {
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "documentSetup" => json!({}),
-            "pdfExport" => {
-                json!({
-                    "preset": "Desktop Printing",
-                    "standard": "none",
-                    "compressImages": false,
-                    "flatten": "",
-                    "spreads": false,
-                    "bleed": true,
-                    "marksCrop": false,
-                    "marksBleed": false,
-                    "marksPageInfo": false,
-                    "marksWeight": "0.25",
-                    "marksOffset": "6",
-                    "tagged": true
-                })
-            }
+            "pdfExport" => serde_json::to_value(crate::state::PdfExportSettings::default()).unwrap_or_else(|_| json!({})),
             _ => json!({}),
         };
         if let Value::Object(d) = defaults {
@@ -834,161 +820,18 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
 }
 
-/// The presets offered by the Export PDF dialog, in display order. The stored value is the
-/// English name; the caption is translated.
-const PDF_EXPORT_PRESETS: &[&str] =
-    &["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-1a:2003", "PDF/X-4", "PDF/A-2b", "Custom"];
-
-/// The `file.exportPdf` options the Export PDF dialog's fields stand for (pages and title aside).
-fn pdf_export_params(d: &Dialog) -> Value {
-    let mut params = json!({
-        "standard": d.s("standard"),
-        "compressImages": d.b("compressImages"),
-        "spreads": d.b("spreads"),
-        "bleed": d.b("bleed"),
-        "tagged": d.b("tagged"),
-        "marks": {
-            "crop": d.b("marksCrop"),
-            "bleed": d.b("marksBleed"),
-            "pageInfo": d.b("marksPageInfo"),
-            "weight": d.pt("marksWeight").unwrap_or(0.25),
-            "offset": d.pt("marksOffset").unwrap_or(6.0),
-        },
-    });
-    let flatten = d.s("flatten");
-    if !flatten.is_empty() {
-        params["flatten"] = json!(flatten);
-    }
-    params
+/// The PDF presets a document can be exported with, by name: the built-in ones, then the ones
+/// the user saved in Export PDF (File › Package's PDF Preset lists them).
+pub(crate) fn pdf_presets(app: &DesignApp) -> Vec<String> {
+    pdf_export::BUILTIN_PRESETS.iter().map(|p| p.to_string()).chain(app.ui.pdf_export_presets.iter().map(|p| p.name.clone())).collect()
 }
 
-/// The PDF presets a document can be exported with, by name (Custom aside).
-pub(crate) fn pdf_presets() -> impl Iterator<Item = &'static str> {
-    PDF_EXPORT_PRESETS.iter().copied().filter(|p| *p != "Custom")
-}
-
-/// The `file.exportPdf` options of PDF preset `preset`, as the Export PDF dialog sets them.
-pub(crate) fn pdf_preset_params(preset: &str) -> Value {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    apply_pdf_preset(&mut d, preset);
-    pdf_export_params(&d)
-}
-
-/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email" and
-/// "PDF/X-1a:2003" (High Resolution); "Custom" (and any unknown value) changes nothing.
-fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
-    let (standard, compress, crop, bleed, page_info, flatten) = match preset {
-        "Desktop Printing" => ("none", false, false, false, false, None),
-        "Commercial Printing" => ("none", true, true, true, false, None),
-        "Screen and Email" => ("none", true, false, false, false, Some("low")),
-        "PDF/X-1a:2003" => ("x1a", false, true, true, false, Some("high")),
-        "PDF/X-4" => ("x4", false, true, true, false, None),
-        "PDF/A-2b" => ("a2b", false, false, false, false, None),
-        _ => return,
-    };
-    d.fields.insert("standard".into(), json!(standard));
-    d.fields.insert("compressImages".into(), json!(compress));
-    d.fields.insert("marksCrop".into(), json!(crop));
-    d.fields.insert("marksBleed".into(), json!(bleed));
-    d.fields.insert("marksPageInfo".into(), json!(page_info));
-    if let Some(f) = flatten {
-        d.fields.insert("flatten".into(), json!(f));
-    }
-}
-
-/// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
-/// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
-/// preset back to "Custom".
-fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let lang = app.ui.language.as_str();
-    let head = |ui: &mut egui::Ui, t: &str| {
-        ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, t)).font(semibold(12.0)));
-    };
-    // Snapshot the non-preset fields so a manual edit can be detected after drawing.
-    let before = d.fields.clone();
-    let mut preset_clicked = false;
-
-    head(ui, "General");
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Preset:"));
-        let cur = d.s("preset");
-        craft_ui::ComboBox::from_id_salt("pdf_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, &cur))).width(200.0).show_ui(
-            ui,
-            |ui| {
-                for p in PDF_EXPORT_PRESETS {
-                    if ui.selectable_label(cur == *p, crate::rtl::widget(ui, crate::i18n::tr(lang, p))).clicked() {
-                        d.fields.insert("preset".into(), json!(*p));
-                        preset_clicked = true;
-                    }
-                }
-            },
-        );
-    });
-    if preset_clicked {
-        let p = d.s("preset");
-        apply_pdf_preset(d, &p);
-    }
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Page Range:"));
-        text_field(ui, d, "pages", 160.0);
-        // Alternate layouts: one click puts a layout's pages in the range.
-        let layouts = app.session.active().map(|st| st.doc.layouts()).unwrap_or_default();
-        if layouts.len() > 1 {
-            craft_ui::ComboBox::from_id_salt("pdf_layout").selected_text(crate::i18n::tr(lang, "Layout…")).width(120.0).show_ui(ui, |ui| {
-                if ui.selectable_label(false, crate::i18n::tr(lang, "All")).clicked() {
-                    d.fields.insert("pages".into(), json!("all"));
-                }
-                for l in &layouts {
-                    if ui.selectable_label(false, &l.name).clicked() {
-                        d.fields.insert("pages".into(), json!(format!("{}-{}", l.start.saturating_add(1), l.end)));
-                    }
-                }
-            });
-        }
-    });
-    check(ui, d, "spreads", crate::i18n::tr(lang, "Spreads"));
-
-    head(ui, "Compression");
-    check(ui, d, "compressImages", crate::i18n::tr(lang, "Compress images"));
-
-    head(ui, "Marks and Bleeds");
-    check(ui, d, "bleed", crate::i18n::tr(lang, "Include document bleed"));
-    check(ui, d, "marksCrop", crate::i18n::tr(lang, "Crop Marks"));
-    check(ui, d, "marksBleed", crate::i18n::tr(lang, "Bleed Marks"));
-    check(ui, d, "marksPageInfo", crate::i18n::tr(lang, "Page Information"));
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Weight:"));
-        text_field(ui, d, "marksWeight", 60.0);
-        ui.add_space(8.0);
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Offset:"));
-        text_field(ui, d, "marksOffset", 60.0);
-    });
-
-    head(ui, "Advanced");
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Standard:"));
-        translated_combo(lang, ui, d, "standard", &[("none", "None"), ("x1a", "PDF/X-1a:2003"), ("x4", "PDF/X-4"), ("a2b", "PDF/A-2b")]);
-    });
-    // Spreads with transparency are rasterized at the preset's resolution; in PDF/X-1a it is the
-    // resolution craft-prepress rasterizes complex transparent regions at.
-    head(ui, "Transparency Flattener");
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Preset:"));
-        translated_combo(
-            lang,
-            ui,
-            d,
-            "flatten",
-            &[("", "None"), ("high", "High Resolution"), ("medium", "Medium Resolution"), ("low", "Low Resolution")],
-        );
-    });
-    check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
-
-    // Any edit other than picking a preset means the settings are no longer that preset.
-    if !preset_clicked && d.fields != before {
-        d.fields.insert("preset".into(), json!("Custom"));
-    }
+/// The `file.exportPdf` options of PDF preset `preset` (built-in or saved), exactly as Export PDF
+/// writes them with that preset. An unknown name, or a saved preset with a value that doesn't
+/// parse, is an error.
+pub(crate) fn pdf_preset_params(app: &DesignApp, preset: &str) -> Result<Value, String> {
+    let unit = app.session.active().map_or(Unit::Points, |st| st.doc.settings.horizontal_units);
+    pdf_export::preset_params(&app.ui.pdf_export_presets, preset, unit).unwrap_or_else(|| Err(format!("unknown PDF preset `{preset}`")))
 }
 
 /// The selected text frame's width (its own, before rotation).
@@ -3029,6 +2872,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
+            "pdfExport" => pdf_export::WIDTH,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -3830,7 +3674,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     "fileInfo" => file_info_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
-                    "pdfExport" => pdf_export(app, ui, &mut d),
+                    "pdfExport" => pdf_export::body(app, ui, &mut d),
                     "epubExport" => epub_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");
@@ -3872,6 +3716,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             _ => "Cancel",
         };
         ui.horizontal(|ui| {
+            if d.id == "pdfExport" {
+                pdf_export::footer(app, ui, &mut d);
+            }
             if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && !d.b("new") {
                 check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
                 app.ui.style_preview = d.b("preview");
@@ -4763,35 +4610,16 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             crate::menus::export_epub(app, &params)
         }
         "pdfExport" => {
-            // Remember the last-used options; `pages` and `title` are per-job and not persisted.
-            app.ui.pdf_export.preset = d.s("preset");
-            app.ui.pdf_export.standard = d.s("standard");
-            app.ui.pdf_export.compress_images = d.b("compressImages");
-            app.ui.pdf_export.flatten = d.s("flatten");
-            app.ui.pdf_export.spreads = d.b("spreads");
-            app.ui.pdf_export.bleed = d.b("bleed");
-            app.ui.pdf_export.marks_crop = d.b("marksCrop");
-            app.ui.pdf_export.marks_bleed = d.b("marksBleed");
-            app.ui.pdf_export.marks_page_info = d.b("marksPageInfo");
-            app.ui.pdf_export.marks_weight = d.s("marksWeight");
-            app.ui.pdf_export.marks_offset = d.s("marksOffset");
-            app.ui.pdf_export.tagged = d.b("tagged");
-
-            let mut params = pdf_export_params(&d);
-            let pages = d.s("pages");
-            if !pages.trim().is_empty() && pages != "all" {
-                params["pages"] = json!(pages);
+            let r = pdf_export::confirm(app, &d);
+            if let Err(e) = &r {
+                // A field that doesn't parse or a failed export keeps the dialog and its edits.
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                // The Summary lists every setting and what's wrong with them.
+                d.fields.insert("section".into(), json!("summary"));
+                app.ui.dialog = Some(d);
             }
-            let title = d.s("title");
-            // Without a title the document's name names the file, and the PDF's title comes from
-            // File Info.
-            let doc_name = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
-            if !title.is_empty() {
-                params["title"] = json!(title);
-            }
-            let stem = if title.is_empty() { doc_name } else { title };
-            let name = if stem.is_empty() { "Export.pdf".to_string() } else { format!("{stem}.pdf") };
-            app.ask_save(&name, Bound::Document, move |app, path| crate::menus::export_pdf(app, &with_path(&params, "path", path)))
+            r
         }
         _ => confirm_part4(app, d),
     }

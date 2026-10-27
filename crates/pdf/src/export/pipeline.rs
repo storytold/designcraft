@@ -13,6 +13,8 @@ pub(crate) struct Sheet {
     pub spread: usize,
     pub trim: Rect,
     pub bleed: Rect,
+    /// What of the spread is drawn: the bleed box, or the slug area when it is included.
+    pub content: Rect,
     pub media: Rect,
     /// Page name(s) for the page-information mark.
     pub label: String,
@@ -69,13 +71,14 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
     if let Some(bad) = pages.iter().find(|p| **p >= count) {
         return Err(PdfError::BadPage(bad.saturating_add(1)));
     }
-    let b = doc.settings.bleed.map(|v| if opts.bleed { v.max(0.0) } else { 0.0 });
+    let b = bleed_values(doc, opts);
+    let g = if opts.slug { doc.settings.slug.map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 }) } else { [0.0; 4] };
     let mut out: Vec<Sheet> = Vec::new();
     let mut seen_spreads: Vec<usize> = Vec::new();
     for abs in pages {
         let (si, pi) = doc.page_loc(abs).ok_or(PdfError::BadPage(abs.saturating_add(1)))?;
         let sp: &Spread = &doc.spreads[si];
-        let (trim, l, r, label) = if opts.spreads {
+        let (trim, l, r, sl, sr, label) = if opts.spreads {
             if seen_spreads.contains(&si) {
                 continue;
             }
@@ -85,23 +88,36 @@ fn sheets(doc: &Document, opts: &PdfOptions) -> Result<Vec<Sheet>> {
             let outer = sp.outer_page_indices();
             let (l, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
             let (_, r) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, b)).unwrap_or((b[2], b[3]));
+            let (sl, _) = outer.and_then(|(l, _)| sp.pages.get(l)).map(|p| bleed_lr(p.side, g)).unwrap_or((g[2], g[3]));
+            let (_, sr) = outer.and_then(|(_, r)| sp.pages.get(r)).map(|p| bleed_lr(p.side, g)).unwrap_or((g[2], g[3]));
             let names: Vec<String> = (0..sp.pages.len()).map(|i| doc.page_name(first + i)).collect();
-            (sp.bounds(), l, r, names.join("–"))
+            (sp.bounds(), l, r, sl, sr, names.join("–"))
         } else {
             let p = &sp.pages[pi];
             let (l, r) = bleed_lr(p.side, b);
-            (p.bounds(), l, r, doc.page_name(abs))
+            let (sl, sr) = bleed_lr(p.side, g);
+            (p.bounds(), l, r, sl, sr, doc.page_name(abs))
         };
         let bleed = Rect::new(trim.x0 - l, trim.y0 - b[0], trim.x1 + r, trim.y1 + b[1]);
+        let content = bleed.union(Rect::new(trim.x0 - sl, trim.y0 - g[0], trim.x1 + sr, trim.y1 + g[1]));
         let media = if opts.marks.any() {
             let m = mark_start(opts, b) + MARK_LEN + 6.0;
-            trim.inflate(m, m)
+            trim.inflate(m, m).union(content)
         } else {
-            bleed
+            content
         };
-        out.push(Sheet { spread: si, trim, bleed, media, label });
+        out.push(Sheet { spread: si, trim, bleed, content, media, label });
     }
     Ok(out)
+}
+
+/// The bleed this export uses (top, bottom, inside, outside): the export's own values or the
+/// document's, none when bleed is off. Negative and non-finite values count as none.
+pub(crate) fn bleed_values(doc: &Document, opts: &PdfOptions) -> [f64; 4] {
+    if !opts.bleed {
+        return [0.0; 4];
+    }
+    opts.bleed_values.unwrap_or(doc.settings.bleed).map(|v| if v.is_finite() { v.clamp(0.0, 1000.0) } else { 0.0 })
 }
 
 /// Distance from the trim edge where marks start: the offset, but never inside the bleed.
@@ -113,7 +129,33 @@ pub(crate) fn mark_start(opts: &PdfOptions, bleed: [f64; 4]) -> f64 {
 /// working space (which PDF/X also carries as its output intent). True when the document blends
 /// in CMYK, and always in PDF/X; PDF/A exports are RGB.
 pub fn print_color(doc: &Document, opts: &PdfOptions) -> bool {
-    opts.standard != Standard::PdfA2b && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard.is_pdfx())
+    opts.standard != Standard::PdfA2b
+        && (doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk || opts.standard.is_pdfx() || cmyk_destination(doc, opts))
+}
+
+/// Whether Output names a CMYK destination: a CMYK profile, or (with none named) the working
+/// CMYK space of a print document. Converting to it makes the file CMYK print output.
+pub(crate) fn cmyk_destination(doc: &Document, opts: &PdfOptions) -> bool {
+    // PDF/X always carries the destination as its output intent, converted or not.
+    if opts.output.conversion == crate::ColorConversion::None && !opts.output.include_profile && !opts.standard.is_pdfx() {
+        return false;
+    }
+    match &opts.output.destination {
+        Some(name) => designcraft_color::cms::profiles().iter().any(|p| p.name == *name && p.kind == designcraft_color::cms::ProfileKind::Cmyk),
+        None => doc.settings.intent == designcraft_doc::Intent::Print || opts.standard.is_pdfx(),
+    }
+}
+
+/// The colour settings the output intent and conversion use: the active working spaces, with a
+/// CMYK destination in place of the working CMYK space.
+fn destination_settings(doc: &Document, opts: &PdfOptions) -> designcraft_color::cms::ColorSettings {
+    let mut settings = designcraft_color::cms::active().settings().clone();
+    if cmyk_destination(doc, opts)
+        && let Some(name) = &opts.output.destination
+    {
+        settings.cmyk = name.clone();
+    }
+    settings
 }
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
@@ -152,8 +194,11 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     let configuration = write::configuration(version, archival)?;
     let mut warnings = Vec::new();
     let base = if print_color(doc, opts) {
-        // An output intent only for PDF/X, as in InDesign.
-        let (settings, warning) = crate::pdfx::print_settings(opts.standard.is_pdfx())?;
+        // An output intent for PDF/X, and when Output includes a CMYK destination profile. It is
+        // the destination's profile when one is chosen.
+        let intent = opts.standard.is_pdfx() || (opts.output.include_profile && cmyk_destination(doc, opts));
+        let cms = designcraft_color::cms::Cms::new(&destination_settings(doc, opts)).map_err(|e| PdfError::Write(e.to_string()))?;
+        let (settings, warning) = crate::pdfx::print_settings_with(&cms, intent)?;
         warnings.extend(warning);
         let pdfx_version = (opts.standard == Standard::PdfX4).then(|| "PDF/X-4".to_string());
         krilla::SerializeSettings { pdfx_version, ..settings }
@@ -197,10 +242,15 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        placement: None,
+        sampled: HashMap::new(),
+        image_facts: HashMap::new(),
+        convert: None,
     };
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
     }
+    ex.convert = output_converter(doc, opts, &mut ex.warnings)?;
     if let Some(o) = crate::links::outline(doc, &sheets) {
         pdf.set_outline(o);
     }
@@ -220,8 +270,8 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         #[cfg(all(test, not(target_arch = "wasm32")))]
         unwind_tests::inject(&mut s);
         s.push_transform(&tf(Affine::translate(-sh.media.origin().to_vec2())));
-        ex.clip = sh.bleed;
-        if let Some(clip) = to_path(&sh.bleed.to_path(0.1)) {
+        ex.clip = sh.content;
+        if let Some(clip) = to_path(&sh.content.to_path(0.1)) {
             s.push_clip_path(&clip, &FillRule::NonZero);
             ex.spread(&mut s, sh.spread);
             s.pop();
@@ -268,6 +318,24 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     warnings.dedup();
     Ok(ExportReport { bytes, pages: sheets.len(), warnings })
+}
+
+/// Output › Color Conversion for this export. PDF/A is RGB and PDF/X is CMYK: a destination of
+/// the other model is left out with a warning. An unknown destination fails the export.
+fn output_converter(doc: &Document, opts: &PdfOptions, warnings: &mut Vec<String>) -> Result<Option<Arc<super::color_out::Converter>>> {
+    let working = designcraft_color::cms::active().settings().clone();
+    let print = doc.settings.intent == designcraft_doc::Intent::Print || opts.standard.is_pdfx();
+    let Some(cv) = super::color_out::Converter::new(&opts.output, &working, print).map_err(PdfError::Write)? else { return Ok(None) };
+    let cmyk = cv.target == designcraft_color::cms::Model::Cmyk;
+    if opts.standard == Standard::PdfA2b && cmyk {
+        warnings.push(format!("PDF/A-2b: colours were not converted to {} (PDF/A output is RGB)", cv.destination));
+        return Ok(None);
+    }
+    if opts.standard.is_pdfx() && !cmyk {
+        warnings.push(format!("PDF/X: colours were not converted to {} (PDF/X needs a CMYK destination)", cv.destination));
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(cv)))
 }
 
 /// Each sheet's name and the names of the graphics placed on it, for PDF/X-1a's errors.

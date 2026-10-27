@@ -28,24 +28,28 @@ use krilla::tagging::{Artifact, ArtifactType, ContentTag, Identifier, Tag, TagGr
 use crate::{ExportReport, PdfError, PdfOptions, Result, Standard};
 
 mod booklet;
+mod color_out;
 mod common;
 mod graphics;
 mod images;
 mod metadata;
 mod paint;
 mod pipeline;
+mod sampling;
+#[cfg(test)]
+pub(crate) use sampling::DECODES;
 mod walk;
 
 pub use booklet::{BookletKind, BookletOptions, booklet_pairs, export_booklet, merge_pdfs};
 use common::TagEntry;
-pub(crate) use common::{norm, q, registration, regular, solid_fill, tf, to_path};
+pub(crate) use common::{device, norm, q, registration, regular, solid_fill, tf, to_path};
 use graphics::CoverageImage;
 #[cfg(test)]
 use images::ConstantImageHasher;
 pub(crate) use images::SRGB_ICC;
 use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, embedded_icc, is_grey, is_grey_icc};
 pub(crate) use metadata::civil;
-pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
+pub(crate) use pipeline::{MARK_LEN, Sheet, bleed_values, exported_items, mark_start};
 pub use pipeline::{export_pdf, export_pdf_with_report, print_color, sheet_spreads};
 #[cfg(test)]
 impl std::hash::Hasher for ConstantImageHasher {
@@ -102,6 +106,15 @@ pub(crate) struct Exporter<'a> {
     pub(crate) text_area: Option<Rect>,
     /// Marked content of each (story, paragraph index).
     pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
+    /// While drawing a frame's graphic: the frame's transform to the page and its outline's box
+    /// in frame space, for the placement's resolution and Crop Image Data to Frames.
+    pub(crate) placement: Option<(Affine, Rect)>,
+    /// Images resampled, cropped or converted for a placement.
+    sampled: HashMap<sampling::Key, Option<Image>>,
+    /// What each image asset's pixels decide (`None`: it can't be decoded).
+    image_facts: HashMap<AssetId, Option<sampling::ImageFacts>>,
+    /// The colour conversion of Output › Color Conversion, when it applies.
+    pub(crate) convert: Option<Arc<color_out::Converter>>,
 }
 
 impl CoverageImage {
