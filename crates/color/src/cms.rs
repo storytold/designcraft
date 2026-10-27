@@ -261,6 +261,15 @@ pub fn profiles() -> Vec<ProfileInfo> {
     v
 }
 
+/// The ICC data of an RGB profile by name (built-in or loaded), to tag RGB written in that
+/// space. `None` for sRGB, which has no built-in profile here, and for unknown names.
+pub fn rgb_profile_bytes(name: &str) -> Option<Vec<u8>> {
+    match rgb_space(name).ok()? {
+        RgbSpace::Srgb => None,
+        RgbSpace::Icc(p) => Some(p.profile().to_bytes().to_vec()),
+    }
+}
+
 /// Register an ICC profile from bytes (named by its description unless `name` is given).
 /// Re-registering a name replaces the old profile.
 pub fn register_icc(bytes: &[u8], name: Option<String>) -> Result<ProfileInfo, CmsError> {

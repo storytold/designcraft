@@ -78,7 +78,7 @@ pub fn open(app: &mut DesignApp) -> Result<(), String> {
         .unwrap_or_default();
     // The packaged PDF's preset: the one last used for Export PDF, as InDesign suggests it.
     let last = app.ui.pdf_export.preset.clone();
-    let preset = crate::dialogs::pdf_presets().find(|p| *p == last).unwrap_or("Desktop Printing");
+    let preset = crate::dialogs::pdf_presets(app).into_iter().find(|p| *p == last).unwrap_or_else(|| "Desktop Printing".to_string());
     let doc = app.session.active().map(|d| d.uid);
     app.ui.dialog = Some(Dialog::new(
         ID,
@@ -296,8 +296,8 @@ pub fn show(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                                 .selected_text(crate::rtl::widget(ui, tr(&cur)))
                                 .width(180.0)
                                 .show_ui(ui, |ui| {
-                                    for p in crate::dialogs::pdf_presets() {
-                                        if ui.selectable_label(cur == p, crate::rtl::widget(ui, tr(p))).clicked() {
+                                    for p in crate::dialogs::pdf_presets(app) {
+                                        if ui.selectable_label(cur == p, crate::rtl::widget(ui, tr(&p))).clicked() {
                                             d.fields.insert("pdfPreset".into(), json!(p));
                                         }
                                     }
@@ -319,15 +319,16 @@ pub fn show(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-/// The `pdf` of `file.package`: false, or the options of the chosen PDF preset.
-fn pdf_param(d: &Dialog) -> Value {
-    if d.b("pdf") { crate::dialogs::pdf_preset_params(&d.s("pdfPreset")) } else { json!(false) }
+/// The `pdf` of `file.package`: false, or the options of the chosen PDF preset (built-in or
+/// saved in Export PDF).
+fn pdf_param(app: &DesignApp, d: &Dialog) -> Result<Value, String> {
+    if d.b("pdf") { crate::dialogs::pdf_preset_params(app, &d.s("pdfPreset")) } else { Ok(json!(false)) }
 }
 
 /// Package…: the Printing Instructions first when asked for, else the folder.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     same_document(app, d)?;
-    let (idml, pdf) = (d.b("idml"), pdf_param(d));
+    let (idml, pdf) = (d.b("idml"), pdf_param(app, d)?);
     if d.b("instructions") {
         app.ui.dialog = Some(Dialog::new(INSTRUCTIONS, json!({"idml": idml, "pdf": pdf, "doc": d.fields.get("doc")})));
         return Ok(Value::Null);

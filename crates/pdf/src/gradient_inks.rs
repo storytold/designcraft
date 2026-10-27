@@ -46,11 +46,11 @@ impl Exporter<'_> {
     /// The inks a stop prints with, following tints and the Ink Manager as solid fills do.
     /// `None` when they can't go into an ink shading (RGB, `[Registration]`).
     fn stop_ink(&self, stop: &designcraft_color::GradientStop) -> Option<Ink> {
-        let Some(mut n) = stop.swatch.as_deref() else { return process_inks(stop.color).map(Ink::Process) };
+        let Some(mut n) = stop.swatch.as_deref() else { return process_inks(self.proc(&stop.color)).map(Ink::Process) };
         let mut t = 1.0f32;
         for _ in 0..8 {
             // A swatch that's gone leaves the stop's own color.
-            let Some(sw) = self.doc.swatch(n) else { return process_inks(stop.color).map(Ink::Process) };
+            let Some(sw) = self.doc.swatch(n) else { return process_inks(self.proc(&stop.color)).map(Ink::Process) };
             match &sw.value {
                 SwatchValue::Paper { .. } => return Some(Ink::Process([0.0; 4])),
                 SwatchValue::Tint { base, tint } => {
@@ -63,12 +63,13 @@ impl Exporter<'_> {
                         self.doc.swatch(ink).filter(|w| matches!(w.value, SwatchValue::Color { color_type: ColorType::Spot, .. })).unwrap_or(sw);
                     let SwatchValue::Color { color, .. } = &target.value else { return None };
                     if process {
-                        return process_inks(apply_tint(*color, t)).map(Ink::Process);
+                        return process_inks(self.proc(&apply_tint(*color, t))).map(Ink::Process);
                     }
                     let tint = if t.is_finite() { t.clamp(0.0, 1.0) } else { 1.0 };
-                    return Some(Ink::Spot { name: target.name.clone(), alternate: *color, tint });
+                    // The ink stays; its alternate is in the destination, as a solid spot's is.
+                    return Some(Ink::Spot { name: target.name.clone(), alternate: self.proc(color), tint });
                 }
-                SwatchValue::Color { color, .. } => return process_inks(apply_tint(*color, t)).map(Ink::Process),
+                SwatchValue::Color { color, .. } => return process_inks(self.proc(&apply_tint(*color, t))).map(Ink::Process),
                 SwatchValue::Registration | SwatchValue::None | SwatchValue::Gradient { .. } => return None,
             }
         }

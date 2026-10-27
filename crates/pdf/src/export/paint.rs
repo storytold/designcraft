@@ -77,6 +77,9 @@ impl Exporter<'_> {
     /// A gradient's stops in device colors: CMYK, RGB or Gray, as one space.
     fn device_gradient_stops(&mut self, g: &designcraft_color::Gradient, swatch: &str) -> Vec<Stop> {
         let mut expanded = g.expanded_stops();
+        for (_, c, _) in &mut expanded {
+            *c = self.proc(c);
+        }
         // Gray and CMYK stops blend as inks, so a gray stop beside a CMYK one is the K ink.
         if !self.rgb_only && expanded.iter().any(|(_, c, _)| matches!(c, Color::Cmyk { .. })) {
             for (_, c, _) in &mut expanded {
