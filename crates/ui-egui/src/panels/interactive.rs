@@ -363,7 +363,36 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         Some(B::GoToNextPage) => ("nextPage", 0, String::new()),
         Some(B::GoToPreviousPage) => ("previousPage", 0, String::new()),
         Some(B::GoToUrl { url }) => ("url", 0, url.clone()),
+        Some(B::GoToDestination { .. }) => ("destination", 0, String::new()),
+        Some(B::GoToState { .. }) => ("state", 0, String::new()),
+        Some(B::GoToNextState { .. }) => ("nextState", 0, String::new()),
+        Some(B::GoToPreviousState { .. }) => ("previousState", 0, String::new()),
     };
+    // What a state or destination action points at (#1798).
+    let (object, state, wrap) = match &cur {
+        Some(B::GoToState { object, state }) => (Some(object.0), *state, false),
+        Some(B::GoToNextState { object, wrap } | B::GoToPreviousState { object, wrap }) => (Some(object.0), 0, *wrap),
+        _ => (None, 0, false),
+    };
+    let anchor = match &cur {
+        Some(B::GoToDestination { anchor }) => Some(*anchor),
+        _ => None,
+    };
+    // The document's multi-state objects (id, name, states) and text anchors (id, name).
+    let (msos, anchors): (Vec<(u64, String, Vec<String>)>, Vec<(u64, String)>) = app.session.active().map_or((vec![], vec![]), |d| {
+        let msos = d
+            .doc
+            .all_items()
+            .into_iter()
+            .filter_map(|i| {
+                let it = d.doc.item(i)?;
+                let name = if it.name.is_empty() { format!("Multi-state object {}", i.0) } else { it.name.clone() };
+                (!it.states.is_empty()).then(|| (i.0, name, it.states.clone()))
+            })
+            .collect();
+        let anchors = d.doc.stories.values().flat_map(|st| st.anchors.iter().map(|a| (a.id, a.name.clone()))).collect();
+        (msos, anchors)
+    });
     let labels = [
         ("none", "Not a button"),
         ("nextPage", "Go To Next Page"),
@@ -372,6 +401,10 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         ("lastPage", "Go To Last Page"),
         ("page", "Go To Page"),
         ("url", "Go To URL"),
+        ("destination", "Go To Destination"),
+        ("state", "Go To State"),
+        ("nextState", "Go To Next State"),
+        ("previousState", "Go To Previous State"),
     ];
     let mut pick = None;
     ui.horizontal(|ui| {
@@ -389,7 +422,70 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     let mut params = None;
     if let Some(k) = pick {
-        params = Some(json!({"action": k, "page": page, "url": if url.is_empty() { "https://" } else { &url }}));
+        let mut p = json!({"action": k, "page": page, "url": if url.is_empty() { "https://" } else { &url }, "wrap": wrap});
+        // A state action starts on the current object (or the first), a destination on the first anchor.
+        if let Some(o) = object.or_else(|| msos.first().map(|m| m.0)) {
+            p["object"] = json!(o);
+        }
+        if k == "state" {
+            p["state"] = json!(if object.is_some() { state } else { 0 });
+        }
+        if let Some(a) = anchor.or_else(|| anchors.first().map(|a| a.0)) {
+            p["anchor"] = json!(a);
+        }
+        params = Some(p);
+    }
+    if matches!(kind, "state" | "nextState" | "previousState") {
+        let current = msos.iter().find(|m| Some(m.0) == object);
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Object"));
+            let combo = craft_ui::ComboBox::from_id_salt("button_state_object")
+                .selected_text(crate::rtl::widget(ui, current.map_or("", |m| m.1.as_str())))
+                .show_ui(ui, |ui| {
+                    for m in &msos {
+                        if ui.selectable_label(Some(m.0) == object, crate::rtl::widget(ui, m.1.as_str())).clicked() {
+                            params = Some(json!({"action": kind, "object": m.0, "state": 0, "wrap": wrap}));
+                        }
+                    }
+                });
+            let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Button Object"));
+        });
+        if kind == "state" {
+            let states: &[String] = current.map_or(&[], |m| m.2.as_slice());
+            ui.horizontal(|ui| {
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "State"));
+                let combo = craft_ui::ComboBox::from_id_salt("button_state_index")
+                    .selected_text(crate::rtl::widget(ui, states.get(state).map_or("", String::as_str)))
+                    .show_ui(ui, |ui| {
+                        for (i, st) in states.iter().enumerate() {
+                            if ui.selectable_label(i == state, crate::rtl::widget(ui, st.as_str())).clicked() {
+                                params = Some(json!({"action": "state", "object": object, "state": i}));
+                            }
+                        }
+                    });
+                let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Button State"));
+            });
+        } else {
+            let mut w = wrap;
+            if ui.checkbox(&mut w, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Loop"))).changed() {
+                params = Some(json!({"action": kind, "object": object, "wrap": w}));
+            }
+        }
+    }
+    if kind == "destination" {
+        ui.horizontal(|ui| {
+            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Destination"));
+            let combo = craft_ui::ComboBox::from_id_salt("button_destination")
+                .selected_text(crate::rtl::widget(ui, anchors.iter().find(|a| Some(a.0) == anchor).map_or("", |a| a.1.as_str())))
+                .show_ui(ui, |ui| {
+                    for (aid, name) in &anchors {
+                        if ui.selectable_label(Some(*aid) == anchor, crate::rtl::widget(ui, name.as_str())).clicked() {
+                            params = Some(json!({"action": "destination", "anchor": aid}));
+                        }
+                    }
+                });
+            let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Button Destination"));
+        });
     }
     if kind == "page" {
         let total = app.session.active().map_or(1, |d| d.doc.page_count());

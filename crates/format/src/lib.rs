@@ -24,9 +24,10 @@ pub const MIME: &str = "application/vnd.designcraft+zip";
 /// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
 /// version 3 adds rendering of retained EPS source assets; version 4 is one capability covering both
 /// retained placed-graphic layer options and explicit all-on placed-PDF layer choices, so a version 4
-/// reader understands both. Any later capability needs version 5. [`required_version`] is the only
-/// place that picks a version.
-pub const VERSION: u32 = 4;
+/// reader understands both; version 5 adds the Go To State, Next/Previous State and Destination
+/// button actions, which a version 4 reader cannot decode. Any later capability needs version 6.
+/// [`required_version`] is the only place that picks a version.
+pub const VERSION: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -73,6 +74,10 @@ const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 /// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
 /// keep their older requirement so existing readers still open them.
 fn required_version(doc: &Document) -> u32 {
+    // An older reader fails on an unknown `kind` of button action and refuses the whole document.
+    if doc.has_state_button_actions() {
+        return 5;
+    }
     // Version 4 covers both of these: older readers ignore the unknown fields, so they would
     // silently drop retained graphic layer choices, or read an explicit all-on PDF layer choice
     // (empty hidden list) as "use the file's defaults". A nonempty hidden list stays readable.
