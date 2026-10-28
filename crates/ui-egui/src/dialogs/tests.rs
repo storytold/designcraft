@@ -161,6 +161,18 @@ fn setup_fields(app: &mut DesignApp, fields: Value) {
     }
 }
 
+/// Native PDF generation completes on a worker; the browser completes in confirm().
+fn finish_pdf_export(app: &mut DesignApp) {
+    let ctx = egui::Context::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+        app.logic(&ctx);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!app.pdf_export.busy(), "the export must complete");
+    assert!(app.pdf_export.last.as_ref().is_none_or(|result| result.get("error").is_none()), "{:?}", app.pdf_export.last);
+}
+
 /// File › File Info opens filled from the document and OK stores what was typed; Export PDF
 /// then names the file after the document and takes the PDF's title from File Info.
 #[test]
@@ -207,6 +219,7 @@ fn file_info_dialog_stores_the_fields_and_titles_the_pdf() {
     }));
     open_pdf_export(&mut app);
     confirm(&mut app).unwrap();
+    finish_pdf_export(&mut app);
     assert_eq!(names.lock().unwrap().as_slice(), ["flyer-v3.pdf"]);
     let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[0]).into_owned();
     assert!(pdf.contains("/Title(Spring Catalog)") && !pdf.contains("/Title(flyer-v3)"), "the PDF's title is File Info's");
@@ -214,6 +227,7 @@ fn file_info_dialog_stores_the_fields_and_titles_the_pdf() {
     open_pdf_export(&mut app);
     setup_fields(&mut app, json!({"title": "flyer-v3"}));
     confirm(&mut app).unwrap();
+    finish_pdf_export(&mut app);
     let asked = names.lock().unwrap().last().cloned().unwrap_or_default();
     assert_eq!(std::path::Path::new(&asked).file_name().and_then(|n| n.to_str()), Some("flyer-v3.pdf"), "{asked}");
     let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[1]).into_owned();
@@ -3099,6 +3113,7 @@ fn confirm_pdf_export_writes_file_and_persists_settings() {
         d.fields.insert("title".into(), json!("Report"));
     }
     confirm(&mut app).unwrap();
+    finish_pdf_export(&mut app);
 
     let got = writes.lock().unwrap();
     assert_eq!(got.len(), 1, "confirming the dialog writes exactly one file");

@@ -170,10 +170,15 @@ pub(crate) fn print_pdf(
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
     let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    export_pdf_document(&st.doc, &s.cache, p)
+}
+
+/// Export an immutable snapshot through the same PDF pipeline as synchronous export and print.
+/// Native hosts can run this on a worker without serializing the PDF bytes through JSON.
+pub fn export_pdf_document(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;
-    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
-    let doc: &designcraft_doc::Document = &st.doc;
+    let mut r = print_pdf(doc, cache, &opts, ppi)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     // Interactive PDF view options.
     let mut cat = String::new();

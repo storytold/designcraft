@@ -1,6 +1,7 @@
 use super::state::{ImportRequest, ImportedFile};
 
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
+pub type BackgroundWriteFn = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<(), String> + Send + Sync>;
 
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
@@ -26,6 +27,8 @@ pub struct Services {
     pub pick_save: Option<PickFn>,
     pub read: Option<ReadFn>,
     pub write: Option<WriteFn>,
+    /// Optional thread-safe writer for native background exports.
+    pub background_write: Option<BackgroundWriteFn>,
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
     /// through [`Services::inbox`]. Used when `pick_open` is unset (web).
     pub open_async: Option<OpenAsyncFn>,

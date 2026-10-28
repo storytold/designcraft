@@ -36,6 +36,7 @@ impl DesignApp {
         let now = now_ms() / 1000.0;
         DesignApp {
             pending_pdf: None,
+            pdf_export: Default::default(),
             session,
             ui: UiState::default(),
             services,
@@ -109,6 +110,7 @@ impl DesignApp {
             ime_interrupt: false,
             ime_canvas: None,
             quit_requested: false,
+            quit_after_export: false,
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
@@ -199,7 +201,8 @@ impl DesignApp {
                 // Sample the generation once for the whole batch: placing the first valid file
                 // must not suppress later files that belong to the same captured batch.
                 let current = self.input_generation();
-                for drop in std::mem::take(&mut self.pending_drops) {
+                let drops = if self.pdf_export.busy() { Vec::new() } else { std::mem::take(&mut self.pending_drops) };
+                for drop in drops {
                     if drop.generation != current {
                         continue;
                     }
@@ -293,6 +296,7 @@ impl DesignApp {
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);
+        self.pdf_export.show(&ctx);
         // The IME is observed once, here: after the canvas, the floating panels, the story editor,
         // dialogs and Quick Apply have all applied this pass's commands and focus changes.
         canvas::ime_observe(self, &ctx);

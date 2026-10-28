@@ -88,6 +88,15 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
         app.ui.dialog = Some(dialogs::Dialog::new("pdfExport", json!({})));
         app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Report"));
         dialogs::confirm(app).unwrap();
+        // Native export completes on a worker; finish it before starting the next dialog.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+            if let Some(result) = app.pdf_export.poll(&mut app.services.write) {
+                result.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export.busy(), "the export must finish before another document is created");
     };
 
     app.run("file.new", json!({})).unwrap();

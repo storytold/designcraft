@@ -3,6 +3,13 @@ use super::{DesignApp, UiRequest, Value, canvas, dialogs, json, menus};
 impl DesignApp {
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.pdf_export.busy() {
+            if id == "app.quit" {
+                self.quit_after_export = true;
+                return Ok(json!({"queued": true}));
+            }
+            return Err("Please wait for the PDF export to finish".into());
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }

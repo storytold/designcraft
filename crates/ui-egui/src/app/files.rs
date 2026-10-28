@@ -201,11 +201,23 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let defer = self.pdf_export.busy();
+        let generation = self.input_generation();
         for f in files {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.open_dropped_at(&p, pointer);
+            let path = f.path().to_string_lossy().to_string();
+            if !path.is_empty() {
+                if defer {
+                    self.pending_drops.push(PendingDrop { path, pointer, generation });
+                } else {
+                    let _ = self.open_dropped_at(&path, pointer);
+                }
             }
+        }
+        if defer
+            && !files.is_empty()
+            && let Some(ctx) = &self.egui_ctx
+        {
+            ctx.request_repaint();
         }
     }
 
