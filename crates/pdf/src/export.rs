@@ -5,6 +5,7 @@
 pub(crate) mod registration_tests;
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use craft_pdf::write::backend as krilla;
@@ -55,6 +56,53 @@ impl std::hash::Hasher for ConstantImageHasher {
     fn write(&mut self, _: &[u8]) {}
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TableContext {
+    pub table: u64,
+    pub anchor: usize,
+    pub row: usize,
+    pub col: usize,
+    /// The enclosing cell of a nested table, an index into [`Exporter::table_parents`].
+    pub parent: Option<usize>,
+}
+
+/// How deep nested tables are tagged; deeper ones are still drawn, as artifacts.
+pub(crate) const MAX_TAGGED_TABLE_DEPTH: usize = 16;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct CellParagraphKey {
+    pub story: designcraft_doc::StoryId,
+    pub table: u64,
+    pub anchor: usize,
+    pub row: usize,
+    pub col: usize,
+    pub parent: Option<usize>,
+    /// Where the run's paragraph starts in the cell text, or where it resumes after a nested table.
+    pub paragraph: usize,
+}
+
+pub(crate) struct StoryTextIndex {
+    pub paragraph_ranges: Vec<Range<usize>>,
+    pub table_anchors: HashMap<u64, usize>,
+}
+
+impl StoryTextIndex {
+    fn new(story: &designcraft_doc::Story) -> Self {
+        let paragraph_ranges = story.para_ranges();
+        let table_anchors = story
+            .tables
+            .keys()
+            .filter_map(|&table_id| {
+                let paragraph_index = story.paras.iter().position(|paragraph| paragraph.table == Some(table_id))?;
+                let range = paragraph_ranges.get(paragraph_index)?;
+                let anchor = story.text.get(range.clone())?.find(designcraft_doc::TABLE_ANCHOR)?;
+                Some((table_id, range.start + anchor))
+            })
+            .collect();
+        Self { paragraph_ranges, table_anchors }
+    }
+}
+
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
     /// The document's inks with its Ink Manager settings.
@@ -63,6 +111,7 @@ pub(crate) struct Exporter<'a> {
     /// Each story's composition per page it is shown on, for this export: the document doesn't
     /// change while it runs, and asking the cache checks every frame of the story again.
     composed: HashMap<(designcraft_doc::StoryId, Option<usize>), Arc<designcraft_compose::ComposedStory>>,
+    pub(crate) story_text_indices: HashMap<designcraft_doc::StoryId, StoryTextIndex>,
     pub opts: &'a PdfOptions,
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,
@@ -100,8 +149,102 @@ pub(crate) struct Exporter<'a> {
     /// While drawing a frame's text: the frame's box in text space, which a gradient on the text
     /// spans (as InDesign lays it across the frame).
     pub(crate) text_area: Option<Rect>,
-    /// Marked content of each (story, paragraph index).
+    /// Marked content keyed by story and paragraph-start byte offset, advanced past any
+    /// table anchor preceding the run within that paragraph.
     pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
+    /// The inline table anchor and owning cell currently being drawn.
+    pub(crate) table_context: Option<TableContext>,
+    /// Cell paragraph marked content keyed by the anchor story, table/cell address and
+    /// paragraph-start byte offset in the cell's own story.
+    pub(crate) cell_para_tags: HashMap<CellParagraphKey, Vec<Identifier>>,
+    /// The cells holding a nested table that was drawn while tagging.
+    pub(crate) table_parents: Vec<TableContext>,
+}
+
+impl<'a> Exporter<'a> {
+    pub(crate) fn story_text_index(&mut self, story_id: designcraft_doc::StoryId) -> Option<&StoryTextIndex> {
+        if !self.story_text_indices.contains_key(&story_id) {
+            let story = self.doc.story(story_id)?;
+            self.story_text_indices.insert(story_id, StoryTextIndex::new(story));
+        }
+        self.story_text_indices.get(&story_id)
+    }
+
+    /// The table a context addresses, found through its enclosing cells.
+    pub(crate) fn context_table(&self, story_id: designcraft_doc::StoryId, context: TableContext) -> Option<&'a designcraft_doc::Table> {
+        let mut chain = vec![context];
+        let mut parent = context.parent;
+        while let Some(index) = parent {
+            let outer = *self.table_parents.get(index)?;
+            chain.push(outer);
+            parent = outer.parent;
+        }
+        chain.reverse();
+        let mut table: &'a designcraft_doc::Table = self.doc.story(story_id)?.tables.get(&chain.first()?.table)?;
+        for pair in chain.windows(2) {
+            table = table.cell(pair[0].row, pair[0].col)?.text.tables.get(&pair[1].table)?;
+        }
+        Some(table)
+    }
+
+    /// Does the structure tree reach this table fragment? A nested one sits in the cell text it
+    /// walks; any other must be anchored in the tagged story itself.
+    pub(crate) fn table_is_reachable(
+        &self,
+        story_id: designcraft_doc::StoryId,
+        enclosing: Option<TableContext>,
+        fragment: &designcraft_compose::TableFrag,
+    ) -> bool {
+        enclosing.is_some() || self.doc.story(story_id).and_then(|story| story.table_anchor(fragment.table)) == Some(fragment.anchor)
+    }
+
+    /// How many tables enclose a context's table.
+    pub(crate) fn table_depth(&self, context: TableContext) -> usize {
+        let mut depth = 0;
+        let mut parent = context.parent;
+        while let Some(outer) = parent.and_then(|index| self.table_parents.get(index)) {
+            depth += 1;
+            parent = outer.parent;
+        }
+        depth
+    }
+
+    /// The index of an enclosing cell in [`Self::table_parents`], so a table split across frames
+    /// keeps one address.
+    pub(crate) fn table_parent(&mut self, context: TableContext) -> usize {
+        self.table_parents.iter().position(|parent| *parent == context).unwrap_or_else(|| {
+            self.table_parents.push(context);
+            self.table_parents.len() - 1
+        })
+    }
+}
+
+#[cfg(test)]
+mod story_text_index_tests {
+    use super::StoryTextIndex;
+    use designcraft_doc::{ParaFormat, Story, StoryId, Table};
+
+    #[test]
+    fn story_text_index_matches_story_ranges_and_registered_table_anchors() {
+        let mut story = Story::with_text(StoryId(1), "é", ParaFormat::default());
+        story.insert_table(story.len(), Table::new(1, 1, 1, 0, 0, 100.0));
+        story.insert(story.len(), "終\n");
+        story.insert_table(story.len(), Table::new(2, 1, 1, 0, 0, 100.0));
+        story.insert(story.len(), "tail\n");
+
+        let index = StoryTextIndex::new(&story);
+        assert_eq!(index.paragraph_ranges, story.para_ranges());
+        for table_id in story.tables.keys() {
+            assert_eq!(index.table_anchors.get(table_id).copied(), story.table_anchor(*table_id));
+        }
+        assert_eq!(index.paragraph_ranges.last().map(|range| range.start..range.end), Some(story.len()..story.len()));
+
+        let mut duplicate = story.clone();
+        duplicate.paras[0].table = Some(1);
+        let duplicate_index = StoryTextIndex::new(&duplicate);
+        assert_eq!(duplicate.table_anchor(1), None);
+        assert!(!duplicate_index.table_anchors.contains_key(&1));
+    }
 }
 
 impl CoverageImage {
