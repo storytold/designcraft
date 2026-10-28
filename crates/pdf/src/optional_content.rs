@@ -311,6 +311,16 @@ pub(crate) fn register(bytes: &[u8]) -> Result<Vec<u8>> {
     #[cfg(test)]
     crate::export::registration_tests::REGISTRATIONS.with(|count| count.set(count.get() + 1));
     let pdf = Pdf::new(bytes.to_vec()).map_err(|_| invalid())?;
+    let root = pdf.xref().root_id();
+    let catalog = pdf.xref().get::<Dict<'_>>(root).ok_or_else(invalid)?;
+    // Groups the writer itself hid (a multi-state object's inactive states, #1798) stay hidden
+    // in the configuration written here, which replaces the writer's.
+    let already_off: Vec<ObjectIdentifier> = catalog
+        .get::<Dict<'_>>(b"OCProperties")
+        .and_then(|p| p.get::<Dict<'_>>(b"D"))
+        .and_then(|d| d.get::<Array<'_>>(b"OFF"))
+        .map(|off| off.raw_iter().filter_map(|o| o.as_obj_ref().map(Into::into)).collect())
+        .unwrap_or_default();
     let mut groups = Vec::new();
     let mut changes = Vec::new();
     for object in pdf.objects() {
@@ -319,7 +329,11 @@ pub(crate) fn register(bytes: &[u8]) -> Result<Vec<u8>> {
             continue;
         }
         // Resource-only OCGs without a catalog configuration are visible by default.
-        let hidden = if dict.contains_key(MARKER) { dict.get::<bool>(MARKER).ok_or_else(invalid)? } else { false };
+        let hidden = if dict.contains_key(MARKER) {
+            dict.get::<bool>(MARKER).ok_or_else(invalid)?
+        } else {
+            dict.obj_id().is_some_and(|id| already_off.contains(&id))
+        };
         let id = dict.obj_id().ok_or_else(invalid)?;
         groups.push((id, hidden));
         changes.push((id, edited(&dict, &[(MARKER, b"")])?));
@@ -337,9 +351,7 @@ pub(crate) fn register(bytes: &[u8]) -> Result<Vec<u8>> {
             .join(" ")
     };
     let all = refs(false);
-    let properties = format!("<</OCGs[{all}]/D<</Name(Placed PDF layers)/BaseState/ON/OFF[{}]/Order[{all}]>>>>", refs(true));
-    let root = pdf.xref().root_id();
-    let catalog = pdf.xref().get::<Dict<'_>>(root).ok_or_else(invalid)?;
+    let properties = format!("<</OCGs[{all}]/D<</Name(Layers)/BaseState/ON/OFF[{}]/Order[{all}]>>>>", refs(true));
     changes.push((root, edited(&catalog, &[(b"OCProperties", properties.as_bytes())])?));
     append(bytes, &changes, root)
 }

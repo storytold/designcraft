@@ -78,6 +78,9 @@ pub(crate) struct Exporter<'a> {
     pdfs: HashMap<(AssetId, Vec<hayro_syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
     variants: HashMap<(AssetId, Option<Vec<String>>), crate::optional_content::Variant>,
     has_optional_content: bool,
+    /// Interactive PDF: the optional content group of each state of a multi-state object on an
+    /// exported spread, `(object, state index)` (#1798). Empty when states export as one state.
+    state_ocgs: HashMap<(designcraft_doc::ItemId, usize), krilla::optional_content::OcgId>,
     #[cfg(test)]
     pdf_preparations: usize,
     layer_error: Option<PdfError>,

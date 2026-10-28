@@ -109,7 +109,8 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
             B::GoToPreviousPage => here.and_then(|h| h.checked_sub(1)),
             // A text anchor's page, as cross-references resolve it.
             B::GoToDestination { anchor } => cache.xref_index(doc).page_index(*anchor),
-            // A PDF shows one state of a multi-state object (#1798: states as optional content to come).
+            // State buttons set the layers of the object's states: `forms::add_fields` writes them
+            // as an incremental update, since krilla has no SetOCGState action (#1798).
             B::GoToState { .. } | B::GoToNextState { .. } | B::GoToPreviousState { .. } => continue,
         };
         let Some(i) = page.and_then(|p| sheet_of_page(doc, sheets, p)) else { continue };

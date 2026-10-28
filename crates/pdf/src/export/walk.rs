@@ -282,8 +282,26 @@ impl Exporter<'_> {
 
     fn draw_group_children(&mut self, s: &mut Surface, it: &Item, xf: Affine, page: Option<usize>) {
         let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
-        for child in it.shown_children() {
-            self.item(s, child, xf, page);
+        if it.states.is_empty() || !self.state_ocgs.contains_key(&(it.id, 0)) {
+            for child in it.shown_children() {
+                self.item(s, child, xf, page);
+            }
+        } else {
+            // A multi-state object in an interactive PDF: every state, each in its own optional
+            // content group, the inactive ones hidden (#1798). A state whose group can't be
+            // marked draws only if it is the active one, so nothing hidden shows.
+            for (i, child) in it.children().iter().enumerate() {
+                match self.state_ocgs.get(&(it.id, i)).copied().map(|g| s.start_optional_content(g)) {
+                    Some(Ok(())) => {
+                        self.item(s, child, xf, page);
+                        if s.end_optional_content().is_err() {
+                            self.warn(format!("object state {} of {} could not be closed as a layer", i.saturating_add(1), it.id));
+                        }
+                    }
+                    _ if i == it.active_state => self.item(s, child, xf, page),
+                    _ => {}
+                }
+            }
         }
         for _ in 0..pushes {
             s.pop();
