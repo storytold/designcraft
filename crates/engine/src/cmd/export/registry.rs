@@ -1,4 +1,4 @@
-use super::formats::{epub_split_param, export_epub, export_html, export_pptx, export_text, has_story_target, print_booklet};
+use super::formats::{epub_split_param, export_epub, export_html, export_png, export_pptx, export_text, has_story_target, print_booklet};
 use super::pdf::export_pdf;
 use super::*;
 
@@ -46,6 +46,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.exportPptx", "Export PowerPoint…", ["File"], None,
         "{path?, pages?: \"1-3,5\" | [1,3] (1-based positions; default all), lineBreaks?: keep|reflow (keep: DesignCraft's lines, spacing and leading; reflow: one box per frame, PowerPoint sets the lines), rasterize?: bool (default true: objects PowerPoint can't show — placed PDF/EPS, type on a path, some effects — go in as 300 ppi images), embedFonts?: bool (default true: the TrueType fonts whose licences allow it), title?, author?} — every page as a slide of editable shapes, pictures, text boxes and tables → {path, bytes, slides, warnings} (no path: {base64, …})",
         has_doc, export_pptx),
+        cmd!(noundo "file.exportPng", "Export PNG…", ["File"], None,
+            "{path?: \"page.png\" (several pages become page-1.png, page-2.png, …), pages?: \"1-3,5\" | [1,3] (1-based positions; default all), ppi?: number (72..=1200; default 300), transparent?: bool (no canvas or paper fill, so the PNG's alpha is the artwork's), bleed?: bool (include the document bleed)} → {files: [{path, page, bytes, width, height}], pages} (no path: {images: [{page, base64, …}], pages})",
+            has_doc, export_png),
         cmd!(noundo "file.exportText", "Export Text…", ["File"], None,
         "{path?, format?: \"txt\"|\"rtf\"|\"tagged\" (Tagged Text; default from the path, else txt), story?, frame?} — the story being edited or of the selected frame → {path, bytes} (no path: {text, bytes})",
         has_story_target, export_text),

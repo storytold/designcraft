@@ -124,6 +124,76 @@ pub(super) fn has_story_target(s: &Session) -> std::result::Result<(), String> {
     crate::cmd::text::story_of(s, &Value::Null).map(|_| ()).ok_or_else(|| "edit text or select a text frame".into())
 }
 
+/// `file.exportPng`: each page as its own PNG, optionally with a transparent background (#1581).
+///
+/// InDesign's Export ▸ PNG writes one file per page with the page number appended, and its
+/// Background setting is White or Transparent. Transparent means no canvas fill *and* no paper
+/// fill: paper is what makes a page opaque, so a transparent export leaves the alpha of whatever
+/// the artwork draws.
+pub(super) fn export_png(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "file.exportPng";
+    const MIN_PPI: f64 = 72.0;
+    const MAX_PPI: f64 = 1200.0;
+    let st = s.doc()?;
+    let count = st.doc.page_count();
+    let pages = pages_param(ID, p, count)?.unwrap_or_else(|| (0..count).collect());
+    if pages.is_empty() {
+        return Err(bad(ID, "no pages to export"));
+    }
+    let ppi = match p.get("ppi") {
+        None | Some(Value::Null) => 300.0,
+        Some(v) => v
+            .as_f64()
+            .filter(|v| v.is_finite() && (MIN_PPI..=MAX_PPI).contains(v))
+            .ok_or_else(|| bad(ID, format!("ppi must be a number from {MIN_PPI} to {MAX_PPI}, not {v}")))?,
+    };
+    let transparent = p.get("transparent").and_then(Value::as_bool).unwrap_or(false);
+    let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
+    let path = str_param(p, "path").map(str::to_string);
+    let scale = ppi / 72.0;
+    // Paper is artwork: a transparent background means not drawing it either, or every page would
+    // be an opaque rectangle of paper colour.
+    let opts = designcraft_render::RenderOptions { printing_only: true, paper: !transparent, ..Default::default() };
+    let background = (!transparent).then_some([255, 255, 255, 255]);
+
+    let mut renderer = designcraft_render::Renderer::new();
+    let mut out = Vec::new();
+    for &abs in &pages {
+        let img = renderer
+            .render_page_on(&st.doc, &s.cache, abs, scale, bleed, &opts, background)
+            .ok_or_else(|| bad(ID, format!("page {} is too large to render at {ppi} ppi", abs + 1)))?;
+        let (width, height) = (img.width, img.height);
+        let bytes = img.to_png();
+        match &path {
+            Some(path) => {
+                let file = page_file_name(path, abs + 1, pages.len() > 1);
+                // Through the helper, which says there is no file system on the web. Skipping
+                // only the write there reported a path for a PNG nothing had saved (noted in
+                // review).
+                write_file(&file, &bytes)?;
+                out.push(json!({"path": file, "page": abs + 1, "bytes": bytes.len(), "width": width, "height": height}));
+            }
+            None => out.push(
+                json!({"page": abs + 1, "base64": crate::cmd::file::base64_encode(&bytes), "bytes": bytes.len(), "width": width, "height": height}),
+            ),
+        }
+    }
+    let key = if path.is_some() { "files" } else { "images" };
+    Ok(json!({key: out, "pages": pages.len()}))
+}
+
+/// `page.png` for one page, `page-3.png` for page 3 of several: the number goes before the
+/// extension, as InDesign's own export names them.
+fn page_file_name(path: &str, page: usize, numbered: bool) -> String {
+    if !numbered {
+        return path.to_string();
+    }
+    match path.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.contains(['/', '\\']) => format!("{stem}-{page}.{ext}"),
+        _ => format!("{path}-{page}"),
+    }
+}
+
 pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.exportText";
     let sid = crate::cmd::text::story_of(s, p).ok_or_else(|| bad(ID, "edit text or select a text frame"))?;
@@ -409,5 +479,91 @@ mod pptx_tests {
         s.execute("object.exportOptions", &json!({"ids": [r["id"]], "rasterize": true})).unwrap();
         let x = shapes(&mut s);
         assert!(x.contains("<p:pic>") && !x.contains("prst=\"ellipse\""), "{x}");
+    }
+}
+
+#[cfg(test)]
+mod export_png_tests {
+    use serde_json::json;
+
+    use crate::Session;
+    use crate::cmd::base64_decode;
+
+    /// The command offered itself with no document open and then failed at `s.doc()`, unlike
+    /// every other document export, which use `has_doc` (noted in review).
+    #[test]
+    fn exporting_a_png_is_unavailable_until_there_is_a_document() {
+        let mut s = Session::new();
+        let offered = |s: &Session| s.commands().into_iter().find(|c| c.id == "file.exportPng").expect("the command is listed");
+        let before = offered(&s);
+        assert!(!before.enabled, "with no document open the command is not offered");
+        assert!(before.disabled_reason.is_some(), "and it says why: {:?}", before.disabled_reason);
+        assert!(s.execute("file.exportPng", &json!({})).is_err(), "and running it anyway is refused");
+
+        s.execute("file.new", &json!({"pages": 1, "width": 100, "height": 50})).unwrap();
+        assert!(offered(&s).enabled, "with a document it is offered");
+    }
+
+    /// A page of each: one with a black box, one left empty.
+    fn two_pages() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": 100, "height": 50})).unwrap();
+        s.execute("frame.create", &json!({"rect": [10, 10, 90, 40]})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Black]"})).unwrap();
+        s
+    }
+
+    /// The alpha of a corner pixel (away from the artwork) and of the middle (on it).
+    fn corner_and_middle(png: &[u8]) -> ((u8, u8), (u8, u8)) {
+        let img = designcraft_images::decode_rgba(png).expect("the export is a readable PNG");
+        let at = |x: u32, y: u32| {
+            let p = img.get_pixel(x, y).0;
+            (p[3], p[0])
+        };
+        (at(2, 2), at(img.width() / 2, img.height() / 2))
+    }
+
+    /// Export ▸ PNG wrote the active page only, flattened onto white (#1581). It now writes one
+    /// file per page, numbered, at a chosen resolution, and can leave the background transparent.
+    #[test]
+    fn every_page_is_its_own_png_and_can_be_transparent() {
+        let mut s = two_pages();
+
+        // All pages by default, one image each, numbered from 1.
+        let r = s.execute("file.exportPng", &json!({"ppi": 72})).unwrap();
+        let images = r["images"].as_array().expect("one entry per page").clone();
+        assert_eq!((r["pages"].as_u64(), images.len()), (Some(2), 2));
+        assert_eq!(images.iter().map(|i| i["page"].as_u64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
+        // 100 x 50 pt at 72 ppi is 100 x 50 px.
+        assert_eq!((images[0]["width"].as_u64(), images[0]["height"].as_u64()), (Some(100), Some(50)));
+
+        // The default background is white and opaque, as before.
+        let white = base64_decode(images[0]["base64"].as_str().unwrap());
+        let ((corner_a, corner_r), (mid_a, mid_r)) = corner_and_middle(&white);
+        assert!(corner_a == 255 && corner_r > 200, "the corner is opaque white: alpha {corner_a}, red {corner_r}");
+        assert!(mid_a == 255 && mid_r < 60, "the box is drawn: alpha {mid_a}, red {mid_r}");
+
+        // Transparent: the corner has no alpha at all, and the artwork still does.
+        let r = s.execute("file.exportPng", &json!({"ppi": 72, "transparent": true, "pages": [1]})).unwrap();
+        let clear = base64_decode(r["images"][0]["base64"].as_str().unwrap());
+        let ((corner_a, _), (mid_a, mid_r)) = corner_and_middle(&clear);
+        assert_eq!(corner_a, 0, "nothing was drawn in the corner, so it is transparent");
+        assert!(mid_a == 255 && mid_r < 60, "the box is still opaque black: alpha {mid_a}, red {mid_r}");
+
+        // Resolution: 300 ppi is 300/72 of the pt size.
+        let r = s.execute("file.exportPng", &json!({"ppi": 300, "pages": [1]})).unwrap();
+        assert_eq!(r["images"][0]["width"].as_u64(), Some((100.0 * 300.0 / 72.0_f64).round() as u64));
+        // And a resolution the renderer cannot mean is refused rather than clamped silently.
+        assert!(s.execute("file.exportPng", &json!({"ppi": 0})).is_err());
+        assert!(s.execute("file.exportPng", &json!({"ppi": 5000})).is_err());
+    }
+
+    /// Several pages become numbered files; one page keeps the name it was given.
+    #[test]
+    fn file_names_carry_the_page_number_only_when_there_are_several() {
+        assert_eq!(super::page_file_name("out.png", 3, true), "out-3.png");
+        assert_eq!(super::page_file_name("out.png", 1, false), "out.png");
+        assert_eq!(super::page_file_name("dir.v2/out", 2, true), "dir.v2/out-2");
+        assert_eq!(super::page_file_name("out", 2, true), "out-2");
     }
 }

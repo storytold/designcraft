@@ -139,6 +139,24 @@ impl Renderer {
 
     /// Render one document page (absolute index) at `scale` px/pt, optionally including bleed.
     pub fn render_page(&mut self, doc: &Document, cache: &Cache, abs: usize, scale: f64, bleed: bool, opts: &RenderOptions) -> Option<Rendered> {
+        self.render_page_on(doc, cache, abs, scale, bleed, opts, Some([255, 255, 255, 255]))
+    }
+
+    /// [`Self::render_page`] with the canvas background the caller chooses. `None` leaves the page
+    /// transparent wherever nothing is drawn, which is what a PNG export with a transparent
+    /// background needs (#1581); the paper fill is the caller's to turn off through
+    /// [`RenderOptions::paper`], since paper is artwork and the canvas is not.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_page_on(
+        &mut self,
+        doc: &Document,
+        cache: &Cache,
+        abs: usize,
+        scale: f64,
+        bleed: bool,
+        opts: &RenderOptions,
+        background: Option<[u8; 4]>,
+    ) -> Option<Rendered> {
         let (si, pi) = doc.page_loc(abs)?;
         let page = &doc.spreads[si].pages[pi];
         let mut r = page.bounds();
@@ -155,7 +173,7 @@ impl Renderer {
         }
         let view = Affine::scale(scale) * Affine::translate(-r.origin().to_vec2());
         let mut o = opts.clone();
-        o.background = Some([255, 255, 255, 255]);
+        o.background = background;
         Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], w, h, view, &o))
     }
 }
