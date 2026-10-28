@@ -904,17 +904,25 @@ mod tests {
     }
 }
 
+/// Pixel allocation after fitting an image to the GPU's texture limit.
+pub(crate) fn fit_texture_size([w, h]: [usize; 2], max_side: usize) -> [usize; 2] {
+    let max_side = max_side.max(1);
+    if w <= max_side && h <= max_side {
+        return [w, h];
+    }
+    let k = (max_side as f64 / w.max(h) as f64).min(1.0);
+    [((w as f64 * k).floor() as usize).clamp(1, max_side), ((h as f64 * k).floor() as usize).clamp(1, max_side)]
+}
+
 /// `img` made to fit the GPU's largest texture (`max_side` pixels a side), sampled down
 /// (nearest pixel) when it is larger. A texture past the limit panics in the renderer, so every
 /// UI texture goes through this: an oversized image loses resolution, not the document.
 pub fn fit_texture(img: egui::ColorImage, max_side: usize) -> egui::ColorImage {
     let [w, h] = img.size;
-    let max_side = max_side.max(1);
-    if w <= max_side && h <= max_side {
+    let [nw, nh] = fit_texture_size(img.size, max_side);
+    if img.size == [nw, nh] {
         return img;
     }
-    let k = (max_side as f64 / w.max(h) as f64).min(1.0);
-    let (nw, nh) = (((w as f64 * k).floor() as usize).clamp(1, max_side), ((h as f64 * k).floor() as usize).clamp(1, max_side));
     let mut pixels = Vec::with_capacity(nw * nh);
     for y in 0..nh {
         let sy = (y * h / nh).min(h.saturating_sub(1));

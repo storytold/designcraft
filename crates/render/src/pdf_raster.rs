@@ -122,13 +122,11 @@ fn render_pdf_raster(bytes: &[u8], page: usize, max_side: u32) -> Result<craft_p
         other => PdfRasterError::Input(other),
     })?;
     let p = pdf.pages().get(page).ok_or(PdfRasterError::MissingPage { page: page.saturating_add(1) })?;
-    let (w, h) = p.render_dimensions();
-    let scale = (max_side as f32 / w.max(h).max(1.0)).min(8.0);
     craft_pdf::raster::render(
         p,
         &craft_pdf::raster::RenderCache::new(),
         &craft_pdf::interpret::InterpreterSettings::default(),
-        &craft_pdf::raster::Options { scale: [scale; 2], ..Default::default() },
+        &pdf_screen_options(p, max_side),
     )
     .map_err(PdfRasterError::Render)
 }
@@ -156,6 +154,21 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
     let transform = Affine::new(p.initial_transform(true).as_coeffs());
     let b = transform.transform_rect_bbox(Rect::new(page_box.x0, page_box.y0, page_box.x1, page_box.y1));
     b.is_finite().then_some((b.x0, b.y0, b.width(), b.height()))
+}
+
+/// Use the same sizing contract as the PDF rasterizer without rasterizing the page. Source
+/// bytes are shared with the document; page points must not be mistaken for screen pixels.
+pub(crate) fn pdf_raster_size(bytes: &Arc<Vec<u8>>, page: u32) -> Option<(u32, u32)> {
+    let pdf = craft_pdf::open(bytes.clone(), None).ok()?;
+    let page = pdf.pages().get(page as usize)?;
+    let [w, h] = craft_pdf::raster::dimensions(page, &pdf_screen_options(page, 3000)).ok()?;
+    Some((w, h))
+}
+
+fn pdf_screen_options(page: &craft_pdf::syntax::page::Page<'_>, max_side: u32) -> craft_pdf::raster::Options {
+    let (w, h) = page.render_dimensions();
+    let scale = (max_side as f32 / w.max(h).max(1.0)).min(8.0);
+    craft_pdf::raster::Options { scale: [scale; 2], ..Default::default() }
 }
 
 /// The part of PDF page `page` that `crop` shows: its left, top, right and bottom edges as

@@ -52,6 +52,7 @@ impl eframe::App for App {
         // Queue/deadline work only. A hidden `run_logic` tick also reports pass index zero, so
         // startup counters and native-menu polling must not live here.
         self.app.logic(ctx);
+        designcraft_render::images::set_preview_enabled(!no_prefs() && self.app.ui.persist_image_previews);
         self.startup.leave();
     }
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -99,12 +100,22 @@ impl eframe::App for App {
     }
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
-        self.startup.presented();
+        if self.app.native_quit_approved() {
+            self.startup.presented();
+        }
         if let Err(e) = preserve_documents_on_exit(&mut self.app) {
             log::error!("Couldn't preserve documents on exit: {e}");
             eprintln!("designcraft: couldn't preserve documents on exit: {e}");
         }
         save_prefs(&self.app);
+        #[cfg(target_os = "macos")]
+        if self.app.native_quit_approved() {
+            // A normal CloseRequested destroys the window before eframe asks winit to
+            // stop. AppKit can fault in that interval. Finish an approved quit here,
+            // after saving, while graphics errors still return their real result below.
+            let status = finish_native_run(Ok(Ok(())), &self.startup, apple_events::queued(&self.apple_events));
+            exit_macos(status);
+        }
     }
 }
 
@@ -442,6 +453,9 @@ fn main() -> std::process::ExitCode {
         }
     }
     let mut options = eframe::NativeOptions {
+        // Return actual graphics errors. An approved macOS quit finishes in on_exit,
+        // before AppKit destroys the window; errors retain the existing retry path.
+        run_and_return: true,
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")
             .with_inner_size([1440.0, 900.0])
@@ -568,6 +582,10 @@ fn main() -> std::process::ExitCode {
                     app.status(format!("Recovered {n} unsaved document{} from the last session.", if n == 1 { "" } else { "s" }));
                 }
                 load_prefs(&mut app);
+                // Apply the saved opt-out before directory installation, which may prune
+                // old previews. Disabled persistence must not access or delete cache files.
+                designcraft_render::images::set_preview_enabled(!no_prefs() && app.ui.persist_image_previews);
+                designcraft_render::images::set_preview_directory(if no_prefs() { None } else { profile::config_dir().map(|d| d.join("Previews")) });
                 // After `load_prefs`, which replaces the UI state and with it the status line.
                 if let Some(note) = portable_note {
                     app.status(note);
@@ -608,8 +626,20 @@ fn main() -> std::process::ExitCode {
     // standard error and the log file, since a Windows start has no console to show it.
     // Documents that arrived after the last frame, for a start again to open too.
     #[cfg(target_os = "macos")]
-    startup.opening(apple_events.queued());
-    match gpu::finish(run, &startup) {
+    let queued = apple_events.queued();
+    #[cfg(not(target_os = "macos"))]
+    let queued = Vec::new();
+    let result = finish_native_run(run, &startup, queued);
+    #[cfg(target_os = "macos")]
+    exit_macos(result);
+    #[cfg(not(target_os = "macos"))]
+    result
+}
+
+/// Preserve queued documents and the actual graphics outcome before terminating the host.
+fn finish_native_run(run: Result<eframe::Result, String>, startup: &gpu::Startup, queued: Vec<String>) -> std::process::ExitCode {
+    startup.opening(queued);
+    match gpu::finish(run, startup) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             log::error!("DesignCraft stopped: {e}");
@@ -618,8 +648,22 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn exit_macos(status: std::process::ExitCode) -> ! {
+    log::logger().flush();
+    std::process::exit(if status == std::process::ExitCode::SUCCESS { 0 } else { 1 });
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_run_reports_graphics_errors_instead_of_success() {
+        let startup = super::gpu::Startup::new(None, Vec::new());
+        assert_eq!(super::finish_native_run(Ok(Ok(())), &startup, Vec::new()), std::process::ExitCode::SUCCESS);
+        let error = eframe::Error::Wgpu(eframe::egui_wgpu::WgpuError::CustomNativeAdapterSelectionError("synthetic unavailable adapter".into()));
+        assert_eq!(super::finish_native_run(Ok(Err(error)), &startup, vec!["queued-layout.designcraft".into()]), std::process::ExitCode::FAILURE);
+    }
+
     #[test]
     fn an_unreadable_ui_json_is_kept_beside_it() {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();

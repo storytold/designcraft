@@ -27,7 +27,7 @@ impl Renderer {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };
         // Paper.
-        if f.opts.paper {
+        if f.opts.paper && self.slice_includes_surrounding(f.opts) {
             let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE);
             if f.opts.page_shadow {
                 ctx.set_transform(f.view);
@@ -50,12 +50,12 @@ impl Renderer {
         }
         let grid_area = f.opts.document_grid.iter().find(|(r, _)| *r == sr).map(|(_, a)| *a);
         let grid = &doc.settings.grid;
-        if let Some(area) = grid_area.filter(|_| grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
         }
         if blendspace::uses_cmyk(doc, sr, f.opts) {
             self.draw_cmyk_spread(ctx, f, sr);
-            if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+            if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
                 grid::draw(ctx, f, sp, grid, area);
             }
             return;
@@ -99,21 +99,47 @@ impl Renderer {
                         if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
                             continue;
                         }
-                        self.draw_item(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
+                        self.draw_root(ctx, f, it, Affine::translate((dx, 0.0)), shown_on(pi));
                     }
                 }
             }
             for it in &sp.items {
                 if it.layer == layer.id {
-                    self.draw_item(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
+                    self.draw_root(ctx, f, it, Affine::IDENTITY, ShownOn::Own);
                 }
             }
         }
         if isolate {
             ctx.pop_layer();
         }
-        if let Some(area) = grid_area.filter(|_| !grid.in_back) {
+        if let Some(area) = grid_area.filter(|_| !grid.in_back && self.slice_includes_surrounding(f.opts)) {
             grid::draw(ctx, f, sp, grid, area);
+        }
+    }
+
+    /// Paper and grids stay in the surrounding slice at their position in paint order.
+    /// They never move with the selected item.
+    fn slice_includes_surrounding(&self, opts: &RenderOptions) -> bool {
+        opts.slice.is_none_or(|slice| match slice.part {
+            SlicePart::Before => !self.slice_seen,
+            SlicePart::Item => false,
+            SlicePart::After => self.slice_seen,
+        })
+    }
+
+    fn draw_root(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
+        let draw = f.opts.slice.is_none_or(|s| {
+            let hit = s.item == it.id;
+            let was_seen = self.slice_seen;
+            self.slice_seen |= hit;
+            match s.part {
+                SlicePart::Before => !was_seen && !hit,
+                SlicePart::Item => hit,
+                SlicePart::After => was_seen && !hit,
+            }
+        });
+        if draw && !f.opts.cancelled() {
+            self.draw_item(ctx, f, it, parent, page);
         }
     }
 
@@ -169,7 +195,7 @@ impl Renderer {
     }
 
     fn draw_item_inner(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, parent: Affine, page: ShownOn) {
-        if it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
+        if f.opts.cancelled() || it.hidden || f.opts.hidden.contains(&it.id) || f.opts.printing_only && it.nonprinting {
             return;
         }
         let xf = parent * it.xf;

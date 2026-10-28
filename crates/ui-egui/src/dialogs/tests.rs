@@ -436,6 +436,19 @@ fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() 
 }
 
 #[test]
+fn disk_preview_preference_applies_and_survives_preferences_reload() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    assert!(app.ui.persist_image_previews);
+    app.run("app.preferences", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("persistImagePreviews".into(), json!(false));
+    assert!(app.ui.persist_image_previews, "editing the dialog does not apply before OK");
+    confirm(&mut app).unwrap();
+    let saved = serde_json::to_vec(&app.ui).unwrap();
+    assert!(!crate::UiState::from_preferences_json(&saved).unwrap().persist_image_previews);
+    assert!(crate::UiState::from_preferences_json(b"{}").unwrap().persist_image_previews);
+}
+
+#[test]
 fn preferences_ok_saves_a_story_editor_size_that_loads_back() {
     // `ui.dialog.set` takes any value; a size that isn't finite is saved as `null`.
     let sizes = [(json!("nan"), 20.0), (json!("inf"), 20.0), (json!(null), 20.0), (json!(1e39), 36.0), (json!(3), 8.0), (json!(11), 11.0)];

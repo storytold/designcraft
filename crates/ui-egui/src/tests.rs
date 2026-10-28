@@ -606,6 +606,7 @@ fn quitting_without_unsaved_changes_closes_at_once() {
     assert!(quit_frame(&mut app, &ctx, false).contains(&egui::ViewportCommand::Close));
     assert!(quit_frame(&mut app, &ctx, true).is_empty());
     assert!(app.ui.dialog.is_none());
+    assert!(app.native_quit_approved());
 }
 
 /// Scripts must not hang on a question: the control channel's quit never asks.
@@ -620,6 +621,20 @@ fn control_channel_quit_does_not_ask() {
     out.textures_delta.clear();
     assert!(quit_frame(&mut app, &ctx, true).is_empty());
     assert!(app.ui.dialog.is_none());
+    assert!(app.native_quit_approved());
+}
+
+#[test]
+fn native_quit_approval_excludes_pending_and_cancelled_questions() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_unsaved_document();
+    assert!(!app.native_quit_approved());
+    assert!(quit_frame(&mut app, &ctx, true).contains(&egui::ViewportCommand::CancelClose));
+    assert!(!app.native_quit_approved());
+    app.ui.dialog = None;
+    quit_frame(&mut app, &ctx, false);
+    assert!(!app.native_quit_approved());
+    assert!(app.session.doc().unwrap().is_dirty());
 }
 
 /// The Control panel's two-row groups were centred as if they were one row tall, so the second

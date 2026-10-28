@@ -2063,6 +2063,10 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                 }
                 "display" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Options")).font(semibold(12.0)));
+                    ui.add_enabled_ui(!cfg!(target_arch = "wasm32"), |ui| {
+                        check(ui, d, "persistImagePreviews", crate::i18n::tr(&app.ui.language, "Save image previews on this computer"));
+                    });
+                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Previews can remain after a document is closed. Turning this off stops disk reads and writes; existing previews can be cleared from the profile's Previews folder while DesignCraft is closed."));
                     let cur = d.s("displayQuality");
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Default View:"));
@@ -3620,6 +3624,9 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             app.run("prefs.set", prefs)?;
             app.ui.dynamic_spelling = d.b("dynamicSpelling");
+            if d.fields.contains_key("persistImagePreviews") {
+                app.ui.persist_image_previews = d.b("persistImagePreviews");
+            }
             if d.fields.contains_key("userWords") {
                 let words: Vec<String> = d.s("userWords").lines().map(str::to_string).collect();
                 app.run("spelling.setWords", json!({"words": words}))?;

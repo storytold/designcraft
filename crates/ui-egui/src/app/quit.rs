@@ -6,9 +6,16 @@ impl DesignApp {
         self.quit_requested = true;
     }
 
+    /// A native host may finish an accepted quit before destroying its platform window.
+    /// A graphics failure or a cancelled/pending unsaved-document question is not a quit.
+    pub fn native_quit_approved(&self) -> bool {
+        self.native_close_approved || self.quit_without_asking
+    }
+
     /// Ask about unsaved documents without closing any of them yet. A later Cancel must also
     /// keep documents whose earlier answer was Don't Save, including their history and recovery.
     pub(crate) fn handle_quit(&mut self, ctx: &egui::Context) {
+        self.native_close_approved = false;
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if self.host_order_pending() {
             if close_requested {
@@ -25,9 +32,11 @@ impl DesignApp {
         if close_requested || replay_close {
             if self.quit_without_asking {
                 self.quitting = None;
+                self.native_close_approved = true;
                 return;
             }
             if self.quitting.is_none() && !self.session.documents().iter().any(|d| d.is_dirty()) {
+                self.native_close_approved = true;
                 return;
             }
             let approved =
@@ -39,6 +48,8 @@ impl DesignApp {
                     self.status(e);
                     self.cancel_quit();
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else {
+                    self.native_close_approved = true;
                 }
                 return;
             }

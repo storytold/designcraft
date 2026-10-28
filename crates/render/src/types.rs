@@ -32,6 +32,10 @@ pub struct RenderOptions {
     pub printing_only: bool,
     /// Items not to draw (live drag previews).
     pub hidden: Vec<designcraft_doc::ItemId>,
+    /// A retained drag layer in the normal painting order; children keep their own clips.
+    pub slice: Option<DrawSlice>,
+    /// Native background jobs may stop between items when a newer view supersedes them.
+    pub cancellation: Option<Cancellation>,
     /// Draw text smaller than this many pixels as grey bars ("greeking"); 0 = never.
     pub greek_below_px: f64,
     /// Drop shadow on pages (screen view).
@@ -69,6 +73,43 @@ pub struct RenderOptions {
     /// document grid covers, drawn behind or in front of the page items as the grid settings say
     /// (screen view). Empty draws no grid.
     pub document_grid: Vec<(SpreadRef, Rect)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlicePart {
+    Before,
+    Item,
+    After,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawSlice {
+    pub item: designcraft_doc::ItemId,
+    pub part: SlicePart,
+}
+
+#[derive(Clone, Debug)]
+pub struct Cancellation {
+    pub generation: Arc<AtomicU64>,
+    pub expected: u64,
+}
+
+impl PartialEq for Cancellation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generation, &other.generation) && self.expected == other.expected
+    }
+}
+
+impl Cancellation {
+    pub fn cancelled(&self) -> bool {
+        self.generation.load(Ordering::Relaxed) != self.expected
+    }
+}
+
+impl RenderOptions {
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancellation.as_ref().is_some_and(Cancellation::cancelled)
+    }
 }
 
 /// View › Display Performance: how placed graphics and effects are drawn on screen.

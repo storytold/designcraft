@@ -471,6 +471,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 designcraft_render::DisplayQuality::High => "high",
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
+            f["persistImagePreviews"] = json!(app.ui.persist_image_previews);
             f["autoCollapseIconicPanels"] = json!(app.ui.dock_auto_collapse);
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);

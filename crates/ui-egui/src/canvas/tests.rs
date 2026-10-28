@@ -3,6 +3,92 @@ use egui_kittest::{Harness, kittest::Queryable};
 
 use super::*;
 
+fn density_fixture() -> (DesignApp, designcraft_doc::ItemId) {
+    let mut doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument {
+        width: 100.0,
+        height: 100.0,
+        facing_pages: false,
+        ..Default::default()
+    });
+    let id = designcraft_doc::ItemId(doc.alloc());
+    let item = designcraft_doc::Item::new(
+        id,
+        doc.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(DRect::new(60.0, 20.0, 80.0, 40.0)),
+    );
+    doc.insert_item(designcraft_doc::SpreadRef::Doc(0), item, None).unwrap();
+    let mut session = designcraft_engine::Session::new();
+    session.add_document(designcraft_engine::DocState::new(doc, None));
+    session.execute("selection.set", &json!({"ids":[id.0]})).unwrap();
+    (DesignApp::new(session, Default::default()), id)
+}
+
+#[test]
+fn density_change_rejects_a_partial_upload_into_the_old_pixel_size() {
+    let (mut app, _) = density_fixture();
+    let ctx = egui::Context::default();
+    let st = app.session.active().unwrap();
+    app.canvas.shown = Some(crate::Shown {
+        doc: (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, false),
+        editing_parents: false,
+        origin: Point::new(-50.0, 0.0),
+        zoom: 1.0,
+        size: (100.0, 100.0),
+    });
+    app.canvas.shown_doc = Some(st.doc.clone());
+    app.canvas.texture = Some(ctx.load_texture("old-1x-canvas", egui::ColorImage::filled([100, 100], Color32::WHITE), egui::TextureOptions::LINEAR));
+    app.session.execute("transform.move", &json!({"dx":1.0})).unwrap();
+    let st = app.session.active().unwrap();
+    let key = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, false);
+    let layout = CanvasLayout::new(&st.doc, false);
+    // At 2x this damage starts beyond x=100. The previous implementation queued
+    // the invalid update; the native wgpu renderer then panicked on write_texture.
+    assert!(!patch_texture(&mut app, &layout, 2.0, key, false), "a stale 1x texture must be replaced before any 2x patch");
+    assert_eq!(app.canvas.patches, 0);
+    assert_eq!(app.canvas.texture.as_ref().unwrap().size(), [100, 100]);
+}
+
+fn density_frame(app: &mut DesignApp, ctx: &egui::Context, scale: f32) {
+    let mut input =
+        egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), max_texture_side: Some(8192), ..Default::default() };
+    input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(ui.ctx());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+}
+
+#[test]
+fn density_changes_refresh_the_canvas_before_subsequent_edits() {
+    let (mut app, _) = density_fixture();
+    let ctx = egui::Context::default();
+    for scale in [1.0, 2.0, 1.5, 1.0] {
+        density_frame(&mut app, &ctx, scale);
+        density_frame(&mut app, &ctx, scale);
+        assert!((ctx.pixels_per_point() - scale).abs() < 0.001);
+        let matches = |a: &DesignApp| {
+            a.canvas
+                .shown
+                .zip(a.canvas.texture.as_ref())
+                .is_some_and(|(sh, tex)| tex.size() == [(sh.size.0 * scale).round().max(1.0) as usize, (sh.size.1 * scale).round().max(1.0) as usize])
+        };
+        assert!(matches(&app) || app.canvas.pending.is_some(), "density change must invalidate the old canvas even with no document edits");
+        app.session.execute("transform.move", &json!({"dx":1.0})).unwrap();
+        let start = std::time::Instant::now();
+        loop {
+            density_frame(&mut app, &ctx, scale);
+            if matches(&app) && app.canvas.pending.is_none() {
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 10, "density refresh stalled");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!app.canvas.low_quality);
+    }
+}
+
 #[test]
 fn a_press_after_a_drag_is_not_a_double_click() {
     let (delay, dist) = (0.3, 6.0);
@@ -45,12 +131,16 @@ fn pages_show_paper_under_their_render() {
             _ => None,
         })
         .collect();
-    // Each page on its own (a spread's pages may differ in size).
-    assert_eq!(paper.len(), st.doc.page_count());
-    for abs in 0..st.doc.page_count() {
-        let want = xf.rect(layout.page_rect(&st.doc, abs).unwrap());
-        assert!(paper.iter().any(|r| (r.min - want.min).length() < 0.01 && (r.max - want.max).length() < 0.01), "page {abs}");
+    // Each visible page has its own paper (a spread's pages may differ in size).
+    // Distant spreads are culled, so their offscreen paper need not be painted.
+    let pages: Vec<Rect> = (0..st.doc.page_count()).map(|abs| xf.rect(layout.page_rect(&st.doc, abs).unwrap())).collect();
+    let visible: Vec<_> = pages.iter().filter(|r| r.intersects(app.canvas_rect.unwrap())).collect();
+    assert!(!visible.is_empty());
+    let same = |a: &Rect, b: &Rect| (a.min - b.min).length() < 0.01 && (a.max - b.max).length() < 0.01;
+    for want in visible {
+        assert!(paper.iter().any(|r| same(r, want)), "visible page {want:?}");
     }
+    assert!(paper.iter().all(|r| pages.iter().any(|p| same(r, p))), "paper follows individual page bounds");
 }
 
 /// Bleed and Slug are preview modes: like Preview they hide the guides, and what the page
@@ -750,7 +840,7 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
     let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
     let mut h = harness(app);
     let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
-        // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+        // As egui-winit delivers the native Paste in Place chord: the chord's paste and the V release, no V press; here the
         // modifiers are released within the same frame.
         let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
         let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
@@ -761,12 +851,12 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
         assert_ne!(pasted.0, id);
         st.doc.item(pasted).unwrap().bounds()
     };
-    let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
-    assert_eq!(paste(&mut h, linux), original, "Paste in Place");
+    let chord = crate::test_window::command_modifiers() | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    assert_eq!(paste(&mut h, chord), original, "Paste in Place");
     let moved = paste(&mut h, egui::Modifiers::COMMAND);
     assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
     // The modifiers went down in an earlier frame than the paste.
-    h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+    h.event_modifiers(egui::Event::Paste(clip.clone()), chord);
     h.run_steps(2);
     let st = h.state().session.doc().unwrap();
     let pasted = *st.selection.items.first().expect("the copy is selected");
@@ -1678,6 +1768,10 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
         assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
         let shown = h.state().canvas.shown.unwrap().size;
         assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
+        // A valid downsampled texture is final at this GPU limit. It must not keep
+        // scheduling background renders merely because it is smaller than view pixels.
+        h.run_steps(3);
+        assert!(h.state().canvas.pending.is_none(), "an unchanged canvas is reused, width {width}");
         let patches = h.state().canvas.patches;
         // A small edit: one more character in the frame.
         h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();

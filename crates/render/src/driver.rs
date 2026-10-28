@@ -21,6 +21,7 @@ impl Renderer {
             cmyk_pass_items: 0,
             threads: default_threads(),
             stats: FrameStats::default(),
+            slice_seen: false,
         }
     }
 
@@ -50,7 +51,9 @@ impl Renderer {
         let start = now();
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
-        if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
+        if let Some(hit) =
+            self.cmyk_view.as_ref().filter(|entry| !opts.cancelled() && entry.matches(doc, spreads, width, height, view, opts, self.threads))
+        {
             let image = hit.image();
             self.stats = hit.stats();
             self.stats.micros = now().saturating_sub(start);
@@ -61,7 +64,7 @@ impl Renderer {
         self.cmyk_ran = false;
         let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
-        if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        if self.cmyk_ran && !image.pixels.is_empty() && !opts.cancelled() && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);
@@ -69,7 +72,7 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_uncached(
+    pub(super) fn render_uncached(
         &mut self,
         doc: &Document,
         cache: &Cache,
@@ -93,6 +96,7 @@ impl Renderer {
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         self.stats = FrameStats::default();
+        self.slice_seen = false;
         self.stories.clear();
         self.glyphs.tick();
         if let Some(bg) = opts.background {
@@ -103,6 +107,9 @@ impl Renderer {
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
         let canvas_visible = view.inverse().transform_rect_bbox(Rect::new(0.0, 0.0, w as f64, h as f64));
         for pl in spreads {
+            if opts.cancelled() {
+                break;
+            }
             let Some(sp) = doc.spread(pl.spread) else { continue };
             let sview = view * pl.xf;
             let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
@@ -114,11 +121,21 @@ impl Renderer {
             let f = Frame { doc, cache, view: sview, visible, px, opts, mt };
             self.draw_spread(&mut ctx, &f, pl.spread);
         }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
+        }
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).
         let mut pixels = vec![0u8; w as usize * h as usize * 4];
         if let Some(pm) = vello_cpu::PixmapMut::new(w, h, &mut pixels) {
             ctx.render(pm, &mut self.resources);
+        }
+        if opts.cancelled() {
+            self.cmyk_ran = false;
+            self.ctx = Some(ctx);
+            return Rendered { width: 0, height: 0, pixels: Vec::new() };
         }
         if opts.blend_space_view && doc.settings.blend_space == designcraft_doc::BlendSpace::Cmyk && opts.plate.is_none() {
             let mut img = Rendered { width: w as u32, height: h as u32, pixels };

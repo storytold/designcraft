@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use designcraft_color::BlendMode as DcBlend;
 use designcraft_compose::{Cache, ComposedStory, ShownOn};
@@ -48,12 +49,16 @@ use decode::halve;
 pub use decode::{decode_pixmap, decode_pixmap_page, image_mime, image_size, natural_size};
 #[cfg(test)]
 use pdf_raster::PDF_RENDERS;
+pub(crate) use pdf_raster::pdf_raster_size;
 pub use pdf_raster::{
     PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png, pdf_page_png_checked,
     pdf_page_png_options_checked, pdf_page_size, render_pdf_page, shown_box,
 };
 pub(crate) use types::Frame;
-pub use types::{DisplayQuality, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads, effect_outset};
+pub use types::{
+    Cancellation, DisplayQuality, DrawSlice, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, SlicePart, default_threads,
+    effect_outset,
+};
 pub mod images;
 mod text;
 
@@ -123,6 +128,8 @@ impl Default for RenderOptions {
             paper: true,
             printing_only: false,
             hidden: vec![],
+            slice: None,
+            cancellation: None,
             greek_below_px: 0.0,
             page_shadow: false,
             highlight_missing_fonts: false,
@@ -165,6 +172,7 @@ pub struct Renderer {
     cmyk_pass_items: usize,
     pub threads: u16,
     pub stats: FrameStats,
+    slice_seen: bool,
 }
 
 impl Default for Renderer {

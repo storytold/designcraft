@@ -22,6 +22,19 @@ impl DesignApp {
 
     /// Work whose identity is a consumed queue item, revision or deadline.
     pub(super) fn logic_tick(&mut self, ctx: &egui::Context) {
+        self.thumbnails.retain_open(self.session.documents().iter().any(|d| d.uid == self.thumbnails.document_uid()));
+        self.canvas.previews.retain_open(self.session.documents().iter().any(|d| d.uid == self.canvas.previews.document_uid()));
+        if let Some((canvas, _)) = &mut self.other_pane {
+            canvas.previews.retain_open(self.session.documents().iter().any(|d| d.uid == canvas.previews.document_uid()));
+        }
+        if self.session.active().is_none() {
+            self.canvas.drag.clear();
+            self.canvas.previews.clear();
+            if let Some((canvas, _)) = &mut self.other_pane {
+                canvas.drag.clear();
+                canvas.previews.clear();
+            }
+        }
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);

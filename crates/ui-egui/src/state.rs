@@ -237,6 +237,8 @@ pub struct UiState {
     pub separations: Option<separations::Separations>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
+    /// Native disposable disk previews; originals and memory previews are unaffected.
+    pub persist_image_previews: bool,
     /// Preferences › Interface › UI scaling (1 = 100%).
     pub ui_scale: f32,
     /// Preferences › Appearance of Black: 100% K on screen as rich black (InDesign's default,
@@ -418,6 +420,7 @@ impl Default for UiState {
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,
+            persist_image_previews: true,
             ui_scale: 1.0,
             rich_black: true,
             overprint_preview: false,
@@ -544,6 +547,11 @@ impl CanvasCache {
             display_key: None,
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
+            drag: Default::default(),
+            previews: Default::default(),
+            drag_active: false,
+            defer_full: false,
+            low_quality: false,
             separations: separations::Preview::default(),
         }
     }
@@ -576,6 +584,11 @@ pub struct CanvasCache {
     pub patcher: designcraft_render::Renderer,
     /// Partial repaints / full renders since start (perf readout).
     pub patches: u64,
+    pub(crate) drag: crate::drag_preview::Preview,
+    pub(crate) previews: crate::canvas_preview::Previews,
+    pub(crate) drag_active: bool,
+    pub(crate) defer_full: bool,
+    pub(crate) low_quality: bool,
     /// View › Separations Preview: the visible spreads' plates.
     pub separations: separations::Preview,
 }

@@ -23,6 +23,10 @@ const ALLOWED: &[(&str, &str)] = &[
     ("engine/src/file_access.rs", "the root check itself (resolves links with the file system)"),
     ("engine/src/atomic.rs", "how a write reaches the disk; commands call it only through io::write_file and io::replace_with"),
     (
+        "render/src/preview_disk.rs",
+        "disposable bounded previews in a directory explicitly configured by the native host; filenames are content hashes, never document-supplied paths. CLI and web leave persistence disabled",
+    ),
+    (
         "engine/src/recovery.rs",
         "the unsaved documents live in a folder the host application chooses (a command's own `dir` is checked in cmd/file.rs before it gets here)",
     ),
