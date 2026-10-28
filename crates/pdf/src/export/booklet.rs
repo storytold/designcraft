@@ -99,6 +99,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         doc,
         cache,
         composed: HashMap::new(),
+        story_text_indices: HashMap::new(),
         opts: &pdf_opts,
         clip: Rect::ZERO,
         warnings,
@@ -124,6 +125,8 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        table_context: None,
+        cell_para_tags: HashMap::new(),
     };
     let pairs = booklet_pairs(n, opts.kind);
     // Sheet size from the largest page.
