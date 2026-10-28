@@ -137,8 +137,10 @@ fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Opti
         None => Ok(None),
         Some(pg) => {
             let pages = d.page_count();
-            match pg.as_u64().map(|n| n as usize) {
-                Some(n) if n >= 1 && n <= pages => Ok(Some(HyperlinkDest::Page(n - 1))),
+            // Compared as it arrived: `n as usize` is lossy where usize is 32 bits, so on wasm
+            // 4294967297 became 1 and a one-page document accepted it (noted in review).
+            match pg.as_u64() {
+                Some(n) if n >= 1 && n <= pages as u64 => Ok(Some(HyperlinkDest::Page(n as usize - 1))),
                 _ => Err(bad(id, format!("page {pg}: the document has {pages} page(s), numbered from 1"))),
             }
         }
@@ -323,6 +325,11 @@ mod anchor_dest_tests {
         for (params, wanted) in [
             (json!({"page": 0}), "numbered from 1"),
             (json!({"page": 99}), "the document has 4 page(s)"),
+            // Compared before it is narrowed: where usize is 32 bits this value truncates to 1
+            // and the document accepted it as its own first page (noted in review). On a 64-bit
+            // host the comparison is the same either way, so this case discriminates on wasm.
+            (json!({"page": 4_294_967_297u64}), "the document has 4 page(s)"),
+            (json!({"page": u64::MAX}), "the document has 4 page(s)"),
             (json!({"anchor": 12345}), "no text anchor"),
             (json!({"anchor": "No Such Anchor"}), "no text anchor"),
         ] {
