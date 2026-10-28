@@ -180,6 +180,32 @@ pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
 mod image_content_cache_tests {
     use super::*;
     use designcraft_doc::Asset;
+    use std::cell::Cell;
+
+    fn gray(v: u8) -> GrayPage {
+        GrayPage { points: (10.0, 10.0), size: (2, 2), pixels: vec![v; 4] }
+    }
+
+    #[test]
+    fn gray_pdf_pulls_pages_lazily_in_order() {
+        let pulled = Cell::new(0);
+        let pages = (0..3u8).map(|i| {
+            pulled.set(pulled.get() + 1);
+            Ok(gray(i * 100))
+        });
+        let bytes = gray_pdf(pages, Some("Gray title")).unwrap();
+        assert_eq!(pulled.get(), 3);
+        assert_eq!(hayro_syntax::Pdf::new(Arc::new(bytes)).unwrap().pages().len(), 3);
+        // An error on the second page stops the build: the third is never rendered.
+        let pulled = Cell::new(0);
+        let pages = (0..3u8).map(|i| {
+            pulled.set(pulled.get() + 1);
+            if i == 1 { Err(PdfError::Write("page 2 could not be rendered".into())) } else { Ok(gray(i)) }
+        });
+        assert_eq!(gray_pdf(pages, None), Err(PdfError::Write("page 2 could not be rendered".into())));
+        assert_eq!(pulled.get(), 2);
+        assert_eq!(gray_pdf(std::iter::empty(), None), Err(PdfError::NoPages));
+    }
 
     fn png(w: u32, h: u32, color: [u8; 4]) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(w, h, image::Rgba(color));

@@ -32,7 +32,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
+# Network printing (WS-Print, IPP): not for the web, there is no socket there.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+designcraft-print = { workspace = true }
+craft-update = { workspace = true }
+
 [dev-dependencies]
+# The in-memory fake printers (never in a shipped binary).
+craft-print = { workspace = true, features = ["testing"] }
 # egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables
 # egui's defaults, and package-scoped UI tests do not build the app binary.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
@@ -46,6 +53,3 @@ designcraft-fonts = { workspace = true, features = ["testing"] }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-craft-update = { workspace = true }

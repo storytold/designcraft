@@ -3506,3 +3506,134 @@ fn character_style_options_set_the_digits() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
+
+fn print_dialog_fields() -> Dialog {
+    Dialog::new(
+        "print",
+        json!({"printers": ["Office", "Front desk", "Zebra"], "defaultPrinter": "Front desk", "printer": "Front desk", "copies": 1, "range": "all",
+            "pages": "1", "spreads": false, "marks": false, "bleed": false, "grayscale": false, "destination": "system"}),
+    )
+}
+
+#[test]
+fn the_printer_list_has_every_system_queue_default_first_then_the_network_entry() {
+    let d = print_dialog_fields();
+    let known = vec![("Studio (reported)".to_owned(), "192.168.0.9".to_owned())];
+    assert_eq!(
+        printer_entries(&d, &known),
+        [
+            PrinterEntry::System("Front desk".into()),
+            PrinterEntry::System("Office".into()),
+            PrinterEntry::System("Zebra".into()),
+            PrinterEntry::Network,
+            PrinterEntry::Known("Studio (reported)".into(), "192.168.0.9".into()),
+        ]
+    );
+    assert_eq!(current_entry(&d, &known, ""), PrinterEntry::System("Front desk".into()));
+    // No queue at all: the system default is still an entry, and the network one follows it.
+    let none = Dialog::new("print", json!({"printers": [], "printer": ""}));
+    assert_eq!(printer_entries(&none, &[]), [PrinterEntry::System(String::new()), PrinterEntry::Network]);
+}
+
+#[test]
+fn choosing_the_network_entry_switches_the_destination_and_a_known_one_brings_its_address() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut d = print_dialog_fields();
+    choose_entry(&mut app, &mut d, &PrinterEntry::Network);
+    assert_eq!(d.s("destination"), "network");
+    assert_eq!(current_entry(&d, &[], ""), PrinterEntry::Network);
+    choose_entry(&mut app, &mut d, &PrinterEntry::Known("Studio".into(), "192.168.0.9".into()));
+    assert_eq!(app.net_print.state.draft.url, "192.168.0.9");
+    let known = vec![("Studio".to_owned(), "192.168.0.9".to_owned())];
+    assert_eq!(current_entry(&d, &known, "192.168.0.9"), PrinterEntry::Known("Studio".into(), "192.168.0.9".into()));
+    choose_entry(&mut app, &mut d, &PrinterEntry::System("Office".into()));
+    assert_eq!((d.s("destination").as_str(), d.s("printer").as_str()), ("system", "Office"));
+}
+
+/// A print that fails keeps the dialog open and shows why (no spooler is touched: the page range
+/// is refused before anything is sent).
+#[test]
+fn a_failed_print_stays_in_the_dialog_with_the_reason() {
+    use egui::vec2;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut d = print_dialog_fields();
+    d.fields.insert("range".into(), json!("range"));
+    d.fields.insert("pages".into(), json!("99"));
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err();
+    let shown = app.ui.dialog.as_ref().expect("the dialog is still open").s("status");
+    assert_eq!(shown, err);
+    assert!(!err.is_empty() && app.ui.status == err);
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+                ready = true;
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    assert!(h.query_by_label_contains(err.as_str()).is_some(), "the reason is on screen: {err}");
+    assert!(h.query_by_label("Printer:").is_some());
+}
+
+/// A network print that cannot start says why in the dialog, as the system queue's does.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_network_print_that_cannot_start_shows_the_reason_in_the_dialog() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut d = print_dialog_fields();
+    d.fields.insert("destination".into(), json!("network"));
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err();
+    let shown = app.ui.dialog.as_ref().expect("the dialog is still open").s("status");
+    assert!(!err.is_empty());
+    assert_eq!(shown, err, "the reason is in the dialog, not only on the status bar");
+}
+
+#[test]
+fn the_print_dialog_has_one_printer_list_and_a_grayscale_checkbox_and_the_network_section_follows_the_entry() {
+    use egui::vec2;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dialog = Some(print_dialog_fields());
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(1000.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+                ready = true;
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    // One Printer list; the old Destination switch is gone; the local queue has Grayscale and copies.
+    assert!(h.query_by_label("Printer:").is_some());
+    assert!(h.query_by_label("Destination:").is_none() && h.query_by_label("System printer").is_none());
+    assert!(h.query_by_label("Grayscale").is_some() && h.query_by_label("Copies:").is_some());
+    assert!(h.query_by_label("Printer address:").is_none());
+    // The list shows the default queue, then the others, then the network entry.
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.run_steps(3);
+    for want in ["Office", "Zebra", "Network printer…"] {
+        assert!(h.query_by_label(want).is_some(), "{want} is in the list");
+    }
+    h.get_by_label("Network printer…").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("destination"), "network");
+    assert!(h.query_by_label("Printer address:").is_some(), "the network section appears");
+    assert!(h.query_by_label("Copies:").is_none(), "the local-queue rows are replaced");
+}

@@ -51,6 +51,8 @@ pub mod preflight;
 mod prefs;
 mod prepress;
 mod print;
+#[cfg(not(target_arch = "wasm32"))]
+pub use print::{PrintDocument, PrintSnapshot, print_document, print_snapshot};
 mod qr;
 mod rulers;
 mod scripts;

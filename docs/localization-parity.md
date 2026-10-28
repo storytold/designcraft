@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (network print messages go through the catalogs, German machine-drafted; catalog file list corrected; missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,it,ja,ka,pt_br,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,it,ja,ka,pl,pt_br,ru,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -94,3 +94,4 @@ locale shaping. See [typography-parity.md](typography-parity.md).
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |
 | 2026-10-11 | minor | Czech (cs) added: 1,722 strings, plural categories handled |
 | 2026-10-13 | minor | Polish interface added (1,717 strings) |
+| 2026-10-18 | minor | Network print: the app's own messages ("Nothing to print", the job that did not start, "the printer", the alert title) go through `tr`; German rows machine-drafted, not yet reviewed. Catalog file list now names de, fr, pl and ru |

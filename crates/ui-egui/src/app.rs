@@ -109,6 +109,8 @@ impl DesignApp {
             quitting: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            net_print: network_glue::NetTasks::default(),
             updates_rt: updates_ui::Runtime::default(),
         }
     }
@@ -284,6 +286,8 @@ impl DesignApp {
             dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_network();
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);

@@ -21,6 +21,20 @@ pub fn pdf_page_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
+/// Sizes of every page of a PDF, as [`pdf_page_size`] gives them, from one parse.
+pub fn pdf_page_sizes(bytes: &[u8]) -> Option<Vec<(f64, f64)>> {
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    Some(
+        pdf.pages()
+            .iter()
+            .map(|p| {
+                let (w, h) = p.render_dimensions();
+                (w as f64, h as f64)
+            })
+            .collect(),
+    )
+}
+
 /// A placed page could not be rasterized completely for export.
 #[derive(Debug, thiserror::Error)]
 pub enum PdfRasterError {

@@ -40,6 +40,56 @@ fn merge_pdfs_inner(parts: &[(Vec<u8>, Vec<(f32, f32)>)], title: Option<&str>) -
     if has_optional_content { crate::optional_content::register(&bytes) } else { Ok(bytes) }
 }
 
+/// Rec. 709 luma of an sRGB colour, 8-bit (the weights every grayscale conversion here uses).
+pub fn rec709_luma(r: u8, g: u8, b: u8) -> u8 {
+    ((u32::from(r) * 2126 + u32::from(g) * 7152 + u32::from(b) * 722 + 5000) / 10_000).min(255) as u8
+}
+
+/// One page of a grayscale PDF: its size in points and an 8-bit luma raster (`pixels` is
+/// `width * height` samples, top row first).
+pub struct GrayPage {
+    pub points: (f32, f32),
+    pub size: (u32, u32),
+    pub pixels: Vec<u8>,
+}
+
+/// A PDF whose every page is one gray picture: what a "Grayscale" print sends, whatever the colours
+/// of the document. (Gray samples are stored as equal R=G=B so every viewer shows exactly gray.)
+///
+/// The pages are pulled one at a time, in order, and each one's raster is released before the next is
+/// asked for, so a long document never holds every page's pixels at once. The first `Err` an iterator
+/// yields ends the build and is returned.
+pub fn gray_pdf(pages: impl IntoIterator<Item = Result<GrayPage>>, title: Option<&str>) -> Result<Vec<u8>> {
+    write::guard(|| gray_pdf_inner(pages, title))
+}
+
+fn gray_pdf_inner(pages: impl IntoIterator<Item = Result<GrayPage>>, title: Option<&str>) -> Result<Vec<u8>> {
+    let metadata = Metadata { creator: "DesignCraft".into(), producer: "DesignCraft".into(), title: title.map(str::to_owned), ..Default::default() };
+    let mut writer = Writer::new(krilla::SerializeSettings::default(), metadata);
+    let pdf = writer.document_mut();
+    let mut count = 0usize;
+    for pg in pages {
+        let pg = pg?;
+        count += 1;
+        let (w, h) = pg.size;
+        if w == 0 || h == 0 || pg.pixels.len() != w as usize * h as usize {
+            return Err(PdfError::Write("a gray page's pixels do not match its size".into()));
+        }
+        let size = Size::from_wh(pg.points.0.max(1.0), pg.points.1.max(1.0)).ok_or(PdfError::NoPages)?;
+        let rgba: Vec<u8> = pg.pixels.iter().flat_map(|&v| [v, v, v, 255]).collect();
+        drop(pg);
+        let mut page = pdf.start_page_with(PageSettings::new(size));
+        let mut s = page.surface();
+        s.draw_image(Image::from_rgba8(rgba, w, h), size);
+        s.finish();
+        page.finish();
+    }
+    if count == 0 {
+        return Err(PdfError::NoPages);
+    }
+    writer.finish().map_err(PdfError::from)
+}
+
 /// File › Print Booklet: how pages pair up on printer spreads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BookletKind {

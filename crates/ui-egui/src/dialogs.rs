@@ -250,11 +250,15 @@ fn user_dictionary(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 /// File › Print, with the printers the system knows.
 pub fn open_print(app: &mut DesignApp) {
     let p = app.session.execute("file.printers", &json!({})).unwrap_or_default();
-    let printer = p["default"].as_str().map(str::to_string).or_else(|| p["printers"][0].as_str().map(str::to_string)).unwrap_or_default();
+    let default = p["default"].as_str().map(str::to_string).unwrap_or_default();
+    let printer = if default.is_empty() { p["printers"][0].as_str().map(str::to_string).unwrap_or_default() } else { default.clone() };
     app.ui.dialog = Some(Dialog::new(
         "print",
-        json!({"printers": p["printers"], "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false}),
+        json!({"printers": p["printers"], "defaultPrinter": default, "printer": printer, "copies": 1, "range": "all", "pages": "1", "spreads": false, "marks": false, "bleed": false, "grayscale": false, "destination": "system"}),
     ));
+    // The confirmation of a network print is never kept: it clears when the dialog opens.
+    #[cfg(not(target_arch = "wasm32"))]
+    app.net_print.state.dialog_opened();
 }
 
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
@@ -330,31 +334,130 @@ fn epub_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let printers: Vec<String> = d
+/// The entries of the Printer list, in order: the system's printers (the default first, marked), then
+/// one entry for a network printer the person adds by address, then the network printers already
+/// queried in this session (by the name they reported).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PrinterEntry {
+    /// A queue of the system (its name; empty = the system default).
+    System(String),
+    /// "Network printer…": the address field and the printer's own options.
+    Network,
+    /// A network printer queried before in this session: (reported name, address).
+    Known(String, String),
+}
+
+/// The Printer list for the dialog's fields (`printers`, `defaultPrinter`) and the session's known
+/// network printers. The web build has no network entries (no sockets there).
+pub(crate) fn printer_entries(d: &Dialog, known: &[(String, String)]) -> Vec<PrinterEntry> {
+    let default = d.s("defaultPrinter");
+    let names: Vec<String> = d
         .fields
         .get("printers")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    egui::Grid::new("print").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Printer:"));
-        let cur = d.s("printer");
-        if printers.is_empty() {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "System default")).italics());
-        } else {
-            craft_ui::ComboBox::from_id_salt("printer").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
-                for p in &printers {
-                    if ui.selectable_label(*p == cur, p).clicked() {
-                        d.fields.insert("printer".into(), json!(p));
-                    }
-                }
-            });
+    let mut entries: Vec<PrinterEntry> = Vec::new();
+    if !default.is_empty() && names.contains(&default) {
+        entries.push(PrinterEntry::System(default.clone()));
+    }
+    entries.extend(names.iter().filter(|n| **n != default).map(|n| PrinterEntry::System(n.clone())));
+    if names.is_empty() {
+        entries.push(PrinterEntry::System(String::new()));
+    }
+    if cfg!(not(target_arch = "wasm32")) {
+        entries.push(PrinterEntry::Network);
+        entries.extend(known.iter().map(|(n, u)| PrinterEntry::Known(n.clone(), u.clone())));
+    }
+    entries
+}
+
+/// The entry the dialog's fields are on (`url`: the network section's address).
+pub(crate) fn current_entry(d: &Dialog, known: &[(String, String)], url: &str) -> PrinterEntry {
+    if d.s("destination") == "network" {
+        known.iter().find(|(_, u)| u == url).map_or(PrinterEntry::Network, |(n, u)| PrinterEntry::Known(n.clone(), u.clone()))
+    } else {
+        PrinterEntry::System(d.s("printer"))
+    }
+}
+
+fn entry_label(lang: &str, d: &Dialog, e: &PrinterEntry) -> String {
+    match e {
+        PrinterEntry::System(n) if n.is_empty() => crate::i18n::tr(lang, "System default").to_string(),
+        PrinterEntry::System(n) if *n == d.s("defaultPrinter") => format!("{n}  \u{2605}"),
+        PrinterEntry::System(n) => n.clone(),
+        PrinterEntry::Network => crate::i18n::tr(lang, "Network printer…").to_string(),
+        PrinterEntry::Known(n, _) => n.clone(),
+    }
+}
+
+/// Choose an entry: a system queue, or the network destination (with the address of a known one).
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+pub(crate) fn choose_entry(app: &mut crate::DesignApp, d: &mut Dialog, e: &PrinterEntry) {
+    match e {
+        PrinterEntry::System(n) => {
+            d.fields.insert("destination".into(), json!("system"));
+            d.fields.insert("printer".into(), json!(n));
         }
-        ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
-        text_field(ui, d, "copies", 50.0);
-        ui.end_row();
+        #[cfg(not(target_arch = "wasm32"))]
+        PrinterEntry::Network => {
+            d.fields.insert("destination".into(), json!("network"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        PrinterEntry::Known(_, url) => {
+            d.fields.insert("destination".into(), json!("network"));
+            app.net_print.use_address(url);
+        }
+        #[cfg(target_arch = "wasm32")]
+        _ => {}
+    }
+}
+
+/// File › Print › Printer: one list with the system's printers and "Network printer…" (a printer the
+/// person adds by address, WS-Print or IPP). Choosing the network entry shows its section below.
+fn print_printer_row(app: &mut crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (known, url) = {
+        app.net_print.remember_queried();
+        (app.net_print.known().to_vec(), app.net_print.state.draft.url.clone())
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (known, url): (Vec<(String, String)>, String) = (Vec::new(), String::new());
+    let entries = printer_entries(d, &known);
+    let current = current_entry(d, &known, &url);
+    let lang = app.ui.language.clone();
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Printer:"));
+        craft_ui::ComboBox::from_id_salt("printer").selected_text(entry_label(&lang, d, &current)).width(260.0).show_ui(ui, |ui| {
+            for e in &entries {
+                if ui.selectable_label(*e == current, entry_label(&lang, d, e)).clicked() {
+                    chosen = Some(e.clone());
+                }
+            }
+        });
+    });
+    if let Some(e) = chosen {
+        choose_entry(app, d, &e);
+    }
+}
+
+fn print_dialog(app: &mut crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    print_printer_row(app, ui, d);
+    #[cfg(not(target_arch = "wasm32"))]
+    let network = d.s("destination") == "network";
+    #[cfg(target_arch = "wasm32")]
+    let network = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    if network {
+        let lang = app.ui.language.clone();
+        app.net_print.show(ui, &lang, app.session.active().is_some());
+        ui.separator();
+    }
+    egui::Grid::new("print").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        if !network {
+            print_system_rows(app, ui, d);
+        }
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pages:"));
         ui.vertical(|ui| {
             let range = d.s("range");
@@ -377,6 +480,21 @@ fn print_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.end_row();
     });
+    // Why the last attempt to print failed.
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        ui.add(egui::Label::new(egui::RichText::new(st).color(ui.visuals().error_fg_color)).wrap());
+    }
+}
+
+/// The system queue's rows: the copies and Grayscale (the printed pages are gray, not only the
+/// driver's colour hint). A network printer has its own copies and colour in its section.
+fn print_system_rows(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Copies:"));
+    text_field(ui, d, "copies", 50.0);
+    ui.end_row();
+    ui.label("");
+    check(ui, d, "grayscale", crate::i18n::tr(&app.ui.language, "Grayscale"));
+    ui.end_row();
 }
 
 /// The presets offered by the Export PDF dialog, in display order. The stored value is the
@@ -3529,14 +3647,47 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        "print" if d.s("destination") == "network" => {
+            // The job is sent on its own thread. The dialog stays up to show it (accepted, printing,
+            // done) and the status bar names the printer; a job that cannot start says why.
+            let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
+            let r = app.network_send(&json!({"pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}));
+            let mut d = d;
+            match &r {
+                Err(e) => {
+                    // In the dialog, as the system queue's failure is, and on the status bar.
+                    d.fields.insert("status".into(), json!(e));
+                    app.status(e.clone());
+                }
+                // The dialog stays up while the job runs: an earlier refusal (the confirmation not yet
+                // ticked) must not keep showing in the error colour beside a job that has started.
+                Ok(()) => {
+                    d.fields.remove("status");
+                }
+            }
+            app.ui.dialog = Some(d);
+            r.map(|()| json!({"network": true}))
+        }
         "print" => {
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };
             let printer = d.s("printer");
             let r = app.run(
                 "file.print",
                 json!({"printer": if printer.is_empty() { Value::Null } else { json!(printer) }, "copies": d.n("copies").unwrap_or(1.0).max(1.0) as u64,
-                    "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed")}),
-            )?;
+                    "pages": pages, "spreads": d.b("spreads"), "marks": d.b("marks"), "bleed": d.b("bleed"), "grayscale": d.b("grayscale")}),
+            );
+            let r = match r {
+                Ok(r) => r,
+                Err(e) => {
+                    // A print that failed keeps the dialog open with the reason in it (the printer, the
+                    // pages, the driver's or the spooler's answer), to be read, fixed and tried again.
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
+            };
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}").replace("{count}", &r["pages"].to_string()).replace("{printer}", printer));
             Ok(r)
