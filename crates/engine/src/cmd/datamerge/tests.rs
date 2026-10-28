@@ -679,6 +679,7 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
             HyperlinkDest::Email(v) => format!("email:{v}"),
             HyperlinkDest::Url(v) => format!("url:{v}"),
             HyperlinkDest::Page(n) => format!("page:{n}"),
+            HyperlinkDest::Anchor(a) => format!("anchor:{a}"),
         });
     }
     kinds.sort();

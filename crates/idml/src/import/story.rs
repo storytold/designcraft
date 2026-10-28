@@ -20,11 +20,21 @@ impl<'r> Importer<'r> {
             notes: Vec::new(),
             anchors: Vec::new(),
             xrefs: Vec::new(),
+            link_srcs: Vec::new(),
             index_refs: Vec::new(),
             objects: Vec::new(),
         };
         self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
-        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, .. } = b;
+        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, link_srcs, .. } = b;
+        for (me, start, end) in link_srcs {
+            // A cell's or a footnote's story is built under the `StoryId(0)` placeholder, so a
+            // range recorded against it names no story of the document (noted in review).
+            if id.0 == 0 {
+                self.nested_link_srcs.insert(me);
+            } else {
+                self.link_text_srcs.insert(me, (id, start, end));
+            }
+        }
         let mut chars: Vec<CharRun> = runs.into_iter().filter(|r| r.len > 0).collect();
         if chars.is_empty() {
             chars.push(CharRun { len: 0, format: last });
@@ -40,7 +50,16 @@ impl<'r> Importer<'r> {
         let mut anchor_list = Vec::new();
         for (k, (me, name)) in anchors.into_iter().enumerate() {
             let aid = (id.0 << 24) | (k as u64 + 1);
-            self.anchor_ids.insert(me, aid);
+            // Only a document story's anchors can be reached. A cell's or a footnote's story is
+            // built under `StoryId(0)`, so its anchors take ids from the same low range as each
+            // other and belong to no story `Document::stories` or the cross-reference index
+            // holds -- a link to one resolved to an id nothing owns, and the PDF then left the
+            // annotation out without saying so (noted in review).
+            if id.0 == 0 {
+                self.nested_anchors.insert(me);
+            } else {
+                self.anchor_ids.insert(me, aid);
+            }
             anchor_list.push(Arc::new(designcraft_doc::TextAnchor { id: aid, name }));
         }
         let mut xref_list = Vec::new();
@@ -170,6 +189,15 @@ impl<'r> Importer<'r> {
                     "Table" => {
                         let t = self.table(c);
                         b.push_table(t, pf, cf);
+                    }
+                    // The source wraps the text the link covers: its children are ordinary ranges
+                    // and content, so the range is where the text stood before and after (#1446).
+                    "HyperlinkTextSource" => {
+                        let start = b.text.len();
+                        self.walk_story(c, b, pf, pchars, cf, brk);
+                        if b.text.len() > start {
+                            b.link_srcs.push((c.get("Self").unwrap_or("").to_string(), start, b.text.len()));
+                        }
                     }
                     "HyperlinkTextDestination" | "ParagraphDestination" => {
                         b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
@@ -397,6 +425,8 @@ struct StoryBuilder {
     anchors: Vec<(String, String)>,
     index_refs: Vec<designcraft_doc::IndexRef>,
     xrefs: Vec<(String, String)>,
+    /// `HyperlinkTextSource` Self and the byte range of the text it wrapped (#1446).
+    link_srcs: Vec<(String, usize, usize)>,
     objects: Vec<designcraft_doc::AnchoredObject>,
 }
 

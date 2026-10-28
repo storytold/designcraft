@@ -752,6 +752,21 @@ pub enum HyperlinkDest {
     Email(String),
     /// Absolute page index.
     Page(usize),
+    /// A text anchor ([`TextAnchor::id`]), as a cross-reference targets one. The page is
+    /// whichever page the anchor's text has landed on when the document is exported, so the link
+    /// follows its destination as the text reflows (#1446).
+    Anchor(u64),
+}
+
+impl HyperlinkDest {
+    /// The name a hyperlink is given when none is supplied.
+    pub fn label(&self) -> String {
+        match self {
+            HyperlinkDest::Url(u) | HyperlinkDest::Email(u) => u.clone(),
+            HyperlinkDest::Page(p) => format!("Page {}", p + 1),
+            HyperlinkDest::Anchor(a) => format!("Anchor {a}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
