@@ -669,3 +669,37 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
 }
+
+#[test]
+fn dotted_strokes_draw_every_dot() {
+    // A 4 pt dotted line 96 pt long: dots every 8 pt, 13 of them.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 400.0), designcraft_geom::Point::new(196.0, 400.0));
+    let mut line = Item::new(id, lid, designcraft_doc::Shape::GraphicLine, path);
+    line.stroke = designcraft_doc::Stroke {
+        swatch: designcraft_color::swatch::BLACK.into(),
+        weight: 4.0,
+        kind: designcraft_doc::StrokeType::Dotted,
+        ..Default::default()
+    };
+    d.insert_item(SpreadRef::Doc(0), line, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    for i in 0..13 {
+        let x = 100 + i * 8;
+        assert!(img.pixel(x, 400)[0] < 128, "dot {i} at x={x}: {:?}", img.pixel(x, 400));
+        if i < 12 {
+            assert_eq!(img.pixel(x + 4, 400), [255, 255, 255, 255], "gap after dot {i}");
+        }
+    }
+    // Table and paragraph rules: one round dot per period.
+    let stroke = text::cell_stroke(&designcraft_doc::StrokeType::Dotted, 4.0, 96.0);
+    let edge = kurbo::Line::new((0.0, 0.0), (96.0, 0.0));
+    let outline = kurbo::stroke(kurbo::Shape::path_elements(&edge, 0.01), &stroke, &kurbo::StrokeOpts::default(), 0.01);
+    let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
+    assert_eq!(dots, 13);
+}

@@ -612,9 +612,7 @@ pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, lengt
         StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
-            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
-        }
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => super::stroke::dotted(st, weight),
         _ => st,
     }
 }
