@@ -22,6 +22,9 @@ finish-args:
   - --socket=fallback-x11
   # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
+  # Network: update checks reach GitHub. This shares the host network namespace, so the optional
+  # --control server (127.0.0.1 in the sandbox) is reachable from the host.
+  - --share=network
   # GPU access for egui's renderer (Vulkan, or GL as a fallback).
   - --device=dri
   # Open/Save, Place and Export go through the file-chooser portal (rfd's xdg-portal backend)
@@ -30,9 +33,7 @@ finish-args:
   # line, Open Recent, linked images placed in a layout) work in the usual places.
   - --filesystem=xdg-documents
   - --filesystem=xdg-pictures
-  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network ai.storyteller.designcraft` exposes it
-  # to host agents) and home/host filesystem access.
+  # Home/host filesystem access is deliberately not granted.
 modules:
   - name: designcraft
     buildsystem: simple
