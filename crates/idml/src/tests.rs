@@ -1544,6 +1544,153 @@ fn page_item_and_text_hyperlinks_survive_import() {
     );
 }
 
+/// The other direction of #1446: a document's own hyperlinks are written to IDML and read back.
+/// Export wrote none of them, so a link made here (or imported from an InDesign file) was lost
+/// the moment the document went out as IDML.
+#[test]
+fn round_trips_page_item_and_text_hyperlinks() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument { pages: 2, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "See the plate overleaf.", ParaFormat::default()).unwrap();
+    let photo = designcraft_doc::ItemId(d.alloc());
+    let frame = designcraft_doc::Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+    let caption = d.paragraph_anchor(sid, 0).unwrap();
+
+    // One of each kind a link can have: a frame to a URL, a frame to an email address, a frame to
+    // a text anchor, and a run of text to a page.
+    let at = d.story(sid).unwrap().text.find("the plate").unwrap();
+    for (name, source, dest) in [
+        ("Photo", S::Item { id: photo }, D::Url("https://example.com/photo.jpg".into())),
+        ("Studio", S::Item { id: photo }, D::Email("studio@example.com".into())),
+        ("Caption", S::Item { id: photo }, D::Anchor(caption)),
+        ("Plate", S::Text { story: sid, start: at, end: at + "the plate".len() }, D::Page(1)),
+    ] {
+        let id = d.alloc();
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest });
+    }
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+
+    let named = |n: &str| back.hyperlinks.iter().find(|h| h.name == n).unwrap_or_else(|| panic!("{n} came back: {:?}", back.hyperlinks));
+    assert_eq!(back.hyperlinks.len(), 4, "every link came back: {:?}", back.hyperlinks);
+    assert_eq!(named("Photo").dest, D::Url("https://example.com/photo.jpg".into()));
+    assert_eq!(named("Studio").dest, D::Email("studio@example.com".into()), "an email link is not written as a bare URL");
+    assert_eq!(named("Plate").dest, D::Page(1), "the page destination is the same page");
+
+    // The frame links point at the frame, which has a new id on the way through.
+    let S::Item { id } = named("Photo").source else { panic!("a page item source: {:?}", named("Photo").source) };
+    assert!(back.item(id).is_some(), "the source frame is in the document");
+    assert_eq!(back.item(id).map(|i| i.shape), Some(Shape::Rectangle), "and it is the frame the link was on");
+
+    // The text link covers the same words, and the anchor link resolves to the same paragraph.
+    let S::Text { story, start, end } = named("Plate").source else { panic!("a text source: {:?}", named("Plate").source) };
+    assert_eq!(&back.story(story).unwrap().text[start..end], "the plate");
+    let D::Anchor(a) = named("Caption").dest else { panic!("an anchor destination: {:?}", named("Caption").dest) };
+    assert_eq!(back.find_anchor(a).map(|(_, pos)| pos), Some(0), "the anchor is the paragraph it was on");
+
+    // One destination element per URL, however many links lead to it.
+    let text = zip_text(&idml, "designmap.xml");
+    assert_eq!(text.matches("<HyperlinkURLDestination").count(), 2, "one for the photo and one for the mailto: {text}");
+    assert_eq!(text.matches("mailto:studio@example.com").count(), 1);
+
+    // Every `Self` names one element. Three links sit on `photo`, so there are three source
+    // elements and they cannot share a `Self`; the page destination is written once however
+    // many links lead to it, as the URL destinations are (noted in review).
+    let selfs: Vec<&str> = text.match_indices("Self=\"").map(|(i, _)| &text[i + 6..][..text[i + 6..].find('"').unwrap_or(0)]).collect();
+    let mut seen = std::collections::HashSet::new();
+    let repeated: Vec<&&str> = selfs.iter().filter(|s| !seen.insert(**s)).collect();
+    assert!(repeated.is_empty(), "no Self is written twice, but these are: {repeated:?}");
+    assert_eq!(text.matches("<HyperlinkPageItemSource").count(), 3, "one per link on the frame: {text}");
+    assert_eq!(text.matches("<HyperlinkPageDestination").count(), 1, "one for the page, not one per link to it: {text}");
+}
+
+/// A link to an anchor whose text has been deleted names no element, so writing it put a
+/// `Hyperlink` in the file whose `Destination` points at nothing: import only warns, and
+/// InDesign may refuse the file. The anchor is resolved first, as the page destination's page is
+/// (noted in review of #1446).
+#[test]
+fn a_link_to_an_anchor_the_document_no_longer_has_is_not_written() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument { pages: 2, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "See the plate overleaf.", ParaFormat::default()).unwrap();
+    let photo = designcraft_doc::ItemId(d.alloc());
+    let frame = designcraft_doc::Item::new(photo, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 420.0, 200.0, 500.0)));
+    d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+
+    // An anchor id the document has never had, alongside a link that is fine.
+    for (name, dest) in [("Dangling", D::Anchor(999_999)), ("Fine", D::Page(1))] {
+        let id = d.alloc();
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source: S::Item { id: photo }, dest });
+    }
+    assert!(d.find_anchor(999_999).is_none(), "the document really has no such anchor");
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    let text = zip_text(&idml, "designmap.xml");
+    assert!(!text.contains("Dangling"), "the dangling link is not written: {text}");
+    assert_eq!(text.matches("<Hyperlink ").count(), 1, "only the link that leads somewhere: {text}");
+
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+    assert_eq!(back.hyperlinks.len(), 1, "{:?}", back.hyperlinks);
+    assert_eq!(back.hyperlinks[0].name, "Fine");
+    let _ = sid;
+}
+
+/// A `HyperlinkTextSource` nests inside a `ParagraphStyleRange`, so a link whose text crosses a
+/// paragraph cannot be one element: it is written as one source per paragraph, and each piece
+/// comes back as a link of its own. Pinned so the behaviour is a decision and not a surprise, and
+/// so it is clear what has to change if IDML ever lets one source span paragraphs (#1446).
+#[test]
+fn a_hyperlink_across_a_paragraph_is_written_as_one_source_per_paragraph() {
+    use designcraft_doc::{Hyperlink, HyperlinkDest as D, HyperlinkSource as S};
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "first line\nsecond line", ParaFormat::default()).unwrap();
+    let text = d.story(sid).unwrap().text.clone();
+    let (start, end) = (text.find("line").unwrap(), text.find("second").unwrap() + "second".len());
+    let id = d.alloc();
+    d.hyperlinks.push(Hyperlink {
+        id,
+        name: "Across".into(),
+        source: S::Text { story: sid, start, end },
+        dest: D::Url("https://example.com/".into()),
+    });
+    d.check().unwrap();
+
+    let idml = export_idml(&d);
+    assert_eq!(zip_text(&idml, "Stories/").matches("<HyperlinkTextSource").count(), 2, "one source in each paragraph");
+
+    let back = import_idml(&idml).unwrap();
+    back.check().unwrap();
+    let across: Vec<_> = back.hyperlinks.iter().filter(|h| h.name == "Across").collect();
+    assert_eq!(across.len(), 2, "each piece is a link of its own: {:?}", back.hyperlinks);
+    let piece = |h: &Hyperlink| {
+        let S::Text { story, start, end } = h.source else { panic!("a text source: {:?}", h.source) };
+        back.story(story).unwrap().text[start..end].to_string()
+    };
+    let mut pieces: Vec<String> = across.iter().map(|h| piece(h)).collect();
+    pieces.sort();
+    // The first piece keeps the paragraph break, because the link's range covered it: the break
+    // is the last character of its paragraph, so the source that wraps that paragraph's text
+    // wraps the break with it. Between them the pieces cover exactly what the link covered.
+    assert_eq!(pieces, vec!["line\n".to_string(), "second".to_string()], "between them they cover the text the link was on");
+    assert_eq!(pieces.concat(), d.story(sid).unwrap().text[start..end], "and nothing of it is lost or added");
+    assert!(across.iter().all(|h| h.dest == D::Url("https://example.com/".into())), "both pieces lead where the link led");
+}
+
 #[test]
 fn round_trips_index_references() {
     use designcraft_doc::index::IndexRange;

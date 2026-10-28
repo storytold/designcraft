@@ -212,7 +212,37 @@ impl<'a> Ex<'a> {
                 let f = s.char_format_at(r.start).clone();
                 segs.push((r.start..r.start, f));
             }
+            // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
+            // ranges it covers, so the runs are cut at its edges first (#1446).
+            let links: Vec<(usize, std::ops::Range<usize>)> = self
+                .d
+                .hyperlinks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, h)| match &h.source {
+                    designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
+                        let (a, b) = ((*start).max(r.start), (*end).min(r.end));
+                        (a < b).then_some((i, a..b))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
+            cuts.sort_unstable();
+            cuts.dedup();
+            let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
+                let mut at = rr.start;
+                for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
+                    out.push((at..c, f.clone()));
+                    at = c;
+                }
+                out.push((at..rr.end, f));
+                out
+            });
             let nseg = segs.len();
+            // Each segment's ranges, with the link they belong to; wrapped once the paragraph is
+            // built so that consecutive ranges of one link share a single source element.
+            let mut psr_csrs: Vec<(Option<usize>, El)> = Vec::new();
             for (k, (rr, f)) in segs.into_iter().enumerate() {
                 let seg_start = rr.start;
                 let text = &s.text[rr];
@@ -471,8 +501,35 @@ impl<'a> Ex<'a> {
                         },
                     }
                 }
+                let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
                 for c in csrs {
-                    psr.push(c);
+                    psr_csrs.push((link, c));
+                }
+            }
+            // Consecutive ranges of one link go inside one `HyperlinkTextSource`.
+            let mut groups: Vec<(Option<usize>, Vec<El>)> = Vec::new();
+            for (link, c) in psr_csrs {
+                match groups.last_mut() {
+                    Some((l, v)) if *l == link => v.push(c),
+                    _ => groups.push((link, vec![c])),
+                }
+            }
+            for (link, cs) in groups {
+                match link.and_then(|i| self.d.hyperlinks.get(i).map(|h| (i, h.name.clone()))) {
+                    None => {
+                        for c in cs {
+                            psr.push(c);
+                        }
+                    }
+                    Some((i, name)) => {
+                        let me = self.fresh();
+                        let mut src = El::new("HyperlinkTextSource").attr("Self", &me).attr("Name", name).attr("Hidden", "false");
+                        for c in cs {
+                            src.push(c);
+                        }
+                        psr.push(src);
+                        self.link_text_sources.push((me, i));
+                    }
                 }
             }
             paras.push(psr);
