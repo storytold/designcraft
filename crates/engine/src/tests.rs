@@ -799,6 +799,74 @@ fn export_pdf_of_the_sample() {
     assert!(s.execute("file.exportPdf", &json!({"standard": "bogus"})).is_err());
 }
 
+/// Export PDF › Compression, Output, custom bleed and the new marks reach the exporter from the
+/// command, and bad values are refused with what was wrong.
+#[test]
+fn export_pdf_print_options_parse_and_validate() {
+    use designcraft_pdf::{ColorConversion, Downsample, ImageCompression, JpegQuality};
+    let p = json!({
+        "images": {
+            "color": {"downsample": "bicubic", "ppi": 300, "above": 450, "compression": "auto", "quality": "high"},
+            "gray": {"downsample": "average", "ppi": 150, "above": 225, "compression": "zip"},
+            "mono": {"downsample": "subsample", "ppi": 1200, "above": 1800, "compression": "jpeg"},
+            "cropToFrames": true
+        },
+        "output": {"conversion": "preserveNumbers", "destination": designcraft_color::cms::GENERIC_CMYK, "includeProfile": true, "intent": "perceptual"},
+        "bleed": true, "bleedValues": [9, 9, 3, 3], "slug": true, "compressText": false,
+        "marks": {"registration": true, "colorBars": true}
+    });
+    let o = cmd::export_pdf_options(&p, 4).unwrap();
+    let io = o.images.unwrap();
+    assert_eq!(
+        (io.color.downsample, io.color.ppi, io.color.above_ppi, io.color.compression, io.color.quality),
+        (Downsample::Bicubic, 300.0, 450.0, ImageCompression::Automatic, JpegQuality::High)
+    );
+    assert_eq!((io.gray.downsample, io.gray.ppi, io.gray.compression), (Downsample::Average, 150.0, ImageCompression::Zip));
+    assert_eq!(io.mono.compression, ImageCompression::Zip, "black and white is always lossless");
+    assert!(io.crop_to_frames);
+    assert_eq!(o.output.conversion, ColorConversion::PreserveNumbers);
+    assert_eq!(o.output.destination.as_deref(), Some(designcraft_color::cms::GENERIC_CMYK));
+    assert!(o.output.include_profile);
+    assert_eq!(o.output.intent, Some(designcraft_color::cms::Intent::Perceptual));
+    assert_eq!(o.bleed_values, Some([9.0, 9.0, 3.0, 3.0]));
+    assert!(o.slug && !o.compress && o.marks.registration && o.marks.color_bars);
+    // Bleed values alone turn bleed on; an explicit `bleed: false` wins.
+    let o = cmd::export_pdf_options(&json!({"bleedValues": [9, 9, 9, 9]}), 4).unwrap();
+    assert!(o.bleed && o.bleed_values == Some([9.0; 4]));
+    let o = cmd::export_pdf_options(&json!({"bleedValues": [9, 9, 9, 9], "bleed": false}), 4).unwrap();
+    assert!(!o.bleed);
+    // Defaults: no image options (the old behaviour), no conversion, text compressed.
+    let o = cmd::export_pdf_options(&json!({}), 4).unwrap();
+    assert!(o.images.is_none() && o.output.conversion == ColorConversion::None && o.compress);
+
+    for bad in [
+        json!({"images": {"color": {"ppi": 0}}}),
+        json!({"images": {"color": {"ppi": 1e9}}}),
+        json!({"images": {"color": {"above": "lots"}}}),
+        json!({"images": {"color": {"downsample": "lanczos"}}}),
+        json!({"images": {"gray": {"compression": "jpeg2000"}}}),
+        json!({"images": {"color": {"quality": "best"}}}),
+        json!({"images": 3}),
+        json!({"output": {"conversion": "sideways"}}),
+        json!({"output": {"destination": "No Such Profile"}}),
+        json!({"output": {"intent": "vivid"}}),
+        json!({"output": {"conversion": 3}}),
+        json!({"output": {"conversion": true}}),
+        json!({"output": {"intent": 2}}),
+        json!({"bleedValues": [1, 2, 3]}),
+        json!({"bleedValues": [1, 2, 3, -4]}),
+        json!({"bleedValues": [1, 2, 3, 1e9]}),
+    ] {
+        assert!(cmd::export_pdf_options(&bad, 4).is_err(), "{bad}");
+    }
+
+    // The sample exports with the full set.
+    let mut s = Session::new();
+    s.execute("file.newSample", &json!({})).unwrap();
+    let r = s.execute("file.exportPdf", &p).unwrap();
+    assert!(cmd::base64_decode(r["base64"].as_str().unwrap()).starts_with(b"%PDF-"));
+}
+
 #[test]
 fn object_set_flags_and_wrap_invert() {
     let mut s = session();

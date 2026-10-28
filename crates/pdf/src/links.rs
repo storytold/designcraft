@@ -55,7 +55,7 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
     let mut out = Vec::new();
     for h in &doc.hyperlinks {
         for r in source_rects(doc, cache, &h.source, sh.spread) {
-            let r = r.intersect(sh.bleed);
+            let r = r.intersect(sh.content);
             if r.width() <= 0.0 || r.height() <= 0.0 {
                 continue;
             }
@@ -84,7 +84,7 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
     });
     for (xf, it) in crate::export::exported_items(doc, sh.spread) {
         let Some(action) = &it.button else { continue };
-        let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
+        let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.content);
         let rect = krilla::geom::Rect::from_ltrb(
             (r.x0 - sh.media.x0) as f32,
             (r.y0 - sh.media.y0) as f32,
@@ -120,7 +120,7 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                 let Some(i) = index.page_index(x.target).and_then(|p| sheet_of_page(doc, sheets, p)) else { continue };
                 let src = HyperlinkSource::Text { story: st.id, start: pos, end: pos + designcraft_doc::XREF_MARK.len_utf8() };
                 for r in source_rects(doc, cache, &src, sh.spread) {
-                    let r = r.intersect(sh.bleed);
+                    let r = r.intersect(sh.content);
                     let rect = krilla::geom::Rect::from_ltrb(
                         (r.x0 - sh.media.x0) as f32,
                         (r.y0 - sh.media.y0) as f32,

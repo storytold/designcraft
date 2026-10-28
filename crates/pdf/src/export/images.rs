@@ -221,6 +221,10 @@ mod image_content_cache_tests {
             tag_story: None,
             text_area: None,
             para_tags: HashMap::new(),
+            placement: None,
+            sampled: HashMap::new(),
+            image_facts: HashMap::new(),
+            convert: None,
         }
     }
     #[test]

@@ -315,7 +315,10 @@ impl Exporter<'_> {
             if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
                 s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
                 s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
+                // A cell's place on the page isn't known here: no resolution or crop.
+                let placement = self.placement.take();
                 self.graphic(s, g, None);
+                self.placement = placement;
                 s.pop();
                 s.pop();
             }

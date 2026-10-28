@@ -124,6 +124,10 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        placement: None,
+        sampled: HashMap::new(),
+        image_facts: HashMap::new(),
+        convert: None,
     };
     let pairs = booklet_pairs(n, opts.kind);
     // Sheet size from the largest page.

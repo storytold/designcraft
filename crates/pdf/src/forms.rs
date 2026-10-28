@@ -22,7 +22,7 @@ pub(crate) type PlacedMedia = (usize, [f64; 4], String, String, std::sync::Arc<V
 fn visit(doc: &Document, sheets: &[Sheet], mut f: impl FnMut(usize, [f64; 4], &Item)) {
     for (pi, sh) in sheets.iter().enumerate() {
         for (xf, it) in crate::export::exported_items(doc, sh.spread) {
-            let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
+            let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.content);
             if r.width() <= 0.0 || r.height() <= 0.0 {
                 continue;
             }

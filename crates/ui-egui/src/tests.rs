@@ -683,7 +683,9 @@ fn pdf_export_settings_defaults() {
     let settings = PdfExportSettings::default();
     assert_eq!(settings.preset, "Desktop Printing");
     assert_eq!(settings.standard, "none");
-    assert!(!settings.compress_images);
+    assert_eq!((settings.color_downsample.as_str(), settings.color_ppi.as_str(), settings.color_above.as_str()), ("bicubic", "300", "450"));
+    assert_eq!(settings.conversion, "none");
+    assert!(settings.crop_to_frames && settings.compress_text);
     assert_eq!(settings.flatten, "");
     assert!(!settings.spreads);
     assert!(settings.bleed);

@@ -118,46 +118,135 @@ fn default_zone() -> f64 {
 }
 
 /// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
-/// dialog's defaults. Serialised as `pdfExport` with camelCase field names.
+/// dialog's defaults, and the settings a saved Export PDF preset holds. Serialised as `pdfExport`
+/// with camelCase field names, which are also the dialog's field names. Numbers the user types
+/// (resolutions, bleed, mark sizes) stay text, so a half-typed value round-trips unchanged.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PdfExportSettings {
-    /// Preset (one of the five presets, or "Custom" after a manual edit).
+    /// Preset: a built-in or saved preset's name, or "Custom" after a manual edit.
     pub preset: String,
     /// PDF standard (`none`, `x1a`, `x4`, `a2b`).
     pub standard: String,
-    /// Compression › Compress images (JPEG).
-    pub compress_images: bool,
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
+    // General.
     pub spreads: bool,
-    pub bleed: bool,
+    /// Viewing › View: `default`, `fitPage`, `fitWidth`, `actual`.
+    pub view: String,
+    /// Viewing › Layout: `default`, `single`, `continuous`, `twoUp`, `twoUpCover`,
+    /// `twoUpContinuous`.
+    pub layout: String,
+    pub full_screen: bool,
+    /// Open with the bookmarks panel showing.
+    pub bookmarks_panel: bool,
+    /// Tagged PDF.
+    pub tagged: bool,
+    /// Embed placed video and sound (interactive PDF).
+    pub media: bool,
+    // Compression, by image class: downsample (`none`, `average`, `subsample`, `bicubic`),
+    // target and threshold ppi, compression (`auto`, `jpeg`, `zip`), JPEG quality.
+    pub color_downsample: String,
+    pub color_ppi: String,
+    pub color_above: String,
+    pub color_compression: String,
+    pub color_quality: String,
+    pub gray_downsample: String,
+    pub gray_ppi: String,
+    pub gray_above: String,
+    pub gray_compression: String,
+    pub gray_quality: String,
+    pub mono_downsample: String,
+    pub mono_ppi: String,
+    pub mono_above: String,
+    pub compress_text: bool,
+    pub crop_to_frames: bool,
+    // Marks and Bleeds.
     pub marks_crop: bool,
     pub marks_bleed: bool,
+    pub marks_registration: bool,
+    pub marks_color_bars: bool,
     pub marks_page_info: bool,
     pub marks_weight: String,
     pub marks_offset: String,
-    /// File › Export PDF › Advanced › Tagged PDF.
-    pub tagged: bool,
+    /// Include bleed.
+    pub bleed: bool,
+    /// Use the document's bleed; off, the four values below.
+    pub use_doc_bleed: bool,
+    pub bleed_top: String,
+    pub bleed_bottom: String,
+    pub bleed_inside: String,
+    pub bleed_outside: String,
+    pub slug: bool,
+    // Output.
+    /// Color Conversion: `none`, `destination`, `preserveNumbers`.
+    pub conversion: String,
+    /// Destination profile name; empty = the working space.
+    pub destination: String,
+    /// Profile inclusion: write the destination profile as the output intent.
+    pub include_profile: bool,
+    /// Rendering intent of the conversion (`perceptual`, `relative`, `saturation`, `absolute`);
+    /// empty = Edit › Color Settings'.
+    pub intent: String,
 }
 
 impl Default for PdfExportSettings {
+    /// The Desktop Printing preset.
     fn default() -> Self {
         PdfExportSettings {
             preset: "Desktop Printing".into(),
             standard: "none".into(),
-            compress_images: false,
             flatten: "".into(),
             spreads: false,
-            bleed: true,
+            view: "default".into(),
+            layout: "default".into(),
+            full_screen: false,
+            bookmarks_panel: false,
+            tagged: true,
+            media: false,
+            color_downsample: "bicubic".into(),
+            color_ppi: "300".into(),
+            color_above: "450".into(),
+            color_compression: "auto".into(),
+            color_quality: "high".into(),
+            gray_downsample: "bicubic".into(),
+            gray_ppi: "300".into(),
+            gray_above: "450".into(),
+            gray_compression: "auto".into(),
+            gray_quality: "high".into(),
+            mono_downsample: "bicubic".into(),
+            mono_ppi: "1200".into(),
+            mono_above: "1800".into(),
+            compress_text: true,
+            crop_to_frames: true,
             marks_crop: false,
             marks_bleed: false,
+            marks_registration: false,
+            marks_color_bars: false,
             marks_page_info: false,
             marks_weight: "0.25".into(),
             marks_offset: "6".into(),
-            tagged: true,
+            bleed: true,
+            use_doc_bleed: true,
+            bleed_top: "0".into(),
+            bleed_bottom: "0".into(),
+            bleed_inside: "0".into(),
+            bleed_outside: "0".into(),
+            slug: false,
+            conversion: "none".into(),
+            destination: "".into(),
+            include_profile: false,
+            intent: "".into(),
         }
     }
+}
+
+/// An Export PDF preset the user saved: a name and every setting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PdfExportPreset {
+    pub name: String,
+    pub settings: PdfExportSettings,
 }
 
 /// The viewport of New Window's OS window, which shows pane 1.
@@ -230,6 +319,8 @@ pub struct UiState {
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
+    /// Export PDF presets the user saved, in the order saved.
+    pub pdf_export_presets: Vec<PdfExportPreset>,
     /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
     pub style_preview: bool,
     /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
@@ -415,6 +506,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
+            pdf_export_presets: Vec::new(),
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,

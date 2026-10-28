@@ -2922,35 +2922,24 @@ fn epub_export_options_store_split_document() {
 #[test]
 fn pdf_export_defaults() {
     let d = Dialog::new("pdfExport", json!({}));
-    let keys: Vec<&str> = d.fields.iter().map(|(k, _)| k.as_str()).collect();
-    // serde_json::Map keeps keys sorted.
-    let expected = [
-        "bleed",
-        "compressImages",
-        "flatten",
-        "marksBleed",
-        "marksCrop",
-        "marksOffset",
-        "marksPageInfo",
-        "marksWeight",
-        "preset",
-        "spreads",
-        "standard",
-        "tagged",
-    ];
+    // Every setting is a field, by its persisted (camelCase) name.
+    let settings = serde_json::to_value(crate::state::PdfExportSettings::default()).unwrap();
+    let keys: Vec<&str> = d.fields.keys().map(String::as_str).collect();
+    let expected: Vec<&str> = settings.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, expected);
     assert_eq!(d.fields["preset"].as_str(), Some("Desktop Printing"));
     assert_eq!(d.fields["standard"].as_str(), Some("none"));
-    assert_eq!(d.fields["compressImages"].as_bool(), Some(false));
-    assert_eq!(d.fields["flatten"].as_str(), Some(""));
-    assert_eq!(d.fields["spreads"].as_bool(), Some(false));
+    assert_eq!(d.fields["colorDownsample"].as_str(), Some("bicubic"));
+    assert_eq!(d.fields["colorPpi"].as_str(), Some("300"));
+    assert_eq!(d.fields["colorAbove"].as_str(), Some("450"));
+    assert_eq!(d.fields["monoPpi"].as_str(), Some("1200"));
+    assert_eq!(d.fields["conversion"].as_str(), Some("none"));
     assert_eq!(d.fields["bleed"].as_bool(), Some(true));
-    assert_eq!(d.fields["marksCrop"].as_bool(), Some(false));
-    assert_eq!(d.fields["marksBleed"].as_bool(), Some(false));
-    assert_eq!(d.fields["marksPageInfo"].as_bool(), Some(false));
+    assert_eq!(d.fields["useDocBleed"].as_bool(), Some(true));
     assert_eq!(d.fields["marksWeight"].as_str(), Some("0.25"));
     assert_eq!(d.fields["marksOffset"].as_str(), Some("6"));
     assert_eq!(d.fields["tagged"].as_bool(), Some(true));
+    assert_eq!(pdf_export::settings_from(&d), crate::state::PdfExportSettings::default());
 }
 
 #[test]
@@ -2961,79 +2950,65 @@ fn pdf_export_override_keeps_override() {
     assert_eq!(d.fields["tagged"].as_bool(), Some(true));
 }
 
+/// Each built-in preset sets its settings; presets that don't flatten keep the dialog's
+/// Transparency Flattener.
 #[test]
-fn pdf_export_preset_high_quality_print_keeps_flatten() {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    d.fields.insert("flatten".into(), json!("medium"));
-    apply_pdf_preset(&mut d, "Desktop Printing");
-    assert_eq!(d.s("standard"), "none");
-    assert!(!d.b("compressImages"));
-    assert!(!d.b("marksCrop"));
-    assert!(!d.b("marksBleed"));
-    assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium", "a leave-unchanged preset must not touch flatten");
-}
+fn pdf_export_builtin_presets() {
+    let apply = |name: &str, flatten: &str| {
+        let mut d = Dialog::new("pdfExport", json!({}));
+        d.fields.insert("flatten".into(), json!(flatten));
+        d.fields.insert("pages".into(), json!("2-3"));
+        pdf_export::apply_preset(&[], &mut d, name);
+        assert_eq!(d.s("preset"), name);
+        assert_eq!(d.s("pages"), "2-3", "{name}: per-job fields stay");
+        d
+    };
+    let d = apply("Desktop Printing", "medium");
+    assert_eq!((d.s("standard").as_str(), d.s("flatten").as_str()), ("none", "medium"));
+    assert!(!d.b("marksCrop") && !d.b("marksBleed") && !d.b("marksPageInfo"));
+    assert_eq!(d.s("conversion"), "none");
 
-#[test]
-fn pdf_export_preset_press_quality_keeps_flatten() {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    d.fields.insert("flatten".into(), json!("high"));
-    apply_pdf_preset(&mut d, "Commercial Printing");
-    assert_eq!(d.s("standard"), "none");
-    assert!(d.b("compressImages"));
-    assert!(d.b("marksCrop"));
-    assert!(d.b("marksBleed"));
-    assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "high");
-}
+    let d = apply("Commercial Printing", "high");
+    assert!(d.b("marksCrop") && d.b("marksBleed") && d.b("bleed"));
+    assert_eq!((d.s("colorQuality").as_str(), d.s("flatten").as_str()), ("maximum", "high"));
 
-#[test]
-fn pdf_export_preset_smallest_file_size_sets_flatten_low() {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    apply_pdf_preset(&mut d, "Screen and Email");
-    assert_eq!(d.s("standard"), "none");
-    assert!(d.b("compressImages"));
-    assert!(!d.b("marksCrop"));
-    assert!(!d.b("marksBleed"));
-    assert!(!d.b("marksPageInfo"));
+    let d = apply("Screen and Email", "");
     assert_eq!(d.s("flatten"), "low");
-}
+    assert_eq!((d.s("colorPpi").as_str(), d.s("colorAbove").as_str(), d.s("colorCompression").as_str()), ("100", "150", "jpeg"));
+    assert_eq!((d.s("conversion").as_str(), d.s("destination").as_str()), ("destination", designcraft_color::cms::SRGB));
+    assert!(!d.b("marksCrop"));
 
-/// The PDF/X-1a preset exports X-1a with the High Resolution flattener and printer's marks.
-#[test]
-fn pdf_export_preset_pdf_x1a_flattens_at_high_resolution() {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    apply_pdf_preset(&mut d, "PDF/X-1a:2003");
-    assert_eq!(d.s("standard"), "x1a");
-    assert_eq!(d.s("flatten"), "high");
+    let d = apply("PDF/X-1a:2003", "");
+    assert_eq!((d.s("standard").as_str(), d.s("flatten").as_str()), ("x1a", "high"));
     assert!(d.b("marksCrop") && d.b("marksBleed"));
-    assert!(PDF_EXPORT_PRESETS.contains(&"PDF/X-1a:2003"));
+    assert_eq!(d.s("conversion"), "preserveNumbers", "X-1a needs CMYK");
+    assert!(d.b("includeProfile"));
+
+    let d = apply("PDF/X-4", "medium");
+    assert_eq!((d.s("standard").as_str(), d.s("flatten").as_str()), ("x4", "medium"));
+    assert!(d.b("marksCrop") && d.b("marksBleed") && !d.b("marksPageInfo"));
+    assert_eq!(d.s("conversion"), "preserveNumbers");
+
+    let d = apply("PDF/A-2b", "low");
+    assert_eq!((d.s("standard").as_str(), d.s("flatten").as_str()), ("a2b", "low"));
+    assert!(!d.b("marksCrop") && !d.b("marksBleed"));
+    for name in pdf_export::BUILTIN_PRESETS {
+        assert!(pdf_export::builtin(name).is_some(), "{name}");
+        assert_ne!(pdf_export::description(name), pdf_export::description("Custom"), "{name} has its own description");
+    }
 }
 
 #[test]
-fn pdf_export_preset_pdf_x4_keeps_flatten() {
+fn pdf_export_preset_custom_changes_nothing() {
     let mut d = Dialog::new("pdfExport", json!({}));
-    d.fields.insert("flatten".into(), json!("medium"));
-    apply_pdf_preset(&mut d, "PDF/X-4");
-    assert_eq!(d.s("standard"), "x4");
-    assert!(!d.b("compressImages"));
-    assert!(d.b("marksCrop"));
-    assert!(d.b("marksBleed"));
-    assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium");
-}
-
-#[test]
-fn pdf_export_preset_pdf_a2b_keeps_flatten() {
-    let mut d = Dialog::new("pdfExport", json!({}));
-    d.fields.insert("flatten".into(), json!("low"));
-    apply_pdf_preset(&mut d, "PDF/A-2b");
-    assert_eq!(d.s("standard"), "a2b");
-    assert!(!d.b("compressImages"));
-    assert!(!d.b("marksCrop"));
-    assert!(!d.b("marksBleed"));
-    assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "low");
+    d.fields.insert("standard".into(), json!("x4"));
+    d.fields.insert("colorPpi".into(), json!("150"));
+    d.fields.insert("marksCrop".into(), json!(true));
+    d.fields.insert("flatten".into(), json!("high"));
+    let before = d.fields.clone();
+    pdf_export::apply_preset(&[], &mut d, "Custom");
+    pdf_export::apply_preset(&[], &mut d, "No Such Preset");
+    assert_eq!(d.fields, before);
 }
 
 #[test]
@@ -3042,6 +3017,7 @@ fn open_pdf_export_seeds_fields_from_settings() {
     app.ui.pdf_export.standard = "x4".into();
     app.ui.pdf_export.tagged = false;
     app.ui.pdf_export.marks_crop = true;
+    app.ui.pdf_export.color_ppi = "200".into();
     app.ui.pdf_export.flatten = String::new();
     app.ui.flattener = "medium".into();
     open_pdf_export(&mut app);
@@ -3050,6 +3026,7 @@ fn open_pdf_export_seeds_fields_from_settings() {
     assert_eq!(d.s("standard"), "x4");
     assert!(!d.b("tagged"));
     assert!(d.b("marksCrop"));
+    assert_eq!(d.s("colorPpi"), "200");
     assert_eq!(d.s("pages"), "all");
     assert_eq!(d.s("flatten"), "medium", "empty flatten falls back to the global flattener");
     assert_eq!(d.s("title"), "", "no document → empty title");
@@ -3062,18 +3039,106 @@ fn open_pdf_export_seeds_fields_from_settings() {
     assert_eq!(d.s("flatten"), "low");
 }
 
+/// Save Preset stores every setting under the name; choosing it later restores them all.
+/// Built-in names are refused.
 #[test]
-fn pdf_export_preset_custom_changes_nothing() {
+fn pdf_export_saved_presets() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     let mut d = Dialog::new("pdfExport", json!({}));
-    d.fields.insert("standard".into(), json!("x4"));
-    d.fields.insert("compressImages".into(), json!(true));
-    d.fields.insert("marksCrop".into(), json!(true));
-    d.fields.insert("marksBleed".into(), json!(true));
-    d.fields.insert("marksPageInfo".into(), json!(true));
-    d.fields.insert("flatten".into(), json!("high"));
-    let before = d.fields.clone();
-    apply_pdf_preset(&mut d, "Custom");
-    assert_eq!(d.fields, before);
+    d.fields.insert("colorPpi".into(), json!("240"));
+    d.fields.insert("marksColorBars".into(), json!(true));
+    d.fields.insert("conversion".into(), json!("destination"));
+    pdf_export::save_preset(&mut app, &mut d, "  Studio Proofs ").unwrap();
+    assert_eq!(d.s("preset"), "Studio Proofs");
+    assert_eq!(app.ui.pdf_export_presets.len(), 1);
+    assert!(pdf_export::save_preset(&mut app, &mut d, "PDF/X-4").is_err());
+    assert!(pdf_export::save_preset(&mut app, &mut d, "Custom").is_err());
+    assert!(pdf_export::save_preset(&mut app, &mut d, "   ").is_err());
+    // Saving again under the name replaces it.
+    d.fields.insert("colorPpi".into(), json!("250"));
+    pdf_export::save_preset(&mut app, &mut d, "Studio Proofs").unwrap();
+    assert_eq!(app.ui.pdf_export_presets.len(), 1);
+
+    let mut d = Dialog::new("pdfExport", json!({}));
+    pdf_export::apply_preset(&app.ui.pdf_export_presets, &mut d, "Studio Proofs");
+    assert_eq!((d.s("preset").as_str(), d.s("colorPpi").as_str(), d.s("conversion").as_str()), ("Studio Proofs", "250", "destination"));
+    assert!(d.b("marksColorBars"));
+    // Saved presets persist with the interface state.
+    let json = serde_json::to_string(&app.ui).unwrap();
+    let back: crate::UiState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.pdf_export_presets, app.ui.pdf_export_presets);
+}
+
+/// The settings become `file.exportPdf` parameters; a bad number names its field.
+#[test]
+fn pdf_export_params_from_settings() {
+    use crate::state::PdfExportSettings;
+    let s = PdfExportSettings {
+        standard: "x4".into(),
+        color_ppi: "150".into(),
+        color_above: "100".into(),
+        gray_compression: "zip".into(),
+        conversion: "preserveNumbers".into(),
+        destination: designcraft_color::cms::GENERIC_CMYK.into(),
+        include_profile: true,
+        use_doc_bleed: false,
+        bleed_top: "3mm".into(),
+        bleed_bottom: "0".into(),
+        bleed_inside: "1".into(),
+        bleed_outside: "9pt".into(),
+        marks_registration: true,
+        layout: "twoUpCover".into(),
+        view: "fitPage".into(),
+        compress_text: false,
+        ..PdfExportSettings::default()
+    };
+    let p = pdf_export::export_params(&s, designcraft_geom::Unit::Picas).unwrap();
+    assert_eq!(p["standard"], "x4");
+    assert_eq!(p["images"]["color"]["ppi"], 150.0);
+    assert_eq!(p["images"]["color"]["above"], 150.0, "a threshold below the target is the target");
+    assert_eq!(p["images"]["gray"]["compression"], "zip");
+    assert_eq!(p["images"]["mono"]["compression"], "zip");
+    assert_eq!(p["images"]["cropToFrames"], true);
+    assert_eq!(p["output"]["conversion"], "preserveNumbers");
+    assert_eq!(p["output"]["destination"], designcraft_color::cms::GENERIC_CMYK);
+    assert_eq!(p["marks"]["registration"], true);
+    assert_eq!((p["pageLayout"].as_str(), p["view"].as_str()), (Some("twoUpCover"), Some("fitPage")));
+    assert_eq!(p["compressText"], false);
+    let b: Vec<f64> = p["bleedValues"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!((b[0] - 3.0 * 72.0 / 25.4).abs() < 1e-6 && b[1] == 0.0 && b[2] == 12.0 && b[3] == 9.0, "{b:?}: a bare number is in the document's unit");
+    // The engine accepts what the dialog builds.
+    let mut session = designcraft_engine::Session::new();
+    session.execute("file.new", &json!({})).unwrap();
+    assert!(session.execute("file.exportPdf", &p).is_ok());
+
+    for (field, bad) in [("colorPpi", "lots"), ("grayAbove", "0"), ("monoPpi", "99999"), ("marksOffset", "far"), ("bleedTop", "-3")] {
+        let mut v = serde_json::to_value(&s).unwrap();
+        v[field] = json!(bad);
+        let s: PdfExportSettings = serde_json::from_value(v).unwrap();
+        assert!(pdf_export::export_params(&s, designcraft_geom::Unit::Points).is_err(), "{field} = {bad}");
+    }
+}
+
+/// Editing a setting by hand makes the preset Custom; Summary lists the settings and warns
+/// about choices that won't work.
+#[test]
+fn pdf_export_summary_and_warnings() {
+    use crate::state::PdfExportSettings;
+    let s = PdfExportSettings { standard: "x1a".into(), conversion: "none".into(), bleed: false, ..PdfExportSettings::default() };
+    let w = pdf_export::warnings(&s, designcraft_color::cms::COATED_FOGRA39);
+    assert!(w.iter().any(|w| w.contains("PDF/X-1a")), "{w:?}");
+    assert!(w.iter().any(|w| w.contains("bleed")), "{w:?}");
+    let s = PdfExportSettings {
+        standard: "x4".into(),
+        conversion: "destination".into(),
+        destination: designcraft_color::cms::SRGB.into(),
+        ..PdfExportSettings::default()
+    };
+    assert!(pdf_export::warnings(&s, designcraft_color::cms::COATED_FOGRA39).iter().any(|w| w.contains("CMYK destination")));
+    assert!(pdf_export::warnings(&PdfExportSettings::default(), designcraft_color::cms::COATED_FOGRA39).is_empty());
+    let lines = pdf_export::summary("", &PdfExportSettings::default());
+    assert!(lines.iter().any(|l| l == "Color Images: Bicubic Downsampling 300 ppi (> 450 ppi), Automatic (JPEG), High"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "Color Conversion: No Color Conversion"), "{lines:?}");
 }
 
 #[test]
@@ -3505,4 +3570,133 @@ fn character_style_options_set_the_digits() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "c.digits", "value": "farsi"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
+}
+
+/// Offscreen pictures of every Export PDF section (set CRAFT_UI_PDF_EXPORT_FIXTURES to a
+/// directory); creates no native windows.
+#[test]
+fn capture_pdf_export_dialog_sections() {
+    let Some(directory) = std::env::var_os("CRAFT_UI_PDF_EXPORT_FIXTURES").map(std::path::PathBuf::from) else { return };
+    std::fs::create_dir_all(&directory).unwrap();
+    for (language, sections) in
+        [("", &["general", "compression", "marks", "output", "advanced", "summary"][..]), ("cs", &["general", "compression"][..])]
+    {
+        for section in sections {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("app.language", json!({"lang": language})).unwrap();
+            let mut h = crate::test_window::open(app, egui::vec2(1280.0, 860.0));
+            {
+                let app = &mut h.state_mut().app;
+                open_pdf_export(app);
+                let d = app.ui.dialog.as_mut().unwrap();
+                pdf_export::apply_preset(&[], d, if *section == "output" { "PDF/X-4" } else { "Commercial Printing" });
+                d.fields.insert("section".into(), json!(section));
+                d.fields.insert("pagesMode".into(), json!("all"));
+            }
+            h.run_steps(6);
+            let name = format!("pdf-export-{}{section}.png", if language.is_empty() { String::new() } else { format!("{language}-") });
+            h.render().unwrap().save(directory.join(name)).unwrap();
+        }
+    }
+}
+
+/// Output › Load Profile… loads an ICC file, makes it the destination and remembers it for the
+/// next start; the rendering intent reaches the export.
+#[test]
+fn pdf_export_loads_a_destination_profile_and_sets_the_intent() {
+    let icc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icc/sRGB-v2-magic.icc");
+    let icc = icc.to_string_lossy().into_owned();
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let picked = icc.clone();
+    app.services.pick_open = Some(Box::new(move |purpose: &str| (purpose == "icc").then(|| picked.clone())));
+    let mut d = Dialog::new("pdfExport", json!({}));
+    pdf_export::load_profile(&mut app, &mut d);
+    // An RGB profile is loaded (for Color Settings) but isn't a PDF destination.
+    assert_eq!(d.s("destination"), "", "not the destination");
+    assert!(d.s("status").contains("sRGB"), "{}", d.s("status"));
+    assert_eq!(app.ui.color_profiles, vec![icc.clone()], "loaded again at the next start");
+    assert!(designcraft_color::cms::profiles().iter().any(|p| p.name == "sRGB"));
+    // Loading it again doesn't list it twice.
+    pdf_export::load_profile(&mut app, &mut d);
+    assert_eq!(app.ui.color_profiles.len(), 1);
+
+    let s = crate::state::PdfExportSettings {
+        conversion: "destination".into(),
+        destination: designcraft_color::cms::SRGB.into(),
+        intent: "perceptual".into(),
+        ..Default::default()
+    };
+    let p = pdf_export::export_params(&s, designcraft_geom::Unit::Points).unwrap();
+    assert_eq!((p["output"]["destination"].as_str(), p["output"]["intent"].as_str()), (Some(designcraft_color::cms::SRGB), Some("perceptual")));
+    let lines = pdf_export::summary("", &s);
+    assert!(lines.iter().any(|l| l == "Rendering Intent: Perceptual"), "{lines:?}");
+    // Left to Color Settings, no intent is sent.
+    let p = pdf_export::export_params(&crate::state::PdfExportSettings::default(), designcraft_geom::Unit::Points).unwrap();
+    assert!(p["output"].get("intent").is_none());
+    // The engine accepts the export.
+    let mut session = designcraft_engine::Session::new();
+    session.execute("file.new", &json!({})).unwrap();
+    let s = crate::state::PdfExportSettings {
+        conversion: "destination".into(),
+        destination: designcraft_color::cms::SRGB.into(),
+        intent: "saturation".into(),
+        ..Default::default()
+    };
+    assert!(session.execute("file.exportPdf", &pdf_export::export_params(&s, designcraft_geom::Unit::Points).unwrap()).is_ok());
+}
+
+/// Any preset, built-in or saved, gives the export parameters it stands for (for a package's
+/// PDF, say); unknown names give none.
+#[test]
+fn pdf_export_preset_params_for_other_callers() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let p = pdf_export::preset_params(&[], "PDF/X-4", designcraft_geom::Unit::Points).unwrap().unwrap();
+    assert_eq!(p["standard"], "x4");
+    assert_eq!(p["output"]["conversion"], "preserveNumbers");
+    let mut d = Dialog::new("pdfExport", json!({}));
+    d.fields.insert("colorPpi".into(), json!("150"));
+    pdf_export::save_preset(&mut app, &mut d, "Proofs").unwrap();
+    let p = pdf_export::preset_params(&app.ui.pdf_export_presets, "Proofs", designcraft_geom::Unit::Points).unwrap().unwrap();
+    assert_eq!(p["images"]["color"]["ppi"], 150.0);
+    assert!(pdf_export::preset_params(&app.ui.pdf_export_presets, "Nope", designcraft_geom::Unit::Points).is_none());
+}
+
+/// A field that doesn't parse keeps Export PDF open with the message and the edits (it closed
+/// and lost them); "None" for the flattener stays None the next time instead of the global
+/// preset.
+#[test]
+fn pdf_export_errors_keep_the_dialog_and_none_flattener_stays_none() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.services.pick_save = Some(Box::new(|_: &str| Some("/tmp/designcraft-never.pdf".to_string())));
+    app.services.write = Some(Box::new(|_: &str, _: &[u8]| panic!("nothing is written")));
+    open_pdf_export(&mut app);
+    setup_fields(&mut app, json!({"colorPpi": "lots", "marksCrop": true}));
+    let e = confirm(&mut app).unwrap_err();
+    assert!(e.contains("lots"), "{e}");
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+    assert_eq!((d.s("colorPpi").as_str(), d.b("marksCrop")), ("lots", true), "with the edits");
+    assert!(d.s("status").contains("lots"), "and says why");
+    assert_eq!(d.s("section"), "summary", "on the Summary, which lists the problem");
+
+    app.ui.flattener = "medium".into();
+    app.ui.pdf_export.flatten = "none".into();
+    open_pdf_export(&mut app);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("flatten"), "none");
+    let s = crate::state::PdfExportSettings { flatten: "none".into(), ..Default::default() };
+    assert!(pdf_export::export_params(&s, designcraft_geom::Unit::Points).unwrap().get("flatten").is_none());
+    let mut session = designcraft_engine::Session::new();
+    session.execute("file.new", &json!({})).unwrap();
+    assert!(session.execute("file.exportPdf", &json!({"flatten": "none"})).is_ok());
+}
+
+/// With Do Not Downsample the resolution fields are disabled, so a stale value in them doesn't
+/// block the export.
+#[test]
+fn pdf_export_ignores_disabled_resolution_fields() {
+    let s =
+        crate::state::PdfExportSettings { color_downsample: "none".into(), color_ppi: "lots".into(), color_above: "".into(), ..Default::default() };
+    assert!(pdf_export::export_params(&s, designcraft_geom::Unit::Points).is_ok());
+    let s = crate::state::PdfExportSettings { color_ppi: "lots".into(), ..Default::default() };
+    assert!(pdf_export::export_params(&s, designcraft_geom::Unit::Points).is_err(), "enabled: still checked");
 }

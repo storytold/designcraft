@@ -103,7 +103,8 @@ impl Exporter<'_> {
                     lossless(&data, fmt, mode)
                 }
             },
-            _ if self.opts.compress_images => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
+            // With per-class image options, Compression decides ([`Exporter::sampled_graphic`]).
+            _ if self.opts.compress_images && self.opts.images.is_none() => recompress(&data, mode).or_else(|| lossless(&data, fmt, mode)),
             _ => lossless(&data, fmt, mode),
         };
         if img.is_none() {
@@ -152,6 +153,9 @@ impl Exporter<'_> {
             return;
         }
         if self.colorized(s, g) {
+            return;
+        }
+        if self.sampled_graphic(s, g) {
             return;
         }
         let Some(img) = self.load_image(g.asset) else { return };

@@ -63,7 +63,10 @@ pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
 pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PickFn, ReadFn, Services, WriteFn};
 pub(crate) use state::second_window_viewport;
-pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
+pub use state::{
+    CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportPreset, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState,
+    View,
+};
 
 /// The bounded admission policy for `ui.screenshot` captures.
 pub(crate) const SCREENSHOT_MAX_REQUESTS: usize = 4;

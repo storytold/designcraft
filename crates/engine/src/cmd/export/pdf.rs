@@ -41,7 +41,6 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
 
     let pages = pages_param(ID, p, page_count)?;
     let spreads = p.get("spreads").and_then(Value::as_bool).unwrap_or(false);
-    let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(false);
     let marks = match p.get("marks") {
         Some(Value::Bool(true)) => Marks::ALL,
         Some(Value::Object(m)) => {
@@ -49,6 +48,8 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
             Marks {
                 crop: b("crop"),
                 bleed: b("bleed"),
+                registration: b("registration"),
+                color_bars: b("colorBars"),
                 page_info: b("pageInfo"),
                 weight: m.get("weight").and_then(Value::as_f64).unwrap_or(0.25),
                 offset: m.get("offset").and_then(Value::as_f64).unwrap_or(6.0),
@@ -60,6 +61,25 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         Some(s) => Standard::parse(s).ok_or_else(|| bad(ID, format!("unknown standard `{s}` (none, x4, x1a, a2b)")))?,
         None => Standard::None,
     };
+    // Bleed for this export (Use Document Bleed Settings off): [top, bottom, inside, outside].
+    let bleed_values = match p.get("bleedValues") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) if a.len() == 4 => {
+            let mut v = [0.0; 4];
+            for (slot, x) in v.iter_mut().zip(a) {
+                *slot = x.as_f64().filter(|x| (0.0..=1000.0).contains(x)).ok_or_else(|| bad(ID, "`bleedValues`: four sizes in points, 0–1000"))?;
+            }
+            Some(v)
+        }
+        Some(_) => return Err(bad(ID, "`bleedValues`: [top, bottom, inside, outside] in points")),
+    };
+    // Bleed values ask for bleed; an explicit `bleed: false` still leaves it out.
+    let bleed = p.get("bleed").and_then(Value::as_bool).unwrap_or(bleed_values.is_some());
+    let images = match p.get("images") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(image_options(ID, v)?),
+    };
+    let output = output_param(ID, p.get("output"))?;
     let created = match p.get("created") {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_i64().ok_or_else(|| bad(ID, "`created`: Unix seconds, an integer"))?),
@@ -68,9 +88,14 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         pages,
         spreads,
         bleed,
+        bleed_values,
+        slug: p.get("slug").and_then(Value::as_bool).unwrap_or(false),
+        compress: p.get("compressText").and_then(Value::as_bool).unwrap_or(true),
         marks,
         standard,
         compress_images: p.get("compressImages").and_then(Value::as_bool).unwrap_or(false),
+        images,
+        output,
         title: str_param(p, "title").map(str::to_string),
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
@@ -78,6 +103,95 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         created,
         ..PdfOptions::default()
     })
+}
+
+/// One image class of `images` (`color`, `gray`, `mono`): `{downsample?, ppi?, above?,
+/// compression?, quality?}`, each defaulting to `base`'s value.
+fn image_sampling(id: &str, class: &str, v: Option<&Value>, base: ImageSampling) -> Result<ImageSampling> {
+    let Some(v) = v else { return Ok(base) };
+    let m = v.as_object().ok_or_else(|| bad(id, format!("`images.{class}`: an object")))?;
+    let mut s = base;
+    if let Some(d) = m.get("downsample") {
+        let d = d.as_str().ok_or_else(|| bad(id, format!("`images.{class}.downsample`: none|average|subsample|bicubic")))?;
+        s.downsample =
+            Downsample::parse(d).ok_or_else(|| bad(id, format!("`images.{class}.downsample`: unknown `{d}` (none, average, subsample, bicubic)")))?;
+    }
+    let ppi = |k: &str| -> Result<Option<f64>> {
+        match m.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v.as_f64().filter(|v| ImageSampling::PPI_RANGE.contains(v)).map(Some).ok_or_else(|| {
+                bad(id, format!("`images.{class}.{k}`: {}–{} pixels per inch", ImageSampling::PPI_RANGE.start(), ImageSampling::PPI_RANGE.end()))
+            }),
+        }
+    };
+    if let Some(v) = ppi("ppi")? {
+        s.ppi = v;
+    }
+    if let Some(v) = ppi("above")? {
+        s.above_ppi = v;
+    }
+    if let Some(c) = m.get("compression") {
+        let c = c.as_str().ok_or_else(|| bad(id, format!("`images.{class}.compression`: auto|jpeg|zip")))?;
+        s.compression =
+            ImageCompression::parse(c).ok_or_else(|| bad(id, format!("`images.{class}.compression`: unknown `{c}` (auto, jpeg, zip)")))?;
+    }
+    if let Some(q) = m.get("quality") {
+        let q = q.as_str().ok_or_else(|| bad(id, format!("`images.{class}.quality`: minimum|low|medium|high|maximum")))?;
+        s.quality =
+            JpegQuality::parse(q).ok_or_else(|| bad(id, format!("`images.{class}.quality`: unknown `{q}` (minimum, low, medium, high, maximum)")))?;
+    }
+    Ok(s)
+}
+
+/// `images`: `{color?, gray?, mono?, cropToFrames?}`. Classes left out are written at full
+/// resolution, losslessly.
+fn image_options(id: &str, v: &Value) -> Result<ImageOptions> {
+    let m = v.as_object().ok_or_else(|| bad(id, "`images`: an object {color?, gray?, mono?, cropToFrames?}"))?;
+    let d = ImageOptions::default();
+    let mut o = ImageOptions {
+        color: image_sampling(id, "color", m.get("color"), d.color)?,
+        gray: image_sampling(id, "gray", m.get("gray"), d.gray)?,
+        mono: image_sampling(id, "mono", m.get("mono"), d.mono)?,
+        crop_to_frames: m.get("cropToFrames").and_then(Value::as_bool).unwrap_or(false),
+    };
+    // Black-and-white images are always lossless.
+    o.mono.compression = ImageCompression::Zip;
+    Ok(o)
+}
+
+/// `output`: `{conversion?: none|destination|preserveNumbers, destination?: profile name,
+/// includeProfile?: bool}`.
+fn output_param(id: &str, v: Option<&Value>) -> Result<OutputColor> {
+    let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(OutputColor::default()) };
+    let m = v.as_object().ok_or_else(|| bad(id, "`output`: an object {conversion?, destination?, includeProfile?}"))?;
+    let conversion = match m.get("conversion") {
+        None | Some(Value::Null) => ColorConversion::None,
+        Some(Value::String(c)) => {
+            ColorConversion::parse(c).ok_or_else(|| bad(id, format!("`output.conversion`: unknown `{c}` (none, destination, preserveNumbers)")))?
+        }
+        Some(_) => return Err(bad(id, "`output.conversion`: none|destination|preserveNumbers")),
+    };
+    let destination = match m.get("destination") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => {
+            if !designcraft_color::cms::profiles().iter().any(|p| p.name == *s) {
+                return Err(bad(id, format!("`output.destination`: unknown profile `{s}`")));
+            }
+            Some(s.clone())
+        }
+        Some(_) => return Err(bad(id, "`output.destination`: a profile name")),
+    };
+    let intent = match m.get("intent") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => Some(
+            designcraft_color::cms::Intent::parse(s)
+                .ok_or_else(|| bad(id, format!("`output.intent`: unknown `{s}` (perceptual, relative, saturation, absolute)")))?,
+        ),
+        Some(_) => return Err(bad(id, "`output.intent`: perceptual|relative|saturation|absolute")),
+    };
+    Ok(OutputColor { conversion, destination, include_profile: m.get("includeProfile").and_then(Value::as_bool).unwrap_or(false), intent })
 }
 
 /// Object number of the first page of a PDF (its page tree's first kid).
@@ -102,6 +216,7 @@ pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn flatten_ppi(id: &str, p: &Value) -> Result<Option<f64>> {
     Ok(match p.get("flatten") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::String(s)) if s.is_empty() || s == "none" => None,
         Some(Value::String(s)) if s == "high" => Some(300.0),
         Some(Value::String(s)) if s == "medium" => Some(150.0),
         Some(Value::String(s)) if s == "low" => Some(72.0),

@@ -326,7 +326,9 @@ impl Exporter<'_> {
                     // An explicit all-on choice is `Some(&[])`, not the file's defaults: passing
                     // `None` would embed the source's default-hidden layers and skip the rewrite
                     // error that a stale choice must raise.
+                    let placement = self.placement.replace((xf, bp.bounding_box()));
                     self.graphic(s, g, it.has_pdf_layer_override().then_some(it.pdf_hidden_layers.as_slice()));
+                    self.placement = placement;
                     s.pop();
                 }
             }

@@ -94,6 +94,10 @@ impl Standard {
 pub struct Marks {
     pub crop: bool,
     pub bleed: bool,
+    /// Registration targets centred outside each edge of the trim.
+    pub registration: bool,
+    /// A row of process-ink and black-tint patches above the page.
+    pub color_bars: bool,
     /// Document title, page name, date — in the slug area under the page.
     pub page_info: bool,
     /// Line weight in points (0.25 default).
@@ -104,16 +108,221 @@ pub struct Marks {
 }
 
 impl Marks {
-    pub const NONE: Marks = Marks { crop: false, bleed: false, page_info: false, weight: 0.25, offset: 6.0 };
-    pub const ALL: Marks = Marks { crop: true, bleed: true, page_info: true, weight: 0.25, offset: 6.0 };
+    pub const NONE: Marks = Marks { crop: false, bleed: false, registration: false, color_bars: false, page_info: false, weight: 0.25, offset: 6.0 };
+    pub const ALL: Marks = Marks { crop: true, bleed: true, registration: true, color_bars: true, page_info: true, weight: 0.25, offset: 6.0 };
     pub fn any(&self) -> bool {
-        self.crop || self.bleed || self.page_info
+        self.crop || self.bleed || self.registration || self.color_bars || self.page_info
     }
 }
 
 impl Default for Marks {
     fn default() -> Self {
         Self::NONE
+    }
+}
+
+/// How an image class is resampled when it is above its threshold resolution (Export PDF ›
+/// Compression).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Downsample {
+    /// Keep every pixel.
+    #[default]
+    None,
+    /// Average downsampling: each new pixel is the area average of the pixels it covers.
+    Average,
+    /// Subsampling: each new pixel takes the source pixel at its centre (fastest, harshest).
+    Subsample,
+    /// Bicubic downsampling: a weighted cubic filter (smoothest tones).
+    Bicubic,
+}
+
+impl Downsample {
+    /// `none`, `average`, `subsample`, `bicubic`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "none" | "" => Self::None,
+            "average" => Self::Average,
+            "subsample" | "subsampling" => Self::Subsample,
+            "bicubic" => Self::Bicubic,
+            _ => return None,
+        })
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Average => "average",
+            Self::Subsample => "subsample",
+            Self::Bicubic => "bicubic",
+        }
+    }
+}
+
+/// How an image class is encoded (Export PDF › Compression).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageCompression {
+    /// JPEG for continuous-tone images; ZIP for images with transparency or few colours, which
+    /// JPEG would blur. JPEG files that need no change are passed through.
+    #[default]
+    Automatic,
+    /// Lossy JPEG at the class's quality (images with transparency stay lossless).
+    Jpeg,
+    /// Lossless (Flate).
+    Zip,
+}
+
+impl ImageCompression {
+    /// `auto` / `automatic`, `jpeg`, `zip`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "auto" | "automatic" => Self::Automatic,
+            "jpeg" | "jpg" => Self::Jpeg,
+            "zip" | "flate" | "lossless" => Self::Zip,
+            _ => return None,
+        })
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Automatic => "auto",
+            Self::Jpeg => "jpeg",
+            Self::Zip => "zip",
+        }
+    }
+}
+
+/// JPEG image quality (Export PDF › Compression › Image Quality).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JpegQuality {
+    Minimum,
+    Low,
+    Medium,
+    High,
+    #[default]
+    Maximum,
+}
+
+impl JpegQuality {
+    pub const ALL: [JpegQuality; 5] = [Self::Minimum, Self::Low, Self::Medium, Self::High, Self::Maximum];
+    /// `minimum`, `low`, `medium`, `high`, `maximum`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|q| q.id().eq_ignore_ascii_case(s))
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Minimum => "minimum",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Maximum => "maximum",
+        }
+    }
+    /// The JPEG encoder's quality (1–100).
+    pub fn level(self) -> u8 {
+        match self {
+            Self::Minimum => 20,
+            Self::Low => 40,
+            Self::Medium => 60,
+            Self::High => 80,
+            Self::Maximum => 92,
+        }
+    }
+}
+
+/// Resampling and encoding for one class of images.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageSampling {
+    pub downsample: Downsample,
+    /// The resolution (pixels per inch at the placed size) to downsample to.
+    pub ppi: f64,
+    /// Only images above this resolution are downsampled (at least `ppi`).
+    pub above_ppi: f64,
+    pub compression: ImageCompression,
+    pub quality: JpegQuality,
+}
+
+impl ImageSampling {
+    /// Accepted resolutions, in pixels per inch.
+    pub const PPI_RANGE: std::ops::RangeInclusive<f64> = 9.0..=2400.0;
+
+    /// No resampling, encoded as `compression`.
+    pub const fn keep(compression: ImageCompression) -> Self {
+        Self { downsample: Downsample::None, ppi: 300.0, above_ppi: 450.0, compression, quality: JpegQuality::Maximum }
+    }
+
+    /// Downsampled to `ppi` when above `above_ppi`.
+    pub const fn resample(downsample: Downsample, ppi: f64, above_ppi: f64, compression: ImageCompression, quality: JpegQuality) -> Self {
+        Self { downsample, ppi, above_ppi, compression, quality }
+    }
+}
+
+/// Export PDF › Compression: how placed raster images are resampled and encoded, by class.
+/// Placed PDFs and SVGs are vectors and are left alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageOptions {
+    /// RGB and CMYK images.
+    pub color: ImageSampling,
+    /// Grayscale images.
+    pub gray: ImageSampling,
+    /// Black-and-white images (only fully black or white pixels); always lossless.
+    pub mono: ImageSampling,
+    /// Leave out the image data outside each graphic's frame.
+    pub crop_to_frames: bool,
+}
+
+impl Default for ImageOptions {
+    /// Lossless and full resolution, as an export without these options writes images.
+    fn default() -> Self {
+        let keep = ImageSampling::keep(ImageCompression::Zip);
+        Self { color: keep, gray: keep, mono: keep, crop_to_frames: false }
+    }
+}
+
+/// Export PDF › Output › Color Conversion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorConversion {
+    /// Colours are written in the space they were defined in.
+    #[default]
+    None,
+    /// Every process colour and image is converted to the destination profile.
+    ToDestination,
+    /// Colours already in the destination's model keep their numbers; the others are converted.
+    PreserveNumbers,
+}
+
+impl ColorConversion {
+    /// `none`, `destination`, `preserveNumbers`.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.to_ascii_lowercase().replace(['_', '-', ' '], "").as_str() {
+            "none" | "" => Self::None,
+            "destination" | "todestination" | "converttodestination" => Self::ToDestination,
+            "preservenumbers" | "destinationpreservenumbers" => Self::PreserveNumbers,
+            _ => return None,
+        })
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ToDestination => "destination",
+            Self::PreserveNumbers => "preserveNumbers",
+        }
+    }
+}
+
+/// Export PDF › Output: colour conversion to a destination profile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputColor {
+    pub conversion: ColorConversion,
+    /// A profile name from `designcraft_color::cms::profiles()`; `None` = the document's
+    /// working space of the destination model (CMYK for print output).
+    pub destination: Option<String>,
+    /// Write the destination profile as the file's output intent (always for PDF/X).
+    pub include_profile: bool,
+    /// Rendering intent of the conversion; `None` = Edit › Color Settings' intent.
+    pub intent: Option<designcraft_color::cms::Intent>,
+}
+
+impl Default for OutputColor {
+    fn default() -> Self {
+        Self { conversion: ColorConversion::None, destination: None, include_profile: false, intent: None }
     }
 }
 
@@ -126,11 +335,21 @@ pub struct PdfOptions {
     pub spreads: bool,
     /// Include the document bleed (`DocSettings::bleed`) around each page.
     pub bleed: bool,
+    /// Bleed for this export instead of the document's (top, bottom, inside, outside, in
+    /// points), when `bleed` is on.
+    pub bleed_values: Option<[f64; 4]>,
+    /// Include the slug area (`DocSettings::slug`): its items print and the sheet grows to it.
+    pub slug: bool,
     pub marks: Marks,
     pub standard: Standard,
     /// Re-encode non-JPEG raster images as JPEG (quality 90) when they have no transparency.
     /// Off = lossless (JPEG data is always passed through unchanged).
     pub compress_images: bool,
+    /// Image resampling and encoding by class. `None` = the `compress_images` behaviour: every
+    /// image at full resolution.
+    pub images: Option<ImageOptions>,
+    /// Colour conversion to a destination profile.
+    pub output: OutputColor,
     /// Flate-compress content streams.
     pub compress: bool,
     /// Title for the metadata; `None` = the document title.
@@ -167,9 +386,13 @@ impl Default for PdfOptions {
             pages: None,
             spreads: false,
             bleed: false,
+            bleed_values: None,
+            slug: false,
             marks: Marks::NONE,
             standard: Standard::None,
             compress_images: false,
+            images: None,
+            output: OutputColor::default(),
             compress: true,
             title: None,
             author: None,
@@ -247,6 +470,8 @@ impl From<craft_pdf::write::WriteError> for PdfError {
     }
 }
 
+#[cfg(test)]
+mod output_tests;
 #[cfg(test)]
 mod print_tests;
 #[cfg(test)]

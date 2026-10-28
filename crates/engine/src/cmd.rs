@@ -15,6 +15,8 @@ mod edit;
 mod editorial;
 mod endnotes;
 mod export;
+#[cfg(test)]
+pub(crate) use export::options as export_pdf_options;
 pub(crate) use export::print_pdf;
 mod file;
 mod file_info;
