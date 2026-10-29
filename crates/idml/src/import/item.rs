@@ -187,13 +187,15 @@ impl<'r> Importer<'r> {
     fn read_content(&mut self, e: &El, tag: &str, id: ItemId, item: &mut Item) {
         match tag {
             "TextFrame" => {
-                let story_self = e.get("ParentStory").unwrap_or("n").to_string();
+                let mut story_self = e.get("ParentStory").unwrap_or("n").to_string();
                 let story = match self.story_ids.get(&story_self) {
                     Some(s) => *s,
                     None => {
                         let sid = StoryId(self.alloc());
                         self.stories.insert(sid, Story::new(sid));
-                        self.story_ids.insert(format!("#orphan{}", sid.0), sid);
+                        // Threaded by this key (an anchored frame isn't on a spread to find it by).
+                        story_self = format!("#orphan{}", sid.0);
+                        self.story_ids.insert(story_self.clone(), sid);
                         sid
                     }
                 };

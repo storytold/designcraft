@@ -39,8 +39,42 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
-    s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    // Anchored text frames take their stories along, and graphics their files.
+    let source = text_source(&st.doc, &slice);
+    s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(source)));
     Ok(Some(text))
+}
+
+/// What pasting `slice` (text copied from `doc`) needs from `doc`, also in another document: the
+/// stories its anchored text frames show (and theirs) and the graphics it and those stories
+/// place. Nothing on spreads.
+fn text_source(doc: &designcraft_doc::Document, slice: &designcraft_doc::Story) -> designcraft_doc::Document {
+    let mut d = doc.clone();
+    d.stories = doc.anchored_stories(slice);
+    let used: std::collections::HashSet<designcraft_doc::AssetId> =
+        std::iter::once(slice).chain(d.stories.values().map(|st| &**st)).flat_map(designcraft_doc::story_asset_refs).collect();
+    d.assets.retain(|id, _| used.contains(id));
+    for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+        Arc::make_mut(sp).items.clear();
+    }
+    d
+}
+
+/// Copied text `slice` pasted into `d`: the graphics it places (from `src`, its
+/// [`text_source`]) under `d`'s ids, since `src`'s may name other files in another document;
+/// fresh ids for its anchored items and copies of the stories its anchored text frames show.
+fn adopt_text(d: &mut designcraft_doc::Document, slice: &mut designcraft_doc::Story, src: &designcraft_doc::Document) {
+    let refs: std::collections::BTreeSet<designcraft_doc::AssetId> = designcraft_doc::story_asset_refs(slice).into_iter().collect();
+    let mut map = std::collections::HashMap::new();
+    for a in refs {
+        // A graphic missing there stays missing: a fresh id, not one that may name a file here.
+        let here = d.adopt_asset(src, a).unwrap_or_else(|| designcraft_doc::AssetId(d.alloc()));
+        if here != a {
+            map.insert(a, here);
+        }
+    }
+    designcraft_doc::remap_story_assets(slice, &map);
+    d.adopt_anchored_from(slice, src);
 }
 
 /// Plain text for the system clipboard after copying objects: the copied text frames' stories,
@@ -106,11 +140,12 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             });
         }
     }
-    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
+    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p, _)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
-    if use_clip && let Some((slice, _)) = clip {
-        let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+    if use_clip && let Some((slice, _, source)) = clip {
+        let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
+            adopt_text(d, &mut slice, &source);
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
@@ -122,7 +157,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     }
     // U+FFFC stands for objects with no text.
     let text = if own { Some(copied_objects_text(s)).filter(|m| m != "\u{FFFC}") } else { text };
-    let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
+    let text = text.or_else(|| clip.map(|(_, p, _)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
     let text = outside_text(&text)?;
     s.execute("text.insert", &json!({"text": text, "raw": true}))
 }
@@ -138,8 +173,9 @@ fn outside_text(text: &str) -> Result<String> {
 /// Pasted text with no insertion point: a new text frame holding it, as wide as the first column
 /// of the page's margin area and as tall as the text (at most the margin area's height), centred
 /// on `at` (spread coordinates) or else on the margin area. The frame ends up selected. With
-/// `slice` (the text copied here), the frame's story is that formatted copy.
-fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&designcraft_doc::Story>) -> Result<Value> {
+/// `slice` (the text copied here, with its [`text_source`]), the frame's story is that formatted
+/// copy.
+fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&designcraft_doc::Story, &designcraft_doc::Document)>) -> Result<Value> {
     use designcraft_geom::{Point, Rect, shapes};
     const LIMIT: f64 = 1.0e5;
     let sr = super::spread_param(p, "edit.paste")?;
@@ -159,13 +195,15 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         let max_h = margins.height().max(12.0);
         let c = at.unwrap_or(Point::new(column.center().x, margins.center().y));
         let rect = |h: f64| Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0);
-        let para = match slice.and_then(|sl| sl.paras.first()) {
+        let para = match slice.and_then(|(sl, _)| sl.paras.first()) {
             Some(pf) => designcraft_doc::ParaFormat { table: None, ..pf.clone() },
             None => designcraft_doc::ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() },
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
-        if let Some(sl) = slice {
-            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+        if let Some((sl, source)) = slice {
+            let mut sl = sl.clone();
+            adopt_text(d, &mut sl, source);
+            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
@@ -389,8 +427,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 // The placeholder of an object copy pastes the copied objects.
                 if let Some(text) = text.filter(|t| !is_objects_placeholder(s, t)) {
                     // What our own text copy put on the clipboard keeps its formatting.
-                    let slice = s.text_clipboard.clone().filter(|(_, plain)| text.replace("\r\n", "\n") == *plain).map(|(slice, _)| slice);
-                    return paste_text_frame(s, p, text, slice.as_deref());
+                    let clip = s.text_clipboard.clone().filter(|(_, plain, _)| text.replace("\r\n", "\n") == *plain);
+                    return paste_text_frame(s, p, text, clip.as_ref().map(|(slice, _, source)| (&**slice, &**source)));
                 }
                 let Some(clip) = s.clipboard.clone() else {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
@@ -521,7 +559,11 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
     }
-    d.stories.retain(|_, st| st.frames.iter().any(|f| frames.contains(f)));
+    // Stories shown by text frames anchored in the kept stories go along (and theirs).
+    let anchored: std::collections::HashSet<designcraft_doc::StoryId> =
+        d.stories.values().filter(|st| st.frames.iter().any(|f| frames.contains(f))).flat_map(|st| d.anchored_stories(st).into_keys()).collect();
+    d.stories.retain(|id, st| st.frames.iter().any(|f| frames.contains(f)) || anchored.contains(id));
+    frames.extend(d.anchored_items().into_iter().map(|(_, i)| i.id));
     for st in d.stories.values_mut() {
         Arc::make_mut(st).frames.retain(|f| frames.contains(f));
     }

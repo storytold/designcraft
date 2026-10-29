@@ -115,41 +115,81 @@ impl Exporter<'_> {
     }
 
     /// The structure tree: stories (one paragraph each, its frames in thread order of appearance)
-    /// and figures, in the order they first appear.
+    /// and figures, in the order they first appear. The story of an anchored text frame is read
+    /// where it is anchored, inside the paragraph that holds its anchor.
     pub(super) fn tag_tree(&mut self) -> TagTree {
         let mut tree = TagTree::new();
         for e in std::mem::take(&mut self.tags) {
             match e {
                 TagEntry::Story(sid) => {
-                    // One structure element per paragraph: headings and quotes from the
-                    // paragraph style's Export Tagging, else P.
-                    let mut paras: Vec<usize> = self.para_tags.keys().filter(|(s, _)| *s == sid).map(|(_, p)| *p).collect();
-                    paras.sort_unstable();
-                    let story = self.doc.story(sid);
-                    for pi in paras {
-                        let ids = self.para_tags.remove(&(sid, pi)).unwrap_or_default();
-                        let style = story.and_then(|st| st.paras.get(pi)).map(|p| p.style.clone()).unwrap_or_default();
-                        let tag = self.doc.styles.export_tag(&style, false).map(|e| e.tag.clone()).unwrap_or_default();
-                        let text = || story.and_then(|st| st.para_ranges().get(pi).map(|r| st.text[r.clone()].trim().to_string()));
-                        let kind: krilla::tagging::TagKind = match tag.as_str() {
-                            h if h.len() == 2 && h.starts_with('h') => {
-                                let n = h[1..].parse::<u16>().unwrap_or(1).clamp(1, 6);
-                                Tag::Hn(std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN), text()).into()
-                            }
-                            "blockquote" => Tag::BlockQuote.into(),
-                            _ => Tag::P.into(),
-                        };
-                        let mut g = TagGroup::new(kind);
-                        for id in ids {
-                            g.push(id);
-                        }
+                    for g in self.story_elements(sid, 0) {
                         tree.push(g);
                     }
                 }
                 TagEntry::Figure(g) => tree.push(g),
             }
         }
+        // Anchored stories nested too deeply (or anchored in a story that isn't read): at the
+        // end, so that all marked content has a parent.
+        while let Some((_, nested)) = self.anchored_tags.pop_first() {
+            for (_, sid) in nested {
+                for g in self.story_elements(sid, 0) {
+                    tree.push(g);
+                }
+            }
+        }
         tree
+    }
+
+    /// One structure element per paragraph of story `sid` (headings and quotes from the paragraph
+    /// style's Export Tagging, else P), holding its marked content and, at their anchors, the
+    /// stories of the text frames anchored in it (`depth`: how deeply this story is anchored).
+    fn story_elements(&mut self, sid: designcraft_doc::StoryId, depth: usize) -> Vec<TagGroup> {
+        // As deep as drawing nests items.
+        const NESTING: usize = 64;
+        let doc = self.doc;
+        let story = doc.story(sid);
+        let para = |at: usize| story.map_or(0, |st| st.para_at(at.min(st.len())));
+        let mut anchored = if depth < NESTING { self.anchored_tags.remove(&sid).unwrap_or_default() } else { Vec::new() };
+        anchored.sort_by_key(|&(at, _)| at);
+        let mut paras: Vec<usize> =
+            self.para_tags.keys().filter(|(s, _)| *s == sid).map(|(_, p)| *p).chain(anchored.iter().map(|&(at, _)| para(at))).collect();
+        paras.sort_unstable();
+        paras.dedup();
+        let mut out = Vec::with_capacity(paras.len());
+        for pi in paras {
+            let runs = self.para_tags.remove(&(sid, pi)).unwrap_or_default();
+            let style = story.and_then(|st| st.paras.get(pi)).map(|p| p.style.clone()).unwrap_or_default();
+            let tag = doc.styles.export_tag(&style, false).map(|e| e.tag.clone()).unwrap_or_default();
+            let text = || story.and_then(|st| st.para_ranges().get(pi).map(|r| st.text[r.clone()].trim().to_string()));
+            let kind: krilla::tagging::TagKind = match tag.as_str() {
+                h if h.len() == 2 && h.starts_with('h') => {
+                    let n = h[1..].parse::<u16>().unwrap_or(1).clamp(1, 6);
+                    Tag::Hn(std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN), text()).into()
+                }
+                "blockquote" => Tag::BlockQuote.into(),
+                _ => Tag::P.into(),
+            };
+            let mut g = TagGroup::new(kind);
+            // Lines hold their glyphs in text order: an anchored story goes before the first run
+            // after its anchor.
+            let mut here = anchored.iter().filter(|&&(at, _)| para(at) == pi).peekable();
+            for (first, id) in runs {
+                while let Some(&(_, nested)) = here.next_if(|&&(at, _)| at < first) {
+                    for c in self.story_elements(nested, depth + 1) {
+                        g.push(c);
+                    }
+                }
+                g.push(id);
+            }
+            for &(_, nested) in here {
+                for c in self.story_elements(nested, depth + 1) {
+                    g.push(c);
+                }
+            }
+            out.push(g);
+        }
+        out
     }
 
     fn item(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
@@ -317,7 +357,7 @@ impl Exporter<'_> {
         if let Content::Text(tfr) = &it.content {
             let cs = self.composed(tfr.story, page);
             if let Some(ft) = cs.frame(it.id) {
-                self.frame_objects(s, ft, xf * self.doc.text_local(it), page);
+                self.frame_objects(s, ft, tfr.story, xf * self.doc.text_local(it), page);
             }
         }
     }
@@ -392,7 +432,21 @@ impl Exporter<'_> {
                         s.push_transform(&tf(local));
                     }
                     self.text_area = (local.determinant().abs() > 1e-12).then(|| local.inverse().transform_rect_bbox(it.inner_bounds()));
+                    // An anchored text frame's story is tagged as a story of its own, read where
+                    // it is anchored (after its host when that is in a footnote or a cell).
+                    let outer = self.tag_story;
+                    if outer.is_some_and(|o| o != tfr.story) {
+                        if let std::collections::hash_map::Entry::Vacant(e) = self.story_tags.entry(tfr.story) {
+                            e.insert(Vec::new());
+                            match self.tag_anchor {
+                                Some((host, at)) => self.anchored_tags.entry(host).or_default().push((at, tfr.story)),
+                                None => self.tags.push(TagEntry::Story(tfr.story)),
+                            }
+                        }
+                        self.tag_story = Some(tfr.story);
+                    }
                     self.frame_text(s, &cs, ft, text);
+                    self.tag_story = outer;
                     self.text_area = None;
                     if local != Affine::IDENTITY {
                         s.pop();
@@ -418,21 +472,41 @@ impl Exporter<'_> {
     }
 
     /// Draw embedded page items after restoring the surface, retaining spread-space
-    /// transforms for page culling (also for anonymous note and cell stories).
-    fn frame_objects(&mut self, s: &mut Surface, ft: &designcraft_compose::FrameText, xf: Affine, page: Option<usize>) {
-        let mut pending = vec![(ft, xf)];
-        while let Some((frame, transform)) = pending.pop() {
+    /// transforms for page culling (also for anonymous note and cell stories). `ft` is a frame of
+    /// `story`.
+    fn frame_objects(
+        &mut self,
+        s: &mut Surface,
+        ft: &designcraft_compose::FrameText,
+        story: designcraft_doc::StoryId,
+        xf: Affine,
+        page: Option<usize>,
+    ) {
+        // While tagging: the byte of each object's mark in `story` (a text frame anchored there is
+        // read there).
+        let marks: Vec<usize> = match self.doc.story(story) {
+            Some(st) if self.tag_story.is_some() && !ft.objects.is_empty() => {
+                st.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect()
+            }
+            _ => Vec::new(),
+        };
+        let mut pending = vec![(ft, xf, true)];
+        while let Some((frame, transform, own)) = pending.pop() {
             for object in &frame.objects {
+                // Objects in footnotes and cells have no anchor in `story`.
+                let at = marks.get(object.index).filter(|_| own).map(|&b| (story, b));
+                let outer = std::mem::replace(&mut self.tag_anchor, at);
                 self.item(s, &object.object.item, transform * Affine::translate(object.origin.to_vec2()), page);
+                self.tag_anchor = outer;
             }
             for note in &frame.notes {
                 if let Some(frame) = note.text.frames.first() {
-                    pending.push((frame, transform * Affine::translate(note.origin.to_vec2())));
+                    pending.push((frame, transform * Affine::translate(note.origin.to_vec2()), false));
                 }
             }
             for cell in frame.tables.iter().flat_map(|t| &t.cells) {
                 if let Some(frame) = cell.text.frames.first() {
-                    pending.push((frame, transform * Affine::translate(cell.origin.to_vec2())));
+                    pending.push((frame, transform * Affine::translate(cell.origin.to_vec2()), false));
                 }
             }
         }

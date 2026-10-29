@@ -107,11 +107,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             let cur = c.get(new, sid, None);
             let changed = designcraft_compose::Cache::changed_frames(&prev, &cur);
             for f in changed {
-                for d in [old, new] {
-                    if d.find(f).is_some() {
-                        out.push(frame_area(d, f)?);
-                    }
-                }
+                out.extend(changed_frame_areas(old, new, f)?);
             }
             continue;
         }
@@ -178,6 +174,13 @@ fn painted_bounds(it: &Item) -> Rect {
         b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)));
     }
     b
+}
+
+/// The areas of changed frame `f` before and after an edit. None (repaint everything) for an
+/// anchored text frame, which is drawn with the text it is anchored in.
+fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
+    let areas: Vec<(SpreadRef, Rect)> = [old, new].into_iter().filter(|d| d.find(f).is_some()).map(|d| frame_area(d, f)).collect::<Option<_>>()?;
+    if areas.is_empty() { None } else { Some(areas) }
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
@@ -304,6 +307,24 @@ mod tests {
         d.item_mut(f).unwrap().xf = Affine::translate((210.0, 90.0)) * Affine::rotate(30f64.to_radians());
         let diff = patched_diff(&old, &d, (700, 560), 1.0);
         assert_eq!(diff, 0, "the moved text left {diff} stale channels behind");
+    }
+
+    #[test]
+    fn editing_the_story_of_an_anchored_text_frame_repaints_everything() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        d.check().unwrap();
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, " text");
+        assert!(damage(&old, &d).is_none());
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
     }
 
     #[test]

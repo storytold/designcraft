@@ -227,6 +227,13 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         if d.layer(it.layer).is_none() {
             it.layer = d.default_layer();
         }
+        // A text frame keeps its place in its story's thread under its new id.
+        if let Some(st) = it.text_frame().and_then(|t| d.story_mut(t.story)) {
+            match st.frames.iter_mut().find(|f| **f == obj.item.id) {
+                Some(f) => *f = it.id,
+                None => st.frames.push(it.id),
+            }
+        }
         let id = d.insert_item(spread, it, None)?;
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         st.delete(pos..pos + OBJECT_MARK.len_utf8());
@@ -331,5 +338,214 @@ mod custom_tests {
             st.objects[0].position,
             designcraft_doc::AnchorPosition::Custom { spine_relative: true, x_offset, object_point: 2, .. } if x_offset == -6.0
         ));
+    }
+}
+
+#[cfg(test)]
+mod text_frame_tests {
+    use designcraft_doc::{ParaFormat, StoryId};
+    use designcraft_geom::Rect;
+    use serde_json::json;
+
+    use super::*;
+
+    /// Anchor, at `pos` of `host`, a 200 × 40 pt text frame showing a new story with `text`.
+    fn anchor(d: &mut Document, host: StoryId, pos: usize, text: &str) -> designcraft_doc::Result<(StoryId, ItemId)> {
+        let layer = d.default_layer();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 40.0), layer, text, ParaFormat::default())?;
+        let item = d.item(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.clone();
+        d.spread_mut(SpreadRef::Doc(0)).ok_or(designcraft_doc::DocError::NoItem(fid))?.items.retain(|i| i.id != fid);
+        d.story_mut(host).ok_or(designcraft_doc::DocError::NoStory(host))?.insert_object(pos, AnchoredObject::new(item, AnchorPosition::default()));
+        Ok((sid, fid))
+    }
+
+    /// A new document with a text frame whose story holds, after "Host ", an anchored text frame
+    /// showing "Anchored words " and, in that, one showing "Deeper". Returns the host story, the
+    /// anchored story and the anchored frame's id.
+    fn session() -> (Session, StoryId, StoryId, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host  end"})).unwrap();
+        let host = StoryId(r["story"].as_u64().unwrap());
+        let (sid, id) = s
+            .edit(|d, _| {
+                let (sid, id) = anchor(d, host, 5, "Anchored words ")?;
+                anchor(d, sid, 15, "Deeper")?;
+                Ok((sid, id))
+            })
+            .unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+        (s, host, sid, id)
+    }
+
+    /// The document is valid (and opens again once saved); returns the texts its anchored text
+    /// frames show, sorted, after checking each has a story of its own.
+    fn shown(s: &Session) -> Vec<String> {
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
+        let stories: Vec<StoryId> = d.anchored_items().iter().filter_map(|(_, i)| i.text_frame()).map(|t| t.story).collect();
+        let distinct: std::collections::HashSet<_> = stories.iter().collect();
+        assert_eq!(distinct.len(), stories.len(), "a story of its own each");
+        let mut texts: Vec<String> = stories.iter().map(|sid| d.story(*sid).unwrap().text.clone()).collect();
+        texts.sort();
+        texts
+    }
+
+    const SHOWN: [&str; 2] = ["Anchored words \u{E00E}", "Deeper"];
+
+    #[test]
+    fn releasing_an_anchored_text_frame_threads_its_story_to_it() {
+        let (mut s, host, sid, _) = session();
+        s.execute("anchored.release", &json!({"story": host.0, "index": 0})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        let id = s.doc().unwrap().selection.items[0];
+        assert_eq!(d.story(sid).unwrap().frames, vec![id]);
+        assert_eq!(d.item(id).unwrap().text_frame().unwrap().story, sid);
+        assert!(s.cache.get(&d, sid, None).frame(id).is_some_and(|f| !f.lines.is_empty()));
+        assert_eq!(shown(&s), ["Deeper"]);
+    }
+
+    #[test]
+    fn copied_anchored_text_frames_get_stories_of_their_own() {
+        let (mut s, host, sid, id) = session();
+        // Text copied and pasted in the same story.
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(shown(&s), ["Anchored words \u{E00E}", "Anchored words \u{E00E}", "Deeper", "Deeper"]);
+        // The original keeps its frame and story.
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().frames, vec![id]);
+        // The host frame duplicated.
+        let frame = s.doc().unwrap().doc.story(host).unwrap().frames[0];
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        assert_eq!(shown(&s).len(), 8);
+        // Text dragged with a copy.
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.edit(|d, _| {
+            let st = d.story_mut(host).ok_or(designcraft_doc::DocError::NoStory(host))?;
+            let piece = st.extract(0..9);
+            st.insert_story(0, &piece);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(shown(&s).len(), 10);
+    }
+
+    #[test]
+    fn deleted_anchored_text_frames_take_their_stories_along() {
+        let (mut s, host, sid, _) = session();
+        let stories = s.doc().unwrap().doc.stories.len();
+        // Cut with the text it is in, and pasted back.
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert!(shown(&s).is_empty());
+        assert!(s.doc().unwrap().doc.story(sid).is_none());
+        assert_eq!(s.doc().unwrap().doc.stories.len(), stories - 2);
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(shown(&s), SHOWN);
+        assert_eq!(s.doc().unwrap().doc.stories.len(), stories);
+        // Deleted with the frame it is anchored in; undo brings it back.
+        let frame = s.doc().unwrap().doc.story(host).unwrap().frames[0];
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.clear", &json!({})).unwrap();
+        assert!(shown(&s).is_empty());
+        assert!(s.doc().unwrap().doc.stories.is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(shown(&s), SHOWN);
+    }
+
+    #[test]
+    fn anchored_text_frames_paste_into_another_document() {
+        let (mut s, host, _, _) = session();
+        let frame = s.doc().unwrap().doc.story(host).unwrap().frames[0];
+        // A second document, whose ids are those of the first one.
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Other "})).unwrap();
+        let other = StoryId(r["story"].as_u64().unwrap());
+        s.edit(|d, _| Ok(anchor(d, other, 6, "Elsewhere")?)).unwrap();
+        // Copied text.
+        s.set_active(0);
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.set_active(1);
+        let len = s.doc().unwrap().doc.story(other).unwrap().len();
+        s.execute("text.select", &json!({"story": other.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(shown(&s), ["Anchored words \u{E00E}", "Deeper", "Elsewhere"]);
+        // A copied frame.
+        s.set_active(0);
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.set_active(1);
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(shown(&s), ["Anchored words \u{E00E}", "Anchored words \u{E00E}", "Deeper", "Deeper", "Elsewhere"]);
+    }
+
+    /// Place a 4 × 4 pt graphic of grey `v`; returns its frame and its asset.
+    fn place(s: &mut Session, v: u8) -> (ItemId, designcraft_doc::AssetId) {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![v; 64] }.to_png();
+        let r =
+            s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": format!("{v}.png"), "x": 72, "y": 72})).unwrap();
+        (ItemId(r["id"].as_u64().unwrap()), designcraft_doc::AssetId(r["asset"].as_u64().unwrap()))
+    }
+
+    /// The files the graphics anchored in the active document show (in its anchored text frames'
+    /// stories too), sorted; `None` for a graphic whose asset is missing.
+    fn anchored_files(s: &Session) -> Vec<Option<Arc<Vec<u8>>>> {
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        let mut files: Vec<_> =
+            d.anchored_items().iter().filter_map(|(_, i)| i.graphic()).map(|g| d.assets.get(&g.asset).map(|a| a.data.clone())).collect();
+        files.sort();
+        files
+    }
+
+    /// Copied text pasted into another document takes along the files of the graphics anchored
+    /// in it and in the stories of its anchored text frames: their asset ids may name other files
+    /// there, or none.
+    #[test]
+    fn pasted_text_takes_its_graphics_into_another_document() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (inline, a) = place(&mut s, 10);
+        let (nested, _) = place(&mut s, 20);
+        let r = s.execute("frame.create", &json!({"rect": [72, 200, 400, 500], "content": "text", "text": "Host  end"})).unwrap();
+        let host = StoryId(r["story"].as_u64().unwrap());
+        let (sid, _) = s.edit(|d, _| Ok(anchor(d, host, 5, "Anchored words ")?)).unwrap();
+        // A graphic in the copied text and one in its anchored text frame's story.
+        s.execute("anchored.insert", &json!({"ids": [inline.0], "story": host.0, "pos": 0})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [nested.0], "story": sid.0, "pos": 0})).unwrap();
+        let files = anchored_files(&s);
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(Option::is_some));
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let plain = s.text_clipboard.as_ref().unwrap().1.clone();
+
+        // Another document whose own graphic has the asset id of the first copied one.
+        s.execute("file.new", &json!({})).unwrap();
+        let (_, b) = place(&mut s, 30);
+        assert_eq!(a, b, "fresh documents allocate the same first asset id");
+        let own = s.doc().unwrap().doc.assets.get(&b).unwrap().data.clone();
+        let r = s.execute("frame.create", &json!({"rect": [72, 200, 400, 500], "content": "text", "text": "Other "})).unwrap();
+        let other = StoryId(r["story"].as_u64().unwrap());
+        // Into text.
+        s.execute("text.select", &json!({"story": other.0, "anchor": 6, "focus": 6})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(anchored_files(&s), files);
+        // Into a new text frame.
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": plain})).unwrap();
+        let twice: Vec<_> = files.iter().flat_map(|f| [f.clone(), f.clone()]).collect();
+        assert_eq!(anchored_files(&s), twice);
+        // The document's own graphic keeps its file.
+        assert_eq!(s.doc().unwrap().doc.assets.get(&b).unwrap().data, own);
     }
 }
