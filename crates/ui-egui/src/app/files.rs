@@ -87,12 +87,26 @@ impl DesignApp {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
         self.activate_import_target(&file.request)?;
         let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop});
-        let placed = if file.request.purpose == "place" { self.place_file(params)? } else { self.open_file("file.place", params)? };
+        // Editable conversion needs a placed item id. The place cursor (`place_file`) may not create
+        // one, so place onto the page when converting.
+        let placed = if editable || file.request.purpose != "place" {
+            self.open_file("file.place", params)?
+        } else {
+            self.place_file(params)?
+        };
         if editable {
-            let id = placed.get("id").cloned().unwrap_or(Value::Null);
-            return self.run("object.convertPdf", json!({"id": id}));
+            return self.convert_placed_pdf(&placed);
         }
         Ok(placed)
+    }
+
+    /// Turn a just-placed PDF graphic into editable objects. Requires `placed.id` from `file.place`.
+    pub(crate) fn convert_placed_pdf(&mut self, placed: &Value) -> Result<Value, String> {
+        let id = placed
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "the PDF was not placed as a page item, so it cannot be converted to editable objects".to_string())?;
+        self.run("object.convertPdf", json!({"id": id}))
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
@@ -732,6 +746,29 @@ pub(crate) mod browser_import_tests {
         // Place options for the page (same path as File › Place).
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
         assert!(app.pending_pdf.is_some());
+    }
+
+    #[test]
+    fn convert_placed_pdf_requires_a_numeric_item_id() {
+        let mut app = app();
+        for placed in [json!({}), json!({"id": null}), json!({"loaded": true}), json!({"id": "x"})] {
+            let err = app.convert_placed_pdf(&placed).unwrap_err();
+            assert!(err.contains("not placed as a page item"), "{placed}: {err}");
+        }
+    }
+
+    #[test]
+    fn editable_pdf_import_places_onto_the_page_then_converts() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "single.pdf", pdf_pages(1));
+        app.ui.dialog.as_mut().unwrap().fields.insert("editable".into(), json!(true));
+        let before = app.session.doc().unwrap().doc.spreads[0].items.len();
+        dialogs::confirm(&mut app).unwrap();
+        // Place-cursor load would leave zero items; editable must place then convert.
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.len() > before);
+        assert!(app.session.loaded.is_none());
+        assert_ne!(app.session.tool_id(), "placeGun");
     }
 
     #[test]

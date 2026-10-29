@@ -4715,14 +4715,16 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
             if editable {
-                // Place the page as a graphic first, then convert it so placement geometry matches Place.
-                let placed = app.place_file(json!({
-                    "path": d.s("path"),
-                    "pdfPage": page,
-                    "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }
-                }))?;
-                let id = placed.get("id").cloned().unwrap_or(Value::Null);
-                return app.run("object.convertPdf", json!({"id": id}));
+                // Place onto the page (not the place cursor), then convert; needs a real item id.
+                let placed = app.open_file(
+                    "file.place",
+                    json!({
+                        "path": d.s("path"),
+                        "pdfPage": page,
+                        "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }
+                    }),
+                )?;
+                return app.convert_placed_pdf(&placed);
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
