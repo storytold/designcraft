@@ -46,6 +46,9 @@ pub enum FontSource {
     Installed(std::path::PathBuf),
     /// A font file in a document's `Document Fonts` folder ([`FontDb::load_document_fonts`]).
     Document(std::path::PathBuf),
+    /// A font file handed over with a document opened from bytes, by its file name
+    /// ([`FontDb::load_document_font_data`]); there is no file behind it.
+    DocumentData(String),
 }
 
 /// The folder beside a document whose fonts the document brings with it (as File › Package
@@ -60,8 +63,9 @@ pub const MAX_DOCUMENT_FONT_BYTES: u64 = 256 << 20;
 
 pub const MAX_DOCUMENT_FONTS_TOTAL: u64 = 512 << 20;
 
-/// What [`FontDb::load_document_fonts`] did: the scope the document looks its fonts up in (0 when
-/// the folder gave none), the faces in it, and a note for each file skipped.
+/// What [`FontDb::load_document_fonts`] or [`FontDb::load_document_font_data`] did: the scope the
+/// document looks its fonts up in (0 when the folder or files gave none), the faces in it, and a
+/// note for each file skipped.
 #[derive(Debug, Default)]
 pub struct DocumentFonts {
     pub scope: u32,

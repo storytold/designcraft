@@ -230,3 +230,30 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+#[test]
+fn document_font_data_loads_in_its_own_scope() {
+    const FAMILY: &str = "DocFont Data";
+    let db = FontDb::with_font_dirs(vec![]);
+    // Two documents bring different versions of one family: A's has `a` and `b`, B's only `b`.
+    let a =
+        db.load_document_font_data(vec![("same.ttf".into(), font_with(FAMILY, &['a', 'b']).unwrap()), ("broken.otf".into(), b"not a font".to_vec())]);
+    let b = db.load_document_font_data(vec![("same.ttf".into(), font_with(FAMILY, &['b']).unwrap())]);
+    assert_eq!((a.faces, b.faces), (1, 1));
+    assert_eq!(a.skipped.len(), 1, "{:?}", a.skipped);
+    assert!(a.skipped[0].contains("broken.otf"), "{:?}", a.skipped);
+    assert!(a.scope != 0 && b.scope != 0 && a.scope != b.scope);
+
+    let (fa, fb) = (db.scoped(a.scope).face(FAMILY, "Regular"), db.scoped(b.scope).face(FAMILY, "Regular"));
+    assert_eq!(fa.source, FontSource::DocumentData("same.ttf".into()));
+    assert!(fa.covers('a') && fa.covers('b'), "A sees its own version");
+    assert!(!fb.covers('a') && fb.covers('b'), "B sees its own version, not A's");
+    assert!(!Arc::ptr_eq(&fa, &fb));
+    assert_eq!(fa.source.path(), None, "no file behind it");
+    assert!(!db.has_family(FAMILY), "neither reaches the shared fonts");
+
+    db.close_scope(a.scope);
+    assert!(!db.scoped(a.scope).has_family(FAMILY), "a closed scope finds its fonts no more");
+    assert!(db.scoped(b.scope).face(FAMILY, "Regular").covers('b'), "closing A leaves B's");
+    assert_eq!(db.load_document_font_data(vec![("readme.txt".into(), b"hello".to_vec())]).scope, 0, "no fonts: scope 0");
+}

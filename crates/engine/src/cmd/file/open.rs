@@ -123,6 +123,24 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
     }
 }
 
+/// Load the font files a document opened from bytes brings (`fonts: [{name, base64}]` in `p`) for
+/// `d` alone, as [`load_document_fonts`] loads a folder's → (the scope, faces, a warning for each
+/// font skipped). No `fonts` loads nothing.
+pub(crate) fn load_supplied_fonts(d: &mut Document, p: &Value, command: &str) -> Result<(Option<Arc<crate::FontScope>>, usize, Vec<String>)> {
+    let Some(list) = p.get("fonts").filter(|v| !v.is_null()) else { return Ok((None, 0, Vec::new())) };
+    let list = list.as_array().ok_or_else(|| bad(command, "`fonts` must be a list of {name, base64}"))?;
+    let mut files = Vec::with_capacity(list.len());
+    for (i, f) in list.iter().enumerate() {
+        let name = str_param(f, "name").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `name`")))?;
+        let data = str_param(f, "base64").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `base64`")))?;
+        files.push((name.to_string(), base64_decode(data)));
+    }
+    let r = designcraft_fonts::FontDb::global().load_document_font_data(files);
+    d.font_scope = r.scope;
+    let scope = (r.scope != 0).then(|| Arc::new(crate::FontScope(r.scope)));
+    Ok((scope, r.faces, r.skipped.into_iter().map(|s| format!("Document fonts: {s}")).collect()))
+}
+
 /// The `Document Fonts` folder in `dir`, matched without regard to case: packages name it
 /// `Document fonts`, and file systems on Linux are case-sensitive. The exact name wins.
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,13 +165,17 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    let (mut d, mut warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();
     }
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i, "warnings": warnings}))
+    let (fonts, faces, font_warnings) = load_supplied_fonts(&mut d, p, "file.openBytes")?;
+    warnings.extend(font_warnings);
+    let mut st = DocState::new(d, None);
+    st.fonts = fonts;
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
 }
 
 #[cfg(test)]
@@ -350,6 +372,54 @@ mod document_fonts_tests {
         }
         let _ = std::fs::remove_dir_all(&a);
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    #[test]
+    fn documents_opened_from_bytes_bring_their_own_fonts() {
+        const FAMILY: &str = "DocFont Bytes";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "ab ab ab");
+        let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        // A's version of the family has both letters, B's only `b` (the same name and style).
+        let (a_font, b_font) = (font_with(FAMILY, &['a', 'b']).unwrap(), font_with(FAMILY, &['b']).unwrap());
+
+        let mut s = Session::new();
+        let r = s
+            .execute(
+                "file.openBytes",
+                &json!({"name": "A.idml", "base64": b64(&idml), "fonts": [{"name": "same.ttf", "base64": b64(&a_font)}, {"name": "bad.otf", "base64": b64(b"nope")}]}),
+            )
+            .unwrap();
+        assert_eq!(r["documentFonts"], 1, "{r}");
+        assert!(r["warnings"].to_string().contains("bad.otf"), "a damaged font is reported, not fatal: {r}");
+        let r = s
+            .execute(
+                "file.openBytes",
+                &json!({"name": "B.designcraft", "base64": b64(&native), "fonts": [{"name": "same.ttf", "base64": b64(&b_font)}]}),
+            )
+            .unwrap();
+        assert_eq!(r["documentFonts"], 1, "{r}");
+        let f = font_entry(&mut s, FAMILY);
+        assert_eq!((f["matchStatus"].clone(), f["source"].clone()), (json!("exact"), json!("document")), "{f}");
+        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
+        let in_b = glyph_faces(&s);
+        s.execute("file.activate", &json!({"index": 0})).unwrap();
+        let in_a = glyph_faces(&s);
+        assert_eq!((in_a.len(), in_b.len()), (8, 8), "{in_a:?} {in_b:?}");
+        assert!(in_a.iter().all(|(_, f)| f.family == FAMILY && f.source == FontSource::DocumentData("same.ttf".into())), "{in_a:?}");
+        for (c, f) in &in_b {
+            match c {
+                'a' => assert!(f.family != FAMILY, "B's font lacks `a`, and A's isn't B's: {f:?}"),
+                _ => assert!(f.family == FAMILY && !f.covers('a'), "`{c}` in B is B's version: {f:?}"),
+            }
+        }
+        // Neither document's fonts reach a third, and a malformed list is an error.
+        new_document(&mut s, FAMILY, "b");
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true);
+        assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": {"name": "x"}})).is_err());
+        assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": [{"name": "x.ttf"}]})).is_err());
     }
 
     #[test]

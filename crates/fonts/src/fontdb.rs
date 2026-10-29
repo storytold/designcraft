@@ -19,7 +19,7 @@ impl FontSource {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             FontSource::Installed(p) | FontSource::Document(p) => Some(p),
-            FontSource::Bundled | FontSource::Memory => None,
+            FontSource::Bundled | FontSource::Memory | FontSource::DocumentData(_) => None,
         }
     }
 }
@@ -77,7 +77,8 @@ impl std::fmt::Debug for FontFace {
 /// each open document's own fonts under its scope (see [`FontDb::scoped`]).
 pub struct FontDb {
     faces: RwLock<Vec<Arc<FontFace>>>,
-    /// Each open document's fonts (its `Document Fonts` folder), by scope.
+    /// Each open document's fonts (its `Document Fonts` folder, or the font files it was opened
+    /// with), by scope.
     scopes: RwLock<HashMap<u32, Arc<[Arc<FontFace>]>>>,
     /// The document font files read, by path: (length, modification time, faces). A document
     /// opened again finds its unchanged files here instead of reading them again.

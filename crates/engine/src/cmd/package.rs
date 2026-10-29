@@ -326,7 +326,7 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
 fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
-        FontSource::Memory => return " — not copied: no font file".into(),
+        FontSource::Memory | FontSource::DocumentData(_) => return " — not copied: no font file".into(),
         FontSource::Installed(p) | FontSource::Document(p) => p,
     };
     if face.restricted_licence() {

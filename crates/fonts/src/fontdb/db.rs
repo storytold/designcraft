@@ -1,4 +1,7 @@
-use super::face::{BUNDLED, FontBytes, FontFace, FontSource, enumerate_faces, make_face};
+use super::face::{
+    BUNDLED, DocumentFonts, FontBytes, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES, MAX_DOCUMENT_FONTS_TOTAL,
+    enumerate_faces, make_face,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use super::fallback::SysFallback;
 use super::names::has_face;
@@ -13,12 +16,11 @@ use super::system::CatalogEntry;
 #[cfg(not(target_os = "macos"))]
 use super::system::platform_font_files;
 use super::system::system_font_dirs;
-use super::{Arc, AtomicU32, BezPath, FontDb, HashMap, Mutex, PoisonError, RwLock};
+use super::{Arc, AtomicU32, BezPath, FontDb, HashMap, Mutex, Ordering, PoisonError, RwLock};
 
 pub(super) static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Scopes are never reused: a closed document's scope finds no fonts ever after.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) static NEXT_SCOPE: AtomicU32 = AtomicU32::new(1);
 
 const OUTLINE_CACHE_MAX: usize = 50_000;
@@ -161,6 +163,63 @@ impl FontDb {
             }
         }
         added
+    }
+
+    /// [`FontDb::load_document_fonts`] for a document opened from bytes, which has no folder (in
+    /// the browser, or a host keeping fonts in its own store): the font files in `files` (name,
+    /// TTF/OTF/TTC/OTC bytes) load under a new scope, for that document alone, ahead of the shared
+    /// faces of the same family and style, until [`FontDb::close_scope`]. The files are untrusted
+    /// and capped as a folder's are (in name order): past [`MAX_DOCUMENT_FONT_FILES`], over
+    /// [`MAX_DOCUMENT_FONT_BYTES`] or past [`MAX_DOCUMENT_FONTS_TOTAL`] in all, and data that isn't
+    /// a font are skipped with a note. A family and style an earlier file gave stays with it.
+    /// Nothing is shared between calls: each document's faces are its own. No fonts → scope 0.
+    pub fn load_document_font_data(&self, mut files: Vec<(String, Vec<u8>)>) -> DocumentFonts {
+        let mut out = DocumentFonts::default();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let count = files.len();
+        let mut total = 0u64;
+        let mut own: Vec<Arc<FontFace>> = Vec::new();
+        for (n, (name, data)) in files.into_iter().enumerate() {
+            if n == MAX_DOCUMENT_FONT_FILES {
+                out.skipped.push(format!("{} more font files not loaded (at most {MAX_DOCUMENT_FONT_FILES} are)", count - n));
+                break;
+            }
+            let len = data.len() as u64;
+            if len > MAX_DOCUMENT_FONT_BYTES {
+                out.skipped.push(format!("{name}: larger than {} MB", MAX_DOCUMENT_FONT_BYTES >> 20));
+                continue;
+            }
+            if total.saturating_add(len) > MAX_DOCUMENT_FONTS_TOTAL {
+                out.skipped.push(format!("{name}: over the {} MB the document's fonts may take in all", MAX_DOCUMENT_FONTS_TOTAL >> 20));
+                continue;
+            }
+            let data = Arc::new(data);
+            let faces: Vec<FontFace> = enumerate_faces(&data)
+                .into_iter()
+                .filter_map(|(i, family, style, coords)| {
+                    make_face(FontBytes::Owned(data.clone()), FontSource::DocumentData(name.clone()), i, family, style, coords)
+                })
+                .collect();
+            if faces.is_empty() {
+                out.skipped.push(format!("{name}: not a font DesignCraft can read"));
+                continue;
+            }
+            total = total.saturating_add(len);
+            for f in faces {
+                if !own.iter().any(|o| o.family.eq_ignore_ascii_case(&f.family) && o.style.eq_ignore_ascii_case(&f.style)) {
+                    own.push(Arc::new(f));
+                }
+            }
+        }
+        for s in &out.skipped {
+            log::warn!("document fonts: {s}");
+        }
+        if !own.is_empty() {
+            out.scope = NEXT_SCOPE.fetch_add(1, Ordering::Relaxed);
+            out.faces = own.len();
+            self.scopes.write().unwrap_or_else(PoisonError::into_inner).insert(out.scope, own.into());
+        }
+        out
     }
 
     /// Close a document's font scope: its fonts are no longer found (in it or anywhere). Their
