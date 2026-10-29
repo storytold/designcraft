@@ -2837,3 +2837,53 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
         assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
     }
 }
+
+/// #1994: hiding a frame or its layer must also hide the separately painted marks.
+#[test]
+fn hidden_characters_follow_frame_layer_and_group_visibility() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 336, 136], "content": "text", "text": "a b\tc\nd"})).unwrap();
+    let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    let layer = doc.item(id).unwrap().layer;
+    fn marks(app: &DesignApp, doc: &Document) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let layout = CanvasLayout::new(doc, false);
+        let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_hidden_characters(app, ui.painter(), &xf, doc, &layout);
+        });
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+    let expected = marks(&app, &doc);
+    for mark in ["·", "»", "¶", "#"] {
+        assert!(expected.iter().any(|m| m == mark), "visible text draws {mark}: {expected:?}");
+    }
+    doc.layer_mut(layer).unwrap().visible = false;
+    assert!(marks(&app, &doc).is_empty(), "hidden layers draw no marks");
+    doc.layer_mut(layer).unwrap().visible = true;
+    assert_eq!(marks(&app, &doc), expected, "showing the layer restores its marks");
+    doc.item_mut(id).unwrap().hidden = true;
+    assert!(marks(&app, &doc).is_empty(), "hidden frames draw no marks");
+    doc.item_mut(id).unwrap().hidden = false;
+    doc.layer_mut(layer).unwrap().locked = true;
+    assert_eq!(marks(&app, &doc), expected, "locked but visible layers still show marks");
+
+    // A child stays individually visible when its containing group is hidden.
+    let sibling = app.run("frame.create", json!({"rect": [400, 36, 450, 86]})).unwrap();
+    app.run("selection.set", json!({"ids": [id.0, sibling["id"]]})).unwrap();
+    let group = app.run("object.group", json!({})).unwrap();
+    let group_id = designcraft_doc::ItemId(group["id"].as_u64().unwrap());
+    let mut grouped = (*app.session.active().unwrap().doc).clone();
+    assert_eq!(marks(&app, &grouped), expected);
+    grouped.item_mut(group_id).unwrap().hidden = true;
+    assert!(marks(&app, &grouped).is_empty(), "hidden groups draw no child marks");
+}

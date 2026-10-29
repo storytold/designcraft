@@ -1,6 +1,10 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+- **2026-10-29 · UI1994:** Show Hidden Characters no longer paints marks for hidden text
+  frames, hidden layers or children of hidden groups. Visible locked layers retain their marks.
+  A canvas-painter regression checks the emitted marks and hide/show transitions (#1994).
+
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
