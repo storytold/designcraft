@@ -17,6 +17,7 @@ use vello_cpu::RenderContext;
 use vello_cpu::kurbo;
 use vello_cpu::peniko;
 
+use crate::stroke::{dotted_expandable, dotted_path};
 use crate::{Frame, Renderer, color_of, rect_overlaps, screen_color};
 
 /// A text colour: solid, or a gradient swatch laid across the frame (InDesign spans a gradient on
@@ -519,8 +520,15 @@ impl Renderer {
                     ctx.fill_path(&o);
                     continue;
                 }
-                ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
-                ctx.stroke_path(&line);
+                // Dots are expanded like item strokes: zero-length dash subpaths paint nothing.
+                if matches!(kind, designcraft_doc::StrokeType::Dotted) && dotted_expandable(s.stroke.weight, s.a.distance(s.b)) {
+                    let dots = dotted_path(&line, s.stroke.weight * 2.0, s.stroke.weight);
+                    ctx.set_stroke(kurbo::Stroke::new(s.stroke.weight).with_caps(kurbo::Cap::Round));
+                    ctx.stroke_path(&dots);
+                } else {
+                    ctx.set_stroke(cell_stroke(&kind, s.stroke.weight, s.a.distance(s.b)));
+                    ctx.stroke_path(&line);
+                }
             }
         }
     }
