@@ -486,4 +486,66 @@ mod text_frame_tests {
         s.execute("edit.paste", &json!({})).unwrap();
         assert_eq!(shown(&s), ["Anchored words \u{E00E}", "Anchored words \u{E00E}", "Deeper", "Deeper", "Elsewhere"]);
     }
+
+    /// Place a 4 × 4 pt graphic of grey `v`; returns its frame and its asset.
+    fn place(s: &mut Session, v: u8) -> (ItemId, designcraft_doc::AssetId) {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![v; 64] }.to_png();
+        let r =
+            s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": format!("{v}.png"), "x": 72, "y": 72})).unwrap();
+        (ItemId(r["id"].as_u64().unwrap()), designcraft_doc::AssetId(r["asset"].as_u64().unwrap()))
+    }
+
+    /// The files the graphics anchored in the active document show (in its anchored text frames'
+    /// stories too), sorted; `None` for a graphic whose asset is missing.
+    fn anchored_files(s: &Session) -> Vec<Option<Arc<Vec<u8>>>> {
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        let mut files: Vec<_> =
+            d.anchored_items().iter().filter_map(|(_, i)| i.graphic()).map(|g| d.assets.get(&g.asset).map(|a| a.data.clone())).collect();
+        files.sort();
+        files
+    }
+
+    /// Copied text pasted into another document takes along the files of the graphics anchored
+    /// in it and in the stories of its anchored text frames: their asset ids may name other files
+    /// there, or none.
+    #[test]
+    fn pasted_text_takes_its_graphics_into_another_document() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let (inline, a) = place(&mut s, 10);
+        let (nested, _) = place(&mut s, 20);
+        let r = s.execute("frame.create", &json!({"rect": [72, 200, 400, 500], "content": "text", "text": "Host  end"})).unwrap();
+        let host = StoryId(r["story"].as_u64().unwrap());
+        let (sid, _) = s.edit(|d, _| Ok(anchor(d, host, 5, "Anchored words ")?)).unwrap();
+        // A graphic in the copied text and one in its anchored text frame's story.
+        s.execute("anchored.insert", &json!({"ids": [inline.0], "story": host.0, "pos": 0})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [nested.0], "story": sid.0, "pos": 0})).unwrap();
+        let files = anchored_files(&s);
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(Option::is_some));
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let plain = s.text_clipboard.as_ref().unwrap().1.clone();
+
+        // Another document whose own graphic has the asset id of the first copied one.
+        s.execute("file.new", &json!({})).unwrap();
+        let (_, b) = place(&mut s, 30);
+        assert_eq!(a, b, "fresh documents allocate the same first asset id");
+        let own = s.doc().unwrap().doc.assets.get(&b).unwrap().data.clone();
+        let r = s.execute("frame.create", &json!({"rect": [72, 200, 400, 500], "content": "text", "text": "Other "})).unwrap();
+        let other = StoryId(r["story"].as_u64().unwrap());
+        // Into text.
+        s.execute("text.select", &json!({"story": other.0, "anchor": 6, "focus": 6})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(anchored_files(&s), files);
+        // Into a new text frame.
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": plain})).unwrap();
+        let twice: Vec<_> = files.iter().flat_map(|f| [f.clone(), f.clone()]).collect();
+        assert_eq!(anchored_files(&s), twice);
+        // The document's own graphic keeps its file.
+        assert_eq!(s.doc().unwrap().doc.assets.get(&b).unwrap().data, own);
+    }
 }

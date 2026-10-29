@@ -97,11 +97,17 @@ pub(crate) struct Exporter<'a> {
     /// While drawing a story's frame for the structure tree: the story (text runs are tagged
     /// per paragraph, everything else in the frame is an artifact).
     pub(crate) tag_story: Option<designcraft_doc::StoryId>,
+    /// While drawing an object anchored in a story's text (not in a footnote or a cell): that
+    /// story and the byte of the object's mark.
+    tag_anchor: Option<(designcraft_doc::StoryId, usize)>,
+    /// The stories of anchored text frames, by the story they are anchored in, with the byte of
+    /// their anchor: the structure tree reads them there.
+    anchored_tags: std::collections::BTreeMap<designcraft_doc::StoryId, Vec<(usize, designcraft_doc::StoryId)>>,
     /// While drawing a frame's text: the frame's box in text space, which a gradient on the text
     /// spans (as InDesign lays it across the frame).
     pub(crate) text_area: Option<Rect>,
-    /// Marked content of each (story, paragraph index).
-    pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<Identifier>>,
+    /// Marked content of each (story, paragraph index), with the first byte each one shows.
+    pub(crate) para_tags: HashMap<(designcraft_doc::StoryId, usize), Vec<(usize, Identifier)>>,
 }
 
 impl CoverageImage {

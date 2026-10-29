@@ -440,8 +440,10 @@ impl Document {
                     let mut copy = (**st).clone();
                     let id = StoryId(self.alloc());
                     copy.id = id;
-                    let snapshot = self.stories.clone();
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| snapshot.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
+                    // Only the stories the copy reaches, as they are now (copies made for earlier
+                    // frames included).
+                    let reachable = self.anchored_stories(&copy);
+                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
                     copy.frames = vec![fid];
                     self.stories.insert(id, Arc::new(copy));
                     id

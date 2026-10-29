@@ -612,31 +612,115 @@ fn fills_open_contours_without_changing_strokes() {
     assert!(paths.iter().any(|r| (r.width() - 22.0).abs() < 0.01 && (r.height() - 17.0).abs() < 0.01), "{paths:?}");
 }
 
-/// Anchor, at the end of `host`, a 300 pt wide text frame `h` high (above the line) showing a new
-/// story with `text`; returns that story.
-fn anchor_text_frame(d: &mut Document, host: designcraft_doc::StoryId, text: &str, h: f64) -> designcraft_doc::StoryId {
+/// Anchor, at byte `at` of `host` (at most its end), a 300 pt wide text frame `h` high (above the
+/// line) showing a new story with `text`; returns that story.
+fn anchor_text_frame(d: &mut Document, host: designcraft_doc::StoryId, at: usize, text: &str, h: f64) -> designcraft_doc::StoryId {
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, h), d.default_layer(), text, ParaFormat::default()).unwrap();
     let it = d.item(fid).unwrap().clone();
     d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
-    let st = d.story_mut(host).unwrap();
-    let n = st.len();
     let above = designcraft_doc::AnchorPosition::AboveLine { align: Default::default(), space_before: 0.0, space_after: 0.0 };
-    st.insert_object(n, designcraft_doc::AnchoredObject::new(it, above));
+    d.story_mut(host).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(it, above));
     sid
+}
+
+/// The structure tree as text: each element as `Tag(…)` around its children, marked content as
+/// the text it shows on the first page.
+fn structure(bytes: &[u8]) -> String {
+    use hayro_interpret::font::Glyph;
+    use hayro_interpret::{
+        BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
+        interpret_page,
+    };
+    use hayro_syntax::Pdf;
+    use hayro_syntax::object::{Dict, Name, Object};
+    #[derive(Default)]
+    struct Marked {
+        open: Vec<Option<i32>>,
+        text: std::collections::HashMap<i32, String>,
+    }
+    impl Device<'_> for Marked {
+        fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
+        fn set_blend_mode(&mut self, _: BlendMode) {}
+        fn draw_path(&mut self, _: &kurbo::BezPath, _: kurbo::Affine, _: &Paint<'_>, _: &PathDrawMode) {}
+        fn push_clip_path(&mut self, _: &ClipPath) {}
+        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn draw_glyph(&mut self, g: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, _: &GlyphDrawMode) {
+            let Some(id) = self.open.iter().rev().find_map(|m| *m) else { return };
+            let t = self.text.entry(id).or_default();
+            match g.as_unicode() {
+                Some(hayro_cmap::BfString::Char(c)) => t.push(c),
+                Some(hayro_cmap::BfString::String(s)) => t.push_str(&s),
+                None => t.push('\u{FFFD}'),
+            }
+        }
+        fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
+        fn pop_clip_path(&mut self) {}
+        fn pop_transparency_group(&mut self) {}
+        fn begin_marked_content(&mut self, _: &[u8], mcid: Option<i32>) {
+            self.open.push(mcid);
+        }
+        fn end_marked_content(&mut self) {
+            self.open.pop();
+        }
+    }
+    fn walk(o: Object<'_>, m: &Marked, out: &mut String) {
+        match o {
+            Object::Number(n) => out.push_str(m.text.get(&(n.as_i64() as i32)).map_or("", String::as_str)),
+            Object::Array(a) => a.iter::<Object<'_>>().for_each(|k| walk(k, m, out)),
+            Object::Dict(d) => match (d.get::<i32>(b"MCID"), d.get::<Name<'_>>(b"S")) {
+                (Some(id), _) => out.push_str(m.text.get(&id).map_or("", String::as_str)),
+                (None, Some(s)) => {
+                    out.push_str(s.as_str());
+                    out.push('(');
+                    if let Some(k) = d.get::<Object<'_>>(b"K") {
+                        walk(k, m, out);
+                    }
+                    out.push(')');
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    let pdf = Pdf::new(bytes.to_vec()).expect("parse");
+    let cache = InterpreterCache::new();
+    let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
+    let mut m = Marked::default();
+    interpret_page(&pdf.pages()[0], &mut ctx, &mut m);
+    let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).expect("catalog");
+    let root = catalog.get::<Dict<'_>>(b"StructTreeRoot").expect("structure tree");
+    let mut out = String::new();
+    walk(root.get::<Object<'_>>(b"K").expect("elements"), &m, &mut out);
+    out
 }
 
 #[test]
 fn anchored_text_frames_are_tagged_as_stories_of_their_own() {
     let mut d = doc_with_text("Host words");
     let host = d.spreads[0].items[0].text_frame().unwrap().story;
-    let inner = anchor_text_frame(&mut d, host, "Inner words", 120.0);
-    anchor_text_frame(&mut d, inner, "Deeper words", 40.0);
+    let inner = anchor_text_frame(&mut d, host, usize::MAX, "Inner words", 120.0);
+    anchor_text_frame(&mut d, inner, usize::MAX, "Deeper words", 40.0);
     d.check().unwrap();
     let text = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap());
     assert!(text[0].contains("Host") && text[0].contains("Inner") && text[0].contains("Deeper"), "{text:?}");
-    // A paragraph element per story, not the anchored text inside the host's paragraph.
+    // A paragraph element per story: the anchored text isn't marked content of its host's paragraph.
     let s = uncompressed(&d, PdfOptions { tagged: true, ..Default::default() });
     assert_eq!(s.matches("/Type/StructElem/S/P/").count(), 3, "{s}");
+}
+
+/// A screen reader reads an anchored text frame's story where it is anchored, not after all of
+/// its host's text.
+#[test]
+fn anchored_text_frames_are_read_at_their_anchors() {
+    let mut d = doc_with_text("Before after\nNext paragraph");
+    let host = d.spreads[0].items[0].text_frame().unwrap().story;
+    let inner = anchor_text_frame(&mut d, host, "Before ".len(), "Inner words", 120.0);
+    anchor_text_frame(&mut d, inner, "Inner ".len(), "Deeper words", 40.0);
+    d.check().unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged: true, ..Default::default() }).unwrap();
+    // Inside the paragraph that holds the anchor, between the text before and after it.
+    let tree = structure(&bytes).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(tree, "Document(P(Before P(Inner P(Deeper words)words)after)P(Next paragraph))");
 }
 
 #[test]

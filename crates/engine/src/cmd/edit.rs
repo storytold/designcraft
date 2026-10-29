@@ -8,9 +8,6 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
-/// The stories copied text's anchored text frames show (see [`crate::Session::text_clipboard`]).
-type AnchoredStories = std::collections::BTreeMap<designcraft_doc::StoryId, Arc<designcraft_doc::Story>>;
-
 fn can_undo(s: &Session) -> std::result::Result<(), String> {
     s.active().filter(|d| !d.history.undo.is_empty()).map(|_| ()).ok_or_else(|| "nothing to undo".into())
 }
@@ -42,10 +39,42 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
-    // Anchored text frames take their stories along.
-    let stories = st.doc.anchored_stories(&slice);
-    s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(stories)));
+    // Anchored text frames take their stories along, and graphics their files.
+    let source = text_source(&st.doc, &slice);
+    s.text_clipboard = Some((Arc::new(slice), text.clone(), Arc::new(source)));
     Ok(Some(text))
+}
+
+/// What pasting `slice` (text copied from `doc`) needs from `doc`, also in another document: the
+/// stories its anchored text frames show (and theirs) and the graphics it and those stories
+/// place. Nothing on spreads.
+fn text_source(doc: &designcraft_doc::Document, slice: &designcraft_doc::Story) -> designcraft_doc::Document {
+    let mut d = doc.clone();
+    d.stories = doc.anchored_stories(slice);
+    let used: std::collections::HashSet<designcraft_doc::AssetId> =
+        std::iter::once(slice).chain(d.stories.values().map(|st| &**st)).flat_map(designcraft_doc::story_asset_refs).collect();
+    d.assets.retain(|id, _| used.contains(id));
+    for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
+        Arc::make_mut(sp).items.clear();
+    }
+    d
+}
+
+/// Copied text `slice` pasted into `d`: the graphics it places (from `src`, its
+/// [`text_source`]) under `d`'s ids, since `src`'s may name other files in another document;
+/// fresh ids for its anchored items and copies of the stories its anchored text frames show.
+fn adopt_text(d: &mut designcraft_doc::Document, slice: &mut designcraft_doc::Story, src: &designcraft_doc::Document) {
+    let refs: std::collections::BTreeSet<designcraft_doc::AssetId> = designcraft_doc::story_asset_refs(slice).into_iter().collect();
+    let mut map = std::collections::HashMap::new();
+    for a in refs {
+        // A graphic missing there stays missing: a fresh id, not one that may name a file here.
+        let here = d.adopt_asset(src, a).unwrap_or_else(|| designcraft_doc::AssetId(d.alloc()));
+        if here != a {
+            map.insert(a, here);
+        }
+    }
+    designcraft_doc::remap_story_assets(slice, &map);
+    d.adopt_anchored_from(slice, src);
 }
 
 /// Plain text for the system clipboard after copying objects: the copied text frames' stories,
@@ -113,11 +142,10 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     }
     let use_clip = formatted && clip.as_ref().is_some_and(|(_, p, _)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
-    if use_clip && let Some((slice, _, stories)) = clip {
+    if use_clip && let Some((slice, _, source)) = clip {
         let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
-            // Anchored items get ids of their own, anchored text frames copies of their stories.
-            d.adopt_anchored(&mut slice, &|id| stories.get(&id).cloned());
+            adopt_text(d, &mut slice, &source);
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
@@ -145,9 +173,9 @@ fn outside_text(text: &str) -> Result<String> {
 /// Pasted text with no insertion point: a new text frame holding it, as wide as the first column
 /// of the page's margin area and as tall as the text (at most the margin area's height), centred
 /// on `at` (spread coordinates) or else on the margin area. The frame ends up selected. With
-/// `slice` (the text copied here, with the stories its anchored text frames show), the frame's
-/// story is that formatted copy.
-fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&designcraft_doc::Story, &AnchoredStories)>) -> Result<Value> {
+/// `slice` (the text copied here, with its [`text_source`]), the frame's story is that formatted
+/// copy.
+fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&designcraft_doc::Story, &designcraft_doc::Document)>) -> Result<Value> {
     use designcraft_geom::{Point, Rect, shapes};
     const LIMIT: f64 = 1.0e5;
     let sr = super::spread_param(p, "edit.paste")?;
@@ -172,10 +200,9 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&desi
             None => designcraft_doc::ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() },
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
-        if let Some((sl, stories)) = slice {
-            // Anchored items get ids of their own, anchored text frames copies of their stories.
+        if let Some((sl, source)) = slice {
             let mut sl = sl.clone();
-            d.adopt_anchored(&mut sl, &|id| stories.get(&id).cloned());
+            adopt_text(d, &mut sl, source);
             d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
@@ -401,7 +428,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Some(text) = text.filter(|t| !is_objects_placeholder(s, t)) {
                     // What our own text copy put on the clipboard keeps its formatting.
                     let clip = s.text_clipboard.clone().filter(|(_, plain, _)| text.replace("\r\n", "\n") == *plain);
-                    return paste_text_frame(s, p, text, clip.as_ref().map(|(slice, _, stories)| (&**slice, &**stories)));
+                    return paste_text_frame(s, p, text, clip.as_ref().map(|(slice, _, source)| (&**slice, &**source)));
                 }
                 let Some(clip) = s.clipboard.clone() else {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
