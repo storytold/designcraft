@@ -13,10 +13,13 @@ use crate::{DocState, EngineError, Result, Session};
 mod bytes;
 mod new;
 mod open;
+mod open_pdf;
 mod place;
 mod registry;
 mod save;
 mod snippets;
+
+pub(crate) use open_pdf::convert_placed_pdf;
 
 pub use bytes::{DOCUMENT_SNIFF_BYTES, base64_decode, base64_encode, from_bytes, is_document, to_bytes, with_document_extension};
 pub(crate) use open::load_document_fonts;
