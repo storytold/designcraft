@@ -271,6 +271,11 @@ pub(super) fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, x
         let cs = app.session.cache.get(doc, story.id, None);
         for ft in &cs.frames {
             let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            // Hidden frames and frames on hidden layers show no marks (#1994), like the
+            // frame edges in `draw_item_edges`.
+            if it.hidden || doc.layer(it.layer).is_some_and(|l| !l.visible) {
+                continue;
+            }
             let m = a * doc.text_xf(it);
             let col = layer_color(doc, it);
             for l in &ft.lines {
