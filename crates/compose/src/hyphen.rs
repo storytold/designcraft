@@ -2,10 +2,11 @@
 //! Liang patterns compiled into `hypher`, one cargo feature per language: Spanish is Javier Bezos's
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
-//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
-//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
-//! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive; Dutch is Piet
+//! Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT (see NOTICE); Greek is `hyph-el-monoton.tex`
+//! 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken under MIT. Those are the
+//! **monotonic** patterns, which is what `hypher` maps `el` to, so polytonic text hyphenates by
+//! them as well.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -433,6 +434,23 @@ mod tests {
         assert_eq!(h("sjøfugl"), "sjø-fugl");
         assert_eq!(h("sirkulasjonen"), "sir-ku-la-sjo-nen");
         assert_eq!(h("beveger"), "be-ve-ger");
+    }
+
+    #[test]
+    fn dutch_uses_the_hyph_nl_patterns() {
+        let nl = Lang::for_language("Dutch").unwrap();
+        // InDesign writes the 2005 spelling as `nl_NL_2005`.
+        assert_eq!(nl, Lang::for_language("nl_NL_2005").unwrap());
+        assert_ne!(nl, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nl);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("uitspraak"), "uit-spraak");
+        assert_eq!(h("kinderen"), "kin-de-ren");
+        assert_eq!(h("leesvaardigheid"), "lees-vaar-dig-heid");
+        assert_eq!(h("zelfvertrouwen"), "zelf-ver-trou-wen");
+        assert_eq!(h("Ontwikkelen"), "Ont-wik-ke-len");
     }
 
     #[test]
