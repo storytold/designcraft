@@ -364,7 +364,10 @@ fn sniff(name: &str, text: &str) -> Delimiter {
         return Delimiter::Tab;
     }
     if ext == "csv" {
-        return Delimiter::Comma;
+        // CSVs from semicolon-locale spreadsheets use ';' as the separator (#1997):
+        // sniff comma vs semicolon instead of forcing comma. Tab stays out so a
+        // stray tab in a comma file cannot flip the table; comma remains the fallback.
+        return sniff_pair(text);
     }
     let tab = header_delimiter_candidate(text, '\t');
     let semicolon = header_delimiter_candidate(text, ';');
@@ -376,6 +379,20 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     if eligible(&tab) {
         Delimiter::Tab
     } else if eligible(&semicolon) && !eligible(&comma) {
+        Delimiter::Semicolon
+    } else {
+        Delimiter::Comma
+    }
+}
+
+/// Comma vs semicolon sniff for `.csv` names (see `sniff`): same coherence and priority
+/// rules as the full sniff, minus tab, with comma as the fallback.
+fn sniff_pair(text: &str) -> Delimiter {
+    let semicolon = header_delimiter_candidate(text, ';');
+    let comma = header_delimiter_candidate(text, ',');
+    let prefer_coherent = [&semicolon, &comma].iter().any(|c| c.found && c.coherent);
+    let eligible = |c: &HeaderDelimiterCandidate| c.found && (!prefer_coherent || c.coherent);
+    if eligible(&semicolon) && !eligible(&comma) {
         Delimiter::Semicolon
     } else {
         Delimiter::Comma
