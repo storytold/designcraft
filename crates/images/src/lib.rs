@@ -12,6 +12,7 @@ pub mod colour;
 mod eps;
 mod jpeg;
 mod psd;
+mod resolution;
 mod tone;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
 pub use tone::{Tone, tone};
@@ -290,8 +291,11 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
-/// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+pub use resolution::raster_resolution;
+
+/// Natural size of a placed graphic in points: rasters at their embedded resolution when sane
+/// (one pixel per point, 72 ppi, without usable metadata), PSDs likewise, SVGs from their
+/// width/height (CSS pixels), PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
@@ -302,7 +306,12 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
         return Some((bb[2] - bb[0], bb[3] - bb[1])).filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0);
     }
     let (w, h) = pixel_size(bytes)?;
-    Some((w as f64, h as f64))
+    // Honor the file's density (#1991): a 600 px photo saved at 600 dpi places one inch wide,
+    // as in InDesign. Absurd metadata falls back to a pixel per point.
+    match raster_resolution(bytes) {
+        Some(dpi) if resolution::sane_resolution(dpi) => Some((w as f64 * 72.0 / dpi.0, h as f64 * 72.0 / dpi.1)),
+        _ => Some((w as f64, h as f64)),
+    }
 }
 
 /// Pixel dimensions of a raster.
