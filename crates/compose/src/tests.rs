@@ -7752,6 +7752,76 @@ fn anchored_object_on_a_hidden_layer_wraps_unless_the_layer_suppresses_it() {
     assert!(!wrapped(&cache.get(&d, b, None)), "the cache follows the layer");
 }
 
+/// A frame in a group is drawn on the group's layer, and its anchored objects follow that layer,
+/// not the frame's own: a group takes its backmost object's layer and leaves the others on theirs.
+/// They followed the frame's layer, so a group on a hidden layer that suppresses wrap still had
+/// its frame's objects push text aside. The cache follows the group's layer.
+#[test]
+fn a_grouped_frames_anchored_objects_follow_the_groups_layer() {
+    use designcraft_doc::{Content, Item, Shape};
+    let long = [LOREM; 3].join(" ");
+    let (mut d, a, fa) = doc_with("Anchor here.", Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    anchor_box(&mut d, a, 0, left - area.x0, 100.0 - area.y0, false, WrapMode::BoundingBox);
+    let hidden = designcraft_doc::LayerId(d.alloc());
+    d.layers.push(designcraft_doc::Layer {
+        id: hidden,
+        name: "Hidden".into(),
+        color: [255, 0, 0],
+        visible: false,
+        locked: false,
+        printable: true,
+        show_guides: true,
+        suppress_wrap_when_hidden: true,
+    });
+    // Group the frame (on the shown layer) with a box, the group on the hidden layer.
+    let (gid, other) = (ItemId(d.alloc()), ItemId(d.alloc()));
+    let sp = Arc::make_mut(&mut d.spreads[0]);
+    let at = sp.items.iter().position(|it| it.id == fa).unwrap();
+    let frame = sp.items.remove(at);
+    let other = Item::new(other, lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 450.0, 20.0, 470.0)));
+    let mut g = Item::new(gid, hidden, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: vec![frame, Arc::new(other)] };
+    sp.items.insert(at, Arc::new(g));
+    assert_eq!(d.item(fa).unwrap().layer, lid);
+    let wrapped = |cs: &ComposedStory| {
+        let band = lines_in_band(cs, 100.0, 160.0);
+        assert!(!band.is_empty());
+        band.iter().all(|l| l.x0 >= left + 100.0 - 1e-6)
+    };
+    let cache = Cache::new();
+    assert!(!wrapped(&compose_story(&d, b, &ComposeOptions::default())), "the group's hidden layer suppresses the wrap");
+    assert!(!wrapped(&cache.get(&d, b, None)));
+    d.layer_mut(hidden).unwrap().suppress_wrap_when_hidden = false;
+    assert!(wrapped(&compose_story(&d, b, &ComposeOptions::default())));
+    assert!(wrapped(&cache.get(&d, b, None)), "the cache follows the group's layer");
+    // The frame's own layer doesn't count: hidden and suppressing, under a group on a shown layer.
+    d.layer_mut(hidden).unwrap().suppress_wrap_when_hidden = true;
+    d.item_mut(gid).unwrap().layer = lid;
+    d.item_mut(fa).unwrap().layer = hidden;
+    assert!(wrapped(&compose_story(&d, b, &ComposeOptions::default())));
+    assert!(wrapped(&cache.get(&d, b, None)));
+}
+
+/// The document-wide indexes (running headers, cross-reference pages) are rebuilt when a layer
+/// starts or stops wrapping text, which can move text to other pages; showing or hiding a layer
+/// doesn't replace the spreads. Hiding one that keeps wrapping changes nothing.
+#[test]
+fn document_indexes_follow_whether_a_layer_wraps_text() {
+    let (mut d, _, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let cache = Cache::new();
+    let (running, xrefs) = (cache.running_index(&d), cache.xref_index(&d));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert!(Arc::ptr_eq(&running, &cache.running_index(&d)), "hidden, its objects still wrap text");
+    d.layer_mut(lid).unwrap().suppress_wrap_when_hidden = true;
+    assert!(!Arc::ptr_eq(&running, &cache.running_index(&d)));
+    assert!(!Arc::ptr_eq(&xrefs, &cache.xref_index(&d)));
+}
+
 #[test]
 fn cache_recomposes_page_numbers_when_a_section_is_renumbered() {
     let text = story::PAGE_NUMBER.to_string();

@@ -643,6 +643,13 @@ pub(crate) fn layer_wraps_text(doc: &Document, layer: designcraft_doc::LayerId) 
     doc.layer(layer).is_none_or(|l| l.visible || !l.suppress_wrap_when_hidden)
 }
 
+/// The layer the item at `loc` is drawn on: its top-level item's. A group takes its backmost
+/// object's layer and leaves the others on theirs, but draws them all on its own.
+pub(crate) fn shown_layer(doc: &Document, loc: &designcraft_doc::ItemLoc) -> Option<designcraft_doc::LayerId> {
+    let top = loc.path.first()?;
+    Some(doc.spread(loc.spread)?.items.get(*top)?.layer)
+}
+
 /// The text wrap exclusions of a page item, the graphic it holds and the items in it, for a frame
 /// whose inner space is reached from the spread by `inv`. `parent` maps the item's parent space to
 /// the spread; `skip` is the text frame being wrapped; `left_page` tells whether a spread x is on

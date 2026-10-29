@@ -58,7 +58,8 @@ pub struct Cache {
     previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
 }
 
-/// Identity of everything a running header can depend on (stories, spreads, styles, variables).
+/// Identity of everything a running header can depend on (stories, spreads, layers, styles,
+/// variables).
 fn doc_signature(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -67,6 +68,11 @@ fn doc_signature(doc: &Document) -> u64 {
     }
     for sp in &doc.spreads {
         (Arc::as_ptr(sp) as usize).hash(&mut h);
+    }
+    // A layer that starts or stops wrapping text can move text to other pages. Layers change in
+    // place: the spreads stay the same allocations.
+    for l in &doc.layers {
+        (l.id.0, crate::layer_wraps_text(doc, l.id)).hash(&mut h);
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
@@ -398,9 +404,10 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
             keep.push(top.clone());
             // Page position matters for page-number markers.
             sig.push(loc.top());
-            // The frame's layer decides whether its anchored objects wrap other stories' text.
+            // The layer the frame is drawn on (its top-level item's) decides whether its anchored
+            // objects wrap other stories' text.
             if crate::wrap::has_wrapping_objects(story) {
-                sig.push(usize::from(doc.item_at(&loc).is_some_and(|it| crate::layer_wraps_text(doc, it.layer))));
+                sig.push(usize::from(crate::layer_wraps_text(doc, top.layer)));
             }
             if !spreads.contains(&loc.spread) {
                 spreads.push(loc.spread);
