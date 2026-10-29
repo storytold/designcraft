@@ -1,7 +1,8 @@
 //! Placed graphics: format sniffing, sizes and decoding for the renderer and PDF export.
-//! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`psd`] (Photoshop's merged
-//! composite); SVG is parsed with usvg (text set in the bundled fonts, then the shared ones) and
-//! rasterised with resvg for the screen — PDF export draws the same tree as vectors.
+//! Rasters go through `image` (PNG, JPEG, GIF, WebP, TIFF, BMP) or [`pcx`] (ZSoft Paintbrush) or
+//! [`psd`] (Photoshop's merged composite); SVG is parsed with usvg (text set in the bundled fonts,
+//! then the shared ones) and rasterised with resvg for the screen — PDF export draws the same tree
+//! as vectors. A [`wmf`] is replayed as SVG, so it draws as a vector with a transparent background.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::sync::{Arc, OnceLock};
@@ -11,13 +12,21 @@ pub use resvg::usvg;
 pub mod colour;
 mod eps;
 mod jpeg;
+mod pcx;
 mod psd;
 mod tone;
+mod wmf;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size, is_eps};
+pub use pcx::is_pcx;
 pub use tone::{Tone, tone};
+pub use wmf::is_wmf;
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
+
+/// The longer side a WMF is rasterised at for the raster paths (thumbnails, PowerPoint). Screen
+/// rendering and PDF export draw the converted SVG as vectors.
+const WMF_RASTER: u32 = 3000;
 
 pub fn is_pdf(bytes: &[u8]) -> bool {
     bytes.starts_with(b"%PDF")
@@ -48,6 +57,12 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
     if is_svg(bytes) {
         return "image/svg+xml";
+    }
+    if pcx::is_pcx(bytes) {
+        return "image/pcx";
+    }
+    if wmf::is_wmf(bytes) {
+        return "image/x-wmf";
     }
     match image::guess_format(bytes) {
         Ok(image::ImageFormat::Png) => "image/png",
@@ -290,12 +305,22 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
+/// A WMF replayed as SVG: a vector drawing with a transparent background. `None` when the file is
+/// damaged or holds records we can't draw faithfully (GDI text, bitmaps, patterns, regions).
+pub fn wmf_svg(bytes: &[u8]) -> Option<String> {
+    wmf::to_svg(bytes)
+}
+
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
-/// likewise, SVGs from their width/height (CSS pixels), PDFs are the caller's.
+/// likewise, SVGs from their width/height (CSS pixels), WMFs from their bounding box and units
+/// per inch, PDFs are the caller's.
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if is_svg(bytes) {
         let s = svg_tree(bytes)?.size();
         return Some((s.width() as f64 * PT_PER_PX, s.height() as f64 * PT_PER_PX));
+    }
+    if wmf::is_wmf(bytes) {
+        return wmf::size(bytes);
     }
     if is_eps(bytes) {
         let bb = eps::bounding_box(bytes)?;
@@ -305,10 +330,18 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
-/// Pixel dimensions of a raster.
+/// Pixel dimensions of a raster (or a vector's size in points, as pixels at 72 ppi).
 pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if wmf::is_wmf(bytes) {
+        let (w, h) = wmf::size(bytes)?;
+        let px = |v: f64| v.round().clamp(1.0, f64::from(u32::MAX)) as u32;
+        return Some((px(w), px(h)));
+    }
     if let Some(p) = palette_tiff(bytes) {
         return Some((p.width, p.height));
+    }
+    if let Some(size) = pcx::pixel_size(bytes) {
+        return Some(size);
     }
     if is_psd(bytes) && bytes.len() >= 26 {
         // Header: signature, version, 6 reserved, channels, height, width (big-endian).
@@ -331,6 +364,17 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
+    if pcx::is_pcx(bytes) {
+        return pcx::decode(bytes);
+    }
+    // A WMF is drawn by replaying its GDI records into SVG and rasterising that; the vector
+    // consumers use `wmf_svg` directly, so this is the fallback for raster paths.
+    if wmf::is_wmf(bytes) {
+        let svg = wmf::to_svg(bytes)?;
+        let (mut px, w, h) = render_svg(svg.as_bytes(), WMF_RASTER)?;
+        unpremultiply(&mut px);
+        return image::RgbaImage::from_raw(w, h, px);
+    }
     // `image` rejects indexed-colour TIFFs (an old GIF logo saved from Photoshop).
     if let Some(img) = decode_palette_tiff(bytes) {
         return Some(img);
@@ -351,6 +395,19 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     let Some(icc) = embedded_icc(bytes) else { return Some(rgba) };
     let px = if img.color().has_color() { Pixels::Rgb(rgba) } else { Pixels::Gray(rgba) };
     to_display_rgba(px, Some(&icc), &DisplayColour::active())
+}
+
+/// Turn premultiplied RGBA (as resvg leaves it) into straight RGBA.
+fn unpremultiply(px: &mut [u8]) {
+    for p in px.as_chunks_mut::<4>().0 {
+        let a = p[3];
+        if a != 0 && a != 255 {
+            let straight = |v: u8| ((u16::from(v) * 255 + u16::from(a) / 2) / u16::from(a)).min(255) as u8;
+            p[0] = straight(p[0]);
+            p[1] = straight(p[1]);
+            p[2] = straight(p[2]);
+        }
+    }
 }
 
 /// The ICC profile embedded in a PNG, JPEG, TIFF or WebP.

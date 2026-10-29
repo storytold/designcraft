@@ -906,6 +906,99 @@ fn note_links_name_the_chapter_file_of_their_target() {
     assert_eq!(link_across_chapters(last, "content2.xhtml", &files), "<li id=\"en-1\"><a href=\"content.xhtml#enref-1\">1</a> End note</li>");
 }
 
+/// A placed WMF is published as an SVG: EPUB readers can't draw WMF, and converting it to
+/// SVG keeps the artwork vector (and its transparent background).
+#[test]
+fn a_placed_wmf_is_published_as_svg() {
+    fn record(function: u16, params: &[u8]) -> Vec<u8> {
+        let words = (6 + params.len()).div_ceil(2);
+        let mut r = Vec::new();
+        r.extend(u32::try_from(words).unwrap().to_le_bytes());
+        r.extend(function.to_le_bytes());
+        r.extend(params);
+        if params.len() % 2 == 1 {
+            r.push(0);
+        }
+        r
+    }
+    let mut brush = Vec::new();
+    brush.extend(0u16.to_le_bytes());
+    brush.extend(0x0000_00FFu32.to_le_bytes()); // red
+    brush.extend(0u16.to_le_bytes());
+    let mut polygon = Vec::new();
+    polygon.extend(3u16.to_le_bytes());
+    for (x, y) in [(10i16, 10i16), (90, 10), (50, 90)] {
+        polygon.extend(x.to_le_bytes());
+        polygon.extend(y.to_le_bytes());
+    }
+    let mut body = record(0x02FC, &brush) // META_CREATEBRUSHINDIRECT
+        .into_iter()
+        .chain(record(0x012D, &0u16.to_le_bytes())) // META_SELECTOBJECT
+        .chain(record(0x0324, &polygon)) // META_POLYGON
+        .chain(record(0, &[])) // META_EOF
+        .collect::<Vec<_>>();
+    let mut wmf = Vec::new();
+    wmf.extend(0x9AC6_CDD7u32.to_le_bytes()); // placeable key
+    wmf.extend(0u16.to_le_bytes());
+    for v in [0i16, 0, 96, 96] {
+        wmf.extend(v.to_le_bytes());
+    }
+    wmf.extend(96u16.to_le_bytes()); // units per inch
+    wmf.extend(0u32.to_le_bytes());
+    wmf.extend(0u16.to_le_bytes());
+    let words = (22 + 18 + body.len()) / 2;
+    wmf.extend(1u16.to_le_bytes());
+    wmf.extend(9u16.to_le_bytes());
+    wmf.extend(0x0300u16.to_le_bytes());
+    wmf.extend(u32::try_from(words).unwrap().to_le_bytes());
+    wmf.extend(0u16.to_le_bytes());
+    wmf.extend(0u32.to_le_bytes());
+    wmf.extend(0u16.to_le_bytes());
+    wmf.append(&mut body);
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let aid = AssetId(d.alloc());
+    d.assets.insert(
+        aid,
+        Arc::new(Asset {
+            page: 0,
+            id: aid,
+            name: "art.wmf".into(),
+            mime: "image/x-wmf".into(),
+            data: Arc::new(wmf),
+            pixels: Some((72, 72)),
+            ..Default::default()
+        }),
+    );
+    let mut item = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(Rect::new(36.0, 36.0, 108.0, 108.0)));
+    item.content = Content::Graphic(Graphic {
+        layer_options: None,
+        asset: aid,
+        size: (72.0, 72.0),
+        xf: Affine::IDENTITY,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        clip: None,
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(&d, &EpubOptions::default()).unwrap())).unwrap();
+    let mut html = String::new();
+    z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut html).unwrap();
+    assert!(html.contains(&format!("<img src=\"images/art-{}.svg\"", aid.0)), "{html}");
+    let mut opf = String::new();
+    z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+    assert!(opf.contains(&format!("href=\"images/art-{}.svg\" media-type=\"image/svg+xml\"", aid.0)), "{opf}");
+    let mut svg = String::new();
+    z.by_name(&format!("OEBPS/images/art-{}.svg", aid.0)).unwrap().read_to_string(&mut svg).unwrap();
+    assert!(svg.contains("<polygon"), "the WMF shapes survive as vectors: {svg}");
+    assert!(z.by_name(&format!("OEBPS/images/art-{}.wmf", aid.0)).is_err(), "raw WMF is not shipped");
+}
+
 #[test]
 fn char_css_joins_underline_and_strikethrough_in_one_declaration() {
     let d = Document::new(&NewDocument::default());

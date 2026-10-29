@@ -359,6 +359,8 @@ impl<'r> Importer<'r> {
             f if f.contains("EPS") || g.local() == "EPS" => "application/postscript".into(),
             f if f.contains("JPEG") => "image/jpeg".into(),
             f if f.contains("TIFF") => "image/tiff".into(),
+            f if f.contains("PCX") => "image/pcx".into(),
+            f if f.contains("WMF") || g.local() == "WMF" => "image/x-wmf".into(),
             f if f.contains("PDF") || g.local() == "PDF" => "application/pdf".into(),
             f if f.contains("GIF") => "image/gif".into(),
             _ => "image/png".into(),

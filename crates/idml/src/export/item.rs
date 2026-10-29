@@ -490,6 +490,8 @@ fn format_name(mime: &str) -> &'static str {
         "image/jpeg" => "JPEG",
         "image/gif" => "GIF",
         "image/tiff" => "TIFF",
+        "image/pcx" => "PCX",
+        "image/x-wmf" => "Windows Metafile (WMF)",
         "application/pdf" => "Adobe Portable Document Format (PDF)",
         "application/postscript" => "Encapsulated PostScript (EPS)",
         _ => "Portable Network Graphics (PNG)",

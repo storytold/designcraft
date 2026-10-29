@@ -3,7 +3,7 @@ name = "designcraft-images"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "DesignCraft placed-graphic decoding: raster formats (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD) and SVG"
+description = "DesignCraft placed-graphic decoding: raster formats (PNG, JPEG, GIF, WebP, TIFF, BMP, PCX, PSD) and SVG"
 
 [lints]
 workspace = true

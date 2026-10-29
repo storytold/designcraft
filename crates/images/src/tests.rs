@@ -120,6 +120,27 @@ fn svg_sniff_size_and_render() {
 }
 
 #[test]
+fn pcx_is_sniffed_sized_and_decoded() {
+    // A 3x1 24-bit PCX: red, green, blue.
+    let mut b = vec![0u8; 128];
+    b[0] = 0x0A;
+    b[1] = 5;
+    b[2] = 1;
+    b[3] = 8;
+    b[8..10].copy_from_slice(&2u16.to_le_bytes());
+    b[10..12].copy_from_slice(&0u16.to_le_bytes());
+    b[65] = 3;
+    b[66..68].copy_from_slice(&4u16.to_le_bytes());
+    b.extend([180, 0, 0, 0, 0, 181, 0, 0, 0, 0, 182, 0]);
+    assert!(pcx::is_pcx(&b));
+    assert_eq!(mime(&b), "image/pcx");
+    assert_eq!(pixel_size(&b), Some((3, 1)));
+    assert_eq!(natural_size(&b), Some((3.0, 1.0)));
+    let px: Vec<_> = decode_rgba(&b).expect("decodes").pixels().map(|p| p.0).collect();
+    assert_eq!(px, [[180, 0, 0, 255], [0, 181, 0, 255], [0, 0, 182, 255]]);
+}
+
+#[test]
 fn svg_images_come_only_from_data_urls() {
     let dir = std::env::temp_dir().join(format!("dc-svg-href-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

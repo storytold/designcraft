@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 designcraft-doc = { workspace = true }
 designcraft-color = { workspace = true }
+designcraft-images = { workspace = true }
 zip = { workspace = true }
 chrono = { workspace = true }

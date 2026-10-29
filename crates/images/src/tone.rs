@@ -23,6 +23,11 @@ pub fn tone(bytes: &[u8]) -> Option<Tone> {
             _ => None,
         };
     }
+    if crate::is_pcx(bytes) {
+        // Header: bits per plane at 3, planes at 65. One plane of one bit is a bitmap; the
+        // 2-, 4- and 8-bit paletted forms and true colour keep their own colours.
+        return (*bytes.get(65)? == 1 && *bytes.get(3)? == 1).then_some(Tone::Bitmap);
+    }
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     match reader.format()? {
         F::Png => {
@@ -168,6 +173,20 @@ mod tests {
         assert_eq!(tone(&tiff_1bit(0b1100_0000)), Some(Tone::Bitmap));
         assert_eq!(tone(&psd_header(1, 1)), Some(Tone::Gray));
         assert_eq!(tone(&psd_header(1, 0)), Some(Tone::Bitmap));
+
+        // PCX: one plane of one bit is a bitmap; the paletted and true-colour forms are not.
+        let mut pcx = vec![0u8; 128];
+        pcx[0] = 0x0A;
+        pcx[1] = 5;
+        pcx[2] = 1;
+        pcx[3] = 1;
+        pcx[8..10].copy_from_slice(&1u16.to_le_bytes());
+        pcx[65] = 1;
+        pcx[66..68].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(tone(&pcx), Some(Tone::Bitmap));
+        pcx[3] = 8;
+        pcx[66..68].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(tone(&pcx), None);
 
         // GIFs are indexed: black and white only is a bitmap, neutral greys a greyscale image.
         let rgba = |vals: &[[u8; 4]]| vals.concat();

@@ -328,7 +328,7 @@ struct OpenFilter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
+const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "pcx", "wmf", "psd", "svg", "pdf", "ai", "eps"];
 
 #[cfg(not(target_arch = "wasm32"))]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
@@ -355,6 +355,8 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                     "tif",
                     "tiff",
                     "bmp",
+                    "pcx",
+                    "wmf",
                     "psd",
                     "svg",
                     "pdf",
@@ -494,7 +496,7 @@ mod tests {
     #[test]
     fn relink_open_dialog_lists_graphics() {
         let exts: Vec<&str> = open_filters("relink").iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
-        for ext in ["png", "jpg", "tif", "psd", "svg", "pdf", "ai", "eps"] {
+        for ext in ["png", "jpg", "tif", "pcx", "wmf", "psd", "svg", "pdf", "ai", "eps"] {
             assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
         }
         assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml"));
