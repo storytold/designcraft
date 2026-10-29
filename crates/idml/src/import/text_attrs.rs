@@ -159,7 +159,11 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = e.num("XOffsetDiacritic").filter(|v| v.is_finite());
         a.diacritic_y_offset = e.num("YOffsetDiacritic").filter(|v| v.is_finite());
         a.positional_form = e.prop("PositionalForm");
-        a.custom_glyph = e.prop("CustomGlyph").map(|v| v.trim_start_matches("$ID/").to_string()).filter(|v| !v.is_empty());
+        // A glyph name (a string), or a glyph id (a long) for a glyph the font doesn't name.
+        a.custom_glyph = match e.prop_el("CustomGlyph").filter(|el| el.get("type") == Some("long")) {
+            Some(el) => el.text_content().trim().parse::<u32>().ok().map(|id| id.to_string()),
+            None => e.prop("CustomGlyph").map(|v| v.trim_start_matches("$ID/").to_string()).filter(|v| !v.is_empty()),
+        };
         self.cjk_settings_chars(e, &mut a);
         if let Some(v) = e.get("AppliedConditions").filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();

@@ -285,22 +285,37 @@ impl FontFace {
         f.glyph_names().iter().find(|(_, n)| n.as_str() == name).map_or(0, |(g, _)| g.to_u32())
     }
 
-    /// The character glyph name `name` stands for: `uniXXXX` or `uXXXX[XX]`, else the character
-    /// the font maps to the glyph of that name. `None` when neither says.
-    pub fn char_for_glyph_name(&self, name: &str) -> Option<char> {
+    /// The characters glyph name `name` stands for: `uni` and one or more groups of four hex
+    /// digits (`uni06440627` is U+0644 U+0627) or `uXXXX[XX]`, else the character the font maps to
+    /// the glyph of that name. Empty when neither says.
+    pub fn chars_for_glyph_name(&self, name: &str) -> Vec<char> {
         let hex = |h: &str| h.chars().all(|c| c.is_ascii_hexdigit()).then(|| u32::from_str_radix(h, 16).ok().and_then(char::from_u32)).flatten();
-        if let Some(c) = name.strip_prefix("uni").filter(|h| h.len() == 4).and_then(hex) {
-            return Some(c);
+        if let Some(h) = name.strip_prefix("uni").filter(|h| !h.is_empty() && h.len() % 4 == 0 && h.is_ascii()) {
+            let chars: Option<Vec<char>> = (0..h.len()).step_by(4).map(|i| h.get(i..i + 4).and_then(hex)).collect();
+            if let Some(chars) = chars {
+                return chars;
+            }
         }
         if let Some(c) = name.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())).and_then(hex) {
-            return Some(c);
+            return vec![c];
         }
-        let gid = self.glyph_by_name(name);
+        self.char_for_glyph(self.glyph_by_name(name)).into_iter().collect()
+    }
+
+    /// The character the font maps to glyph `gid` (the lowest when several are), `None` for
+    /// .notdef or a glyph no character maps to.
+    pub fn char_for_glyph(&self, gid: u32) -> Option<char> {
         if gid == 0 {
             return None;
         }
         let f = self.skrifa()?;
         f.charmap().mappings().filter(|(_, g)| g.to_u32() == gid).filter_map(|(cp, _)| char::from_u32(cp)).min()
+    }
+
+    /// How many glyphs the font has (glyph ids are below it); 0 when it can't be read.
+    pub fn glyph_count(&self) -> u32 {
+        use skrifa::raw::TableProvider;
+        self.skrifa().and_then(|f| f.maxp().ok()).map_or(0, |m| u32::from(m.num_glyphs()))
     }
 
     /// Glyph id for `c` (0 = .notdef).
