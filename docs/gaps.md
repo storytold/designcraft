@@ -221,7 +221,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Missing:** EPS is shown through its preview only (no PostScript interpreter); PSD layer
   comps beyond visibility; the Clipping Path Options dialog (tracing into a clip that keeps the
   frame, Threshold/Tolerance/Inset Frame preview, picking an alpha channel or a path saved in a
-  TIFF/PSD); Text Wrap › Same As Clipping following an imported clipping path; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);
+  TIFF/PSD); Text Wrap › Same As Clipping following an imported clipping path; Edit Original / Edit With; PDF as editable vectors is available via File › Open on a PDF, Place › Import as editable objects and Object › Convert PDF to Editable (glyphs as outlines; live text, clip depth and pattern fidelity still open, #227, #24);
   QuarkXPress import (#73); applying a swatch to a selected greyscale or bitmap image (Direct
   Selection + Swatches). A swatch already on the image (IDML `<Image FillColor>`) colours it on
   screen and in PDF and IDML export (#1094).

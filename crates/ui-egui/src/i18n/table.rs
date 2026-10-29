@@ -79,6 +79,27 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("New", ["Neu", "Nouveau", "Nuevo", "新規", "新建"]),
     ("New Document…", ["Neues Dokument …", "Nouveau document…", "Nuevo documento…", "新規ドキュメント…", "新建文档…"]),
     ("Open…", ["Öffnen …", "Ouvrir…", "Abrir…", "開く…", "打开…"]),
+    ("Open PDF…", ["PDF öffnen …", "Ouvrir un PDF…", "Abrir PDF…", "PDFを開く…", "打开 PDF…"]),
+    (
+        "Import as editable objects",
+        [
+            "Als bearbeitbare Objekte importieren",
+            "Importer en objets modifiables",
+            "Importar como objetos editables",
+            "編集可能なオブジェクトとして読み込む",
+            "导入为可编辑对象",
+        ],
+    ),
+    (
+        "Convert PDF to Editable…",
+        [
+            "PDF in bearbeitbare Objekte umwandeln …",
+            "Convertir le PDF en objets modifiables…",
+            "Convertir PDF en editable…",
+            "PDFを編集可能に変換…",
+            "将 PDF 转为可编辑对象…",
+        ],
+    ),
     (
         "Open Recent",
         ["Zuletzt verwendete Datei öffnen", "Ouvrir les fichiers récents", "Abrir recientes", "最近使用したファイルを開く", "打开最近的文件"],

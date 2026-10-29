@@ -22,16 +22,19 @@ impl DesignApp {
     }
 
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
+    /// File › Open on a PDF / PDF-compatible `.ai` opens it as editable vectors via `file.openPdf`.
     pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
-        // Image Import Options: a multi-page PDF asks which page.
-        if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
+        let lower = path.to_ascii_lowercase();
+        if purpose == "open" && is_pdf_like(&lower) {
+            return self.open_file("file.openPdf", json!({"path": path}));
+        }
+        // Place PDF / PDF-compatible AI: page, crop and editable-import options (also for one-page files).
+        if purpose == "place" && is_pdf_like(&lower) {
             let target = self.session.active().map(|d| d.uid);
             let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
-            if pages > 1 {
-                self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
-                return Ok(Value::Null);
-            }
-            return self.place_file(json!({"path": path}));
+            self.ui.dialog =
+                Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target, "editable": false})));
+            return Ok(Value::Null);
         }
         if purpose == "place" {
             return self.place_file(json!({"path": path}));
@@ -80,11 +83,26 @@ impl DesignApp {
         self.pending_pdf = None;
     }
 
-    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String) -> Result<Value, String> {
+    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String, editable: bool) -> Result<Value, String> {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
         self.activate_import_target(&file.request)?;
         let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop});
-        if file.request.purpose == "place" { self.place_file(params) } else { self.open_file("file.place", params) }
+        // Editable conversion needs a placed item id. The place cursor (`place_file`) may not create
+        // one, so place onto the page when converting.
+        let placed = if editable || file.request.purpose != "place" { self.open_file("file.place", params)? } else { self.place_file(params)? };
+        if editable {
+            return self.convert_placed_pdf(&placed);
+        }
+        Ok(placed)
+    }
+
+    /// Turn a just-placed PDF graphic into editable objects. Requires `placed.id` from `file.place`.
+    pub(crate) fn convert_placed_pdf(&mut self, placed: &Value) -> Result<Value, String> {
+        let id = placed
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "the PDF was not placed as a page item, so it cannot be converted to editable objects".to_string())?;
+        self.run("object.convertPdf", json!({"id": id}))
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
@@ -139,19 +157,21 @@ impl DesignApp {
         }
         let layout = opens_as_document(&file.name)
             || (std::path::Path::new(&file.name).extension().is_none() && designcraft_engine::cmd::is_document(&file.bytes));
-        let place =
-            file.request.purpose == "place" || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !lower.ends_with(".ase"));
+        // File › Open turns a PDF into an editable document; a drop or Place still places the page.
+        let open_pdf = file.request.purpose == "open" && (is_pdf_like(&lower) || designcraft_render::is_pdf(&file.bytes));
+        let place = file.request.purpose == "place"
+            || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && !open_pdf && !lower.ends_with(".ase"));
         if place || lower.ends_with(".ase") || file.request.purpose == "swatches" {
             self.activate_import_target(&file.request)?;
         }
-        if place && lower.ends_with(".pdf") {
+        if place && is_pdf_like(&lower) {
             let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
-            if pages > 1 {
-                self.ui.dialog =
-                    Some(dialogs::Dialog::new("pdfImport", json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
-                self.pending_pdf = Some(file);
-                return Ok(Value::Null);
-            }
+            self.ui.dialog = Some(dialogs::Dialog::new(
+                "pdfImport",
+                json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages, "editable": false}),
+            ));
+            self.pending_pdf = Some(file);
+            return Ok(Value::Null);
         }
         let b64 = designcraft_engine::cmd::base64_encode(&file.bytes);
         if lower.ends_with(".ase") || file.request.purpose == "swatches" {
@@ -160,6 +180,8 @@ impl DesignApp {
             self.place_file(json!({"name": file.name, "base64": b64}))
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
+        } else if open_pdf {
+            self.open_file("file.openPdf", json!({"name": file.name, "base64": b64}))
         } else {
             let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
             self.open_file("file.openBytes", json!({"name": title, "base64": b64}))
@@ -189,7 +211,8 @@ impl DesignApp {
     /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
     /// dropped on the canvas, text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
-        if path.to_ascii_lowercase().ends_with(".ase") {
+        let lower = path.to_ascii_lowercase();
+        if lower.ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
         }
         let document = opens_as_document(path)
@@ -198,6 +221,11 @@ impl DesignApp {
                     .is_ok_and(|b| designcraft_engine::cmd::is_document(&b)));
         if document {
             return self.open_file("file.open", json!({"path": path}));
+        }
+        // PDF / PDF-compatible AI: same Place options as File › Place (page, crop, editable).
+        // Other graphics land at the drop point; File › Open is what opens a PDF as a document.
+        if is_pdf_like(&lower) {
+            return self.open_picked("place", path.to_string());
         }
         let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
@@ -221,7 +249,9 @@ impl DesignApp {
 
     pub(crate) fn open_os_documents(&mut self) {
         for path in std::mem::take(&mut self.os_documents) {
-            if let Err(e) = self.open_file("file.open", json!({"path": path})) {
+            let lower = path.to_ascii_lowercase();
+            let cmd = if is_pdf_like(&lower) { "file.openPdf" } else { "file.open" };
+            if let Err(e) = self.open_file(cmd, json!({"path": path})) {
                 log::warn!("{path}: {e}");
             }
         }
@@ -288,10 +318,17 @@ impl DesignApp {
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
-/// IDML, and InDesign documents and templates (converted to IDML on open).
+/// IDML, and InDesign documents and templates (converted to IDML on open). PDFs are graphics on
+/// drop / Place; File › Open routes them to `file.openPdf` separately.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+}
+
+/// PDF and PDF-compatible Illustrator files share Place options (page, crop, editable import).
+fn is_pdf_like(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.ends_with(".pdf") || n.ends_with(".ai")
 }
 
 #[cfg(test)]
@@ -605,7 +642,7 @@ pub(crate) mod browser_import_tests {
             app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
             // The native dialog clamps zero to one; positive invalid pages must fail.
             if page == 0 {
-                assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
+                assert!(app.confirm_pdf_import(page, "crop".into(), false).is_err());
             } else {
                 assert!(dialogs::confirm(&mut app).is_err());
             }
@@ -632,11 +669,69 @@ pub(crate) mod browser_import_tests {
         deliver(&mut app, request, "red.svg", image());
         assert_eq!(app.session.active_index(), Some(1));
         assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+        // File › Open on a PDF opens editable vectors as a new document.
+        let before = app.session.documents().len();
         let request = app.import_request("open");
         deliver(&mut app, request, "single.pdf", pdf_pages(1));
-        assert_eq!(app.session.documents().len(), 2);
+        assert_eq!(app.session.documents().len(), before + 1);
         assert!(app.pending_pdf.is_none());
         assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn dropped_pdf_is_placed_not_opened_as_a_document() {
+        assert!(!opens_as_document("poster.pdf"));
+        assert!(!opens_as_document("art.ai"));
+        let mut app = app();
+        let before = app.session.documents().len();
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "poster.pdf", pdf_pages(1));
+        assert_eq!(app.session.documents().len(), before, "a drop places the PDF; it does not open a tab");
+        // Place options for the page (same path as File › Place).
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        assert!(app.pending_pdf.is_some());
+    }
+
+    #[test]
+    fn place_and_drop_offer_pdf_import_options_for_ai_files() {
+        assert!(is_pdf_like("poster.AI"));
+        assert!(is_pdf_like("art.ai"));
+        assert!(!is_pdf_like("art.eps"));
+        let mut app = app();
+        // File › Place on a .ai file shows the same options as a PDF.
+        app.open_picked("place", "/tmp/logo.ai".into()).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        assert_eq!(app.ui.dialog.as_ref().and_then(|d| d.fields.get("path")).and_then(Value::as_str), Some("/tmp/logo.ai"));
+        app.ui.dialog = None;
+        // Inbox drop / Place of .ai bytes keeps the page for editable conversion.
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "logo.ai", pdf_pages(1));
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        assert!(app.pending_pdf.is_some());
+        assert_eq!(app.session.documents().len(), 1);
+    }
+
+    #[test]
+    fn convert_placed_pdf_requires_a_numeric_item_id() {
+        let mut app = app();
+        for placed in [json!({}), json!({"id": null}), json!({"loaded": true}), json!({"id": "x"})] {
+            let err = app.convert_placed_pdf(&placed).unwrap_err();
+            assert!(err.contains("not placed as a page item"), "{placed}: {err}");
+        }
+    }
+
+    #[test]
+    fn editable_pdf_import_places_onto_the_page_then_converts() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "single.pdf", pdf_pages(1));
+        app.ui.dialog.as_mut().unwrap().fields.insert("editable".into(), json!(true));
+        let before = app.session.doc().unwrap().doc.spreads[0].items.len();
+        dialogs::confirm(&mut app).unwrap();
+        // Place-cursor load would leave zero items; editable must place then convert.
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.len() > before);
+        assert!(app.session.loaded.is_none());
+        assert_ne!(app.session.tool_id(), "placeGun");
     }
 
     #[test]

@@ -12,6 +12,9 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-29** · File › Open opens PDFs as editable paths and images in PDF paint order (glyphs as
+  outlines). Object › Convert PDF to Editable and Place › Import as editable objects do the same for
+  a placed page. Live PDF text and deeper clip/pattern fidelity remain open (#227).
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.

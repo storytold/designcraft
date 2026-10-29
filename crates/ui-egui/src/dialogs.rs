@@ -2585,6 +2585,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                                 }
                             });
                         });
+                        let editable_label = crate::i18n::tr(&app.ui.language, "Import as editable objects");
+                        check(ui, &mut d, "editable", &editable_label);
                     }
                     "layerOptions" => {
                         let mut layers = d.fields.get("layers").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -3525,6 +3527,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "pdfImport" => {
             let crop = d.s("crop");
+            let editable = d.b("editable");
             // One page number, 1 or more; a blank field is page 1. A range or list ("4-5", "2,5"), a
             // fraction or a negative is refused rather than placing some other page.
             let raw = if d.fields.get("page").is_none_or(Value::is_null) { String::new() } else { d.s("page") };
@@ -3542,10 +3545,22 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 },
             };
             if d.b("async") {
-                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
+                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, editable);
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+            }
+            if editable {
+                // Place onto the page (not the place cursor), then convert; needs a real item id.
+                let placed = app.open_file(
+                    "file.place",
+                    json!({
+                        "path": d.s("path"),
+                        "pdfPage": page,
+                        "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }
+                    }),
+                )?;
+                return app.convert_placed_pdf(&placed);
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }

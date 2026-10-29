@@ -312,6 +312,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "cmd:path.reverse",
             "<",
+            "cmd:object.convertPdf",
             ">Pathfinder",
             "cmd:object.pathfinder|Add|{\"op\": \"add\"}",
             "cmd:object.pathfinder|Subtract|{\"op\": \"subtract\"}",

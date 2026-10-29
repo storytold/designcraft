@@ -31,12 +31,13 @@ The same dialog has separate filters for **Graphics**, **Text (Word, RTF, plain,
 
 ## Place a page of a PDF
 
-1. Choose **File**, then **Place…** and pick a PDF with more than one page.
+1. Choose **File**, then **Place…** and pick a PDF.
 2. In the **Place PDF** dialog, type the page number in **Page**. The label shows the page count.
 3. Pick a box in **Crop to:**. The choices are **Crop**, **Trim**, **Bleed**, **Art** and **Media**.
-4. Click **OK**.
+4. Optionally tick **Import as editable objects** to convert that page into editable paths and images (glyphs become outlines) instead of keeping a placed PDF graphic.
+5. Click **OK**.
 
-A PDF with one page is placed without this dialog.
+To open a whole PDF as a new document of editable objects, use **File**, then **Open…** and pick the PDF. To convert a PDF you already placed, select it and choose **Object**, then **Convert PDF to Editable…**.
 
 ## Place Word or RTF text with your styles
 

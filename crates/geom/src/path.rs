@@ -251,14 +251,21 @@ impl SubPath {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PathData {
     pub subpaths: Vec<SubPath>,
+    /// How overlapping subpaths fill (PDF `f*` / compound paths with holes).
+    #[serde(default, skip_serializing_if = "is_nonzero_fill")]
+    pub fill_rule: FillRule,
+}
+
+fn is_nonzero_fill(rule: &FillRule) -> bool {
+    *rule == FillRule::NonZero
 }
 
 impl PathData {
     pub fn new(subpaths: Vec<SubPath>) -> Self {
-        Self { subpaths }
+        Self { subpaths, fill_rule: FillRule::NonZero }
     }
     pub fn single(sp: SubPath) -> Self {
-        Self { subpaths: vec![sp] }
+        Self { subpaths: vec![sp], fill_rule: FillRule::NonZero }
     }
     pub fn is_empty(&self) -> bool {
         self.subpaths.iter().all(|s| s.anchors.is_empty())
@@ -335,7 +342,7 @@ impl PathData {
             }
             subpaths.push(sp);
         }
-        Self { subpaths }
+        Self { subpaths, fill_rule: FillRule::NonZero }
     }
     /// Tight geometric bounds (curve extrema, not control points).
     pub fn bounds(&self) -> Option<Rect> {

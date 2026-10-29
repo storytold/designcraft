@@ -3,6 +3,7 @@ use super::EngineError;
 use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
+use super::open_pdf::file_open_pdf;
 use super::place::{file_place, place_drop, place_load, read_source};
 use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
@@ -40,6 +41,9 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path} — a DesignCraft or IDML file (recognised by its content, so the extension may be missing), or an InDesign .indd/.indt (recognised by its signature or extension, converted to IDML; its conversion warnings join `warnings`); the fonts in a `Document Fonts` folder beside it load first → {index, documentFonts: faces loaded, warnings: font files skipped, GREP styles whose pattern can't compile, Based on Parent links cleared and, for IDML and InDesign files, package parts missing}",
             always, file_open),
         cmd!(noundo "file.openBytes", "Open Bytes", [], None, "{name, base64} — DesignCraft JSON, an IDML package or an InDesign .indd/.indt → {index, warnings}", always, file_open_bytes),
+        cmd!(noundo "file.openPdf", "Open PDF", [], None,
+            "{path | base64, name?} → {index, title, pages, ids, warnings} — opens a PDF as a new document of editable paths (glyphs as outlines) and placed images in PDF paint order; multi-page PDFs become multi-page documents. File › Open routes here for .pdf/.ai",
+            always, file_open_pdf),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
             "{index} — reopen entry `index` of File › Open Recent (as file.open); a file that is gone is an error and stays listed",
             has_recent, file_open_recent),

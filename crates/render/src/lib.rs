@@ -30,7 +30,12 @@ mod fx;
 pub mod glyphs;
 mod grid;
 mod pdf_bounds;
+mod pdf_convert;
 mod pdf_layers;
+pub use pdf_convert::{
+    MAX_PDF_ART_IMAGE_PIXELS, MAX_PDF_ART_OBJECTS, PdfArtCap, PdfArtImage, PdfArtJoin, PdfArtOp, PdfArtPaint, PdfArtPath, PdfArtStroke,
+    PdfConvertError, PdfPageArt, pdf_document_art, pdf_page_art,
+};
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 
 mod color;

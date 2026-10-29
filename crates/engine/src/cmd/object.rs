@@ -154,6 +154,15 @@ pub fn specs() -> Vec<CommandSpec> {
             .execute("object.arrange", &json!({"to": "back"}))),
         cmd!("object.group", "Group", ["Object"], Some("Cmd+G"), "{ids?}", can_group, group),
         cmd!("object.ungroup", "Ungroup", ["Object"], Some("Cmd+Shift+G"), "{ids?}", has_selection, ungroup),
+        cmd!(
+            "object.convertPdf",
+            "Convert PDF to Editable…",
+            ["Object"],
+            None,
+            "{id?} — turns a placed PDF page in the selection (or `id`) into editable paths and images; glyphs become outlines",
+            has_selection,
+            |s, p| crate::cmd::file::convert_placed_pdf(s, p)
+        ),
         cmd!("object.lock", "Lock", ["Object"], Some("Cmd+L"), "{ids?}", has_selection, |s, p| set_flag(s, p, |i| i.locked = true, true)),
         cmd!("object.unlockAll", "Unlock All on Spread", ["Object"], Some("Cmd+Alt+L"), "{}", has_doc, |s, _| all_flag(s, |i| i.locked = false)),
         cmd!("object.hide", "Hide", ["Object"], Some("Cmd+3"), "{ids?}", has_selection, |s, p| set_flag(s, p, |i| i.hidden = true, true)),
