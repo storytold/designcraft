@@ -81,6 +81,46 @@ fn to_png_survives_a_mismatched_buffer() {
     assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_png().len() < 1024);
 }
 
+/// Page PNG export must not leave a 1px fringe: `(width×scale).round()` can disagree with
+/// `scale` so the page edge lands between pixels and AA blends into transparent void (a grey line).
+#[test]
+fn page_png_export_has_no_edge_fringe_on_fractional_page_sizes() {
+    let mm = 72.0 / 25.4;
+    // A4 in mm → non-integer points; at scale 2 the rounded pixel size ≠ width*scale.
+    let mut d = Document::new(&NewDocument {
+        width: 210.0 * mm,
+        height: 297.0 * mm,
+        facing_pages: false,
+        ..Default::default()
+    });
+    let page = d.spreads[0].pages[0].bounds();
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut box_ = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(page));
+    box_.fill = Fill::swatch("C=0 M=100 Y=0 K=0");
+    d.insert_item(SpreadRef::Doc(0), box_, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let img = r.render_page(&d, &cache, 0, 2.0, false, &RenderOptions::default()).unwrap();
+    let ink = |p: [u8; 4]| p[0] > 180 && p[1] < 80 && p[2] > 100;
+    // Interior and every border pixel must be solid ink — not a light AA fringe against void.
+    for (x, y) in [
+        (0, 0),
+        (img.width - 1, 0),
+        (0, img.height - 1),
+        (img.width - 1, img.height - 1),
+        (img.width / 2, 0),
+        (img.width / 2, img.height - 1),
+        (0, img.height / 2),
+        (img.width - 1, img.height / 2),
+        (img.width / 2, img.height / 2),
+    ] {
+        let p = img.pixel(x, y);
+        assert!(ink(p), "fringe at ({x},{y}): {p:?} size={}×{}", img.width, img.height);
+    }
+}
+
 #[test]
 fn proof_view_simulates_the_target() {
     use designcraft_color::cms::{ProofSetup, ProofTarget};
