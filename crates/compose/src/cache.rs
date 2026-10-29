@@ -71,6 +71,8 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    // Squeeze Word Spaces Below the Minimum can move text to other pages.
+    doc.settings.squeeze_word_spaces.hash(&mut h);
     h.finish()
 }
 

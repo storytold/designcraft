@@ -948,10 +948,47 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
     (start + 1..=i).rev().find(|&j| allowed(j)).unwrap_or(i)
 }
 
+/// The elastic material of a line the greedy breaker sets, to rate it as the paragraph composer
+/// does ([`tiered_ratio_overshrink`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct LineElastic {
+    /// Per-tier (word, letter, glyph) stretch and shrink.
+    y: [f64; 3],
+    z: [f64; 3],
+    /// The word spaces' stretch past the maximum ([`Spacing::space_overflow`]) and their shrink
+    /// range, which may shrink past the minimum ([`overshrink_units`]).
+    over: f64,
+    under: f64,
+}
+
+impl LineElastic {
+    fn add(&mut self, (y, z): ([f64; 3], [f64; 3])) {
+        for t in 0..3 {
+            self.y[t] += y[t];
+            self.z[t] += z[t];
+        }
+    }
+
+    /// The ratio of the line set `d` points short of its measure (`d < 0`: too long), ending in a
+    /// glyph with line-end elasticity `edge` ([`crate::mojikumi::end_elastic`]), like the paragraph
+    /// composer's line.
+    fn ratio(&self, d: f64, edge: [f64; 2], overshrink: f64) -> (f64, bool) {
+        let (mut y, mut z) = (self.y, self.z);
+        y[0] = (y[0] + edge[0]).max(0.0);
+        z[0] = (z[0] + edge[1]).max(0.0);
+        tiered_ratio_overshrink(d, y, z, self.over, self.under, overshrink)
+    }
+}
+
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
 ///
 /// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
 /// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
+///
+/// Where word spaces may shrink past the minimum ([`overshrink_units`]), a glyph that fits only that
+/// way stays on the line when the line rates better with it than broken at the last opportunity, as
+/// the paragraph composer weighs them: the minimum is a limit broken only when every choice breaks
+/// one.
 pub fn greedy(
     glyphs: &[Glyph],
     hyph_after: &[bool],
@@ -969,12 +1006,18 @@ pub fn greedy(
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    let overshrink = overshrink_units(sp);
+    let edge_of = |g: &Glyph| crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
     while start < n {
         let w = width(line).max(1.0);
         let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
-        let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
+        let start_elastic = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3);
+        let mut shrink = start_elastic[1];
+        let mut elastic = LineElastic { y: [start_elastic[0], 0.0, 0.0], z: [start_elastic[1], 0.0, 0.0], ..Default::default() };
         let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
+        // The line broken at `last_ok`: its width, elastic material and line-end elasticity.
+        let mut ok_line: Option<(f64, LineElastic, [f64; 2])> = None;
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
         let mut i = start;
         let mut brk: Option<(usize, bool, bool)> = None;
@@ -985,8 +1028,18 @@ pub fn greedy(
                 break;
             }
             if g.is_space() && !g.no_break && g.break_after != Some(false) {
+                // Broken here, the line ends at the glyph before the spaces.
+                let prev = i.checked_sub(1).filter(|&p| p >= start).and_then(|p| glyphs.get(p));
+                if !prev.is_some_and(|p| p.is_space()) {
+                    ok_line = Some((x - prev.map_or(0.0, |p| right_hang(p, sp)), elastic, prev.map_or([0.0; 2], edge_of)));
+                }
                 if sp.justify {
-                    shrink += sp.space_elastic(g).1;
+                    let (st, sh) = sp.space_elastic(g);
+                    shrink += sh;
+                    elastic.y[0] += st;
+                    elastic.z[0] += sh;
+                    elastic.over += sp.space_overflow(g);
+                    elastic.under += sh;
                 }
                 last_ok = Some((i, false));
                 if x <= w + FIT_EPS {
@@ -999,8 +1052,14 @@ pub fn greedy(
             }
             let hang_r = right_hang(g, sp);
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
-            let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
-            let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            let edge = edge_of(g);
+            let boxed = sp.box_elastic(g);
+            let available = shrink + boxed.1.iter().sum::<f64>() + edge[1];
+            let mut through = elastic;
+            through.add(boxed);
+            if sp.justify && g.is_justify_space() {
+                through.under += sp.space_elastic(g).1;
+            }
             if sp.kinsoku_priority == 2
                 && x + adv - hang_r > w + FIT_EPS
                 && let Some((end, hyphen)) = last_natural
@@ -1008,9 +1067,20 @@ pub fn greedy(
                 brk = Some((end, hyphen, false));
                 break;
             }
+            // Fits only by squeezing word spaces past the minimum: worth it when the line rates
+            // better that way than broken at the last opportunity (or split inside the word).
+            let squeezes = || {
+                let (r, feasible) = through.ratio(w - (x + adv - hang_r), edge, overshrink);
+                feasible
+                    && ok_line.is_none_or(|(ok_w, ok_elastic, ok_edge)| {
+                        let (ok_r, ok_feasible) = ok_elastic.ratio(w - ok_w, ok_edge, overshrink);
+                        !ok_feasible || r.abs() < ok_r.abs()
+                    })
+            };
             if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
+                && (overshrink <= 0.0 || !squeezes())
             {
                 // Overflow: break at the last opportunity, else before this glyph.
                 brk = Some(match last_ok {
@@ -1024,12 +1094,14 @@ pub fn greedy(
                 break;
             }
             x += adv;
-            shrink += sp.box_elastic(g).1.iter().sum::<f64>();
+            shrink += boxed.1.iter().sum::<f64>();
+            elastic = through;
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
+                    ok_line = Some((x - hang_r, elastic, edge));
                     if x - hang_r <= w + FIT_EPS {
                         last_natural = last_ok;
                     }
@@ -1038,6 +1110,7 @@ pub fn greedy(
                     let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
+                        ok_line = Some((x + hy, elastic, [0.0; 2]));
                     }
                 }
             }

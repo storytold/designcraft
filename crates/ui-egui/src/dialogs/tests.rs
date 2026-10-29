@@ -475,6 +475,23 @@ fn preferences_ok_sets_only_the_ruler_units_it_is_given() {
 }
 
 #[test]
+fn preferences_ok_sets_squeezing_word_spaces_only_when_it_has_the_checkbox() {
+    // `ui.dialog.open` takes any fields, so the checkbox can be missing.
+    for (field, want) in [(None, true), (Some(false), false)] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"squeezeWordSpaces": true})).unwrap();
+        let mut fields = json!({"horizontalUnits": "points", "bg.relativeTo": "topOfPage"});
+        if let Some(v) = field {
+            fields["squeezeWordSpaces"] = json!(v);
+        }
+        app.ui.dialog = Some(Dialog::new("preferences", fields));
+        confirm(&mut app).unwrap();
+        assert_eq!(app.run("document.preferences", json!({})).unwrap()["squeezeWordSpaces"], want, "{field:?}");
+    }
+}
+
+#[test]
 fn enter_and_escape_close_the_style_menu_not_numbering_and_section_options() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"pages": 2})).unwrap();

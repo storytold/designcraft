@@ -3754,7 +3754,10 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             doc["advancedType"] = adv;
             doc["overprintBlack"] = json!(d.b("overprintBlack"));
             doc["glyphFallback"] = json!(d.b("glyphFallback"));
-            doc["squeezeWordSpaces"] = json!(d.b("squeezeWordSpaces"));
+            // Fields can come from `ui.dialog.open`: without the checkbox the preference stays.
+            if d.fields.contains_key("squeezeWordSpaces") {
+                doc["squeezeWordSpaces"] = json!(d.b("squeezeWordSpaces"));
+            }
             app.run("document.preferences", doc)
         }
         _ => confirm_part5(app, d),
