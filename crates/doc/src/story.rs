@@ -38,9 +38,19 @@ pub const TABLE_ANCHOR: char = '\u{E009}';
 pub const FORCED_LINE_BREAK: char = '\u{2028}';
 pub const ODD_PAGE_BREAK: char = '\u{E011}';
 pub const EVEN_PAGE_BREAK: char = '\u{E012}';
-/// A glyph without a Unicode value, picked from the font by name (InDesign's Glyphs panel; its
-/// name is the character's [`crate::CharProps::custom_glyph`]).
+/// A glyph without a Unicode value, picked from the font by name or glyph id (InDesign's Glyphs
+/// panel; the character's [`crate::CharProps::custom_glyph`] says which, see [`custom_glyph_id`]).
 pub const CUSTOM_GLYPH: char = '\u{E013}';
+
+/// The glyph id a [`CUSTOM_GLYPH`]'s [`crate::CharProps::custom_glyph`] gives: a decimal number is
+/// a glyph id (IDML gives one, of type long, for a glyph the font doesn't name; glyph names never
+/// start with a digit). `None` for a glyph name, or a number too large to be a glyph id.
+pub fn custom_glyph_id(glyph: &str) -> Option<u32> {
+    if glyph.is_empty() || !glyph.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    glyph.parse().ok()
+}
 
 /// A column, frame or page break character. It ends its paragraph: the story stores it as the
 /// paragraph's last character, followed by the `\n` separator (also at the end of the story), and

@@ -164,7 +164,8 @@ attr_set! {
         diacritic_y_offset: f64 = 0.0,
         /// IDML contextual-form request, separate from general OpenType features.
         positional_form: String = String::new(),
-        /// The font's glyph name a [`crate::story::CUSTOM_GLYPH`] character draws.
+        /// The glyph a [`crate::story::CUSTOM_GLYPH`] character draws: the font's name for it, or
+        /// its glyph id in decimal ([`crate::story::custom_glyph_id`]).
         custom_glyph: String = String::new(),
         language: String = "English: USA".into(),
         /// Additional OpenType features, e.g. `["onum", "ss01"]`.

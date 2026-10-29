@@ -905,13 +905,27 @@ fn shape_run_raw(
                     }
                 }
                 story::CUSTOM_GLYPH => {
-                    // The glyph the font names. For bidi it is the character it draws first;
-                    // without one it is neutral (U+FFFC) and goes with the text around it.
+                    // The glyph the font names or numbers. For bidi it is the character it draws
+                    // first; without one it is neutral (U+FFFC) and goes with the text around it.
                     let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);
-                    g.display_char = custom_glyph_role(&primary, &p.custom_glyph).0.unwrap_or('\u{FFFC}');
-                    let gid = primary.glyph_by_name(&p.custom_glyph);
-                    g.gid = gid;
-                    g.adv = primary.advance(gid) * g.sx;
+                    let drawn = custom_glyph_role(&primary, &p.custom_glyph).0;
+                    g.display_char = drawn.unwrap_or('\u{FFFC}');
+                    g.gid = custom_glyph_gid(&primary, &p.custom_glyph);
+                    // In vertical text it stands upright when the character it draws would, down
+                    // the line by its vertical advance and in the em box, as upright text does.
+                    let mode = sub.upright();
+                    g.upright = mode.vertical && !p.tate_chu_yoko && drawn.is_some_and(|d| sets_upright(d, mode.rotate_roman));
+                    let body = if g.upright {
+                        let (em_top, em_bottom) = primary.em_box();
+                        (g.ascent, g.descent) = (em_top * g.sy, -em_bottom * g.sy);
+                        primary.v_advance(g.gid) * g.sy
+                    } else {
+                        primary.advance(g.gid) * g.sx
+                    };
+                    // Tracking and manual kerning, as for the letters around it.
+                    let manual = if let Kerning::Manual(v) = p.kerning { v / 1000.0 * p.size } else { 0.0 };
+                    g.moji.body = body;
+                    g.adv = body + p.tracking / 1000.0 * p.size + manual;
                     out.push(g);
                 }
                 designcraft_doc::OBJECT_MARK => {
@@ -1315,7 +1329,7 @@ fn shape_segment(
 fn upright_runs(src: &str, vertical: bool, rotate_roman: bool) -> Vec<(std::ops::Range<usize>, bool)> {
     let mut runs: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
     for (i, c) in src.char_indices() {
-        let up = vertical && (crate::upright_in_vertical(c) || (rotate_roman && half_width_roman(c)));
+        let up = vertical && sets_upright(c, rotate_roman);
         match runs.last_mut() {
             Some((r, u)) if *u == up || is_mark(c) => r.end = i + c.len_utf8(),
             _ => runs.push((i..i + c.len_utf8(), up)),
@@ -1327,6 +1341,11 @@ fn upright_runs(src: &str, vertical: bool, rotate_roman: bool) -> Vec<(std::ops:
 /// Half-width (single-byte) roman characters: what Rotate Roman Characters stands upright.
 fn half_width_roman(c: char) -> bool {
     matches!(c, '!'..='~') || (matches!(c as u32, 0xC0..=0x24F) && c.is_alphabetic())
+}
+
+/// Whether vertical text sets `c` upright: CJK, and with `rotate_roman` half-width characters too.
+fn sets_upright(c: char, rotate_roman: bool) -> bool {
+    crate::upright_in_vertical(c) || (rotate_roman && half_width_roman(c))
 }
 
 /// Auto tate-chu-yoko: the byte ranges in `range` of `text` that are runs of at most `max`
@@ -1441,11 +1460,28 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
     }
 }
 
-/// What custom glyph `name` of `face` stands for: the character it draws first (its first
-/// ligature component) and whether it joins the letter before it and the one after it. A
-/// positional suffix (`.init`, `.medi`, `.fina`, `.isol`) on the first or last component says so,
-/// else that component's character does.
+/// The glyph custom glyph `name` of `face` draws: the glyph of that id when `name` is a number
+/// ([`story::custom_glyph_id`]) and the font has it, else the glyph of that name; .notdef (0) when
+/// there is none.
+fn custom_glyph_gid(face: &FontFace, name: &str) -> u32 {
+    match story::custom_glyph_id(name) {
+        Some(gid) if gid < face.glyph_count() => gid,
+        Some(_) => 0,
+        None => face.glyph_by_name(name),
+    }
+}
+
+/// What custom glyph `name` of `face` stands for: the character it draws first (the first letter
+/// of its first ligature component) and whether it joins the letter before it and the one after
+/// it. A positional suffix (`.init`, `.medi`, `.fina`, `.isol`) on the first or last component
+/// says so, else the first component's first letter and the last one's last letter do. A glyph
+/// given by id stands for the character the font maps to it.
 pub(crate) fn custom_glyph_role(face: &FontFace, name: &str) -> (Option<char>, bool, bool) {
+    if story::custom_glyph_id(name).is_some() {
+        let c = face.char_for_glyph(custom_glyph_gid(face, name));
+        let joins = |f: fn(char) -> bool| c.is_some_and(|c| c == '\u{0640}' || f(c));
+        return (c, joins(crate::joins_prev), joins(crate::joins_next));
+    }
     let parts: Vec<(&str, Option<&str>)> = name
         .split('_')
         .map(|part| {
@@ -1455,7 +1491,9 @@ pub(crate) fn custom_glyph_role(face: &FontFace, name: &str) -> (Option<char>, b
         })
         .collect();
     let (Some(first), Some(last)) = (parts.first(), parts.last()) else { return (None, false, false) };
-    let (c0, c1) = (face.char_for_glyph_name(first.0), face.char_for_glyph_name(last.0));
+    let firsts = face.chars_for_glyph_name(first.0);
+    let c1 = if parts.len() > 1 { face.chars_for_glyph_name(last.0).last().copied() } else { firsts.last().copied() };
+    let c0 = firsts.first().copied();
     let before = match first.1 {
         Some(form) => matches!(form, "medi" | "fina"),
         None => c0.is_some_and(|c| c == '\u{0640}' || crate::joins_prev(c)),

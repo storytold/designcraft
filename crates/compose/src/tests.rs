@@ -107,6 +107,79 @@ fn custom_glyph_draws_the_named_glyph() {
     assert!(g.visible && (g.adv - face.advance(g.gid) * g.sx).abs() < 1e-9 && g.adv > 0.0, "{g:?}");
 }
 
+/// The first line's glyphs of `text` in a 200 × 400 frame, the character at byte `at` a custom
+/// glyph `name` when there is one, after `edit`.
+fn custom_glyph_glyphs(text: &str, custom: Option<(usize, &str)>, edit: impl FnOnce(&mut Document, StoryId)) -> Vec<PlacedGlyph> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 200.0, 400.0), ParaAttrs::default());
+    if let Some((at, name)) = custom {
+        let end = at + designcraft_doc::story::CUSTOM_GLYPH.len_utf8();
+        d.story_mut(sid).unwrap().format_chars(at..end, |f| f.over.custom_glyph = Some(name.into()));
+    }
+    edit(&mut d, sid);
+    compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone()
+}
+
+/// A custom glyph takes its run's tracking and manual kerning like the letters around it: it
+/// used to keep its bare advance.
+#[test]
+fn custom_glyph_takes_tracking_and_manual_kerning() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH;
+    let spaced = |d: &mut Document, sid: StoryId| {
+        let len = d.story(sid).unwrap().text.len();
+        d.story_mut(sid).unwrap().format_chars(0..len, |f| {
+            f.over.tracking = Some(200.0);
+            f.over.kerning = Some(designcraft_doc::Kerning::Manual(-50.0));
+        });
+    };
+    let custom = custom_glyph_glyphs(&format!("x{glyph}x"), Some((1, "a")), spaced);
+    let plain = custom_glyph_glyphs("xax", None, spaced);
+    let (custom, plain) = (custom.iter().find(|g| g.byte == 1).unwrap(), plain.iter().find(|g| g.byte == 1).unwrap());
+    assert_eq!(custom.gid, plain.gid);
+    assert!((custom.adv - plain.adv).abs() < 1e-9, "{} vs {}", custom.adv, plain.adv);
+    let face = custom.face.get();
+    assert!((custom.adv - face.advance(custom.gid) * custom.sx - 0.15 * 12.0).abs() < 1e-9, "{custom:?}");
+}
+
+/// In vertical text a custom glyph stands upright when the character it draws would, by its
+/// vertical advance, and turns with the line otherwise: it always turned.
+#[test]
+fn custom_glyph_stands_upright_in_vertical_text_as_its_character() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH.to_string();
+    let vertical = |rotate_roman: bool| {
+        move |d: &mut Document, sid: StoryId| {
+            d.story_mut(sid).unwrap().vertical = true;
+            d.story_mut(sid).unwrap().paras[0].para.rotate_roman = Some(rotate_roman);
+        }
+    };
+    for rotate_roman in [false, true] {
+        let custom = custom_glyph_glyphs(&glyph, Some((0, "a")), vertical(rotate_roman))[0].clone();
+        let plain = custom_glyph_glyphs("a", None, vertical(rotate_roman))[0].clone();
+        assert_eq!((custom.gid, custom.upright), (plain.gid, rotate_roman), "Rotate Roman {rotate_roman}");
+        assert!((custom.adv - plain.adv).abs() < 1e-6, "Rotate Roman {rotate_roman}: {} vs {}", custom.adv, plain.adv);
+    }
+    // A kana stands upright whatever the font draws for it, one vertical advance down the line.
+    let kana = custom_glyph_glyphs(&glyph, Some((0, "uni3042")), vertical(false))[0].clone();
+    assert!(kana.upright, "{kana:?}");
+    let face = kana.face.get();
+    assert!((kana.adv - face.v_advance(kana.gid) * kana.sy).abs() < 1e-9, "{kana:?}");
+}
+
+/// A custom glyph InDesign gives by number (IDML `CustomGlyph` of type long, for a glyph the font
+/// doesn't name) draws the glyph of that id; an id the font hasn't draws its .notdef. Numbers
+/// used to be looked up as glyph names.
+#[test]
+fn custom_glyph_by_id_draws_that_glyph() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH.to_string();
+    let plain = custom_glyph_glyphs("a", None, |_, _| {})[0].clone();
+    assert_ne!(plain.gid, 0);
+    let by_id = custom_glyph_glyphs(&glyph, Some((0, &plain.gid.to_string())), |_, _| {})[0].clone();
+    assert_eq!(by_id.gid, plain.gid);
+    assert!((by_id.adv - plain.adv).abs() < 1e-9, "{} vs {}", by_id.adv, plain.adv);
+    for missing in ["65535", "4294967295", "99999999999"] {
+        assert_eq!(custom_glyph_glyphs(&glyph, Some((0, missing)), |_, _| {})[0].gid, 0, "{missing}");
+    }
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
@@ -4636,6 +4709,24 @@ fn letters_join_a_custom_glyph_as_its_letters() {
     // Right to left in a left-to-right paragraph: the glyph comes first, on the left.
     let gs = set(&before, Some((2, "uni0644")));
     assert!(at(&gs, 2).1 < at(&gs, 0).1, "{:?} {:?}", at(&gs, 2), at(&gs, 0));
+}
+
+/// A custom glyph named for several letters in one `uni` name (`uni06440627`, lam alef) joins the
+/// letter before it as its first letter would and the one after it as its last: the name used to
+/// stand for no letter, so neither joined.
+#[test]
+fn letters_join_a_multi_letter_custom_glyph() {
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH;
+    let fallback = |d: &mut Document, _: StoryId| d.settings.glyph_fallback = true;
+    let gid = |gs: &[PlacedGlyph], byte: usize| gs.iter().find(|g| g.byte == byte).map(|g| g.gid).unwrap();
+    // Lam alef after a beh: the lam joins it (initial beh).
+    let before = format!("\u{0628}{glyph}");
+    let initial = gid(&custom_glyph_glyphs("\u{0628}\u{0644}", None, fallback), 0);
+    assert_eq!(gid(&custom_glyph_glyphs(&before, Some((2, "uni06440627")), fallback), 0), initial, "initial beh");
+    // Beh lam before a beh: the lam joins it (final beh).
+    let after = format!("{glyph}\u{0628}");
+    let fin = gid(&custom_glyph_glyphs("\u{0644}\u{0628}", None, fallback), 2);
+    assert_eq!(gid(&custom_glyph_glyphs(&after, Some((0, "uni06280644")), fallback), 3), fin, "final beh");
 }
 
 #[test]

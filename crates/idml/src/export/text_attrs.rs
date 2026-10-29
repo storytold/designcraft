@@ -130,7 +130,10 @@ impl<'a> Ex<'a> {
 
     fn char_font_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(g) = &a.custom_glyph {
-            props.push(p("CustomGlyph", "string", format!("$ID/{g}")));
+            props.push(match st::custom_glyph_id(g) {
+                Some(id) => p("CustomGlyph", "long", id.to_string()),
+                None => p("CustomGlyph", "string", format!("$ID/{g}")),
+            });
         }
         if let Some(f) = &a.font_family {
             if let Some(composite) = self.d.styles.composite_font(f) {
