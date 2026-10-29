@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::build::NewDocument;
-use designcraft_doc::{Asset, AssetId, Content, Fill, Graphic, Item, ItemId, Margins, Selection, Shape, Stroke, StrokeType, SpreadRef};
+use designcraft_doc::{Asset, AssetId, Content, Fill, Graphic, Item, ItemId, Margins, Selection, Shape, SpreadRef, Stroke, StrokeType};
 use designcraft_geom::{Affine, PathData, Point, Rect, Shape as GeomShape, shapes};
 use designcraft_render::{PdfArtCap, PdfArtImage, PdfArtJoin, PdfArtOp, PdfArtPaint, PdfArtPath, PdfArtStroke, PdfPageArt};
 use serde_json::{Value, json};
@@ -242,11 +242,7 @@ fn stem_title(name: &str) -> String {
 pub(crate) fn convert_placed_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     const CID: &str = "object.convertPdf";
     let st = s.doc()?;
-    let ids: Vec<ItemId> = if let Some(id) = id_param(p, "id") {
-        vec![id]
-    } else {
-        st.selection.items.clone()
-    };
+    let ids: Vec<ItemId> = if let Some(id) = id_param(p, "id") { vec![id] } else { st.selection.items.clone() };
     if ids.is_empty() {
         return Err(bad(CID, "nothing selected"));
     }
@@ -335,9 +331,7 @@ mod tests {
         assert!((d.doc.settings.page_height - 100.0).abs() < 0.01);
         let items = d.doc.all_items();
         assert!(!items.is_empty(), "{r}");
-        assert!(items.iter().any(|&id| {
-            d.doc.item(id).is_some_and(|it| matches!(it.shape, Shape::Path | Shape::Rectangle | Shape::GraphicLine))
-        }));
+        assert!(items.iter().any(|&id| { d.doc.item(id).is_some_and(|it| matches!(it.shape, Shape::Path | Shape::Rectangle | Shape::GraphicLine)) }));
     }
 
     #[test]

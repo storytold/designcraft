@@ -130,13 +130,7 @@ pub fn pdf_page_art(bytes: &[u8], page: usize) -> Result<PdfPageArt, PdfConvertE
     let page_rect = kurbo::Rect::new(0.0, 0.0, w, h);
     let cache = InterpreterCache::new();
     let mut ctx = Context::new(initial, page_rect, &cache, p.xref(), InterpreterSettings::default());
-    let mut art = Collector {
-        ops: Vec::new(),
-        warnings: Notes::default(),
-        hidden: Vec::new(),
-        image_pixels: 0,
-        capped: false,
-    };
+    let mut art = Collector { ops: Vec::new(), warnings: Notes::default(), hidden: Vec::new(), image_pixels: 0, capped: false };
     interpret_page(p, &mut ctx, &mut art);
     let mut warnings = art.warnings.into_warnings();
     if art.capped {
@@ -236,11 +230,7 @@ impl Collector {
         let scale = transform.determinant().abs().sqrt();
         let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
         let width = round(f64::from(s.line_width.max(0.0)) * scale);
-        let dashes = if s.dash_array.is_empty() {
-            None
-        } else {
-            Some(s.dash_array.iter().map(|v| round(f64::from(*v) * scale)).collect())
-        };
+        let dashes = if s.dash_array.is_empty() { None } else { Some(s.dash_array.iter().map(|v| round(f64::from(*v) * scale)).collect()) };
         PdfArtStroke {
             width,
             cap: match s.line_cap {
