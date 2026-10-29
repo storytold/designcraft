@@ -4102,6 +4102,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "用后备字体绘制缺失字形",
         ],
     ),
+    (
+        "Squeeze Word Spaces Below the Minimum",
+        [
+            "Wortabstände unter das Minimum stauchen",
+            "Resserrer les espaces entre les mots sous le minimum",
+            "Comprimir los espacios entre palabras por debajo del mínimo",
+            "単語間隔を最小値より詰める",
+            "将字间距压缩到最小值以下",
+        ],
+    ),
     ("Units & Increments", ["Units & Increments", "Unités et incréments", "Units & Increments", "Units & Increments", "单位和增量"]),
     ("Grids", ["Grids", "Grilles", "Grids", "Grids", "网格"]),
     ("Guides & Pasteboard", ["Guides & Pasteboard", "Repères et table de montage", "Guides & Pasteboard", "Guides & Pasteboard", "参考线和粘贴板"]),

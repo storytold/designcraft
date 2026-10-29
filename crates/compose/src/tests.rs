@@ -91,6 +91,101 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// With Squeeze Word Spaces Below the Minimum, a justified line squeezes its word spaces past the
+/// 80% minimum (down to 60%) rather than leave a long word for the next line and gape, as
+/// InDesign's composers often do. Off (the default), word spaces stay at the minimum and the word
+/// goes to the next line.
+#[test]
+fn justified_line_squeezes_past_the_minimum_only_when_the_document_allows_it() {
+    let text = "Aaaa bbbb cccc dddd Wwwwwwwwwwwwwwwwww eee";
+    // Natural word widths and the space, from one unjustified line.
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs::default());
+    let line = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone();
+    let space = line.glyphs.iter().find(|g| text[g.byte..].starts_with(' ')).unwrap().adv;
+    let end_of = |w: &str| {
+        let at = text.find(w).unwrap() + w.len();
+        line.glyphs.iter().filter(|g| g.byte < at).map(|g| g.x + g.adv).fold(0.0, f64::max)
+    };
+    // The first five words fit with their four spaces at 70%.
+    let words = end_of("Wwwwwwwwwwwwwwwwww") - 4.0 * space;
+    let first_line = |measure: f64, squeeze: bool| {
+        let para = ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, measure, 100.0), para);
+        d.settings.squeeze_word_spaces = squeeze;
+        all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone()
+    };
+    let measure = words + 4.0 * space * 0.7;
+    assert!(first_line(measure, false).range.end <= text.find("Wwww").unwrap(), "off: the long word goes to the next line");
+    let first = first_line(measure, true);
+    assert!(first.range.end >= text.find(" eee").unwrap(), "the long word stays on the first line: {:?}", first.range);
+    let gaps: Vec<f64> = first.glyphs.windows(2).filter(|w| text[w[0].byte..].starts_with(' ')).map(|w| w[1].x - w[0].x).collect();
+    assert_eq!(gaps.len(), 4);
+    for g in &gaps {
+        assert!(*g > space * 0.6 - 0.01 && *g < space * 0.8, "a squeezed space {g} of {space}");
+    }
+    // Room for less than 60%: the word goes to the next line after all.
+    assert!(first_line(words + 4.0 * space * 0.5, true).range.end <= text.find("Wwww").unwrap());
+}
+
+/// The Single-line Composer squeezes word spaces past the minimum like the paragraph composer:
+/// when the line rates better squeezed than broken before the word. It never did, so the long word
+/// went to the next line and the line gaped. A line that stays within the maximum broken before
+/// the word still wins over squeezing, as with the paragraph composer.
+#[test]
+fn single_line_composer_squeezes_past_the_minimum_where_the_paragraph_composer_does() {
+    let text = "Aaaa bbbb cccc dddd Wwwwwwwwwwwwwwwwww eee i fff";
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs::default());
+    let line = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone();
+    let space = line.glyphs.iter().find(|g| text[g.byte..].starts_with(' ')).unwrap().adv;
+    let end_of = |w: &str| {
+        let at = text.find(w).unwrap() + w.len();
+        line.glyphs.iter().filter(|g| g.byte < at).map(|g| g.x + g.adv).fold(0.0, f64::max)
+    };
+    let first_line = |measure: f64, composer: Composer, squeeze: bool| {
+        // Without hyphenation: the line-by-line composer takes any hyphen that fits.
+        let para = ParaAttrs { align: Some(Align::LeftJustified), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, measure, 100.0), para);
+        d.settings.squeeze_word_spaces = squeeze;
+        all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].range.end
+    };
+    let long = text.find("Wwww").unwrap();
+    // The first five words fit with their four spaces at 70%; broken before the long word, the
+    // line would stretch its three spaces far past the maximum.
+    let measure = end_of("Wwwwwwwwwwwwwwwwww") - 4.0 * space * 0.3;
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        assert!(first_line(measure, composer, false) <= long, "{composer:?} off: the long word goes to the next line");
+        assert!(first_line(measure, composer, true) > long, "{composer:?}: the long word stays on the first line");
+        // Room for less than 60%: the word goes to the next line after all.
+        assert!(first_line(end_of("Wwwwwwwwwwwwwwwwww") - 4.0 * space * 0.5, composer, true) <= long, "{composer:?}");
+    }
+    // Seven words fit with their six spaces at 70%; broken before "i", the line's five spaces
+    // stretch no further than the maximum: that breaks no limit, so it wins.
+    let six = end_of("eee i") - 6.0 * space * 0.3;
+    // The line ends with its trailing space: it takes the text up to "i".
+    let before_i = text.find(" i ").unwrap() + 1;
+    assert!(six - end_of("eee") < 5.0 * space * 0.33, "a line within the maximum");
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        assert_eq!(first_line(six, composer, true), before_i, "{composer:?}");
+    }
+}
+
+/// The composition cache recomposes when Squeeze Word Spaces Below the Minimum changes.
+#[test]
+fn cache_recomposes_when_squeezing_word_spaces_is_switched() {
+    let para = ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() };
+    let (mut d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 800.0), para);
+    let cache = Cache::new();
+    let a = cache.get(&d, sid, None);
+    let (running, xrefs) = (cache.running_index(&d), cache.xref_index(&d));
+    d.settings.squeeze_word_spaces = true;
+    let b = cache.get(&d, sid, None);
+    assert!(!Arc::ptr_eq(&a, &b));
+    // The document-wide indexes (running headers, cross-reference pages) are rebuilt too: lines
+    // that squeeze can move text to other pages.
+    assert!(!Arc::ptr_eq(&running, &cache.running_index(&d)));
+    assert!(!Arc::ptr_eq(&xrefs, &cache.xref_index(&d)));
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());

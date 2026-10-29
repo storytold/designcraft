@@ -71,6 +71,8 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    // Squeeze Word Spaces Below the Minimum can move text to other pages.
+    doc.settings.squeeze_word_spaces.hash(&mut h);
     h.finish()
 }
 
@@ -209,6 +211,8 @@ impl Cache {
         sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].into_iter().flat_map(bits));
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
+        // Squeeze Word Spaces Below the Minimum changes justified lines.
+        sig.push(usize::from(doc.settings.squeeze_word_spaces));
         // Named lists continue from earlier stories.
         for l in &doc.settings.lists {
             let mut h = std::collections::hash_map::DefaultHasher::new();
