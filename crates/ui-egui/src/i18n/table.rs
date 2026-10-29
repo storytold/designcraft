@@ -119,11 +119,23 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Open PDF…", ["PDF öffnen …", "Ouvrir un PDF…", "Abrir PDF…", "PDFを開く…", "打开 PDF…"]),
     (
         "Import as editable objects",
-        ["Als bearbeitbare Objekte importieren", "Importer en objets modifiables", "Importar como objetos editables", "編集可能なオブジェクトとして読み込む", "导入为可编辑对象"],
+        [
+            "Als bearbeitbare Objekte importieren",
+            "Importer en objets modifiables",
+            "Importar como objetos editables",
+            "編集可能なオブジェクトとして読み込む",
+            "导入为可编辑对象",
+        ],
     ),
     (
         "Convert PDF to Editable…",
-        ["PDF in bearbeitbare Objekte umwandeln …", "Convertir le PDF en objets modifiables…", "Convertir PDF en editable…", "PDFを編集可能に変換…", "将 PDF 转为可编辑对象…"],
+        [
+            "PDF in bearbeitbare Objekte umwandeln …",
+            "Convertir le PDF en objets modifiables…",
+            "Convertir PDF en editable…",
+            "PDFを編集可能に変換…",
+            "将 PDF 转为可编辑对象…",
+        ],
     ),
     (
         "Open Recent",

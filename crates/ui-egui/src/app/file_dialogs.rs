@@ -408,10 +408,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter {
-                name: "DesignCraft, IDML, InDesign or PDF",
-                extensions: &["designcraft", "idml", "indd", "indt", "pdf", "ai"],
-            },
+            OpenFilter { name: "DesignCraft, IDML, InDesign or PDF", extensions: &["designcraft", "idml", "indd", "indt", "pdf", "ai"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
             OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
