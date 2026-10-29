@@ -7744,6 +7744,50 @@ fn arabic_outside_a_world_ready_paragraph_runs_left_to_right_unjoined() {
     assert_eq!((b.1, l.1), (beh, lam), "isolated forms");
 }
 
+/// A paragraph that isn't World-Ready sets its lines left to right whatever its direction, as
+/// InDesign's Paragraph Composer does: beside an object the left segment fills first, and the
+/// first-line indent and the drop cap are at the left edge. A right-to-left paragraph's lines
+/// used to start at the right even so.
+#[test]
+fn a_paragraph_that_isnt_world_ready_places_its_lines_from_the_left() {
+    let not_world_ready = |para: &mut ParaAttrs| {
+        para.direction = Some(designcraft_doc::TextDirection::RightToLeft);
+        para.world_ready = Some(false);
+        para.align = Some(Align::Left);
+    };
+    let left_edge = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| g.x).fold(f64::MAX, f64::min);
+    // Beside an object with text on both sides: the left segment, then the right one.
+    let (mut d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    not_world_ready(&mut d.story_mut(sid).unwrap().paras[0].para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (&w[0], &w[1])).collect();
+    assert!(pairs.len() >= 4, "{} lines share a baseline", pairs.len());
+    for (first, second) in &pairs {
+        assert!(first.x1 < 150.0 && second.x0 > 150.0, "left segment first: {} {}", first.x1, second.x0);
+        assert_eq!(first.range.end, second.range.start);
+    }
+    // The first-line indent is at the left.
+    let mut para = ParaAttrs { first_line_indent: Some(20.0), ..Default::default() };
+    not_world_ready(&mut para);
+    let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((left_edge(lines[0]) - 20.0).abs() < 1.0, "first line indented: {}", left_edge(lines[0]));
+    assert!(left_edge(lines[1]).abs() < 1.0, "the next line at the edge: {}", left_edge(lines[1]));
+    // So is the drop cap, with its lines' text after it.
+    let mut para = drop_cap(2, 1);
+    not_world_ready(&mut para);
+    let (d, sid, _) = drop_doc(LOREM, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!(dc.x < 1.0 && !dc.rtl, "{dc:?}");
+    for l in &lines[..2] {
+        assert!(l.glyphs.iter().filter(|g| g.byte > 0 && g.visible).all(|g| g.x >= dc.x + dc.adv - 0.5));
+    }
+}
+
 #[test]
 fn greek_text_gets_greek_hyphenation() {
     // Greek had no hyphenation at all: `hypher`'s Greek patterns were not among the features
