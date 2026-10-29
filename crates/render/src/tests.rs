@@ -87,12 +87,7 @@ fn to_png_survives_a_mismatched_buffer() {
 fn page_png_export_has_no_edge_fringe_on_fractional_page_sizes() {
     let mm = 72.0 / 25.4;
     // A4 in mm → non-integer points; at scale 2 the rounded pixel size ≠ width*scale.
-    let mut d = Document::new(&NewDocument {
-        width: 210.0 * mm,
-        height: 297.0 * mm,
-        facing_pages: false,
-        ..Default::default()
-    });
+    let mut d = Document::new(&NewDocument { width: 210.0 * mm, height: 297.0 * mm, facing_pages: false, ..Default::default() });
     let page = d.spreads[0].pages[0].bounds();
     let lid = d.default_layer();
     let id = designcraft_doc::ItemId(d.alloc());
