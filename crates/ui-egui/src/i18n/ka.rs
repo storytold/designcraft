@@ -38,7 +38,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Link Info", "ბმულის ინფორმაცია"),
     ("Next Link", "შემდეგი ბმული"),
     ("Previous Link", "წინა ბმული"),
-    ("Format", "ფორმატი"),
     ("Dimensions", "განზომილებები"),
     ("Effective PPI", "ეფექტური ppi"),
     ("Restart Numbering", "ნუმერაციის თავიდან დაწყება"),
