@@ -256,12 +256,13 @@ enum Checker {
 impl Checker {
     fn for_language(language: &str) -> Checker {
         let installed = dictionaries::for_language(language);
-        if !installed.is_empty() {
-            Checker::Installed(installed)
-        } else if designcraft_compose::is_english(language) {
+        // English has the bundled list to fall back on when no installed dictionary can be read.
+        if designcraft_compose::is_english(language) && !installed.iter().any(|d| d.is_readable()) {
             Checker::English
-        } else {
+        } else if installed.is_empty() {
             Checker::None
+        } else {
+            Checker::Installed(installed)
         }
     }
 
@@ -477,6 +478,17 @@ mod tests {
         assert!(r[0]["suggestions"].as_array().unwrap().iter().any(|v| v == "slainte"));
         s.execute("spelling.addWord", &json!({"word": "Slaintte"})).unwrap();
         assert_eq!(s.execute("spelling.check", &json!({})).unwrap().as_array().unwrap().len(), 1, "the user dictionary counts");
+    }
+
+    #[test]
+    fn english_keeps_the_bundled_list_when_its_dictionary_cannot_be_read() {
+        // Harmless to other tests, though process-wide: they get the bundled list as before.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("en_ZA.aff"), "SET UTF-8\n").unwrap();
+        std::fs::write(dir.path().join("en_ZA.dic"), [0xff, 0xfe, 0x00]).unwrap();
+        dictionaries::install_dir(dir.path());
+        assert!(!dictionaries::for_language("English").is_empty());
+        assert!(Checker::for_language("English: USA").misspelled("zzzq", &[]));
     }
 }
 

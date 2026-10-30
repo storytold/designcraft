@@ -4,6 +4,7 @@
 //! takes a few hundred milliseconds). Text in a language with an installed dictionary is
 //! spell-checked with it, through [`spellbook`] (see `cmd::spelling`).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
@@ -34,11 +35,12 @@ impl Installed {
         self.loaded
             .get_or_init(|| {
                 let read = |p: &Path| -> Result<String, String> {
-                    let len = std::fs::metadata(p).map_err(|e| e.to_string())?.len();
-                    if len > MAX_FILE_BYTES {
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(p).and_then(|f| f.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)).map_err(|e| e.to_string())?;
+                    if bytes.len() as u64 > MAX_FILE_BYTES {
                         return Err(format!("larger than {} MB", MAX_FILE_BYTES >> 20));
                     }
-                    String::from_utf8(std::fs::read(p).map_err(|e| e.to_string())?).map_err(|_| "not UTF-8".to_string())
+                    String::from_utf8(bytes).map_err(|_| "not UTF-8".to_string())
                 };
                 let loaded = read(&self.aff).and_then(|aff| {
                     let dic = read(&self.dic)?;
@@ -57,6 +59,11 @@ impl Installed {
                 }
             })
             .as_ref()
+    }
+
+    /// Can the dictionary be read? Reads it, if that hasn't been tried yet.
+    pub fn is_readable(&self) -> bool {
+        self.loaded().is_some()
     }
 }
 
@@ -85,10 +92,10 @@ fn dictionary_language(language: &str) -> Option<&'static str> {
 
 /// Register the `<locale>.aff` + `<locale>.dic` pairs in `dir` and its subfolders (in name
 /// order; `hyph_*.dic` hyphenation files are not dictionaries). A missing folder registers
-/// nothing. Returns one line per dictionary for the log.
+/// nothing. Returns one line per dictionary, and per folder that couldn't be read, for the log.
 pub fn install_dir(dir: &Path) -> Vec<String> {
-    let files = crate::hyphenation::dictionary_files(dir);
-    let mut report = Vec::new();
+    let (files, problems) = crate::hyphenation::dictionary_files(dir);
+    let mut report: Vec<String> = problems.into_iter().map(|p| format!("spelling: {p}")).collect();
     for (name, aff) in &files {
         let Some(locale) = name.strip_suffix(".aff").filter(|l| !l.is_empty()) else { continue };
         let dic = aff.with_extension("dic");

@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Serbian hyphenation and installed `hyph_*.dic` pattern files; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Serbian hyphenation; installed `hyph_*.dic` pattern files and Hunspell dictionaries; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -82,7 +82,7 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Overset rule (baseline fits) and frame-fit parity | 5–10 |
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
 | Bundled hyphenation patterns for the top 15 InDesign languages (permissive sources; installed `hyph_*.dic` files already work) | 20–35 |
-| Spelling dictionaries beyond English (licence review per language) | 10–20 (+ owner review) |
+| Bundled spelling dictionaries beyond English (licence review per language; installed Hunspell dictionaries already work) | 10–20 (+ owner review) |
 | Tabs panel, list conversion commands | 8–15 |
 | **Total** | **120–200** |
 
@@ -93,4 +93,5 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
 | 2026-10-30 | minor | Serbian hyphenation in both scripts; installed `hyph_*.dic` pattern files |
+| 2026-10-30 | minor | Spelling in other languages with installed Hunspell dictionaries |
 | 2026-10-31 | minor | Serbian Latin words where `nj` or `dž` is two letters; pattern files in ISO 8859-2 and -5 |
