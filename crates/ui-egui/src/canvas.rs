@@ -37,6 +37,7 @@ use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guid
 use guides::{guide_at, guide_drag_delta, guide_measure};
 use ime::ime_canvas_pass;
 pub(crate) use ime::{CanvasIme, ime_observe};
+pub use input::drop_frame;
 pub(crate) use input::forwarded_keys;
 pub use input::{begin_frame, context_menu_open};
 use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};

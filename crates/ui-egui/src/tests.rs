@@ -870,6 +870,57 @@ fn a_file_dropped_while_a_parent_is_open_lands_on_the_parent() {
     assert!(d.spreads.iter().all(|s| s.items.is_empty()), "no document page gets it");
 }
 
+/// A document with an empty frame at 36–136 pt on its first spread, the canvas laid out, and
+/// the screen points over the frame and over an empty spot of the page.
+fn frame_drop_app() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let _ = app.view_mut();
+    let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+    let st = app.session.active().unwrap();
+    let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+    let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+    let xf = canvas::Xf::new(rect, view);
+    let inside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(80.0, 80.0)));
+    let outside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(300.0, 300.0)));
+    (app, frame, inside, outside)
+}
+
+/// #1666: a graphic dropped on an empty or graphic frame fills it instead of making a new object,
+/// and replaces the image in it when dropped again; text dropped there gets a frame of its own
+/// and leaves the image in place.
+#[test]
+fn a_graphic_dropped_on_a_frame_fills_it() {
+    let (mut app, frame, inside, outside) = frame_drop_app();
+    let path = temporary_png("dropframe");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(inside));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r.unwrap()["id"], frame, "the frame under the pointer is filled");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+    assert!(canvas::drop_frame(&app, Some(outside)).is_none(), "an empty spot on the page is no frame");
+    let path = temporary_png("dropframe-again");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "still no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else { panic!("a graphic frame") };
+    assert!(d.assets[&g.asset].name.contains("dropframe-again"), "the frame shows the new image");
+    let text = std::env::temp_dir().join(format!("designcraft-ui-{}-dropframe.txt", std::process::id()));
+    std::fs::write(&text, "Dropped words").unwrap();
+    let r = app.open_dropped_at(&text.to_string_lossy(), Some(inside));
+    let _ = std::fs::remove_file(&text);
+    r.unwrap();
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
 #[test]
 fn file_open_failures_show_an_alert() {
     let path = unreadable_file("open.designcraft");

@@ -299,8 +299,9 @@ impl DesignApp {
         }
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
+    /// new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -311,6 +312,12 @@ impl DesignApp {
                     .is_ok_and(|b| designcraft_engine::cmd::is_document(&b)));
         if document {
             return self.open_file("file.open", json!({"path": path}));
+        }
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if designcraft_textimport::is_text_file(path) { None } else { canvas::drop_frame(self, pointer) };
+        if let Some(frame) = frame {
+            return self.open_file("file.place", json!({"path": path, "frame": frame.0}));
         }
         let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
