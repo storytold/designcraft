@@ -194,6 +194,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 for (icon, mode, tip) in [
                     ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
                     ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
+                    ("fit-aware", "contentAwareFit", "Content-Aware Fit"),
                     ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
                     ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
                     ("fit-center", "centerContent", "Center Content"),

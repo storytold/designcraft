@@ -546,9 +546,15 @@ fn paint_panels(pen: &mut Pen, name: &str) -> bool {
             pen.rect(3.0, 3.0, 17.0, 17.0);
             pen.p.line_segment([pen.pt(3.0, 17.0), pen.pt(17.0, 3.0)], Stroke::new(1.6 * pen.s(), Color32::from_rgb(230, 40, 40)));
         }
-        "fit-fill" | "fit-content" | "fit-frame" | "fit-center" | "fit-prop" => {
+        "fit-fill" | "fit-content" | "fit-frame" | "fit-center" | "fit-prop" | "fit-aware" => {
             pen.rect(3.0, 5.0, 17.0, 15.0);
             match name {
+                // Content-Aware Fit: the subject, off-centre, and a sparkle.
+                "fit-aware" => {
+                    pen.fcircle(12.5, 10.5, 2.5);
+                    pen.line(&[(6.5, 7.0), (6.5, 11.0)]);
+                    pen.line(&[(4.5, 9.0), (8.5, 9.0)]);
+                }
                 "fit-fill" => pen.frect(5.0, 3.0, 15.0, 17.0),
                 "fit-prop" => pen.frect(7.0, 6.5, 13.0, 13.5),
                 "fit-content" => pen.frect(4.5, 6.5, 15.5, 13.5),

@@ -393,6 +393,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Fitting",
             "ui:fit.fillFrameProportionally",
             "ui:fit.contentProportionally",
+            "ui:fit.contentAware",
             "ui:fit.frameToContent",
             "ui:fit.contentToFrame",
             "ui:fit.centerContent",

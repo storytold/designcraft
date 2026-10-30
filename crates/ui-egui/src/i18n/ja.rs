@@ -30,6 +30,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "カット"),
     ("Copy", "コピー"),
     ("Paste", "ペースト"),
+    ("Content-Aware Fit", "コンテンツに応じて調整"),
     ("Restart Numbering", "番号の振り直し"),
     ("Continue Numbering", "番号の継続"),
     ("Keep Options…", "段落分離禁止オプション…"),

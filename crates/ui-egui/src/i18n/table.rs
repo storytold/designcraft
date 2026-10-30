@@ -1042,6 +1042,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "按比例适合内容",
         ],
     ),
+    ("Content-Aware Fit", ["Content-Aware Fit", "Ajustement basé sur le contenu", "Ajuste según el contenido", "Content-Aware Fit", "内容识别调整"]),
     ("Fit Content to Frame", ["Fit Content to Frame", "Ajuster le contenu au bloc", "Fit Content to Frame", "Fit Content to Frame", "内容适合框架"]),
     ("Fitting:", ["Fitting:", "Ajustement :", "Fitting:", "Fitting:", "适合："]),
     (

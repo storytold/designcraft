@@ -625,7 +625,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ids?} — locked objects and objects on locked layers are left as they are",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|contentAwareFit (fills proportionally, showing the part of a raster image that stands out most)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ids?} — locked objects and objects on locked layers are left as they are",
             has_selection,
             fit
         ),
@@ -2958,6 +2958,22 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
         "both" => (true, true),
         other => return Err(bad("object.fit", format!("unknown axis `{other}`"))),
     };
+    // Content-Aware Fit reads the images first (a raster's saliency map per asset).
+    let mut aware = std::collections::HashMap::new();
+    if mode == "contentAwareFit" {
+        let d = &s.doc()?.doc;
+        let mut maps = HashMap::new();
+        for id in &ids {
+            let Some(it) = d.item(*id) else { continue };
+            let Content::Graphic(g) = &it.content else { continue };
+            let map = maps
+                .entry(g.asset)
+                .or_insert_with(|| d.assets.get(&g.asset).filter(|a| a.is_raster()).and_then(|a| super::content_fit::saliency(&a.data)));
+            if let Some(xf) = super::content_fit::content_aware(g, it.inner_bounds(), map.as_ref()) {
+                aware.insert(*id, xf);
+            }
+        }
+    }
     // Text frames: Fit Frame to Content fits the frame to its composed text.
     let mut text_fits = Vec::new();
     if mode == "fitFrameToContent" {
@@ -2987,6 +3003,12 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
                     if width { cur.x1 } else { r.x1 },
                     if height { cur.y1 } else { r.y1 },
                 ));
+                continue;
+            }
+            if mode == "contentAwareFit" {
+                if let Some(xf) = aware.get(id) {
+                    g.xf = *xf;
+                }
                 continue;
             }
             let m = fitting_mode(&mode)

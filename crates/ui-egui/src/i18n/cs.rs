@@ -32,6 +32,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Vyjmout"),
     ("Copy", "Kopírovat"),
     ("Paste", "Vložit"),
+    ("Content-Aware Fit", "Přizpůsobit podle obsahu"),
     ("Restart Numbering", "Začít číslování znovu"),
     ("Continue Numbering", "Pokračovat v číslování"),
     ("Keep Options…", "Volby zachování…"),

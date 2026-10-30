@@ -10,6 +10,7 @@ pub(crate) mod changes;
 mod color_theme;
 mod colorsettings;
 mod conditions;
+mod content_fit;
 mod datamerge;
 mod edit;
 mod editorial;

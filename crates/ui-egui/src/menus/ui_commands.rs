@@ -341,6 +341,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     // Object › Fitting with InDesign's shortcuts (one `object.fit` mode each).
     ("fit.fillFrameProportionally", "Fill Frame Proportionally", Some("Cmd+Alt+Shift+C"), "{} — object.fit {mode: fillProportionally}"),
     ("fit.contentProportionally", "Fit Content Proportionally", Some("Cmd+Alt+Shift+E"), "{} — object.fit {mode: fitProportionally}"),
+    ("fit.contentAware", "Content-Aware Fit", Some("Cmd+Alt+X"), "{} — object.fit {mode: contentAwareFit}"),
     ("fit.frameToContent", "Fit Frame to Content", Some("Cmd+Alt+C"), "{} — object.fit {mode: fitFrameToContent}"),
     ("fit.contentToFrame", "Fit Content to Frame", Some("Cmd+Alt+E"), "{} — object.fit {mode: fitContentToFrame}"),
     ("fit.centerContent", "Center Content", Some("Cmd+Shift+E"), "{} — object.fit {mode: centerContent}"),

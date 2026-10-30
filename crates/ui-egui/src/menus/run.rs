@@ -787,10 +787,16 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             toggle_tabs_panel(app);
             Ok(Value::Null)
         }
-        "fit.fillFrameProportionally" | "fit.contentProportionally" | "fit.frameToContent" | "fit.contentToFrame" | "fit.centerContent" => {
+        "fit.fillFrameProportionally"
+        | "fit.contentProportionally"
+        | "fit.contentAware"
+        | "fit.frameToContent"
+        | "fit.contentToFrame"
+        | "fit.centerContent" => {
             let mode = match id {
                 "fit.fillFrameProportionally" => "fillProportionally",
                 "fit.contentProportionally" => "fitProportionally",
+                "fit.contentAware" => "contentAwareFit",
                 "fit.frameToContent" => "fitFrameToContent",
                 "fit.contentToFrame" => "fitContentToFrame",
                 _ => "centerContent",

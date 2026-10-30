@@ -697,6 +697,7 @@ fn fitting_has_indesigns_shortcuts() {
     for (id, keys) in [
         ("fit.fillFrameProportionally", "Cmd+Alt+Shift+C"),
         ("fit.contentProportionally", "Cmd+Alt+Shift+E"),
+        ("fit.contentAware", "Cmd+Alt+X"),
         ("fit.frameToContent", "Cmd+Alt+C"),
         ("fit.contentToFrame", "Cmd+Alt+E"),
         ("fit.centerContent", "Cmd+Shift+E"),
