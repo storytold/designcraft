@@ -638,6 +638,11 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(crop) = &image.crop {
             place["pdfCrop"] = json!(crop);
         }
+        // An unknown fit fails before anything is placed, so `failed` means not placed.
+        if let Some(mode) = image.fit.as_deref().filter(|m| !super::object::fit_mode_known(m)) {
+            failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, format!("unknown fit `{mode}`")).to_string()}));
+            continue;
+        }
         let done = s.execute("file.place", &place).and_then(|_| match &image.fit {
             Some(mode) => s.execute("object.fit", &json!({"mode": mode, "ids": [frame.0]})),
             None => Ok(Value::Null),
@@ -869,6 +874,9 @@ mod tests {
         let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
         assert_eq!(r["placed"], 2, "{r}");
         assert_eq!(r["failed"][0]["tag"], "c", "{r}");
+        // An unknown fit places nothing: the frame stays empty, as the report says.
+        assert!(r["failed"][0]["error"].as_str().unwrap().contains("unknown fit `squash`"), "{r}");
+        assert!(!matches!(s.doc().unwrap().doc.item(bad).unwrap().content, Content::Graphic(_)), "not placed");
         let width = |s: &Session, id: ItemId| {
             let d = &s.doc().unwrap().doc;
             let Content::Graphic(g) = &d.item(id).unwrap().content else { panic!("graphic") };

@@ -2901,6 +2901,11 @@ fn fitting_mode(s: &str) -> Option<designcraft_doc::Fitting> {
     })
 }
 
+/// Whether `object.fit` takes `mode`: Fit Frame to Content, or a fitting other than none.
+pub(crate) fn fit_mode_known(mode: &str) -> bool {
+    mode == "fitFrameToContent" || fitting_mode(mode).is_some_and(|m| m != designcraft_doc::Fitting::None)
+}
+
 /// Frame Fitting Options: auto-fit, fitting, align from, crop amounts.
 fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.fittingOptions";
