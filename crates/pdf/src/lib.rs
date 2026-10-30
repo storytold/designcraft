@@ -32,7 +32,7 @@
 //!   craft-prepress (no transparency, only DeviceCMYK, DeviceGray, Separation and DeviceN) and
 //!   written by krilla as PDF 1.4 with the PDF/X-1a identification. `designcraft-cli validate-pdf` exposes those checks for CI.
 //!
-//! Not yet: tagged PDF, bookmarks, hyperlinks, layers as optional content.
+//! Not yet: bookmarks, hyperlinks, layers as optional content.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
@@ -42,6 +42,9 @@ pub mod inks;
 mod links;
 mod marks;
 mod text;
+
+#[cfg(test)]
+mod inline_tables_tests;
 
 mod forms;
 mod optional_content;

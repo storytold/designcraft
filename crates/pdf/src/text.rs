@@ -28,7 +28,7 @@ use krilla::surface::Surface;
 use krilla::tagging::{Artifact, ArtifactType, ContentTag, SpanTag};
 use krilla::text::{Font, GlyphId, KrillaGlyph};
 
-use crate::export::{Exporter, solid_fill, tf, to_path};
+use crate::export::{CellParagraphKey, Exporter, TableContext, solid_fill, tf, to_path};
 
 impl Exporter<'_> {
     /// A text run's paint: solid, or a gradient spanning the frame's box (`area`, text space),
@@ -224,11 +224,40 @@ impl Exporter<'_> {
     fn tagged_run(&mut self, s: &mut Surface, cs: &ComposedStory, gs: &[PlacedGlyph], baseline: f64, story: &str) {
         match self.tag_story {
             Some(sid) => {
-                let pi = self.doc.story(sid).map_or(0, |st| st.para_at(gs[0].byte.min(st.len())));
+                let has_table_context = self.table_context.is_some();
+                let text_index = self.story_text_index(sid);
+                let start = if !has_table_context {
+                    text_index.map_or(0, |index| {
+                        let pi = index.paragraph_ranges.partition_point(|range| range.start <= gs[0].byte).saturating_sub(1);
+                        let paragraph = index.paragraph_ranges.get(pi).map_or(0, |range| range.start);
+                        index
+                            .table_anchors
+                            .values()
+                            .copied()
+                            .filter(|anchor| *anchor < gs[0].byte && *anchor >= paragraph)
+                            .map(|anchor| anchor.saturating_add('\u{e009}'.len_utf8()))
+                            .max()
+                            .unwrap_or(paragraph)
+                    })
+                } else {
+                    0
+                };
                 let id = s.start_tagged(ContentTag::Span(SpanTag::empty()));
                 self.run(s, cs, gs, baseline, story);
                 s.end_tagged();
-                self.para_tags.entry((sid, pi)).or_default().push(id);
+                if let Some(context) = self.table_context {
+                    let paragraph = self
+                        .doc
+                        .story(sid)
+                        .and_then(|st| st.tables.get(&context.table))
+                        .and_then(|table| table.cell(context.row, context.col))
+                        .map_or(0, |cell| cell.text.para_at(gs[0].byte));
+                    let key =
+                        CellParagraphKey { story: sid, table: context.table, anchor: context.anchor, row: context.row, col: context.col, paragraph };
+                    self.cell_para_tags.entry(key).or_default().push(id);
+                } else {
+                    self.para_tags.entry((sid, start)).or_default().push(id);
+                }
             }
             None => self.run(s, cs, gs, baseline, story),
         }
@@ -283,10 +312,10 @@ impl Exporter<'_> {
                     }
                 }
             }
-            if !ft.tables.is_empty() {
-                me.tables(s, ft);
-            }
         });
+        if !ft.tables.is_empty() {
+            self.tables(s, ft);
+        }
         // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
         // into the next line doesn't hide that line. Objects keep their page-space transforms.
         let drawn = match objects {
@@ -334,17 +363,28 @@ impl Exporter<'_> {
     /// One table cell's graphic, or its text composed in the cell's own area.
     fn table_cell(&mut self, s: &mut Surface, c: &designcraft_compose::PlacedCell) {
         if let Some(g) = &c.graphic {
-            if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
-                s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
-                s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
-                self.graphic(s, g, None);
-                s.pop();
-                s.pop();
-            }
+            self.as_artifact(s, |me, s| {
+                if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
+                    s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
+                    s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
+                    me.graphic(s, g, None);
+                    s.pop();
+                    s.pop();
+                }
+            });
         } else if let Some(cft) = c.text.frames.first() {
             s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-            self.frame_text(s, &c.text, cft, &c.source, None);
+            let prior = self.table_context;
+            self.table_context = prior.map(|context| TableContext { row: c.row, col: c.col, ..context });
+            if c.repeated {
+                self.as_artifact(s, |me, s| {
+                    me.frame_text(s, &c.text, cft, &c.source, None);
+                });
+            } else {
+                self.frame_text(s, &c.text, cft, &c.source, None);
+            }
+            self.table_context = prior;
             self.text_area = area;
             s.pop();
         }
@@ -353,83 +393,99 @@ impl Exporter<'_> {
     /// Table fragments: cell fills, cell text (real text), edges and the border.
     fn tables(&mut self, s: &mut Surface, ft: &FrameText) {
         for t in &ft.tables {
-            for c in &t.cells {
-                if let Some((sw, tint)) = &c.fill {
-                    let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
-                    if let Some(paint) = self.fill_paint(&fill, t.rect)
-                        && let Some(path) = to_path(&c.rect.to_path(0.1))
-                    {
-                        s.set_stroke(None);
-                        s.set_fill(Some(paint_fill(paint)));
-                        s.draw_path(&path);
-                        s.set_fill(None);
+            let anchor_story = self.tag_story;
+            let previous = self.table_context;
+            if anchor_story.is_some() {
+                self.table_context = Some(TableContext { table: t.table, anchor: t.anchor, row: 0, col: 0 });
+            }
+            self.as_artifact(s, |me, s| {
+                for c in &t.cells {
+                    if let Some((sw, tint)) = &c.fill {
+                        let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
+                        if let Some(paint) = me.fill_paint(&fill, t.rect)
+                            && let Some(path) = to_path(&c.rect.to_path(0.1))
+                        {
+                            s.set_stroke(None);
+                            s.set_fill(Some(paint_fill(paint)));
+                            s.draw_path(&path);
+                            s.set_fill(None);
+                        }
                     }
                 }
-            }
+            });
             for c in &t.cells {
+                if anchor_story.is_some() {
+                    self.table_context = Some(TableContext { table: t.table, anchor: t.anchor, row: c.row, col: c.col });
+                }
                 self.table_cell(s, c);
             }
-            for seg in &t.strokes {
-                let st = &seg.stroke;
-                let Some(col) = self.swatch_color(&st.color, st.tint) else { continue };
-                let kind = self.doc.stroke_kind(&st.kind);
-                let mut bp = BezPath::new();
-                bp.move_to(seg.a);
-                bp.line_to(seg.b);
-                let Some(p) = to_path(&bp) else { continue };
-                // Butt-ended fills close the table's corners the way square caps do.
-                let (ca, cb) = t.corner_capped(seg);
-                let mut capped = BezPath::new();
-                capped.move_to(ca);
-                capped.line_to(cb);
-                let Some(cp) = to_path(&capped) else { continue };
-                // Gap colour under dashes, dots and stripes: the whole edge, solid.
-                if !matches!(kind, designcraft_doc::StrokeType::Solid)
-                    && st.gap_color != designcraft_color::swatch::NONE
-                    && let Some(gap) = self.swatch_color(&st.gap_color, st.gap_tint)
-                {
-                    s.set_fill(None);
-                    s.set_stroke(Some(Stroke {
-                        paint: gap.into(),
-                        width: st.weight as f32,
-                        line_cap: krilla::paint::LineCap::Butt,
-                        ..Default::default()
-                    }));
-                    s.draw_path(&cp);
-                    s.set_stroke(None);
-                }
-                // Stripes, wavy and hash types are fills along the edge.
-                if let Some(o) = kind.outline(&capped, st.weight, 0.05)
-                    && let Some(op) = to_path(&o)
-                {
-                    s.set_stroke(None);
-                    s.set_fill(Some(solid_fill(col, 1.0)));
-                    s.draw_path(&op);
-                    s.set_fill(None);
-                    continue;
-                }
-                let (cap, dash) = match &kind {
-                    designcraft_doc::StrokeType::Dashed { pattern }
-                        if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
+            self.table_context = previous;
+            self.as_artifact(s, |me, s| {
+                for seg in &t.strokes {
+                    let st = &seg.stroke;
+                    let Some(col) = me.swatch_color(&st.color, st.tint) else { continue };
+                    let kind = me.doc.stroke_kind(&st.kind);
+                    let mut bp = BezPath::new();
+                    bp.move_to(seg.a);
+                    bp.line_to(seg.b);
+                    let Some(p) = to_path(&bp) else { continue };
+                    // Butt-ended fills close the table's corners the way square caps do.
+                    let (ca, cb) = t.corner_capped(seg);
+                    let mut capped = BezPath::new();
+                    capped.move_to(ca);
+                    capped.line_to(cb);
+                    let Some(cp) = to_path(&capped) else { continue };
+                    // Gap colour under dashes, dots and stripes: the whole edge, solid.
+                    if !matches!(kind, designcraft_doc::StrokeType::Solid)
+                        && st.gap_color != designcraft_color::swatch::NONE
+                        && let Some(gap) = me.swatch_color(&st.gap_color, st.gap_tint)
                     {
-                        let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
-                        if pat.len() % 2 == 1 {
-                            pat.extend(pat.clone());
+                        s.set_fill(None);
+                        s.set_stroke(Some(Stroke {
+                            paint: gap.into(),
+                            width: st.weight as f32,
+                            line_cap: krilla::paint::LineCap::Butt,
+                            ..Default::default()
+                        }));
+                        s.draw_path(&cp);
+                        s.set_stroke(None);
+                    }
+                    // Stripes, wavy and hash types are fills along the edge.
+                    if let Some(o) = kind.outline(&capped, st.weight, 0.05)
+                        && let Some(op) = to_path(&o)
+                    {
+                        s.set_stroke(None);
+                        s.set_fill(Some(solid_fill(col, 1.0)));
+                        s.draw_path(&op);
+                        s.set_fill(None);
+                        continue;
+                    }
+                    let (cap, dash) = match &kind {
+                        designcraft_doc::StrokeType::Dashed { pattern }
+                            if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
+                        {
+                            let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
+                            if pat.len() % 2 == 1 {
+                                pat.extend(pat.clone());
+                            }
+                            (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
                         }
-                        (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
-                    }
-                    designcraft_doc::StrokeType::Dotted
-                        if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
-                    {
-                        (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
-                    }
-                    _ => (krilla::paint::LineCap::Square, None),
-                };
-                s.set_fill(None);
-                s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
-                s.draw_path(&p);
-                s.set_stroke(None);
-            }
+                        designcraft_doc::StrokeType::Dotted
+                            if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
+                        {
+                            (
+                                krilla::paint::LineCap::Round,
+                                Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }),
+                            )
+                        }
+                        _ => (krilla::paint::LineCap::Square, None),
+                    };
+                    s.set_fill(None);
+                    s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
+                    s.draw_path(&p);
+                    s.set_stroke(None);
+                }
+            });
         }
     }
 
