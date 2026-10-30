@@ -37,8 +37,21 @@ fn tagged(d: &Document) -> Vec<ItemId> {
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
+/// Escapes markup characters and drops characters XML 1.0 cannot hold.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            c if (c as u32) < 0x20 || c == '\u{FFFE}' || c == '\u{FFFF}' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Plain text of a story (markers dropped, forced breaks as newlines).
@@ -268,6 +281,11 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let style = str_param(p, "style").unwrap_or("").to_string();
                 let tag = str_param(p, "tag").map(str::to_string);
+                if let Some(t) = &tag
+                    && !valid_name(t)
+                {
+                    return Err(bad("xml.mapStyle", format!("`{t}` isn't a valid XML name")));
+                }
                 if s.doc()?.doc.styles.para(&style).is_none() {
                     return Err(bad("xml.mapStyle", format!("no paragraph style `{style}`")));
                 }
@@ -473,6 +491,31 @@ mod tests {
         assert!(s.execute("xml.loadDtd", &json!({"text": "<!ELEMENT a (b,|c)>"})).is_err());
         s.execute("xml.deleteDtd", &json!({})).unwrap();
         assert!(s.execute("xml.validate", &json!({})).is_err());
+    }
+
+    #[test]
+    fn export_xml_drops_forbidden_control_chars() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "A\u{1}B\u{8}C\u{FFFE}\u{FFFF}", "caret": false}))
+            .unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<story>ABC</story>"), "{x:?}");
+    }
+
+    #[test]
+    fn map_style_rejects_invalid_tag_name() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        assert!(s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "a b><x"})).is_err());
+        let d = &s.doc().unwrap().doc;
+        assert!(d.xml.style_map.is_empty());
+        assert!(d.xml.tags.iter().all(|t| t.name != "a b><x"));
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.xml.style_map.len(), 1);
     }
 
     #[test]

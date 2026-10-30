@@ -1097,6 +1097,16 @@ mod text_link_tests {
     }
 
     #[test]
+    fn placed_plain_text_drops_story_markers() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let b64 = crate::cmd::base64_encode("a\u{E009}b\u{E000}c\u{E002}d".as_bytes());
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "n.txt", "rect": [72, 72, 300, 200]})).unwrap();
+        let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(st.text, "abcd");
+    }
+
+    #[test]
     fn create_links_when_placing_text_files_preference() {
         let dir = std::env::temp_dir().join(format!("dc-text-link-pref-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

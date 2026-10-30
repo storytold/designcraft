@@ -96,7 +96,9 @@ pub fn value_name(c: Color) -> String {
         Color::Cmyk { c, m, y, k } => cmyk_name(c, m, y, k),
         other => {
             let [r, g, b] = other.to_rgb();
-            format!("R={} G={} B={}", (r * 255.0).round(), (g * 255.0).round(), (b * 255.0).round())
+            // `+ 0.0` turns -0.0 into 0.0 so it prints as "0", not "-0".
+            let p = |v: f32| (v * 255.0).round() + 0.0;
+            format!("R={} G={} B={}", p(r), p(g), p(b))
         }
     }
 }
@@ -171,6 +173,11 @@ pub fn default_swatches() -> Vec<Swatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn value_name_has_no_negative_zero() {
+        assert_eq!(value_name(Color::rgb(-0.001, 0.5, 1.0)), "R=0 G=128 B=255");
+    }
 
     #[test]
     fn defaults_start_with_specials() {

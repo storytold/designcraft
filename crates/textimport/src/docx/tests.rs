@@ -89,6 +89,124 @@ fn a_measure_or_size_a_file_cannot_mean_is_bounded() {
     assert_eq!(size, None, "a size the engine cannot mean is dropped, so the style's size stands");
 }
 
+/// A footnote reference clones its note and walks it again, so one large footnote referenced
+/// many times multiplied: the audit's case is a 1 MB note referenced 100k times, around
+/// 100 GB, which aborts rather than fails (#1584). The text is kept at the first reference;
+/// later ones get the mark and an empty note, and the report says so.
+#[test]
+fn a_footnote_referenced_many_times_is_imported_once() {
+    let note_text = "x".repeat(2_000);
+    let footnotes = format!(r#"<w:footnotes {W}><w:footnote w:id="2"><w:p><w:r><w:t>{note_text}</w:t></w:r></w:p></w:footnote></w:footnotes>"#);
+    // One note, referenced 50 times.
+    let refs = r#"<w:r><w:footnoteReference w:id="2"/></w:r>"#.repeat(50);
+    let doc = format!(r#"<w:document {W}><w:body><w:p>{refs}</w:p></w:body></w:document>"#);
+    let i = import(&docx(&doc, "", &footnotes)).unwrap();
+
+    // Every reference is still in the text: the marks are the document's content.
+    assert_eq!(i.story.notes.len(), 50, "all 50 references are kept");
+    let with_text = i.story.notes.iter().filter(|n| !n.text.text.is_empty()).count();
+    assert_eq!(with_text, 1, "only the first reference carries the note's text");
+    let total: usize = i.story.notes.iter().map(|n| n.text.text.len()).sum();
+    assert!(total <= note_text.len() + 64, "the note text is stored once, not 50 times: {total} bytes");
+    assert!(i.warnings.iter().any(|w| w.contains("referenced more than once")), "the report says what it did: {:?}", i.warnings);
+
+    // A document whose notes each have their own id is unaffected.
+    let many = (2..6).map(|id| format!(r#"<w:footnote w:id="{id}"><w:p><w:r><w:t>note {id}</w:t></w:r></w:p></w:footnote>"#)).collect::<String>();
+    let footnotes = format!(r#"<w:footnotes {W}>{many}</w:footnotes>"#);
+    let refs = (2..6).map(|id| format!(r#"<w:r><w:footnoteReference w:id="{id}"/></w:r>"#)).collect::<String>();
+    let doc = format!(r#"<w:document {W}><w:body><w:p>{refs}</w:p></w:body></w:document>"#);
+    let i = import(&docx(&doc, "", &footnotes)).unwrap();
+    assert_eq!(i.story.notes.len(), 4);
+    assert!(i.story.notes.iter().all(|n| n.text.text.contains("note")), "each distinct note keeps its text");
+    assert!(!i.warnings.iter().any(|w| w.contains("referenced more than once")), "{:?}", i.warnings);
+}
+
+/// A footnote's table keeps its cell text in stories of its own, so the budget counted a
+/// table of any size as the couple of bytes of its anchor and the cap did not hold (noted in
+/// review of #1584). Eighteen notes of ~600 KB of cell text each are 10.8 MB of table text
+/// against an 8 MB budget.
+#[test]
+fn a_footnote_table_counts_toward_the_note_budget() {
+    let big = "x".repeat(600_000);
+    let cell = format!(r#"<w:tbl><w:tr><w:tc><w:p><w:r><w:t>{big}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#);
+    let notes: String = (2..20).map(|id| format!(r#"<w:footnote w:id="{id}">{cell}</w:footnote>"#)).collect();
+    let footnotes = format!(r#"<w:footnotes {W}>{notes}</w:footnotes>"#);
+    let refs: String = (2..20).map(|id| format!(r#"<w:r><w:footnoteReference w:id="{id}"/></w:r>"#)).collect();
+    let doc = format!(r#"<w:document {W}><w:body><w:p>{refs}</w:p></w:body></w:document>"#);
+    let i = import(&docx(&doc, "", &footnotes)).unwrap();
+
+    // Every reference is still a mark in the text.
+    assert_eq!(i.story.notes.len(), 18, "all 18 references are kept");
+    // What was retained is the budget plus at most the one note that was already being built
+    // when it ran out -- not all 10.8 MB.
+    let held: usize = i.story.notes.iter().map(|n| note_bytes(&n.text, MAX_NOTE_DEPTH)).sum();
+    assert!(held <= (8 << 20) + big.len() + 1024, "the cell text is inside the budget: {held} bytes");
+    assert!(held > big.len(), "and the notes that fit were imported in full: {held} bytes");
+    assert!(i.warnings.iter().any(|w| w.contains("longer than 8 MB")), "the budget warning is reported: {:?}", i.warnings);
+}
+
+/// The report is one line per distinct footnote id, and the file chooses how many ids it
+/// has: 400 ids referenced twice each meant 400 warnings, every one of them pushed after a
+/// `Vec::contains` scan of all the earlier ones (noted in review of #1584). Both the report
+/// and the set behind it stop at the cap.
+#[test]
+fn the_report_does_not_grow_with_the_document() {
+    let ids = 2..402;
+    // Small notes, so the byte budget is not what stops this -- the ids are.
+    let notes: String = ids.clone().map(|id| format!(r#"<w:footnote w:id="{id}"><w:p><w:r><w:t>note {id}</w:t></w:r></w:p></w:footnote>"#)).collect();
+    let footnotes = format!(r#"<w:footnotes {W}>{notes}</w:footnotes>"#);
+    let refs: String = ids
+        .clone()
+        .flat_map(|id| {
+            let one = format!(r#"<w:r><w:footnoteReference w:id="{id}"/></w:r>"#);
+            [one.clone(), one]
+        })
+        .collect();
+    let doc = format!(r#"<w:document {W}><w:body><w:p>{refs}</w:p></w:body></w:document>"#);
+    let i = import(&docx(&doc, "", &footnotes)).unwrap();
+
+    // The document is imported in full: every reference is a mark in the text.
+    assert_eq!(i.story.notes.len(), 800, "all 800 references are kept");
+    let duplicates = i.warnings.iter().filter(|w| w.contains("referenced more than once")).count();
+    assert!(duplicates >= 1, "the repeats are reported: {:?}", i.warnings);
+    assert!(i.warnings.len() <= MAX_WARNINGS + 1, "400 duplicated ids do not make 400 warnings: {} warnings", i.warnings.len());
+    // And the last line says the list was cut, rather than ending without explanation.
+    assert!(i.warnings.iter().any(|w| w.contains("the rest are not listed")), "{:?}", i.warnings);
+}
+
+/// When the budget runs out before a note's *first* reference, that reference gets an empty
+/// note -- and must not be recorded as the one that kept the text, or a later reference to the
+/// same id would be told the text is at a reference that has none (noted in review of #1584).
+#[test]
+fn a_note_whose_first_reference_is_past_the_budget_is_not_recorded_as_kept() {
+    // Notes totalling more than the 8 MB budget, so the later ids are never built.
+    let big = "x".repeat(600_000);
+    let notes: String = (2..20).map(|id| format!(r#"<w:footnote w:id="{id}"><w:p><w:r><w:t>{big}</w:t></w:r></w:p></w:footnote>"#)).collect();
+    let footnotes = format!(r#"<w:footnotes {W}>{notes}</w:footnotes>"#);
+    // Each id referenced twice, in order.
+    let refs: String = (2..20)
+        .flat_map(|id| {
+            let one = format!(r#"<w:r><w:footnoteReference w:id="{id}"/></w:r>"#);
+            [one.clone(), one]
+        })
+        .collect();
+    let doc = format!(r#"<w:document {W}><w:body><w:p>{refs}</w:p></w:body></w:document>"#);
+    let i = import(&docx(&doc, "", &footnotes)).unwrap();
+
+    // Every reference is kept, and the budget is respected.
+    assert_eq!(i.story.notes.len(), 36, "all 36 references are in the text");
+    let total: usize = i.story.notes.iter().map(|n| n.text.text.len()).sum();
+    assert!(total <= (8 << 20) + big.len(), "the note text stays inside the budget: {total} bytes");
+
+    // The "referenced more than once" warning is only about ids whose text was actually kept.
+    // A note that was never built cannot have kept its text at a first reference.
+    let kept: std::collections::HashSet<&str> = i.story.notes.iter().filter(|n| !n.text.text.is_empty()).map(|n| n.text.text.as_str()).collect();
+    if i.warnings.iter().any(|w| w.contains("referenced more than once")) {
+        assert!(!kept.is_empty(), "that warning implies some text was kept: {:?}", i.warnings);
+    }
+    assert!(i.warnings.iter().any(|w| w.contains("longer than 8 MB")), "the budget warning is the one this document earns: {:?}", i.warnings);
+}
+
 #[test]
 fn imports_styles_runs_footnotes_and_tables() {
     let styles = format!(
