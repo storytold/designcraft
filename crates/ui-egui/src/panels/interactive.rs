@@ -279,9 +279,45 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("app.exportXml", json!({}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Import XML…"))).clicked() {
-            ask_then_run(app, "xml", "Import XML", |path| ("file.importXml", json!({"path": path})));
+            import_xml(app);
         }
     });
+}
+
+/// File ▸ Import XML… and the Tags panel's button: asks for the XML file, imports it and says in
+/// the status line what was placed and what wasn't.
+pub fn import_xml(app: &mut DesignApp) {
+    let asked = app.ask_open("xml", Bound::Document, |app, path| {
+        match app.run("file.importXml", json!({"path": path})) {
+            Ok(r) => {
+                let report = import_report(&app.ui.language, &r);
+                app.status(report);
+            }
+            Err(e) => app.status_error("Import XML", e),
+        }
+        Ok(Value::Null)
+    });
+    if let Err(e) = asked {
+        app.status_error("Import XML", e);
+    }
+}
+
+/// The status line for `file.importXml`'s result: how many elements were placed, which tags found
+/// no frame, and the first image that couldn't be placed.
+pub(crate) fn import_report(lang: &str, r: &Value) -> String {
+    let tr = |s| crate::i18n::tr(lang, s);
+    let n = |key: &str| r[key].as_u64().unwrap_or(0).to_string();
+    let mut parts = vec![tr("{n} placed").replace("{n}", &n("placed"))];
+    let tags: Vec<&str> = r["unmatchedTags"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if r["unmatched"].as_u64().unwrap_or(0) > 0 {
+        parts.push(tr("{n} without a free tagged frame ({tags})").replace("{n}", &n("unmatched")).replace("{tags}", &tags.join(", ")));
+    }
+    let failed = r["failed"].as_array().map_or(&[][..], Vec::as_slice);
+    if let Some(first) = failed.first() {
+        let what = format!("{}: {}", first["tag"].as_str().unwrap_or(""), first["error"].as_str().unwrap_or(""));
+        parts.push(tr("{n} images not placed ({first})").replace("{n}", &failed.len().to_string()).replace("{first}", &what));
+    }
+    format!("{}: {}", tr("Import XML"), parts.join(", "))
 }
 
 /// Asks for a file for `purpose`, then runs the command `command(path)` names; a failure shows
@@ -785,6 +821,54 @@ pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("changes.rejectAll", json!({}));
         }
     });
+}
+
+#[cfg(test)]
+mod import_xml_tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::app::file_dialogs::testing::answer_with;
+
+    #[test]
+    fn the_report_names_unmatched_tags_and_the_first_failed_image() {
+        let ok = json!({"placed": 18, "unmatched": 0, "unmatchedTags": [], "failed": []});
+        assert_eq!(import_report("", &ok), "Import XML: 18 placed");
+        let bad = json!({
+            "placed": 15, "unmatched": 3, "unmatchedTags": ["pictogram_1", "pictogram_2"],
+            "failed": [{"tag": "logo", "href": "x.eps", "error": "can't read x.eps"}]
+        });
+        assert_eq!(
+            import_report("", &bad),
+            "Import XML: 15 placed, 3 without a free tagged frame (pictogram_1, pictogram_2), 1 images not placed (logo: can't read x.eps)"
+        );
+        assert!(import_report("de", &bad).starts_with("XML importieren: 15 platziert, 3 ohne freien Rahmen"), "{}", import_report("de", &bad));
+    }
+
+    /// File › Import XML… asks for the file with a picker (not a field to type the path into)
+    /// and reports what the import did in the status line.
+    #[test]
+    fn the_menu_asks_for_the_file_and_reports_in_the_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = dir.path().join("content.xml");
+        std::fs::write(&xml, "<Root><headline>New</headline><photo href=\"missing.png\"/><extra>x</extra></Root>").unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.answer_dialogs(answer_with(Some(xml.to_string_lossy().to_string())));
+        app.run("file.new", json!({})).unwrap();
+        let head = app.run("frame.create", json!({"rect": [72, 72, 400, 120], "content": "text", "text": "Old", "caret": false})).unwrap();
+        let photo = app.run("frame.create", json!({"rect": [72, 200, 300, 400], "content": "graphic"})).unwrap();
+        app.run("xml.tag", json!({"tag": "headline", "ids": [head["id"]]})).unwrap();
+        app.run("xml.tag", json!({"tag": "photo", "ids": [photo["id"]]})).unwrap();
+
+        crate::menus::activate(&mut app, "file.importXml", &Value::Null);
+        assert!(app.ui.dialog.is_none(), "no typed-path dialog");
+        assert_eq!(app.file_dialogs.queued(), 1, "a file picker is asked for");
+        app.settle_dialogs();
+        let status = app.ui.status.clone();
+        assert!(status.starts_with("Import XML: 1 placed, 1 without a free tagged frame (extra), 1 images not placed (photo: "), "{status}");
+        let story = app.run("story.get", json!({"story": head["story"]})).unwrap();
+        assert_eq!(story["text"], "New");
+    }
 }
 
 #[cfg(test)]
