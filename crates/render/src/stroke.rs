@@ -33,14 +33,13 @@ impl Renderer {
             .with_miter_limit(st.miter_limit);
         let kind = f.doc.stroke_kind(&st.kind);
         let length = designcraft_doc::path_length_bound(bp);
-        match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
-                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+        if let Some((pattern, dots)) = kind.dashes(st.weight)
+            && StrokeType::expandable_dashes(&pattern, length)
+        {
+            stroke = stroke.with_dashes(0.0, pattern);
+            if dots {
+                stroke = stroke.with_caps(kurbo::Cap::Round);
             }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
-            }
-            _ => {}
         }
         ctx.set_transform(f.view * xf);
         if !set_fill_paint(ctx, f.doc, &paint, bounds) {
@@ -52,8 +51,15 @@ impl Renderer {
         let bp = arrows.as_ref().map_or(bp, |a| &a.0);
         // Gap colour under dashes and dots: the whole path, undashed.
         let gap = if matches!(kind, StrokeType::Solid) { None } else { f.doc.resolve_color(&st.gap_swatch, st.gap_tint) };
+        // Round dots aligned inside or outside run along the path moved half the weight that way
+        // (they stay whole), and so does their gap colour.
+        let dots = kind.draws_dots(st.weight, length);
+        let moved = (closed && dots && st.align != StrokeAlign::Center).then(|| {
+            let d = st.weight / 2.0 * if st.align == StrokeAlign::Outside { 1.0 } else { -1.0 };
+            designcraft_geom::stroke_style::offset_outward(bp, d, 0.05 * f.px)
+        });
         if let Some(g) = gap
-            && !matches!(st.align, StrokeAlign::Inside | StrokeAlign::Outside if closed)
+            && (moved.is_some() || !matches!(st.align, StrokeAlign::Inside | StrokeAlign::Outside if closed))
         {
             let op = overprints(f, &st.gap_swatch, st.gap_tint, st.gap_overprint);
             if op {
@@ -68,7 +74,7 @@ impl Renderer {
                 end_cap: kurbo::Cap::Butt,
                 ..stroke.clone()
             });
-            ctx.stroke_path(bp);
+            ctx.stroke_path(moved.as_ref().unwrap_or(bp));
             if op {
                 ctx.pop_layer();
             }
@@ -89,6 +95,11 @@ impl Renderer {
             return;
         }
         match st.align {
+            // Round dots aligned inside or outside stay whole, as InDesign draws them.
+            _ if moved.is_some() => {
+                ctx.set_stroke(stroke);
+                ctx.stroke_path(moved.as_ref().unwrap_or(bp));
+            }
             StrokeAlign::Inside if closed => {
                 // Clip a double-width stroke to the path.
                 ctx.push_clip_layer(bp);

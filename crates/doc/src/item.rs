@@ -385,6 +385,43 @@ mod tests {
     use super::*;
     use designcraft_geom::shapes;
 
+    /// Dots are dots only where their pattern expands: on a path too long for it the stroke is solid.
+    #[test]
+    fn dots_draw_only_where_their_pattern_expands() {
+        assert!(StrokeType::Dotted.draws_dots(1.0, 500.0));
+        assert!(!StrokeType::Dotted.draws_dots(1.0, 1e9), "solid fallback");
+        assert!(!StrokeType::Dashed3x2.draws_dots(1.0, 500.0), "dashes aren't dots");
+        assert!(!StrokeType::Solid.draws_dots(1.0, 500.0));
+    }
+
+    /// The Type menu's built-in types: each once, each a type of its own with a label, and the
+    /// dashed and dotted ones with their patterns.
+    #[test]
+    fn built_in_stroke_types_parse_and_dash_as_indesigns() {
+        let mut seen = std::collections::HashSet::new();
+        for k in StrokeType::BUILT_IN {
+            assert!(seen.insert(k), "{k} twice");
+            let t: StrokeType = serde_json::from_value(serde_json::json!({"kind": k, "pattern": []}))
+                .or_else(|_| serde_json::from_value(serde_json::json!({"kind": k})))
+                .unwrap_or_else(|e| panic!("{k}: {e}"));
+            assert_eq!(serde_json::to_value(&t).unwrap()["kind"], k);
+            assert!(!t.label().is_empty());
+        }
+        assert_eq!(StrokeType::Dashed3x2.dashes(2.0), Some((vec![6.0, 4.0], false)));
+        assert_eq!(StrokeType::Dashed4x4.dashes(2.0), Some((vec![8.0, 8.0], false)));
+        let period = |t: StrokeType| t.dashes(2.0).map(|(p, dots)| (p.iter().sum::<f64>(), dots));
+        assert_eq!(period(StrokeType::Dotted), Some((6.0, true)));
+        assert_eq!(period(StrokeType::JapaneseDots), Some((4.0, true)));
+        assert_eq!(StrokeType::Triple.bands().map(|b| b.len()), Some(3));
+        let line = designcraft_geom::BezPath::from_vec(vec![
+            designcraft_geom::PathEl::MoveTo((0.0, 0.0).into()),
+            designcraft_geom::PathEl::LineTo((100.0, 0.0).into()),
+        ]);
+        for t in [StrokeType::LeftSlantHash, StrokeType::RightSlantHash, StrokeType::WhiteDiamond, StrokeType::Triple] {
+            assert!(t.outline(&line, 8.0, 0.05).is_some(), "{t:?} draws as a fill");
+        }
+    }
+
     #[test]
     fn graphics_without_a_clipping_path_load_and_save_as_before() {
         let g = Graphic {

@@ -76,20 +76,12 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             ))
             .width(140.0)
             .show_ui(ui, |ui| {
-                let built_in = [
-                    "solid",
-                    "dashed",
-                    "dotted",
-                    "thickThin",
-                    "thinThick",
-                    "thinThin",
-                    "thickThick",
-                    "thinThickThin",
-                    "thickThinThick",
-                    "wavy",
-                    "hashed",
-                ];
-                for k in built_in {
+                // InDesign's order; plain Dashed after a separator, the document's styles after
+                // another.
+                for k in StrokeType::BUILT_IN {
+                    if k == "dashed" {
+                        ui.separator();
+                    }
                     let ty = if k == "dashed" { json!({"kind": k, "pattern": [12.0, 4.0]}) } else { json!({"kind": k}) };
                     let label = serde_json::from_value::<StrokeType>(ty.clone()).map(|k| k.label()).unwrap_or("");
                     if ui.selectable_label(shown == label, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {

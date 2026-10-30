@@ -140,6 +140,21 @@ pub enum StrokeType {
     ThickThinThick,
     Wavy,
     Hashed,
+    /// Three lines of the same width.
+    Triple,
+    /// Dashes three weights long, gaps two weights (InDesign's Dashed (3 and 2)).
+    #[serde(rename = "dashed3x2")]
+    Dashed3x2,
+    /// Dashes and gaps four weights long (Dashed (4 and 4)).
+    #[serde(rename = "dashed4x4")]
+    Dashed4x4,
+    /// Hash ticks leaning back and forward.
+    LeftSlantHash,
+    RightSlantHash,
+    /// A chain of hollow diamonds, tip to tip.
+    WhiteDiamond,
+    /// Dots closer together than Dotted's.
+    JapaneseDots,
     /// A custom striped stroke: bands (start, width) as fractions of the weight from the left edge.
     Stripes {
         bands: Vec<(f64, f64)>,
@@ -164,9 +179,55 @@ impl StrokeType {
             StrokeType::ThickThinThick => "Thick - Thin - Thick",
             StrokeType::Wavy => "Wavy",
             StrokeType::Hashed => "Straight Hash",
+            StrokeType::Triple => "Triple",
+            StrokeType::Dashed3x2 => "Dashed (3 and 2)",
+            StrokeType::Dashed4x4 => "Dashed (4 and 4)",
+            StrokeType::LeftSlantHash => "Left Slant Hash",
+            StrokeType::RightSlantHash => "Right Slant Hash",
+            StrokeType::WhiteDiamond => "White Diamond",
+            StrokeType::JapaneseDots => "Japanese Dots",
             StrokeType::Stripes { .. } => "Stripes",
             StrokeType::Style { .. } => "Custom",
         }
+    }
+
+    /// The built-in types (serialized `kind`s) in the order of InDesign's Type menu, plain Dashed
+    /// last, after its separator.
+    pub const BUILT_IN: [&'static str; 18] = [
+        "solid",
+        "thickThick",
+        "thickThin",
+        "thickThinThick",
+        "thinThick",
+        "thinThickThin",
+        "thinThin",
+        "triple",
+        "dashed3x2",
+        "dashed4x4",
+        "leftSlantHash",
+        "rightSlantHash",
+        "hashed",
+        "dotted",
+        "wavy",
+        "whiteDiamond",
+        "japaneseDots",
+        "dashed",
+    ];
+
+    /// The dash pattern of the dashed and dotted types for a stroke of `weight` (points), and
+    /// whether its dashes are round dots (very short dashes with round caps: a zero-length dash
+    /// isn't drawn by every stroker). Dotted spaces its dots three weights apart and Japanese Dots
+    /// two, as InDesign draws them.
+    pub fn dashes(&self, weight: f64) -> Option<(Vec<f64>, bool)> {
+        let dot = |spacing: f64| (vec![weight * 1e-3, weight * (spacing - 1e-3)], true);
+        Some(match self {
+            StrokeType::Dashed { pattern } => (pattern.clone(), false),
+            StrokeType::Dashed3x2 => (vec![3.0 * weight, 2.0 * weight], false),
+            StrokeType::Dashed4x4 => (vec![4.0 * weight, 4.0 * weight], false),
+            StrokeType::Dotted => dot(3.0),
+            StrokeType::JapaneseDots => dot(2.0),
+            _ => return None,
+        })
     }
 
     /// Whether `pattern` is a dash pattern commands accept: 1 to [`MAX_DASH_ENTRIES`] lengths,
@@ -191,6 +252,12 @@ impl StrokeType {
             && length / period <= MAX_DASH_PERIODS
     }
 
+    /// Whether this type draws round dots along a path at most `length` points long: a dotted
+    /// type whose pattern expands there (otherwise it draws solid, see [`Self::expandable_dashes`]).
+    pub fn draws_dots(&self, weight: f64, length: f64) -> bool {
+        self.dashes(weight).is_some_and(|(pattern, dots)| dots && Self::expandable_dashes(&pattern, length))
+    }
+
     /// The bands of a striped type (start, width as fractions of the weight).
     pub fn bands(&self) -> Option<Vec<(f64, f64)>> {
         Some(match self {
@@ -200,6 +267,7 @@ impl StrokeType {
             StrokeType::ThickThick => vec![(0.0, 0.4), (0.6, 0.4)],
             StrokeType::ThinThickThin => vec![(0.0, 0.2), (0.35, 0.3), (0.8, 0.2)],
             StrokeType::ThickThinThick => vec![(0.0, 0.35), (0.45, 0.1), (0.65, 0.35)],
+            StrokeType::Triple => vec![(0.0, 0.2), (0.4, 0.2), (0.8, 0.2)],
             StrokeType::Stripes { bands } => bands.clone(),
             _ => return None,
         })
@@ -212,6 +280,9 @@ impl StrokeType {
         match self {
             StrokeType::Wavy => Some(ss::wavy(bp, weight, tol)),
             StrokeType::Hashed => Some(ss::hashed(bp, weight, tol)),
+            StrokeType::LeftSlantHash => Some(ss::slant_hash(bp, weight, -1.0, tol)),
+            StrokeType::RightSlantHash => Some(ss::slant_hash(bp, weight, 1.0, tol)),
+            StrokeType::WhiteDiamond => Some(ss::diamonds(bp, weight, tol)),
             t => t.bands().map(|b| ss::stripes(bp, weight, &b, tol)),
         }
     }

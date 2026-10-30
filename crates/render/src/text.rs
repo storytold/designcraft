@@ -609,12 +609,9 @@ fn paint_glyphs(
 pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, length: f64) -> kurbo::Stroke {
     use designcraft_doc::StrokeType;
     let st = kurbo::Stroke::new(weight).with_caps(kurbo::Cap::Square);
-    match kind {
-        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
-            st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
-        }
-        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
-            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
+    match kind.dashes(weight) {
+        Some((pattern, dots)) if StrokeType::expandable_dashes(&pattern, length) => {
+            st.with_caps(if dots { kurbo::Cap::Round } else { kurbo::Cap::Butt }).with_dashes(0.0, pattern)
         }
         _ => st,
     }
