@@ -477,7 +477,42 @@ fn offscreen(reach: Rect, spread: f64, width: u16, height: u16) -> Option<Offscr
 
 #[cfg(test)]
 mod tests {
+    use designcraft_compose::Cache;
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::{Document, SpreadRef, StrokeAlign, StrokeType};
+
     use super::*;
+    use crate::RenderOptions;
+
+    /// A hidden style on a closed frame aligned inside still has its gap colour under it.
+    #[test]
+    fn hidden_stroke_keeps_its_gap_colour_when_aligned() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let id = designcraft_doc::ItemId(d.alloc());
+        let mut frame =
+            Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 300.0, 300.0)));
+        frame.stroke = designcraft_doc::Stroke {
+            swatch: designcraft_color::swatch::BLACK.into(),
+            weight: 12.0,
+            align: StrokeAlign::Inside,
+            kind: StrokeType::Hidden { style: designcraft_doc::HiddenStroke::Feet },
+            gap_swatch: "C=100 M=0 Y=0 K=0".into(),
+            ..Default::default()
+        };
+        d.insert_item(SpreadRef::Doc(0), frame, None).unwrap();
+        let cache = Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let cyan = (100..300).filter(|x| {
+            (94..106).any(|y| {
+                let p = img.pixel(*x, y);
+                p[0] < 80 && p[2] > 150
+            })
+        });
+        assert!(cyan.count() > 20, "the gap colour shows between the feet");
+    }
 
     #[test]
     fn a_wide_blur_is_drawn_offscreen_at_a_lower_resolution() {

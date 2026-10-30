@@ -408,20 +408,14 @@ impl Exporter<'_> {
                     s.set_fill(None);
                     continue;
                 }
-                let (cap, dash) = match &kind {
-                    designcraft_doc::StrokeType::Dashed { pattern }
-                        if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
-                    {
+                let (cap, dash) = match kind.dashes(st.weight) {
+                    Some((pattern, dots)) if designcraft_doc::StrokeType::expandable_dashes(&pattern, seg.a.distance(seg.b)) => {
                         let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
                         if pat.len() % 2 == 1 {
                             pat.extend(pat.clone());
                         }
-                        (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
-                    }
-                    designcraft_doc::StrokeType::Dotted
-                        if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
-                    {
-                        (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
+                        let cap = if dots { krilla::paint::LineCap::Round } else { krilla::paint::LineCap::Butt };
+                        (cap, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
                     }
                     _ => (krilla::paint::LineCap::Square, None),
                 };

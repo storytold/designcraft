@@ -56,8 +56,9 @@ fn border(ex: &mut Exporter, tag: &str, s: Option<&StrokeSeg>, k: f64, opacity: 
     let st = &s.stroke;
     let Some(c) = ex.color(&st.color, st.tint, opacity) else { return format!("<a:{tag} w=\"0\"><a:noFill/></a:{tag}>") };
     let dash = match st.kind {
-        StrokeType::Dashed { .. } => "dash",
-        StrokeType::Dotted => "sysDot",
+        StrokeType::Dashed { .. } | StrokeType::Dashed3x2 => "dash",
+        StrokeType::Dashed4x4 => "lgDash",
+        StrokeType::Dotted | StrokeType::JapaneseDots => "sysDot",
         _ => "solid",
     };
     format!(
