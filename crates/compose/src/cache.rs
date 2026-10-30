@@ -209,11 +209,16 @@ impl Cache {
         sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].into_iter().flat_map(bits));
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
-        // Named lists continue from earlier stories.
-        for l in &doc.settings.lists {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
-            sig.push(std::hash::Hasher::finish(&h) as usize);
+        // Named lists continue from earlier stories: the start of each list this story numbers.
+        // Finding a start walks the stories before it, so lists the story doesn't number (whose
+        // start can't change its layout) are left out.
+        if !doc.settings.lists.is_empty() {
+            let numbered = numbered_lists(doc, story);
+            for l in doc.settings.lists.iter().filter(|l| numbered.contains(&l.name)) {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
+                sig.push(std::hash::Hasher::finish(&h) as usize);
+            }
         }
         {
             let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
@@ -421,4 +426,16 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         }
     }
     (sig, keep)
+}
+
+/// The named lists whose numbers `story`'s own paragraphs show (as composing them asks
+/// [`Document::list_start`] for).
+fn numbered_lists(doc: &Document, story: &designcraft_doc::Story) -> std::collections::HashSet<String> {
+    story
+        .paras
+        .iter()
+        .map(|p| doc.styles.resolve_para(p).0)
+        .filter(|pp| pp.list_type == designcraft_doc::ListType::Numbers && !pp.list_name.is_empty())
+        .map(|pp| pp.list_name.clone())
+        .collect()
 }

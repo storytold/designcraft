@@ -229,15 +229,13 @@ impl crate::Document {
         if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
             return n;
         }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
         let Some(me) = self.story(sid) else { return n };
+        let key = self.story_order();
         let mine = key(me);
-        let mut before: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|st| st.id != sid && key(st) < mine).collect();
-        before.sort_by_key(|st| key(st));
-        for st in before {
+        let mut before: Vec<((usize, u64), &Story)> =
+            self.stories.values().map(|s| (key(s), s.as_ref())).filter(|(k, st)| st.id != sid && *k < mine).collect();
+        before.sort_by_key(|(k, _)| *k);
+        for (_, st) in before {
             for (p, r) in st.paras.iter().zip(st.para_ranges()) {
                 let (pp, _) = self.styles.resolve_para(p);
                 if pp.list_type == crate::ListType::Numbers && pp.list_name == name && !r.is_empty() {
@@ -255,14 +253,27 @@ impl crate::Document {
         if o.restart != NoteRestart::Never {
             return o.start_at;
         }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
         let Some(me) = self.story(sid) else { return o.start_at };
+        let key = self.story_order();
         let mine = key(me);
         let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
         o.start_at.saturating_add(before as u32)
+    }
+
+    /// The page order of stories: (page of the first frame, `usize::MAX` off the document pages;
+    /// story id). The pages of all items are found in one pass over the spreads, so ordering every
+    /// story costs one walk instead of a search per story.
+    fn story_order(&self) -> impl Fn(&Story) -> (usize, u64) + '_ {
+        let mut pages = std::collections::HashMap::new();
+        for (si, sp) in self.spreads.iter().enumerate() {
+            let first = self.first_page_of_spread(si);
+            for top in &sp.items {
+                top.walk(&mut |it: &crate::Item| {
+                    pages.insert(it.id, first + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
+                });
+            }
+        }
+        move |st: &Story| (st.frames.first().and_then(|f| pages.get(f).copied()).unwrap_or(usize::MAX), st.id.0)
     }
 
     /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.
