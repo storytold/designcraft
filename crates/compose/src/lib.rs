@@ -4615,6 +4615,15 @@ fn layout_line(
     let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
+    // How a line that isn't justified aligns: a justified paragraph's last line by its last-line
+    // alignment.
+    let last_align = match align {
+        Align::LeftJustified => Align::Left,
+        Align::CenterJustified => Align::Center,
+        Align::RightJustified => Align::Right,
+        Align::FullyJustified => Align::Left,
+        a => a,
+    };
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
     let squeeze_last = !justify_this
         && seg_justifies
@@ -4634,6 +4643,12 @@ fn layout_line(
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
+        // A squeezed centred line still wider than the measure is centred on it too, hanging out
+        // on both sides like one with nothing to squeeze.
+        if squeeze_last && last_align == Align::Center {
+            let width: f64 = line.iter().zip(&add).zip(&scale).map(|((g, a), k)| g.adv * k + a).sum();
+            offset = ((measure - width) / 2.0).min(0.0);
+        }
     } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
         // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
         let (seg_line, seg_add, seg_scale) =
@@ -4669,20 +4684,14 @@ fn layout_line(
             _ => {}
         }
     } else {
-        let last_align = match align {
-            Align::LeftJustified => Align::Left,
-            Align::CenterJustified => Align::Center,
-            Align::RightJustified => Align::Right,
-            Align::FullyJustified => Align::Left,
-            a => a,
-        };
         offset = match last_align {
             Align::Center => extra / 2.0,
             Align::Right => extra,
             _ => 0.0,
         };
-        // Overfull ragged lines are not shifted left of the slot.
-        if offset < 0.0 {
+        // An overfull ragged line is not shifted left of the slot, except a centred one: InDesign
+        // centres it, hanging out on both sides.
+        if offset < 0.0 && last_align != Align::Center {
             offset = 0.0;
         }
     }

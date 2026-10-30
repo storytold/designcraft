@@ -8333,3 +8333,38 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
+
+/// A centred line wider than its column (a word set to No Break) is centred on the column and
+/// hangs out on both sides, as in InDesign; it used to start at the left edge.
+#[test]
+fn an_overfull_centred_line_hangs_out_on_both_sides() {
+    let text = "nnnnnnnnnnnn";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 30.0, 100.0), ParaAttrs { align: Some(Align::Center), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let first = l.glyphs.first().unwrap();
+    let last = l.glyphs.last().unwrap();
+    assert!(first.x < l.x0, "starts left of the column: {} vs {}", first.x, l.x0);
+    let mid = (first.x + last.x + last.adv) / 2.0;
+    assert!((mid - (l.x0 + l.x1) / 2.0).abs() < 0.01, "centre {mid} vs {}", (l.x0 + l.x1) / 2.0);
+}
+
+/// A centred last line of a justified paragraph that stays wider than its column after squeezing
+/// its no-break spaces is centred on the column too, hanging out on both sides. It started at the
+/// left edge.
+#[test]
+fn an_overfull_squeezed_centred_last_line_hangs_out_on_both_sides() {
+    let text = "nnnnnnnnnnnn\u{a0}nnnnnnnnnnnn";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 30.0, 100.0), ParaAttrs { align: Some(Align::CenterJustified), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.no_break = Some(true));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert_eq!(l.range, 0..text.len(), "one line");
+    let first = l.glyphs.first().unwrap();
+    let last = l.glyphs.last().unwrap();
+    assert!(l.glyphs.iter().any(|g| text[g.byte..].starts_with('\u{a0}')), "the no-break space is on the line");
+    assert!(first.x < l.x0, "starts left of the column: {} vs {}", first.x, l.x0);
+    let mid = (first.x + last.x + last.adv) / 2.0;
+    assert!((mid - (l.x0 + l.x1) / 2.0).abs() < 0.01, "centre {mid} vs {}", (l.x0 + l.x1) / 2.0);
+}
