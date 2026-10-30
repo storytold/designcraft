@@ -58,10 +58,10 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
 }
 
 /// Read `.designcraft` bytes and repair what a hand-edited file can get wrong without failing the
-/// open, with a warning for each repair.
+/// open, with a warning for each repair and for each damaged embedded file (opened as missing).
 pub(super) fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
-    let mut d = designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))?;
-    let warnings = d.fix_parent_bases();
+    let (mut d, mut warnings) = designcraft_format::load_with_warnings(b).map_err(|e| EngineError::Other(e.to_string()))?;
+    warnings.extend(d.fix_parent_bases());
     Ok((d, warnings))
 }
 

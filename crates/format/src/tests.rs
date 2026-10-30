@@ -421,6 +421,30 @@ fn older_files_with_one_asset_per_placement_open_with_one() {
     assert_eq!(asset_entries(&save(&back).unwrap()), 1);
 }
 
+#[test]
+fn corrupt_embedded_asset_opens_with_a_warning() {
+    let mut d = Document::new(&NewDocument::default());
+    let payload = b"PAYLOADPAYLOADPAYLOAD";
+    let id = png_asset(&mut d, payload);
+    place(&mut d, id, 0.0);
+    let mut bytes = save(&d).unwrap();
+    // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+    let at = bytes.windows(payload.len()).position(|w| w == payload).unwrap();
+    bytes[at + 3] ^= 0xFF;
+    let (back, warnings) = load_with_warnings(&bytes).unwrap();
+    assert!(back.assets[&id].data.is_empty(), "the damaged asset is marked missing");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with(&format!("assets/{}.png", id.0)), "{warnings:?}");
+    assert!(load(&bytes).is_ok());
+    // A link-only asset (no embedded copy) still opens with empty data.
+    let mut d = Document::new(&NewDocument::default());
+    let id = png_asset(&mut d, b"");
+    Arc::make_mut(d.assets.get_mut(&id).unwrap()).link = Some("/p/a.png".into());
+    place(&mut d, id, 0.0);
+    let back = load(&save(&d).unwrap()).unwrap();
+    assert!(back.assets[&id].data.is_empty());
+}
+
 /// The object of the item `id` in a document's JSON.
 fn item_json(v: &mut Value, id: u64) -> Option<&mut Value> {
     if v.get("id").and_then(Value::as_u64) == Some(id) && v.get("content").is_some() {

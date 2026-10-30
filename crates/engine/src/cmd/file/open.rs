@@ -239,6 +239,29 @@ mod document_fonts_tests {
     }
 
     #[test]
+    fn opening_a_document_with_a_damaged_asset_reports_it() {
+        let dir = temp_dir("damaged-asset");
+        let path = dir.join("Damaged.designcraft");
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![200u8; 64] }.to_png();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "a.png", "x": 72, "y": 72})).unwrap();
+        s.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+        // PNG assets are stored uncompressed: flip one payload byte so the CRC check fails.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(png.len()).position(|w| w == png.as_slice()).unwrap();
+        bytes[at + png.len() / 2] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let r = open(&mut Session::new(), &path);
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
+        // Opened from bytes, it is reported the same way.
+        let r = Session::new().execute("file.openBytes", &json!({"name": "Damaged", "base64": crate::cmd::file::base64_encode(&bytes)})).unwrap();
+        assert!(r["warnings"].to_string().contains("assets/"), "a damaged asset is reported, not fatal: {r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn opening_an_idml_file_loads_its_document_fonts() {
         const FAMILY: &str = "DocFont IDML Test";
         let dir = temp_dir("idml");
