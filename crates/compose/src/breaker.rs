@@ -148,11 +148,11 @@ pub const WORD_FLOOR: f64 = 0.6;
 pub const OVERSHRINK_COST: f64 = 2.0;
 
 /// How far word spaces may shrink beyond the minimum, in units of their shrink range (desired −
-/// minimum): from the minimum down to [`WORD_FLOOR`]. Zero when the paragraph doesn't allow it
+/// minimum): from the minimum down to [`WORD_FLOOR`] of the desired width. Zero when the paragraph doesn't allow it
 /// ([`Spacing::overshrink`]) or has no shrink range.
 pub fn overshrink_units(sp: &Spacing) -> f64 {
     let range = sp.word_desired - sp.word_min;
-    if !sp.justify || !sp.overshrink || range <= 1e-9 { 0.0 } else { ((sp.word_min - WORD_FLOOR) / range).max(0.0) }
+    if !sp.justify || !sp.overshrink || range <= 1e-9 { 0.0 } else { ((sp.word_min - WORD_FLOOR * sp.word_desired) / range).max(0.0) }
 }
 
 /// Effective adjustment ratio for `d` points of stretch (`d > 0`) or shrink (`d < 0`), consuming
@@ -1209,5 +1209,8 @@ mod tests {
         assert_eq!(overshrink_units(&Spacing { overshrink: false, ..sp }), 0.0);
         assert_eq!(overshrink_units(&Spacing { justify: false, ..sp }), 0.0);
         assert_eq!(overshrink_units(&Spacing { word_min: 1.0, ..sp }), 0.0, "no shrink range");
+        // The floor is 60% of the desired width: 150% desired, 120% minimum: down to 90%.
+        let wide = Spacing { word_min: 1.2, word_desired: 1.5, ..sp };
+        assert!((overshrink_units(&wide) - 1.0).abs() < 1e-9, "{}", overshrink_units(&wide));
     }
 }
