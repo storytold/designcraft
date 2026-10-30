@@ -261,17 +261,23 @@ impl crate::Document {
     }
 
     /// The page order of stories: (page of the first frame, `usize::MAX` off the document pages;
-    /// story id). The pages of all items are found in one pass over the spreads, so ordering every
-    /// story costs one walk instead of a search per story.
+    /// story id). The pages of the stories' first frames are found in one pass over the spreads,
+    /// so ordering every story costs one walk instead of a search per story.
     fn story_order(&self) -> impl Fn(&Story) -> (usize, u64) + '_ {
+        let firsts: std::collections::HashSet<crate::ItemId> = self.stories.values().filter_map(|s| s.frames.first().copied()).collect();
         let mut pages = std::collections::HashMap::new();
-        for (si, sp) in self.spreads.iter().enumerate() {
-            let first = self.first_page_of_spread(si);
+        // The first page of each spread, counted along (not summed again for every spread).
+        let mut first = 0;
+        for sp in &self.spreads {
             for top in &sp.items {
+                // Every item is visited (frames can be nested in groups); only frames are measured.
                 top.walk(&mut |it: &crate::Item| {
-                    pages.insert(it.id, first + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
+                    if firsts.contains(&it.id) {
+                        pages.insert(it.id, first + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
+                    }
                 });
             }
+            first += sp.pages.len();
         }
         move |st: &Story| (st.frames.first().and_then(|f| pages.get(f).copied()).unwrap_or(usize::MAX), st.id.0)
     }
