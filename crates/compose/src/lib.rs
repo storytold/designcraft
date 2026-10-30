@@ -637,6 +637,19 @@ pub struct ComposeOptions {
 /// Nesting depth past which wrap obstacles inside groups are not collected.
 const MAX_WRAP_DEPTH: usize = 64;
 
+/// Do the objects on `layer` wrap text? Those on a hidden layer too, unless the layer suppresses
+/// their wrap (Layer Options › Suppress Text Wrap When Layer Is Hidden), as in InDesign.
+pub(crate) fn layer_wraps_text(doc: &Document, layer: designcraft_doc::LayerId) -> bool {
+    doc.layer(layer).is_none_or(|l| l.visible || !l.suppress_wrap_when_hidden)
+}
+
+/// The layer the item at `loc` is drawn on: its top-level item's. A group takes its backmost
+/// object's layer and leaves the others on theirs, but draws them all on its own.
+pub(crate) fn shown_layer(doc: &Document, loc: &designcraft_doc::ItemLoc) -> Option<designcraft_doc::LayerId> {
+    let top = loc.path.first()?;
+    Some(doc.spread(loc.spread)?.items.get(*top)?.layer)
+}
+
 /// The text wrap exclusions of a page item, the graphic it holds and the items in it, for a frame
 /// whose inner space is reached from the spread by `inv`. `parent` maps the item's parent space to
 /// the spread; `skip` is the text frame being wrapped; `left_page` tells whether a spread x is on
@@ -669,7 +682,7 @@ fn wrap_obstacles(it: &Item, parent: Affine, inv: Affine, skip: ItemId, left_pag
 fn frame_wrap_exclusions(doc: &Document, sp: &designcraft_doc::Spread, item: &Item, inv: Affine, exclusions: &mut Vec<Exclusion>) {
     let left = |x: f64| sp.page_at_x(x).and_then(|pi| sp.pages.get(pi)).is_some_and(|p| p.side == designcraft_doc::PageSide::Left);
     for other in &sp.items {
-        if doc.layer(other.layer).is_some_and(|l| !l.visible) {
+        if !layer_wraps_text(doc, other.layer) {
             continue;
         }
         wrap_obstacles(other, Affine::IDENTITY, inv, item.id, &left, 0, exclusions);
