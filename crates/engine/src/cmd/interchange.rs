@@ -369,7 +369,7 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
 /// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
+pub(crate) fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>)> {
     for path in packaged_link_candidates(link, package) {
         if !crate::io::is_file(&path) || !crate::io::metadata(&path).is_ok_and(|m| m.len() <= MAX_LINKED_FILE_BYTES) {
             continue;

@@ -126,6 +126,194 @@ fn recovery_data_is_private_to_the_user() {
     }
 }
 
+/// Poll `file.recovery.progress` until the background writer has nothing left, as the app does at
+/// the end of a frame.
+fn finished_writes(s: &mut Session) -> usize {
+    let mut written = 0;
+    for _ in 0..1200 {
+        let v = s.execute("file.recovery.progress", &json!({})).unwrap();
+        assert_eq!(v["errors"], json!([]), "{v}");
+        written += v["written"].as_u64().unwrap_or(0) as usize;
+        if !v["busy"].as_bool().unwrap_or(false) {
+            return written;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the background writer did not finish");
+}
+
+#[test]
+fn a_background_save_writes_recovery_data_the_app_can_recover() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    // The timer's call: the interface thread does not wait for the deflate or the file writes.
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    assert_eq!(finished_writes(&mut s), 1);
+    assert_eq!(list(dir.path()).len(), 1);
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, _)| same_directory(d, dir.path())), "the checkpoint is recorded");
+    // Recovering it gives the unsaved edits back.
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 1);
+    assert!(reopened.doc().unwrap().is_dirty());
+    discard(dir.path(), reopened.doc().unwrap().uid);
+}
+
+/// A placed file linked to disk, as a catalogues with a Links folder has them.
+fn session_with_linked_image(dir: &Path) -> (Session, std::path::PathBuf) {
+    let image = dir.join("photo.png");
+    let png = designcraft_render::Rendered { width: 8, height: 8, pixels: vec![90u8; 8 * 8 * 4] }.to_png();
+    std::fs::write(&image, &png).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": image.to_string_lossy()})).unwrap();
+    assert!(s.doc().unwrap().doc.assets.values().any(|a| a.link.is_some()), "the file is placed as a link");
+    (s, image)
+}
+
+#[test]
+fn recovery_data_keeps_a_linked_file_as_a_link() {
+    // Embedding the linked file made a recovery snapshot as large as the user's Links folder,
+    // and left those gigabytes behind after every crash.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, image) = session_with_linked_image(dir.path());
+    let entry = dir.path().join(format!("{}.designcraft", s.docs[0].uid));
+    assert_eq!(save(&s, dir.path()).unwrap(), 1);
+    let bytes = std::fs::read(&entry).unwrap();
+    let packaged = designcraft_format::load(&bytes).unwrap();
+    assert!(packaged.assets.values().all(|a| a.data.is_empty()), "the snapshot carries no copy of the link");
+    assert!(packaged.assets.values().all(|a| a.link.is_some()), "it keeps where the file is");
+    // Recovering reads it back: the document opens as it did.
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    let a = reopened.doc().unwrap().doc.assets.values().find(|a| a.link.is_some()).expect("the link");
+    assert_eq!(a.link.as_deref(), Some(image.to_string_lossy().as_ref()));
+    assert_eq!(&*a.data, &std::fs::read(&image).unwrap());
+    discard(dir.path(), reopened.doc().unwrap().uid);
+}
+
+/// The placed bytes of the linked image in `dir`.
+fn placed_bytes(s: &Session) -> Vec<u8> {
+    s.doc().unwrap().doc.assets.values().find(|a| a.link.is_some()).expect("the link").data.to_vec()
+}
+
+#[test]
+fn a_link_whose_file_changed_or_is_gone_keeps_its_bytes() {
+    // A snapshot leaves a link out only while the file still holds the placed bytes: a file that
+    // was moved, edited or deleted after placement must not replace what the user saw.
+    let dir = tempfile::tempdir().unwrap();
+    let (s, image) = session_with_linked_image(dir.path());
+    let placed = placed_bytes(&s);
+    let entry = dir.path().join(format!("{}.designcraft", s.docs[0].uid));
+
+    // Edited in place, to another size.
+    std::fs::write(&image, b"not the placed bytes any more").unwrap();
+    assert_eq!(save(&s, dir.path()).unwrap(), 1);
+    let packaged = designcraft_format::load(&std::fs::read(&entry).unwrap()).unwrap();
+    let a = packaged.assets.values().find(|a| a.link.is_some()).expect("the link");
+    assert_eq!(placed, a.data.to_vec(), "the bytes the file no longer holds stay in the snapshot");
+    assert_eq!(a.link.as_deref(), Some(image.to_string_lossy().as_ref()), "and so does the link");
+    let mut recovered = Session::new();
+    assert_eq!(open(&mut recovered, dir.path()).unwrap().len(), 1);
+    let a = recovered.doc().unwrap().doc.assets.values().find(|a| a.link.is_some()).expect("the link");
+    assert_eq!(placed, a.data.to_vec(), "recovered as the user saw it, not as the edited file is");
+    // The republished entry (a crash before the next timer) keeps them too.
+    let (uid, _) = list(dir.path()).into_iter().next().expect("the recovered entry");
+    let republished = designcraft_format::load(&std::fs::read(files(dir.path(), uid).0).unwrap()).unwrap();
+    assert!(republished.assets.values().any(|a| !a.data.is_empty()), "the republished snapshot keeps them");
+    discard(dir.path(), recovered.doc().unwrap().uid);
+
+    // Gone after the crash: the bytes stay, and the link reports missing, as opening would.
+    std::fs::remove_file(&image).unwrap();
+    assert_eq!(save(&s, dir.path()).unwrap(), 1);
+    let mut recovered = Session::new();
+    assert_eq!(open(&mut recovered, dir.path()).unwrap().len(), 1);
+    let a = recovered.doc().unwrap().doc.assets.values().find(|a| a.link.is_some()).expect("the link");
+    assert_eq!(placed, a.data.to_vec());
+    let links = recovered.execute("links.list", &json!({})).unwrap();
+    assert_eq!(links[0]["status"], "missing", "the file is still reported missing, as opening reports it");
+    discard(dir.path(), recovered.doc().unwrap().uid);
+}
+
+#[test]
+fn a_snapshot_that_finishes_after_the_save_is_dropped() {
+    // A write of a large document runs for seconds: the user can save while it does. The saved
+    // document's checkpoint is consumed then, and the write must not put a stale snapshot back.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = s.docs[0].uid;
+    // The snapshot the writer took before the save.
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    let saved = dir.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!s.docs[0].is_dirty());
+    // The write lands after the save.
+    write_snapshot(&entry, || false).unwrap();
+    let (file, _) = files(dir.path(), uid);
+    assert!(file.exists());
+    assert!(!record_checkpoint(&mut s, dir.path().to_path_buf(), uid), "a saved document records no checkpoint");
+    assert!(!file.exists(), "its snapshot is not left to be recovered");
+    assert!(list(dir.path()).is_empty());
+    // A document still unsaved does record one.
+    s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    write_snapshot(&entry, || false).unwrap();
+    assert!(record_checkpoint(&mut s, dir.path().to_path_buf(), uid));
+    assert!(s.docs[0].recovery_entries.iter().any(|(d, u)| *u == uid && d == dir.path()));
+}
+
+#[test]
+fn a_write_cancelled_midway_publishes_nothing() {
+    // Save/Revert/Close during a write marks it cancelled; the snapshot must not land after it,
+    // even if the app crashes before the next interface frame discards it.
+    let dir = tempfile::tempdir().unwrap();
+    let s = dirty_session();
+    let entry = Snapshot::of(&prepare_save(&s, dir.path()).unwrap(), dir.path(), &s.docs[0]);
+    write_snapshot(&entry, || true).unwrap();
+    assert!(list(dir.path()).is_empty(), "a cancelled write leaves no snapshot");
+    assert!(!files(dir.path(), entry.uid).0.exists(), "nor its document");
+    assert!(!files(dir.path(), entry.uid).1.exists(), "nor its metadata");
+    // The temporary file it was written to is dropped, not left behind.
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().all(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with(".designcraft-recovery-"))),
+        "no temporary file is left"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn only_a_queued_write_is_cancelled() {
+    // A mark for a document with no write in flight would stay in the writer's set for ever.
+    let dir = tempfile::tempdir().unwrap();
+    worker::cancel(dir.path(), 7);
+    assert!(!worker::cancelled(dir.path(), 7), "nothing was queued for it");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_panicking_recovery_write_is_an_error_and_the_writer_keeps_going() {
+    let err = worker::guarded(|| -> Result<()> { panic!("boom") }).unwrap_err();
+    assert!(err.to_string().contains("panicked") && err.to_string().contains("boom"), "{err}");
+    assert_eq!(worker::guarded(|| Ok(7)).unwrap(), 7, "the next write still runs");
+}
+
+#[test]
+fn a_saved_document_is_not_written_in_the_background() {
+    // The autosave writes unsaved documents only.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = dirty_session();
+    s.recovery_dir = Some(dir.path().to_path_buf());
+    let saved = dir.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    let queued = s.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 0, "{queued}");
+    assert_eq!(finished_writes(&mut s), 0);
+    assert!(list(dir.path()).is_empty());
+}
+
 #[test]
 fn existing_recovery_directory_is_used() {
     let root = tempfile::tempdir().unwrap();

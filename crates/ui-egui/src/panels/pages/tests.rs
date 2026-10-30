@@ -7,6 +7,16 @@ use egui_kittest::{
 use super::*;
 use crate::test_window;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_panicking_thumbnail_leaves_its_row_undrawn_and_the_worker_alive() {
+    // A renderer bug on one document must not end the thread: its slot would stay reserved, and
+    // four of them would stop the panel from drawing any thumbnail again.
+    let (drawn, panicked) = super::worker::contained(|| -> Option<u32> { panic!("a renderer bug") });
+    assert!(drawn.is_none() && panicked);
+    assert_eq!(super::worker::contained(|| Some(7)), (Some(7), false), "the next row draws");
+}
+
 #[test]
 fn parent_context_menu_deletes_the_clicked_id_even_with_a_shared_prefix() {
     for vertical in [true, false] {
@@ -324,6 +334,42 @@ fn parent_thumbnails_follow_panel_options() {
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
+}
+
+/// A long document draws thumbnails for the rows on screen, not for every page: the first frame
+/// of a 190-page catalogue used to render all 190 on the interface thread (a 40-second freeze,
+/// repeated on every edit).
+#[test]
+fn only_visible_pages_get_thumbnails() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 120, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let st = h.state().app.session.active().unwrap();
+    let (uid, rev) = (st.uid, st.revision);
+    let thumbs = super::THUMBS.lock().unwrap();
+    let drawn = thumbs.as_ref().map_or(0, |m| m.keys().filter(|k| k.0 == uid && k.1 == rev && matches!(k.2, super::ThumbOf::Page(_))).count());
+    assert!(drawn > 0, "the rows on screen are drawn");
+    assert!(drawn < 40, "120 pages, but only the visible rows are drawn: {drawn}");
+    assert!(
+        !thumbs.as_ref().is_some_and(|m| m.keys().any(|k| k.0 == uid && k.1 == rev && k.2 == super::ThumbOf::Page(119))),
+        "the last page is far below the panel"
+    );
+}
+
+/// Background slots are capped, so a fast scroll across a long document queues a few thumbnails
+/// rather than every page.
+#[test]
+fn background_thumbnails_are_capped() {
+    let keys: Vec<ThumbKey> = (0..10).map(|i| (u64::MAX - 1, 0, ThumbOf::Page(i), 24)).collect();
+    let taken = keys.iter().filter(|k| begin(**k)).count();
+    assert_eq!(taken, super::MAX_IN_FLIGHT);
+    assert!(!begin(keys[0]), "a slot is reserved once");
+    for k in &keys {
+        ended(*k);
+    }
+    assert!(begin(keys[0]), "released slots are free again");
+    ended(keys[0]);
 }
 
 #[test]

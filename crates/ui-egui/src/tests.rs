@@ -140,6 +140,35 @@ fn app_with_unsaved_document() -> DesignApp {
     app
 }
 
+/// The recovery timer wrote the whole document on the interface thread: on a catalogue with
+/// gigabytes of linked files the window stopped answering for minutes after every edit.
+#[test]
+fn the_recovery_timer_writes_off_the_interface_thread() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_unsaved_document();
+    let dir = tempfile::tempdir().unwrap();
+    app.session.recovery_dir = Some(dir.path().to_path_buf());
+    app.last_recovery = -1.0e9;
+    let uid = app.session.documents()[0].uid;
+    let entry = dir.path().join(format!("{uid}.designcraft"));
+    let mut written = false;
+    for _ in 0..600 {
+        shot_frame(&mut app, &ctx, egui::vec2(1400.0, 900.0));
+        // The timer fired and the write finished: the file is there and nothing is still queued.
+        if entry.exists() && !app.recovery_writing {
+            written = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(written, "the timer's background write published the document");
+    assert!(app.last_recovery > 0.0, "the timer restarted its interval");
+    // The checkpoint is the document's: saving it removes the recovery entry.
+    let saved = dir.path().join("saved.designcraft");
+    app.run("file.saveAs", json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(!dir.path().join(format!("{uid}.designcraft")).exists());
+}
+
 /// File ▸ Close (and its shortcut) closed a document with unsaved changes without asking, and
 /// closing discards the document's recovery data too.
 #[test]

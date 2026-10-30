@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (recovery data keeps a link as a link only while its file still holds the placed bytes; a moved, edited or deleted link keeps its copy in the snapshot: `Placed::LinksOnlyExcept` · a save can leave linked placed files out of the package and keep their paths, which recovery data does: `Placed::LinksOnly` · PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -122,6 +122,8 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Recovery data keeps a linked file as a link only while its file still holds the placed bytes: a moved, edited or deleted link keeps its copy in the snapshot (`designcraft_format::Placed::LinksOnlyExcept`), and so does the copy republished after recovering |
+| 2026-10-27 | minor | A `.designcraft` save can leave linked placed files out (`designcraft_format::Placed::LinksOnly`) and keep their paths; automatic recovery data does, and re-reads the links when recovering, so it is not a copy of the user's Links folder |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |

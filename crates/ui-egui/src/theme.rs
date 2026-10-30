@@ -277,9 +277,9 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
     found
 }
 
-/// Whether [`install_fonts`] would find the installed fonts cataloged.
+/// Whether [`install_fonts`] would find the installed fonts cataloged and their faces read.
 pub fn system_fonts_ready() -> bool {
-    designcraft_fonts::FontDb::global().system_fonts_cataloged()
+    designcraft_fonts::FontDb::global().system_fonts_cataloged() && (cfg!(test) || SYSTEM_FACES.get().is_some())
 }
 
 /// An installed font the UI falls back to for a script the built-in faces lack.
@@ -352,8 +352,11 @@ const SYSTEM_UI_FONTS: &[(&str, char, &[&str])] = &[
 /// Traditional Chinese (font names in the font menus), Indic, Southeast Asian and other scripts
 /// in any build. egui can't find system fonts itself; the document font scan (not on the web)
 /// does.
-fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<Vec<SystemFont>> {
-    static FACES: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+///
+/// Reading them opens the fallback faces' files — several megabytes each for the CJK ones, tens
+/// of megabytes in all — so on the desktop they are read on their own thread ([`read_ui_fonts`])
+/// and the interface keeps the built-in faces until they arrive. `None` while that runs.
+fn system_ui_fonts(craft: &'static [designcraft_fonts::CraftFont]) -> Option<Vec<SystemFont>> {
     let db = designcraft_fonts::FontDb::global();
     // Never wait for the font scan here (the first frame): it runs in the background, and the
     // faces are read once, when it is done.
@@ -370,7 +373,37 @@ fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<Vec<SystemF
         let _ = db.load_system_fonts();
         return Some(installed_ui_fonts(db, craft));
     }
-    Some(FACES.get_or_init(|| installed_ui_fonts(db, craft)).to_vec())
+    if let Some(faces) = SYSTEM_FACES.get() {
+        return Some(faces.clone());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    read_ui_fonts(craft);
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The web has no threads, and only its few bundled fonts.
+        let _ = SYSTEM_FACES.set(installed_ui_fonts(db, craft));
+    }
+    SYSTEM_FACES.get().cloned()
+}
+
+/// The installed fallback faces, once read.
+static SYSTEM_FACES: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
+
+/// Read the installed faces on their own thread: the first frame draws with the built-in faces
+/// meanwhile, and the app's existing retry installs them once [`system_fonts_ready`] says so.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_ui_fonts(craft: &'static [designcraft_fonts::CraftFont]) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let read = move || installed_ui_fonts(designcraft_fonts::FontDb::global(), craft);
+        if let Err(e) = std::thread::Builder::new().name("ui-fonts".into()).spawn(move || {
+            let _ = SYSTEM_FACES.set(read());
+        }) {
+            // No thread to spare: read them here.
+            log::warn!("reading the installed interface fonts here: {e}");
+            let _ = SYSTEM_FACES.set(read());
+        }
+    });
 }
 
 /// The faces of [`SYSTEM_UI_FONTS`] that `db` has, for the scripts `craft` doesn't cover.

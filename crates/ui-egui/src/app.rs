@@ -108,6 +108,7 @@ impl DesignApp {
             shortcut_answers: Default::default(),
             last_time: now,
             last_recovery: now,
+            recovery_writing: false,
             egui_ctx: None,
             in_control: false,
             object_clip_text: None,

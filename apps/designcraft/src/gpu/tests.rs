@@ -393,6 +393,16 @@ fn the_skip_list_is_an_argument() {
     assert_eq!(skip_arg("layout.designcraft"), None);
 }
 
+/// The retry after a start that found no adapter at all forgets the recorded backend failures but
+/// keeps the adapters earlier restarts left out: they were hung, and the retry must not pick one
+/// again only to wait for it once more.
+#[test]
+fn the_no_adapter_retry_keeps_the_adapters_earlier_restarts_left_out() {
+    let skip = vec!["Dx12:10de:2204".to_string(), "Dx12".to_string(), SOFTWARE_LEFT.to_string(), "Gl".to_string(), "Vulkan:1002:164e".into()];
+    assert_eq!(retry_skip(&skip), ["Dx12:10de:2204", "Vulkan:1002:164e", RETRIED]);
+    assert_eq!(retry_skip(&[]), [RETRIED]);
+}
+
 #[test]
 fn a_restart_tries_the_next_adapter() {
     let c = wayland_desktop();
@@ -556,6 +566,8 @@ fn a_normal_exit_or_another_failure_does_not_restart() {
     let startup = Startup::new(None, Vec::new());
     assert_eq!(finish(Ok(Ok(())), &startup), Ok(()));
     // No adapter was picked (none can show the window): the error is returned, nothing restarts.
+    // Without a record nothing is blamed either, so there is nothing to forget and start over for.
+    assert!(!startup.blamed_a_backend());
     let none = eframe::Error::Wgpu(eframe::egui_wgpu::WgpuError::CustomNativeAdapterSelectionError("no graphics adapter can show the window".into()));
     assert_eq!(
         finish(Ok(Err(none)), &startup),

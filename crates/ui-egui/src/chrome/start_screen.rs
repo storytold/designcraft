@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{Color32, Content, DesignApp, Sense, Stroke, Tokens, json, semibold, vec2};
 
 pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -131,12 +133,11 @@ fn recent_files(app: &mut DesignApp, ui: &mut egui::Ui) {
         for (i, path) in rows {
             let stat = recent_file_stat(ui.ctx(), &path);
             let there = stat.exists;
-            let modified = there.then_some(stat.modified);
             let (cr, resp) = ui.allocate_exact_size(vec2(140.0, 170.0), Sense::click());
             let resp = resp.on_hover_text(&path);
             ui.painter().rect_filled(cr, 6.0, if resp.hovered() { t.hover } else { t.panel });
             let area = egui::Rect::from_min_size(cr.min + vec2(20.0, 12.0), vec2(100.0, 108.0));
-            match modified.and_then(|m| recent_preview_texture(ui.ctx(), &path, m)) {
+            match recent_preview_texture(ui.ctx(), &path, &stat) {
                 Some(tex) => {
                     let size = tex.size_vec2();
                     let k = (area.width() / size.x).min(area.height() / size.y);
@@ -169,54 +170,155 @@ fn recent_files(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// How often a recent file is looked up on disk again, in ms: the start screen and the Open Recent
-/// menu draw every frame and must not touch the file system each time.
+/// How often a recent file is read again, in ms: the start screen and the Open Recent menu draw
+/// every frame and must not touch the file system each time.
 pub(super) const RECENT_STAT_MS: f64 = 3000.0;
 
-/// A recent file as last seen on disk.
+/// A recent file as last read: whether it is there, when it last changed, and the first page's
+/// picture saved in it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RecentStat {
     pub exists: bool,
     pub modified: Option<std::time::SystemTime>,
+    /// When this was read (ms).
     checked: f64,
+    /// The picture as straight RGBA, before it becomes a texture (see [`recent_preview_texture`]).
+    image: Option<Arc<egui::ColorImage>>,
 }
 
-/// Whether recent file `path` is there and when it last changed, looked up again at most every
-/// [`RECENT_STAT_MS`].
+impl RecentStat {
+    /// Nothing read yet: not known to be gone (so the card isn't dimmed before the answer), and
+    /// old enough that the first look asks for a read.
+    fn unread() -> RecentStat {
+        // Checked long ago, not at 0: the clock counts from this process's first look, so 0.0
+        // would read as "just checked" for the first seconds and leave the cards unread.
+        RecentStat { exists: true, modified: None, checked: f64::NEG_INFINITY, image: None }
+    }
+}
+
+/// Whether recent file `path` is there and when it last changed: read at most every
+/// [`RECENT_STAT_MS`] and never on the interface thread (see [`reader`]). A file on a slow disk, or
+/// a drive that has to spin up, must not hold the window black.
 pub(crate) fn recent_file_stat(ctx: &egui::Context, path: &str) -> RecentStat {
     recent_file_stat_at(ctx, path, crate::now_ms())
 }
 
 pub(super) fn recent_file_stat_at(ctx: &egui::Context, path: &str, now: f64) -> RecentStat {
+    poll_reads(ctx);
     let key = egui::Id::unique(("recent_stat", path));
-    if let Some(st) = ctx.data(|d| d.get_temp::<RecentStat>(key))
-        && (0.0..RECENT_STAT_MS).contains(&(now - st.checked))
-    {
+    let mut st = ctx.data(|d| d.get_temp::<RecentStat>(key)).unwrap_or_else(RecentStat::unread);
+    if (0.0..RECENT_STAT_MS).contains(&(now - st.checked)) {
         return st;
     }
-    let meta = designcraft_engine::io::metadata(path).ok().filter(designcraft_engine::io::Metadata::is_file);
-    let st = RecentStat { exists: meta.is_some(), modified: meta.and_then(|m| m.modified().ok()), checked: now };
+    // Asked for now, so however many frames draw meanwhile only one read is queued.
+    st.checked = now;
+    ctx.data_mut(|d| d.insert_temp(key, st.clone()));
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        reader::submit(ctx, path.to_owned());
+        return st;
+    }
+    // The web has no threads, and a test reads the file it made itself.
+    let st = read_recent_at(path, now);
     ctx.data_mut(|d| d.insert_temp(key, st.clone()));
     st
 }
 
-/// The texture of a recent file's saved first-page picture, decoded once per file version.
-fn recent_preview_texture(ctx: &egui::Context, path: &str, modified: Option<std::time::SystemTime>) -> Option<egui::TextureHandle> {
-    type Cached = (Option<std::time::SystemTime>, Option<egui::TextureHandle>);
+/// `path` as it is on disk now: what [`reader`]'s thread reads.
+fn read_recent_at(path: &str, now: f64) -> RecentStat {
+    let meta = designcraft_engine::io::metadata(path).ok().filter(designcraft_engine::io::Metadata::is_file);
+    let modified = meta.as_ref().and_then(|m| m.modified().ok());
+    let image = modified.and_then(|_| recent_picture(path));
+    RecentStat { exists: meta.is_some(), modified, checked: now, image }
+}
+
+/// The first page's picture saved in the file at `path`, if it has one.
+fn recent_picture(path: &str) -> Option<Arc<egui::ColorImage>> {
+    let p = designcraft_engine::cmd::recent_preview(path)?;
+    let size = [usize::try_from(p.width).ok()?, usize::try_from(p.height).ok()?];
+    (size[0].checked_mul(size[1])?.checked_mul(4)? == p.rgba.len()).then(|| Arc::new(egui::ColorImage::from_rgba_unmultiplied(size, &p.rgba)))
+}
+
+/// Take in the answers [`reader`]'s thread has finished.
+fn poll_reads(ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    reader::poll(ctx);
+    #[cfg(target_arch = "wasm32")]
+    let _ = ctx;
+}
+
+/// The texture of a recent file's saved first-page picture, uploaded once per file version.
+fn recent_preview_texture(ctx: &egui::Context, path: &str, stat: &RecentStat) -> Option<egui::TextureHandle> {
+    let image = stat.image.as_ref()?;
+    type Cached = (Option<std::time::SystemTime>, egui::TextureHandle);
     let key = egui::Id::unique(("recent_preview", path));
     if let Some((m, tex)) = ctx.data(|d| d.get_temp::<Cached>(key))
-        && m == modified
+        && m == stat.modified
     {
-        return tex;
+        return Some(tex);
     }
-    let tex = designcraft_engine::cmd::recent_preview(path).and_then(|p| {
-        let size = [usize::try_from(p.width).ok()?, usize::try_from(p.height).ok()?];
-        (size[0].checked_mul(size[1])?.checked_mul(4)? == p.rgba.len()).then(|| {
-            ctx.load_texture(format!("recent_preview:{path}"), egui::ColorImage::from_rgba_unmultiplied(size, &p.rgba), egui::TextureOptions::LINEAR)
-        })
-    });
-    ctx.data_mut(|d| d.insert_temp::<Cached>(key, (modified, tex.clone())));
-    tex
+    let tex = ctx.load_texture(format!("recent_preview:{path}"), (**image).clone(), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(key, (stat.modified, tex.clone())));
+    Some(tex)
+}
+
+/// Background reads of the recent files: one thread, so the first frame draws before their
+/// pictures arrive and a file on a slow disk never stalls the interface.
+#[cfg(not(target_arch = "wasm32"))]
+mod reader {
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{RecentStat, read_recent_at};
+
+    struct Reader {
+        jobs: Sender<String>,
+        done: Mutex<Receiver<(String, RecentStat)>>,
+    }
+
+    static READER: OnceLock<Option<Reader>> = OnceLock::new();
+
+    fn reader(ctx: &egui::Context) -> Option<&'static Reader> {
+        READER
+            .get_or_init(|| {
+                let (jobs, job_rx) = std::sync::mpsc::channel::<String>();
+                let (result_tx, result_rx) = std::sync::mpsc::channel::<(String, RecentStat)>();
+                let ctx = ctx.clone();
+                let spawned = std::thread::Builder::new().name("recent-files".into()).spawn(move || {
+                    while let Ok(path) = job_rx.recv() {
+                        let stat = read_recent_at(&path, crate::now_ms());
+                        if result_tx.send((path, stat)).is_err() {
+                            break;
+                        }
+                        ctx.request_repaint();
+                    }
+                });
+                if spawned.is_err() {
+                    return None;
+                }
+                Some(Reader { jobs, done: Mutex::new(result_rx) })
+            })
+            .as_ref()
+    }
+
+    /// Queue a read of `path`.
+    pub(super) fn submit(ctx: &egui::Context, path: String) {
+        if let Some(r) = reader(ctx) {
+            let _ = r.jobs.send(path);
+        }
+    }
+
+    /// Take finished reads into the window's state, on the interface thread.
+    pub(super) fn poll(ctx: &egui::Context) {
+        if READER.get().is_none() {
+            return;
+        }
+        let Some(r) = reader(ctx) else { return };
+        let Ok(done) = r.done.lock() else { return };
+        while let Ok((path, stat)) = done.try_recv() {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("recent_stat", path.as_str())), stat));
+        }
+    }
 }
 
 /// Start screen: the ArtCraft community (Discord first) and project links.

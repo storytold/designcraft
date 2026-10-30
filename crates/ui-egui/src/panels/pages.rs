@@ -1,9 +1,13 @@
 //! Pages panel: parents at the top, document spreads with live thumbnails below.
 
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashSet;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use designcraft_doc::{SpreadId, SpreadRef};
+use designcraft_doc::{Document, SpreadId, SpreadRef};
+use designcraft_render::{RenderOptions, Rendered};
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
 use serde_json::json;
 
@@ -20,50 +24,254 @@ enum ThumbOf {
 /// (document uid, revision, page or parent, thumbnail height).
 type ThumbKey = (u64, u64, ThumbOf, u32);
 
-static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
+/// A thumbnail texture. `None` records a spread that can't be drawn, so it isn't retried every
+/// frame.
+struct Entry {
+    stamp: u64,
+    tex: Option<egui::TextureHandle>,
+}
+
+static THUMBS: Mutex<Option<HashMap<ThumbKey, Entry>>> = Mutex::new(None);
+/// Thumbnails the background worker is drawing ([`begin`] reserves a slot).
+#[cfg(not(target_arch = "wasm32"))]
+static PENDING: Mutex<Option<HashSet<ThumbKey>>> = Mutex::new(None);
+static CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// Thumbnails kept: older revisions of a page are replaced, so this bounds documents, not edits.
+const MAX_THUMBS: usize = 512;
+/// Thumbnails drawn at once; the rest wait for later frames, so scrolling never queues a whole
+/// document.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_IN_FLIGHT: usize = 4;
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
 
-fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
-    let st = app.session.active()?;
-    let key = (st.uid, st.revision, of, h.round() as u32);
-    let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let map = g.get_or_insert_with(HashMap::new);
-    if let Some(t) = map.get(&key) {
-        return Some(t.clone());
-    }
-    let px = h as f64 * ctx.pixels_per_point() as f64;
-    let mut r = designcraft_render::Renderer::new();
-    r.threads = 0;
-    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
-    let (img, name) = match of {
+/// Thumbnails are drawn on a background thread. The tests and the web build draw them inline, so
+/// a frame stays deterministic (and wasm has no threads); `DESIGNCRAFT_SYNC_RENDER` does the same
+/// in a debugging session, like the canvas.
+#[cfg(not(target_arch = "wasm32"))]
+fn inline() -> bool {
+    cfg!(any(test, target_arch = "wasm32")) || std::env::var_os("DESIGNCRAFT_SYNC_RENDER").is_some()
+}
+
+/// Draw thumbnail `of` at `px` device pixels high, with its texture name.
+fn draw(
+    r: &mut designcraft_render::Renderer,
+    doc: &Document,
+    cache: &designcraft_compose::Cache,
+    of: ThumbOf,
+    px: f64,
+) -> Option<(Rendered, String)> {
+    let opts = RenderOptions { printing_only: true, ..Default::default() };
+    match of {
         ThumbOf::Page(abs) => {
-            let page = st.doc.page(abs)?;
-            let img = r.render_page(&st.doc, &app.session.cache, abs, px / page.height.max(1e-6), false, &opts)?;
-            (img, format!("thumb{abs}"))
+            let page = doc.page(abs)?;
+            let img = r.render_page(doc, cache, abs, px / page.height.max(1e-6), false, &opts)?;
+            Some((img, format!("thumb{abs}")))
         }
         ThumbOf::Parent(id) => {
-            let i = st.doc.parent_index(id)?;
-            let b = st.doc.parents.get(i)?.bounds();
+            let i = doc.parent_index(id)?;
+            let b = doc.parents.get(i)?.bounds();
             if !(b.width() > 0.0 && b.height() > 0.0) {
                 return None;
             }
             let scale = (px / b.height()).min(MAX_THUMB_W / b.width());
             let (w, h) = ((b.width() * scale).round().max(1.0) as u32, (b.height() * scale).round().max(1.0) as u32);
             let view = designcraft_geom::Affine::scale(scale) * designcraft_geom::Affine::translate(-b.origin().to_vec2());
-            let o = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..opts };
+            let o = RenderOptions { background: Some([255, 255, 255, 255]), ..opts };
             let placed = [designcraft_render::Placed { spread: SpreadRef::Parent(i), xf: designcraft_geom::Affine::IDENTITY }];
-            (r.render(&st.doc, &app.session.cache, &placed, (w, h), view, &o), format!("thumbp{}", id.0))
+            Some((r.render(doc, cache, &placed, (w, h), view, &o), format!("thumbp{}", id.0)))
         }
-    };
-    let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
-    let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    // Drop thumbnails of older revisions.
+    }
+}
+
+thread_local! {
+    /// Drawing inline reuses one renderer (its glyph and image caches make the next thumbnail
+    /// cheap) rather than building one per thumbnail.
+    static INLINE_RENDERER: std::cell::RefCell<Option<designcraft_render::Renderer>> = const { std::cell::RefCell::new(None) };
+}
+
+fn draw_inline(doc: &Document, cache: &designcraft_compose::Cache, of: ThumbOf, px: f64) -> Option<(Rendered, String)> {
+    INLINE_RENDERER.with(|cell| {
+        let mut g = cell.borrow_mut();
+        let r = g.get_or_insert_with(|| {
+            let mut r = designcraft_render::Renderer::new();
+            r.threads = 0;
+            r
+        });
+        draw(r, doc, cache, of, px)
+    })
+}
+
+/// Upload a finished thumbnail under `key` (or remember that it can't be drawn).
+fn store(ctx: &egui::Context, key: ThumbKey, drawn: Option<(Rendered, String)>) {
+    let tex = drawn.map(|(img, name)| {
+        let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
+        crate::widgets::load_texture(ctx, format!("{name}_{}", key.3), ci, egui::TextureOptions::LINEAR)
+    });
+    let stamp = CLOCK.fetch_add(1, Ordering::Relaxed);
+    let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = g.get_or_insert_with(HashMap::new);
+    // One thumbnail per page and size: the older revision has done its job.
+    map.retain(|k, _| !(k.0 == key.0 && k.2 == key.2 && k.3 == key.3 && k.1 != key.1));
+    map.insert(key, Entry { stamp, tex });
+    if map.len() > MAX_THUMBS {
+        let mut oldest: Vec<(u64, ThumbKey)> = map.iter().map(|(k, e)| (e.stamp, *k)).collect();
+        oldest.sort_unstable_by_key(|(stamp, _)| *stamp);
+        let over = map.len() - MAX_THUMBS;
+        for (_, k) in oldest.into_iter().take(over) {
+            map.remove(&k);
+        }
+    }
+}
+
+/// The thumbnail for exactly this revision: `Some(None)` is a spread that can't be drawn.
+fn cached(key: ThumbKey) -> Option<Option<egui::TextureHandle>> {
+    let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let e = g.as_mut()?.get_mut(&key)?;
+    e.stamp = CLOCK.fetch_add(1, Ordering::Relaxed);
+    Some(e.tex.clone())
+}
+
+/// The last thumbnail drawn for this page and size, from an older revision: shown until the
+/// background worker catches up, as InDesign lags its page thumbnails.
+fn older(uid: u64, of: ThumbOf, h: u32) -> Option<egui::TextureHandle> {
+    let g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = g.as_ref()?;
+    map.iter().filter(|(k, e)| k.0 == uid && k.2 == of && k.3 == h && e.tex.is_some()).max_by_key(|(k, _)| k.1).and_then(|(_, e)| e.tex.clone())
+}
+
+/// Reserve a background slot for `key`: false when it is already being drawn or the slots are
+/// full (a later frame tries again).
+#[cfg(not(target_arch = "wasm32"))]
+fn begin(key: ThumbKey) -> bool {
+    let mut g = PENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let set = g.get_or_insert_with(HashSet::new);
+    set.len() < MAX_IN_FLIGHT && set.insert(key)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ended(key: ThumbKey) {
+    let mut g = PENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(set) = g.as_mut() {
+        set.remove(&key);
+    }
+}
+
+/// Thumbnail of `of` `h` points high, or `None` until one is ready. `visible` says whether the
+/// row is on screen: a document with hundreds of pages must not draw them all.
+fn thumb(app: &DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32, visible: bool) -> Option<egui::TextureHandle> {
+    if !visible {
+        return None;
+    }
+    let st = app.session.active()?;
     let (uid, rev) = (st.uid, st.revision);
-    map.retain(|k, _| !(k.0 == uid && k.1 != rev));
-    map.insert(key, tex.clone());
-    Some(tex)
+    let key = (uid, rev, of, h.round() as u32);
+    if let Some(tex) = cached(key) {
+        return tex;
+    }
+    let px = (h as f64 * ctx.pixels_per_point() as f64).max(1.0);
+    // Background: the panel keeps showing the previous revision instead of waiting for pixels.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !inline() {
+        if begin(key) {
+            worker::submit(ctx, worker::Job { key, doc: std::sync::Arc::clone(&st.doc), cache: std::sync::Arc::clone(&app.session.cache), of, px });
+        }
+        return older(uid, of, key.3);
+    }
+    store(ctx, key, draw_inline(&st.doc, &app.session.cache, of, px));
+    if let Some(tex) = cached(key) { tex } else { older(uid, of, key.3) }
+}
+
+/// Background thumbnail rendering: one thread with its own renderer, so the Pages panel never
+/// blocks the interface.
+#[cfg(not(target_arch = "wasm32"))]
+mod worker {
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use super::{Document, Rendered, ThumbKey, ThumbOf, draw, ended, store};
+
+    pub(super) struct Job {
+        pub key: ThumbKey,
+        pub doc: Arc<Document>,
+        pub cache: Arc<designcraft_compose::Cache>,
+        pub of: ThumbOf,
+        pub px: f64,
+    }
+
+    struct Worker {
+        jobs: Sender<Job>,
+        done: Mutex<Receiver<(ThumbKey, Option<(Rendered, String)>)>>,
+    }
+
+    static WORKER: OnceLock<Option<Worker>> = OnceLock::new();
+
+    fn worker(ctx: &egui::Context) -> Option<&'static Worker> {
+        WORKER
+            .get_or_init(|| {
+                let (jobs, job_rx) = std::sync::mpsc::channel::<Job>();
+                let (result_tx, result_rx) = std::sync::mpsc::channel::<(ThumbKey, Option<(Rendered, String)>)>();
+                let ctx = ctx.clone();
+                let spawned = std::thread::Builder::new().name("designcraft-thumbs".into()).spawn(move || {
+                    let mut r = designcraft_render::Renderer::new();
+                    r.threads = 0;
+                    while let Ok(job) = job_rx.recv() {
+                        // A panic on one row must not end this thread: its slot would never be
+                        // freed, and after four the panel would draw no thumbnail at all again.
+                        let (drawn, panicked) = contained(|| draw(&mut r, &job.doc, &job.cache, job.of, job.px));
+                        if panicked {
+                            // Its caches may be inconsistent after a panic: start clean.
+                            r = designcraft_render::Renderer::new();
+                            r.threads = 0;
+                        }
+                        if result_tx.send((job.key, drawn)).is_err() {
+                            break;
+                        }
+                        ctx.request_repaint();
+                    }
+                });
+                if spawned.is_err() {
+                    return None;
+                }
+                Some(Worker { jobs, done: Mutex::new(result_rx) })
+            })
+            .as_ref()
+    }
+
+    /// Queue a thumbnail (the caller reserved its slot with [`begin`]).
+    pub(super) fn submit(ctx: &egui::Context, job: Job) {
+        let Some(w) = worker(ctx) else {
+            ended(job.key);
+            return;
+        };
+        if let Err(e) = w.jobs.send(job) {
+            ended(e.0.key);
+        }
+    }
+
+    /// A draw that panics (a renderer bug on one document) is contained: the row is left undrawn
+    /// with `None`, which frees its slot, and the worker draws the next one.
+    pub(super) fn contained<T>(draw: impl FnOnce() -> Option<T>) -> (Option<T>, bool) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(draw)) {
+            Ok(drawn) => (drawn, false),
+            Err(_) => (None, true),
+        }
+    }
+
+    /// Upload finished thumbnails, on the interface thread.
+    pub(super) fn poll(ctx: &egui::Context) {
+        if WORKER.get().is_none() {
+            return;
+        }
+        let Some(w) = worker(ctx) else { return };
+        let Ok(done) = w.done.lock() else { return };
+        while let Ok((key, drawn)) = done.try_recv() {
+            ended(key);
+            store(ctx, key, drawn);
+        }
+    }
 }
 
 /// Thumbnail sizes of the Pages panel (Panel Options › Size), InDesign's six.
@@ -244,7 +452,7 @@ impl ParentRow {
 /// `thumbnails`), or blank pages for [None] and when the spread can't be rendered.
 fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &ParentRow, h: f32, thumbnails: bool, t: &Tokens) {
     let area = egui::Rect::from_min_size(egui::pos2(right.x - row.unit_w * h, right.y - h / 2.0), vec2(row.unit_w * h, h));
-    let tex = if thumbnails { row.parent.and_then(|(_, id)| thumb(app, ui.ctx(), ThumbOf::Parent(id), h)) } else { None };
+    let tex = if thumbnails { row.parent.and_then(|(_, id)| thumb(app, ui.ctx(), ThumbOf::Parent(id), h, ui.is_rect_visible(area))) } else { None };
     let p = ui.painter();
     match tex {
         Some(tex) => {
@@ -263,6 +471,11 @@ fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &Pare
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
+    // Thumbnails the background thread finished since the last frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !inline() {
+        worker::poll(ui.ctx());
+    }
     let doc = st.doc.clone();
     let editing_parents = st.editing_parents;
     let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
@@ -455,7 +668,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                         });
                         let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                        match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
+                        let tex = if thumbnails { thumb(app, ui.ctx(), ThumbOf::Page(abs), th, ui.is_rect_visible(pr)) } else { None };
+                        match tex {
                             Some(tex) => {
                                 ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                             }
