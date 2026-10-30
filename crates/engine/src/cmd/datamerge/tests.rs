@@ -519,6 +519,69 @@ fn typed_fields_keep_style_and_unknown_markers() {
     assert_eq!(story.format_after(at).over.size, Some(21.0));
 }
 
+/// Every record stat'd and read its image again, so a sheet naming one file in many rows read it
+/// once per row -- up to 256 MiB each time (#1595). A merge reads a file once and the records
+/// share the bytes.
+#[test]
+fn one_image_named_by_many_records_is_read_once() {
+    let dir = scratch("image-reads");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    // 25 records, all naming the same file.
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 25);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len).unwrap_or(0), 0, "every record found the image");
+
+    // Each record has its graphic, and they share one buffer: the document holds the file's bytes
+    // once however many records named it.
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let graphics: Vec<_> = doc
+        .spreads
+        .iter()
+        .flat_map(|sp| &sp.items)
+        .filter_map(|it| match &it.content {
+            Content::Graphic(g) => Some(g.asset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(graphics.len(), 25, "one graphic per record");
+}
+
+/// The same merge, counting what the engine actually hands the file system: `io::touched` records
+/// every path read, so the reads are counted rather than inferred. The document already shares
+/// identical asset bytes, so memory alone does not show this -- the I/O is the bug (#1595).
+#[test]
+fn a_merge_reads_a_repeated_image_once_not_once_per_record() {
+    let dir = scratch("image-read-count");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+
+    let (r, seen) = crate::io::touched(|| exec(&mut s, "data.merge", json!({})));
+    assert_eq!(r["records"], 25);
+    let reads = seen.iter().filter(|p| p.ends_with("shared.png")).count();
+    assert!(reads <= 2, "the image is read once for the merge, not once per record: {reads} reads for 25 records");
+}
+
 #[test]
 fn images_resolve_in_order_and_roles_win() {
     let dir = scratch("images");
