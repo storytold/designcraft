@@ -364,10 +364,94 @@ pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) 
         if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
             show_panel(app, "textWrap");
         }
-        if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
-            let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
+        effects_button(app, ui);
+    });
+}
+
+/// The effects applied to the selection's first object, as Effects dialog pages, in the
+/// dialog's order (for the link beside the button); and, over every selected object, whether
+/// any has an effect (Clear Effects) and whether any has transparency other than plain (Clear
+/// All Transparency).
+pub(super) fn applied_effects(app: &DesignApp) -> (Vec<&'static str>, bool, bool) {
+    let Some(st) = app.session.active() else { return (Vec::new(), false, false) };
+    let items: Vec<&designcraft_doc::Item> = st.selection.items.iter().filter_map(|id| st.doc.item(*id)).collect();
+    let pages = items.first().map(|it| effect_pages(it)).unwrap_or_default();
+    let any_effect = items.iter().any(|it| !effect_pages(it).is_empty());
+    let transparent = any_effect || items.iter().any(|it| it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal);
+    (pages, any_effect, transparent)
+}
+
+/// The Effects dialog pages of the effects `it` has on, in the dialog's order.
+fn effect_pages(it: &designcraft_doc::Item) -> Vec<&'static str> {
+    let fx = &it.effects;
+    let on = [
+        ("dropShadow", fx.drop_shadow.on),
+        ("innerShadow", fx.inner_shadow.on),
+        ("outerGlow", fx.outer_glow.on),
+        ("innerGlow", fx.inner_glow.on),
+        ("bevel", fx.bevel.on),
+        ("satin", fx.satin.on),
+        ("feather", fx.feather > 0.0),
+        ("directionalFeather", fx.directional_feather.on),
+        ("gradientFeather", fx.gradient_feather.on),
+    ];
+    on.iter().filter(|(_, on)| *on).map(|(p, _)| *p).collect()
+}
+
+/// Properties › Appearance › fx, as InDesign's: a menu of the effects (each opens the Effects
+/// dialog on its page), Clear Effects, Clear All Transparency and Global Light…; beside it, the
+/// first effect applied, a link to it in the dialog.
+fn effects_button(app: &mut DesignApp, ui: &mut Ui) {
+    let lang = app.ui.language.clone();
+    let (applied, any_effect, transparent) = applied_effects(app);
+    let fx = icon_toggle(ui, "fx", !applied.is_empty(), crate::i18n::tr(&lang, "Effects"));
+    let mut page = None;
+    let mut clear = None;
+    let mut global_light = false;
+    egui::Popup::menu(&fx).show(|ui| {
+        for (p, label) in crate::effects_dialog::PAGES {
+            if ui.button(crate::rtl::widget(ui, format!("{}…", crate::i18n::tr(&lang, label)))).clicked() {
+                page = Some(p);
+                ui.close();
+            }
+            // InDesign keeps Transparency apart from the effects.
+            if p == "transparency" {
+                ui.separator();
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(any_effect, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear Effects")))).clicked() {
+            clear = Some(false);
+            ui.close();
+        }
+        if ui.add_enabled(transparent, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Clear All Transparency")))).clicked() {
+            clear = Some(true);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Global Light…"))).clicked() {
+            global_light = true;
+            ui.close();
         }
     });
+    if let Some(&first) = applied.first()
+        && let Some((_, label)) = crate::effects_dialog::PAGES.iter().find(|(p, _)| *p == first)
+    {
+        let text = crate::i18n::tr(&lang, label);
+        let w = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::proportional(11.5), egui::Color32::WHITE).size().x) + 4.0;
+        if link_label(ui, text, w).clicked() {
+            page = Some(first);
+        }
+    }
+    if let Some(p) = page {
+        crate::effects_dialog::open(app, p);
+    }
+    if let Some(opaque) = clear {
+        let _ = app.run("object.clearEffects", if opaque { json!({"opaque": true}) } else { json!({}) });
+    }
+    if global_light {
+        crate::menus::activate(app, "object.globalLight", &Value::Null);
+    }
 }
 
 /// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's

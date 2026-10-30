@@ -588,6 +588,36 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             effects_all
         ),
+        cmd!(
+            "object.clearEffects",
+            "Clear Effects",
+            [],
+            None,
+            "{opaque?: bool (also Normal 100 %: the Effects panel's Clear All button), ids?} — removes every effect (the Effects panel's trash button)",
+            has_selection,
+            |s, p| {
+                let opaque = bool_or(p, "opaque", false);
+                let ids = targets(s, p)?;
+                s.edit(|d, _| {
+                    let mut changed = 0;
+                    for id in &ids {
+                        // Locked objects (or ones in a locked group, or on a locked layer) keep
+                        // their effects, as with `object.effects`.
+                        if path_editable(d, *id, "object.clearEffects").is_err() {
+                            continue;
+                        }
+                        let Some(it) = d.item_mut(*id) else { continue };
+                        it.effects = Default::default();
+                        if opaque {
+                            it.opacity = 1.0;
+                            it.blend = Default::default();
+                        }
+                        changed += 1;
+                    }
+                    Ok(json!({"changed": changed}))
+                })
+            }
+        ),
         cmd!("object.feather", "Basic Feather", ["Object", "Effects"], None, "{width (0 = off), ids?}", has_selection, |s, p| {
             let w = f64_or(p, "width", 9.0).max(0.0);
             set_effects(s, p, "object.feather", move |fx| fx.feather = w)
@@ -5669,6 +5699,52 @@ mod fill_tint_tests {
         let stroke_of = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.clone();
         assert_eq!((stroke_of(&s, a).swatch.as_str(), stroke_of(&s, a).tint, stroke_of(&s, a).weight), ("C=100 M=0 Y=0 K=0", 0.5, 2.0));
         assert!(stroke_of(&s, b).is_none());
+    }
+}
+
+#[cfg(test)]
+mod clear_effects_tests {
+    use serde_json::json;
+
+    #[test]
+    fn clear_effects_removes_them_and_opaque_resets_transparency() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let item = |s: &crate::Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        s.execute("object.effects", &json!({"ids": [id], "opacity": 0.5, "blend": "multiply", "effects": {"innerGlow": {"on": true}, "feather": 4}}))
+            .unwrap();
+        s.execute("object.clearEffects", &json!({"ids": [id]})).unwrap();
+        let it = item(&s);
+        assert!(!it.effects.any());
+        assert_eq!(it.opacity, 0.5, "the trash button keeps the transparency");
+        s.execute("object.clearEffects", &json!({"ids": [id], "opaque": true})).unwrap();
+        let it = item(&s);
+        assert_eq!((it.opacity, it.blend), (1.0, designcraft_color::BlendMode::Normal));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(item(&s).opacity, 0.5);
+        // A locked object named by `ids` keeps its effects and transparency.
+        s.execute("object.effects", &json!({"ids": [id], "effects": {"feather": 4}})).unwrap();
+        s.execute("object.lock", &json!({"ids": [id]})).unwrap();
+        let r = s.execute("object.clearEffects", &json!({"ids": [id], "opaque": true})).unwrap();
+        assert_eq!(r["changed"], 0);
+        let it = item(&s);
+        assert!(it.effects.any());
+        assert_eq!((it.opacity, it.blend), (0.5, designcraft_color::BlendMode::Multiply));
+    }
+
+    #[test]
+    fn a_child_of_a_locked_group_keeps_its_effects() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [60, 0, 110, 50]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.effects", &json!({"ids": [a], "effects": {"feather": 4}})).unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.lock", &json!({"ids": [g]})).unwrap();
+        let r = s.execute("object.clearEffects", &json!({"ids": [a]})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().effects.any());
     }
 }
 

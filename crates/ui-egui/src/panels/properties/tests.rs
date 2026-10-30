@@ -786,6 +786,43 @@ fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
     assert_eq!(doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch, "[None]", "the frame isn't");
 }
 
+/// Properties › fx, as InDesign's: a menu of every effect (each opens the Effects dialog on
+/// it), Clear Effects and Clear All Transparency; the effect applied shows beside the button
+/// and opens the dialog on it.
+#[test]
+fn the_fx_button_lists_the_effects_and_names_the_one_applied() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 172, 172], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = panel(app);
+    assert!(h.query_by_label("Drop Shadow").is_none(), "no effect named yet");
+    h.get_by_label("Effects").click();
+    h.run_steps(3);
+    for l in ["Transparency…", "Drop Shadow…", "Outer Glow…", "Gradient Feather…", "Clear Effects", "Clear All Transparency", "Global Light…"]
+    {
+        let _ = h.get_by_label(l);
+    }
+    h.get_by_label("Outer Glow…").click();
+    h.run_steps(3);
+    let d = h.state().ui.dialog.clone().expect("the Effects dialog");
+    assert_eq!(d.id, crate::effects_dialog::ID);
+    h.state_mut().ui.dialog = None;
+    // A drop shadow applied: its name beside fx opens the dialog on it; Clear Effects removes it.
+    h.state_mut().run("object.dropShadow", json!({"on": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Drop Shadow").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == crate::effects_dialog::ID));
+    h.state_mut().ui.dialog = None;
+    h.get_by_label("Effects").click();
+    h.run_steps(3);
+    h.get_by_label("Clear Effects").click();
+    h.run_steps(3);
+    let st = h.state().session.active().unwrap();
+    assert!(!st.doc.item(designcraft_doc::ids::ItemId(id)).unwrap().effects.drop_shadow.on);
+}
+
 #[test]
 fn transform_flips_and_rotates_from_properties() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
