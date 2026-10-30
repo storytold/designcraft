@@ -25,8 +25,16 @@ impl CellRange {
 
 impl Table {
     /// A `rows × cols` table (`header` + body + `footer` rows) whose columns share `width`.
+    ///
+    /// The shape is clamped to [`clamped_size`](super::clamped_size): the counts reach this from
+    /// IDML and DOCX files, where they are whatever the file says (#1583).
     pub fn new(id: u64, body_rows: usize, cols: usize, header: usize, footer: usize, width: f64) -> Table {
-        let cols = cols.max(1);
+        // Header, body and footer rows share one budget: the total is clamped first, then the
+        // header and footer take what they can of it, and the body keeps at least one row.
+        let (total, cols) = super::clamped_size(body_rows.max(1).saturating_add(header).saturating_add(footer), cols);
+        let header = header.min(total.saturating_sub(1));
+        let footer = footer.min(total.saturating_sub(header).saturating_sub(1));
+        let body_rows = total.saturating_sub(header).saturating_sub(footer).max(1);
         let mut rows = Vec::new();
         rows.extend((0..header).map(|_| Row { kind: RowKind::Header, ..Default::default() }));
         rows.extend((0..body_rows.max(1)).map(|_| Row::default()));
