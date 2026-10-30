@@ -2,7 +2,7 @@
 use super::DocState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::bytes::from_bytes;
-use super::bytes::{to_bytes_with_preview, with_document_extension};
+use super::bytes::{bytes_for_path, with_save_extension};
 #[cfg(not(target_arch = "wasm32"))]
 use super::open::load_document_fonts;
 #[cfg(test)]
@@ -13,7 +13,7 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc_mut()?;
     // Saving to the document's own file keeps its name, even one opened without the extension.
     let path = str_param(p, "path")
-        .map(with_document_extension)
+        .map(with_save_extension)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
     // Before anything about the document changes: a refused save leaves it as it was.
@@ -23,7 +23,7 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     crate::cmd::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
     let paths_changed = saved.data_merge != st.doc.data_merge;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
-    let bytes = to_bytes_with_preview(&saved, &s.cache)?;
+    let bytes = bytes_for_path(&saved, &path, &s.cache)?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;

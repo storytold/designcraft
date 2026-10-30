@@ -1,6 +1,7 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use super::browser_policy::{has_query_flag, mime_for};
+use super::prefs_store::{self, PrefsSync};
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
@@ -73,10 +74,16 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    // The preferences saved by an earlier visit (as the desktop app reads prefs.json).
+                    let stored = local_storage().and_then(|s| s.get_item(prefs_store::KEY).ok().flatten());
+                    if let Some(prefs) = prefs_store::decode(stored.as_deref()) {
+                        app.session.prefs = prefs;
+                    }
+                    let prefs_sync = PrefsSync::new(stored);
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, prefs_sync }))
                 }),
             )
             .await;
@@ -335,6 +342,11 @@ fn add_document_recovery_controls(snapshots: Vec<RecoveryDocument>) -> Result<bo
     Ok(true)
 }
 
+/// The page's local storage; `None` where the browser refuses it (some private modes).
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
@@ -345,12 +357,25 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    /// Writes the preferences to local storage when they change.
+    prefs_sync: PrefsSync,
 }
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        // Changed preferences go to local storage, so they survive a reload.
+        if self.prefs_sync.due(ctx.input(|i| i.time))
+            && let Some(json) = self.prefs_sync.changed(&self.app.session.prefs)
+            && let Some(storage) = local_storage()
+        {
+            // Counted as stored only once written; otherwise it's tried again at the next check.
+            match storage.set_item(prefs_store::KEY, &json) {
+                Ok(()) => self.prefs_sync.stored(json),
+                Err(e) => log::warn!("couldn't keep the preferences in local storage: {e:?}"),
+            }
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {

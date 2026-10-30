@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::EngineError;
-use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
+use super::bytes::{base64_encode, bytes_for_path, to_bytes, with_save_extension};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
 use super::place::{file_place, place_drop, place_load, read_source};
@@ -50,14 +50,14 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.recent_files.clear();
             ok()
         }),
-        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
+        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `.idml` path is written as IDML (images embedded); any other `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a `.idml` path is written as IDML (images embedded); any other path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a `.idml` path is written as IDML, any other without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
-            let path = with_document_extension(path);
+            let path = with_save_extension(path);
             let mut copy = (*s.doc()?.doc).clone();
             crate::cmd::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = to_bytes_with_preview(&copy, &s.cache)?;
+            let bytes = bytes_for_path(&copy, &path, &s.cache)?;
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))

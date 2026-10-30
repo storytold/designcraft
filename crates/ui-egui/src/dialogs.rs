@@ -1860,6 +1860,32 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Links")).font(semibold(12.0))));
                     check(ui, d, "linkTextFiles", crate::i18n::tr(&app.ui.language, "Create Links When Placing Text Files"));
+                    ui.add_space(6.0);
+                    ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Saving")).font(semibold(12.0))));
+                    ui.horizontal(|ui| {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Save documents as:"));
+                        let cur = d.s("saveFormat");
+                        let formats = [("designcraft", "DesignCraft (.designcraft)"), ("idml", "InDesign Markup (.idml)")];
+                        let shown = formats.iter().find(|(v, _)| *v == cur).map_or(formats[0].1, |(_, l)| l);
+                        craft_ui::ComboBox::from_id_salt("pref_save_format")
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for (v, l) in formats {
+                                    if ui.selectable_label(v == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                                        d.fields.insert("saveFormat".into(), json!(v));
+                                    }
+                                }
+                            });
+                    });
+                    crate::rtl::label(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(
+                            &app.ui.language,
+                            "InDesign Markup: new documents are saved as .idml, and an opened .idml file is saved back to itself.",
+                        ))
+                        .small(),
+                    );
                 }
                 "type" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
@@ -3658,6 +3684,10 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     }).collect::<Vec<_>>()});
             if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
                 prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
+            }
+            // Save documents as (File Handling): only a format the dialog shows.
+            if let Some(format) = Some(d.s("saveFormat")).filter(|f| f == "designcraft" || f == "idml") {
+                prefs["saveFormat"] = json!(format);
             }
             app.run("prefs.set", prefs)?;
             app.ui.dynamic_spelling = d.b("dynamicSpelling");

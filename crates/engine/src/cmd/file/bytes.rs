@@ -53,6 +53,26 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     save_bytes(d, png.as_deref())
 }
 
+/// The bytes a save to `path` writes: an IDML package (images embedded) for a `.idml` name, else
+/// DesignCraft's own format with its first-page picture (Preferences › File Handling › Save
+/// documents as).
+pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache) -> Result<Vec<u8>> {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => crate::cmd::interchange::idml_bytes(d, &designcraft_idml::ExportOptions::default()),
+        crate::SaveFormat::Designcraft => to_bytes_with_preview(d, cache),
+    }
+}
+
+/// The path a save writes to: a `.idml` name as given (written as IDML, see [`bytes_for_path`]),
+/// any other with the `.designcraft` extension added when it lacks it
+/// ([`with_document_extension`]).
+pub fn with_save_extension(path: &str) -> String {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => path.to_string(),
+        crate::SaveFormat::Designcraft => with_document_extension(path),
+    }
+}
+
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
     load_bytes(b).map(|(d, _)| d)
 }

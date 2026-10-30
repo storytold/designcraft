@@ -10,7 +10,7 @@ mod export;
 mod invoke;
 mod keys;
 mod quick_apply;
-mod run;
+pub(crate) mod run;
 mod state;
 mod tables;
 mod tree;
@@ -62,5 +62,7 @@ fn cmd_item(id: &str, params: Value) -> Item {
     Item::Cmd { label, id: id.to_string(), params, shortcut }
 }
 
+#[cfg(test)]
+mod save_format_tests;
 #[cfg(test)]
 mod tests;
