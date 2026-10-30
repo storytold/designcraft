@@ -278,6 +278,47 @@ fn style_groups_rename_every_use() {
     assert!(s.execute("style.group", &json!({"names": ["[Basic Paragraph]"], "group": "X"})).is_err());
 }
 
+/// The styles panels' groups, as InDesign's: New Style Group makes an empty "Style Group 1";
+/// styles move into it; renaming it renames its styles and their uses; a group its styles
+/// leave stays, empty; and it all survives saving.
+#[test]
+fn style_groups_can_be_empty_created_and_renamed() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Bullets"})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Recipe Categories"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Eggs"})).unwrap();
+    let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 4})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": "Bullets"})).unwrap();
+    let groups = |s: &Session| s.doc().unwrap().doc.styles.style_groups(true);
+    assert_eq!(s.execute("style.group.create", &json!({"kind": "paragraph"})).unwrap()["name"], "Style Group 1");
+    assert_eq!(s.execute("style.group.create", &json!({"kind": "paragraph"})).unwrap()["name"], "Style Group 2");
+    assert_eq!(groups(&s), ["Style Group 1", "Style Group 2"]);
+    s.execute("style.group", &json!({"kind": "paragraph", "names": ["Bullets", "Recipe Categories"], "group": "Style Group 1"})).unwrap();
+    let r = s.execute("style.group.rename", &json!({"kind": "paragraph", "name": "Style Group 1", "to": "Basic Styles"})).unwrap();
+    assert_eq!(r["renamed"]["Style Group 1/Bullets"], "Basic Styles/Bullets");
+    let d = s.doc().unwrap().doc.clone();
+    assert_eq!(d.story(sid).unwrap().paras[0].style, "Basic Styles/Bullets", "the text follows");
+    assert_eq!(groups(&s), ["Basic Styles", "Style Group 2"]);
+    assert!(s.execute("style.group.rename", &json!({"kind": "paragraph", "name": "Basic Styles", "to": "Style Group 2"})).is_err());
+    assert!(s.execute("style.group.create", &json!({"kind": "paragraph", "name": "Basic Styles"})).is_err());
+    assert!(s.execute("style.group.create", &json!({"kind": "paragraph", "name": " / "})).is_err());
+    // Out of the group again: the group stays, empty.
+    s.execute("style.group", &json!({"kind": "paragraph", "names": ["Basic Styles/Bullets", "Basic Styles/Recipe Categories"], "group": ""}))
+        .unwrap();
+    assert_eq!(groups(&s), ["Basic Styles", "Style Group 2"]);
+    // Saved and opened again.
+    let bytes = s.execute("file.serialize", &json!({})).unwrap();
+    let mut back = Session::new();
+    back.execute("file.openBytes", &json!({"name": "copy", "base64": bytes["base64"]})).unwrap();
+    assert_eq!(back.doc().unwrap().doc.styles.style_groups(true), ["Basic Styles", "Style Group 2"]);
+    // Character style groups are their own.
+    assert_eq!(s.execute("style.group.create", &json!({"kind": "character"})).unwrap()["name"], "Style Group 1");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.styles.style_groups(false).is_empty());
+}
+
 #[test]
 fn character_style_edit_sets_unsets_rebases_and_renames_every_use() {
     let mut s = Session::new();

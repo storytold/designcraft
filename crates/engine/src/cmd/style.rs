@@ -15,7 +15,8 @@ mod swatches;
 use color::{apply_color, apply_gradient, has_text_or_selection, sample_color};
 use object::{apply_object, clear_object_overrides, create_object, edit_object};
 use paragraph::{
-    apply_char, apply_para, create_char, create_para, delete_char, delete_para, edit_char, edit_para, export_tag_key, group_styles, redefine,
+    apply_char, apply_para, create_char, create_group, create_para, delete_char, delete_para, edit_char, edit_para, export_tag_key, group_styles,
+    redefine, rename_group,
 };
 pub(crate) use paragraph::{check_grep_styles, grep_style_warnings};
 pub use swatches::parse_color;
@@ -134,7 +135,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
+            "{name, rename?, basedOn?, nextStyle?: style | null ([Same style]), resetToBase?: bool (Reset To Base: the style sets nothing of its own; `para`/`chars` then apply over its Based On), para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
             has_doc,
             edit_para
         ),
@@ -230,6 +231,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{kind?: linear|radial, stops?: [{location: 0–100, color: \"#rrggbb\"|{c,m,y,k}(0..100)|[r,g,b](0..255)|{model: rgb|cmyk|gray, …}(0..1) | swatch: a color swatch's name (as dropped on the Gradient panel: its color on screen, its inks in print), opacity?: 0–100, midpoint?: 13–87}], reverse?: bool, angle?: degrees, from?: [x,y], to?: [x,y] (spread coords: the Gradient Swatch tool's drag), target?: fill|stroke, ids?} → {swatch, kind, stops: [{location, color, swatch?, opacity, midpoint}]} — edits the fill's (or the stroke's) gradient (an unnamed gradient unless it equals a gradient swatch)",
             super::has_selection,
             apply_gradient
+        ),
+        cmd!(
+            "style.group.create",
+            "New Style Group",
+            [],
+            None,
+            "{kind: paragraph|character, name? (default: the first free \"Style Group n\")} — an empty style group, as the styles panels' folder button makes it → {name}",
+            has_doc,
+            create_group
+        ),
+        cmd!(
+            "style.group.rename",
+            "Rename Style Group",
+            [],
+            None,
+            "{kind: paragraph|character, name, to} — the group and every style in it (Group/Name) are renamed, and so is every use; `to` must not be a group already → {renamed: {old: new}}",
+            has_doc,
+            rename_group
         ),
         cmd!(
             "style.group",

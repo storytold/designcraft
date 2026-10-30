@@ -1,5 +1,18 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
+    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
+    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
+    (
+        "Apply Style to Selection",
+        [
+            "Format auf Auswahl anwenden",
+            "Appliquer le style à la sélection",
+            "Aplicar estilo a la selección",
+            "選択範囲にスタイルを適用",
+            "将样式应用于选区",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [
@@ -1298,6 +1311,25 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Move to Color Group", "Déplacer vers le groupe de couleurs", "Move to Color Group", "Move to Color Group", "移动到颜色组"],
     ),
     ("Move to Group", ["Move to Group", "Déplacer vers le groupe", "Move to Group", "Move to Group", "移动到组"]),
+    ("New Style Group", ["Neue Formatgruppe", "Nouveau groupe de styles", "Nuevo grupo de estilos", "新規スタイルグループ", "新建样式组"]),
+    (
+        "Rename Style Group",
+        [
+            "Formatgruppe umbenennen",
+            "Renommer le groupe de styles",
+            "Cambiar nombre del grupo de estilos",
+            "スタイルグループ名を変更",
+            "重命名样式组",
+        ],
+    ),
+    (
+        "Delete Paragraph Style…",
+        ["Absatzformat löschen …", "Supprimer le style de paragraphe…", "Eliminar estilo de párrafo…", "段落スタイルを削除…", "删除段落样式…"],
+    ),
+    (
+        "Delete Character Style…",
+        ["Zeichenformat löschen …", "Supprimer le style de caractère…", "Eliminar estilo de carácter…", "文字スタイルを削除…", "删除字符样式…"],
+    ),
     ("Multiline", ["Multiline", "Multiligne", "Multiline", "Multiline", "多行"]),
     ("Name", ["Name", "Nom", "Name", "Name", "名称"]),
     ("Name:", ["Name:", "Nom :", "Name:", "Name:", "名称："]),

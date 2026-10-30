@@ -102,6 +102,13 @@ pub struct Styles {
     pub default_character: String,
     pub default_text_frame: String,
     pub default_graphic_frame: String,
+    /// Paragraph and character style groups that exist with no style in them yet (Create New
+    /// Style Group, or a group whose styles were moved out), by path ("Titles", "Titles/Display").
+    /// A group holding styles comes from their `Group/Name` names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paragraph_groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub character_groups: Vec<String>,
 }
 
 /// A style's Export Tagging.
@@ -129,6 +136,18 @@ impl Styles {
     /// Export tagging of a paragraph (`character` false) or character style.
     pub fn export_tag(&self, name: &str, character: bool) -> Option<&ExportTag> {
         self.export_tags.get(&format!("{}:{name}", if character { "c" } else { "p" }))
+    }
+
+    /// The paragraph (`para`) or character style groups, sorted: those the styles' `Group/Name`
+    /// names give and the empty ones.
+    pub fn style_groups(&self, para: bool) -> Vec<String> {
+        let names: Vec<&str> =
+            if para { self.paragraph.iter().map(|s| s.name.as_str()).collect() } else { self.character.iter().map(|s| s.name.as_str()).collect() };
+        let empty = if para { &self.paragraph_groups } else { &self.character_groups };
+        let mut g: Vec<String> = names.iter().filter_map(|n| n.rsplit_once('/').map(|(g, _)| g.to_string())).chain(empty.iter().cloned()).collect();
+        g.sort();
+        g.dedup();
+        g
     }
 }
 
@@ -174,6 +193,8 @@ impl Default for Styles {
             default_character: NO_CHAR_STYLE.into(),
             default_text_frame: BASIC_TEXT_FRAME.into(),
             default_graphic_frame: BASIC_GRAPHICS_FRAME.into(),
+            paragraph_groups: Vec::new(),
+            character_groups: Vec::new(),
         }
     }
 }

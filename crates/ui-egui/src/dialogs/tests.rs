@@ -3269,7 +3269,8 @@ fn new_paragraph_style_opens_its_options_and_creates_the_style() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     let st = app.session.active().unwrap().doc.styles.para("Paragraph Style 1").cloned().unwrap();
     assert_eq!(st.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
-    assert_eq!(st.chars, CharAttrs { size: Some(20.0), ..Default::default() });
+    // The selected text's own Italic comes along, as InDesign's New Paragraph Style takes it.
+    assert_eq!(st.chars, CharAttrs { size: Some(20.0), font_style: Some("Italic".into()), ..Default::default() });
 }
 
 #[test]
@@ -3520,4 +3521,85 @@ fn character_style_options_set_the_digits() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "c.digits", "value": "farsi"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
+}
+
+/// The course's chapter 20: the "Recipe Categories" title formatted on the page (size, All
+/// Caps, tracking, space after), then New Paragraph Style from it: the dialog starts from the
+/// text, and with Apply Style to Selection the paragraph takes the new style. Next Style and
+/// Reset To Base are set from General.
+#[test]
+fn a_new_paragraph_style_starts_from_the_selected_text() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Egg Recipes\rBoil them."})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 11})).unwrap();
+    app.run("type.char", json!({"attrs": {"size": 20, "capitalization": "allCaps", "tracking": 50}})).unwrap();
+    app.run("type.para", json!({"attrs": {"spaceAfter": 6}})).unwrap();
+    open_new_style(&mut app, true);
+    let d = app.ui.dialog.clone().unwrap();
+    assert_eq!(
+        (d.fields["c.size"].clone(), d.fields["c.capitalization"].clone(), d.fields["p.spaceAfter"].clone()),
+        (json!(20.0), json!("allCaps"), json!(6.0))
+    );
+    assert!(d.b("apply") && !d.fields.contains_key("c.fontFamily"), "only what differs from [No Paragraph Style]");
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("rename".into(), json!("Recipe Categories"));
+        d.fields.insert("nextStyle".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+    }
+    confirm(&mut app).unwrap();
+    let a = app.run("type.selectionAttrs", json!({})).unwrap();
+    assert_eq!(a["paragraphStyle"], "Recipe Categories", "applied to the selection");
+    assert_eq!(a["paraOverrides"].as_u64().unwrap_or(0) + a["charOverrides"].as_u64().unwrap_or(0), 0);
+    let style = |app: &DesignApp| app.session.doc().unwrap().doc.styles.para("Recipe Categories").cloned().unwrap();
+    assert_eq!(style(&app).next_style.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+    assert_eq!(style(&app).chars.size, Some(20.0));
+    // Reset To Base: the style keeps nothing of its own, apart from the edits made then.
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Recipe Categories", "basedOn": designcraft_doc::BASIC_PARAGRAPH})));
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("resetToBase".into(), json!(true));
+        d.fields.insert("c.tracking".into(), json!(10.0));
+    }
+    confirm(&mut app).unwrap();
+    let s = style(&app);
+    assert_eq!((s.chars.size, s.chars.tracking, s.para.space_after), (None, Some(10.0), None), "{s:?}");
+    assert_eq!(s.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+}
+
+/// A Based On changed in the dialog (without Reset To Base) is what the fields are checked
+/// against: the style's own settings over the new parent.
+#[test]
+fn a_changed_based_on_is_what_the_fields_are_checked_against() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Loose", "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Child", "basedOn": "Loose"})).unwrap();
+    let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Child"}));
+    d.fields.insert("p.wordSpaceDesired".into(), json!(1.0));
+    assert!(check_paragraph_style_justification(&app, &d).is_err(), "below Loose's minimum");
+    d.fields.insert("basedOn".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+    assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "[Basic Paragraph]'s minimum is lower");
+}
+
+/// With Reset To Base, the justification fields are checked against the base style (the
+/// style's own minimum no longer applies), and Preview shows the reset on the page.
+#[test]
+fn reset_to_base_checks_and_previews_against_the_base() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Loose words"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Loose", "basedOn": designcraft_doc::BASIC_PARAGRAPH, "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}, "chars": {"size": 30}}))
+        .unwrap();
+    app.run("style.paragraph.apply", json!({"name": "Loose"})).unwrap();
+    let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Loose"}));
+    d.fields.insert("p.wordSpaceDesired".into(), json!(1.1));
+    assert!(check_paragraph_style_justification(&app, &d).is_err(), "below the style's own minimum");
+    d.fields.insert("resetToBase".into(), json!(true));
+    assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "the base's minimum is 100%");
+    d.fields.insert("preview".into(), json!(true));
+    style_options_preview(&mut app, &mut d);
+    assert_eq!(d.fields[PREVIEWED]["resetToBase"], true);
+    let size = app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["size"].clone();
+    assert_eq!(size, json!(12.0), "the page shows the style reset to its base");
+    app.session.cancel_interaction();
 }

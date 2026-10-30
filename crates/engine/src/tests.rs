@@ -1661,6 +1661,38 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
 
+/// Reset To Base with a new Based On: a partial rule edit resolves over the new parent, not the
+/// old one.
+#[test]
+fn reset_to_base_with_a_new_parent_resolves_rule_edits_over_it() {
+    let mut s = session();
+    let rule = |weight: f64, offset: f64| json!({"on": true, "weight": weight, "color": "[Black]", "offset": offset});
+    s.execute("style.paragraph.create", &json!({"name": "Old", "para": {"ruleBelow": rule(3.0, 1.0)}})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "New", "para": {"ruleBelow": rule(1.0, 9.0)}})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Child", "basedOn": "Old"})).unwrap();
+    s.execute("style.paragraph.edit", &json!({"name": "Child", "resetToBase": true, "basedOn": "New", "para": {"ruleBelow": {"weight": 2}}}))
+        .unwrap();
+    let r = s.doc().unwrap().doc.styles.resolve_para_style("Child").0.rule_below;
+    assert_eq!((r.weight, r.offset), (2.0, 9.0), "the offset is the new parent's");
+}
+
+/// Paragraph style references are checked: a Based On or Next Style that names no style, or
+/// that isn't a name or null, is refused and changes nothing.
+#[test]
+fn paragraph_style_references_must_name_styles() {
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+    assert!(s.execute("style.paragraph.create", &json!({"name": "Lost", "nextStyle": "Nowhere"})).is_err());
+    assert!(s.doc().unwrap().doc.styles.para("Lost").is_none());
+    s.execute("style.paragraph.create", &json!({"name": "Self", "nextStyle": "Self"})).unwrap();
+    let before = s.doc().unwrap().doc.clone();
+    for p in [json!({"name": "Body", "basedOn": "Nowhere"}), json!({"name": "Body", "basedOn": 3}), json!({"name": "Body", "nextStyle": true})] {
+        assert!(s.execute("style.paragraph.edit", &p).is_err(), "{p}");
+    }
+    assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+    s.execute("style.paragraph.edit", &json!({"name": "Body", "basedOn": null, "nextStyle": "Self"})).unwrap();
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]

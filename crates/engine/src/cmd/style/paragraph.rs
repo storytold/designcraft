@@ -437,6 +437,13 @@ pub(super) fn create_para(s: &mut Session, p: &Value) -> Result<Value> {
         {
             return Err(bad("style.paragraph.create", format!("no style `{b}`")));
         }
+        // Next Style: a style of the document, or this one.
+        if let Some(n) = &next
+            && *n != name
+            && d.styles.para(n).is_none()
+        {
+            return Err(bad("style.paragraph.create", format!("no style `{n}`")));
+        }
         d.styles_mut().paragraph.push(ParagraphStyle { name: name.clone(), based_on, next_style: next, para, chars, shortcut: String::new() });
         Ok(json!({"name": name}))
     })
@@ -499,11 +506,41 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     crate::cmd::text::validate_char_fill(&s.doc()?.doc, &chars, "style.paragraph.edit")?;
     let rename = str_param(p, "rename").map(str::trim).filter(|n| *n != name).map(str::to_string);
     let based = p.get("basedOn").cloned();
+    let next = p.get("nextStyle").cloned();
+    let reset = p.get("resetToBase").and_then(Value::as_bool).unwrap_or(false);
+    for (key, v) in [("basedOn", &based), ("nextStyle", &next)] {
+        if v.as_ref().is_some_and(|v| !v.is_string() && !v.is_null()) {
+            return Err(bad("style.paragraph.edit", format!("`{key}` must be a style name or null")));
+        }
+    }
     s.edit(|d, _| {
-        if let Some(Value::String(b)) = &based
-            && d.styles.para_based_on_cycles(&name, b)
+        if let Some(Value::String(b)) = &based {
+            if d.styles.para(b).is_none() {
+                return Err(bad("style.paragraph.edit", format!("no style `{b}`")));
+            }
+            if d.styles.para_based_on_cycles(&name, b) {
+                return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+            }
+        }
+        if let Some(Value::String(n)) = &next
+            && d.styles.para(n).is_none()
         {
-            return Err(bad("style.paragraph.edit", "based-on would create a cycle"));
+            return Err(bad("style.paragraph.edit", format!("no style `{n}`")));
+        }
+        // Reset To Base: what the style set of its own goes before the edits apply.
+        if reset {
+            let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
+            st.para = ParaAttrs::default();
+            st.chars = CharAttrs::default();
+        }
+        // A new Based On first, so the fields below resolve over the new parent.
+        if based.is_some() {
+            let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
+            match &based {
+                Some(Value::String(b)) => st.based_on = Some(b.clone()),
+                Some(Value::Null) => st.based_on = None,
+                _ => {}
+            }
         }
         if let Some(n) = &rename {
             if n.is_empty() || n.starts_with('[') {
@@ -522,9 +559,9 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.styles_mut().para_mut(&name).ok_or_else(|| bad("style.paragraph.edit", format!("no style `{name}`")))?;
         st.para.merge(&para);
         st.chars.merge(&chars);
-        match based {
-            Some(Value::String(b)) => st.based_on = Some(b),
-            Some(Value::Null) => st.based_on = None,
+        match next {
+            Some(Value::String(n)) => st.next_style = Some(n),
+            Some(Value::Null) => st.next_style = None,
             _ => {}
         }
         if let Some(n) = rename.clone() {
@@ -672,6 +709,8 @@ pub(super) fn group_styles(s: &mut Session, p: &Value) -> Result<Value> {
     let group = str_param(p, "group").unwrap_or("").trim_matches('/').to_string();
     s.edit(|d, _| {
         let mut renamed = serde_json::Map::new();
+        // The groups the styles leave stay, empty, as InDesign keeps them.
+        let before = d.styles.style_groups(para);
         for n in &names {
             if n.starts_with('[') {
                 return Err(bad("style.group", format!("`{n}` is built in")));
@@ -690,6 +729,86 @@ pub(super) fn group_styles(s: &mut Session, p: &Value) -> Result<Value> {
                 rename_style(d, para, n, &to);
                 renamed.insert(n.clone(), json!(to));
             }
+        }
+        let after = d.styles.style_groups(para);
+        let styles = d.styles_mut();
+        let empty = if para { &mut styles.paragraph_groups } else { &mut styles.character_groups };
+        empty.extend(before.into_iter().filter(|g| !after.contains(g)));
+        Ok(json!({"renamed": renamed}))
+    })
+}
+
+fn group_kind(cmd: &str, p: &Value) -> Result<bool> {
+    match str_param(p, "kind").unwrap_or("paragraph") {
+        "paragraph" => Ok(true),
+        "character" => Ok(false),
+        k => Err(bad(cmd, format!("unknown kind `{k}`"))),
+    }
+}
+
+/// A style group name: trimmed, no leading or trailing `/`, no empty part.
+fn group_name(cmd: &str, name: &str) -> Result<String> {
+    let n = name.trim().trim_matches('/').to_string();
+    if n.is_empty() || n.split('/').any(|part| part.trim().is_empty()) {
+        return Err(bad(cmd, format!("`{name}` is not a group name")));
+    }
+    Ok(n)
+}
+
+pub(super) fn create_group(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "style.group.create";
+    let para = group_kind(CMD, p)?;
+    let requested = str_param(p, "name").map(|n| group_name(CMD, n)).transpose()?;
+    s.edit(|d, _| {
+        let groups = d.styles.style_groups(para);
+        let name = match requested {
+            Some(n) if groups.contains(&n) => return Err(bad(CMD, format!("there is a group `{n}` already"))),
+            Some(n) => n,
+            None => (1..).map(|i| format!("Style Group {i}")).find(|n| !groups.contains(n)).unwrap_or_default(),
+        };
+        let styles = d.styles_mut();
+        if para {
+            styles.paragraph_groups.push(name.clone())
+        } else {
+            styles.character_groups.push(name.clone())
+        }
+        Ok(json!({"name": name}))
+    })
+}
+
+pub(super) fn rename_group(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "style.group.rename";
+    let para = group_kind(CMD, p)?;
+    let name = group_name(CMD, str_param(p, "name").ok_or_else(|| bad(CMD, "missing name"))?)?;
+    let to = group_name(CMD, str_param(p, "to").ok_or_else(|| bad(CMD, "missing to"))?)?;
+    s.edit(|d, _| {
+        let groups = d.styles.style_groups(para);
+        if !groups.contains(&name) {
+            return Err(bad(CMD, format!("no group `{name}`")));
+        }
+        if to == name {
+            return Ok(json!({"renamed": {}}));
+        }
+        // A group inside it moves with it ("Titles/Display" with "Titles").
+        let inside = |g: &str| g == name || g.starts_with(&format!("{name}/"));
+        if groups.contains(&to) || inside(&to) {
+            return Err(bad(CMD, format!("there is a group `{to}` already")));
+        }
+        let members: Vec<String> = if para {
+            d.styles.paragraph.iter().map(|s| s.name.clone()).collect()
+        } else {
+            d.styles.character.iter().map(|s| s.name.clone()).collect()
+        };
+        let mut renamed = serde_json::Map::new();
+        for n in members.iter().filter(|n| n.rsplit_once('/').is_some_and(|(g, _)| inside(g))) {
+            let new = format!("{to}{}", &n[name.len()..]);
+            rename_style(d, para, n, &new);
+            renamed.insert(n.clone(), json!(new));
+        }
+        let styles = d.styles_mut();
+        let empty = if para { &mut styles.paragraph_groups } else { &mut styles.character_groups };
+        for g in empty.iter_mut().filter(|g| inside(g)) {
+            *g = format!("{to}{}", &g[name.len()..]);
         }
         Ok(json!({"renamed": renamed}))
     })
