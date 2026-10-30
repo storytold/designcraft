@@ -4532,6 +4532,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "“{name}”的图层选项…",
         ],
     ),
+    (
+        "Duplicate Layer \"{name}\"",
+        ["Ebene „{name}“ duplizieren", "Dupliquer le calque « {name} »", "Duplicar capa «{name}»", "レイヤー「{name}」を複製", "复制图层“{name}”"],
+    ),
     ("Swatch Name:", ["Farbfeldname:", "Nom de la nuance :", "Nombre de muestra:", "スウォッチ名:", "色板名称:"]),
     (
         "Name with Color Value",

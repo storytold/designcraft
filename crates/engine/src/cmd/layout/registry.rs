@@ -1,4 +1,4 @@
-use super::layers::set_layer;
+use super::layers::{duplicate_layer, set_layer};
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
 use super::parents::{parent_options, parent_ref, parent_spread_index};
@@ -621,6 +621,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.doc_mut()?.active_layer = r;
             Ok(json!({"id": r.0}))
         }),
+        cmd!(
+            "layer.duplicate",
+            "Duplicate Layer",
+            [],
+            None,
+            "{id} → {id}. Adds a copy of the layer's settings and objects (document and parent spreads) above it, named \"<name> copy\"",
+            has_doc,
+            duplicate_layer
+        ),
         cmd!(
             "layer.set",
             "Layer Options…",

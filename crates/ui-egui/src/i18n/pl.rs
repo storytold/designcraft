@@ -212,6 +212,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Delete Column", "Usuń kolumnę"),
     ("Delete Condition", "Usuń warunek"),
     ("Delete Layer", "Usuń warstwę"),
+    ("Duplicate Layer \"{name}\"", "Powiel warstwę „{name}”"),
     ("Delete Page", "Usuń stronę"),
     ("Delete Row", "Usuń wiersz"),
     ("Delete Swatch", "Usuń próbkę"),

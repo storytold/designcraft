@@ -1867,6 +1867,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "Opzioni gruppo colori…"),
     ("Layer Options", "Opzioni livello"),
     ("Layer Options for \"{name}\"…", "Opzioni livello \"{name}\"…"),
+    ("Duplicate Layer \"{name}\"", "Duplica livello \"{name}\""),
     ("Swatch Name:", "Nome campione:"),
     ("Name with Color Value", "Nome con valore colore"),
     ("Color Type:", "Tipo colore:"),

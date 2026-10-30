@@ -78,6 +78,20 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
 }
 
 #[test]
+fn duplicate_layer_menu_item_is_localized_in_every_interface_language() {
+    let key = "Duplicate Layer \"{name}\"";
+    for (code, name) in LANGUAGES {
+        let label = tr(code, key);
+        if code.is_empty() {
+            assert_eq!(label, key, "{name}");
+        } else {
+            assert_ne!(label, key, "{name} shows the Layers panel's Duplicate Layer item in English");
+            assert!(label.contains("{name}"), "{name}");
+        }
+    }
+}
+
+#[test]
 fn context_captions_come_from_their_context_or_the_plain_translation() {
     for (lang, table) in CONTEXT_TABLES {
         for (key, scope, text) in *table {

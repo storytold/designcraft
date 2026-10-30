@@ -1835,6 +1835,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "Параметри групи кольорів…"),
     ("Layer Options", "Параметри шару"),
     ("Layer Options for \"{name}\"…", "Параметри шару «{name}»…"),
+    ("Duplicate Layer \"{name}\"", "Дублювати шар «{name}»"),
     ("Swatch Name:", "Назва зразка:"),
     ("Name with Color Value", "Назва за значенням кольору"),
     ("Color Type:", "Тип кольору:"),

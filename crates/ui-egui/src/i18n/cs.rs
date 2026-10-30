@@ -211,6 +211,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Delete Column", "Odstranit sloupec"),
     ("Delete Condition", "Odstranit podmínku"),
     ("Delete Layer", "Odstranit vrstvu"),
+    ("Duplicate Layer \"{name}\"", "Duplikovat vrstvu „{name}“"),
     ("Delete Page", "Odstranit stránku"),
     ("Delete Row", "Odstranit řádek"),
     ("Delete Swatch", "Odstranit vzorek"),

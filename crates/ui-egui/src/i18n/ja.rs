@@ -2125,6 +2125,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "カラーグループオプション…"),
     ("Layer Options", "レイヤーオプション"),
     ("Layer Options for \"{name}\"…", "「{name}」のレイヤーオプション…"),
+    ("Duplicate Layer \"{name}\"", "レイヤー「{name}」を複製"),
     ("Swatch Name:", "スウォッチ名:"),
     ("Name with Color Value", "カラー値を名前にする"),
     ("Color Type:", "カラータイプ:"),
