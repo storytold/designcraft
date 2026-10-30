@@ -1198,3 +1198,19 @@ fn facing_pages_merge_tiles_short_blocks_without_stacking() {
     let unique: std::collections::BTreeSet<_> = origins.iter().collect();
     assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
 }
+
+// #1522: each record's copy of an anchored object needs its own id, or the merged file won't reopen.
+#[test]
+fn merged_records_give_anchored_objects_their_own_ids() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name\nAda\nGrace\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 80.0], "<<Name>> here", None);
+    let b = exec(&mut s, "frame.create", json!({"rect": [450, 450, 474, 490]}));
+    exec(&mut s, "anchored.insert", json!({"ids": [b["id"]], "story": made["story"], "pos": 2}));
+    assert_eq!(exec(&mut s, "data.merge", json!({}))["records"], 2);
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.anchored_items().len(), 2);
+    doc.check().unwrap();
+    designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+}

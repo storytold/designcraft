@@ -74,7 +74,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
     }
     let mut out = doc.clone();
     let mut variants = std::collections::HashMap::new();
-    // Duplicated anchors can share an id. Reuse a variant only when source and choice agree.
+    // Ids should be unique (#1522); placements that still share one reuse a variant only when source and choice agree.
     let mut expected = std::collections::HashMap::new();
     for (id, asset, hidden, overridden) in choices {
         let signature = (asset.id, hidden.clone(), overridden);
@@ -798,8 +798,8 @@ mod nested_layer_tests {
         session.execute("file.exportIdml", &json!({"embedImages": false})).unwrap();
     }
 
-    // Duplicating a text frame that holds an anchored placed PDF leaves two placements sharing
-    // one ItemId (renumber gap, tracked separately). Export must still apply the choice to both.
+    // Duplicating a text frame that holds an anchored placed PDF copies the placement under a
+    // fresh id (#1522). Export must apply the choice to both.
     #[test]
     fn duplicated_frame_keeps_its_anchored_pdf_choice_in_idml() {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
@@ -821,8 +821,9 @@ mod nested_layer_tests {
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
         let doc = s.doc().unwrap().doc.clone();
         let with_choice: Vec<_> = doc.placed_items().into_iter().filter(|i| i.has_pdf_layer_override()).map(|i| i.id).collect();
-        assert_eq!(with_choice, [chosen, chosen], "both placements share one id");
-        assert!(doc.check().unwrap_err().to_string().contains(&format!("duplicate item id {chosen}")));
+        assert_eq!(with_choice.len(), 2);
+        assert!(with_choice.contains(&chosen) && with_choice[0] != with_choice[1], "{with_choice:?}");
+        doc.check().unwrap();
         let result = s.execute("file.exportIdml", &json!({})).unwrap();
         let imported = designcraft_idml::import_idml(&base64_decode(result["base64"].as_str().unwrap())).unwrap();
         let mut layers: Vec<_> =
@@ -831,8 +832,8 @@ mod nested_layer_tests {
         assert_eq!(layers, vec![states(false, true), states(true, false)]);
     }
 
-    // Shared anchored ids are a pre-existing duplication gap. Conflicting choices must not
-    // silently select one variant; this fixture changes only the copied anchor's choice.
+    // Duplication no longer shares anchored ids (#1522), so this fixture forces the shared id.
+    // Conflicting choices must not silently select one variant; only the copy's choice changes.
     #[test]
     fn shared_id_with_divergent_pdf_choices_is_rejected() {
         let mut s = Session::new();
@@ -840,23 +841,25 @@ mod nested_layer_tests {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
         let placed = s.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "layers.pdf"})).unwrap();
         let control = ItemId(placed["id"].as_u64().unwrap());
-        let frame = {
+        let (frame, anchored) = {
             let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
             let mut item = doc.item(control).unwrap().clone();
             item.id = ItemId(doc.alloc());
             item.pdf_hidden_layers = vec!["Blue".into()];
+            let anchored = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
             doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
-            frame
+            (frame, anchored)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
-        // Change ONLY the copy in the newest story to explicit all-on.
+        // Give ONLY the copy in the newest story the original's id and explicit all-on.
         {
             let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
             let (_, st) = doc.stories.iter_mut().filter(|(_, st)| !st.objects.is_empty()).last().unwrap();
             let o = &mut Arc::make_mut(st).objects[0];
             let it = &mut Arc::make_mut(o).item;
+            it.id = anchored;
             it.pdf_hidden_layers.clear();
             it.pdf_layer_override = true;
         }
@@ -871,8 +874,8 @@ mod nested_layer_tests {
         assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
     }
 
-    // Cross-document paste: the pasted frame's anchored placement keeps its source id,
-    // which can collide with an unrelated placement in the destination.
+    // Cross-document paste used to keep the anchored placement's source id (#1522), colliding
+    // with an unrelated placement in the destination. The fixture forces that collision.
     #[test]
     fn shared_id_with_different_pdf_assets_is_rejected() {
         let mut s = Session::new();
@@ -893,7 +896,13 @@ mod nested_layer_tests {
             .as_u64()
             .unwrap();
         s.execute("edit.paste", &json!({})).unwrap();
-        assert_eq!(a, b, "fresh documents allocate the same first placement id");
+        {
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let (_, st) = doc.stories.iter_mut().find(|(_, st)| !st.objects.is_empty()).unwrap();
+            let pasted = &mut Arc::make_mut(&mut Arc::make_mut(st).objects[0]).item;
+            assert_ne!(pasted.id.0, b, "paste gives the anchored placement a fresh id");
+            pasted.id = ItemId(b);
+        }
         let before = s.doc().unwrap().doc.clone();
         let graphics: Vec<_> = before.placed_items().into_iter().filter(|i| i.graphic().is_some()).collect();
         assert_eq!(graphics.len(), 2);
