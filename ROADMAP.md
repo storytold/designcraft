@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+> **Integration validation (2026-10-27):** The upstream synchronization at `24104cc2` retains native-window restoration and both independent progress entries. All nine `cargo xtask ci` steps passed on Linux; parity estimates are unchanged.
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
@@ -393,7 +395,11 @@ Newest first.
 - **2026-10-24** · Column rules run from the top line's ascent to the bottom line's descent, as InDesign draws them, instead of from the top to the bottom of the columns, on screen, in PDF and in PowerPoint export. The top and bottom insets shorten the rule from those lines. Existing documents draw their column rules at the new length. No readiness percentage change.
 - **2026-10-20** · Edit › Keyboard Shortcuts is craft-keymap's shared dialog: commands grouped by menu with Show and Filter, recording that asks before taking a key from another command, undo and redo, named shortcut sets (edits of Default become Custom; an imported set becomes a set of its own), an on-screen US keyboard, InDesign Show Set files reviewed before they apply, JSON export and an HTML summary. ui.json keeps the `shortcuts` map earlier versions read, for the active set. No readiness percentage change.
 - **2026-10-19** · Import InDesign Set… runs on craft-keymap's importer: a set's Window menu panel items (Layers F7, Pages F12, Swatches F5) and Tools items set the panel and tool shortcuts, all of an item's Default keys apply, and the report adds numeric keypad keys read as main keys and likely commands for unmatched items (`window.importShortcuts`). On InDesign's Windows defaults it matches 366 of 1,629 items (was 233) and changes 23 commands. No readiness percentage change.
+- 2026-10-27: Reconcile the current upstream modules and craft-libs `92d392c` while retaining the window-restoration egui pin `69750b7`; feature readiness estimates are unchanged.
+
 - **2026-10-19** · Keyboard shortcuts run on the shared craft-keymap crate. Panels take shortcuts, with InDesign's defaults where the key is free (Swatches F5, Color F6, Layers F7, Info F8, Stroke F10, Paragraph Styles F11, Character Styles Shift+F11, Pages F12, Align Shift+F7); tool keys are editable in Edit › Keyboard Shortcuts and `window.setShortcut`, and tools sharing a key take turns (B). Saved shortcuts load unchanged. No readiness percentage change.
+- **2026-10-26** · Windows reopen at their last size, or maximized, at any interface size (such as 150%), and Restore after a maximized restart returns to the last normal size. On GNOME Wayland, where the compositor draws no frame, a native Wayland window (`DESIGNCRAFT_WAYLAND=1`; by default DesignCraft opens through XWayland, where GNOME draws the frame) gets standard minimize, maximize and close buttons. Shared change: storytold/egui#3; checked on Linux only.
+
 - **2026-10-16** · Edit › Keyboard Shortcuts imports a set saved by InDesign's Show Set (.txt, Windows or Mac key names, UTF-8 or UTF-16): matched commands take its Default shortcuts or lose theirs, other commands give up keys it takes, and a report lists what it changed and the items it could not match (`window.importShortcuts`, #1180). Tool keys stay fixed. No readiness percentage change.
 - **2026-10-20** · PDF/X-1a:2003 export (craft-libs#194): `file.exportPdf {standard: "x1a"}`, the Export PDF dialog's PDF/X-1a:2003 preset and standard. The PDF/X-4 print file is flattened in its inks by craft-prepress (no transparency; spot, process, overprint and live text kept; complex regions as DeviceN images at the Transparency Flattener preset's resolution), then written as PDF 1.4 with the X-1a identification and checked; `validate-pdf --standard x1a`. Soft drop shadows reach the flattener in their swatch's inks; other soft effects are still RGB images. No readiness percentage change.
 - **2026-10-20** · Print color (craft-libs#190): CMYK print PDFs blend in DeviceCMYK through craft-pdf's print settings instead of byte rewrites, with the CMYK working space as the output intent in PDF/X-4 only; overprint (Overprint Fill, Stroke and Gap, overprinting text, 100% [Black]) is written as `/op` `/OP` `/OPM 1`; Knockout Group writes `/K true` instead of becoming an image; File › Print prints the PDF Export PDF writes. No readiness percentage change.
@@ -739,10 +745,13 @@ Newest first.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-27 | trivial | Reconcile the native-window progress entry with the independent iconic-panel preferences update; nine-step Linux CI passed, parity estimates unchanged |
 | 2026-10-12 | minor | Manual text threading landed; alpha distance 15–25 h → 5–7 h (Primary Text Frame page fixes, #165) |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; readiness estimates unchanged |
 | 2026-10-10 | minor | Full number 42% → 47% (method aligned with the standard: plain weighted sum, no new evidence); readiness table with hours per audience |
+| 2026-10-27 | trivial | Reconcile the current upstream modules and craft-libs `92d392c` while retaining the window-restoration egui pin `69750b7`; feature readiness estimates are unchanged. |
 | 2026-10-10 | minor | Headline adds mainstream practitioner (~42%) and essentials user (~54%); method in docs/target-app-parity.md |
+| 2026-10-26 | trivial | Progress log: windows reopen at their last size or maximized at any interface size; standard caption buttons on native GNOME Wayland windows, `DESIGNCRAFT_WAYLAND=1` (storytold/egui#3) |
 | 2026-10-10 | minor | Stage alpha → pre-alpha under the new core-workflow gate: manual text threading is missing; alpha gate table added to docs/roadmap.md |
 | 2026-10-10 | major | Restructured to the progress-docs standard; full re-measure; the "Working today" inventory moved to docs/target-app-parity.md, milestones to docs/roadmap.md, the CLI/MCP section left to docs/agents.md (which already covered it) |
 | 2026-10-04 | major | Parity estimate: breadth 99%, depth ~83%, ~170 h |

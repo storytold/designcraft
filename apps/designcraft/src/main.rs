@@ -47,6 +47,11 @@ struct App {
 }
 
 impl eframe::App for App {
+    // App preferences already persist separately; only the native window belongs in eframe storage.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.startup.enter();
         // Queue/deadline work only. A hidden `run_logic` tick also reports pass index zero, so
@@ -308,6 +313,9 @@ fn main() -> std::process::ExitCode {
         // DesignCraft's own FontDb supplies script-specific system fallbacks; egui's system-font
         // provider would put its discovery ahead of that order and change line metrics.
         system_font_fallback: false,
+        // No-preferences and control-channel runs neither restore nor save the native window, so
+        // control-channel screenshots start from the same window every time.
+        persist_window: !no_prefs() && control_port.is_none(),
         ..Default::default()
     };
     options.viewport = options.viewport.with_app_id(APP_ID);

@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** trivial (window size and maximized state survive restarts at any interface size; caption buttons on native GNOME Wayland windows, `DESIGNCRAFT_WAYLAND=1`, storytold/egui#3) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -122,6 +122,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | trivial | Window size and maximized state survive restarts at any interface size; standard caption buttons on native GNOME Wayland windows, `DESIGNCRAFT_WAYLAND=1` (storytold/egui#3) |
 | 2026-10-24 | minor | Panels row: Story panel (Optical Margin Alignment and its size) |
 | 2026-10-21 | minor | Chrome row: the text Control panel's A/¶ modes; Properties row: ••• expands Character and Paragraph in place |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
