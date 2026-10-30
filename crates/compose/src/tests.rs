@@ -1724,14 +1724,16 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// As in InDesign, a table keeps its column widths: wider than the text column it runs past the
+/// frame's edge (and isn't overset); a narrow one keeps its widths too.
 #[test]
-fn table_columns_scale_to_the_text_column() {
+fn table_columns_keep_their_widths_past_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let tf = &cs.frames[0].tables[0];
-    assert!((tf.rect.width() - 200.0).abs() < 1e-6, "{}", tf.rect.width());
-    assert!((tf.cell(0, 3).unwrap().rect.x1 - 200.0).abs() < 1e-6);
-    // A narrow table keeps its widths.
+    assert!((tf.rect.width() - 600.0).abs() < 1e-6, "{}", tf.rect.width());
+    assert!((tf.cell(0, 3).unwrap().rect.x1 - 600.0).abs() < 1e-6);
+    assert!(!cs.is_overset(), "a wide table isn't overset");
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), filled(2, 2, 0, 100.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!((cs.frames[0].tables[0].rect.width() - 100.0).abs() < 1e-6);
