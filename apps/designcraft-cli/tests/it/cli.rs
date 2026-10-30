@@ -616,3 +616,50 @@ fn thumbnail_of_a_file_without_a_preview_fails_and_writes_nothing() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `thumbnail a.designcraft a.designcraft` would replace the document with a PNG. An output that
+/// names the input, by the same path, through a symlink or (on Unix) as a hard link, is refused
+/// before anything is read or written, and the document keeps its bytes.
+#[test]
+fn thumbnail_refuses_an_output_that_names_the_input() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-self-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let saved = std::fs::read(&doc).unwrap();
+    let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        outs.push(link);
+        let hard = dir.join("hard.png");
+        std::fs::hard_link(&doc, &hard).unwrap();
+        outs.push(hard);
+    }
+    for out_path in &outs {
+        let out = cli().arg("thumbnail").arg(&doc).arg(out_path).arg("128").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{}: {err}", out_path.display());
+        assert!(err.contains("is the document"), "{}: {err}", out_path.display());
+        assert!(std::fs::read(&doc).unwrap() == saved, "{} changed the document", out_path.display());
+        assert!(std::fs::read(out_path).unwrap() == saved, "{} was written", out_path.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Another existing file at the output path is still replaced by the thumbnail.
+#[test]
+fn thumbnail_replaces_another_existing_file() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let png = dir.join("old.png");
+    std::fs::write(&png, b"an older thumbnail").unwrap();
+    let out = cli().arg("thumbnail").arg(&doc).arg(&png).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&png).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

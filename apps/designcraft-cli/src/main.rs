@@ -203,11 +203,31 @@ fn thumbnail(args: &[String]) -> Result<(), String> {
         [s] => Some(s.parse::<u32>().ok().filter(|s| *s > 0).ok_or_else(|| format!("bad SIZE `{s}`: expected a positive number of pixels"))?),
         _ => return Err(USAGE.into()),
     };
+    if names_the_same_file(input.as_ref(), out.as_ref()) {
+        return Err(format!("{out} is the document {input}: the thumbnail would replace it"));
+    }
     let file = std::fs::File::open(input).map_err(|e| format!("{input}: {e}"))?;
     let preview = designcraft_format::read_preview(std::io::BufReader::new(file))
         .ok_or_else(|| format!("{input} has no preview (a DesignCraft file saved before they had one, or not a DesignCraft file)"))?;
     let png = fit_png(preview, size).map_err(|e| format!("{input}: the preview can't be read: {e}"))?;
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &png).map_err(|e| format!("{out}: {e}"))
+}
+
+/// Whether `out` is the file `input` names: the same path, a symlink to it or, on Unix, a hard
+/// link (the same device and inode). An `out` that doesn't exist yet can't be the input.
+fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(out)) else { return false };
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(&a), std::fs::metadata(&b)) {
+            return (a.dev(), a.ino()) == (b.dev(), b.ino());
+        }
+    }
+    false
 }
 
 /// `png` with its longer side brought down to `size`. A picture already that small is returned
