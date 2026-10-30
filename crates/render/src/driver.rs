@@ -53,9 +53,12 @@ impl Renderer {
         // Release the old snapshot before rendering an edited document or resized viewport.
         self.cmyk_view = None;
         self.cmyk_ran = false;
+        crate::images::take_deferred();
         let image = self.render_uncached(doc, cache, spreads, size, view, opts);
-        // Kept only when the ink passes ran: other views render at their usual cost anyway.
-        if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
+        // Kept only when the ink passes ran: other views render at their usual cost anyway. Not
+        // with images still decoding: the next render must show them.
+        let deferred = crate::images::take_deferred();
+        if self.cmyk_ran && !deferred && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
         }
         self.stats.micros = now().saturating_sub(start);

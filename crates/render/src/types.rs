@@ -69,6 +69,10 @@ pub struct RenderOptions {
     /// document grid covers, drawn behind or in front of the page items as the grid settings say
     /// (screen view). Empty draws no grid.
     pub document_grid: Vec<(SpreadRef, Rect)>,
+    /// Don't wait for images that aren't decoded at the size drawn: show a coarser cached level,
+    /// or a grey box, and decode them in the background ([`crate::images::mip_now`]); render
+    /// again when [`crate::images::generation`] advances (canvas).
+    pub defer_images: bool,
 }
 
 /// View › Display Performance: how placed graphics and effects are drawn on screen.

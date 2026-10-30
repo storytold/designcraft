@@ -139,6 +139,7 @@ impl Default for RenderOptions {
             overprint_preview: false,
             blend_space_view: false,
             document_grid: vec![],
+            defer_images: false,
         }
     }
 }

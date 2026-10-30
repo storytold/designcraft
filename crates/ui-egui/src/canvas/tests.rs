@@ -152,7 +152,8 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
