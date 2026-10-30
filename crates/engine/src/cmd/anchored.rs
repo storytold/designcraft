@@ -459,6 +459,22 @@ mod text_frame_tests {
         assert_eq!(notes(&s), 1, "deleted");
     }
 
+    /// Text with an anchored text frame pasted into the generated endnote story is replaced when
+    /// the endnotes are set again; the repair after it leaves no story threaded to the dropped frame.
+    #[test]
+    fn anchored_text_frames_pasted_into_the_endnote_story_leave_a_valid_document() {
+        let (mut s, host, sid, _) = session();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "A note"})).unwrap();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let notes = s.doc().unwrap().doc.endnote_story.unwrap();
+        let len = s.doc().unwrap().doc.story(notes).unwrap().len();
+        s.execute("text.select", &json!({"story": notes.0, "anchor": len, "focus": len})).unwrap();
+        let _ = s.execute("edit.paste", &json!({}));
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
     #[test]
     fn deleted_anchored_text_frames_take_their_stories_along() {
         let (mut s, host, sid, _) = session();
