@@ -502,6 +502,7 @@ pub fn create(id: &str) -> Box<dyn Tool> {
     match id {
         "selection" => Box::new(select::SelectionTool::new(false)),
         "directSelection" => Box::new(select::SelectionTool::new(true)),
+        "freeTransform" => Box::new(select::SelectionTool::free_transform()),
         "rectangleFrame" | "ellipseFrame" | "polygonFrame" | "rectangle" | "ellipse" | "polygon" | "line" => Box::new(frame::FrameTool::new(id)),
         "type" => Box::new(text::TypeTool::default()),
         "verticalType" => Box::new(text::TypeTool::vertical()),

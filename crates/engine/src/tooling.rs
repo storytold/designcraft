@@ -71,6 +71,13 @@ impl Session {
         if matches!(self.tool.id(), "selection" | "directSelection") {
             self.last_selection_tool = self.tool.id();
         }
+        // Free Transform works on frames (it has no content handles): a selected graphic gives way
+        // to its frame, whose handles then show.
+        if id == "freeTransform"
+            && let Some(st) = self.active_mut()
+        {
+            st.selection.content = false;
+        }
         // Any other tool unloads the place cursor.
         if id != "placeGun" {
             self.loaded = None;
@@ -128,7 +135,7 @@ impl Session {
     /// Hand, Zoom and a loaded place cursor, where Cmd means something else or nothing.
     fn borrowed_selection_tool(&self) -> Option<&'static str> {
         match self.tool.id() {
-            "selection" | "directSelection" | "hand" | "zoom" | "placeGun" => None,
+            "selection" | "directSelection" | "hand" | "zoom" | "freeTransform" | "placeGun" => None,
             _ => Some(self.last_selection_tool),
         }
     }

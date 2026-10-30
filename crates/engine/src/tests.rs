@@ -1661,6 +1661,92 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
 
+#[test]
+fn free_transform_scales_with_contents_rotates_reflects_shears_and_moves() {
+    // The Free Transform tool as InDesign documents it (and Chris Nielsen's "The Adobe InDesign
+    // Toolbox", 13:23–13:48): inside the box it moves, a handle scales (contents too; Shift keeps
+    // proportions, Alt from the centre), past the opposite edge it reflects, outside the box it
+    // rotates (Shift: 45° steps), and Cmd during a handle's drag shears (Alt+Cmd: from the centre).
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, SnapView};
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+    // The frame's corners on the spread, and the picture's width there.
+    let corners = |s: &Session| {
+        let it = item(s);
+        it.path.subpaths[0].anchors.iter().map(|a| it.xf * a.p).collect::<Vec<_>>()
+    };
+    let graphic_w = |it: &designcraft_doc::Item| (it.xf * it.graphic().unwrap().xf).as_coeffs()[0];
+    let w0 = graphic_w(&item(&s));
+    s.set_tool("freeTransform");
+    assert_eq!(s.tool_id(), "freeTransform");
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let layout = s.layout();
+    let at = |x: f64, y: f64| layout.to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(x, y));
+    let drag = |s: &mut Session, a: designcraft_geom::Point, b: designcraft_geom::Point, mods: Mods| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Drag, (a.x + b.x) / 2.0, (a.y + b.y) / 2.0).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y).with_mods(mods), v).unwrap();
+    };
+    let none = Mods::default();
+    let near = |a: designcraft_geom::Point, x: f64, y: f64| (a.x - x).abs() < 1e-6 && (a.y - y).abs() < 1e-6;
+    // Scale: the right handle to x = 400, half as wide again, the picture with it.
+    drag(&mut s, at(300.0, 200.0), at(400.0, 200.0), none);
+    let it = item(&s);
+    assert!((it.bounds().width() - 300.0).abs() < 1e-6, "{:?}", it.bounds());
+    assert!((graphic_w(&it) / w0 - 1.5).abs() < 1e-6, "the graphic scales with its frame: {w0} → {}", graphic_w(&it));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Reflect: the right handle dragged past the left edge, to x = 0.
+    drag(&mut s, at(300.0, 200.0), at(0.0, 200.0), none);
+    let it = item(&s);
+    assert!((it.bounds().x0 - 0.0).abs() < 1e-6 && (it.bounds().x1 - 100.0).abs() < 1e-6, "{:?}", it.bounds());
+    assert!(it.xf.determinant() < 0.0 || graphic_w(&it) < 0.0, "flipped: {:?}", it.xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Rotate: just outside the top-right corner; Shift keeps to 45° steps.
+    drag(&mut s, at(308.0, 92.0), at(330.0, 160.0), none);
+    assert!(item(&s).xf.as_coeffs()[1].abs() > 1e-3, "rotated: {:?}", item(&s).xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    drag(&mut s, at(308.0, 92.0), at(330.0, 160.0), Mods { shift: true, ..none });
+    let [a, b, ..] = item(&s).xf.as_coeffs();
+    assert!((b.atan2(a).to_degrees().abs() % 45.0) < 1e-6, "a 45° step: {:?}", item(&s).xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Shear: Cmd on the top handle slides the top edge, the bottom one stays.
+    drag(&mut s, at(200.0, 100.0), at(300.0, 100.0), Mods { cmd: true, ..none });
+    let c = corners(&s);
+    assert!(near(c[0], 200.0, 100.0) && near(c[1], 400.0, 100.0), "the top edge moved 100: {c:?}");
+    assert!(near(c[2], 300.0, 300.0) && near(c[3], 100.0, 300.0), "the bottom edge stayed: {c:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Alt+Cmd on the right handle: from the centre, both sides slide.
+    drag(&mut s, at(300.0, 200.0), at(300.0, 250.0), Mods { cmd: true, alt: true, ..none });
+    let c = corners(&s);
+    assert!(near(c[1], 300.0, 150.0) && near(c[0], 100.0, 50.0), "right side down 50, left side up 50: {c:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Move: inside the box.
+    drag(&mut s, at(200.0, 200.0), at(200.0, 250.0), none);
+    assert!(near(corners(&s)[0], 100.0, 150.0), "{:?}", corners(&s));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(near(corners(&s)[0], 100.0, 100.0) && (item(&s).bounds().width() - 200.0).abs() < 1e-6, "every gesture undoes in one step");
+    // The picture selected (Direct Selection), then Free Transform: the frame's handles work.
+    s.set_tool("directSelection");
+    s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+    s.set_tool("freeTransform");
+    assert!(!s.doc().unwrap().selection.content, "Free Transform works on the frame");
+    drag(&mut s, at(300.0, 200.0), at(400.0, 200.0), none);
+    assert!((item(&s).bounds().width() - 300.0).abs() < 1e-6, "{:?}", item(&s).bounds());
+    s.execute("edit.undo", &json!({})).unwrap();
+    // A double click on the frame keeps the frame selected.
+    s.pointer(&PointerEvent::new(PointerKind::Down, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, at(200.0, 200.0).x, at(200.0, 200.0).y).with_clicks(2), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    assert!(!s.doc().unwrap().selection.content);
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]

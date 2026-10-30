@@ -105,11 +105,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Shear",
             ["Object", "Transform"],
             None,
-            "{angle (degrees), ref?: 0..8 (reference point of the selection bounds, default 4: centre), ids?}",
+            "{angle (degrees), axis?: horizontal|vertical (default horizontal: points slide sideways), ref?: 0..8 (default 4), origin?: [x, y] (spread coords: the point that stays; default the selection's reference point — the Free Transform tool passes the opposite edge), ids?}",
             has_selection,
             |s, p| {
                 let a = f64_or(p, "angle", 0.0).clamp(-85.0, 85.0).to_radians().tan();
-                apply_about_ref(s, p, Affine::new([1.0, 0.0, a, 1.0, 0.0, 0.0]))
+                let m = match p.get("axis").and_then(Value::as_str) {
+                    None | Some("horizontal") => Affine::new([1.0, 0.0, a, 1.0, 0.0, 0.0]),
+                    Some("vertical") => Affine::new([1.0, a, 0.0, 1.0, 0.0, 0.0]),
+                    Some(other) => return Err(bad("transform.shear", format!("unknown axis `{other}`"))),
+                };
+                match p.get("origin") {
+                    None | Some(Value::Null) => apply_about_ref(s, p, m),
+                    Some(o) => {
+                        let o = serde_json::from_value::<[f64; 2]>(o.clone())
+                            .ok()
+                            .filter(|o| o.iter().all(|v| v.is_finite()))
+                            .ok_or_else(|| bad("transform.shear", "origin is [x, y]"))?;
+                        apply_about(s, p, Point::new(o[0], o[1]), m)
+                    }
+                }
             }
         ),
         cmd!(
@@ -1498,6 +1512,20 @@ fn apply_about_ref(s: &mut Session, p: &Value, a: Affine) -> Result<Value> {
         }
         ok()
     })
+}
+
+/// Applies `m` (spread coordinates) to each item, in its parent's space when it sits in a
+/// transformed group.
+fn apply_in_spread(d: &mut Document, ids: &[ItemId], m: Affine) {
+    for id in ids {
+        let parent = d.find(*id).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+        if parent.determinant().abs() < 1e-12 {
+            continue;
+        }
+        if let Some(it) = d.item_mut(*id) {
+            it.xf = parent.inverse() * m * parent * it.xf;
+        }
+    }
 }
 
 fn transform_rotate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -5669,6 +5697,51 @@ mod fill_tint_tests {
         let stroke_of = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().stroke.clone();
         assert_eq!((stroke_of(&s, a).swatch.as_str(), stroke_of(&s, a).tint, stroke_of(&s, a).weight), ("C=100 M=0 Y=0 K=0", 0.5, 2.0));
         assert!(stroke_of(&s, b).is_none());
+    }
+}
+
+/// `a` about `origin` (spread coordinates) on every target.
+fn apply_about(s: &mut Session, p: &Value, origin: Point, a: Affine) -> Result<Value> {
+    let ids = targets(s, p)?;
+    let m = Affine::translate(origin.to_vec2()) * a * Affine::translate(-origin.to_vec2());
+    s.edit(|d, _| {
+        apply_in_spread(d, &ids, m);
+        ok()
+    })
+}
+
+#[cfg(test)]
+mod shear_origin_tests {
+    use designcraft_doc::ItemId;
+    use designcraft_geom::{Affine, Point};
+    use serde_json::json;
+
+    #[test]
+    fn a_shear_about_an_origin_holds_that_point_inside_a_rotated_group() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 150]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [250, 100, 300, 150]})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("transform.rotate", &json!({"ids": [g], "angle": 90})).unwrap();
+        let full = |s: &crate::Session| {
+            let d = &s.doc().unwrap().doc;
+            d.parent_xf(&d.find(ItemId(a)).unwrap()) * d.item(ItemId(a)).unwrap().xf
+        };
+        let before = full(&s);
+        assert!(before.as_coeffs()[1].abs() > 0.5, "the group turns the frame: {before:?}");
+        // The point that stays, and another, in spread coordinates.
+        let origin = before * Point::new(100.0, 150.0);
+        let other = before * Point::new(200.0, 100.0);
+        s.execute("transform.shear", &json!({"ids": [a], "angle": 20, "origin": [origin.x, origin.y]})).unwrap();
+        let after = full(&s);
+        let local = |xf: Affine, p: Point| xf.inverse() * p;
+        assert!((after * local(before, origin) - origin).hypot() < 1e-6, "the origin stays where it was");
+        let moved = after * local(before, other);
+        assert!(
+            (moved.y - other.y).abs() < 1e-6 && (moved.x - other.x).abs() > 1.0,
+            "a horizontal shear slides points sideways on the spread: {other:?} → {moved:?}"
+        );
     }
 }
 
