@@ -599,7 +599,7 @@ impl Session {
         self.keep_guide_selection_valid(before.as_ref(), id);
         self.record_undo_step(spec, before, nested);
         if spec.journal {
-            self.journal.push((id.to_string(), params.clone()));
+            self.journal.push((id.to_string(), journal_params(id, params)));
         }
         self.discard_stale_find_scope();
         Ok(r)
@@ -760,6 +760,22 @@ fn push_undo(st: &mut DocState, e: HistoryEntry) {
 }
 
 pub(crate) use push_undo as record_undo;
+
+/// A command's parameters as the journal keeps them: `links.relinkFiles` keeps its files' names
+/// and paths but not their contents (whole image files, which would stay in memory for the
+/// session).
+fn journal_params(id: &str, params: &Value) -> Value {
+    if id != "links.relinkFiles" {
+        return params.clone();
+    }
+    let mut p = params.clone();
+    if let Some(files) = p.get_mut("files").and_then(Value::as_array_mut) {
+        for f in files.iter_mut().filter_map(Value::as_object_mut) {
+            f.remove("base64");
+        }
+    }
+    p
+}
 
 #[cfg(test)]
 mod tests;
