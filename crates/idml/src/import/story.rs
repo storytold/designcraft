@@ -73,6 +73,7 @@ impl<'r> Importer<'r> {
             },
             vertical: e.find("StoryPreference").and_then(|p| p.get("StoryOrientation")) == Some("Vertical"),
             optical_margin,
+            frame_grid: None,
             rev: 0,
             tables,
             notes,

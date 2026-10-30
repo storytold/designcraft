@@ -149,6 +149,29 @@ fn a_frame_removed_from_a_vertical_thread_stays_vertical() {
 }
 
 #[test]
+fn frames_of_a_frame_grid_stay_frame_grids_through_threading() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let r = |x: f64| Rect::new(x, 10.0, x + 50.0, 100.0);
+    let grid = Some(crate::FrameGrid { size: 10.0, ..Default::default() });
+    let story_of = |d: &Document, f: ItemId| d.story(d.item(f).unwrap().text_frame().unwrap().story).unwrap().frame_grid;
+    let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), r(0.0), lid, "原稿用紙", ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), r(60.0), lid, "", ParaFormat::default()).unwrap();
+    let (c, _) = d.add_text_frame(SpreadRef::Doc(0), r(120.0), lid, "", ParaFormat::default()).unwrap();
+    d.story_mut(sa).unwrap().frame_grid = grid;
+    // Threaded on, a plain frame takes the story's grid.
+    d.thread(a, b).unwrap();
+    d.thread(b, c).unwrap();
+    assert_eq!(story_of(&d, b), grid);
+    // Taken out or cut off, frames keep it.
+    d.remove_from_thread(b).unwrap();
+    assert_eq!(story_of(&d, b), grid, "removed from the thread");
+    d.unthread_after(a).unwrap();
+    assert_eq!(story_of(&d, c), grid, "after the break");
+    d.check().unwrap();
+}
+
+#[test]
 fn a_frame_removed_from_a_right_to_left_thread_keeps_its_column_order() {
     let mut d = doc();
     let lid = d.default_layer();

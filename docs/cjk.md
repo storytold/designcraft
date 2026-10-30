@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (frame grid rows for grid alignment) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -45,7 +45,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Kenten | the kinds and a custom mark (up to 8 characters) in its own font; size, x/y scale, distance, above/right or below/left, centred or at the character's start; fill, stroke, tints, weight, and overprint in Overprint Preview (`type.kenten`, IDML `Kenten*`). The character set (input mode) is kept, not converted; PDF export writes no overprint |
 | Shatai | magnification, angle, adjust rotation and adjust tsume on screen, in PDF, outlines and type on a path (`type.shatai`, IDML `Shatai*`) |
 | Rotate roman, roman word break | half-width characters upright in vertical text (`type.rotateRoman`, IDML `RotateSingleByteCharacters`); breaks between Latin, Greek or Cyrillic letters without a hyphen (`type.romanWordBreak`, IDML `AllowArbitraryHyphenation`) |
-| Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). No frame grid; vertical frames have no baseline grid |
+| Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). In a frame grid story (`Story.frame_grid`) the grid's rows replace the baseline grid: each reference sits on its place in the row (top, centre, bottom, the cell's roman baseline; ICF Top/Bottom put the em box edge on the cell's ICF), a line takes the first band of rows whose reference is at or below its natural one, and auto gyoudori takes the rows its em box needs. Horizontal frames only; vertical frames have no baseline grid or frame grid rows. No commands, IDML or display of frame grids yet |
 | Composite fonts | done: model, `style.compositeFont.*`, shaping, IDML, font list, replace and Preflight; no dialog |
 | Languages | Japanese, Korean, Simplified and Traditional Chinese reach the shaper (`locl`), font fallback, line breaking and typographer's quotes; IDML language names are kept as written; locale codes (`ja_JP`, `ko-KR`, `de_DE_2006`) are their language and region, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`) |
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
@@ -292,6 +292,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Grid alignment: frame grid rows (horizontal), from InDesign observed black-box |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |

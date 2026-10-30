@@ -133,6 +133,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         section_marker: opts.section_marker.clone(),
         page: opts.page,
         grid: None,
+        frame_grid: None,
         left_page,
         right_page,
         page_rect: None,

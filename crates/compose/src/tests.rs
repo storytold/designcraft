@@ -4,6 +4,8 @@ use designcraft_geom::Rect;
 
 use super::*;
 
+mod framegrid;
+
 #[test]
 fn long_wrapped_paragraph_rechecks_width_after_estimated_slots_end() {
     let text="Distinctive shapes and warm colours set the rhythm of the page. The story flows around the illustration while the frame keeps its original dimensions. ".repeat(14);
