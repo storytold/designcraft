@@ -64,6 +64,7 @@ fn ctx_on<'a>(doc: &'a Document, sel: &'a Selection, cache: &'a Cache, layout: &
         snap: SnapView::FACTORY,
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     }
 }
 

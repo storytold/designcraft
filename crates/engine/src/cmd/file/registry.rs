@@ -3,7 +3,7 @@ use super::EngineError;
 use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
-use super::place::{file_place, place_drop, place_load, read_source};
+use super::place::{file_place, place_contact_sheet, place_drop, place_grid, place_load, read_source};
 use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
 use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, str_param};
@@ -123,17 +123,41 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Place Cursor",
             [],
             None,
-            "{path | base64, name?} — load a graphic into the place cursor (then click/drag with the placeGun tool)",
+            "{path | base64, name?, files?: [{path | base64, name?}], append? (keep the images already loaded and queue these after them)} — load up to 1000 images in order",
             has_doc,
             place_load
         ),
         cmd!("place.drop", "Place Loaded Graphic", [], None, "{spread?, x, y, rect?: [x0,y0,x1,y1], frame?: id}", has_doc, place_drop),
         cmd!(
+            "place.grid",
+            "Place Image Grid",
+            [],
+            None,
+            "{spread?, rect: [x0,y0,x1,y1], columns?: 1, rows?: 1, gutter?: 6} — place queued images in row order",
+            has_doc,
+            place_grid
+        ),
+        cmd!(
+            "place.contactSheet",
+            "Place Contact Sheet",
+            ["File"],
+            None,
+            "{columns?: 3, rows?: 4, gutter?: 6, margin?: 36} — place all loaded images on new pages",
+            has_doc,
+            place_contact_sheet
+        ),
+        cmd!(noundo "place.cancel", "Cancel Image Placement", [], None, "{}", has_doc, |s, _| {
+            s.loaded = None;
+            s.loaded_queue.clear();
+            s.set_tool("selection");
+            ok()
+        }),
+        cmd!(
             "file.place",
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), append? (with loadCursor: queue the image after those already loaded instead of replacing them), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
             has_doc,
             file_place
         ),

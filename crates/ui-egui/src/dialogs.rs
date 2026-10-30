@@ -32,6 +32,7 @@ impl Dialog {
         };
         let defaults = match id {
             "newDocument" => crate::new_document::defaults(),
+            "contactSheet" => json!({"columns": 3, "rows": 4, "gutter": "6pt", "margin": "36pt"}),
             "goToPage" => json!({"page": "1"}),
             "epubExport" => json!({"split": false, "mode": "style", "style": designcraft_doc::BASIC_PARAGRAPH}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
@@ -932,6 +933,14 @@ fn confirm_text_frame_options(app: &mut DesignApp, d: &mut Dialog) -> Result<Val
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
+}
+
+/// File › Place Contact Sheet…: bare numbers typed in the dialog are in the document's ruler unit
+/// (the defaults keep their explicit `pt`).
+pub fn open_contact_sheet(app: &mut DesignApp) {
+    let mut d = Dialog::new("contactSheet", json!({}));
+    d.unit = doc_unit(app);
+    app.ui.dialog = Some(d);
 }
 
 /// Layout › Create Guides…: guides go on the page in view (or the parent page being edited), not
@@ -2254,6 +2263,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
+        "contactSheet" => crate::i18n::tr(&app.ui.language, "Place Contact Sheet"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "epubExport" => crate::i18n::tr(&app.ui.language, "EPUB Export Options"),
@@ -2556,6 +2566,18 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
+                    "contactSheet" => {
+                        if !d.s("status").is_empty() {
+                            ui.label(d.s("status"));
+                        }
+                        ui.label("Place loaded images on new pages, in file order.");
+                        for (label, key) in [("Columns", "columns"), ("Rows", "rows"), ("Gutter", "gutter"), ("Page margin", "margin")] {
+                            ui.horizontal(|ui| {
+                                ui.add_sized([95.0, 20.0], egui::Label::new(crate::i18n::tr(&app.ui.language, label)));
+                                text_field(ui, &mut d, key, 80.0);
+                            });
+                        }
+                    }
                     "pdfImport" => {
                         ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
                         ui.horizontal(|ui| {
@@ -3522,6 +3544,20 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.color_settings = Some(designcraft_color::cms::active_settings());
             app.canvas.shown = None;
             Ok(r)
+        }
+        "contactSheet" => {
+            let result = (|| {
+                let params = json!({"columns": d.s("columns").parse::<u64>().map_err(|_| "Columns must be a whole number")?,
+                    "rows": d.s("rows").parse::<u64>().map_err(|_| "Rows must be a whole number")?,
+                    "gutter": d.m("gutter").ok_or("Enter a valid gutter")?, "margin": d.m("margin").ok_or("Enter a valid margin")?});
+                app.run("place.contactSheet", params)
+            })();
+            if let Err(error) = &result {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(error));
+                app.ui.dialog = Some(d);
+            }
+            result
         }
         "pdfImport" => {
             let crop = d.s("crop");

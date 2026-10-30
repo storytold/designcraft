@@ -368,12 +368,82 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let icon = crate::cursors::show(ui.ctx(), &mut app.cursors, c, p);
         ui.ctx().set_cursor_icon(icon);
         draw_cursor_badge(&painter, p, c, &t);
+        if c == Cursor::LoadedGraphic {
+            draw_loaded_thumbnail(app, &painter, p, &t);
+        }
     }
     // A second viewport has no panels, dialogs or Quick Apply after its canvas: observe here,
     // once, as the end of its pass. The root viewport observes at the end of `DesignApp::ui`.
     if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
         ime_observe(app, ui.ctx());
     }
+}
+
+/// Longest side of the loaded place cursor's thumbnail, in points.
+const LOADED_THUMB: f32 = 128.0;
+
+/// The loaded place cursor's thumbnail, as InDesign shows it: the graphic, at most 128 pt on its
+/// longer side, hanging from the pointer, with an image badge in its corner.
+fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &Tokens) {
+    let (Some(l), Ok(st)) = (app.session.loaded.as_ref(), app.session.doc()) else { return };
+    let (w, h) = (l.size.0 as f32, l.size.1 as f32);
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return;
+    }
+    let k = LOADED_THUMB / w.max(h);
+    let r = Rect::from_min_size(p + vec2(2.0, 2.0), vec2(w * k, h * k));
+    if let Some(tex) = loaded_thumb_texture(painter.ctx(), &st.doc, l.asset, l.size) {
+        painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha(225));
+    } else {
+        // Not drawable here (an unreadable file): its frame only.
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, t.measure_text), StrokeKind::Inside);
+    }
+    let badge = Rect::from_min_size(r.min + vec2(6.0, 6.0), vec2(16.0, 12.0));
+    painter.rect_filled(badge, 2.0, t.measure_bg);
+    let ink = Stroke::new(1.2, t.measure_text);
+    let inner = badge.shrink2(vec2(3.0, 2.5));
+    painter.rect_stroke(inner, 0.5, ink, StrokeKind::Middle);
+    painter.add(egui::Shape::line(
+        vec![pos2(inner.min.x, inner.max.y), pos2(inner.min.x + 3.5, inner.min.y + 2.5), pos2(inner.max.x, inner.max.y)],
+        ink,
+    ));
+    // Several images loaded: how many, beside the badge ("(6)"), navy with a white rim so it
+    // reads over any picture.
+    if let Some(label) = loaded_count_label(app.session.loaded.is_some().then(|| app.session.loaded_queue.len() + 1)) {
+        let at = pos2(badge.max.x + 6.0, badge.center().y);
+        let font = crate::theme::semibold(15.0);
+        for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
+            painter.text(at + d, egui::Align2::LEFT_CENTER, &label, font.clone(), Color32::WHITE);
+        }
+        painter.text(at, egui::Align2::LEFT_CENTER, label, font, Color32::from_rgb(25, 35, 100));
+    }
+}
+
+/// The count the loaded place cursor shows, as InDesign's "(6)": only when more than one image
+/// is loaded.
+fn loaded_count_label(loaded: Option<usize>) -> Option<String> {
+    loaded.filter(|n| *n > 1).map(|n| format!("({n})"))
+}
+
+/// The loaded graphic's thumbnail texture, cached per image data.
+fn loaded_thumb_texture(ctx: &egui::Context, doc: &Document, asset: designcraft_doc::AssetId, size: (f64, f64)) -> Option<egui::TextureHandle> {
+    let a = doc.assets.get(&asset)?;
+    let key = egui::Id::unique(("loaded_thumb", std::sync::Arc::as_ptr(&a.data) as usize, a.data.len(), a.page));
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
+        return Some(t);
+    }
+    // Twice the thumbnail's size in pixels, for high-density screens.
+    let scale = (2.0 * f64::from(LOADED_THUMB) / size.0.max(size.1)).min(1.0);
+    let pm = designcraft_render::images::mip(&a.data, a.page, size.0, scale)?;
+    let (pw, ph) = (pm.width() as usize, pm.height() as usize);
+    if pw == 0 || ph == 0 {
+        return None;
+    }
+    let ci = egui::ColorImage::from_rgba_premultiplied([pw, ph], pm.data_as_u8_slice());
+    let max = ctx.input(|i| i.max_texture_side).min(1024);
+    let t = ctx.load_texture("loaded_thumb", crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(key, t.clone()));
+    Some(t)
 }
 
 /// Presses in a row on the canvas: the last press's count, and where and when it was released
@@ -395,3 +465,15 @@ mod guide_selection_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod loaded_count_tests {
+    /// The loaded cursor counts the images as InDesign's "(6)", and shows no count for the last
+    /// one or with nothing loaded.
+    #[test]
+    fn the_loaded_cursor_counts_several_images() {
+        assert_eq!(super::loaded_count_label(Some(6)).as_deref(), Some("(6)"));
+        assert_eq!(super::loaded_count_label(Some(1)), None);
+        assert_eq!(super::loaded_count_label(None), None);
+    }
+}

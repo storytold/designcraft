@@ -19,6 +19,7 @@ fn ctx<'a>(d: &'a Document, s: &'a Selection, c: &'a Cache, l: &'a CanvasLayout)
         snap: SnapView::OFF,
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     }
 }
 

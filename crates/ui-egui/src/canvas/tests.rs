@@ -1772,6 +1772,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
         snap: SnapView { snap_to_document_grid: true, zone_px: 20.0, ..SnapView::OFF },
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     };
     let (snapped, _) = designcraft_tools::snap::snap_point(&cx, sr, Point::new(page.x0 + 31.3, page.y0 + 47.9));
     assert_eq!((snapped.x - page.x0, snapped.y - page.y0), (27.0, 45.0));

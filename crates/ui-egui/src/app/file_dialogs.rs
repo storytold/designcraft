@@ -16,6 +16,10 @@ use super::{DesignApp, Value, json};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type Then = Box<dyn FnOnce(&mut DesignApp, String) -> Result<Value, String>>;
 
+/// What runs with the files chosen in a dialog that takes several.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type ThenMany = Box<dyn FnOnce(&mut DesignApp, Vec<String>) -> Result<Value, String>>;
+
 /// Whether an answer still needs the document that was active when the dialog was asked for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
@@ -64,6 +68,8 @@ pub(crate) struct Held {
 enum Step {
     /// Open: run `then` with the file chosen.
     Open(Then),
+    /// Open several: run `then` with the files chosen, in the dialog's order.
+    OpenMany(ThenMany),
     /// Save: `ext` is added to a name typed without it, then `then` runs, after the replace-file
     /// question when the added extension names a file that exists.
     Save { ext: Option<String>, then: Then },
@@ -109,6 +115,30 @@ impl DesignApp {
                 dialog = dialog.filter(filter.name, filter.extensions);
             }
             self.ask_file(dialog, bound, Step::Open(Box::new(then)));
+            Ok(Value::Null)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (purpose, bound, then);
+            Err(NO_PICKER.into())
+        }
+    }
+
+    /// [`Self::ask_open`] where several files may be chosen: `then` runs with their paths.
+    #[track_caller]
+    pub(crate) fn ask_open_many(
+        &mut self,
+        purpose: &str,
+        bound: Bound,
+        then: impl FnOnce(&mut DesignApp, Vec<String>) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut dialog = craft_dialogs::FileDialog::open_many();
+            for filter in open_filters(purpose) {
+                dialog = dialog.filter(filter.name, filter.extensions);
+            }
+            self.ask_file(dialog, bound, Step::OpenMany(Box::new(then)));
             Ok(Value::Null)
         }
         #[cfg(target_arch = "wasm32")]
@@ -231,6 +261,13 @@ impl DesignApp {
                     if let Some(path) = paths.into_iter().next() {
                         self.continue_in(Held { doc, dialog, then, path: path.to_string_lossy().to_string() });
                     }
+                }
+                (Step::OpenMany(then), Answer::Paths(paths)) => {
+                    let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                    let Some(first) = paths.first().cloned() else { continue };
+                    // Held runs a one-path continuation: this one takes them all.
+                    let then: Then = Box::new(move |app, _| then(app, paths));
+                    self.continue_in(Held { doc, dialog, then, path: first });
                 }
                 (Step::Save { ext, then }, Answer::Paths(paths)) => {
                     let Some(picked) = paths.into_iter().next() else { continue };

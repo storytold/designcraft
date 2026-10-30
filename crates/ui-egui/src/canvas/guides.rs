@@ -143,6 +143,7 @@ pub(super) fn guide_spot(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<Guid
         snap: app.ui.snap_view(),
         unit: app.ui.units,
         stroke_in_front: false,
+        loaded: None,
     };
     let s = designcraft_tools::snap::snap(
         &cx,
@@ -407,6 +408,7 @@ pub(super) fn over_item(app: &DesignApp, xf: &Xf, p: Pos2) -> bool {
         snap: app.ui.snap_view(),
         unit: app.ui.units,
         stroke_in_front: false,
+        loaded: None,
     };
     cx.hit(xf.to_canvas(p)).is_some()
 }
