@@ -71,3 +71,6 @@ real_name = "Paul Gemignani"
 
 [people.skylartaylor]
 display_name = "skylartaylor"
+
+[people.dylanmtaylor]
+sync_github_name = true

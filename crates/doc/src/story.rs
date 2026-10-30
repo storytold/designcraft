@@ -385,11 +385,11 @@ impl Story {
         // Paragraph formats: each new '\n' splits the current paragraph; the new paragraphs copy it.
         let pi = self.para_at(pos);
         let newlines = text.bytes().filter(|b| *b == b'\n').count();
-        if newlines > 0 {
-            let f = self.paras[pi].clone();
-            for _ in 0..newlines {
-                self.paras.insert(pi + 1, f.clone());
-            }
+        if newlines > 0
+            && let Some(f) = self.paras.get(pi).cloned()
+        {
+            // All at once: an insert per return made many returns quadratic (#1588).
+            self.paras.splice(pi + 1..pi + 1, std::iter::repeat_n(f, newlines));
         }
         self.text.insert_str(pos, text);
         // Character runs.
@@ -667,6 +667,19 @@ mod tests {
         assert_eq!(s.paras.len(), 1);
         s.check().unwrap();
         assert_eq!(s.para_ranges(), vec![0..6]);
+    }
+
+    /// Each return inserted its paragraph format on its own, quadratic in the returns (#1588).
+    #[test]
+    fn many_returns_split_a_paragraph_at_once() {
+        let para = ParaFormat { style: "Body".into(), ..ParaFormat::default() };
+        let started = std::time::Instant::now();
+        let s = Story::with_text(StoryId(1), &"\n".repeat(20_000), para.clone());
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+        assert_eq!(s.paras.len(), 20_001);
+        assert!(s.paras.iter().all(|p| *p == para));
+        s.check().unwrap();
     }
 
     #[test]
