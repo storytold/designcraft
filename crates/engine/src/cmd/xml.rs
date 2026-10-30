@@ -318,7 +318,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"root": root_name(d), "elements": elements}))
         }),
-        cmd!(noundo "file.exportXml", "Export XML…", ["File"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
+        cmd!(noundo "file.exportXml", "Export XML…", ["File", "Export"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
             let text = export_xml(&s.doc()?.doc);
             match str_param(p, "path") {
                 Some(path) => {

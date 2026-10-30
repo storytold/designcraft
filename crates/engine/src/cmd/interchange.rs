@@ -16,7 +16,7 @@ use crate::{DocState, EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "file.exportIdml", "Export IDML…", [], None,
+        cmd!(query "file.exportIdml", "Export IDML…", ["File", "Export"], None,
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
