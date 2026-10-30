@@ -65,7 +65,7 @@ pub fn open(app: &mut DesignApp, page: &str) {
 }
 
 /// Every effect's settings, those still at their defaults included (the document leaves them out).
-fn effects_json(e: &designcraft_doc::Effects) -> Value {
+pub(crate) fn effects_json(e: &designcraft_doc::Effects) -> Value {
     use designcraft_doc::{Bevel, DirectionalFeather, DropShadow, FeatherOptions, GradientFeather, InnerGlow, InnerShadow, OuterGlow, Satin};
     let mut fx = serde_json::to_value(e).unwrap_or_else(|_| json!({}));
     let defaults = [
@@ -90,7 +90,7 @@ fn effects_json(e: &designcraft_doc::Effects) -> Value {
 }
 
 /// Turn the effect of `page` on, as choosing it does (Basic Feather: its default width).
-fn turn_on(fx: &mut Value, page: &str) {
+pub(crate) fn turn_on(fx: &mut Value, page: &str) {
     match page {
         "transparency" => {}
         "feather" => {
@@ -106,7 +106,7 @@ fn turn_on(fx: &mut Value, page: &str) {
     }
 }
 
-fn is_on(fx: &Value, page: &str) -> bool {
+pub(crate) fn is_on(fx: &Value, page: &str) -> bool {
     match page {
         "transparency" => true,
         "feather" => fx["feather"].as_f64().unwrap_or(0.0) > 0.0,
@@ -283,7 +283,7 @@ fn offset(ui: &mut egui::Ui, d: &mut Dialog, key: &str, unit: Unit, global: f64,
 }
 
 /// The settings of `page`.
-fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
+pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let unit = app.session.active().map_or(Unit::Points, |st| st.doc.settings.horizontal_units);

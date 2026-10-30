@@ -3786,6 +3786,8 @@ fn object_style_effects_round_trip() {
     };
     d.styles_mut().object.push(ObjectStyle { name: "Photo".into(), effects: Some(fx.clone()), ..Default::default() });
     d.styles_mut().object.push(ObjectStyle { name: "Plain".into(), fill: Some(Fill::swatch("Black")), ..Default::default() });
+    let rounded = designcraft_geom::corners::CornerOptions::uniform(designcraft_geom::corners::CornerShape::Rounded, 9.0);
+    d.styles_mut().object.push(ObjectStyle { name: "Rounded".into(), corners: Some(rounded), ..Default::default() });
     let lid = d.default_layer();
     let id = designcraft_doc::ItemId(d.alloc());
     let mut it = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 40.0, 140.0, 140.0)));
@@ -3816,6 +3818,9 @@ fn object_style_effects_round_trip() {
     assert!((ds.distance - 5.0).abs() < 1e-6 && (ds.angle - DropShadow::default().angle).abs() < 1e-6, "{ds:?}");
     assert_eq!(got.feather, 3.0);
     assert!(style("Plain").effects.is_none());
+    // Corner options (Stroke & Corner Options).
+    assert_eq!(style("Rounded").corners, Some(rounded));
+    assert_eq!(style("Plain").corners, None);
     // The frame's effects are the style's, so it follows later edits of the style.
     let frames: Vec<_> = back.spreads[0].items.iter().filter(|i| i.object_style == "Photo").collect();
     assert_eq!(frames[0].effects, got);

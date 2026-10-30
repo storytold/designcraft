@@ -2264,6 +2264,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "colorGroupOptions" => crate::i18n::tr(&app.ui.language, "Color Group Options"),
         "layerSettings" => crate::i18n::tr(&app.ui.language, "Layer Options"),
         crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
+        crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
         id => match id.strip_prefix("cmd:").and_then(designcraft_engine::find_command) {
             Some(c) => crate::i18n::tr(&app.ui.language, c.label.trim_end_matches('…')),
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
@@ -2282,6 +2283,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "hyphenation" => 560.0,
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
+            crate::object_style_dialog::ID => 760.0,
             _ => 640.0,
         };
         let width = preferred_width.min(available.x);
@@ -2554,6 +2556,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "colorGroupOptions" => options::color_group_options(app, ui, &mut d),
                     "layerSettings" => options::layer_options(app, ui, &mut d),
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
+                    crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
                     "pdfImport" => {
@@ -3897,6 +3900,16 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "alert" => Ok(Value::Null),
         crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
+        crate::object_style_dialog::ID => {
+            let r = crate::object_style_dialog::confirm(app, &d);
+            if let Err(e) = &r {
+                // Keep the dialog and its edits open with the reason (an empty or taken name).
+                let mut d = d.clone();
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
         "findChange" => {
             let result = if d.b("objectMode") { Ok(Value::Null) } else { app.run("find.change", find_change_params(&d)) };
             // Confirmation consumes retained bounds before closing, even on an error.

@@ -695,6 +695,66 @@ fn object_style_effects_follow_the_style_until_overridden() {
     assert_eq!(s.doc().unwrap().revision, rev);
 }
 
+/// The course's "Rounded Corner Image, White Stroke" style: made from a frame with rounded corners
+/// and a paper stroke, applied to another frame, then edited (a thicker stroke, bigger corners):
+/// the frames that follow the style change, one with its own stroke keeps it; a rename follows.
+#[test]
+fn object_styles_carry_corners_and_their_stroke_and_corners_can_be_edited() {
+    use designcraft_doc::ItemId;
+    use designcraft_geom::corners::CornerShape;
+    let mut s = session();
+    let frame = |s: &mut Session, x: f64| {
+        s.execute("frame.create", &json!({"rect": [x, 36, x + 100.0, 136], "content": "graphic"})).unwrap()["id"].as_u64().unwrap()
+    };
+    let item = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().clone();
+    let a = frame(&mut s, 36.0);
+    s.execute("object.cornerOptions", &json!({"shape": "rounded", "size": 18, "ids": [a]})).unwrap();
+    s.execute("object.stroke", &json!({"swatch": "[Paper]", "weight": 2.5, "ids": [a]})).unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    let name =
+        s.execute("style.object.create", &json!({"name": "Rounded Corner Image, White Stroke"})).unwrap()["name"].as_str().unwrap().to_string();
+    let os = s.doc().unwrap().doc.styles.object_style(&name).cloned().unwrap();
+    assert_eq!(os.corners.unwrap().corners[0].shape, CornerShape::Rounded);
+    let (b, c) = (frame(&mut s, 200.0), frame(&mut s, 360.0));
+    s.execute("style.object.apply", &json!({"name": name, "ids": [a, b, c]})).unwrap();
+    assert_eq!((item(&s, b).corners, item(&s, b).stroke.weight, item(&s, b).stroke.swatch.as_str()), (item(&s, a).corners, 2.5, "[Paper]"));
+    s.execute("object.stroke", &json!({"weight": 1, "ids": [c]})).unwrap();
+
+    let r = s.execute("style.object.edit", &json!({"name": name, "stroke": {"weight": 6}, "corners": {"size": 30}})).unwrap();
+    assert_eq!(r["updated"], 3);
+    assert_eq!((item(&s, a).stroke.weight, item(&s, b).stroke.weight, item(&s, c).stroke.weight), (6.0, 6.0, 1.0));
+    assert_eq!(item(&s, b).stroke.swatch, "[Paper]");
+    assert!(item(&s, c).corners.corners.iter().all(|k| k.shape == CornerShape::Rounded && k.size == 30.0), "corners follow apart from the stroke");
+    s.execute("style.object.edit", &json!({"name": name, "fill": "[Black]"})).unwrap();
+    assert_eq!(item(&s, b).fill.swatch, "[Black]");
+
+    // Renamed, the items keep the style; a name in use or a built-in one is refused.
+    s.execute("style.object.edit", &json!({"name": name, "rename": "Framed"})).unwrap();
+    assert_eq!(item(&s, a).object_style, "Framed");
+    assert!(s.doc().unwrap().doc.styles.object_style(&name).is_none());
+    assert!(s.execute("style.object.edit", &json!({"name": "Framed", "rename": "[Basic Text Frame]"})).is_err());
+    assert!(s.execute("style.object.edit", &json!({"name": "[Basic Graphics Frame]", "rename": "Mine"})).is_err());
+    assert!(s.execute("style.object.edit", &json!({"name": "Framed", "corners": {"size": "big"}})).is_err());
+    // A negative stroke weight is refused when creating a style as when editing one.
+    let styles = s.doc().unwrap().doc.styles.object.len();
+    for cmd in ["style.object.create", "style.object.edit"] {
+        let e = s.execute(cmd, &json!({"name": "Framed", "stroke": {"weight": -3}})).unwrap_err();
+        assert!(e.to_string().contains("stroke weight"), "{cmd}: {e}");
+        for tint in [-1.0, 1.5] {
+            let e = s.execute(cmd, &json!({"name": "Framed", "stroke": {"tint": tint}})).unwrap_err();
+            assert!(e.to_string().contains("stroke tint"), "{cmd}: {e}");
+        }
+    }
+    assert_eq!(s.doc().unwrap().doc.styles.object.len(), styles);
+    // null: the style stops setting corners, the items keep theirs.
+    s.execute("style.object.edit", &json!({"name": "Framed", "corners": null})).unwrap();
+    assert!(s.doc().unwrap().doc.styles.object_style("Framed").unwrap().corners.is_none());
+    assert_eq!(item(&s, a).corners.corners[0].size, 30.0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(item(&s, a).object_style, name);
+}
+
 #[test]
 fn object_style_effects_reach_grouped_and_anchored_items() {
     use designcraft_doc::ItemId;
@@ -1659,6 +1719,35 @@ fn a_line_fits_when_its_baseline_does() {
     // descent (about 25 pt more) doesn't.
     assert!(!overset(&mut s, 78.5), "the line is set; its descenders hang below the frame");
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
+}
+
+/// Clear Overrides puts a text frame's story back in its object style's paragraph style, as
+/// applying the style does; and a style's feather choke is kept to 0–100 %, as IDML reads it.
+#[test]
+fn object_style_clear_overrides_restores_the_paragraph_style_and_choke_is_clamped() {
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Caption"})).unwrap();
+    s.execute("style.object.create", &json!({"name": "Captioned", "fromSelection": false, "paragraphStyle": "Caption"})).unwrap();
+    let f = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "One\nTwo"})).unwrap();
+    let (id, sid) = (f["id"].as_u64().unwrap(), designcraft_doc::StoryId(f["story"].as_u64().unwrap()));
+    s.execute("style.object.apply", &json!({"name": "Captioned", "ids": [id]})).unwrap();
+    let styles = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().paras.iter().map(|p| p.style.clone()).collect::<Vec<_>>();
+    assert_eq!(styles(&s), ["Caption", "Caption"]);
+    {
+        let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = std::sync::Arc::make_mut(doc.stories.get_mut(&sid).unwrap());
+        st.paras[1].style = designcraft_doc::BASIC_PARAGRAPH.into();
+    }
+    let r = s.execute("style.object.clearOverrides", &json!({"ids": [id]})).unwrap();
+    assert_eq!(r["changed"], 1);
+    assert_eq!(styles(&s), ["Caption", "Caption"]);
+    let r = s.execute("style.object.clearOverrides", &json!({"ids": [id]})).unwrap();
+    assert_eq!(r["changed"], 0, "nothing left to clear");
+
+    s.execute("style.object.create", &json!({"name": "Soft", "fromSelection": false, "effects": {"feather": 4, "featherOptions": {"choke": 150}}}))
+        .unwrap();
+    let fx = s.doc().unwrap().doc.styles.object_style("Soft").unwrap().effects.clone().unwrap();
+    assert_eq!(fx.feather_options.choke, 100.0);
 }
 
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key

@@ -233,7 +233,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Numbering & Section Options", "Options de numérotation et de section"),
     ("OK", "OK"),
     ("Object Style", "Style d'objet"),
-    ("Object Style Options…", "Options de style d'objet…"),
     ("Object Styles", "Styles d'objet"),
     ("Object/Anchored Object", "Objet/Objet ancré"),
     ("Object/Arrange", "Objet/Disposition"),

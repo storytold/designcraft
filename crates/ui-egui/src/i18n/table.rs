@@ -1,5 +1,44 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("New Object Style", ["Neues Objektformat", "Nouveau style d'objet", "Nuevo estilo de objeto", "新規オブジェクトスタイル", "新建对象样式"]),
+    (
+        "Object Style Options",
+        ["Objektformatoptionen", "Options de style d'objet", "Opciones de estilo de objeto", "オブジェクトスタイルの設定", "对象样式选项"],
+    ),
+    (
+        "Object Style Options…",
+        ["Objektformatoptionen…", "Options de style d'objet…", "Opciones de estilo de objeto…", "オブジェクトスタイルの設定…", "对象样式选项…"],
+    ),
+    ("Basic Attributes", ["Grundattribute", "Attributs de base", "Atributos básicos", "基本属性", "基本属性"]),
+    (
+        "Stroke & Corner Options",
+        ["Kontur- und Eckenoptionen", "Options de contour et d'angle", "Opciones de trazo y esquina", "線とコーナーのオプション", "描边和角选项"],
+    ),
+    ("Effects for:", ["Effekte für:", "Effets pour :", "Efectos para:", "効果 :", "效果："]),
+    (
+        "Apply Style to Selection",
+        [
+            "Format auf Auswahl anwenden",
+            "Appliquer le style à la sélection",
+            "Aplicar estilo a la selección",
+            "選択範囲にスタイルを適用",
+            "将样式应用于选区",
+        ],
+    ),
+    ("Create New Style", ["Neues Format erstellen", "Créer un style", "Crear nuevo estilo", "新規スタイルを作成", "创建新样式"]),
+    ("Clear Overrides", ["Abweichungen löschen", "Effacer les remplacements", "Borrar modificaciones", "オーバーライドを消去", "清除覆盖"]),
+    ("Shape:", ["Form:", "Forme :", "Forma:", "形状 :", "形状："]),
+    ("(no attributes)", ["(keine Attribute)", "(aucun attribut)", "(sin atributos)", "（属性なし）", "（无属性）"]),
+    (
+        "Enter a style name.",
+        [
+            "Geben Sie einen Formatnamen ein.",
+            "Saisissez un nom de style.",
+            "Escriba un nombre de estilo.",
+            "スタイル名を入力してください。",
+            "请输入样式名称。",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [
