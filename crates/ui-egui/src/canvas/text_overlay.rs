@@ -270,7 +270,8 @@ pub(super) fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, x
     for story in doc.stories.values() {
         let cs = app.session.cache.get(doc, story.id, None);
         for ft in &cs.frames {
-            let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            let Some((loc, it)) = hidden_characters_frame(doc, ft.frame) else { continue };
+            let a = layout.xf(loc.spread) * doc.parent_xf(&loc);
             let m = a * doc.text_xf(it);
             let col = layer_color(doc, it);
             for l in &ft.lines {
@@ -284,6 +285,22 @@ pub(super) fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, x
             }
         }
     }
+}
+
+/// Resolve a visible frame once for both the visibility check and painting, including its groups.
+fn hidden_characters_frame(doc: &Document, frame: designcraft_doc::ItemId) -> Option<(designcraft_doc::ItemLoc, &designcraft_doc::Item)> {
+    let loc = doc.find(frame)?;
+    let spread = doc.spread(loc.spread)?;
+    let mut items = spread.items.as_slice();
+    for &index in &loc.path {
+        let item = items.get(index)?;
+        if item.hidden || doc.layer(item.layer).is_some_and(|layer| !layer.visible) {
+            return None;
+        }
+        items = item.children();
+    }
+    let item = doc.item_at(&loc)?;
+    Some((loc, item))
 }
 
 /// The hidden-character marks on line `l` of a story with text `text`: frame-space x, mark, and
