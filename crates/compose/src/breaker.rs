@@ -26,6 +26,10 @@ pub struct Break {
 #[derive(Clone, Copy, Debug)]
 pub struct Spacing {
     pub justify: bool,
+    /// Justified lines may squeeze word spaces below `word_min` when the alternative is a much
+    /// looser line, as InDesign does (see [`FLEX_SQUEEZE_WEIGHT`], [`FLEX_SQUEEZE_RATIO`]).
+    /// Off, the minimum is a hard limit.
+    pub flexible: bool,
     pub word_min: f64,
     pub word_desired: f64,
     pub word_max: f64,
@@ -61,6 +65,7 @@ impl Default for Spacing {
     fn default() -> Self {
         Spacing {
             justify: false,
+            flexible: false,
             word_min: 0.8,
             word_desired: 1.0,
             word_max: 1.33,
@@ -122,6 +127,62 @@ impl Spacing {
         }
         g.space * (self.word_max - self.word_desired).max(OVERFLOW_STRETCH)
     }
+}
+
+/// InDesign-compatible spacing (measured against InDesign's output, see `docs/typography-parity.md`).
+/// Word spaces never shrink below this fraction of their natural width.
+pub const FLEX_FLOOR: f64 = 0.2;
+/// Paragraph Composer: a line costs ln(spacing / desired)², times this when its spaces are
+/// narrower than desired (squeezing is rated about four times as bad as stretching).
+pub const FLEX_SQUEEZE_WEIGHT: f64 = 4.0;
+/// Single-line Composer: a line that would be looser than desired takes one more word (or word
+/// part) instead, squeezing its spaces below the minimum, when that puts them less than this
+/// fraction as far below the desired spacing as the loose line would be above it.
+pub const FLEX_SQUEEZE_RATIO: f64 = 0.19;
+/// Paragraph Composer, flexible: cost of a line that has no word spaces to justify with.
+const FLEX_SPACELESS_COST: f64 = 10.0;
+
+/// Word spacing a justified line gets, as a fraction of the natural space: `d` points of room
+/// (negative: overfull) shared by word spaces `spaces` points wide at their natural width.
+fn flex_spacing(d: f64, spaces: f64, sp: &Spacing) -> f64 {
+    sp.word_desired + d / spaces
+}
+
+/// Paragraph Composer, flexible: cost of a line whose word spaces come out at `p` of their
+/// natural width, or `None` when they would be narrower than [`FLEX_FLOOR`].
+fn flex_cost(p: f64, sp: &Spacing) -> Option<f64> {
+    if p.is_nan() || p < FLEX_FLOOR {
+        return None;
+    }
+    let desired = sp.word_desired.max(FLEX_FLOOR);
+    let l = (p / desired).ln();
+    Some(l * l * if p < desired { FLEX_SQUEEZE_WEIGHT } else { 1.0 })
+}
+
+/// Paragraph Composer, flexible: the cost of a line `d` points short of its measure (negative:
+/// overfull) whose word spaces are `spaces` points wide at their natural width. A line whose spaces
+/// would be squeezed past [`FLEX_FLOOR`] is infeasible (`feasible` is cleared); `None`: the standard
+/// rating applies.
+fn flex_line_cost(sp: &Spacing, d: f64, spaces: f64, forced: bool, feasible: &mut bool) -> Option<f64> {
+    if forced && d >= 0.0 {
+        Some(0.0)
+    } else if spaces > 1e-9 {
+        let c = flex_cost(flex_spacing(d, spaces, sp), sp);
+        *feasible = c.is_some();
+        c
+    } else if *feasible {
+        Some(if forced { 0.0 } else { FLEX_SPACELESS_COST })
+    } else {
+        None
+    }
+}
+
+/// Paragraph Composer, flexible: the total after a line costing `cost` from node `n`, the sum of
+/// the lines' costs; a hyphen costs its penalty `pp` in the same units (about a line stretched to
+/// 170% at the default Hyphenation weight), twice after a hyphenated line.
+fn flex_total(n: Node, cost: f64, pp: f64, flagged: bool) -> f64 {
+    let hyphen = if flagged && pp > 0.0 { pp / 1000.0 } else { 0.0 };
+    n.demerits + cost + hyphen + if flagged && n.flagged { hyphen } else { 0.0 }
 }
 
 /// Minimum stretch of a word space, as a fraction of its width, for rating lines that stretch
@@ -189,6 +250,8 @@ struct Item {
     emergency: bool,
     /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
     over: f64,
+    /// Glue: natural width of a word space (0 for other glue), for flexible spacing.
+    nat: f64,
 }
 
 const NONE: usize = usize::MAX;
@@ -209,6 +272,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            nat: 0.0,
         }
     }
     fn glue(w: f64, st: f64, sh: f64) -> Item {
@@ -226,6 +290,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            nat: 0.0,
         }
     }
     fn penalty(w: f64, p: f64, flagged: bool) -> Item {
@@ -243,6 +308,7 @@ impl Item {
             zone_from: NONE,
             emergency: false,
             over: 0.0,
+            nat: 0.0,
         }
     }
 }
@@ -423,6 +489,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                     gl.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, sp.kinsoku_priority != 3);
                 }
                 gl.over = sp.space_overflow(g);
+                gl.nat = if g.is_word_space() && !g.locked_advance { g.space } else { 0.0 };
                 last_space = it.len();
                 it.push(gl);
                 ig.push(i);
@@ -506,6 +573,8 @@ struct Node {
     ty: [f64; 3],
     tz: [f64; 3],
     to: f64,
+    /// Natural width of the word spaces before `pos` (flexible spacing).
+    tn: f64,
     demerits: f64,
     prev: Option<usize>,
     hyphens: u32,
@@ -670,6 +739,8 @@ struct PrefixSums {
     sy: Vec<[f64; 3]>,
     sz: Vec<[f64; 3]>,
     so: Vec<f64>,
+    /// Natural width of the word spaces (flexible spacing).
+    sn: Vec<f64>,
 }
 
 fn prefix_sums(items: &[Item]) -> PrefixSums {
@@ -677,6 +748,7 @@ fn prefix_sums(items: &[Item]) -> PrefixSums {
     let mut sy = vec![[0.0; 3]; items.len() + 1];
     let mut sz = vec![[0.0; 3]; items.len() + 1];
     let mut so = vec![0.0; items.len() + 1];
+    let mut sn = vec![0.0; items.len() + 1];
     for (i, it) in items.iter().enumerate() {
         let (w, y, z) = match it.kind {
             Kind::Box | Kind::Glue => (it.w, it.st, it.sh),
@@ -684,18 +756,19 @@ fn prefix_sums(items: &[Item]) -> PrefixSums {
         };
         sw[i + 1] = sw[i] + w;
         so[i + 1] = so[i] + it.over;
+        sn[i + 1] = sn[i] + it.nat;
         for t in 0..3 {
             sy[i + 1][t] = sy[i][t] + y[t];
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
-    PrefixSums { sw, sy, sz, so }
+    PrefixSums { sw, sy, sz, so, sn }
 }
 
 fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
     let PassInput { items, item_glyphs, glyphs, spacing: sp, width, tolerance: tol, emergency } = input;
     let m = items.len();
-    let PrefixSums { sw, sy, sz, so } = prefix_sums(items);
+    let PrefixSums { sw, sy, sz, so, sn } = prefix_sums(items);
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -707,6 +780,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         ty: [-first_elastic[0], 0.0, 0.0],
         tz: [-first_elastic[1], 0.0, 0.0],
         to: 0.0,
+        tn: 0.0,
         demerits: 0.0,
         prev: None,
         hyphens: 0,
@@ -746,24 +820,28 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             // A line that overruns its measure by a rounding error fits exactly.
             let d = target - l;
             let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
-            let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
+            let (mut r, mut feasible) = tiered_ratio(d, y, z, so[b] - n.to);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
                 // space it leaves, so the fullest piece wins (the break at the last glyph that fits).
                 r = d / target;
             }
+            // Flexible spacing: the line's cost from its word spacing alone (None: the standard
+            // rating, for a line without word spaces or an emergency piece).
+            let flex = if sp.flexible && !it.emergency { flex_line_cost(sp, d, sn[b] - n.tn, forced, &mut feasible) } else { None };
             if feasible && !forced {
                 keep.push(a);
             } else {
                 last_removed = Some(a);
             }
-            if !feasible || (r > tol && !forced) {
+            if !feasible || (r > tol && !forced && flex.is_none()) {
                 continue;
             }
             if flagged && !hyphen_allowed(it, n, sp, &sw, items, target) {
                 continue;
             }
             let (fit, total) = break_demerits(n, r, pp, flagged, sp.kinsoku_priority);
+            let total = flex.map_or(total, |cost| flex_total(n, cost, pp, flagged));
             let hs = if flagged { (n.hyphens as usize + 1).min(states - 1) } else { 0 };
             let slot = &mut best[fit * states + hs];
             if slot.is_none_or(|(bd, _)| total < bd) {
@@ -786,7 +864,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             continue;
         }
         // Totals after the break: skip glue and penalties up to the next box.
-        let (mut tw, mut ty, mut tz, mut to) = (sw[b], sy[b], sz[b], so[b]);
+        let (mut tw, mut ty, mut tz, mut to, mut tn) = (sw[b], sy[b], sz[b], so[b], sn[b]);
         let mut i = b;
         while i < m {
             let x = items[i];
@@ -800,6 +878,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                 Kind::Glue => {
                     tw += x.w;
                     to += x.over;
+                    tn += x.nat;
                     for t in 0..3 {
                         ty[t] += x.st[t];
                         tz[t] += x.sh[t];
@@ -825,6 +904,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
                     ty,
                     tz,
                     to,
+                    tn,
                     demerits: d,
                     prev: Some(a),
                     hyphens: if flagged { prev.hyphens + 1 } else { 0 },
@@ -922,6 +1002,12 @@ pub fn greedy(
         let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
         let mut last_space: Option<(usize, f64)> = None; // (break position, line width there)
+        // Flexible spacing: the line's width and its word spaces' natural width at `last_ok`,
+        // and the natural width of the word spaces so far.
+        let mut last_ok_at: Option<(f64, f64)> = None;
+        let mut nat = 0.0;
+        // The first hyphenation point after `last_ok` too far out to fit: (break, width there).
+        let mut beyond: Option<(usize, f64)> = None;
         let mut i = start;
         let mut brk: Option<(usize, bool, bool)> = None;
         while i < n {
@@ -935,10 +1021,15 @@ pub fn greedy(
                     shrink += sp.space_elastic(g).1;
                 }
                 last_ok = Some((i, false));
+                last_ok_at = Some((x, nat));
+                beyond = None;
                 if x <= w + FIT_EPS {
                     last_natural = last_ok;
                 }
                 last_space = Some((i, x));
+                if g.is_word_space() && !g.locked_advance {
+                    nat += g.space;
+                }
                 x += g.adv;
                 i += 1;
                 continue;
@@ -964,7 +1055,12 @@ pub fn greedy(
                     Some((_, true)) if !sp.justify && sp.hyph_zone > 0.0 && last_space.is_some_and(|(_, xs)| w - xs < sp.hyph_zone) => {
                         (last_space.map_or(i, |s| s.0), false, false)
                     }
-                    Some((p, h)) => (p, h, false),
+                    Some((p, h)) => last_ok_at
+                        .and_then(|(xl, nl)| {
+                            let next = Next { i, x, nat, beyond };
+                            squeeze_further(glyphs, hyph_after, sp, next, (xl, nl), w, may_hyphenate(hyphens), &mut hy_cache, &|x, i| tab(line, x, i))
+                        })
+                        .unwrap_or((p, h, false)),
                     None => (emergency_split(glyphs, start, i), false, false),
                 });
                 break;
@@ -984,6 +1080,8 @@ pub fn greedy(
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
+                    last_ok_at = Some((x, nat));
+                    beyond = None;
                     if x - hang_r <= w + FIT_EPS {
                         last_natural = last_ok;
                     }
@@ -992,6 +1090,10 @@ pub fn greedy(
                     let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
+                        last_ok_at = Some((x + hy, nat));
+                        beyond = None;
+                    } else if beyond.is_none() {
+                        beyond = Some((i + 1, x + hy));
                     }
                 }
             }
@@ -1023,6 +1125,80 @@ pub fn greedy(
         out.push(Break { start: n, end: n, next: n, hyphen: false, forced: true });
     }
     out
+}
+
+/// Single-line Composer, flexible spacing: where a justified line ends instead of its last break
+/// opportunity that fits at the minimum spacing (`loose`: the line's width and its word spaces'
+/// natural width there). When that line would be looser than desired, the next opportunity
+/// (glyph `i` overflowed at width `x`, after word spaces `nat` wide) is taken instead if
+/// squeezing to it stays within [`FLEX_SQUEEZE_RATIO`] (see [`Spacing::flexible`]).
+struct Next {
+    /// The glyph that overflowed, the line's width before it and its word spaces' natural width.
+    i: usize,
+    x: f64,
+    nat: f64,
+    /// A hyphenation point before `i` that didn't fit: (break, line width there with the hyphen).
+    beyond: Option<(usize, f64)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn squeeze_further(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    next: Next,
+    loose: (f64, f64),
+    w: f64,
+    may_hyphenate: bool,
+    hy_cache: &mut Vec<(u32, f64)>,
+    tab: &dyn Fn(f64, usize) -> f64,
+) -> Option<(usize, bool, bool)> {
+    let Next { i, x, nat, beyond } = next;
+    if !sp.flexible || !sp.justify || loose.1 <= 1e-9 || nat <= 1e-9 {
+        return None;
+    }
+    let desired = sp.word_desired;
+    let l = flex_spacing(w - loose.0, loose.1, sp);
+    if l <= desired {
+        return None;
+    }
+    // The next break opportunity: before a word space, after a dash or hard hyphen, at a
+    // hyphenation point, or the paragraph's end.
+    let mut x = x;
+    let mut j = i;
+    let (end, hyphen, forced, width) = if let Some((b, wb)) = beyond {
+        (b, true, false, wb)
+    } else {
+        loop {
+            let Some(g) = glyphs.get(j) else { break (glyphs.len(), false, true, x) };
+            if is_forced(g.ch) {
+                return None;
+            }
+            if g.is_space() && !g.no_break && g.break_after != Some(false) {
+                break (j, false, false, x);
+            }
+            if g.break_after == Some(true) || glyphs.get(j + 1).is_some_and(|n| cjk_break(g, n, sp)) {
+                return None; // scripts that break between characters keep the strict rule
+            }
+            if !g.is_letter() && !g.ch.is_alphanumeric() && !g.ch.is_ascii_punctuation() && !matches!(g.ch, '\u{2010}'..='\u{2027}' | '\u{00AD}') {
+                return None;
+            }
+            x += if g.ch == '\t' { tab(x, j) } else { g.adv };
+            let next_space = glyphs.get(j + 1).is_none_or(|n| n.is_space());
+            if !next_space && !g.no_break && g.break_after != Some(false) {
+                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/') {
+                    break (j + 1, false, false, x);
+                }
+                if hyph_after.get(j) == Some(&true) && may_hyphenate {
+                    let hy = hyphen_width(g, hy_cache);
+                    break (j + 1, true, false, x + hy);
+                }
+            }
+            j += 1;
+        }
+    };
+    let s = flex_spacing(w - width, nat, sp);
+    (s >= FLEX_FLOOR && desired - s < FLEX_SQUEEZE_RATIO * (l - desired)).then_some((end, hyphen, forced))
 }
 
 /// Natural width of a broken line (with its inserted hyphen).

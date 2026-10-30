@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (Word Spacing below Minimum: InDesign-compatible line breaks, on for IDML; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -32,8 +32,8 @@ Fidelity: **unmeasured** unless stated.
 
 | Area | InDesign 2026 | DesignCraft | Status | Notes / evidence |
 |---|---|---|---|---|
-| Paragraph Composer | Adobe's multi-line composer | Knuth–Plass total fit, fitness classes, hyphen penalties | ~ | same family of algorithm, Adobe's weights unknown; breaks will differ on some paragraphs |
-| Single-line Composer | greedy | greedy with the same ranges | ✓ | |
+| Paragraph Composer | Adobe's multi-line composer | Knuth–Plass total fit, fitness classes, hyphen penalties; InDesign-compatible spacing (below) | ~ | with InDesign-compatible spacing, 89% of a measured document's justified paragraphs break as in InDesign (75% strict); hyphen weights are not yet measured |
+| Single-line Composer | greedy | greedy with the same ranges; InDesign-compatible spacing (below) | ✓ | 97% of a measured document's justified lines break as in InDesign given the same start |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531) |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Greek (hyph-el-monoton) and German 2006 (hyph-de-1996); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
@@ -86,9 +86,34 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Tabs panel, list conversion commands | 8–15 |
 | **Total** | **120–200** |
 
+## Word spacing below the Minimum (measured)
+
+InDesign treats a paragraph's Minimum Word Spacing as a preference, not a limit: a justified line
+squeezes its word spaces below it (as far as 25–30% of a space) when the alternative is a much
+looser line. Measured black-box from InDesign's PDF output of two documents (about 1,600 and
+3,000 justified lines, Palatino, hyphenation off and on), against the IDML they were exported with:
+
+- **Single-line Composer:** a line takes as many words (or word parts at hyphenation points) as
+  fit at the Minimum. When that line is looser than Desired, it takes one more word or word part
+  instead, squeezing below the Minimum, when the squeeze falls short of Desired by less than 0.19
+  times as much as the loose line exceeds it. A hyphenation point that fits is used before any
+  squeezing. This reproduces 96.8% (unhyphenated) and 97.6% (hyphenated) of the lines, against
+  95.1% and 96.2% with the Minimum as a limit.
+- **Paragraph Composer:** each line costs ln(spacing ÷ Desired)², four times that when squeezed,
+  and the paragraph takes the breaks with the least total. This reproduces 89% of the paragraphs
+  (86–90% on held-out halves), against 75% for Knuth–Plass with the Minimum as a limit.
+
+Preferences › Composition › **Word Spacing below Minimum** chooses between *Never (strict)*, new
+documents' default, and *When it avoids a very loose line (InDesign-compatible)*, the default for
+documents opened from IDML. It is saved with the document. Spaces never go below 20% of their
+width. Laid out by DesignCraft, the measured dictionary document matches 87.3% of InDesign's lines
+exactly (72.5% strict). In the hyphenated document most remaining differences are hyphenation
+points: InDesign's English dictionary and DesignCraft's agree on about 60% of the hyphenated words.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Word Spacing below Minimum: InDesign-compatible line breaks for both composers, measured against InDesign output; on for IDML |
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |

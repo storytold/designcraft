@@ -410,6 +410,12 @@ pub struct DocSettings {
     /// Documents saved before the setting existed read as on, the way they were drawn.
     #[serde(default = "yes")]
     pub glyph_fallback: bool,
+    /// Preferences › Composition › Word Spacing below Minimum. Off (strict; new documents'),
+    /// justified lines never set word spaces narrower than the paragraph's Minimum Word Spacing.
+    /// On (InDesign-compatible; documents opened from IDML), a justified line may squeeze its
+    /// word spaces below the Minimum when the alternative is a much looser line, as InDesign
+    /// does: its Minimum is a preference rather than a limit.
+    pub flexible_word_spacing: bool,
     /// What the rulers measure from before the zero point moves it.
     pub ruler_origin: RulerOrigin,
     /// The rulers' zero point: points right of and below the ruler origin (`ruler_origin`).
@@ -490,6 +496,7 @@ impl Default for DocSettings {
             overprint_black: true,
             track_changes: false,
             glyph_fallback: false,
+            flexible_word_spacing: false,
             ruler_origin: RulerOrigin::Spread,
             zero_point: [0.0, 0.0],
             zero_point_locked: false,
