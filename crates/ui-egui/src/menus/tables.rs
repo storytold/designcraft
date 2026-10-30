@@ -587,6 +587,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:window.panel|Stroke|{\"panel\": \"stroke\"}",
             ">Styles",
             "ui:window.panel|Character Styles|{\"panel\": \"characterStyles\"}",
+            "ui:window.panel|Object Styles|{\"panel\": \"objectStyles\"}",
             "ui:window.panel|Paragraph Styles|{\"panel\": \"paragraphStyles\"}",
             "<",
             "ui:window.panel|Text Wrap|{\"panel\": \"textWrap\"}",

@@ -35,6 +35,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
+    (
+        "objectStyle.dialog",
+        "Object Style…",
+        None,
+        "{name?: style} — Object Style Options for the style `name`, or (without it) New Object Style from the selected object",
+    ),
     ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{dir?} — choose the package folder to create (file.package)"),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),

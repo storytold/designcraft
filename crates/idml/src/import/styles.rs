@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+
+use designcraft_geom::corners::CornerOptions;
+
+use super::object_style::{corners, corners_in};
 use super::table::uniform_cell_stroke;
 use super::values::tint;
 use super::{
@@ -166,6 +171,7 @@ impl<'r> Importer<'r> {
                 None => self.styles.table.push(ts),
             }
         }
+        let objects_by_self: HashMap<&str, &El> = objects.iter().filter_map(|(_, e)| Some((e.get("Self")?, e))).collect();
         for (_, e) in &objects {
             let name = names::style_name_in(OBJECT_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = e.prop("BasedOn").map(|b| {
@@ -193,7 +199,27 @@ impl<'r> Importer<'r> {
                 None
             };
             let effects = self.style_effects(e);
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, text_frame, effects };
+            // Corner options, when the style sets them (Stroke & Corner Options), by name. A style
+            // that sets some corners takes the others from the styles it is based on, as the style
+            // holds all four.
+            let corners = (e.get("EnableStrokeAndCornerOptions") != Some("false") && corners(e, "").is_some())
+                .then(|| {
+                    let mut levels = vec![e];
+                    let mut next = e.prop("BasedOn");
+                    while let Some(b) = next.take()
+                        && levels.len() < 16
+                        && let Some(s) = objects_by_self.get(b.trim()).copied()
+                        && !levels.iter().any(|l| std::ptr::eq(*l, s))
+                    {
+                        levels.push(s);
+                        next = s.prop("BasedOn");
+                    }
+                    corners_in(&levels, "")
+                })
+                .flatten()
+                .map(|c| CornerOptions { corners: c });
+            let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
+            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),

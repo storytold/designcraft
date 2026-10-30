@@ -149,6 +149,34 @@ fn item_overrides_and_disabled_categories_turn_style_effects_off() {
     assert!((ds.opacity - 0.75).abs() < 1e-6);
 }
 
+/// An object style's paragraph style and Apply Next Style (`ApplyNextParagraphStyle`) round-trip.
+#[test]
+fn object_style_apply_next_style_round_trips() {
+    let mut d = small_doc();
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    styles.paragraph.push(designcraft_doc::ParagraphStyle {
+        name: "Opener".into(),
+        based_on: None,
+        next_style: Some(designcraft_doc::BASIC_PARAGRAPH.into()),
+        para: Default::default(),
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    for (name, next) in [("Chained", true), ("Single", false)] {
+        styles.object.push(designcraft_doc::ObjectStyle {
+            name: name.into(),
+            paragraph_style: Some("Opener".into()),
+            apply_next_style: next,
+            ..Default::default()
+        });
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for (name, next) in [("Chained", true), ("Single", false)] {
+        let os = back.styles.object_style(name).unwrap();
+        assert_eq!((os.paragraph_style.as_deref(), os.apply_next_style), (Some("Opener"), next), "{name}");
+    }
+}
+
 #[test]
 fn exported_frames_keep_their_own_values_over_their_object_style() {
     let mut d = small_doc();
@@ -226,4 +254,38 @@ fn feathers_come_from_the_object_style_unless_its_category_turns_them_off() {
     assert!(fx[1].directional_feather.on);
     assert!(fx[2].gradient_feather.on);
     assert!(!fx[2].directional_feather.on, "the item's own setting wins");
+}
+
+/// A style that sets one corner takes the others from the style it is based on, so applying it
+/// keeps the based-on style's rounded corners; and a style's named corners go to the anchors at
+/// those corners of a frame whose path runs top left, bottom left, bottom right, top right.
+#[test]
+fn a_style_setting_one_corner_inherits_the_others_and_names_them() {
+    let child = r#"<ObjectStyle Self="ObjectStyle/Child" Name="Child" TopRightCornerOption="BevelCorner" TopRightCornerRadius="4">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{child}"), &[(r#"AppliedObjectStyle="ObjectStyle/Child""#, "")]);
+    let style = d.styles.object.iter().find(|s| s.name == "Child").unwrap();
+    let c = style.corners.expect("the child sets corners").corners;
+    assert_eq!(c.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Bevel, CornerShape::Rounded, CornerShape::Rounded], "{c:?}");
+    assert_eq!(c.map(|c| c.size), [17.0, 4.0, 17.0, 17.0]);
+    // Applied to the fixture's frame (anchors top left, bottom left, bottom right, top right):
+    // the bevel goes to the top right anchor, the last.
+    let mut it = (*d.spreads[0].items[0]).clone();
+    it.corners = Default::default();
+    style.apply_to(&mut it);
+    assert_eq!(it.corners.corners.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Rounded, CornerShape::Rounded, CornerShape::Bevel]);
+}
+
+/// An object style giving its corners only with the legacy all-corners `CornerOption` and
+/// `CornerRadius` keeps them, so applying it to another frame rounds it.
+#[test]
+fn a_style_with_legacy_all_corner_attributes_keeps_its_corners() {
+    let legacy = r#"<ObjectStyle Self="ObjectStyle/Legacy" Name="Legacy" CornerOption="RoundedCorner" CornerRadius="9">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(legacy, &[]);
+    let style = d.styles.object.iter().find(|s| s.name == "Legacy").unwrap();
+    let c = style.corners.expect("the legacy corners").corners;
+    assert!(c.iter().all(|c| c.shape == CornerShape::Rounded && c.size == 9.0), "{c:?}");
 }
