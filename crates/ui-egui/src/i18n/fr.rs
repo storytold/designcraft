@@ -13,7 +13,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Align To", "Aligner sur"),
     ("Alignment", "Alignement"),
     ("All Documents", "Tous les documents"),
-    ("Alpha Channel", "Couche alpha"),
     ("Alternate layout", "Variante de mise en page"),
     ("Anchored Object Options", "Options d'objet ancré"),
     ("Apply Numbering & Section Options", "Appliquer les options de numérotation et de section"),

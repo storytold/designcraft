@@ -1,5 +1,6 @@
 //! The command registry. Ids follow InDesign's menu structure.
 
+pub(crate) mod alpha_wrap;
 mod anchored;
 pub mod anchors;
 mod articles;

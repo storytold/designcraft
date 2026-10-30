@@ -301,6 +301,7 @@ fn interface_strings() -> HashSet<&'static str> {
         "Equal fixed heights for the selected rows; cell text may become overset.",
         "Found",
         "Grab bag",
+        "Include Inside Edges",
         "Key Object",
         "Load Styles",
         "layer",

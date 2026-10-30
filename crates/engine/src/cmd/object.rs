@@ -616,7 +616,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side, contour, insideEdges or threshold is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping|alphaChannel, insideEdges?: bool (alphaChannel: text may enter transparent holes), content?: bool (the placed graphic instead of its frame; defaults to the current selection), threshold?: 0..254 (alphaChannel: pixels more opaque count; default 25), ids?}; offset or contour drops an imported custom wrap boundary",
             has_selection,
             text_wrap
         ),
@@ -2093,16 +2093,21 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown side"))?),
         None => None,
     };
-    // Detected edges, alpha channels and image paths need the image's pixels or paths, which
-    // composition doesn't read; those types aren't offered.
+    // Alpha contours use the document's traced image mask; other unsupported contour types are rejected.
     let contour = match p.get("contour").map(|v| serde_json::from_value::<ContourType>(v.clone())) {
-        Some(Ok(c @ (ContourType::BoundingBox | ContourType::GraphicFrame | ContourType::SameAsClipping))) => Some(c),
+        Some(Ok(c @ (ContourType::BoundingBox | ContourType::GraphicFrame | ContourType::SameAsClipping | ContourType::AlphaChannel))) => Some(c),
         Some(_) => return Err(bad("object.textWrap", "unsupported contour type")),
+        None => None,
+    };
+    let inside_edges =
+        p.get("insideEdges").map(|v| v.as_bool().ok_or_else(|| bad("object.textWrap", "insideEdges must be a boolean"))).transpose()?;
+    let threshold = match p.get("threshold") {
+        Some(v) => Some(v.as_u64().filter(|n| *n <= 254).ok_or_else(|| bad("object.textWrap", "threshold must be 0..254"))? as u8),
         None => None,
     };
     let mode: Option<WrapMode> = match p.get("mode") {
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
-        None if side.is_some() || contour.is_some() => None,
+        None if side.is_some() || contour.is_some() || inside_edges.is_some() || threshold.is_some() => None,
         None => Some(WrapMode::BoundingBox),
     };
     let off = match p.get("offset") {
@@ -2137,6 +2142,12 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(c) = contour {
                 w.contour = c;
+            }
+            if let Some(v) = inside_edges {
+                w.inside_edges = v;
+            }
+            if let Some(v) = threshold {
+                w.alpha_threshold = v;
             }
             // A custom boundary has the offsets built in and replaces the contour, so setting
             // either one rebuilds the wrap from the frame.

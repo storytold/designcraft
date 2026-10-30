@@ -284,7 +284,7 @@ pub enum ContourType {
 }
 
 /// Text Wrap panel settings.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextWrap {
     pub mode: WrapMode,
@@ -298,6 +298,30 @@ pub struct TextWrap {
     /// item transforms it with the path; other path edits keep it as it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathData>,
+    /// Contour Options › Include Inside Edges: an Alpha Channel contour also lets text into the
+    /// transparent holes it encloses (off: holes are blocked with the shape around them).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub inside_edges: bool,
+    /// Alpha Channel contour: pixels more opaque than this (0..254) count as the image.
+    pub alpha_threshold: u8,
+}
+
+/// InDesign's default alpha threshold for contour wraps.
+pub const DEFAULT_ALPHA_THRESHOLD: u8 = 25;
+
+impl Default for TextWrap {
+    fn default() -> Self {
+        TextWrap {
+            mode: WrapMode::default(),
+            offsets: [0.0; 4],
+            invert: false,
+            side: WrapSide::default(),
+            contour: ContourType::default(),
+            path: None,
+            inside_edges: false,
+            alpha_threshold: DEFAULT_ALPHA_THRESHOLD,
+        }
+    }
 }
 
 impl TextWrap {

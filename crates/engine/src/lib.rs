@@ -146,7 +146,9 @@ fn next_revision() -> u64 {
 
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
-    pub fn new(doc: Document, path: Option<String>) -> Self {
+    pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        // Alpha Channel contour outlines aren't saved: trace them for the document as opened.
+        crate::cmd::alpha_wrap::sync(&mut doc);
         let active_layer = doc.default_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
@@ -742,6 +744,7 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
+        crate::cmd::alpha_wrap::sync(&mut doc);
         doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;

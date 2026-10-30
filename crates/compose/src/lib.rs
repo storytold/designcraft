@@ -429,6 +429,96 @@ impl Contour {
         }
         (lo <= hi).then_some((lo - self.offset, hi + self.offset))
     }
+
+    /// Occupied intervals across the whole line band, preserving gaps between parts of a
+    /// concave or compound outline. Project boundary edges and the filled middle slice: any
+    /// area that starts or ends inside the band is bounded by those projected edges.
+    fn band_spans(&self, y0: f64, y1: f64) -> Vec<(f64, f64)> {
+        let (low, high) = (y0 - self.offset, y1 + self.offset);
+        if !low.is_finite() || !high.is_finite() || high < low {
+            return self.band_extent(y0, y1).into_iter().collect();
+        }
+        let mut spans = rings_band_spans(&self.rings, low, high);
+        // Extremely fragmented imported paths use the conservative outer extent, bounding the
+        // work of subtracting intervals from every line. A traced 128-column mask stays below it.
+        if spans.len() > 128 {
+            return self.band_extent(y0, y1).into_iter().collect();
+        }
+        if !self.clip.is_empty() {
+            let clip = rings_band_spans(&self.clip, low, high);
+            let mut cut = Vec::new();
+            let (mut i, mut j) = (0, 0);
+            while let (Some(&(a, b)), Some(&(c, d))) = (spans.get(i), clip.get(j)) {
+                if a.max(c) < b.min(d) {
+                    cut.push((a.max(c), b.min(d)));
+                }
+                if b < d {
+                    i += 1;
+                } else {
+                    j += 1;
+                }
+            }
+            spans = cut;
+        }
+        merge_spans(spans.into_iter().map(|(a, b)| (a - self.offset, b + self.offset)).collect())
+    }
+}
+
+fn merge_spans(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    spans.retain(|(a, b)| a.is_finite() && b.is_finite() && b - a > 1e-9);
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in spans {
+        if let Some(last) = out.last_mut().filter(|last| a <= last.1 + 1e-9) {
+            last.1 = last.1.max(b);
+        } else {
+            out.push((a, b));
+        }
+    }
+    out
+}
+
+fn rings_band_spans(rings: &[Vec<Point>], y0: f64, y1: f64) -> Vec<(f64, f64)> {
+    let mut spans = Vec::new();
+    let mut crossings = Vec::new();
+    let middle = y0 * 0.5 + y1 * 0.5;
+    for ring in rings {
+        let Some(&last) = ring.last() else { continue };
+        let mut a = last;
+        for &b in ring {
+            let dy = b.y - a.y;
+            if a.y.max(b.y) >= y0 && a.y.min(b.y) <= y1 {
+                let (t0, t1) = if dy.abs() < 1e-12 {
+                    (0.0, 1.0)
+                } else {
+                    let (u, v) = ((y0 - a.y) / dy, (y1 - a.y) / dy);
+                    (u.min(v).clamp(0.0, 1.0), u.max(v).clamp(0.0, 1.0))
+                };
+                let (x0, x1) = (a.x + t0 * (b.x - a.x), a.x + t1 * (b.x - a.x));
+                spans.push((x0.min(x1), x0.max(x1)));
+            }
+            if (a.y <= middle && middle < b.y) || (b.y <= middle && middle < a.y) {
+                let x = a.x + (middle - a.y) / dy * (b.x - a.x);
+                if x.is_finite() {
+                    crossings.push((x, if dy > 0.0 { 1i32 } else { -1 }));
+                }
+            }
+            a = b;
+        }
+    }
+    crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut winding = 0i32;
+    let mut previous = None;
+    for (x, delta) in crossings {
+        if winding != 0
+            && let Some(start) = previous
+        {
+            spans.push((start, x));
+        }
+        winding += delta;
+        previous = Some(x);
+    }
+    merge_spans(spans)
 }
 
 /// The closed polylines of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
@@ -491,19 +581,19 @@ fn rings_band_extent(rings: &[Vec<Point>], y0: f64, y1: f64) -> Option<(f64, f64
 /// The wrap exclusion of `other` (an item whose inner space maps to the spread by `xf`) for a
 /// frame whose inner space is reached from the spread by `inv`. `left_page` places the object on
 /// a left page (for the spine sides).
-pub fn exclusion(other: &Item, xf: Affine, inv: Affine, left_page: bool) -> Exclusion {
+pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_page: bool) -> Exclusion {
     let group = other.shape == designcraft_doc::Shape::Group;
     let b =
         if group { (xf * other.xf.inverse()).transform_rect_bbox(other.bounds()) } else { other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO) };
-    wrap_exclusion(&other.wrap, b, || (!group).then(|| contour_path(other, other.wrap.contour)), xf, inv, left_page)
+    wrap_exclusion(&other.wrap, b, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page)
 }
 
 /// The wrap exclusion of the graphic placed in frame `it` (arguments as for [`exclusion`]): around
 /// the part of the graphic the frame shows. None if there is no graphic or it is not shown.
-pub fn graphic_exclusion(it: &Item, xf: Affine, inv: Affine, left_page: bool) -> Option<Exclusion> {
+pub fn graphic_exclusion(doc: &Document, it: &Item, xf: Affine, inv: Affine, left_page: bool) -> Option<Exclusion> {
     let g = it.graphic()?;
     let shown = g.shown_bounds(it.inner_bounds())?;
-    Some(wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), || Some(contour_path(it, g.wrap.contour)), xf, inv, left_page))
+    Some(wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), || Some(contour_path(doc, it, &g.wrap)), xf, inv, left_page))
 }
 
 /// The exclusion of `wrap` around an object with spread-space bounds `b`; `outline` gives its
@@ -547,8 +637,22 @@ fn wrap_exclusion(
 /// follows the part of the placed graphic the frame shows; Same As Clipping follows the graphic's
 /// clipping path when it has one; detected edges, alpha channels and image paths need the image,
 /// so they follow the frame's path (as other frames do).
-fn contour_path(it: &Item, kind: designcraft_doc::ContourType) -> (designcraft_geom::BezPath, Option<designcraft_geom::BezPath>) {
+fn contour_path(doc: &Document, it: &Item, wrap: &designcraft_doc::TextWrap) -> (designcraft_geom::BezPath, Option<designcraft_geom::BezPath>) {
     let frame = designcraft_geom::corners::apply(&it.path, &it.corners);
+    let kind = wrap.contour;
+    if kind == designcraft_doc::ContourType::AlphaChannel
+        && let Some(g) = it.graphic()
+        && let Some(o) = doc.alpha_outline(g.asset, wrap.alpha_threshold)
+        && o.width > 0
+        && o.height > 0
+    {
+        let to_graphic = Affine::scale_non_uniform(g.size.0 / f64::from(o.width), g.size.1 / f64::from(o.height));
+        let mut path = o.outer.to_bezpath();
+        if wrap.inside_edges {
+            path.extend(o.holes.to_bezpath().iter());
+        }
+        return (g.xf * to_graphic * path, Some(frame));
+    }
     if kind == designcraft_doc::ContourType::SameAsClipping
         && let Some((path, _)) = it.graphic().and_then(|g| g.clip_region())
     {
@@ -642,20 +746,29 @@ const MAX_WRAP_DEPTH: usize = 64;
 /// the spread; `skip` is the text frame being wrapped; `left_page` tells whether a spread x is on
 /// a left page.
 #[allow(clippy::too_many_arguments)]
-fn wrap_obstacles(it: &Item, parent: Affine, inv: Affine, skip: ItemId, left_page: &dyn Fn(f64) -> bool, depth: usize, out: &mut Vec<Exclusion>) {
+fn wrap_obstacles(
+    doc: &Document,
+    it: &Item,
+    parent: Affine,
+    inv: Affine,
+    skip: ItemId,
+    left_page: &dyn Fn(f64) -> bool,
+    depth: usize,
+    out: &mut Vec<Exclusion>,
+) {
     if it.id == skip || it.hidden || depth > MAX_WRAP_DEPTH {
         return;
     }
     let xf = parent * it.xf;
     let left = || left_page(parent.transform_rect_bbox(it.bounds()).center().x);
     if it.wrap.mode != WrapMode::None {
-        out.push(exclusion(it, xf, inv, left()));
+        out.push(exclusion(doc, it, xf, inv, left()));
     }
     match &it.content {
-        Content::Graphic(g) if g.wrap.mode != WrapMode::None => out.extend(graphic_exclusion(it, xf, inv, left())),
+        Content::Graphic(g) if g.wrap.mode != WrapMode::None => out.extend(graphic_exclusion(doc, it, xf, inv, left())),
         Content::Group { .. } => {
             for c in it.shown_children() {
-                wrap_obstacles(c, xf, inv, skip, left_page, depth + 1, out);
+                wrap_obstacles(doc, c, xf, inv, skip, left_page, depth + 1, out);
             }
         }
         _ => {}
@@ -672,7 +785,7 @@ fn frame_wrap_exclusions(doc: &Document, sp: &designcraft_doc::Spread, item: &It
         if doc.layer(other.layer).is_some_and(|l| !l.visible) {
             continue;
         }
-        wrap_obstacles(other, Affine::IDENTITY, inv, item.id, &left, 0, exclusions);
+        wrap_obstacles(doc, other, Affine::IDENTITY, inv, item.id, &left, 0, exclusions);
     }
     let a = item.text_area();
     exclusions.retain(|e| {
@@ -4272,39 +4385,40 @@ fn free_slots(f: &FrameSpec, col: Rect, y0: f64, y1: f64, desc: f64, size: f64, 
         let blocked = match ex.mode {
             WrapMode::JumpToNextColumn if y1 > r.y0 && r.x0 < col.x1 && r.x1 > col.x0 => return vec![],
             WrapMode::BoundingBox | WrapMode::Contour if overlaps_band => match &ex.contour {
-                Some(c) => c.band_extent(y0, y1),
-                None => Some((r.x0, r.x1)),
+                Some(c) => c.band_spans(y0, y1),
+                None => vec![(r.x0, r.x1)],
             },
-            _ => None,
+            _ => Vec::new(),
         };
-        let Some((a, b)) = blocked.filter(|&(a, b)| a < col.x1 && b > col.x0) else { continue };
-        cut = true;
-        // One-sided wraps also block the column on the other side of the object.
-        let text_left = match ex.side {
-            WrapSide::LeftSide => Some(true),
-            WrapSide::RightSide => Some(false),
-            WrapSide::LargestArea => Some(r.x0 - col.x0 >= col.x1 - r.x1),
-            WrapSide::BothSides | WrapSide::TowardsSpine | WrapSide::AwayFromSpine => None,
-        };
-        let (a, b) = match text_left {
-            Some(true) => (a, b.max(col.x1)),
-            Some(false) => (a.min(col.x0), b),
-            None => (a, b),
-        };
-        let mut next = Vec::with_capacity(free.len() + 1);
-        for (fa, fb) in free {
-            if b <= fa || a >= fb {
-                next.push((fa, fb));
-                continue;
+        for (a, b) in blocked.into_iter().filter(|&(a, b)| a < col.x1 && b > col.x0) {
+            cut = true;
+            // One-sided wraps also block the column on the other side of the object.
+            let text_left = match ex.side {
+                WrapSide::LeftSide => Some(true),
+                WrapSide::RightSide => Some(false),
+                WrapSide::LargestArea => Some(r.x0 - col.x0 >= col.x1 - r.x1),
+                WrapSide::BothSides | WrapSide::TowardsSpine | WrapSide::AwayFromSpine => None,
+            };
+            let (a, b) = match text_left {
+                Some(true) => (a, b.max(col.x1)),
+                Some(false) => (a.min(col.x0), b),
+                None => (a, b),
+            };
+            let mut next = Vec::with_capacity(free.len() + 1);
+            for (fa, fb) in free {
+                if b <= fa || a >= fb {
+                    next.push((fa, fb));
+                    continue;
+                }
+                if a > fa {
+                    next.push((fa, a));
+                }
+                if b < fb {
+                    next.push((b, fb));
+                }
             }
-            if a > fa {
-                next.push((fa, a));
-            }
-            if b < fb {
-                next.push((b, fb));
-            }
+            free = next;
         }
-        free = next;
     }
     if cut {
         free.retain(|(a, b)| b - a >= size * 1.5);

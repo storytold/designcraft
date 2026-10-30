@@ -285,11 +285,22 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ];
     wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
     if i.wrap == "contour" && i.is_graphic {
-        // Detected edges, alpha channels and image paths aren't offered: composition doesn't read
-        // the image. An imported one shows by name and wraps around the frame.
-        let types = [("boundingBox", "Bounding Box"), ("graphicFrame", "Graphic Frame"), ("sameAsClipping", "Same as Clipping")];
-        let shown_only = [("detectEdges", "Detect Edges"), ("alphaChannel", "Alpha Channel"), ("photoshopPath", "Photoshop Path")];
+        // Detected edges and image paths aren't offered: they need the image's own analysis or
+        // paths. An imported one shows by name and wraps around the frame.
+        let types = [
+            ("boundingBox", "Bounding Box"),
+            ("alphaChannel", "Alpha Channel"),
+            ("graphicFrame", "Graphic Frame"),
+            ("sameAsClipping", "Same as Clipping"),
+        ];
+        let shown_only = [("detectEdges", "Detect Edges"), ("photoshopPath", "Photoshop Path")];
         wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+        if i.wrap_contour == "alphaChannel" {
+            let mut inside = i.wrap_inside_edges;
+            if widgets::checkbox(ui, &mut inside, crate::i18n::tr(&app.ui.language, "Include Inside Edges")).changed() {
+                let _ = app.run("object.textWrap", json!({"insideEdges": inside}));
+            }
+        }
     }
 }
 

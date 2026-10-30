@@ -152,7 +152,7 @@ pub(crate) fn exclusions(doc: &Document, specs: &[FrameSpec], obs: &[Obstacle]) 
         let a = spec.area;
         for ob in obs.iter().filter(|o| o.spread == loc.spread) {
             let mut found = Vec::new();
-            crate::wrap_obstacles(ob.item, ob.xf, inv, spec.id, &left, 0, &mut found);
+            crate::wrap_obstacles(doc, ob.item, ob.xf, inv, spec.id, &left, 0, &mut found);
             for mut e in found {
                 let r = e.rect;
                 if r.is_finite() && r.x0 < a.x1 && r.x1 > a.x0 && r.y0 < a.y1 && r.y1 > a.y0 {
