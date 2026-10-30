@@ -2123,6 +2123,61 @@ fn vertically_justified_tables_clear_footnotes() {
     justified_content_clears_footnotes(designcraft_doc::VerticalJustification::Justify, true);
 }
 
+/// #1999: Cap Height + Center counted full font descent, so figure lines sat high. A tiny corner
+/// radius only looked centred because shaped outlines pushed Cap Height placement down.
+#[test]
+fn vertical_center_with_cap_height_centres_figures_without_corner_radius() {
+    use designcraft_doc::{FirstBaseline, VerticalJustification};
+    use designcraft_geom::corners::{CornerOptions, CornerShape};
+    let mm = 72.0 / 25.4;
+    let rect = Rect::new(0.0, 0.0, 29.553 * mm, 9.593 * mm);
+    let compose = |radius: f64| {
+        let (mut d, sid, fid) = doc_with("137mm", rect, ParaAttrs::default());
+        {
+            let item = d.item_mut(fid).unwrap();
+            if radius > 0.0 {
+                item.corners = CornerOptions::uniform(CornerShape::Rounded, radius);
+            }
+            let tf = item.text_frame_mut().unwrap();
+            tf.options.vertical_justification = VerticalJustification::Center;
+            tf.options.first_baseline = FirstBaseline::CapHeight;
+            tf.options.inset = [0.0; 4];
+        }
+        d.story_mut(sid).unwrap().format_chars(0.."137mm".len(), |f| {
+            f.over.size = Some(19.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(19.0));
+        });
+        let specs = frame_specs(&d, sid);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        (specs[0].outline.is_some(), specs[0].area, l.baseline, l.ascent, l.descent)
+    };
+    let (outline0, area, b0, _asc, desc) = compose(0.0);
+    assert!(!outline0, "radius 0 stays a rectangular frame");
+    // Cap Height first baseline: the visible box is [y0, baseline_at_top]; Centre puts its mid on
+    // the frame mid, so baseline ≈ (y0 + y1 + first_offset) / 2. first_offset = Cap ≈ Top baseline.
+    let (mut d, sid, fid) = doc_with("137mm", rect, ParaAttrs::default());
+    {
+        let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+        tf.options.first_baseline = FirstBaseline::CapHeight;
+        tf.options.inset = [0.0; 4];
+    }
+    d.story_mut(sid).unwrap().format_chars(0.."137mm".len(), |f| {
+        f.over.size = Some(19.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(19.0));
+    });
+    let top_b = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline;
+    let want = (area.y0 + area.y1 + top_b) / 2.0;
+    assert!((b0 - want).abs() < 0.05, "Centre without radius should match Cap Height visual centre: got {b0}, want {want} (top {top_b})");
+    assert!(b0 + desc <= area.y1 + 0.01, "descenders stay inside after Centre");
+
+    let (outline_r, _, br, _, _) = compose(0.1 * mm);
+    assert!(outline_r, "a tiny radius creates a shaped outline");
+    // Shaped outlines still centre by baseline fit; they may sit slightly differently because Cap
+    // Height Top placement itself walks down inside the outline, but must not sit above the square case.
+    assert!(br + 0.01 >= b0 - 0.5, "radius must not leave text higher than the square-frame Centre: {br} vs {b0}");
+}
+
 #[test]
 fn vertical_justification_counts_table_fragment_bottoms() {
     use designcraft_doc::VerticalJustification::{Bottom, Center, Justify};

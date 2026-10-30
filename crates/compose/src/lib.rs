@@ -5338,23 +5338,32 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
     let ncols = if spanned { 1 } else { ft.columns.len().max(1) as u32 };
     for c in 0..ncols {
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
-        let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
-        let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
-        let bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(bottom, f64::max);
+        let (Some(_), Some(_)) = (idx.first(), idx.last()) else { continue };
+        // Typographic bottom (descenders must stay inside after the shift).
+        let metric_bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
+        let metric_bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(metric_bottom, f64::max);
+        // Visual fit bottom: last baseline (and table bottoms). Counting full font descent here
+        // pushed Cap Height / figure lines high (#1999, #1771); table cells already fit by baseline.
+        let fit_bottom = idx.iter().map(|&i| ft.lines[i].baseline).fold(f64::NEG_INFINITY, f64::max);
+        let fit_bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(fit_bottom, f64::max);
         let limit = ft
             .notes
             .iter()
             .filter(|n| spanned || notes.span_columns || n.column == c)
             .map(|n| n.rect.y0 - notes.space_before)
             .fold(f.area.y1, f64::min);
-        let space = limit - bottom;
-        if space <= 0.0 {
+        let metric_space = limit - metric_bottom;
+        if metric_space <= 0.0 {
             continue;
         }
-        let _ = a;
         match f.opts.vertical_justification {
-            VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
-            VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
+            // Half the visual slack, but never so far that descenders cross `limit`.
+            VerticalJustification::Center => {
+                let visual = (limit - fit_bottom).max(0.0) / 2.0;
+                let shift = visual.min(metric_space);
+                idx.iter().for_each(|&i| ft.lines[i].baseline += shift);
+            }
+            VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += metric_space),
             VerticalJustification::Justify => {
                 // Segments of one line (beside an object) share a row and move together.
                 let rows: Vec<usize> = idx
@@ -5370,7 +5379,7 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                     .collect();
                 let n = rows.last().copied().unwrap_or(0);
                 if n > 0 {
-                    let per = space / n as f64;
+                    let per = metric_space / n as f64;
                     for (&i, &k) in idx.iter().zip(&rows) {
                         ft.lines[i].baseline += per * k as f64;
                     }
