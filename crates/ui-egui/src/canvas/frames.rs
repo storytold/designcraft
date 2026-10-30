@@ -43,12 +43,46 @@ pub(super) fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
     out
 }
 
+/// Whether a slot can show anything `draw_frames` would draw for it, in the painter's clip.
+/// Everything that function does for a slot costs work in proportion to the items on its spread
+/// -- `overset_marks` searches the whole document for each overset frame -- so a document of many
+/// spreads paid for all of them on every frame, whatever was on screen (#1343).
+///
+/// The test is the slot's `reach`, which covers the pasteboard around the pages *and* the outline
+/// of every item the overlay draws, this spread's and the parent items shown through its pages:
+/// an item dragged past the pasteboard still has its edges drawn, so the pasteboard rectangle
+/// alone would be the wrong test.
+///
+/// Only `draw_frames` is culled. The guides reach across the whole pasteboard rather than one
+/// slot's part of it, and the flattener preview draws each item's effect outset, which `reach`
+/// does not include (it is `designcraft-render`'s to compute, not the layout's); both are cheap per
+/// slot, so they draw for every spread as before rather than be culled on a rectangle that does
+/// not bound them.
+pub(super) fn slot_can_show(painter: &egui::Painter, xf: &Xf, slot: &SpreadSlot) -> bool {
+    slot_in_clip(xf, slot, painter.clip_rect())
+}
+
+/// [`slot_can_show`] against a clip rectangle given directly, so the geometry can be tested
+/// without a painter.
+pub(super) fn slot_in_clip(xf: &Xf, slot: &SpreadSlot, clip: Rect) -> bool {
+    xf.rect(slot.reach).expand(SLOT_SLACK_PX).intersects(clip)
+}
+
+/// How far the overlays reach outside a slot's own extent, in screen pixels: half the port square,
+/// which is centred on a frame's out port and so hangs that far past the frame, plus a hair so an
+/// edge exactly on the clip boundary is not cut. The overset mark is drawn at that size whatever
+/// the zoom, so the slack is in screen pixels and does not scale (#1370 review).
+pub(super) const SLOT_SLACK_PX: f32 = designcraft_tools::thread::PORT_SIZE_PX as f32 / 2.0 + 2.0;
+
 pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     if !app.ui.frame_edges {
         return;
     }
     let ported = ported_frames(app, doc);
     for slot in &layout.slots {
+        if !slot_can_show(painter, xf, slot) {
+            continue;
+        }
         let Some(sp) = doc.spread(slot.spread) else { continue };
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.

@@ -2837,3 +2837,65 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
         assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
     }
 }
+
+/// Only the slots that can show are drawn. Every per-slot overlay costs work in proportion to
+/// the items on its spread, so a long document paid for all of them on every frame (#1343):
+/// 48 spreads at fit-spread is one or two slots of work, not 48.
+#[test]
+fn off_screen_slots_are_culled() {
+    use designcraft_doc::build::NewDocument;
+    let doc = designcraft_doc::Document::new(&NewDocument { pages: 96, ..Default::default() });
+    let layout = designcraft_tools::CanvasLayout::new(&doc, false);
+    assert!(layout.slots.len() >= 40, "a long document: {}", layout.slots.len());
+
+    // Fit the first spread in a 1440 x 900 view, as the report measured.
+    let first = layout.slots[0].bounds;
+    let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1440.0, 900.0));
+    let zoom = (f64::from(view.width()) / first.width()).min(f64::from(view.height()) / first.height());
+    let xf = super::Xf { min: view.min, origin: designcraft_geom::Point::new(first.x0, first.y0), zoom, rot: 0, pivot: view.center() };
+
+    let shown = layout.slots.iter().filter(|s| super::frames::slot_in_clip(&xf, s, view)).count();
+    assert!(shown >= 1, "the spread in view is drawn");
+    assert!(shown <= 4, "only the spreads near the view are drawn, not {} of {}", shown, layout.slots.len());
+
+    // Scrolled to the end, the first spread is not drawn and the last is.
+    let last = layout.slots[layout.slots.len() - 1].bounds;
+    let far = super::Xf { origin: designcraft_geom::Point::new(last.x0, last.y0), ..xf };
+    assert!(!super::frames::slot_in_clip(&far, &layout.slots[0], view), "the first spread is off screen");
+    assert!(super::frames::slot_in_clip(&far, &layout.slots[layout.slots.len() - 1], view), "the last spread is on screen");
+}
+
+/// The overset mark is a port-sized square **centred** on a frame's out port, so it hangs half
+/// its size past the frame -- and past the slot's own reach. Culling with 2 px of slack cut up
+/// to 4.25 px of it: a slot whose only pixels in view were that half-square was skipped and
+/// the mark went missing (#1370 review).
+#[test]
+fn the_cull_covers_the_overset_mark_hanging_off_a_slot() {
+    let half = designcraft_tools::thread::PORT_SIZE_PX as f32 / 2.0;
+    assert!(super::frames::SLOT_SLACK_PX >= half, "the slack covers the mark: {} vs {half}", super::frames::SLOT_SLACK_PX);
+
+    // A slot one unit wide at zoom 1, and a view that begins just past its right edge: only
+    // the mark's outer half can reach into it.
+    let doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+    let layout = designcraft_tools::CanvasLayout::new(&doc, false);
+    let slot = &layout.slots[0];
+    let view = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1440.0, 900.0));
+    let xf = super::Xf { min: view.min, origin: designcraft_geom::Point::new(slot.reach.x0, slot.reach.y0), zoom: 1.0, rot: 0, pivot: view.center() };
+    let right = super::frames::slot_in_clip(&xf, slot, view);
+    assert!(right, "the slot itself is in view");
+
+    // Slide the view right so the slot's reach ends `gap` px before it: anything up to half a
+    // mark away must still count as showing.
+    let reach = xf.rect(slot.reach);
+    for gap in [0.0f32, 1.0, half - 0.5] {
+        let just_past = egui::Rect::from_min_size(egui::pos2(reach.max.x + gap, view.min.y), view.size());
+        assert!(
+            super::frames::slot_in_clip(&xf, slot, just_past),
+            "a mark {gap} px past the reach is still drawn (slack {})",
+            super::frames::SLOT_SLACK_PX
+        );
+    }
+    // Well clear of the mark, the slot is culled as before.
+    let clear = egui::Rect::from_min_size(egui::pos2(reach.max.x + super::frames::SLOT_SLACK_PX + 1.0, view.min.y), view.size());
+    assert!(!super::frames::slot_in_clip(&xf, slot, clear), "a slot with nothing in view, not even its mark, is culled");
+}
