@@ -125,12 +125,36 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
     }
     // Empty graphic frame: the X.
     if it.object_style == designcraft_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, Content::Unassigned) {
-        let r = it.inner_bounds();
         let m = a * it.xf;
-        let p = |x: f64, y: f64| xf.to_screen(m * Point::new(x, y));
-        painter.line_segment([p(r.x0, r.y0), p(r.x1, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
-        painter.line_segment([p(r.x1, r.y0), p(r.x0, r.y1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        for (p0, p1) in frame_x(it) {
+            painter.line_segment([xf.to_screen(m * p0), xf.to_screen(m * p1)], Stroke::new(hair(painter), col.gamma_multiply(0.75)));
+        }
     }
+}
+
+/// The X of an empty graphic frame, in its own space: a four-cornered frame joins its opposite
+/// corners, so a frame slanted with Direct Selection keeps its X corner to corner, as InDesign
+/// draws it; other shapes span their bounds.
+pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
+    // A rectangle (slanted or not: four corner points, no handles). Ellipses, polygons (a
+    // four-sided one is a diamond) and curved paths keep the X across their bounds. Edited points
+    // make any of them a path: a four-cornered one whose corners would cross as a plus (a diamond,
+    // edited) keeps the bounds too.
+    let crosses = |a: Point, b: Point| {
+        let d = b - a;
+        d.x.abs() > 0.18 * d.hypot() && d.y.abs() > 0.18 * d.hypot()
+    };
+    if matches!(it.shape, designcraft_doc::Shape::Rectangle | designcraft_doc::Shape::Path)
+        && let [sp] = it.path.subpaths.as_slice()
+        && sp.closed
+        && let [c0, c1, c2, c3] = sp.anchors.as_slice()
+        && sp.anchors.iter().all(|a| a.h_in == a.p && a.h_out == a.p)
+        && (it.shape == designcraft_doc::Shape::Rectangle || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
+    {
+        return [(c0.p, c2.p), (c1.p, c3.p)];
+    }
+    let r = it.inner_bounds();
+    [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))]
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.

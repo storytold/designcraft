@@ -30,7 +30,7 @@ mod view;
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]
-use frames::{item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
+use frames::{frame_x, item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};
 #[cfg(test)]
 use guides::{guide_at, guide_drag_delta, guide_measure};
