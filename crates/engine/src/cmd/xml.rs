@@ -544,7 +544,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import XML…",
             ["File"],
             None,
-            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag (`fit`: an object.fit mode, default fillProportionally; `crop`: a PDF box such as contentVisible) → {placed, unmatched, failed: [{tag, href, error}]}",
+            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag (`fit`: an object.fit mode, default fillProportionally; `crop`: a PDF box such as contentVisible) → {placed, unmatched, unmatchedTags: [tags without a free frame], failed: [{tag, href, error}]}",
             has_doc,
             import_xml
         ),
@@ -590,11 +590,19 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
     let mut fills: Vec<(StoryId, Vec<(Option<String>, String)>)> = Vec::new();
     let mut images: Vec<(ItemId, String, Image)> = Vec::new();
+    // Elements without a free frame of their tag, and those tags (once each, in order).
     let mut unmatched = 0;
+    let mut unmatched_tags: Vec<String> = Vec::new();
+    let mut miss = |name: &str| {
+        unmatched += 1;
+        if !unmatched_tags.iter().any(|t| t == name) {
+            unmatched_tags.push(name.to_string());
+        }
+    };
     for mut el in elements {
         if let Some(image) = el.image.take() {
             let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
-                unmatched += 1;
+                miss(&el.name);
                 continue;
             };
             slot.2 = true;
@@ -602,7 +610,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
-            unmatched += 1;
+            miss(&el.name);
             continue;
         };
         slot.2 = true;
@@ -638,7 +646,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             Err(e) => failed.push(json!({"tag": tag, "href": image.href, "error": e.to_string()})),
         }
     }
-    Ok(json!({"placed": placed, "unmatched": unmatched, "failed": failed}))
+    Ok(json!({"placed": placed, "unmatched": unmatched, "unmatchedTags": unmatched_tags, "failed": failed}))
 }
 
 /// Replaces each story's text with the paragraphs, in their mapped styles.
@@ -945,6 +953,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!((r["placed"].as_u64(), r["unmatched"].as_u64()), (Some(2), Some(1)));
+        assert_eq!(r["unmatchedTags"], json!(["extra"]));
         let d = &s.doc().unwrap().doc;
         let sa = d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].clone();
         assert_eq!(sa.text, "New title\nNew body");
