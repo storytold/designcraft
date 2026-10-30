@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::{
-    AnchorPosition, AnchoredObject, Content, Document, Item, ItemId, OBJECT_MARK, SpreadRef, StoryId, TextSel, anchored::AnchorAlign,
+    AnchorPosition, AnchoredObject, AnchoredSel, Content, Document, Item, ItemId, OBJECT_MARK, SpreadRef, StoryId, TextSel, anchored::AnchorAlign,
 };
 use designcraft_geom::Affine;
 use serde_json::{Value, json};
@@ -39,6 +39,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{story?, index? (default: the object at the insertion point)} — puts the object back on the page where it is now and removes it from the text",
             has_doc,
             release
+        ),
+        cmd!(
+            noundo "anchored.select",
+            "Select Anchored Object",
+            [],
+            None,
+            "{story, index} — selects the anchored object as an object (the Selection tool clicking it); Delete removes it from the text, anchored.resize / options / release act on it",
+            has_doc,
+            select
+        ),
+        cmd!(
+            "anchored.resize",
+            "Resize Anchored Object",
+            [],
+            None,
+            "{story?, index? (default: the selected anchored object), from: rect, to: rect (the object's bounds before and after, in its own space: [x0, y0, x1, y1]), content?: bool (scale its content with it; default: the frame alone resizes and crops it from the sides that moved)} — the text then places it again and reflows around it",
+            has_doc,
+            resize
         ),
         cmd!(query "anchored.list", "Anchored Objects", [], None, "{story?} → [{story, index, pos, position, size}]", has_doc, |s, p| {
             let d = &s.doc()?.doc;
@@ -170,11 +188,41 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `{story, index}`, or the anchored object at (or just before) the text insertion point.
+/// Whether the `k`-th anchored object of story `sid` can't be selected or changed: it, or the text
+/// frame holding it, is locked or on a locked layer (as for other page items).
+fn is_locked(s: &Session, sid: StoryId, k: usize) -> Result<bool> {
+    let d = &s.doc()?.doc;
+    let locked = |it: &designcraft_doc::Item| it.locked || d.layer(it.layer).is_some_and(|l| l.locked);
+    let o = d.story(sid).and_then(|st| st.objects.get(k)).ok_or_else(|| bad("anchored", "no such anchored object"))?;
+    if locked(&o.item) {
+        return Ok(true);
+    }
+    // The frame composition placed it in; before it is placed, any of the story's frames.
+    let cs = s.cache.get(d, sid, None);
+    let host = cs.frames.iter().find(|ft| ft.objects.iter().any(|x| x.index == k)).map(|ft| ft.frame);
+    let frames: Vec<designcraft_doc::ItemId> = match host {
+        Some(f) => vec![f],
+        None => d.story(sid).map(|st| st.frames.clone()).unwrap_or_default(),
+    };
+    Ok(frames.iter().filter_map(|f| d.item(*f)).any(locked))
+}
+
+/// [`is_locked`] as the error a command returns.
+fn check_unlocked(s: &Session, sid: StoryId, k: usize, cmd: &str) -> Result<()> {
+    if is_locked(s, sid, k)? {
+        return Err(bad(cmd, "the anchored object or its frame is locked, or on a locked layer"));
+    }
+    Ok(())
+}
+
 fn object_ref(s: &Session, p: &Value, cmd: &str) -> Result<(StoryId, usize)> {
     if let (Some(sid), Some(k)) = (p.get("story").and_then(Value::as_u64), p.get("index").and_then(Value::as_u64)) {
-        return Ok((StoryId(sid), k as usize));
+        return Ok((StoryId(sid), usize::try_from(k).map_err(|_| bad(cmd, "index out of range"))?));
     }
     let st = s.doc()?;
+    if let Some(a) = st.selection.anchored {
+        return Ok((a.story, a.index));
+    }
     let t = st
         .selection
         .text
@@ -188,6 +236,87 @@ fn object_ref(s: &Session, p: &Value, cmd: &str) -> Result<(StoryId, usize)> {
         .find(|&i| story.text.get(i..).is_some_and(|x| x.starts_with(OBJECT_MARK)))
         .ok_or_else(|| bad(cmd, "no anchored object at the insertion point"))?;
     Ok((t.story, story.text[..at].matches(OBJECT_MARK).count()))
+}
+
+fn select(s: &mut Session, p: &Value) -> Result<Value> {
+    let sid = p.get("story").and_then(Value::as_u64).map(StoryId).ok_or_else(|| bad("anchored.select", "missing story"))?;
+    let k = p.get("index").and_then(Value::as_u64).and_then(|k| usize::try_from(k).ok()).ok_or_else(|| bad("anchored.select", "missing index"))?;
+    if s.doc()?.doc.story(sid).and_then(|x| x.objects.get(k)).is_none() {
+        return Err(bad("anchored.select", "no such anchored object"));
+    }
+    check_unlocked(s, sid, k, "anchored.select")?;
+    let st = s.doc_mut()?;
+    st.selection = designcraft_doc::Selection { anchored: Some(AnchoredSel { story: sid, index: k }), ..Default::default() };
+    st.bump_revision();
+    Ok(Value::Null)
+}
+
+/// Resize an anchored object's frame from its bounds `from` to `to` (its own space): the content
+/// keeps its place while the edges move, so a frame made narrower from the left crops the
+/// picture's left side. Its top-left then returns to the origin, where composition places it,
+/// and the text reflows around the new size.
+fn resize(s: &mut Session, p: &Value) -> Result<Value> {
+    let (sid, k) = object_ref(s, p, "anchored.resize")?;
+    check_unlocked(s, sid, k, "anchored.resize")?;
+    let from = super::rect_param(p, "from").ok_or_else(|| bad("anchored.resize", "missing from"))?;
+    let to = super::rect_param(p, "to").ok_or_else(|| bad("anchored.resize", "missing to"))?;
+    let finite = |r: designcraft_geom::Rect| [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
+    if !finite(from) || !finite(to) || from.width().abs() < 1e-9 || from.height().abs() < 1e-9 {
+        return Err(bad("anchored.resize", "degenerate or non-finite rect"));
+    }
+    // At least a point each way, at most the largest page InDesign allows.
+    const MIN: f64 = 1.0;
+    const MAX: f64 = 15552.0;
+    let sx = to.width().abs().clamp(MIN, MAX) / from.width().abs();
+    let sy = to.height().abs().clamp(MIN, MAX) / from.height().abs();
+    // The dragged edges move and the content stays where it was on the page (InDesign crops a
+    // picture from the side whose handle moved). Then the text places the object again by its
+    // top-left, so after a left or top handle the frame and picture shift together.
+    let m = Affine::translate((to.x0.min(to.x1), to.y0.min(to.y1))) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
+    let content = p.get("content").and_then(Value::as_bool).unwrap_or(false);
+    let strokes = s.prefs.scale_strokes;
+    s.edit(|d, _| {
+        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let o = st.objects.get_mut(k).ok_or_else(|| bad("anchored.resize", "no such anchored object"))?;
+        let o = Arc::make_mut(o);
+        let it = &mut o.item;
+        if content {
+            super::object::scale_item(it, m, (sx * sy).sqrt(), strokes);
+        } else if matches!(it.content, Content::Group { .. }) {
+            it.xf = m * it.xf;
+        } else {
+            let inner = it.xf.inverse() * m * it.xf;
+            super::object::bake(it, inner);
+            let r = it.inner_bounds();
+            if let Content::Graphic(g) = &mut it.content
+                && let Some(xf) = g.fitted(r, g.auto_fit)
+            {
+                g.xf = xf;
+            }
+        }
+        // Composition places the object by its top-left: keep that at the origin.
+        let b = it.bounds();
+        it.xf = Affine::translate((-b.x0, -b.y0)) * it.xf;
+        let size = o.size();
+        st.rev = st.rev.wrapping_add(1);
+        Ok(json!({"size": [size.0, size.1]}))
+    })
+}
+
+/// Delete a selected anchored object: its mark leaves the text, and the object with it.
+pub(crate) fn delete(s: &mut Session, a: AnchoredSel) -> Result<Value> {
+    // A locked object keeps its place in the text (Delete does nothing to it, as to a locked item).
+    check_unlocked(s, a.story, a.index, "edit.clear")?;
+    let pos = {
+        let st = s.doc()?.doc.story(a.story).ok_or_else(|| bad("edit.clear", "no such story"))?;
+        st.text.match_indices(OBJECT_MARK).nth(a.index).map(|(i, _)| i).ok_or_else(|| bad("edit.clear", "no such anchored object"))?
+    };
+    s.edit(|d, sel| {
+        let st = d.story_mut(a.story).ok_or(designcraft_doc::DocError::NoStory(a.story))?;
+        st.delete(pos..pos + OBJECT_MARK.len_utf8());
+        *sel = designcraft_doc::Selection::default();
+        Ok(json!({"deleted": 1}))
+    })
 }
 
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
@@ -238,6 +367,185 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A text frame whose story holds a 24 × 40 inline box: (session, story).
+    fn inline_box() -> (Session, StoryId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after and more words."})).unwrap();
+        let sid = s.doc().unwrap().doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        let r = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [r["id"]], "story": sid.0, "pos": 7})).unwrap();
+        (s, sid)
+    }
+
+    /// A locked anchored object, one on a locked layer, or one in a locked frame or a frame on a
+    /// locked layer can't be selected, resized or deleted: it stays in the text with its marker.
+    #[test]
+    fn locked_anchored_objects_are_left_alone() {
+        type Lock = fn(&mut designcraft_doc::Document, StoryId);
+        let lock_object: Lock = |d, sid| Arc::make_mut(&mut d.story_mut(sid).unwrap().objects[0]).item.locked = true;
+        let lock_object_layer: Lock = |d, sid| {
+            let layer = d.story(sid).unwrap().objects[0].item.layer;
+            d.layers.iter_mut().find(|l| l.id == layer).unwrap().locked = true;
+        };
+        let lock_frame: Lock = |d, sid| {
+            let f = d.story(sid).unwrap().frames[0];
+            d.item_mut(f).unwrap().locked = true;
+        };
+        let lock_frame_layer: Lock = |d, sid| {
+            let f = d.story(sid).unwrap().frames[0];
+            let layer = d.item(f).unwrap().layer;
+            d.layers.iter_mut().find(|l| l.id == layer).unwrap().locked = true;
+        };
+        for (what, lock) in
+            [("object", lock_object), ("its layer", lock_object_layer), ("its frame", lock_frame), ("its frame's layer", lock_frame_layer)]
+        {
+            let (mut s, sid) = inline_box();
+            // Selected before it is locked, so Delete and Resize meet the lock themselves.
+            s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+            s.edit(|d, _| {
+                lock(d, sid);
+                Ok(Value::Null)
+            })
+            .unwrap();
+            assert!(s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).is_err(), "{what}: select");
+            assert!(s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [0, 0, 24, 60]})).is_err(), "{what}: resize");
+            assert!(s.execute("edit.clear", &json!({})).is_err(), "{what}: delete");
+            let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+            assert_eq!(st.objects.len(), 1, "{what}: the object stays");
+            assert_eq!(st.text.matches(OBJECT_MARK).count(), 1, "{what}: and its marker");
+            assert_eq!(st.objects[0].size(), (24.0, 40.0), "{what}: at its size");
+        }
+    }
+
+    /// Placing a graphic selects the new frame alone: a selected anchored object is deselected.
+    #[test]
+    fn placing_a_graphic_deselects_an_anchored_object() {
+        let (mut s, sid) = inline_box();
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        // A video (any bytes: media is placed by its name) gets a media frame of its own.
+        let b64 = crate::cmd::base64_encode(b"not really a video");
+        let r = s.execute("file.place", &json!({"name": "clip.mp4", "base64": b64, "x": 500, "y": 500})).unwrap();
+        let sel = s.doc().unwrap().selection.clone();
+        assert_eq!(sel.items, [ItemId(r["id"].as_u64().unwrap())]);
+        assert_eq!(sel.anchored, None, "not both the new frame and the anchored object");
+    }
+
+    #[test]
+    fn a_selected_inline_object_resizes_and_the_line_follows() {
+        let (mut s, sid) = inline_box();
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        let sel = s.doc().unwrap().selection.clone();
+        assert_eq!(sel.anchored, Some(AnchoredSel { story: sid, index: 0 }));
+        assert!(sel.items.is_empty() && sel.text.is_none() && !sel.is_empty());
+        // Taller by its bottom handle: the line grows to fit it; its top-left stays at the origin.
+        let r = s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [0, 0, 24, 60]})).unwrap();
+        assert_eq!(r["size"], json!([24.0, 60.0]));
+        let d = s.doc().unwrap().doc.clone();
+        let b = d.story(sid).unwrap().objects[0].item.bounds();
+        assert!(b.x0.abs() < 1e-9 && b.y0.abs() < 1e-9, "{b:?}");
+        let cs = s.cache.get(&d, sid, None);
+        let o = &cs.frames[0].objects[0];
+        assert!(cs.frames[0].lines[o.line].ascent >= 60.0);
+        // Narrower from its left handle: still at the origin, 10 pt wide.
+        s.execute("anchored.resize", &json!({"from": [0, 0, 24, 60], "to": [14, 0, 24, 60]})).unwrap();
+        let o = s.doc().unwrap().doc.story(sid).unwrap().objects[0].clone();
+        assert_eq!(o.size(), (10.0, 60.0));
+        assert!(o.item.bounds().x0.abs() < 1e-9);
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].size(), (24.0, 40.0));
+    }
+
+    #[test]
+    fn a_left_or_top_handle_crops_that_side_of_the_picture() {
+        let (mut s, sid) = inline_box();
+        let graphic = designcraft_doc::Graphic {
+            asset: designcraft_doc::AssetId(1),
+            size: (24.0, 40.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+            layer_options: Default::default(),
+        };
+        s.edit(|d, _| {
+            let it = &mut Arc::make_mut(&mut d.story_mut(sid).unwrap().objects[0]).item;
+            // At the frame's top-left, in its inner space.
+            let inner = it.inner_bounds();
+            it.content = Content::Graphic(designcraft_doc::Graphic { xf: Affine::translate((inner.x0, inner.y0)), ..graphic.clone() });
+            Ok(Value::Null)
+        })
+        .unwrap();
+        // The picture's top-left relative to the frame's.
+        let offset = |s: &Session| {
+            let it = s.doc().unwrap().doc.story(sid).unwrap().objects[0].item.clone();
+            let Content::Graphic(g) = &it.content else { panic!() };
+            let b = it.bounds();
+            ((it.xf * g.xf) * designcraft_geom::Point::ORIGIN - designcraft_geom::Point::new(b.x0, b.y0), b)
+        };
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        // The left handle 10 pt right and the top handle 20 pt down: the picture stayed put while
+        // those edges moved, so its left 10 and top 20 points are cropped.
+        s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [10, 20, 24, 40]})).unwrap();
+        let (d, b) = offset(&s);
+        assert!((b.width() - 14.0).abs() < 1e-9 && (b.height() - 20.0).abs() < 1e-9 && b.x0.abs() < 1e-9 && b.y0.abs() < 1e-9, "{b:?}");
+        assert!((d.x + 10.0).abs() < 1e-9 && (d.y + 20.0).abs() < 1e-9, "{d:?}");
+        // The right and bottom handles leave the picture at the frame's top-left.
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [0, 0, 30, 50]})).unwrap();
+        let (d, _) = offset(&s);
+        assert!(d.x.abs() < 1e-9 && d.y.abs() < 1e-9, "{d:?}");
+    }
+
+    #[test]
+    fn delete_removes_a_selected_anchored_object_from_the_text() {
+        let (mut s, sid) = inline_box();
+        let before = s.doc().unwrap().doc.story(sid).unwrap().text.clone();
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        assert_eq!(s.execute("edit.clear", &json!({})).unwrap()["deleted"], 1);
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert!(st.objects.is_empty() && !st.text.contains(OBJECT_MARK));
+        assert!(s.doc().unwrap().selection.is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, before);
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn options_and_release_act_on_the_selected_anchored_object() {
+        let (mut s, sid) = inline_box();
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        s.execute("anchored.options", &json!({"position": "aboveLine"})).unwrap();
+        assert!(matches!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].position, AnchorPosition::AboveLine { .. }));
+        s.execute("anchored.release", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.story(sid).unwrap().objects.is_empty());
+        assert_eq!(s.doc().unwrap().selection.items.len(), 1, "the released item is selected");
+    }
+
+    #[test]
+    fn selecting_items_drops_an_anchored_selection_and_bad_input_is_refused() {
+        let (mut s, sid) = inline_box();
+        assert!(s.execute("anchored.select", &json!({"story": sid.0, "index": 5})).is_err());
+        assert!(s.execute("anchored.select", &json!({"story": 999_999, "index": 0})).is_err());
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        for bad in [
+            json!({"from": [0, 0, 0, 40], "to": [0, 0, 24, 40]}),
+            json!({"from": [0, 0, 24, 40], "to": [0, 0, "wide", 40]}),
+            json!({"to": [0, 0, 1, 1]}),
+        ] {
+            assert!(s.execute("anchored.resize", &bad).is_err(), "{bad}");
+        }
+        // Dragged inside out or to nothing: at least a point each way.
+        s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [24, 40, 24, 40]})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].size(), (1.0, 1.0));
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        assert!(s.doc().unwrap().selection.anchored.is_none());
+    }
 
     #[test]
     fn inline_object_flows_with_text_and_releases() {

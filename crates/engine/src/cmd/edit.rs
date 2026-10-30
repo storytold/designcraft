@@ -252,6 +252,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             st.selection.text = None;
             st.selection.cells = None;
+            st.selection.anchored = None;
             st.bump_revision();
             ok()
         }),
@@ -260,6 +261,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let st = s.doc_mut()?;
             st.selection.text = None;
             st.selection.cells = None;
+            st.selection.anchored = None;
             if let Some(i) = st.selection.items.iter().position(|x| *x == id) {
                 st.selection.items.remove(i);
                 // A key object needs another object to align to it.
@@ -325,6 +327,12 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 if s.doc()?.selection.text.is_some() && p.get("ids").is_none() {
                     return super::text::delete_selection(s);
+                }
+                // A selected anchored object leaves the text.
+                if p.get("ids").is_none()
+                    && let Some(a) = s.doc()?.selection.anchored
+                {
+                    return super::anchored::delete(s, a);
                 }
                 if p.get("ids").is_none() && s.doc()?.selection.items.is_empty() && !s.doc()?.selection.guides.is_empty() {
                     return s.execute("guide.delete", &json!({}));

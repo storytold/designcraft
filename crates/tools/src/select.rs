@@ -61,6 +61,18 @@ enum Drag {
         start_angle: f64,
         start_rotation: Option<f64>,
     },
+    /// Resizing a selected anchored object by a handle: `from` its bounds on `spread` and `local`
+    /// its bounds in its own space, at pointer down. As in InDesign, only an outline follows the
+    /// pointer (`to`, on the spread, with the pointer and Cmd); the object resizes on release,
+    /// when the text places it again.
+    AnchoredResize {
+        sel: designcraft_doc::AnchoredSel,
+        handle: usize,
+        from: Rect,
+        local: Rect,
+        spread: SpreadRef,
+        to: Option<(Rect, Point, bool)>,
+    },
     Marquee {
         start: Point,
         cur: Point,
@@ -424,6 +436,18 @@ fn content_handle_at(cx: &ToolContext, p: Point) -> Option<(ItemId, usize)> {
     let (id, b) = selected_graphic(cx)?;
     let tol = cx.tol(5.0);
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol).map(|h| (id, h))
+}
+
+/// The selected anchored object (not turned by its frame) and the handle of it under `p`.
+fn anchored_handle_at(cx: &ToolContext, p: Point) -> Option<(crate::anchored::Placed, usize)> {
+    let pl = crate::anchored::selected(cx.doc, cx.cache, cx.layout, cx.selection.anchored).filter(|pl| !pl.turned)?;
+    let tol = cx.tol(5.0);
+    let h = handles(pl.canvas_rect).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)?;
+    Some((pl, h))
+}
+
+fn anchored_select(pl: &crate::anchored::Placed) -> Action {
+    Action::Exec("anchored.select".into(), json!({"story": pl.sel.story.0, "index": pl.sel.index}))
 }
 
 fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
@@ -986,6 +1010,11 @@ impl SelectionTool {
                     json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
                 )]
             }
+            Drag::AnchoredResize { sel, handle, from, local, spread, .. } => {
+                let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
+                self.drag = Drag::AnchoredResize { sel, handle, from, local, spread, to: Some((to, p, ev.mods.cmd)) };
+                vec![Action::Handled]
+            }
             Drag::ContentResize { id, handle, from, spread } => {
                 let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
                 vec![Action::Preview("transform.set".into(), json!({"ids": [id.0], "content": true, "bounds": rect_json(to)}))]
@@ -1107,6 +1136,28 @@ impl Tool for SelectionTool {
         {
             return actions;
         }
+        // Anchored objects (inline graphics and the like): a press on a selected one's handle
+        // resizes it, a press on one selects it. They flow with the text, so a drag doesn't move
+        // them, and a double click selects rather than editing the text around them.
+        if !self.direct && !ev.mods.shift && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick) {
+            if let Some((pl, h)) = anchored_handle_at(cx, p)
+                && let Some(o) = cx.doc.story(pl.sel.story).and_then(|s| s.objects.get(pl.sel.index))
+            {
+                let turns = cx.layout.slot(pl.spread).map_or(0, |s| s.rotation as usize);
+                let handle = (h + 8 - 2 * turns) % 8;
+                self.drag = Drag::AnchoredResize { sel: pl.sel, handle, from: pl.spread_rect, local: o.item.bounds(), spread: pl.spread, to: None };
+                return vec![Action::Handled];
+            }
+            if handle_at(cx, p).is_none()
+                && let Some(pl) = crate::anchored::at(cx.doc, cx.cache, cx.layout, p)
+            {
+                self.drag = Drag::None;
+                if cx.selection.anchored == Some(pl.sel) {
+                    return vec![Action::Handled];
+                }
+                return vec![anchored_select(&pl)];
+            }
+        }
         // The second press of a double click on a selection handle: Fit Frame to Content, along
         // that handle's side (a corner fits both).
         if !self.direct
@@ -1159,6 +1210,22 @@ impl Tool for SelectionTool {
                     | Drag::Bracket { .. } => {
                         vec![Action::Commit]
                     }
+                    // Released: the object takes the outline's size and the text places it again.
+                    Drag::AnchoredResize { sel, from, local, to: Some((to, _, cmd)), .. } => {
+                        // Spread → the object's own space (its frame may scale it).
+                        let (kx, ky) = (local.width() / from.width().max(1e-9), local.height() / from.height().max(1e-9));
+                        let to_local = Rect::new(
+                            local.x0 + (to.x0 - from.x0) * kx,
+                            local.y0 + (to.y0 - from.y0) * ky,
+                            local.x0 + (to.x1 - from.x0) * kx,
+                            local.y0 + (to.y1 - from.y0) * ky,
+                        );
+                        vec![Action::Exec(
+                            "anchored.resize".into(),
+                            json!({"story": sel.story.0, "index": sel.index, "from": rect_json(local), "to": rect_json(to_local), "content": cmd}),
+                        )]
+                    }
+                    Drag::AnchoredResize { to: None, .. } => vec![],
                     Drag::Pending { .. } => match (release, key) {
                         (Some(id), _) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
                         (None, Some(id)) => vec![Action::Exec("selection.key".into(), json!({"id": id}))],
@@ -1246,6 +1313,22 @@ impl Tool for SelectionTool {
             Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Anchor { .. } => self.guides.clone(),
             // The whole graphic shows while it's resized, outside the frame too.
             Drag::ContentResize { id, .. } => vec![Overlay::ContentGhost(*id)],
+            // The outline the anchored object will take, and its size at the pointer.
+            Drag::AnchoredResize { spread, to: Some((to, p, _)), .. } => {
+                let r = cx.layout.xf(*spread).transform_rect_bbox(*to);
+                vec![
+                    Overlay::Path { path: designcraft_geom::Shape::to_path(&r, 0.1), color: [79, 153, 255], dashed: false },
+                    // In the document's ruler units, as its Control and Properties fields show them.
+                    Overlay::Measure {
+                        p: *p,
+                        text: format!(
+                            "W: {}\nH: {}",
+                            designcraft_geom::format_measure(to.width(), cx.doc.settings.horizontal_units),
+                            designcraft_geom::format_measure(to.height(), cx.doc.settings.vertical_units)
+                        ),
+                    },
+                ]
+            }
             Drag::None | Drag::Bracket { .. } => brackets(cx),
             _ => vec![],
         };
@@ -1267,8 +1350,14 @@ impl Tool for SelectionTool {
         if matches!(self.drag, Drag::Bracket { .. }) || (matches!(self.drag, Drag::None) && self.bracket_at(cx, p).is_some()) {
             return Cursor::PathBracket;
         }
-        if let Drag::ContentResize { handle, .. } = self.drag {
+        if let Drag::ContentResize { handle, .. } | Drag::AnchoredResize { handle, .. } = self.drag {
             return handle_cursor(handle);
+        }
+        if !self.direct
+            && matches!(self.drag, Drag::None)
+            && let Some((_, h)) = anchored_handle_at(cx, p)
+        {
+            return handle_cursor(h);
         }
         if matches!(self.drag, Drag::None)
             && !(self.direct && anchor_at(cx, p).is_some())

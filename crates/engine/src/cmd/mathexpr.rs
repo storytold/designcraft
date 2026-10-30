@@ -92,6 +92,8 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = it.id;
         d.insert_item(spread, it, None)?;
         sel.items = vec![id];
+        sel.text = None;
+        sel.anchored = None;
         Ok(json!({"id": id.0}))
     })
 }
