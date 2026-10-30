@@ -64,6 +64,7 @@ pub use page::*;
 pub use selection::*;
 pub use story::*;
 pub use styles::*;
+pub use swatch_refs::swatches_named_by;
 pub use table::*;
 pub use xref::{ANCHOR_MARK, CrossRef, TextAnchor, XREF_MARK, XrefFormat};
 

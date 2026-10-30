@@ -47,6 +47,19 @@ impl crate::Document {
 }
 
 impl Story {
+    /// Visit this story and every text inside it (table cells, footnotes).
+    pub fn for_each_text(&self, f: &mut impl FnMut(&Story)) {
+        f(self);
+        for t in self.tables.values() {
+            for c in &t.cells {
+                c.text.for_each_text(f);
+            }
+        }
+        for n in &self.notes {
+            n.text.for_each_text(f);
+        }
+    }
+
     /// Visit this story and every text inside it (table cells, footnotes), mutably.
     pub fn for_each_text_mut(&mut self, f: &mut impl FnMut(&mut Story)) {
         f(self);

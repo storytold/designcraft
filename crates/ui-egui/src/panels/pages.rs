@@ -727,6 +727,11 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
         ui.close();
     }
     crate::menus::menu_button(ui, crate::rtl::widget(ui, tr("Parent Pages")), |ui| {
+        if ui.button(crate::rtl::widget(ui, tr("Load Parent Pages…"))).clicked() {
+            crate::menus::activate(app, "layout.parents.load", &serde_json::Value::Null);
+            ui.close();
+        }
+        ui.separator();
         for (id, label) in [("layout.removeOverrides", "Remove All Local Overrides"), ("layout.detachAll", "Detach All Objects from Parent")] {
             if ui.button(crate::rtl::widget(ui, tr(label))).clicked() {
                 let _ = app.run(id, json!({"page": abs}));

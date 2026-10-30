@@ -62,6 +62,48 @@ impl DesignApp {
         })
     }
 
+    /// Load Parent Pages: ask the host for a document whose parents to load. A native dialog's
+    /// answer opens, when the file has parents of the names this document has or another page
+    /// size, a dialog that asks how to go on, as InDesign's alerts do; otherwise (and in a
+    /// browser, when the file arrives) they load at once, parents of the same names under the
+    /// next free prefixes.
+    #[track_caller]
+    pub fn pick_parents(&mut self) -> Result<Value, String> {
+        designcraft_engine::cmd::has_doc(&self.session)?;
+        if let Some(open) = self.services.open_async.as_mut() {
+            open(ImportRequest { purpose: "parents".into(), target: self.session.active().map(|d| d.uid) });
+            return Ok(Value::Null);
+        }
+        self.ask_open("parents", file_dialogs::Bound::Document, |app, path| app.parents_picked(path))
+    }
+
+    /// The parents of the file at `path`, chosen for Load Parent Pages: loaded at once, or the
+    /// dialog that asks about parents of the same names or another page size.
+    fn parents_picked(&mut self, path: String) -> Result<Value, String> {
+        let found = self.run("layout.parents.load.list", json!({"path": path}))?;
+        let same: Vec<Value> =
+            found["parents"].as_array().into_iter().flatten().filter(|p| p["conflict"] == true).map(|p| p["label"].clone()).collect();
+        if same.is_empty() && found["sizesDiffer"] != true {
+            return self.load_parents(json!({"path": path}));
+        }
+        // The conflicts were found in this document: OK loads into it, whichever is active then.
+        let target = self.session.active().map(|d| d.uid);
+        self.ui.dialog = Some(dialogs::Dialog::new(
+            "loadParents",
+            json!({"path": path, "conflicts": "rename", "same": same, "sizesDiffer": found["sizesDiffer"], "target": target}),
+        ));
+        Ok(Value::Null)
+    }
+
+    /// Load the parents of a file (`layout.parents.load`) and say which came in.
+    pub(crate) fn load_parents(&mut self, params: Value) -> Result<Value, String> {
+        let r = self.run("layout.parents.load", params)?;
+        let names: Vec<&str> = r["parents"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        let message = crate::i18n::tr(&self.ui.language, "Parent pages loaded: {names}").replace("{names}", &names.join(", "));
+        self.status(message);
+        Ok(r)
+    }
+
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
         ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
     }
@@ -127,6 +169,10 @@ impl DesignApp {
 
     fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
         let lower = file.name.to_ascii_lowercase();
+        if file.request.purpose == "parents" {
+            self.activate_import_target(&file.request)?;
+            return self.load_parents(json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)}));
+        }
         if let Some(kind) = file.request.purpose.strip_prefix("styles") {
             self.activate_import_target(&file.request)?;
             let mut params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes)});
@@ -401,6 +447,110 @@ mod import_warning_tests {
         assert!(app.ui.dialog.is_none());
         assert!(app.ui.status.is_empty());
         assert_eq!(app.session.documents().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod load_parents_tests {
+    use designcraft_engine::Session;
+    use egui_kittest::kittest::Queryable as _;
+    use serde_json::json;
+
+    use crate::{DesignApp, Services, dialogs, test_window};
+
+    /// A template file whose A-Parent has a frame, with B-Section beside it, and an app whose
+    /// picker answers with it. The app's document is A4, the template Letter.
+    fn app_and_template(test: &str) -> (DesignApp, std::path::PathBuf) {
+        let mut t = Session::new();
+        t.execute("file.new", &json!({"preset": "Letter", "facingPages": false})).unwrap();
+        t.execute("frame.create", &json!({"rect": [36, 36, 200, 100], "spread": {"kind": "parent", "index": 0}})).unwrap();
+        t.execute("layout.parents.new", &json!({"prefix": "B", "name": "Section"})).unwrap();
+        let bytes = designcraft_engine::cmd::base64_decode(t.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap());
+        let path = std::env::temp_dir().join(format!("designcraft-load-parents-{}-{test}.designcraft", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let picked = path.to_string_lossy().to_string();
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
+        app.run("file.new", json!({"preset": "A4", "pages": 2, "facingPages": false})).unwrap();
+        (app, path)
+    }
+
+    fn labels(app: &DesignApp) -> Vec<String> {
+        app.session.doc().unwrap().doc.parents.iter().map(|p| p.parent.as_ref().unwrap().label()).collect()
+    }
+
+    /// The course's chapter 36: a parent of a name the document has, and another page size, make
+    /// Load Parent Pages ask first, as InDesign's alerts do. Replace Parent Pages puts the file's
+    /// A-Parent in the place of the document's.
+    #[test]
+    fn load_parent_pages_asks_about_parents_of_the_same_name_and_another_page_size() {
+        let (app, path) = app_and_template("replace");
+        let mut h = test_window::open(app, egui::vec2(1200.0, 800.0));
+        h.state_mut().app.pick_parents().unwrap();
+        h.state_mut().app.settle_dialogs();
+        h.run_steps(3);
+        let d = h.state().app.ui.dialog.as_ref().expect("the Load Parent Pages dialog");
+        assert_eq!((d.id.as_str(), &d.fields["same"], &d.fields["conflicts"]), ("loadParents", &json!(["A-Parent"]), &json!("rename")));
+        let _ = h.get_by_label_contains("The page sizes differ in the two documents.");
+        let replace = h.get_by_label("Replace Parent Pages").rect().center();
+        test_window::click_at(&mut h, replace);
+        let ok = h.get_by_label("  OK  ").rect().center();
+        test_window::click_at(&mut h, ok);
+        std::fs::remove_file(&path).unwrap();
+        let app = &h.state().app;
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(labels(app), ["A-Parent", "B-Section"]);
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.parents[0].items.len(), 1, "the file's A-Parent, with its frame");
+        assert_eq!(d.page(0).unwrap().parent, Some(d.parents[0].id), "the pages show it");
+        assert_eq!(app.ui.status, "Parent pages loaded: A-Parent, B-Section");
+    }
+
+    /// The dialog's choice goes to the document it was opened for: made active again if another
+    /// one is, and refused, loading nothing, when it has closed.
+    #[test]
+    fn load_parent_pages_loads_into_the_document_it_asked_about() {
+        let (mut app, path) = app_and_template("target");
+        app.pick_parents().unwrap();
+        app.settle_dialogs();
+        let asked = app.session.doc().unwrap().uid;
+        let dialog = app.ui.dialog.clone().expect("the Load Parent Pages dialog");
+        app.run("file.new", json!({})).unwrap();
+        assert_ne!(app.session.doc().unwrap().uid, asked, "another document is active");
+        app.ui.dialog = Some(dialog.clone());
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.session.doc().unwrap().uid, asked, "loaded into the one it asked about");
+        assert_eq!(labels(&app).len(), 3, "its A-Parent and the file's two");
+        // That document closed: nothing loads, into the other one either.
+        app.run("file.close", json!({})).unwrap();
+        assert!(app.session.documents().iter().all(|d| d.uid != asked));
+        let before = labels(&app);
+        app.ui.dialog = Some(dialog);
+        assert!(dialogs::confirm(&mut app).is_err());
+        assert_eq!(labels(&app), before, "the other document is untouched");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// No conflict and the same page size: the parents load at once. The picker cancelled, or no
+    /// document, loads nothing.
+    #[test]
+    fn load_parent_pages_loads_at_once_without_conflicts() {
+        let (mut app, path) = app_and_template("direct");
+        app.run("file.new", json!({"preset": "Letter", "facingPages": false})).unwrap();
+        let id = app.session.doc().unwrap().doc.parents[0].id.0;
+        app.run("layout.parents.delete", json!({"id": id})).unwrap();
+        app.pick_parents().unwrap();
+        app.settle_dialogs();
+        std::fs::remove_file(&path).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(labels(&app), ["A-Parent", "B-Section"]);
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
+        app.pick_parents().unwrap();
+        app.settle_dialogs();
+        assert_eq!(labels(&app).len(), 2);
+        app.run("file.close", json!({})).unwrap();
+        app.run("file.close", json!({})).unwrap();
+        assert!(app.pick_parents().is_err());
     }
 }
 

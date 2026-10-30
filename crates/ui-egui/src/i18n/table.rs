@@ -1225,6 +1225,49 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
     ),
     (
+        "Load Parent Pages…",
+        ["Vorlagenseiten laden…", "Charger des pages parents…", "Cargar páginas principales…", "親ページを読み込み…", "加载父页面…"],
+    ),
+    ("Load Parent Pages", ["Vorlagenseiten laden", "Charger des pages parents", "Cargar páginas principales", "親ページを読み込み", "加载父页面"]),
+    (
+        "Parents of the same name are already in this document: {names}",
+        [
+            "Vorlagenseiten gleichen Namens sind in diesem Dokument bereits vorhanden: {names}",
+            "Des pages parents du même nom existent déjà dans ce document : {names}",
+            "Este documento ya tiene páginas principales con el mismo nombre: {names}",
+            "同じ名前の親ページがこのドキュメントに既にあります：{names}",
+            "此文档中已有同名的父页面：{names}",
+        ],
+    ),
+    (
+        "Rename Parent Pages",
+        ["Vorlagenseiten umbenennen", "Renommer les pages parents", "Cambiar nombre de páginas principales", "親ページの名前を変更", "重命名父页面"],
+    ),
+    (
+        "Replace Parent Pages",
+        ["Vorlagenseiten ersetzen", "Remplacer les pages parents", "Reemplazar páginas principales", "親ページを置換", "替换父页面"],
+    ),
+    (
+        "The page sizes differ in the two documents. The pages and the positions of their objects may not match exactly.",
+        [
+            "Die Seitenformate der beiden Dokumente unterscheiden sich. Die Seiten und die Positionen ihrer Objekte stimmen möglicherweise nicht genau überein.",
+            "Les formats de page des deux documents sont différents. Les pages et la position de leurs objets risquent de ne pas correspondre exactement.",
+            "Los tamaños de página de los dos documentos son distintos. Es posible que las páginas y la posición de sus objetos no coincidan exactamente.",
+            "2 つのドキュメントのページサイズが異なります。ページとオブジェクトの位置が正確に一致しない場合があります。",
+            "两个文档的页面大小不同。页面及其对象的位置可能无法完全对应。",
+        ],
+    ),
+    (
+        "Parent pages loaded: {names}",
+        [
+            "Vorlagenseiten geladen: {names}",
+            "Pages parents chargées : {names}",
+            "Páginas principales cargadas: {names}",
+            "親ページを読み込みました：{names}",
+            "已加载父页面：{names}",
+        ],
+    ),
+    (
         "Differs from this document",
         ["Weicht von diesem Dokument ab", "Diffère de ce document", "Difiere de este documento", "このドキュメントと異なります", "与此文档不同"],
     ),

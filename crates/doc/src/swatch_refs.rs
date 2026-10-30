@@ -1,5 +1,7 @@
-//! Renaming a swatch: every place the document names a swatch follows the new name.
+//! Renaming a swatch: every place the document names a swatch follows the new name. The same
+//! walk lists the swatches that page items, stories and styles name.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use designcraft_color::SwatchValue;
@@ -8,83 +10,34 @@ use crate::Document;
 use crate::attrs::{CharAttrs, ParaAttrs};
 use crate::item::{Fill, Item, Stroke, TextFrameOptions};
 use crate::story::Story;
-use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs};
+use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs, Styles};
 use crate::table::{AltFills, AltStrokes, CellStroke, Table};
 
+/// Every swatch name a walk meets goes through `visit`.
 struct Names<'a> {
-    from: &'a str,
-    to: &'a str,
+    visit: &'a mut dyn FnMut(&mut String),
 }
 
 impl Names<'_> {
-    /// Rename the swatch references in every paragraph, character, object, cell and table style.
-    fn styles(&self, styles: &mut crate::styles::Styles) {
-        let n = self;
-        for p in &mut styles.paragraph {
-            n.para(&mut p.para);
-            n.chars(&mut p.chars);
-        }
-        for c in &mut styles.character {
-            n.chars(&mut c.chars);
-        }
-        for o in &mut styles.object {
-            if let Some(f) = &mut o.fill {
-                n.fill(f);
-            }
-            if let Some(s) = &mut o.stroke {
-                n.stroke(s);
-            }
-            if let Some(tf) = &mut o.text_frame {
-                n.frame(tf);
-            }
-        }
-        for c in &mut styles.cell {
-            n.o(&mut c.fill);
-            if let Some(s) = &mut c.stroke {
-                n.cell_stroke(s);
-            }
-            for s in &mut c.strokes {
-                n.stroke_attrs(s);
-            }
-        }
-        for t in &mut styles.table {
-            if let Some(b) = &mut t.border {
-                n.cell_stroke(b);
-            }
-            for b in &mut t.borders {
-                n.stroke_attrs(b);
-            }
-            if let Some(f) = &mut t.alt_rows {
-                n.alt_fills(f);
-            }
-            n.alt_fill_attrs(&mut t.row_fills);
-            n.alt_fill_attrs(&mut t.column_fills);
-            n.alt_stroke_attrs(&mut t.row_strokes);
-            n.alt_stroke_attrs(&mut t.column_strokes);
-        }
+    fn s(&mut self, v: &mut String) {
+        (self.visit)(v);
     }
-
-    fn s(&self, v: &mut String) {
-        if v == self.from {
-            *v = self.to.to_string();
-        }
-    }
-    fn o(&self, v: &mut Option<String>) {
+    fn o(&mut self, v: &mut Option<String>) {
         if let Some(v) = v {
             self.s(v);
         }
     }
-    fn fill(&self, f: &mut Fill) {
+    fn fill(&mut self, f: &mut Fill) {
         self.s(&mut f.swatch);
     }
-    fn stroke(&self, s: &mut Stroke) {
+    fn stroke(&mut self, s: &mut Stroke) {
         self.s(&mut s.swatch);
         self.s(&mut s.gap_swatch);
     }
-    fn frame(&self, o: &mut TextFrameOptions) {
+    fn frame(&mut self, o: &mut TextFrameOptions) {
         self.s(&mut o.column_rule_color);
     }
-    fn chars(&self, c: &mut CharAttrs) {
+    fn chars(&mut self, c: &mut CharAttrs) {
         for v in [
             &mut c.fill,
             &mut c.stroke,
@@ -98,7 +51,7 @@ impl Names<'_> {
             self.o(v);
         }
     }
-    fn para(&self, p: &mut ParaAttrs) {
+    fn para(&mut self, p: &mut ParaAttrs) {
         for r in [&mut p.rule_above, &mut p.rule_below].into_iter().flatten() {
             self.s(&mut r.color);
         }
@@ -106,32 +59,32 @@ impl Names<'_> {
         self.o(&mut p.border_color);
         self.o(&mut p.border_gap_color);
     }
-    fn cell_stroke(&self, s: &mut CellStroke) {
+    fn cell_stroke(&mut self, s: &mut CellStroke) {
         self.s(&mut s.color);
         self.s(&mut s.gap_color);
     }
-    fn alt_fills(&self, f: &mut AltFills) {
+    fn alt_fills(&mut self, f: &mut AltFills) {
         self.s(&mut f.first_color);
         self.s(&mut f.next_color);
     }
-    fn alt_strokes(&self, s: &mut AltStrokes) {
+    fn alt_strokes(&mut self, s: &mut AltStrokes) {
         self.cell_stroke(&mut s.first_stroke);
         self.cell_stroke(&mut s.next_stroke);
     }
-    fn stroke_attrs(&self, s: &mut CellStrokeAttrs) {
+    fn stroke_attrs(&mut self, s: &mut CellStrokeAttrs) {
         self.o(&mut s.color);
         self.o(&mut s.gap_color);
     }
-    fn alt_fill_attrs(&self, f: &mut AltFillsAttrs) {
+    fn alt_fill_attrs(&mut self, f: &mut AltFillsAttrs) {
         self.o(&mut f.first_color);
         self.o(&mut f.next_color);
     }
-    fn alt_stroke_attrs(&self, s: &mut AltStrokesAttrs) {
+    fn alt_stroke_attrs(&mut self, s: &mut AltStrokesAttrs) {
         self.stroke_attrs(&mut s.first_stroke);
         self.stroke_attrs(&mut s.next_stroke);
     }
     /// An item and everything inside it (group members). Depth-bounded for hostile documents.
-    fn item(&self, it: &mut Item, depth: u32) {
+    fn item(&mut self, it: &mut Item, depth: u32) {
         if depth > 64 {
             return;
         }
@@ -150,7 +103,7 @@ impl Names<'_> {
             }
         }
     }
-    fn table(&self, t: &mut Table) {
+    fn table(&mut self, t: &mut Table) {
         let o = &mut t.options;
         self.cell_stroke(&mut o.border);
         for b in o.borders.iter_mut().flatten() {
@@ -169,8 +122,53 @@ impl Names<'_> {
             }
         }
     }
+    /// Every style's swatches.
+    fn styles(&mut self, styles: &mut Styles) {
+        for p in &mut styles.paragraph {
+            self.para(&mut p.para);
+            self.chars(&mut p.chars);
+        }
+        for c in &mut styles.character {
+            self.chars(&mut c.chars);
+        }
+        for o in &mut styles.object {
+            if let Some(f) = &mut o.fill {
+                self.fill(f);
+            }
+            if let Some(s) = &mut o.stroke {
+                self.stroke(s);
+            }
+            if let Some(tf) = &mut o.text_frame {
+                self.frame(tf);
+            }
+        }
+        for c in &mut styles.cell {
+            self.o(&mut c.fill);
+            if let Some(s) = &mut c.stroke {
+                self.cell_stroke(s);
+            }
+            for s in &mut c.strokes {
+                self.stroke_attrs(s);
+            }
+        }
+        for t in &mut styles.table {
+            if let Some(b) = &mut t.border {
+                self.cell_stroke(b);
+            }
+            for b in &mut t.borders {
+                self.stroke_attrs(b);
+            }
+            if let Some(f) = &mut t.alt_rows {
+                self.alt_fills(f);
+            }
+            self.alt_fill_attrs(&mut t.row_fills);
+            self.alt_fill_attrs(&mut t.column_fills);
+            self.alt_stroke_attrs(&mut t.row_strokes);
+            self.alt_stroke_attrs(&mut t.column_strokes);
+        }
+    }
     /// One story's own text, objects and tables (cell and note text are visited separately).
-    fn story(&self, st: &mut Story) {
+    fn story(&mut self, st: &mut Story) {
         for f in &mut st.paras {
             self.para(&mut f.para);
             self.chars(&mut f.chars);
@@ -239,7 +237,12 @@ impl Document {
         if from == to {
             return;
         }
-        let n = Names { from, to };
+        let mut rename = |v: &mut String| {
+            if v == from {
+                *v = to.to_string();
+            }
+        };
+        let mut n = Names { visit: &mut rename };
         for w in &mut self.swatches {
             match &mut w.value {
                 SwatchValue::Tint { base, .. } => n.s(base),
@@ -279,4 +282,32 @@ impl Document {
             }
         }
     }
+}
+
+/// The swatches that page items (and their groups' members), stories (with their tables, notes
+/// and anchored objects) and styles name; a tint's base isn't included.
+pub fn swatches_named_by<'a>(
+    items: impl IntoIterator<Item = &'a Item>,
+    stories: impl IntoIterator<Item = &'a Story>,
+    styles: &Styles,
+) -> BTreeSet<String> {
+    let mut used = BTreeSet::new();
+    let mut note = |v: &mut String| {
+        if !v.is_empty() {
+            used.insert(v.clone());
+        }
+    };
+    let mut n = Names { visit: &mut note };
+    for it in items {
+        n.item(&mut it.clone(), 0);
+    }
+    for st in stories {
+        let mut st = st.clone();
+        st.for_each_text_mut(&mut |t| n.story(t));
+        for e in &mut st.endnotes {
+            Arc::make_mut(e).text.for_each_text_mut(&mut |t| n.story(t));
+        }
+    }
+    n.styles(&mut styles.clone());
+    used
 }

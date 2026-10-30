@@ -2250,6 +2250,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
         "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
         "loadStyles" => crate::i18n::tr(&app.ui.language, "Load Styles"),
+        "loadParents" => crate::i18n::tr(&app.ui.language, "Load Parent Pages"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
@@ -2276,7 +2277,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let frame_margin = egui::Frame::popup(ui.style()).total_margin().sum();
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
-            "alert" => 440.0,
+            "alert" | "loadParents" => 440.0,
             "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
             "newDocument" => 960.0,
             "hyphenation" => 560.0,
@@ -2757,6 +2758,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                     }
                     "loadStyles" => load_styles(app, ui, &mut d),
+                    "loadParents" => load_parent_pages(app, ui, &mut d),
                     "closeDocument" => {
                         let text = crate::i18n::tr(&app.ui.language, "“{}” has changes that are not saved. Save them before closing?")
                             .replace("{}", &d.s("title"));
@@ -3811,6 +3813,12 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 "style.load",
                 json!({"path": d.s("path"), "paragraph": checked("paragraph"), "character": checked("character"), "conflicts": d.s("conflicts")}),
             )
+        }
+        "loadParents" => {
+            // Into the document the dialog was opened for, made active again; refused if it has closed.
+            let target = d.fields.get("target").and_then(Value::as_u64);
+            app.activate_import_target(&crate::ImportRequest { purpose: "parents".into(), target })?;
+            app.load_parents(json!({"path": d.s("path"), "conflicts": d.s("conflicts")}))
         }
         "importOptions" => app.open_file(
             "file.place",
@@ -7363,6 +7371,35 @@ fn load_styles(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             }
         }
     });
+}
+
+/// Load Parent Pages, when the file's parents meet this document's: parents of the same names
+/// are renamed or replace this document's, and the page sizes may differ (InDesign's two alerts).
+fn load_parent_pages(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let path = d.s("path");
+    let file = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+    crate::rtl::label(ui, egui::RichText::new(file).font(semibold(12.0)));
+    let same: Vec<&str> = d.fields.get("same").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    if !same.is_empty() {
+        ui.add_space(6.0);
+        crate::rtl::label(
+            ui,
+            crate::i18n::tr(lang, "Parents of the same name are already in this document: {names}").replace("{names}", &same.join(", ")),
+        );
+        let cur = d.s("conflicts");
+        for (v, l) in [("rename", "Rename Parent Pages"), ("replace", "Replace Parent Pages")] {
+            if ui.radio(cur == v, crate::rtl::widget(ui, crate::i18n::tr(lang, l))).clicked() {
+                d.fields.insert("conflicts".into(), json!(v));
+            }
+        }
+    }
+    if d.b("sizesDiffer") {
+        ui.add_space(6.0);
+        let text =
+            crate::i18n::tr(lang, "The page sizes differ in the two documents. The pages and the positions of their objects may not match exactly.");
+        crate::rtl::label(ui, format!("⚠ {text}"));
+    }
 }
 
 fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {

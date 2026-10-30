@@ -54,6 +54,12 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_file_info(app);
         return;
     }
+    if params.is_null() && id == "layout.parents.load" {
+        if let Err(e) = app.pick_parents() {
+            app.status(e);
+        }
+        return;
+    }
     if params.is_null() && id == "toc.generate" {
         crate::dialogs::open_toc(app);
         return;

@@ -346,6 +346,32 @@ fn the_panel_menu_follows_indesigns_order() {
     assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:layout.pages.insert"));
 }
 
+/// The course's chapter 36: the panel menu's Parent Pages › Load Parent Pages… picks a
+/// document; as A-Parent is in both, it asks how to load that one.
+#[test]
+fn parent_pages_load_parent_pages_picks_a_document() {
+    let mut t = designcraft_engine::Session::new();
+    t.execute("file.new", &json!({"facingPages": false})).unwrap();
+    t.execute("layout.parents.new", &json!({"prefix": "T", "name": "Template"})).unwrap();
+    let bytes = designcraft_engine::cmd::base64_decode(t.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap());
+    let path = std::env::temp_dir().join(format!("designcraft-pages-load-parents-{}.designcraft", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let picked = path.to_string_lossy().to_string();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
+    app.run("file.new", json!({"facingPages": false})).unwrap();
+    let mut h = menu_harness(app, 0, 0);
+    h.get_by_label("Parent Pages").click();
+    h.run_steps(3);
+    h.get_by_label("Load Parent Pages…").click();
+    h.run_steps(3);
+    h.state_mut().settle_dialogs();
+    std::fs::remove_file(&path).unwrap();
+    let d = h.state().ui.dialog.as_ref().expect("A-Parent is in both: the dialog asks");
+    assert_eq!(d.id, "loadParents");
+    assert_eq!(d.fields["same"], json!(["A-Parent"]));
+}
+
 #[test]
 fn a_page_dropped_on_create_new_page_is_duplicated_at_the_end() {
     // Chris Cicchino's Page Tool video (2:06): "click and drag onto my plus sign I can duplicate that".
