@@ -1625,6 +1625,13 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("{n} placed", "{n} platziert"),
     ("{n} without a free tagged frame ({tags})", "{n} ohne freien Rahmen mit passendem Tag ({tags})"),
     ("{n} images not placed ({first})", "{n} Bilder nicht platziert ({first})"),
+    ("Auto Tag Frames", "Rahmen automatisch taggen"),
+    (
+        "Tags every untagged text and graphic frame: by its name in the Layers panel, else text_1, image_1, …",
+        "Taggt alle ungetaggten Text- und Grafikrahmen: mit ihrem Namen aus dem Ebenen-Bedienfeld, sonst text_1, image_1, …",
+    ),
+    ("no untagged frames", "keine ungetaggten Rahmen"),
+    ("{n} frames tagged", "{n} Rahmen getaggt"),
     ("Insert Anchored Object", "Verankertes Objekt einfügen"),
     ("Insert Cross-Reference", "Querverweis einfügen"),
     ("Insert Math Expression", "Mathematischen Ausdruck einfügen"),
