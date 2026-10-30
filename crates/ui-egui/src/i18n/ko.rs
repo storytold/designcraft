@@ -652,6 +652,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "패널 표시/숨기기"),
     ("Show/Hide Panels Except Tools", "도구 외 패널 표시/숨기기"),
     ("Show/Hide Rulers", "눈금자 표시/숨기기"),
+    ("Show/Hide Depth Ruler", "깊이 눈금자 표시/숨기기"),
     ("Show/Hide Tagged Frames", "태그가 지정된 프레임 표시/숨기기"),
     ("Show/Hide Text Threads", "텍스트 스레드 표시/숨기기"),
     ("Smooth", "매끄럽게"),

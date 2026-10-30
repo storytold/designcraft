@@ -652,6 +652,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "顯示／隱藏面板"),
     ("Show/Hide Panels Except Tools", "顯示／隱藏面板（工具除外）"),
     ("Show/Hide Rulers", "顯示／隱藏尺標"),
+    ("Show/Hide Depth Ruler", "顯示／隱藏深度尺標"),
     ("Show/Hide Tagged Frames", "顯示／隱藏已標記的框架"),
     ("Show/Hide Text Threads", "顯示／隱藏文字串連"),
     ("Smooth", "平滑"),
