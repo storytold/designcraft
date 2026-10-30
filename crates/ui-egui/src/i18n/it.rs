@@ -883,6 +883,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "Mostra/nascondi pannelli"),
     ("Show/Hide Panels Except Tools", "Mostra/nascondi pannelli tranne Strumenti"),
     ("Show/Hide Rulers", "Mostra/nascondi righelli"),
+    ("Show/Hide Style Name Column", "Mostra/nascondi colonna nomi stili"),
     ("Show/Hide Tagged Frames", "Mostra/nascondi cornici con tag"),
     ("Show/Hide Text Threads", "Mostra/nascondi concatenamenti testo"),
     ("Smooth", "Arrotonda"),

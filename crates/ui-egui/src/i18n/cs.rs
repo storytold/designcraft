@@ -757,6 +757,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "Zobrazit/skrýt panely"),
     ("Show/Hide Panels Except Tools", "Zobrazit/skrýt panely kromě nástrojů"),
     ("Show/Hide Rulers", "Zobrazit/skrýt pravítka"),
+    ("Show/Hide Style Name Column", "Zobrazit/skrýt sloupec názvů stylů"),
     ("Show/Hide Tagged Frames", "Zobrazit/skrýt otagované rámečky"),
     ("Show/Hide Text Threads", "Zobrazit/skrýt zřetězení textu"),
     ("Smooth", "Vyhladit"),

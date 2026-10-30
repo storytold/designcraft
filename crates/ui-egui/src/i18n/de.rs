@@ -765,6 +765,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "Bedienfelder ein-/ausblenden"),
     ("Show/Hide Panels Except Tools", "Bedienfelder außer Werkzeugen ein-/ausblenden"),
     ("Show/Hide Rulers", "Lineale ein-/ausblenden"),
+    ("Show/Hide Style Name Column", "Spalte mit Formatnamen ein-/ausblenden"),
     ("Show/Hide Tagged Frames", "Getaggte Rahmen ein-/ausblenden"),
     ("Show/Hide Text Threads", "Textverkettungen ein-/ausblenden"),
     ("Smooth", "Glätten"),

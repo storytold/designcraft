@@ -807,6 +807,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "პანელების ჩვენება/დამალვა"),
     ("Show/Hide Panels Except Tools", "პანელების ჩვენება/დამალვა, ხელსაწყოების გარდა"),
     ("Show/Hide Rulers", "სახაზავების ჩვენება/დამალვა"),
+    ("Show/Hide Style Name Column", "სტილების სახელების სვეტის ჩვენება/დამალვა"),
     ("Show/Hide Tagged Frames", "ტეგირებული ჩარჩოების ჩვენება/დამალვა"),
     ("Show/Hide Text Threads", "ტექსტის კავშირების ჩვენება/დამალვა"),
     ("Smooth", "გლუვი"),
