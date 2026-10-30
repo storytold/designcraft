@@ -12,6 +12,16 @@ For larger selections, choose **File > Place Contact Sheet…** after loading th
 
 A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. Image batches support up to 1000 images. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid or contact-sheet area also leaves the document and queue unchanged.
 
+## Dropping files
+
+- One image dropped on an empty or graphic frame fills it, or replaces the image in it.
+- One image dropped anywhere else loads into the place cursor, as File > Place does with nothing selected: the next click or drag places it.
+- Several images dropped together load into the place cursor in the order they came, wherever they are dropped.
+- Images dropped while the cursor already holds some queue after them.
+- DesignCraft, IDML and InDesign documents open; text files (.txt, .docx, .rtf, .md) and spreadsheets go into a new frame where they are dropped; a PDF is placed where it is dropped (or fills the frame under it); swatch exchange (.ase) files load their swatches.
+
+Images here are PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, PSD and EPS files.
+
 ## Automation
 
 All placement behavior is available through the engine, CLI, control channel and MCP:

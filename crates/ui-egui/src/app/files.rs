@@ -186,8 +186,9 @@ impl DesignApp {
                     group.push(next);
                 }
             }
-            // Several images: into the place cursor.
-            if !group.is_empty() {
+            // Several images, or one dropped (a browser drop has no position to place it at or
+            // frame to fill): into the place cursor.
+            if !group.is_empty() || (file.request.purpose == "drop" && cursor_image(&file)) {
                 if self.ui.dialog.is_some() {
                     self.status(crate::i18n::tr(&self.ui.language, "Image import cancelled while a dialog is open"));
                     continue;
@@ -265,9 +266,9 @@ impl DesignApp {
     }
 
     /// A file dropped on the window: documents open, the swatches in a swatch exchange (.ase) file
-    /// are loaded, and anything else is placed on the spread in view (a parent spread while parents
-    /// are being edited). A file without an extension opens when its content is a DesignCraft or
-    /// IDML document.
+    /// are loaded, an image loads into the place cursor, and anything else is placed on the spread
+    /// in view (a parent spread while parents are being edited). A file without an extension
+    /// opens when its content is a DesignCraft or IDML document.
     pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
         self.open_dropped_at(path, None)
     }
@@ -282,9 +283,9 @@ impl DesignApp {
 
     /// Files dropped on the window together, in the order they came. Each that isn't an image
     /// opens or is placed as [`Self::open_dropped_at`] does; then one image is dropped as that
-    /// does too, and several load the place cursor together, after any images it already holds,
-    /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
-    /// a grid.
+    /// does too (filling the frame under the pointer, else loading the place cursor), and several
+    /// load the place cursor together, after any images it already holds, whatever is under the
+    /// pointer: click to place them one by one, drag with the arrow keys for a grid.
     pub fn open_dropped_batch(&mut self, paths: Vec<String>, pointer: Option<egui::Pos2>) {
         let (images, others): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| is_cursor_image(p));
         for path in others {
@@ -300,8 +301,8 @@ impl DesignApp {
     }
 
     /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
-    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
-    /// new frame on the document page there.
+    /// it; elsewhere an image loads into the place cursor, and another graphic's top left lands
+    /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -318,6 +319,11 @@ impl DesignApp {
         let frame = if designcraft_textimport::is_text_file(path) { None } else { canvas::drop_frame(self, pointer) };
         if let Some(frame) = frame {
             return self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+        }
+        // An image dropped anywhere else waits in the place cursor, after any it already holds.
+        if is_cursor_image(path) {
+            let append = self.session.loaded.is_some();
+            return self.open_file("place.load", json!({"path": path, "append": append}));
         }
         let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
@@ -873,6 +879,23 @@ pub(crate) mod browser_import_tests {
         }
         app.drain_inbox();
         assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A browser drop of one image (it has no position or frame under it) loads the place
+    /// cursor; images dropped together load it at once, after what it holds.
+    #[test]
+    fn browser_dropped_images_load_the_place_cursor() {
+        let mut app = app();
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "one.png", png(200));
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.is_empty(), "nothing placed yet");
+        let request = app.import_request("drop");
+        for (name, v) in [("two.png", 90), ("three.png", 60)] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(v) });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["one.png", "two.png", "three.png"]);
     }
 
     #[test]
