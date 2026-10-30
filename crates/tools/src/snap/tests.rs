@@ -683,6 +683,44 @@ fn centering_needs_smart_spacing() {
     assert_eq!(hit.delta.x, 0.0);
 }
 
+/// A frame drawn on an A4 landscape page from the top margin down to the middle of the page
+/// stops at the page's centre line (297.6 pt), not at the hidden baseline grid line 1.4 pt
+/// further down (300 pt), as InDesign's smart guides do.
+#[test]
+fn a_drawn_edge_snaps_to_the_page_centre() {
+    let a4 = NewDocument { width: 841.89, height: 595.276, ..NewDocument::default() };
+    let doc = with_baseline_grid(Document::new(&a4));
+    let cache = Cache::new();
+    let layout = CanvasLayout::new(&doc, false);
+    let sel = Selection::default();
+    let cx = ctx_on(&doc, &sel, &cache, &layout);
+    let create = |gesture, y_edges, rect| SnapRequest {
+        spread: SpreadRef::Doc(0),
+        gesture,
+        rect,
+        x_edges: [false, false, false],
+        y_edges,
+        exclude: &[],
+        exclude_guides: &[],
+        copying: false,
+        lengths: [None, None],
+        angle: None,
+        radius: 0.0,
+        pointer: Point::new(0.0, 0.0),
+    };
+    let centre = 595.276 / 2.0;
+    let hit = snap(&cx, create(Gesture::Create, [false, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+    assert!((hit.delta.y - (centre - 298.6)).abs() < 1e-6, "{}", hit.delta.y);
+    // Drawn upwards, the top edge meets it too; a resized edge does as well.
+    let hit = snap(&cx, create(Gesture::Create, [true, false, false], Rect::new(500.0, 296.0, 800.0, 552.0)));
+    assert!((hit.delta.y - (centre - 296.0)).abs() < 1e-6, "{}", hit.delta.y);
+    let hit = snap(&cx, create(Gesture::Resize, [false, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+    assert!((hit.delta.y - (centre - 298.6)).abs() < 1e-6, "{}", hit.delta.y);
+    // A moved frame still lines up by its centre only: its bottom edge goes to the baseline.
+    let hit = snap(&cx, create(Gesture::Move, [true, false, true], Rect::new(500.0, 42.52, 800.0, 298.6)));
+    assert!((hit.delta.y - 1.4).abs() < 1e-6, "{}", hit.delta.y);
+}
+
 #[test]
 fn create_does_not_match_spacing() {
     let mut doc = Document::new(&NewDocument::default());
