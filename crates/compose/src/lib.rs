@@ -1436,7 +1436,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                                 Some(mark) if j + 1 == breaks.len() => next_lead.max(mark),
                                 _ => next_lead,
                             };
-                            let (next_reference, next_model) = cjk_line_reference(next_glyphs);
+                            let (next_reference, next_model) = line_reference(next_glyphs, db, mark_chars, pp, f.vertical);
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
@@ -1946,7 +1946,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
             };
-            let (reference, model) = cjk_line_reference(line_glyphs);
+            let (reference, model) = line_reference(line_glyphs, db, mark_chars, pp, f.vertical);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
                 frame: f,
@@ -2419,8 +2419,15 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story);
-    // An empty paragraph takes its height from its paragraph mark's character format.
-    let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
+    // An empty line takes its height from its paragraph mark's character format, the one character
+    // it holds: an empty paragraph's line, and the line a trailing forced line break leaves.
+    let mark_chars = if glyphs.is_empty() {
+        doc.styles.resolve_char(base_chars, story.char_format_of(prange.start))
+    } else if glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK) {
+        doc.styles.resolve_char(base_chars, story.char_format_of(prange.end))
+    } else {
+        base_chars.clone()
+    };
     let mark_leading = match mark_chars.leading {
         designcraft_doc::Leading::Auto => mark_chars.size * pp.auto_leading,
         designcraft_doc::Leading::Points(v) => v,
@@ -4066,8 +4073,12 @@ fn em_box_top(face: &designcraft_fonts::FontFace, size: f64) -> f64 {
 /// Em box relative to the baseline. Font ascender/descender proportions locate it;
 /// the box's total extent is the em, rather than the font's optional line gap.
 fn cjk_em_box(g: &Glyph) -> (f64, f64) {
-    let height = g.face.units_per_em() * g.sy.abs();
-    let top = -height * g.ascent / (g.ascent + g.descent).max(1e-9);
+    em_box(g.face.units_per_em() * g.sy.abs(), g.ascent, g.descent)
+}
+/// An em box `height` tall relative to the baseline, placed by the font's `ascent` and `descent`
+/// proportions (see [`cjk_em_box`]).
+fn em_box(height: f64, ascent: f64, descent: f64) -> (f64, f64) {
+    let top = -height * ascent / (ascent + descent).max(1e-9);
     (top, top + height)
 }
 /// The ideographic character face (ICF) box relative to the baseline: the em box of
@@ -4109,16 +4120,51 @@ fn cjk_alignment_shift(g: &Glyph, reference: &Glyph) -> f64 {
 fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingModel) {
     use designcraft_doc::cjk::LeadingModel as L;
     let Some(g) = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)) else { return (0.0, L::Roman) };
-    let (top, bottom) = cjk_em_box(g);
-    let reference = match g.leading_model {
+    (leading_reference(g.leading_model, cjk_em_box(g)), g.leading_model)
+}
+
+/// [`cjk_line_reference`] of a line of paragraph `pp`. An empty line (an empty paragraph, or the
+/// line a trailing forced line break leaves) has no character to measure from: it measures from
+/// its paragraph mark's em box under the mark's leading model (`mark`: its font, size and model),
+/// as in InDesign, so it keeps the leading like any other line instead of moving by the em box's
+/// offset from the baseline. In `vertical` text that is the upright em box, as for the upright
+/// characters around it. Only the Japanese composers use a leading model.
+fn line_reference(
+    line: &[Glyph],
+    db: &ScopedFonts<'_>,
+    mark: &designcraft_doc::CharProps,
+    pp: &ParaProps,
+    vertical: bool,
+) -> (f64, designcraft_doc::cjk::LeadingModel) {
+    use designcraft_doc::cjk::LeadingModel as L;
+    if !line.is_empty() {
+        return cjk_line_reference(line);
+    }
+    if !pp.composer.japanese() || mark.leading_model == L::Roman {
+        return (0.0, L::Roman);
+    }
+    let face = db.face(&mark.font_family, &mark.font_style);
+    // Placed by the proportions the shaper gives the glyphs: upright ones fill the em box.
+    let (ascent, descent) = if vertical {
+        let (top, bottom) = face.em_box();
+        (top, -bottom)
+    } else {
+        (face.ascent, face.descent)
+    };
+    (leading_reference(mark.leading_model, em_box(mark.size * mark.v_scale, ascent, descent)), mark.leading_model)
+}
+
+/// Where `model` measures leading from, for an em box at `top..bottom` from the baseline.
+fn leading_reference(model: designcraft_doc::cjk::LeadingModel, (top, bottom): (f64, f64)) -> f64 {
+    use designcraft_doc::cjk::LeadingModel as L;
+    match model {
         L::Roman => 0.0,
         // "Space below" measures from the em box top (Em Box Top/Right), "space above" from its
         // bottom (Em Box Bottom/Left).
         L::AkiBelow => top,
         L::AkiAbove => bottom,
         L::Center | L::CenterDown => (top + bottom) / 2.0,
-    };
-    (reference, g.leading_model)
+    }
 }
 
 fn line_metrics(
