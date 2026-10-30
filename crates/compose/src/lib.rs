@@ -930,16 +930,23 @@ fn line_has_wrapping_exclusion(frame: &FrameSpec, range: Range<usize>, column: R
     })
 }
 
-fn previous_visible_break(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool], pi: usize) -> Option<StartParagraph> {
+/// The visible break ending the last placed paragraph before `pi`, which sends `pi` on.
+pub fn previous_visible_break(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool], pi: usize) -> Option<StartParagraph> {
     (0..pi).rev().find(|&p| !deleted.get(p).copied().unwrap_or(false)).and_then(|p| {
         let range = ranges.get(p)?;
-        let (index, character) = story.text.get(range.clone())?.char_indices().next_back()?;
-        let start = break_start(character)?;
-        let (_, chars) = doc.styles.resolve_para(story.paras.get(p)?);
-        let props = doc.styles.resolve_char(&chars, story.char_format_at(range.start + index + character.len_utf8()));
-        let gone = props.change == designcraft_doc::ChangeMark::Deleted || doc.conditions_hide(&props.conditions);
-        (!gone).then_some(start)
+        let (index, _) = story.text.get(range.clone())?.char_indices().next_back()?;
+        visible_break(doc, story, p, range.start + index)
     })
+}
+
+/// The start option of the break at byte `at` in paragraph `p`, unless deleted or hidden.
+pub fn visible_break(doc: &Document, story: &Story, p: usize, at: usize) -> Option<StartParagraph> {
+    let character = story.text.get(at..)?.chars().next()?;
+    let start = break_start(character)?;
+    let (_, chars) = doc.styles.resolve_para(story.paras.get(p)?);
+    let props = doc.styles.resolve_char(&chars, story.char_format_at(at + character.len_utf8()));
+    let gone = props.change == designcraft_doc::ChangeMark::Deleted || doc.conditions_hide(&props.conditions);
+    (!gone).then_some(start)
 }
 
 fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool]) -> Vec<Option<String>> {
@@ -1099,7 +1106,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     }
     let at_top = cursor.last_baseline.is_none();
     let start_at = (cursor.fi, cursor.col);
-    if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, opts) {
+    if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
         if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
             *balance_runs += 1;
             rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
@@ -3108,7 +3115,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        vertical_justify(ft, f, spanned);
+        vertical_justify(ft, f, spanned, &doc.footnote_options);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -3483,8 +3490,8 @@ fn rewind(
 }
 
 /// Paragraphs that tracked changes delete: all their text is deleted, and so is their return or
-/// the return before them (then they join a paragraph and add nothing to it).
-fn deleted_paras(story: &Story, ranges: &[Range<usize>]) -> Vec<bool> {
+/// the return before them (then they join a paragraph and add nothing to it). Composing skips them.
+pub fn deleted_paras(story: &Story, ranges: &[Range<usize>]) -> Vec<bool> {
     let mut spans: Vec<Range<usize>> = Vec::new();
     for (r, f) in story.runs() {
         if f.over.change != Some(designcraft_doc::ChangeMark::Deleted) {
@@ -5320,7 +5327,7 @@ fn hyphenation_points(
 }
 
 /// `spanned`: a paragraph spans the frame's columns, so the lines move together.
-fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
+fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &designcraft_doc::FootnoteOptions) {
     if ft.lines.is_empty() || f.opts.vertical_justification == VerticalJustification::Top {
         return;
     }
@@ -5333,7 +5340,14 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool) {
         let idx: Vec<usize> = ft.lines.iter().enumerate().filter(|(_, l)| spanned || l.column == c).map(|(i, _)| i).collect();
         let (Some(&a), Some(_)) = (idx.first(), idx.last()) else { continue };
         let bottom = idx.iter().map(|&i| ft.lines[i].baseline + ft.lines[i].descent).fold(f64::NEG_INFINITY, f64::max);
-        let space = f.area.y1 - bottom;
+        let bottom = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(bottom, f64::max);
+        let limit = ft
+            .notes
+            .iter()
+            .filter(|n| spanned || notes.span_columns || n.column == c)
+            .map(|n| n.rect.y0 - notes.space_before)
+            .fold(f.area.y1, f64::min);
+        let space = limit - bottom;
         if space <= 0.0 {
             continue;
         }

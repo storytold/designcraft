@@ -6,10 +6,24 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     if t.cell.is_some() {
         return Err(bad("table.insert", "tables can't be nested in cells"));
     }
-    let rows = p.get("rows").and_then(Value::as_u64).unwrap_or(4).clamp(1, 500) as usize;
-    let cols = p.get("cols").or_else(|| p.get("columns")).and_then(Value::as_u64).unwrap_or(4).clamp(1, 200) as usize;
-    let header = p.get("headerRows").and_then(Value::as_u64).unwrap_or(0).min(100) as usize;
-    let footer = p.get("footerRows").and_then(Value::as_u64).unwrap_or(0).min(100) as usize;
+    // A size that is given but is not one a table can have used to be corrected in silence:
+    // `{"rows": 0}` made a table with one row, `-1` and `1.5` made the default four, and 10000
+    // was capped at 500. Named `given` rather than `count`, which this module already imports
+    // for the repeat count of a row or column insert.
+    let given = |key: &str, alt: Option<&str>, default: u64, range: std::ops::RangeInclusive<u64>| -> Result<usize> {
+        let v = p.get(key).or_else(|| alt.and_then(|a| p.get(a))).filter(|v| !v.is_null());
+        match v {
+            None => Ok(default as usize),
+            Some(v) => match v.as_u64().filter(|n| range.contains(n)) {
+                Some(n) => Ok(n as usize),
+                None => Err(bad("table.insert", format!("{key} {v}: {} to {}", range.start(), range.end()))),
+            },
+        }
+    };
+    let rows = given("rows", None, 4, 1..=500)?;
+    let cols = given("cols", Some("columns"), 4, 1..=200)?;
+    let header = given("headerRows", None, 0, 0..=100)?;
+    let footer = given("footerRows", None, 0, 0..=100)?;
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
     s.edit(|d, sel| {
         let id = d.alloc();

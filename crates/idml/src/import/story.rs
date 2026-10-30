@@ -171,8 +171,11 @@ impl<'r> Importer<'r> {
                         b.fresh = true;
                     }
                     "Table" => {
-                        let t = self.table(c);
-                        b.push_table(t, pf, cf);
+                        // `None` once the file-wide cell budget is spent: the table is not read
+                        // at all rather than kept as a 1 x 1 (noted in review).
+                        if let Some(t) = self.table(c) {
+                            b.push_table(t, pf, cf);
+                        }
                     }
                     "HyperlinkTextDestination" | "ParagraphDestination" => {
                         b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
