@@ -647,6 +647,7 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             flag(&mut app.ui.document_grid)
         }
         "view.textThreads" => flag(&mut app.ui.text_threads),
+        "view.linkBadge" => flag(&mut app.ui.link_badge),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),

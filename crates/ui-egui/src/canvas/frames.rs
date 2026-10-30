@@ -140,6 +140,175 @@ pub(super) fn selection_color(app: &DesignApp) -> Color32 {
     st.selection.items.first().and_then(|id| st.doc.item(*id)).map_or(fallback, |it| layer_color(&st.doc, it))
 }
 
+/// What a link badge shows: the chain of a linked file, or the trouble the Links panel reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LinkBadge {
+    Linked,
+    Modified,
+    Missing,
+}
+
+pub(super) type LinkStatuses = std::sync::Arc<std::collections::HashMap<u64, String>>;
+
+/// The link badges' check: the last result, the document state it was made for, and a check
+/// running off the UI thread.
+#[derive(Clone, Default)]
+pub(super) struct LinkCheck {
+    /// Document uid and revision of `map`, and when it was made.
+    pub(super) key: (u64, u64),
+    at: f64,
+    map: LinkStatuses,
+    /// A check running, for that document state: it fills the slot when done.
+    pub(super) pending: Option<((u64, u64), std::sync::Arc<std::sync::Mutex<Option<std::collections::HashMap<u64, String>>>>)>,
+}
+
+/// The Links panel's status of each linked asset ("ok", "modified", "missing"), for the link
+/// badges. Checking reads the linked files, so it runs on a background thread when the document
+/// changes and at most once a second otherwise; the badges show the last result meanwhile (none
+/// for another document).
+pub(super) fn link_statuses(app: &mut DesignApp, ctx: &egui::Context, doc: &Document) -> LinkStatuses {
+    if !doc.assets.values().any(|a| a.link.is_some()) {
+        return Default::default();
+    }
+    let Some(st) = app.session.active() else { return Default::default() };
+    let key = (st.uid, st.revision);
+    let now = ctx.input(|i| i.time);
+    // An idle canvas still draws again when the check is due, so a file changed on disk shows.
+    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    let id = egui::Id::unique(("link_badge_status", app.pane));
+    let mut check = ctx.data(|d| d.get_temp::<LinkCheck>(id)).unwrap_or_default();
+    if let Some((for_key, slot)) = check.pending.clone()
+        && let Some(map) = slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+    {
+        (check.key, check.at, check.map, check.pending) = (for_key, now, std::sync::Arc::new(map), None);
+    }
+    let due = check.key != key || now - check.at >= 1.0;
+    if due && check.pending.is_none() {
+        let assets: Vec<(u64, std::sync::Arc<designcraft_doc::Asset>)> =
+            doc.assets.iter().filter(|(_, a)| a.link.is_some()).map(|(id, a)| (id.0, a.clone())).collect();
+        let document = st.path.clone();
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let run = {
+            let (slot, ctx) = (slot.clone(), ctx.clone());
+            move || {
+                let path = document.as_deref().map(std::path::Path::new);
+                let map = assets.iter().map(|(id, a)| (*id, designcraft_engine::cmd::link_status(a, path).to_string())).collect();
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
+                ctx.request_repaint();
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(run);
+        #[cfg(target_arch = "wasm32")]
+        run();
+        check.pending = Some((key, slot));
+    }
+    let map = if check.key.0 == key.0 { check.map.clone() } else { Default::default() };
+    ctx.data_mut(|d| d.insert_temp(id, check));
+    map
+}
+
+/// View › Extras › Show Link Badge: every frame showing a linked file carries a badge on its top
+/// edge, near the left corner, in its layer's colour, as InDesign marks placed files. A modified
+/// link shows a warning and a missing one a stop instead, as in the Links panel. Returns each
+/// badge's screen centre, kind and colour.
+pub(super) fn link_badges(
+    doc: &Document,
+    layout: &CanvasLayout,
+    xf: &Xf,
+    status: &std::collections::HashMap<u64, String>,
+) -> Vec<(Pos2, LinkBadge, Color32)> {
+    fn walk(
+        doc: &Document,
+        xf: &Xf,
+        it: &Item,
+        a: Affine,
+        status: &std::collections::HashMap<u64, String>,
+        out: &mut Vec<(Pos2, LinkBadge, Color32)>,
+    ) {
+        if it.hidden || doc.layer(it.layer).is_some_and(|l| !l.visible) {
+            return;
+        }
+        match &it.content {
+            Content::Group { items } => {
+                for c in items {
+                    walk(doc, xf, c, a * it.xf, status, out);
+                }
+            }
+            Content::Graphic(g) => {
+                if doc.assets.get(&g.asset).is_none_or(|asset| asset.link.is_none()) {
+                    return;
+                }
+                // On the frame's own top edge (rotated with it), 16 px in from its left corner.
+                let b = it.inner_bounds();
+                let m = a * it.xf;
+                let (tl, tr) = (xf.to_screen(m * Point::new(b.x0, b.y0)), xf.to_screen(m * Point::new(b.x1, b.y0)));
+                let len = (tr - tl).length();
+                if !len.is_finite() {
+                    return;
+                }
+                let at = if len > 0.0 { tl + (tr - tl) / len * 16.0f32.min(len / 2.0) } else { tl };
+                let badge = match status.get(&g.asset.0).map(String::as_str) {
+                    Some("missing") => LinkBadge::Missing,
+                    Some("modified") => LinkBadge::Modified,
+                    _ => LinkBadge::Linked,
+                };
+                out.push((at, badge, layer_color(doc, it)));
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for slot in &layout.slots {
+        let Some(sp) = doc.spread(slot.spread) else { continue };
+        // Parent items shown on the pages (not those a page overrides), as draw_frames finds them.
+        for (pi, page) in sp.pages.iter().enumerate() {
+            for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
+                let Some(parent) = doc.parents.get(ppi) else { continue };
+                let Some(ppage) = parent.pages.get(ppg) else { continue };
+                let dx = page.x - ppage.x;
+                for it in &parent.items {
+                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                        continue;
+                    }
+                    walk(doc, xf, it, slot.xf * Affine::translate((dx, 0.0)), status, &mut out);
+                }
+            }
+        }
+        for it in &sp.items {
+            walk(doc, xf, it, slot.xf, status, &mut out);
+        }
+    }
+    out
+}
+
+/// A link badge centred on `c`: two interlocked links on a light halo, so it reads over any
+/// picture; a red stop with a question mark for a missing file, a yellow warning for a modified
+/// one. Drawn in code.
+pub(super) fn draw_link_badge(painter: &egui::Painter, c: Pos2, badge: LinkBadge, col: Color32) {
+    match badge {
+        LinkBadge::Linked => {
+            painter.rect_filled(Rect::from_center_size(c, vec2(24.0, 13.0)), 6.5, Color32::from_white_alpha(235));
+            let dark = |v: u8| (f32::from(v) * 0.55) as u8;
+            let ink = Color32::from_rgb(dark(col.r()), dark(col.g()), dark(col.b()));
+            for dx in [-4.0, 4.0] {
+                painter.rect_stroke(Rect::from_center_size(c + vec2(dx, 0.0), vec2(12.0, 7.0)), 3.5, Stroke::new(1.8, ink), StrokeKind::Middle);
+            }
+        }
+        LinkBadge::Missing => {
+            painter.circle_filled(c, 7.0, Color32::WHITE);
+            painter.circle_filled(c, 6.0, Color32::from_rgb(214, 38, 38));
+            painter.text(c, egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(10.0), Color32::WHITE);
+        }
+        LinkBadge::Modified => {
+            let tri = |h: f32| vec![c + vec2(0.0, -h), c + vec2(h * 1.1, h * 0.8), c + vec2(-h * 1.1, h * 0.8)];
+            painter.add(egui::Shape::convex_polygon(tri(7.5), Color32::WHITE, Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(tri(6.0), Color32::from_rgb(250, 200, 30), Stroke::NONE));
+            painter.text(c + vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, "!", egui::FontId::proportional(9.0), Color32::BLACK);
+        }
+    }
+}
+
 pub(super) fn layer_color(doc: &Document, it: &Item) -> Color32 {
     doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::from_rgb(79, 153, 255))
 }

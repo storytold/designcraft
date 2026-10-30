@@ -2360,6 +2360,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Show/Hide Text Threads",
         ["Show/Hide Text Threads", "Afficher/Masquer le chaînage du texte", "Show/Hide Text Threads", "Show/Hide Text Threads", "显示/隐藏文本串接"],
     ),
+    (
+        "Show/Hide Link Badge",
+        [
+            "Show/Hide Link Badge",
+            "Afficher/Masquer le badge de lien",
+            "Mostrar/ocultar distintivo de vínculo",
+            "Show/Hide Link Badge",
+            "显示/隐藏链接标记",
+        ],
+    ),
     ("Smooth", ["Smooth", "Lisse", "Smooth", "Smooth", "平滑"]),
     ("Sort", ["Sort", "Trier", "Sort", "Sort", "排序"]),
     (

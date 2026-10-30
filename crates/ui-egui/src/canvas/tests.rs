@@ -86,6 +86,78 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
     }
 }
 
+/// A picture placed from a file carries the link badge on its frame's top edge, near the left
+/// corner, as in the tutorial's chapter 10; an embedded picture has none, a missing file shows
+/// the stop instead, and View › Extras hides the badges.
+#[test]
+fn linked_pictures_carry_the_link_badge() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snowflake.png");
+    std::fs::write(&path, &png).unwrap();
+    let linked = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": path.to_string_lossy(), "frame": linked})).unwrap();
+    let embedded = app.run("frame.create", json!({"rect": [72, 300, 272, 400]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "e.png", "frame": embedded})).unwrap();
+    let ctx = egui::Context::default();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    // The check runs off the UI thread: ask until the result for this document state is in.
+    let badges = |app: &mut DesignApp| {
+        let doc = app.session.active().unwrap().doc.clone();
+        let key = (app.session.active().unwrap().uid, app.session.active().unwrap().revision);
+        for _ in 0..1000 {
+            let status = link_statuses(app, &ctx, &doc);
+            let check = ctx.data(|d| d.get_temp::<LinkCheck>(egui::Id::unique(("link_badge_status", app.pane)))).unwrap();
+            if check.key == key && check.pending.is_none() {
+                return link_badges(&doc, &CanvasLayout::new(&doc, false), &xf, &status);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the link check didn't finish");
+    };
+    let b = badges(&mut app);
+    assert_eq!(b.len(), 1, "only the linked picture: {b:?}");
+    assert_eq!(b[0].1, LinkBadge::Linked);
+    let doc = app.session.active().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let (a, _) = item_canvas_xf(&doc, &layout, designcraft_doc::ItemId(linked)).unwrap();
+    let r = doc.item(designcraft_doc::ItemId(linked)).unwrap().bounds();
+    let corner = xf.to_screen(a * Point::new(r.x0, r.y0));
+    let d = b[0].0 - corner;
+    assert!(d.y.abs() < 0.5 && d.x > 0.0 && d.x <= 16.5, "on the top edge near the left corner: {d:?}");
+    // Rotated, the badge stays on the frame's own top edge, 16 px from its corner along it.
+    app.run("transform.set", json!({"ids": [linked], "rotation": 30})).unwrap();
+    let doc = app.session.active().unwrap().doc.clone();
+    let it = doc.item(designcraft_doc::ItemId(linked)).unwrap().clone();
+    let (a, _) = item_canvas_xf(&doc, &CanvasLayout::new(&doc, false), designcraft_doc::ItemId(linked)).unwrap();
+    let ib = it.inner_bounds();
+    let (tl, tr) = (xf.to_screen(a * it.xf * Point::new(ib.x0, ib.y0)), xf.to_screen(a * it.xf * Point::new(ib.x1, ib.y0)));
+    let c = badges(&mut app)[0].0;
+    let along = (tr - tl).normalized();
+    let off = c - tl;
+    assert!((off.dot(along) - 16.0).abs() < 0.5 && (off.x * along.y - off.y * along.x).abs() < 0.5, "on the rotated top edge: {off:?}");
+    app.run("edit.undo", json!({})).unwrap();
+    // A linked picture on the parent page shows its badge on the document page that shows it
+    // (the first page is a right-hand one: the parent's right page).
+    let px = app.session.active().unwrap().doc.parents[0].pages[1].x;
+    let pf = app.run("frame.create", json!({"rect": [px + 300.0, 500, px + 400.0, 600], "spread": {"kind": "parent", "index": 0}})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("file.place", json!({"path": path.to_string_lossy(), "frame": pf})).unwrap();
+    assert_eq!(badges(&mut app).len(), 2, "the parent page's picture too");
+    // The file gone: the badge says so (the check runs again once the document changes).
+    std::fs::remove_file(&path).unwrap();
+    app.run("frame.create", json!({"rect": [400, 400, 420, 420]})).unwrap();
+    assert_eq!(badges(&mut app)[0].1, LinkBadge::Missing);
+    // View › Extras › Hide Link Badge.
+    assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(true));
+    app.run("view.linkBadge", json!({})).unwrap();
+    assert!(!app.ui.link_badge);
+    assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(false));
+}
+
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and
 /// Slug the slug box. A slug narrower than the bleed never pulls the edge back in.
 #[test]

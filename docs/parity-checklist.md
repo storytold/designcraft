@@ -315,7 +315,7 @@ Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print)
 | View & navigation | Screen modes | P0 | D |
 | View & navigation | Overprint preview | P1 | D |
 | View & navigation | Rulers, guides, grids toggles | P0 | D |
-| View & navigation | Show/hide frame edges, threads, hidden chars | P0 | D |
+| View & navigation | Show/hide frame edges, threads, link badge, hidden chars | P0 | D |
 | View & navigation | Structure / tag markers | P2 | D |
 | View & navigation | Display performance | P0 | D |
 | View & navigation | Navigate pages | P0 | D |

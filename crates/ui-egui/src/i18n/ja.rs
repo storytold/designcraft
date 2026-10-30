@@ -948,6 +948,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Rulers", "定規を表示・非表示"),
     ("Show/Hide Tagged Frames", "タグ付きフレームを表示・非表示"),
     ("Show/Hide Text Threads", "テキストフレームの連結を表示・非表示"),
+    ("Show/Hide Link Badge", "リンクバッジを表示・非表示"),
     ("Smooth", "平滑化"),
     ("Sort", "並べ替え"),
     ("Split Cell Horizontally", "セルを横方向に分割"),

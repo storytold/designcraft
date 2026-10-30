@@ -726,6 +726,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Rulers", "Pokaż/ukryj linijki"),
     ("Show/Hide Tagged Frames", "Pokaż/ukryj ramki z tagami"),
     ("Show/Hide Text Threads", "Pokaż/ukryj powiązania tekstu"),
+    ("Show/Hide Link Badge", "Pokaż/ukryj znacznik łącza"),
     ("Smooth", "Wygładź"),
     ("Sort", "Sortuj"),
     ("Split Cell Horizontally", "Podziel komórkę w poziomie"),

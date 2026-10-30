@@ -719,6 +719,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Rulers", "Zobrazit/skrýt pravítka"),
     ("Show/Hide Tagged Frames", "Zobrazit/skrýt otagované rámečky"),
     ("Show/Hide Text Threads", "Zobrazit/skrýt zřetězení textu"),
+    ("Show/Hide Link Badge", "Zobrazit/skrýt odznak propojení"),
     ("Smooth", "Vyhladit"),
     ("Sort", "Seřadit"),
     ("Split Cell Horizontally", "Rozdělit buňku vodorovně"),

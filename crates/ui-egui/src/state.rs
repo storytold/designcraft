@@ -190,6 +190,8 @@ pub struct UiState {
     pub baseline_grid: bool,
     pub document_grid: bool,
     pub text_threads: bool,
+    /// View › Extras › Show Link Badge: the chain on frames showing a linked file.
+    pub link_badge: bool,
     pub hidden_characters: bool,
     /// View › Structure › Show Tagged Frames.
     pub tagged_frames: bool,
@@ -393,6 +395,7 @@ impl Default for UiState {
             baseline_grid: false,
             document_grid: false,
             text_threads: false,
+            link_badge: true,
             hidden_characters: false,
             tagged_frames: false,
             hidden_menu_items: Vec::new(),

@@ -851,6 +851,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Rulers", "Показати/приховати лінійки"),
     ("Show/Hide Tagged Frames", "Показати/приховати фрейми з тегами"),
     ("Show/Hide Text Threads", "Показати/приховати зв’язки текстових фреймів"),
+    ("Show/Hide Link Badge", "Показати/приховати значок зв’язку"),
     ("Smooth", "Згладити"),
     ("Sort", "Сортувати"),
     ("Split Cell Horizontally", "Розділити клітинку горизонтально"),
