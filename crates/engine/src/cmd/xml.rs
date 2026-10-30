@@ -42,13 +42,14 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
-/// `text` for text frames, `image` for frames holding a graphic and empty graphic frames (an
-/// unassigned frame in the document's default graphic frame style), `None` for anything else.
-fn frame_kind(d: &Document, it: &Item) -> Option<&'static str> {
+/// `text` for text frames, `image` for frames holding a graphic and empty graphic frames, `None`
+/// for anything else: a plain shape is no frame, whatever its object style (InDesign gives every
+/// rectangle the graphics frame style).
+fn frame_kind(it: &Item) -> Option<&'static str> {
     match &it.content {
         Content::Text(_) => Some("text"),
         Content::Graphic(_) => Some("image"),
-        Content::Unassigned if it.object_style == d.styles.default_graphic_frame => Some("image"),
+        Content::Unassigned if it.graphic_frame => Some("image"),
         _ => None,
     }
 }
@@ -68,7 +69,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     let overwrite = bool_or(p, "overwrite", false);
     let use_names = bool_or(p, "useNames", true);
     let d = &s.doc()?.doc;
-    let wanted = |it: &Item| frame_kind(d, it).is_some_and(|k| kinds.iter().any(|w| w == k)) && (overwrite || it.xml_tag.is_empty());
+    let wanted = |it: &Item| frame_kind(it).is_some_and(|k| kinds.iter().any(|w| w == k)) && (overwrite || it.xml_tag.is_empty());
     let ids = in_reading_order(d, wanted);
     // Numbers already taken by tags that stay, so `text_3` isn't given twice.
     let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
@@ -81,7 +82,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     let mut plan: Vec<(ItemId, String, &'static str)> = Vec::new();
     for id in ids {
         let Some(it) = d.item(id) else { continue };
-        let Some(kind) = frame_kind(d, it) else { continue };
+        let Some(kind) = frame_kind(it) else { continue };
         let name = it.name.trim();
         let tag = if use_names && valid_name(name) {
             name.to_string()
@@ -584,7 +585,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     let mut image_slots: Vec<(String, ItemId, bool)> = tagged(d)
         .into_iter()
         .filter_map(|id| d.item(id))
-        .filter(|it| frame_kind(d, it) == Some("image"))
+        .filter(|it| frame_kind(it) == Some("image"))
         .map(|it| (it.xml_tag.clone(), it.id, false))
         .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
@@ -776,6 +777,15 @@ mod tests {
         let shape = frame(&mut s, [450, 72, 500, 120], "unassigned");
         s.execute("object.rename", &json!({"id": head, "name": "headline"})).unwrap();
         s.execute("object.rename", &json!({"id": body, "name": "not a tag"})).unwrap();
+        // A plain shape in the graphics frame style (as InDesign gives every rectangle) is no frame.
+        s.edit(|d, _| {
+            let style = d.styles.default_graphic_frame.clone();
+            if let Some(it) = d.item_mut(designcraft_doc::ItemId(shape.as_u64().unwrap())) {
+                it.object_style = style;
+            }
+            Ok(())
+        })
+        .unwrap();
         s.execute("xml.tag", &json!({"tag": "text_1", "ids": [kept]})).unwrap();
         let r = s.execute("xml.autoTag", &json!({})).unwrap();
         let tags: Vec<(serde_json::Value, String)> =
