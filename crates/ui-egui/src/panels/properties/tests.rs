@@ -787,6 +787,61 @@ fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
 }
 
 #[test]
+fn several_objects_are_named_as_indesign_names_them() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = |app: &mut DesignApp, x: u64| {
+        app.run("frame.create", json!({"rect": [x, 72, x + 100, 140], "content": "text", "text": "75%"})).unwrap()["id"].as_u64().unwrap()
+    };
+    let (a, b) = (text(&mut app, 72), text(&mut app, 200));
+    let rect = app.run("frame.create", json!({"rect": [72, 200, 172, 300]})).unwrap()["id"].as_u64().unwrap();
+    let title = |app: &mut DesignApp, ids: Vec<u64>| {
+        app.run("selection.set", json!({ "ids": ids })).unwrap();
+        selection_title(app, &super::super::sel_info(app))
+    };
+    assert_eq!(title(&mut app, vec![a, b]), "Text Frames");
+    // A number, its text and the square under it: the tutorial's column.
+    assert_eq!(title(&mut app, vec![a, b, rect]), "Mixed Objects");
+    assert_eq!(title(&mut app, vec![a]), "Text Frame");
+    // Empty graphic frames, as the tutorial's slanted row: "Frames".
+    let frames: Vec<u64> = (0..2)
+        .map(|k| {
+            app.run("frame.create", json!({"rect": [72 + 120 * k, 400, 172 + 120 * k, 480], "content": "graphic"})).unwrap()["id"].as_u64().unwrap()
+        })
+        .collect();
+    assert_eq!(title(&mut app, frames.clone()), "Frames");
+    let shape = app.run("frame.create", json!({"rect": [72, 500, 172, 580], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(title(&mut app, vec![frames[0], shape]), "Mixed Objects", "a frame and a drawn rectangle");
+    // Placed images, as the tutorial's three pictures.
+    let png = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![200u8; 40 * 40 * 4] }.to_png();
+    let b64 = designcraft_engine::cmd::base64_encode(&png);
+    let mut pics = vec![];
+    for x in [300, 420] {
+        let f = app.run("frame.create", json!({"rect": [x, 200, x + 100, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"base64": b64, "name": "a.png", "frame": f})).unwrap();
+        pics.push(f);
+    }
+    // Embedded pictures (placed from bytes) are images; ones placed from files, as in the
+    // tutorial, linked files; some of each, mixed.
+    assert_eq!(title(&mut app, pics.clone()), "Images");
+    assert_eq!(title(&mut app, vec![pics[0]]), "Image");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snowflake.png");
+    std::fs::write(&path, &png).unwrap();
+    let linked: Vec<u64> = [320, 440]
+        .into_iter()
+        .map(|y| {
+            let f = app.run("frame.create", json!({"rect": [300, y, 400, y + 100], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+            app.run("file.place", json!({"path": path.to_string_lossy(), "frame": f})).unwrap();
+            f
+        })
+        .collect();
+    assert_eq!(title(&mut app, vec![linked[0]]), "Linked File");
+    assert_eq!(title(&mut app, linked.clone()), "Linked Files");
+    assert_eq!(title(&mut app, vec![linked[0], pics[0]]), "Mixed Objects");
+}
+
+#[test]
 fn transform_flips_and_rotates_from_properties() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

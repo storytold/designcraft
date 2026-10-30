@@ -91,11 +91,40 @@ fn selection_title(app: &DesignApp, info: &Option<SelInfo>) -> String {
     }
     match info {
         None => crate::i18n::tr(&app.ui.language, "No Selection").into(),
-        Some(i) if i.count > 1 => crate::i18n::tr(&app.ui.language, "Multiple Objects").into(),
+        // Several objects, named as InDesign names them: "Text Frames", "Linked Files" (pictures
+        // placed from files), "Images" (embedded ones) or "Frames" (empty graphic frames) when all
+        // are of that kind, "Mixed Objects" when the kinds differ.
+        Some(i) if i.count > 1 => {
+            let kind = |it: &designcraft_doc::Item| {
+                if it.object_style == designcraft_doc::BASIC_GRAPHICS_FRAME && matches!(it.content, designcraft_doc::Content::Unassigned) {
+                    "<graphic frame>"
+                } else if it.graphic().and_then(|g| st.doc.assets.get(&g.asset)).is_some_and(|a| a.link.is_some()) {
+                    "<linked image>"
+                } else {
+                    it.default_label()
+                }
+            };
+            let mut kinds = st.selection.items.iter().map(|id| st.doc.item(*id).map(kind));
+            let first = kinds.next().flatten();
+            let title = match first {
+                _ if !kinds.all(|k| k == first) => "Mixed Objects",
+                Some("<text frame>") => "Text Frames",
+                Some("<linked image>") => "Linked Files",
+                Some("<image>") => "Images",
+                Some("<graphic frame>") => "Frames",
+                _ => "Multiple Objects",
+            };
+            crate::i18n::tr(&app.ui.language, title).into()
+        }
         Some(i) => match i.kind {
             "<text frame>" => crate::i18n::tr(&app.ui.language, "Text Frame").into(),
             "<group>" => crate::i18n::tr_context(&app.ui.language, "Group", "selection").into(),
-            "<image>" => crate::i18n::tr(&app.ui.language, "Image").into(),
+            // A picture placed from a file is a "Linked File"; an embedded one is an image.
+            "<image>" => {
+                let linked = st.selection.items.first().and_then(|id| st.doc.item(*id)).and_then(|it| it.graphic());
+                let linked = linked.and_then(|g| st.doc.assets.get(&g.asset)).is_some_and(|a| a.link.is_some());
+                crate::i18n::tr(&app.ui.language, if linked { "Linked File" } else { "Image" }).into()
+            }
             "<rectangle>" => crate::i18n::tr(&app.ui.language, "Rectangle").into(),
             "<ellipse>" => crate::i18n::tr(&app.ui.language, "Ellipse").into(),
             "<polygon>" => crate::i18n::tr(&app.ui.language, "Polygon").into(),
