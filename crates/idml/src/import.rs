@@ -32,6 +32,7 @@ mod swatches;
 mod table;
 mod text_attrs;
 mod values;
+mod xml_structure;
 
 use document::IndexTopic;
 use frame::margins_of;
@@ -261,6 +262,8 @@ struct Importer<'r> {
     /// Tab lists [`TabStop::sanitized_list`] had to repair (an import warning).
     repaired_tab_lists: usize,
     toc: Option<designcraft_doc::Toc>,
+    /// The XML structure read so far (`XMLElement`s, the root, tags).
+    xml: xml_structure::XmlImport,
 }
 
 impl<'r> Importer<'r> {
@@ -341,6 +344,7 @@ impl<'r> Importer<'r> {
             modified: None,
             repaired_tab_lists: 0,
             toc: None,
+            xml: Default::default(),
         }
     }
 
@@ -619,6 +623,7 @@ impl<'r> Importer<'r> {
             );
         }
         self.link_threads();
+        self.xml_structure(top);
         Ok(())
     }
 
@@ -787,7 +792,13 @@ impl<'r> Importer<'r> {
             inks: std::mem::take(&mut self.inks),
             stroke_styles: std::mem::take(&mut self.stroke_styles),
             articles: vec![],
-            xml: Default::default(),
+            xml: designcraft_doc::XmlSettings {
+                root: std::mem::take(&mut self.xml.root),
+                tags: std::mem::take(&mut self.xml.tags),
+                elements: std::mem::take(&mut self.xml.elements),
+                root_children: std::mem::take(&mut self.xml.root_children),
+                ..Default::default()
+            },
             endnote_options: Default::default(),
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),

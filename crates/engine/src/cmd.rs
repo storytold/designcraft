@@ -68,6 +68,7 @@ mod toc;
 mod transitions;
 mod variables;
 mod xml;
+mod xml_structure;
 mod xref;
 
 use designcraft_doc::{ItemId, SpreadRef};

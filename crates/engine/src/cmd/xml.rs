@@ -184,8 +184,17 @@ fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
     out
 }
 
-/// The document's tagged content as XML.
+/// The document's tagged content as XML: its XML structure as InDesign writes it when it has one
+/// (read from an InDesign file), else the tagged frames in reading order.
 pub fn export_xml(d: &Document) -> String {
+    export_xml_with(d, None)
+}
+
+/// [`export_xml`], cross-references showing the pages `xrefs` finds for them.
+fn export_xml_with(d: &Document, xrefs: Option<&designcraft_compose::xref::XrefIndex>) -> String {
+    if !d.xml.root_children.is_empty() {
+        return super::xml_structure::export(d, xrefs);
+    }
     let mut out = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{}>\n", root_name(d));
     for id in tagged(d) {
         let Some(it) = d.item(id) else { continue };
@@ -508,7 +517,10 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"root": root_name(d), "elements": elements}))
         }),
         cmd!(noundo "file.exportXml", "Export XML…", ["File"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
-            let text = export_xml(&s.doc()?.doc);
+            let d = &s.doc()?.doc;
+            // Cross-references in the XML structure show their page, found by composing.
+            let xrefs = (!d.xml.root_children.is_empty()).then(|| s.cache.xref_index(d));
+            let text = export_xml_with(d, xrefs.as_deref());
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -607,6 +619,10 @@ fn text_or_path(p: &Value, id: &str) -> Result<String> {
 fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
+    // A document with InDesign's XML structure takes the texts of the elements by their Id.
+    if !s.doc()?.doc.xml.root_children.is_empty() {
+        return super::xml_structure::import_by_id(s, &text);
+    }
     let elements = parse(&text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
     // Relative image paths: against `imageDir`, else the XML file's folder.
     let base = str_param(p, "imageDir").map(std::path::PathBuf::from).or_else(|| {

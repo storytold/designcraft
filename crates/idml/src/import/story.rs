@@ -26,9 +26,10 @@ impl<'r> Importer<'r> {
             link_srcs: Vec::new(),
             index_refs: Vec::new(),
             objects: Vec::new(),
+            table_breaks: Vec::new(),
         };
         self.walk_story(e, &mut b, &default_para, &CharAttrs::default(), &CharFormat::default(), None);
-        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, link_srcs, .. } = b;
+        let StoryBuilder { text, mut paras, runs, last, tables: tbls, notes, anchors, xrefs, index_refs, objects, link_srcs, table_breaks, .. } = b;
         for (me, start, end) in link_srcs {
             // A cell's or a footnote's story is built under the `StoryId(0)` placeholder, so a
             // range recorded against it names no story of the document (noted in review).
@@ -37,6 +38,9 @@ impl<'r> Importer<'r> {
             } else {
                 self.link_text_srcs.insert(me, (id, start, end));
             }
+        }
+        for (t, before, after) in table_breaks {
+            self.xml.breaks.insert(t, (before, after));
         }
         let mut chars: Vec<CharRun> = runs.into_iter().filter(|r| r.len > 0).collect();
         if chars.is_empty() {
@@ -138,8 +142,10 @@ impl<'r> Importer<'r> {
                         let style = c.get("AppliedParagraphStyle").map(|r| self.para_style_ref(r)).unwrap_or_else(|| pf.style.clone());
                         let para = self.para_attrs(c);
                         let mut chars = self.char_attrs(c);
-                        // A paragraph range inside a tracked change is part of that change.
+                        // A paragraph range inside a tracked change is part of that change, and one
+                        // inside an inline XML element is that element's text.
                         chars.change = chars.change.or(cf.over.change);
+                        chars.xml_element = chars.xml_element.or(cf.over.xml_element);
                         let npf = ParaFormat { style, para, chars: CharAttrs::default(), table: None };
                         if b.fresh
                             && let Some(last) = b.paras.last_mut()
@@ -161,9 +167,10 @@ impl<'r> Importer<'r> {
                         for t in &c.children {
                             match t {
                                 Node::Text(s) | Node::CData(s) => {
+                                    // U+FEFF stays: InDesign keeps it in the text (a translation
+                                    // workflow wraps protected text in it), and XML export writes it.
                                     let s: String = s
                                         .chars()
-                                        .filter(|c| *c != '\u{FEFF}')
                                         .map(|c| if c == '\n' || c == '\r' || c == '\u{2029}' { st::FORCED_LINE_BREAK } else { c })
                                         .collect();
                                     b.push(&s, cf);
@@ -328,7 +335,20 @@ impl<'r> Importer<'r> {
                         }
                         self.walk_story(c, b, pf, pchars, &ncf, brk);
                     }
-                    "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" => {}
+                    "XMLElement" => {
+                        let (id, inline) = self.xml_element_begin(c);
+                        if inline {
+                            let mut ncf = cf.clone();
+                            ncf.over.xml_element = Some(id);
+                            let mut npchars = pchars.clone();
+                            npchars.xml_element = Some(id);
+                            self.walk_story(c, b, pf, &npchars, &ncf, brk);
+                        } else {
+                            self.walk_story(c, b, pf, pchars, cf, brk);
+                        }
+                        self.xml_element_end();
+                    }
+                    "Properties" | "Note" | "StoryPreference" | "InCopyExportOption" | "XMLAttribute" => {}
                     _ => self.walk_story(c, b, pf, pchars, cf, brk),
                 },
                 Node::Pi(t, v) if t == "ACE" => {
@@ -438,13 +458,15 @@ struct StoryBuilder {
     after_table: Option<ParaFormat>,
     /// Footnote texts in reference order.
     notes: Vec<Story>,
-    /// Text destinations (Self, name) and cross-reference sources (Self, format Self) in order.
+    /// Text destinations (Self, name) in order.
     anchors: Vec<(String, String)>,
     index_refs: Vec<designcraft_doc::IndexRef>,
     xrefs: Vec<XrefSource>,
     /// `HyperlinkTextSource` Self and the byte range of the text it wrapped (#1446).
     link_srcs: Vec<(String, usize, usize)>,
     objects: Vec<designcraft_doc::AnchoredObject>,
+    /// Tables (id) and whether a paragraph break was added before and after each one's anchor.
+    table_breaks: Vec<(u64, bool, bool)>,
 }
 
 /// A cross-reference source as saved: its id, its format's id, and its text with each page number
@@ -491,6 +513,8 @@ impl StoryBuilder {
     /// A table gets an anchor paragraph of its own.
     fn push_table(&mut self, t: Table, pf: &ParaFormat, cf: &CharFormat) {
         let para_empty = self.text.rsplit('\n').next().is_none_or(str::is_empty);
+        // A table that follows text in its paragraph gets a break the file doesn't have.
+        self.table_breaks.push((t.id, !para_empty, false));
         if !para_empty {
             self.after_table = None;
             self.push("\n", cf);
@@ -510,6 +534,10 @@ impl StoryBuilder {
         if let Some(pf) = self.after_table.take()
             && !s.starts_with('\n')
         {
+            // Text right after a table, in its paragraph: the break is the import's own.
+            if let Some(last) = self.table_breaks.last_mut() {
+                last.2 = true;
+            }
             self.push("\n", f);
             self.paras.push(pf);
         }
