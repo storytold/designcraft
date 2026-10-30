@@ -669,3 +669,47 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
 }
+
+/// In InDesign, removing an inherited item from a parent page means overriding it there and
+/// deleting the override: the parent's page keeps the item in its override list with no copy
+/// of its own. The pages that use that parent still drew the base's item — a signature block
+/// from parent B over the notice text of every page using parent E (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_gone_from_the_pages_that_use_it() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    // Parent A: a black box. Parent B: based on A, nothing of its own.
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = designcraft_doc::ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    {
+        let bp = std::sync::Arc::make_mut(&mut d.parents[1]);
+        bp.parent.as_mut().unwrap().based_on = Some(a);
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let ink = |d: &Document, r: &mut Renderer| {
+        let img = r.render_page(d, &Cache::new(), 0, 1.0, false, &RenderOptions::default()).unwrap();
+        img.pixel(rect.center().x as u32, rect.center().y as u32)[0] < 64
+    };
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the page shows parent A's box through parent B");
+
+    // B overrides the box and the override is deleted: B's page keeps it in its override list.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(!ink(&d, &mut r), "the box is removed on B, so the page using B does not show it");
+
+    // Removing the override on B brings it back, which is how InDesign's Remove All Local
+    // Overrides behaves.
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.clear();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    assert!(ink(&d, &mut r), "the box shows again");
+}
