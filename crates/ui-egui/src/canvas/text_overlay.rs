@@ -113,11 +113,9 @@ pub(super) fn draw_text_selection(
         let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
         let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
         let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
+        if caret::visible(painter.ctx(), ts) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
 
@@ -167,11 +165,9 @@ fn draw_cell_selection(
     {
         let m = a * doc.text_xf(it);
         let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
+        if caret::visible(painter.ctx(), ts) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
 

@@ -334,6 +334,7 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         let (delay, dist) = ui.ctx().options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
         let n = press_count(ui.data(|d| d.get_temp(clicks_id)), o, now, delay, dist);
         ui.data_mut(|d| d.insert_temp(clicks_id, Clicks { at: f64::NEG_INFINITY, pos: o, n }));
+        caret::reset(ui.ctx());
         events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m, clicks: n });
         down = true;
     }
@@ -403,6 +404,9 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     let mut held =
         ui.data(|d| d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id())).map_or_else(|| ui.input(|i| i.modifiers), |(start, _)| start);
     for e in evs {
+        if matches!(&e, egui::Event::Text(_) | egui::Event::Ime(_) | egui::Event::Paste(_) | egui::Event::Key { pressed: true, .. }) {
+            caret::reset(ui.ctx());
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let chord = {
             if let egui::Event::ModifiersChanged(m) = &e {

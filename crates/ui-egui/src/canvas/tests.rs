@@ -2837,3 +2837,34 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
         assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
     }
 }
+
+#[test]
+fn the_caret_blink_restarts_on_input_and_caret_changes() {
+    let ctx = egui::Context::default();
+    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
+
+    let shown = |t: f64, caret: designcraft_doc::TextSel, reset: bool| {
+        let mut visible = false;
+
+        let mut out = ctx.run_ui(egui::RawInput { time: Some(t), ..Default::default() }, |ui| {
+            if reset {
+                caret::reset(ui.ctx());
+            }
+            visible = caret::visible(ui.ctx(), caret);
+        });
+        out.textures_delta.clear();
+        visible
+    };
+    assert!(shown(10.0, caret, true), "a reset shows the caret");
+    assert!(shown(10.5, caret, false), "the first half is on");
+    assert!(!shown(10.7, caret, false), "the second half is off");
+    assert!(shown(11.3, caret, false), "the next cycle is on");
+    assert!(shown(10.7, caret, true), "typing shows it again");
+    assert!(!shown(11.4, caret, false), "and its phase follows the reset");
+
+    let moved = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 8);
+    assert!(shown(11.4, moved, false), "a caret that moved shows at once");
+    assert!((caret::until_flip(0.0) - 0.625).abs() < 1e-9);
+    assert!((caret::until_flip(0.96) - 0.025).abs() < 1e-9);
+    assert!((caret::until_flip(1.0) - 0.625).abs() < 1e-9);
+}
