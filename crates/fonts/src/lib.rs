@@ -208,7 +208,7 @@ pub fn shape_with_context(
 /// joining forms, mandatory ligatures and contextual alternates of a joining script off.
 fn script_features(features: &[Feature], script: unicode_script::Script, unjoined: bool) -> std::borrow::Cow<'_, [Feature]> {
     use unicode_script::Script;
-    let joining = matches!(script, Script::Arabic | Script::Syriac | Script::Nko | Script::Mandaic | Script::Mongolian);
+    let joining = matches!(script, Script::Adlam | Script::Arabic | Script::Syriac | Script::Nko | Script::Mandaic | Script::Mongolian);
     if unjoined && joining {
         let mut v = features.to_vec();
         v.extend(["-init", "-medi", "-fina", "-med2", "-fin2", "-fin3", "-rlig", "-calt"].into_iter().filter_map(feature));
@@ -361,6 +361,17 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Outside a World-Ready paragraph every joining script stands unjoined, Adlam too.
+    #[test]
+    fn unjoined_scripts_lose_their_joining_features() {
+        use unicode_script::Script;
+        for script in [Script::Adlam, Script::Arabic, Script::Syriac, Script::Nko, Script::Mandaic, Script::Mongolian] {
+            let tags: Vec<_> = script_features(&[], script, true).iter().map(|f| (f.tag, f.value)).collect();
+            assert!(tags.contains(&(Tag::new(b"fina"), 0)) && tags.contains(&(Tag::new(b"rlig"), 0)), "{script:?}: {tags:?}");
+        }
+        assert!(script_features(&[], Script::Latin, true).is_empty());
+    }
 
     #[test]
     fn arabic_keeps_contextual_alternates() {
