@@ -81,6 +81,7 @@ pub struct NumField<'a> {
     range: (f64, f64),
     enabled: bool,
     parens: bool,
+    slider: bool,
     /// The widget naming the field (an icon or caption beside it), for accessibility.
     label: Option<egui::Id>,
     /// What an unset value shows (InDesign's "Ignore"), and the first of the presets.
@@ -108,6 +109,7 @@ impl<'a> NumField<'a> {
             range: (f64::MIN, f64::MAX),
             enabled: true,
             parens: false,
+            slider: false,
             label: None,
             empty: None,
         }
@@ -142,6 +144,12 @@ impl<'a> NumField<'a> {
     /// Show a ⌄ preset segment on the right listing `presets`.
     pub fn presets(mut self, p: &'a [f64]) -> Self {
         self.presets = p;
+        self
+    }
+    /// Show a › segment on the right that pops up a slider over the range, as InDesign's
+    /// percentage fields (Opacity, Noise…).
+    pub fn slider(mut self) -> Self {
+        self.slider = true;
         self
     }
     pub fn step(mut self, s: f64) -> Self {
@@ -231,15 +239,24 @@ impl<'a> NumField<'a> {
             text_rect.min.x = rect.min.x + SEG_W;
             out = self.spinner_segment(ui, rect, key, enabled, &t).or(out);
         }
-        // Preset segment.
+        // Preset (⌄) or slider (›) segment.
         let mut preset_resp = None;
-        if !self.presets.is_empty() {
+        let segment = !self.presets.is_empty() || self.slider;
+        if segment {
             let seg = Rect::from_min_max(pos2(rect.max.x - SEG_W, rect.min.y), rect.max);
             text_rect.max.x = seg.min.x;
             let resp = ui.interact(seg, key.with("presets"), if enabled { Sense::click() } else { Sense::hover() });
             ui.painter().rect_filled(seg, 0.0, if resp.hovered() && enabled { t.hover } else { t.input });
-            chevron_down(ui.painter(), seg.center(), if enabled { t.icon } else { t.text_disabled });
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{name} presets")));
+            let col = if enabled { t.icon } else { t.text_disabled };
+            if self.presets.is_empty() {
+                let c = seg.center();
+                ui.painter().line_segment([pos2(c.x - 1.5, c.y - 4.0), pos2(c.x + 2.0, c.y)], Stroke::new(1.0, col));
+                ui.painter().line_segment([pos2(c.x + 2.0, c.y), pos2(c.x - 1.5, c.y + 4.0)], Stroke::new(1.0, col));
+            } else {
+                chevron_down(ui.painter(), seg.center(), col);
+            }
+            let what = if self.presets.is_empty() { "slider" } else { "presets" };
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{name} {what}")));
             preset_resp = Some(resp);
         }
         // Value.
@@ -311,10 +328,20 @@ impl<'a> NumField<'a> {
         if self.spinner {
             p.line_segment([pos2(rect.min.x + SEG_W, rect.min.y), pos2(rect.min.x + SEG_W, rect.max.y)], Stroke::new(1.0, t.field_border));
         }
-        if !self.presets.is_empty() {
+        if segment {
             p.line_segment([pos2(rect.max.x - SEG_W, rect.min.y), pos2(rect.max.x - SEG_W, rect.max.y)], Stroke::new(1.0, t.field_border));
         }
-        if let Some(resp) = preset_resp
+        if let Some(resp) = preset_resp.as_ref().filter(|_| enabled && self.slider && self.presets.is_empty()) {
+            egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                let (lo, hi) = self.range;
+                let mut v = self.value.unwrap_or(lo).clamp(lo, hi);
+                let r = ui.add(egui::Slider::new(&mut v, lo..=hi).show_value(false).step_by(1.0));
+                r.widget_info(|| egui::WidgetInfo::slider(true, v, name));
+                if r.changed() {
+                    out = Some(v);
+                }
+            });
+        } else if let Some(resp) = preset_resp
             && enabled
         {
             egui::Popup::menu(&resp).show(|ui| {

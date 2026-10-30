@@ -1,5 +1,20 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Noise:", ["Rauschen:", "Bruit :", "Ruido:", "ノイズ :", "杂色："]),
+    (
+        "Object Knocks Out Shadow",
+        ["Objekt spart Schatten aus", "L'objet masque l'ombre", "El objeto cubre la sombra", "オブジェクトでシャドウを抜く", "对象挖空阴影"],
+    ),
+    (
+        "Shadow Honors Other Effects",
+        [
+            "Schatten berücksichtigt andere Effekte",
+            "L'ombre tient compte des autres effets",
+            "La sombra respeta otros efectos",
+            "シャドウに他の効果を使用",
+            "阴影接受其他效果",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [

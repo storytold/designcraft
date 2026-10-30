@@ -99,35 +99,112 @@ impl Renderer {
         // The silhouette is the shape when the object paints its area (fill / image); text frames
         // without a fill cast the shadow of their text only, which can't be grown.
         let solid = !it.fill.is_none() || matches!(it.content, designcraft_doc::Content::Graphic(_)) || it.has_nested_items();
+        let feathered = e.feather > 0.0 && it.path.is_closed();
+        let see_through = matches!(it.content, designcraft_doc::Content::Graphic(_)) || e.gradient_feather.on || e.directional_feather.on;
+        // The object's opacity applies to its shadow and to itself apart, so a shadow it doesn't
+        // knock out shows through it (the caller leaves the opacity to this).
+        let apart = opacity_apart(it);
+        if apart {
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, None, Some(it.opacity), None, None);
+        }
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity));
+            let precise = g.technique == designcraft_doc::GlowTechnique::Precise;
+            below.push(Below {
+                off: Vec2::ZERO,
+                size: g.size,
+                pct: g.spread,
+                color: g.color.clone(),
+                opacity: g.opacity,
+                mode: g.mode,
+                noise: g.noise,
+                knockout: false,
+                honors: false,
+                precise,
+            });
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity));
+            below.push(Below {
+                off: offset(doc.light_angle(d.angle, d.global_light), d.distance),
+                size: d.size,
+                pct: d.spread,
+                color: d.color.clone(),
+                opacity: d.opacity,
+                mode: d.mode,
+                noise: d.noise,
+                // Where the object paints opaquely it hides the shadow anyway (and cutting it there
+                // would lighten antialiased edges): knock out only what can be translucent.
+                knockout: d.knockout && (feathered || see_through),
+                honors: d.honors_effects && feathered,
+                precise: false,
+            });
         }
-        for (off, size, pct, color, opacity) in below {
+        for Below { off, size, pct, color, opacity, mode, noise, knockout, honors, precise } in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
-            let (sigma, grow) = split(size, pct);
+            // Precise keeps the glow close to the shape: half of it solid, then a short fade.
+            let (sigma, grow) = split(size, if precise { 50.0 + pct / 2.0 } else { pct });
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
+            // The effect's blend sees what's behind the object: a layer around the filtered one.
+            let mix = crate::blend_mode(mode).mix;
+            if mix != Mix::Normal {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+            }
             self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
+                // Noise and knockout cut into the effect alone: its own layer.
+                let isolated = noise > 0.0 || knockout;
+                if isolated {
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, None, None, None, None);
+                }
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
                 c.push_layer(None, None, None, None, Some(filter));
-                me.draw_body(c, &moved, it, bp, xf, page);
-                if grow > 0.0 && solid {
+                // Shadow Honors Other Effects: the feathered silhouette.
+                if honors {
+                    me.draw_feathered_body(c, &moved, it, bp, xf, page, reach);
+                } else {
+                    me.draw_body(c, &moved, it, bp, xf, page);
+                }
+                if grow > 0.0 && solid && !honors {
                     c.set_transform(moved.view * xf);
                     c.set_paint(peniko::Color::BLACK);
                     c.set_stroke(kurbo::Stroke::new(grow * 2.0).with_join(kurbo::Join::Round));
                     c.stroke_path(bp);
                 }
                 c.pop_layer();
+                if noise > 0.0 {
+                    noise_out(c, fr, r, noise);
+                }
+                // Object Knocks Out Shadow: none of it shows through where the object paints.
+                if knockout {
+                    c.set_transform(Affine::IDENTITY);
+                    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                    if feathered {
+                        me.draw_feathered_body(c, fr, it, bp, xf, page, reach);
+                    } else {
+                        me.draw_body(c, fr, it, bp, xf, page);
+                    }
+                    c.pop_layer();
+                }
+                if isolated {
+                    c.pop_layer();
+                }
             });
+            if mix != Mix::Normal {
+                ctx.pop_layer();
+            }
+        }
+        if apart {
+            ctx.pop_layer();
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, None, Some(it.opacity), None, None);
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
@@ -139,38 +216,8 @@ impl Renderer {
         }
         // The object, feathered or not. Choke keeps that much of the width opaque (a shorter
         // fade); Sharp and Rounded corners follow the inset shape more tightly than Diffused.
-        if e.feather > 0.0 && it.path.is_closed() {
-            let fo = &e.feather_options;
-            let w = e.feather * (1.0 - fo.choke.clamp(0.0, 100.0) / 100.0).max(0.01);
-            let (sigma, join) = match fo.corners {
-                designcraft_doc::FeatherCorners::Diffused => (w / 4.0, kurbo::Join::Round),
-                designcraft_doc::FeatherCorners::Rounded => (w / 3.0, kurbo::Join::Round),
-                designcraft_doc::FeatherCorners::Sharp => (w / 6.0, kurbo::Join::Miter),
-            };
-            // The body and its clip stay at device resolution; only the blurred mask may be drawn
-            // offscreen at a lower one.
-            ctx.set_transform(f.view * xf);
-            ctx.push_clip_layer(bp);
-            self.draw_body(ctx, f, it, bp, xf, page);
-            // Keep the body where the blurred inset silhouette is.
-            ctx.set_transform(Affine::IDENTITY);
-            ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
-            self.with_filters(ctx, f, reach, sigma, None, |_, c, fr| {
-                c.set_transform(fr.view);
-                c.push_layer(None, None, None, None, Some(blur(sigma)));
-                c.set_transform(fr.view * xf);
-                c.set_paint(peniko::Color::BLACK);
-                c.fill_path(bp);
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                c.set_transform(fr.view * xf);
-                c.set_stroke(kurbo::Stroke::new(w).with_join(join));
-                c.stroke_path(bp);
-                c.pop_layer();
-                c.pop_layer();
-            });
-            ctx.pop_layer();
-            ctx.pop_layer();
+        if feathered {
+            self.draw_feathered_body(ctx, f, it, bp, xf, page, reach);
         } else {
             self.draw_body(ctx, f, it, bp, xf, page);
         }
@@ -208,9 +255,19 @@ impl Renderer {
         if gf.on || directional {
             ctx.pop_layer();
         }
-        if !it.path.is_closed() {
-            return;
+        if it.path.is_closed() {
+            self.draw_inner_effects(ctx, f, it, bp, xf, page, reach);
         }
+        if apart {
+            ctx.pop_layer();
+        }
+    }
+
+    /// The effects inside a closed shape: inner shadow and glow, satin, bevel and emboss.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inner_effects(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn, reach: Rect) {
+        let doc = f.doc;
+        let e = &it.effects;
         // An image's edge is where it is opaque, not the frame: inner shadows, glows and bevels
         // follow what is painted when the frame holds a graphic.
         let painted = matches!(it.content, designcraft_doc::Content::Graphic(_)).then_some((it, page));
@@ -221,7 +278,20 @@ impl Renderer {
             let s = &e.inner_shadow;
             let (sigma, choke) = split(s.size, s.choke);
             let off = offset(doc.light_angle(s.angle, s.global_light), s.distance);
-            self.inner_edge(ctx, f, reach, bp, xf, off, sigma, choke, color_of(&c, s.opacity.clamp(0.0, 1.0)), Mix::Normal, painted);
+            self.inner_edge(
+                ctx,
+                f,
+                reach,
+                bp,
+                xf,
+                off,
+                sigma,
+                choke,
+                color_of(&c, s.opacity.clamp(0.0, 1.0)),
+                crate::blend_mode(s.mode).mix,
+                s.noise,
+                painted,
+            );
         }
         // Inner glow: from the edges inwards (or out from the centre), screened over the object.
         if e.inner_glow.on
@@ -233,6 +303,7 @@ impl Renderer {
             let sigma = if g.technique == designcraft_doc::GlowTechnique::Precise { sigma * 0.4 } else { sigma };
             let mix = crate::blend_mode(g.mode).mix;
             let paint = color_of(&c, g.opacity.clamp(0.0, 1.0));
+            let noise = g.noise;
             if g.center {
                 self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |_, c, fr| {
                     c.set_transform(fr.view);
@@ -249,9 +320,10 @@ impl Renderer {
                     c.stroke_path(bp);
                     c.pop_layer();
                     c.pop_layer();
+                    noise_out(c, fr, reach, noise);
                 });
             } else {
-                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, mix, painted);
+                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, mix, g.noise, painted);
             }
         }
         // Satin: the shape shifted both ways along the angle, blurred, where exactly one covers.
@@ -292,18 +364,54 @@ impl Renderer {
             let sigma = b.size.max(0.0) / 2.0;
             if let Some(c) = doc.resolve_color(&b.highlight, 1.0) {
                 // The inverse shape moved away from the light lights the edges facing it.
-                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen, painted);
+                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen, 0.0, painted);
             }
             if let Some(c) = doc.resolve_color(&b.shadow, 1.0) {
-                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply, painted);
+                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply, 0.0, painted);
             }
         }
     }
 
+    /// The object with its Basic Feather: masked by its shape inset by the width and blurred, so
+    /// the edge fades from ~0 at the path to full strength inside.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_feathered_body(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn, reach: Rect) {
+        let e = &it.effects;
+        let fo = &e.feather_options;
+        let w = e.feather * (1.0 - fo.choke.clamp(0.0, 100.0) / 100.0).max(0.01);
+        let (sigma, join) = match fo.corners {
+            designcraft_doc::FeatherCorners::Diffused => (w / 4.0, kurbo::Join::Round),
+            designcraft_doc::FeatherCorners::Rounded => (w / 3.0, kurbo::Join::Round),
+            designcraft_doc::FeatherCorners::Sharp => (w / 6.0, kurbo::Join::Miter),
+        };
+        // The body and its clip stay at device resolution; only the blurred mask may be drawn
+        // offscreen at a lower one.
+        ctx.set_transform(f.view * xf);
+        ctx.push_clip_layer(bp);
+        self.draw_body(ctx, f, it, bp, xf, page);
+        // Keep the body where the blurred inset silhouette is.
+        ctx.set_transform(Affine::IDENTITY);
+        ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+        self.with_filters(ctx, f, reach, sigma, None, |_, c, fr| {
+            c.set_transform(fr.view);
+            c.push_layer(None, None, None, None, Some(blur(sigma)));
+            c.set_transform(fr.view * xf);
+            c.set_paint(peniko::Color::BLACK);
+            c.fill_path(bp);
+            c.set_transform(Affine::IDENTITY);
+            c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+            c.set_transform(fr.view * xf);
+            c.set_stroke(kurbo::Stroke::new(w).with_join(join));
+            c.stroke_path(bp);
+            c.pop_layer();
+            c.pop_layer();
+        });
+        ctx.pop_layer();
+        ctx.pop_layer();
+    }
+
     /// An inner shadow-like edge: everything outside the shape moved by `off`, blurred by
-    /// `sigma`, clipped to the shape and blended with `mix`. With `painted` (an object and the
-    /// page it shows on), the shape is what the object paints, so a transparent part of an image
-    /// is outside it: the edge runs along the image's opaque pixels, not the frame.
+    /// `sigma`, clipped to the shape and blended with `mix`.
     #[allow(clippy::too_many_arguments)]
     fn inner_edge(
         &mut self,
@@ -317,6 +425,7 @@ impl Renderer {
         choke: f64,
         paint: peniko::Color,
         mix: Mix,
+        noise: f64,
         painted: Option<(&Item, ShownOn)>,
     ) {
         if let Some((it, page)) = painted {
@@ -335,6 +444,7 @@ impl Renderer {
                 me.draw_body(c, &moved, it, bp, xf, page);
                 c.pop_layer();
                 c.pop_layer();
+                noise_out(c, fr, reach, noise);
                 // ... kept only where the object paints.
                 c.set_transform(Affine::IDENTITY);
                 c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
@@ -363,6 +473,7 @@ impl Renderer {
                 c.stroke_path(&shape);
             }
             c.pop_layer();
+            noise_out(c, fr, reach, noise);
         });
     }
 
@@ -431,6 +542,63 @@ impl Renderer {
         pop_clip(ctx, outer);
         ctx.set_transform(Affine::IDENTITY);
     }
+}
+
+/// Whether the object's opacity applies to its drop shadow and to the object apart (rather than
+/// to both as one): a translucent object that doesn't knock out its shadow, as InDesign shows it.
+pub(crate) fn opacity_apart(it: &Item) -> bool {
+    it.effects.drop_shadow.on && !it.effects.drop_shadow.knockout && it.opacity < 0.999
+}
+
+/// An effect drawn below the object (drop shadow, outer glow) and how.
+struct Below {
+    off: Vec2,
+    size: f64,
+    pct: f64,
+    color: String,
+    opacity: f32,
+    mode: designcraft_color::BlendMode,
+    noise: f64,
+    knockout: bool,
+    honors: bool,
+    precise: bool,
+}
+
+/// Noise: `amount` percent of grain cut out of what the current layer holds over `area`
+/// (spread space), as InDesign's Noise roughens a shadow or glow. The grain is a fixed tile, so
+/// the same document always draws the same.
+fn noise_out(c: &mut RenderContext, fr: &Frame, area: Rect, amount: f64) {
+    let a = (amount / 100.0).clamp(0.0, 1.0) as f32;
+    if a <= 0.0 {
+        return;
+    }
+    c.set_transform(Affine::IDENTITY);
+    c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), Some(a), None, None);
+    let sampler =
+        peniko::ImageSampler { x_extend: peniko::Extend::Repeat, y_extend: peniko::Extend::Repeat, quality: peniko::ImageQuality::Low, alpha: 1.0 };
+    c.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(noise_tile()), sampler });
+    c.fill_rect(&fr.view.transform_rect_bbox(area));
+    c.pop_layer();
+}
+
+/// A 64×64 tile of grain: black with a pseudo-random coverage per pixel (a fixed sequence).
+fn noise_tile() -> std::sync::Arc<vello_cpu::Pixmap> {
+    static TILE: std::sync::OnceLock<std::sync::Arc<vello_cpu::Pixmap>> = std::sync::OnceLock::new();
+    TILE.get_or_init(|| {
+        let mut x: u32 = 0x9E37_79B9;
+        let data: Vec<vello_cpu::color::PremulRgba8> = (0..64 * 64)
+            .map(|_| {
+                // xorshift32
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                let a = (x >> 24) as u8;
+                vello_cpu::color::PremulRgba8 { r: 0, g: 0, b: 0, a }
+            })
+            .collect();
+        std::sync::Arc::new(vello_cpu::Pixmap::from_parts(data, 64, 64))
+    })
+    .clone()
 }
 
 fn push_clip(ctx: &mut RenderContext, f: &Frame, clip: Option<(&BezPath, Affine)>) {

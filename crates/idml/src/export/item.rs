@@ -220,6 +220,10 @@ impl<'a> Ex<'a> {
                     .attr("Size", num(ds.size))
                     .attr("Spread", num(ds.spread))
                     .attr("Opacity", pct(ds.opacity as f64))
+                    .attr("BlendMode", names::blend_out(ds.mode))
+                    .attr("Noise", num(ds.noise))
+                    .attr("KnockedOut", if ds.knockout { "true" } else { "false" })
+                    .attr("HonorOtherEffects", if ds.honors_effects { "true" } else { "false" })
                     .attr("EffectColor", self.sw(&ds.color)),
             );
         }

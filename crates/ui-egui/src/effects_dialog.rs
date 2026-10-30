@@ -181,47 +181,87 @@ fn set(d: &mut Dialog, path: &[&str], value: Value) {
 }
 
 /// A distance in the document's unit (stored in points).
+/// The field id for a value of the dialog (`fx_dropShadow_size`).
+fn field_id(path: &[&str]) -> String {
+    format!("fx_{}", path.join("_"))
+}
+
+/// A length in the document's units, with spinner arrows as InDesign's.
 fn measure(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], unit: Unit) {
-    let mut v = num(d, path);
-    let w = egui::DragValue::new(&mut v)
-        .range(0.0..=10_000.0)
-        .speed(0.25)
-        .custom_formatter(move |n, _| format_measure(n, unit))
-        .custom_parser(move |s| parse_measure(s, unit).ok());
-    if ui.add_sized([90.0, 20.0], w).changed() {
+    let id = field_id(path);
+    if let Some(v) = crate::widgets::NumField::measure(&id, Some(num(d, path)), unit).width(96.0).spinner().range(0.0, 10_000.0).show(ui) {
         set(d, path, json!(v));
     }
 }
 
 /// An opacity (0–1, shown as %).
 fn percent_of_one(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
-    let mut v = num(d, path) * 100.0;
-    if ui.add_sized([70.0, 20.0], egui::DragValue::new(&mut v).range(0.0..=100.0).suffix("%").max_decimals(0)).changed() {
+    let id = field_id(path);
+    if let Some(v) =
+        crate::widgets::NumField::number(&id, Some((num(d, path) * 100.0).round()), "%", 0).width(96.0).range(0.0, 100.0).slider().show(ui)
+    {
         set(d, path, json!(v / 100.0));
     }
 }
 
 /// A percentage (0–100).
 fn percent(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
-    let mut v = num(d, path);
-    if ui.add_sized([70.0, 20.0], egui::DragValue::new(&mut v).range(0.0..=100.0).suffix("%").max_decimals(0)).changed() {
+    let id = field_id(path);
+    if let Some(v) = crate::widgets::NumField::number(&id, Some(num(d, path)), "%", 0).width(96.0).range(0.0, 100.0).slider().show(ui) {
         set(d, path, json!(v));
     }
 }
 
 /// The effect's own angle at `path`, or with Use Global Light (`own` false) the document's
-/// global light angle: editing it then changes that one, for every effect that uses it.
+/// global light angle: editing it then changes that one, for every effect that uses it. The dial
+/// and the field both edit it.
 fn angle(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], own: bool, global: f64) -> egui::Response {
-    let mut v = if own { num(d, path) } else { global };
-    let r = ui.add(egui::DragValue::new(&mut v).range(-180.0..=180.0).suffix("°").max_decimals(1));
-    if r.changed() {
+    let v = if own { num(d, path) } else { global };
+    let put = |d: &mut Dialog, v: f64| {
         if own {
             set(d, path, json!(v));
         } else {
             d.fields.insert(GLOBAL_LIGHT.into(), json!(v));
         }
+    };
+    ui.horizontal(|ui| {
+        if let Some(a) = angle_dial(ui, v, true) {
+            put(d, a);
+        }
+        let id = field_id(path);
+        if let Some(n) = crate::widgets::NumField::number(&id, Some(v), "°", 1).width(70.0).range(-180.0, 180.0).show(ui) {
+            put(d, n);
+        }
+    })
+    .response
+}
+
+/// The angle dial's size.
+const DIAL: f32 = 26.0;
+
+/// InDesign's angle dial: a circle with a radius pointing where the light comes from (0° to the
+/// right, counter-clockwise). A click or a drag on it points it at the pointer.
+fn angle_dial(ui: &mut egui::Ui, deg: f64, enabled: bool) -> Option<f64> {
+    let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(DIAL, DIAL), sense);
+    resp.widget_info(|| egui::WidgetInfo::slider(enabled, deg, "Angle"));
+    let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+    let (c, rad) = (r.center(), 11.0);
+    ui.painter().circle_stroke(c, rad, egui::Stroke::new(1.2, col));
+    let a = deg.to_radians() as f32;
+    ui.painter().line_segment([c, c + egui::vec2(a.cos(), -a.sin()) * rad], egui::Stroke::new(1.4, col));
+    if enabled && (resp.dragged() || resp.clicked()) {
+        return resp.interact_pointer_pos().and_then(|p| dial_angle(c, p));
     }
-    r
+    None
+}
+
+/// The angle a dial at `c` points at for the pointer at `p`, in whole degrees (−180 to 180,
+/// counter-clockwise from the right); none too close to the centre to tell.
+fn dial_angle(c: egui::Pos2, p: egui::Pos2) -> Option<f64> {
+    let d = p - c;
+    // Straight left is 180° (not −180°, which a negative zero would give).
+    (d.length() > 2.0).then(|| f64::from((-d.y).atan2(d.x)).to_degrees().round()).map(|a| if a <= -180.0 { 180.0 } else { a })
 }
 
 fn flag(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], label: &str) {
@@ -271,10 +311,14 @@ fn offset(ui: &mut egui::Ui, d: &mut Dialog, key: &str, unit: Unit, global: f64,
     let a = if gl { global } else { num(d, &[key, "angle"]) }.to_radians();
     let dist = num(d, &[key, "distance"]);
     let (mut x, mut y) = (-dist * a.cos(), dist * a.sin());
-    let v = if y_axis { &mut y } else { &mut x };
-    let w =
-        egui::DragValue::new(v).speed(0.25).custom_formatter(move |n, _| format_measure(n, unit)).custom_parser(move |s| parse_measure(s, unit).ok());
-    if ui.add_sized([90.0, 20.0], w).changed() {
+    let id = field_id(&[key, if y_axis { "yOffset" } else { "xOffset" }]);
+    let cur = if y_axis { y } else { x };
+    if let Some(v) = crate::widgets::NumField::measure(&id, Some(cur), unit).width(96.0).spinner().range(-10_000.0, 10_000.0).show(ui) {
+        if y_axis {
+            y = v;
+        } else {
+            x = v;
+        }
         set(d, &[key, "distance"], json!(x.hypot(y)));
         if !gl {
             set(d, &[key, "angle"], json!(y.atan2(-x).to_degrees()));
@@ -314,112 +358,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                 ui.end_row();
             });
         }
-        "dropShadow" | "innerShadow" => {
-            let key = page;
-            heading(ui, &tr("Blending"));
-            grid("b").show(ui, |ui| {
-                row(ui, "Color:");
-                swatch(app, ui, d, &[key, "color"]);
-                row(ui, "Opacity:");
-                percent_of_one(ui, d, &[key, "opacity"]);
-                ui.end_row();
-            });
-            heading(ui, &tr("Position"));
-            grid("p").show(ui, |ui| {
-                row(ui, "Distance:");
-                measure(ui, d, &[key, "distance"], unit);
-                row(ui, "X Offset:");
-                offset(ui, d, key, unit, global, false);
-                ui.end_row();
-                row(ui, "Angle:");
-                let gl = d.fields.get("fx").is_some_and(|f| f[key]["globalLight"].as_bool().unwrap_or(false));
-                angle(ui, d, &[key, "angle"], !gl, global);
-                row(ui, "Y Offset:");
-                offset(ui, d, key, unit, global, true);
-                ui.end_row();
-                crate::rtl::label(ui, "");
-                flag(ui, d, &[key, "globalLight"], &tr("Use Global Light"));
-                ui.end_row();
-            });
-            heading(ui, &tr("Options"));
-            grid("o").show(ui, |ui| {
-                row(ui, "Size:");
-                measure(ui, d, &[key, "size"], unit);
-                if key == "dropShadow" {
-                    row(ui, "Spread:");
-                    percent(ui, d, &[key, "spread"]);
-                } else {
-                    row(ui, "Choke:");
-                    percent(ui, d, &[key, "choke"]);
-                }
-                ui.end_row();
-            });
-        }
-        "outerGlow" | "innerGlow" => {
-            let key = page;
-            heading(ui, &tr("Blending"));
-            grid("b").show(ui, |ui| {
-                // Inner Glow: its blend mode (Screen, as InDesign starts it).
-                if key == "innerGlow" {
-                    row(ui, "Mode:");
-                    let cur = d.fields.get("fx").and_then(|f| f["innerGlow"]["mode"].as_str()).unwrap_or("Screen").to_string();
-                    let label = |m: &designcraft_color::BlendMode| {
-                        serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
-                    };
-                    let shown = designcraft_color::BlendMode::ALL.iter().find(|m| label(m) == cur).map_or("Screen", |m| m.label());
-                    craft_ui::ComboBox::from_id_salt("fx_glow_mode").selected_text(tr(shown)).width(150.0).show_ui(ui, |ui| {
-                        for m in designcraft_color::BlendMode::ALL {
-                            if ui.selectable_label(label(&m) == cur, tr(m.label())).clicked() {
-                                set(d, &["innerGlow", "mode"], json!(label(&m)));
-                            }
-                        }
-                    });
-                    ui.end_row();
-                }
-                row(ui, "Color:");
-                swatch(app, ui, d, &[key, "color"]);
-                row(ui, "Opacity:");
-                percent_of_one(ui, d, &[key, "opacity"]);
-                ui.end_row();
-            });
-            heading(ui, &tr("Options"));
-            grid("o").show(ui, |ui| {
-                row(ui, "Size:");
-                measure(ui, d, &[key, "size"], unit);
-                if key == "outerGlow" {
-                    row(ui, "Spread:");
-                    percent(ui, d, &[key, "spread"]);
-                } else {
-                    row(ui, "Choke:");
-                    percent(ui, d, &[key, "choke"]);
-                    ui.end_row();
-                    row(ui, "Technique:");
-                    let cur = d.fields.get("fx").and_then(|f| f["innerGlow"]["technique"].as_str()).unwrap_or("softer").to_string();
-                    craft_ui::ComboBox::from_id_salt("fx_technique").selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" })).show_ui(
-                        ui,
-                        |ui| {
-                            for (v, l) in [("softer", "Softer"), ("precise", "Precise")] {
-                                if ui.selectable_label(cur == v, tr(l)).clicked() {
-                                    set(d, &["innerGlow", "technique"], json!(v));
-                                }
-                            }
-                        },
-                    );
-                    ui.end_row();
-                    row(ui, "Source:");
-                    let mut center = d.fields.get("fx").is_some_and(|f| f["innerGlow"]["center"].as_bool().unwrap_or(false));
-                    let label = |c: bool| tr(if c { "Center" } else { "Edge" });
-                    craft_ui::ComboBox::from_id_salt("fx_source").selected_text(label(center)).show_ui(ui, |ui| {
-                        for c in [false, true] {
-                            if ui.selectable_value(&mut center, c, label(c)).clicked() {
-                                set(d, &["innerGlow", "center"], json!(c));
-                            }
-                        }
-                    });
-                }
-                ui.end_row();
-            });
-        }
+        "dropShadow" | "innerShadow" | "outerGlow" | "innerGlow" => shadow_or_glow(app, ui, d, page, unit, global, &tr),
         "bevel" => {
             heading(ui, &tr("Structure"));
             grid("s").show(ui, |ui| {
@@ -555,6 +494,200 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
     }
 }
 
+/// A titled group as InDesign's Effects dialog draws it: a thin frame with the title inside.
+fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.add_space(8.0);
+    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::symmetric(10, 8)).corner_radius(2.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        crate::rtl::label(ui, egui::RichText::new(title).font(semibold(12.0)));
+        ui.add_space(2.0);
+        ui.spacing_mut().item_spacing.y = 7.0;
+        add(ui);
+    });
+}
+
+/// The widths of a page's two columns: the left captions, its fields, the right captions (both
+/// captions right-aligned before their fields, as InDesign's).
+#[derive(Clone, Copy)]
+struct Cols {
+    left: f32,
+    fields: f32,
+    right: f32,
+}
+
+impl Cols {
+    fn new(ui: &egui::Ui, left: &[String], right: &[String]) -> Self {
+        let w = |l: &[String]| {
+            l.iter()
+                .map(|s| {
+                    egui::WidgetText::from(s.as_str())
+                        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+                        .size()
+                        .x
+                })
+                .fold(0.0, f32::max)
+        };
+        Cols { left: w(left) + 2.0, fields: 196.0, right: w(right) + 2.0 }
+    }
+}
+
+/// A caption right-aligned in `w`, then `add` in a cell `fields` wide (0: as wide as it is).
+fn cell(ui: &mut egui::Ui, caption: &str, w: f32, fields: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let h = crate::widgets::FIELD_H;
+    ui.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_min_width(w);
+        if !caption.is_empty() {
+            ui.add(egui::Label::new(crate::rtl::widget(ui, caption)).wrap_mode(egui::TextWrapMode::Extend));
+        }
+    });
+    if fields > 0.0 {
+        ui.allocate_ui_with_layout(egui::vec2(fields, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(fields);
+            add(ui);
+        });
+    } else {
+        add(ui);
+    }
+}
+
+/// The colour of a shadow or glow, as InDesign's: a chip beside the mode that lists the swatches.
+fn color_chip(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], tr: &dyn Fn(&str) -> String) {
+    let cur = {
+        let mut v = d.fields.get("fx").unwrap_or(&Value::Null);
+        for k in path {
+            v = &v[*k];
+        }
+        v.as_str().unwrap_or("[Black]").to_string()
+    };
+    let doc = app.session.active().map(|st| &st.doc);
+    let chip = |name: &str| doc.map_or((None, None), |doc| crate::widgets::swatch_colors(doc, name, 1.0));
+    let (c, g) = chip(&cur);
+    let resp = crate::widgets::swatch_chip(ui, crate::widgets::FIELD_H, c, g).on_hover_text(&cur);
+    let label = tr("Color:").trim_end_matches([':', ' ']).to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+    let names: Vec<String> =
+        doc.map_or_else(Vec::new, |doc| doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
+    egui::Popup::menu(&resp).show(|ui| {
+        for n in names {
+            let picked = ui
+                .horizontal(|ui| {
+                    let (c, g) = chip(&n);
+                    let r = crate::widgets::swatch_chip(ui, 14.0, c, g);
+                    ui.selectable_label(n == cur, &n).clicked() || r.clicked()
+                })
+                .inner;
+            if picked {
+                set(d, path, json!(n));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// Softer or Precise, for a glow.
+fn technique(ui: &mut egui::Ui, d: &mut Dialog, key: &str, tr: &dyn Fn(&str) -> String) {
+    let cur = d.fields.get("fx").and_then(|f| f[key]["technique"].as_str()).unwrap_or("softer").to_string();
+    craft_ui::ComboBox::from_id_salt(("fx_technique", key.to_string()))
+        .selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" }))
+        .width(130.0)
+        .show_ui(ui, |ui| {
+            for (v, l) in [("softer", "Softer"), ("precise", "Precise")] {
+                if ui.selectable_label(cur == v, tr(l)).clicked() {
+                    set(d, &[key, "technique"], json!(v));
+                }
+            }
+        });
+}
+
+/// Drop Shadow, Inner Shadow, Outer Glow and Inner Glow, laid out as InDesign's: Blending (Mode,
+/// colour, Opacity), Position for the shadows (Distance and Angle beside the X and Y Offsets),
+/// and Options in two columns.
+fn shadow_or_glow(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, unit: Unit, global: f64, tr: &dyn Fn(&str) -> String) {
+    let shadow = key.ends_with("Shadow");
+    let (left, right): (&[&str], &[&str]) = match key {
+        "dropShadow" => (&["Mode:", "Distance:", "Angle:", "Size:", "Spread:", "Noise:"], &["Opacity:", "X Offset:", "Y Offset:"]),
+        "innerShadow" => (&["Mode:", "Distance:", "Angle:", "Size:", "Choke:", "Noise:"], &["Opacity:", "X Offset:", "Y Offset:"]),
+        "outerGlow" => (&["Mode:", "Technique:", "Size:"], &["Opacity:", "Noise:", "Spread:"]),
+        _ => (&["Mode:", "Technique:", "Size:", "Source:"], &["Opacity:", "Noise:", "Choke:"]),
+    };
+    let c = Cols::new(ui, &left.iter().map(|l| tr(l)).collect::<Vec<_>>(), &right.iter().map(|l| tr(l)).collect::<Vec<_>>());
+    group(ui, &tr("Blending"), |ui| {
+        ui.horizontal(|ui| {
+            cell(ui, &tr("Mode:"), c.left, c.fields, |ui| {
+                mode_combo(ui, d, key, tr);
+                color_chip(app, ui, d, &[key, "color"], tr);
+            });
+            cell(ui, &tr("Opacity:"), c.right, 0.0, |ui| percent_of_one(ui, d, &[key, "opacity"]));
+        });
+    });
+    if shadow {
+        group(ui, &tr("Position"), |ui| {
+            let gl = d.fields.get("fx").is_some_and(|f| f[key]["globalLight"].as_bool().unwrap_or(false));
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Distance:"), c.left, c.fields, |ui| measure(ui, d, &[key, "distance"], unit));
+                cell(ui, &tr("X Offset:"), c.right, 0.0, |ui| offset(ui, d, key, unit, global, false));
+            });
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Angle:"), c.left, c.fields, |ui| {
+                    angle(ui, d, &[key, "angle"], !gl, global);
+                });
+                cell(ui, &tr("Y Offset:"), c.right, 0.0, |ui| offset(ui, d, key, unit, global, true));
+            });
+            ui.horizontal(|ui| {
+                // Under the angle's field, past the dial.
+                let past = c.left + DIAL + 2.0 * ui.spacing().item_spacing.x;
+                cell(ui, "", past, 0.0, |ui| flag(ui, d, &[key, "globalLight"], &tr("Use Global Light")));
+            });
+        });
+    }
+    group(ui, &tr("Options"), |ui| match key {
+        "dropShadow" => {
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Size:"), c.left, c.fields, |ui| measure(ui, d, &[key, "size"], unit));
+                flag(ui, d, &[key, "knockout"], &tr("Object Knocks Out Shadow"));
+            });
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Spread:"), c.left, c.fields, |ui| percent(ui, d, &[key, "spread"]));
+                flag(ui, d, &[key, "honorsEffects"], &tr("Shadow Honors Other Effects"));
+            });
+            ui.horizontal(|ui| cell(ui, &tr("Noise:"), c.left, c.fields, |ui| percent(ui, d, &[key, "noise"])));
+        }
+        "innerShadow" => {
+            ui.horizontal(|ui| cell(ui, &tr("Size:"), c.left, c.fields, |ui| measure(ui, d, &[key, "size"], unit)));
+            ui.horizontal(|ui| cell(ui, &tr("Choke:"), c.left, c.fields, |ui| percent(ui, d, &[key, "choke"])));
+            ui.horizontal(|ui| cell(ui, &tr("Noise:"), c.left, c.fields, |ui| percent(ui, d, &[key, "noise"])));
+        }
+        _ => {
+            let outer = key == "outerGlow";
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Technique:"), c.left, c.fields, |ui| technique(ui, d, key, tr));
+                cell(ui, &tr("Noise:"), c.right, 0.0, |ui| percent(ui, d, &[key, "noise"]));
+            });
+            ui.horizontal(|ui| {
+                cell(ui, &tr("Size:"), c.left, c.fields, |ui| measure(ui, d, &[key, "size"], unit));
+                let (l, k) = if outer { ("Spread:", "spread") } else { ("Choke:", "choke") };
+                cell(ui, &tr(l), c.right, 0.0, |ui| percent(ui, d, &[key, k]));
+            });
+            if !outer {
+                ui.horizontal(|ui| {
+                    cell(ui, &tr("Source:"), c.left, c.fields, |ui| {
+                        let mut center = d.fields.get("fx").is_some_and(|f| f["innerGlow"]["center"].as_bool().unwrap_or(false));
+                        let label = |c: bool| tr(if c { "Center" } else { "Edge" });
+                        craft_ui::ComboBox::from_id_salt("fx_source").selected_text(label(center)).width(130.0).show_ui(ui, |ui| {
+                            for c in [false, true] {
+                                if ui.selectable_value(&mut center, c, label(c)).clicked() {
+                                    set(d, &["innerGlow", "center"], json!(c));
+                                }
+                            }
+                        });
+                    })
+                });
+            }
+        }
+    });
+}
+
 /// One line per applied level, as in InDesign's summary: "OBJECT: Normal 100%; Drop Shadow".
 fn summary(lang: &str, d: &Dialog) -> String {
     let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
@@ -563,6 +696,26 @@ fn summary(lang: &str, d: &Dialog) -> String {
     let on: Vec<String> = PAGES.iter().skip(1).filter(|p| is_on(&fx, p.0)).map(|p| crate::i18n::tr(lang, p.1).to_string()).collect();
     let effects = if on.is_empty() { crate::i18n::tr(lang, "(no effects)").to_string() } else { on.join(", ") };
     format!("{}: {} {:.0}%; {}", crate::i18n::tr(lang, "OBJECT").to_uppercase(), crate::i18n::tr(lang, blend), opacity * 100.0, effects)
+}
+
+/// The Mode of a shadow's or glow's Blending: its blend mode, as InDesign's (shadows start
+/// Multiply, glows Screen).
+fn mode_combo(ui: &mut egui::Ui, d: &mut Dialog, key: &str, tr: &dyn Fn(&str) -> String) {
+    let fallback = if key.ends_with("Glow") { "Screen" } else { "Multiply" };
+    let cur = d.fields.get("fx").and_then(|f| f[key]["mode"].as_str()).unwrap_or(fallback).to_string();
+    let name = |m: &designcraft_color::BlendMode| serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let shown = designcraft_color::BlendMode::ALL.iter().find(|m| name(m) == cur).map_or(fallback, |m| m.label());
+    let mut picked = None;
+    craft_ui::ComboBox::from_id_salt(("fx_mode", key.to_string())).selected_text(tr(shown)).width(140.0).show_ui(ui, |ui| {
+        for m in designcraft_color::BlendMode::ALL {
+            if ui.selectable_label(name(&m) == cur, tr(m.label())).clicked() {
+                picked = Some(name(&m));
+            }
+        }
+    });
+    if let Some(m) = picked {
+        set(d, &[key, "mode"], json!(m));
+    }
 }
 
 /// The dialog's body.
@@ -613,7 +766,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         ui.add_space(16.0);
         ui.vertical(|ui| {
-            ui.set_min_width(380.0);
+            ui.set_min_width(470.0);
             page_ui(app, ui, d, &page);
         });
     });
@@ -653,7 +806,7 @@ mod tests {
 
     fn frame(app: &mut DesignApp, ctx: &egui::Context) -> Vec<String> {
         let mut texts = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..4 {
             let input =
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
             let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
@@ -765,6 +918,79 @@ mod tests {
         assert!((app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().opacity - 0.8).abs() < 1e-6);
         app.run("edit.undo", json!({})).unwrap();
         assert!(!fx(&app).inner_shadow.on);
+    }
+
+    /// Drop Shadow and Outer Glow have InDesign's Mode under Blending (Multiply and Screen to
+    /// start); a mode picked there is what OK applies.
+    #[test]
+    fn shadows_and_glows_have_a_blend_mode() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        open(&mut app, "dropShadow");
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Mode:") && texts.iter().any(|x| x.trim() == "Multiply"), "{texts:?}");
+        crate::dialogs::cancel(&mut app);
+        open(&mut app, "outerGlow");
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Screen"), "{texts:?}");
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["outerGlow", "mode"], json!("Normal"));
+        }
+        frame(&mut app, &ctx);
+        crate::dialogs::confirm(&mut app).unwrap();
+        let fx = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.clone();
+        assert!(fx.outer_glow.on);
+        assert_eq!(fx.outer_glow.mode, designcraft_color::BlendMode::Normal);
+    }
+
+    /// The angle dial points where the pointer is, as InDesign's: right is 0°, up 90°, left 180°,
+    /// down −90°, upper left 135°.
+    /// The shadow and glow pages have InDesign's options: Noise, Object Knocks Out Shadow (on
+    /// to start) and Shadow Honors Other Effects for the drop shadow, a Technique for the outer
+    /// glow; what they're set to is what OK applies.
+    #[test]
+    fn shadows_and_glows_have_indesigns_options() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        open(&mut app, "dropShadow");
+        let texts = frame(&mut app, &ctx);
+        for t in ["Object Knocks Out Shadow", "Shadow Honors Other Effects", "Noise:", "X Offset:", "Use Global Light"] {
+            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
+        }
+        assert_eq!(app.ui.dialog.as_ref().unwrap().fields["fx"]["dropShadow"]["knockout"], json!(true));
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["dropShadow", "knockout"], json!(false));
+            set(d, &["dropShadow", "honorsEffects"], json!(true));
+            set(d, &["dropShadow", "noise"], json!(20.0));
+            d.fields.insert("page".into(), json!("outerGlow"));
+            turn_on(d.fields.get_mut("fx").unwrap(), "outerGlow");
+        }
+        let texts = frame(&mut app, &ctx);
+        for t in ["Technique:", "Softer", "Noise:", "Spread:"] {
+            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
+        }
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["outerGlow", "technique"], json!("precise"));
+        }
+        frame(&mut app, &ctx);
+        crate::dialogs::confirm(&mut app).unwrap();
+        let fx = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.clone();
+        assert!(!fx.drop_shadow.knockout && fx.drop_shadow.honors_effects);
+        assert_eq!(fx.drop_shadow.noise, 20.0);
+        assert_eq!(fx.outer_glow.technique, designcraft_doc::GlowTechnique::Precise);
+    }
+
+    #[test]
+    fn the_angle_dial_points_at_the_pointer() {
+        let c = egui::pos2(100.0, 100.0);
+        assert_eq!(dial_angle(c, egui::pos2(120.0, 100.0)), Some(0.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 80.0)), Some(90.0));
+        assert_eq!(dial_angle(c, egui::pos2(80.0, 100.0)), Some(180.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 120.0)), Some(-90.0));
+        assert_eq!(dial_angle(c, egui::pos2(90.0, 90.0)), Some(135.0));
+        assert_eq!(dial_angle(c, egui::pos2(101.0, 100.0)), None, "too close to the centre");
     }
 
     #[test]

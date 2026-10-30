@@ -3780,7 +3780,16 @@ fn object_style_effects_round_trip() {
     use designcraft_doc::{DropShadow, Effects, ObjectStyle};
     let mut d = Document::new(&NewDocument::default());
     let fx = Effects {
-        drop_shadow: DropShadow { on: true, distance: 5.0, size: 12.0, opacity: 0.28, ..Default::default() },
+        drop_shadow: DropShadow {
+            on: true,
+            distance: 5.0,
+            size: 12.0,
+            opacity: 0.28,
+            noise: 12.0,
+            knockout: false,
+            honors_effects: true,
+            ..Default::default()
+        },
         feather: 3.0,
         ..Default::default()
     };
@@ -3814,6 +3823,8 @@ fn object_style_effects_round_trip() {
     let ds = &got.drop_shadow;
     assert!(ds.on && ds.size == 12.0 && (ds.opacity - 0.28).abs() < 1e-6, "{ds:?}");
     assert!((ds.distance - 5.0).abs() < 1e-6 && (ds.angle - DropShadow::default().angle).abs() < 1e-6, "{ds:?}");
+    // Noise, Object Knocks Out Shadow and Shadow Honors Other Effects.
+    assert!(ds.noise == 12.0 && !ds.knockout && ds.honors_effects, "{ds:?}");
     assert_eq!(got.feather, 3.0);
     assert!(style("Plain").effects.is_none());
     // The frame's effects are the style's, so it follows later edits of the style.
@@ -3849,6 +3860,7 @@ fn object_style_effects_import_by_category_and_based_on() {
     let base = fx("Base").unwrap();
     assert!(base.drop_shadow.on && base.drop_shadow.size == 9.0 && (base.drop_shadow.distance - 5.0).abs() < 1e-9);
     assert_eq!(base.feather, 0.0, "EnableFeather=false");
+    assert_eq!(base.drop_shadow.mode, designcraft_color::BlendMode::Normal, "no BlendMode: Normal, as earlier exports rendered");
     let child = fx("Child").unwrap();
     assert_eq!((child.drop_shadow.size, child.feather), (9.0, 6.0), "settings from the BasedOn style");
     assert!(fx("Off").is_none());
