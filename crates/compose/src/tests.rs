@@ -1798,6 +1798,20 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// A table starts Space Before below the previous line's baseline, as in InDesign (not below its
+/// descenders).
+#[test]
+fn table_starts_space_before_below_the_previous_baseline() {
+    let mut t = designcraft_doc::Table::new(77, 2, 2, 0, 0, 100.0);
+    t.options.space_before = 4.0;
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 600.0), t);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let f = &cs.frames[0];
+    let above = f.lines.iter().filter(|l| l.baseline < f.tables[0].rect.y0).map(|l| l.baseline).fold(f64::NEG_INFINITY, f64::max);
+    assert!(above.is_finite(), "a line above the table");
+    assert!((f.tables[0].rect.y0 - (above + 4.0)).abs() < 1e-6, "{} vs {}", f.tables[0].rect.y0, above);
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
