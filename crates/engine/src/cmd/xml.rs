@@ -200,11 +200,63 @@ pub fn export_xml(d: &Document) -> String {
     out
 }
 
-/// One element under the root: its name and either text or (child name, text) paragraphs.
+/// One element under the root: its name and either text or (child name, text) paragraphs, or an
+/// image to place (its `href`).
 struct Element {
     name: String,
     text: String,
     children: Vec<(String, String)>,
+    href: Option<String>,
+}
+
+/// The element's `href` (also `xlink:href`), unescaped.
+fn href_attr(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<String>, String> {
+    for a in e.attributes() {
+        let a = a.map_err(|e| e.to_string())?;
+        if a.key.local_name().as_ref() == b"href" {
+            return Ok(Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
+/// against `base`.
+fn href_path(href: &str, base: Option<&std::path::Path>) -> String {
+    let mut p = href.trim();
+    if let Some(rest) = p.strip_prefix("file://") {
+        p = rest;
+        // `file:///C:/x.png` → `C:/x.png`; `file:///home/x.png` stays absolute.
+        if p.len() > 2 && p.starts_with('/') && p.as_bytes()[2] == b':' {
+            p = &p[1..];
+        }
+    }
+    let decoded = percent_decode(p);
+    let path = std::path::Path::new(&decoded);
+    match base {
+        Some(b) if path.is_relative() && !decoded.starts_with('/') && !decoded.starts_with('\\') => b.join(path).to_string_lossy().to_string(),
+        _ => decoded,
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
 
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
@@ -219,13 +271,18 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
                 depth += 1;
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![] }),
+                    2 => out.push(Element { name, text: String::new(), children: vec![], href: href_attr(&e)? }),
                     3 => child = Some((name, String::new())),
                     _ => {}
                 }
             }
             Event::Empty(e) if depth == 1 => {
-                out.push(Element { name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(), text: String::new(), children: vec![] });
+                out.push(Element {
+                    name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
+                    text: String::new(),
+                    children: vec![],
+                    href: href_attr(&e)?,
+                });
             }
             ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
                 let s = match ev {
@@ -476,7 +533,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import XML…",
             ["File"],
             None,
-            "{path | text} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style) → {placed, unmatched}",
+            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag → {placed, unmatched, failed: [{tag, href, error}]}",
             has_doc,
             import_xml
         ),
@@ -505,14 +562,34 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
     let elements = parse(&text).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
+    // Relative image paths: against `imageDir`, else the XML file's folder.
+    let base = str_param(p, "imageDir").map(std::path::PathBuf::from).or_else(|| {
+        str_param(p, "text").is_none().then(|| str_param(p, "path")).flatten().and_then(|x| std::path::Path::new(x).parent().map(Into::into))
+    });
     let d = &s.doc()?.doc;
     // Frames by tag, in reading order; each element takes the next free one.
     let mut slots: Vec<(String, StoryId, bool)> =
         tagged(d).into_iter().filter_map(|id| d.item(id)).filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false))).collect();
+    let mut image_slots: Vec<(String, ItemId, bool)> = tagged(d)
+        .into_iter()
+        .filter_map(|id| d.item(id))
+        .filter(|it| frame_kind(d, it) == Some("image"))
+        .map(|it| (it.xml_tag.clone(), it.id, false))
+        .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
     let mut fills: Vec<(StoryId, Vec<(Option<String>, String)>)> = Vec::new();
+    let mut images: Vec<(ItemId, String, String)> = Vec::new();
     let mut unmatched = 0;
     for el in elements {
+        if let Some(href) = &el.href {
+            let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
+                unmatched += 1;
+                continue;
+            };
+            slot.2 = true;
+            images.push((slot.1, el.name.clone(), href.clone()));
+            continue;
+        }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
             unmatched += 1;
             continue;
@@ -528,7 +605,25 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         };
         fills.push((slot.1, paras));
     }
-    let placed = fills.len();
+    let mut placed = fills.len();
+    if !fills.is_empty() {
+        fill_stories(s, fills)?;
+    }
+    // Each image fills its frame proportionally. One that can't be read is reported and the
+    // rest of the import goes on.
+    let mut failed: Vec<Value> = Vec::new();
+    for (frame, tag, href) in images {
+        let path = href_path(&href, base.as_deref());
+        match s.execute("file.place", &json!({"path": path, "frame": frame.0})) {
+            Ok(_) => placed += 1,
+            Err(e) => failed.push(json!({"tag": tag, "href": href, "error": e.to_string()})),
+        }
+    }
+    Ok(json!({"placed": placed, "unmatched": unmatched, "failed": failed}))
+}
+
+/// Replaces each story's text with the paragraphs, in their mapped styles.
+fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<(Option<String>, String)>)>) -> Result<()> {
     s.edit(|d, _| {
         for (sid, paras) in fills {
             let Some(st) = d.story_mut(sid) else { continue };
@@ -545,7 +640,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             fresh.rev = st.rev.wrapping_add(1);
             *st = fresh;
         }
-        Ok(json!({"placed": placed, "unmatched": unmatched}))
+        Ok(())
     })
 }
 
@@ -636,6 +731,56 @@ mod tests {
         // The tagged frames take imported XML.
         let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
         assert_eq!(r["placed"], 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn import_xml_places_images_from_href() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-href-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200u8; 40 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("img").join("cover photo.png"), &png).unwrap();
+        std::fs::write(dir.join("logo.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, rect: [i32; 4], content: &str| {
+            ItemId(
+                s.execute("frame.create", &json!({"rect": rect, "content": content, "text": "x", "caret": false})).unwrap()["id"].as_u64().unwrap(),
+            )
+        };
+        let head = frame(&mut s, [72, 72, 400, 120], "text");
+        let photo = frame(&mut s, [72, 200, 300, 400], "graphic");
+        let logo = frame(&mut s, [72, 500, 172, 550], "graphic");
+        let spare = frame(&mut s, [72, 600, 172, 650], "graphic");
+        s.execute("xml.tag", &json!({"tag": "headline", "ids": [head.0]})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [photo.0, spare.0]})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "logo", "ids": [logo.0]})).unwrap();
+        let logo_url = format!("file:///{}", dir.join("logo.png").to_string_lossy().replace('\\', "/"));
+        let xml = format!(
+            "<Root><headline>Spring</headline><photo href=\"img/cover%20photo.png\"/><logo href=\"{logo_url}\"/><photo href=\"missing.png\"/><headline href=\"img/x.png\"/></Root>"
+        );
+        let path = dir.join("content.xml");
+        std::fs::write(&path, xml).unwrap();
+        let r = s.execute("file.importXml", &json!({"path": path.to_string_lossy()})).unwrap();
+        // Text, a relative href against the XML's folder and a file:// URL; the missing file is
+        // reported, and a text frame doesn't take an image.
+        assert_eq!((r["placed"].as_u64(), r["unmatched"].as_u64()), (Some(3), Some(1)), "{r}");
+        assert_eq!(r["failed"][0]["href"], "missing.png", "{r}");
+        let d = &s.doc().unwrap().doc;
+        for id in [photo, logo] {
+            assert!(matches!(d.item(id).unwrap().content, Content::Graphic(_)), "{id:?} holds the image");
+        }
+        assert!(!matches!(d.item(spare).unwrap().content, Content::Graphic(_)));
+        let Content::Graphic(g) = &d.item(photo).unwrap().content else { panic!("graphic") };
+        assert!(d.assets.get(&g.asset).unwrap().link.as_deref().unwrap().ends_with("cover photo.png"));
+        // One undo takes back the whole import.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert!(!matches!(d.item(photo).unwrap().content, Content::Graphic(_)));
+        assert_eq!(d.stories[&d.item(head).unwrap().text_frame().unwrap().story].text, "x");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

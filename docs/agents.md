@@ -97,6 +97,18 @@ frame whose Layers panel name is a valid XML name gets that name, the others `te
 echo 'xml.autoTag' | designcraft-cli script - --in template.designcraft --save template.designcraft
 ```
 
+`file.importXml {path | text, imageDir?}` puts each element's text into the next text frame with its tag. An element
+with an `href` (`file://` URL or path) places that image into the next graphic frame with its tag, filling it
+proportionally; relative paths are read against `imageDir`, else the XML file's folder. An image that can't be read
+is listed in `failed` and the rest is still imported; one Undo takes back the whole import.
+
+```xml
+<Root>
+  <headline>Spring Issue</headline>
+  <photo href="img/cover.jpg"/>
+</Root>
+```
+
 ## The running app
 
 ```sh
