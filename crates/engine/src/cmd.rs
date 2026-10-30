@@ -155,13 +155,13 @@ pub fn has_text_or_frames(s: &Session) -> std::result::Result<(), String> {
 }
 
 macro_rules! cmd {
-    ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+    ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:expr, $en:expr, $run:expr) => {
         $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true }
     };
-    (query $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+    (query $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:expr, $en:expr, $run:expr) => {
         $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false }
     };
-    (noundo $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+    (noundo $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:expr, $en:expr, $run:expr) => {
         $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false }
     };
 }

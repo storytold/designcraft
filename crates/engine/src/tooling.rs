@@ -58,6 +58,7 @@ impl Session {
         self.tool.id()
     }
 
+    /// Change tools, clearing loaded content that belongs to the previous placement tool.
     pub fn set_tool(&mut self, id: &str) {
         if self.tool.id() == id {
             return;
@@ -74,6 +75,9 @@ impl Session {
         // Any other tool unloads the place cursor.
         if id != "placeGun" {
             self.loaded = None;
+        }
+        if id != "tocPlace" {
+            self.loaded_toc = None;
         }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
@@ -128,7 +132,7 @@ impl Session {
     /// Hand, Zoom and a loaded place cursor, where Cmd means something else or nothing.
     fn borrowed_selection_tool(&self) -> Option<&'static str> {
         match self.tool.id() {
-            "selection" | "directSelection" | "hand" | "zoom" | "placeGun" => None,
+            "selection" | "directSelection" | "hand" | "zoom" | "placeGun" | "tocPlace" => None,
             _ => Some(self.last_selection_tool),
         }
     }

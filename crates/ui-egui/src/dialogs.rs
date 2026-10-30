@@ -3918,7 +3918,8 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             r
         }
         TOC => {
-            let r = app.run("toc.generate", toc_params(app, &d));
+            let command = if d.b("replace") && d.b("hasToc") { "toc.generate" } else { "toc.load" };
+            let r = app.run(command, toc_params(app, &d));
             if let Err(e) = &r {
                 let mut d = d.clone();
                 d.fields.insert("status".into(), json!(e));

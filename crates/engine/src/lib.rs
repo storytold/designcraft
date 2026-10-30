@@ -355,6 +355,8 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// A TOC awaiting a click/drag, bound to the document in which its options were chosen.
+    pub(crate) loaded_toc: Option<(u64, Value)>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -393,6 +395,7 @@ impl Session {
         format!("Untitled-{}", self.untitled.saturating_add(1))
     }
 
+    /// Start an empty editing session with no pending placement.
     pub fn new() -> Self {
         guard::install_panic_hook();
         Session {
@@ -413,6 +416,7 @@ impl Session {
             text_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            loaded_toc: None,
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,
@@ -480,8 +484,12 @@ impl Session {
         }
     }
 
+    /// Switch documents, cancelling a TOC cursor bound to the previous document.
     pub fn set_active(&mut self, i: usize) {
         if i < self.docs.len() && self.active != Some(i) {
+            if self.loaded_toc.is_some() {
+                self.set_tool("selection");
+            }
             // The composition belongs to the document it shows in.
             if let Err(e) = self.end_composition() {
                 log::warn!("ending the IME composition: {e}");
@@ -491,7 +499,11 @@ impl Session {
             self.active = Some(i);
         }
     }
+    /// Open and activate a document, discarding any pending TOC placement.
     pub fn add_document(&mut self, d: DocState) -> usize {
+        if self.loaded_toc.is_some() {
+            self.set_tool("selection");
+        }
         if let Err(e) = self.end_composition() {
             log::warn!("ending the IME composition: {e}");
         }
@@ -509,7 +521,14 @@ impl Session {
         st.doc = stash;
         st.bump_revision();
     }
+    /// Close a document and cancel transient TOC placement state.
     pub fn close_document(&mut self, i: usize) {
+        // Only the document the loaded table of contents belongs to cancels it.
+        if let Some(d) = self.docs.get(i)
+            && self.loaded_toc.as_ref().is_some_and(|(uid, _)| *uid == d.uid)
+        {
+            self.set_tool("selection");
+        }
         if self.active == Some(i) {
             self.stop_data_preview();
         }
