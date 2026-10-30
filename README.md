@@ -138,6 +138,10 @@ include it.
 To drive a running app, send JSON lines to `127.0.0.1:7979`. The protocol is described in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 
+To fill templates from XML over HTTP (text and images into tagged frames, back as PDF, PNG,
+`.designcraft` or IDML), run `cargo run --release -p designcraft-server -- --templates DIR`; see
+[`docs/server.md`](docs/server.md).
+
 ### Logs
 
 The desktop app writes its `log` records to standard error and to `logs/designcraft.log` in the

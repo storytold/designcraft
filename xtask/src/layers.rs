@@ -54,6 +54,7 @@ pub const TABLE: &[(&str, Class)] = &[
     // L7 apps and tooling
     ("designcraft", Class::Exempt),
     ("cli", Class::Exempt),
+    ("server", Class::Exempt),
     ("web", Class::Exempt),
     ("xtask", Class::Exempt),
 ];
@@ -313,7 +314,7 @@ mod tests {
 
     #[test]
     fn apps_and_xtask_exempt() {
-        for app in ["designcraft", "designcraft-cli", "designcraft-web", "xtask"] {
+        for app in ["designcraft", "designcraft-cli", "designcraft-server", "designcraft-web", "xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("designcraft-ui-egui", Normal, true)])]).is_empty());
         }
     }
