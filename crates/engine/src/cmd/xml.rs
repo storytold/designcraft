@@ -201,23 +201,34 @@ pub fn export_xml(d: &Document) -> String {
 }
 
 /// One element under the root: its name and either text or (child name, text) paragraphs, or an
-/// image to place (its `href`).
+/// image to place (its `href`, and how: `fit`, an `object.fit` mode, and `crop`, a PDF box).
 struct Element {
     name: String,
     text: String,
     children: Vec<(String, String)>,
-    href: Option<String>,
+    image: Option<Image>,
 }
 
-/// The element's `href` (also `xlink:href`), unescaped.
-fn href_attr(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<String>, String> {
+struct Image {
+    href: String,
+    fit: Option<String>,
+    crop: Option<String>,
+}
+
+/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`, unescaped.
+fn image_attrs(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<Image>, String> {
+    let (mut href, mut fit, mut crop) = (None, None, None);
     for a in e.attributes() {
         let a = a.map_err(|e| e.to_string())?;
-        if a.key.local_name().as_ref() == b"href" {
-            return Ok(Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string()));
-        }
+        let slot = match a.key.local_name().as_ref() {
+            b"href" => &mut href,
+            b"fit" => &mut fit,
+            b"crop" => &mut crop,
+            _ => continue,
+        };
+        *slot = Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string());
     }
-    Ok(None)
+    Ok(href.map(|href| Image { href, fit, crop }))
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -271,7 +282,7 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
                 depth += 1;
                 let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![], href: href_attr(&e)? }),
+                    2 => out.push(Element { name, text: String::new(), children: vec![], image: image_attrs(&e)? }),
                     3 => child = Some((name, String::new())),
                     _ => {}
                 }
@@ -281,7 +292,7 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
                     name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
                     text: String::new(),
                     children: vec![],
-                    href: href_attr(&e)?,
+                    image: image_attrs(&e)?,
                 });
             }
             ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
@@ -533,7 +544,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import XML…",
             ["File"],
             None,
-            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag → {placed, unmatched, failed: [{tag, href, error}]}",
+            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag (`fit`: an object.fit mode, default fillProportionally; `crop`: a PDF box such as contentVisible) → {placed, unmatched, failed: [{tag, href, error}]}",
             has_doc,
             import_xml
         ),
@@ -578,16 +589,16 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
     let mut fills: Vec<(StoryId, Vec<(Option<String>, String)>)> = Vec::new();
-    let mut images: Vec<(ItemId, String, String)> = Vec::new();
+    let mut images: Vec<(ItemId, String, Image)> = Vec::new();
     let mut unmatched = 0;
-    for el in elements {
-        if let Some(href) = &el.href {
+    for mut el in elements {
+        if let Some(image) = el.image.take() {
             let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
                 unmatched += 1;
                 continue;
             };
             slot.2 = true;
-            images.push((slot.1, el.name.clone(), href.clone()));
+            images.push((slot.1, el.name, image));
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
@@ -609,14 +620,22 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     if !fills.is_empty() {
         fill_stories(s, fills)?;
     }
-    // Each image fills its frame proportionally. One that can't be read is reported and the
-    // rest of the import goes on.
+    // Each image fills its frame proportionally unless `fit` says otherwise; `crop` picks a PDF's
+    // box. One that can't be placed is reported and the rest of the import goes on.
     let mut failed: Vec<Value> = Vec::new();
-    for (frame, tag, href) in images {
-        let path = href_path(&href, base.as_deref());
-        match s.execute("file.place", &json!({"path": path, "frame": frame.0})) {
+    for (frame, tag, image) in images {
+        let path = href_path(&image.href, base.as_deref());
+        let mut place = json!({"path": path, "frame": frame.0});
+        if let Some(crop) = &image.crop {
+            place["pdfCrop"] = json!(crop);
+        }
+        let done = s.execute("file.place", &place).and_then(|_| match &image.fit {
+            Some(mode) => s.execute("object.fit", &json!({"mode": mode, "ids": [frame.0]})),
+            None => Ok(Value::Null),
+        });
+        match done {
             Ok(_) => placed += 1,
-            Err(e) => failed.push(json!({"tag": tag, "href": href, "error": e.to_string()})),
+            Err(e) => failed.push(json!({"tag": tag, "href": image.href, "error": e.to_string()})),
         }
     }
     Ok(json!({"placed": placed, "unmatched": unmatched, "failed": failed}))
@@ -808,6 +827,39 @@ mod tests {
         assert_eq!(st.text, "Enthält: 300 g/L\n");
         assert_eq!(size(&st, 0), Some(20.0));
         assert_eq!(st.paras.len(), 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn import_xml_image_fit_attribute() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-fit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200u8; 40 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("wide.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, y: i32| {
+            ItemId(s.execute("frame.create", &json!({"rect": [72, y, 272, y + 200], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (fill, fit, bad) = (frame(&mut s, 72), frame(&mut s, 300), frame(&mut s, 520));
+        for (id, tag) in [(fill, "a"), (fit, "b"), (bad, "c")] {
+            s.execute("xml.tag", &json!({"tag": tag, "ids": [id.0]})).unwrap();
+        }
+        let xml = "<Root><a href=\"wide.png\"/><b href=\"wide.png\" fit=\"fitProportionally\"/><c href=\"wide.png\" fit=\"squash\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"], 2, "{r}");
+        assert_eq!(r["failed"][0]["tag"], "c", "{r}");
+        let width = |s: &Session, id: ItemId| {
+            let d = &s.doc().unwrap().doc;
+            let Content::Graphic(g) = &d.item(id).unwrap().content else { panic!("graphic") };
+            g.xf.as_coeffs()[0] * g.size.0
+        };
+        // A 2:1 image in a square frame: filling covers the height, fitting shows the whole width.
+        assert!((width(&s, fill) - 400.0).abs() < 0.5, "{}", width(&s, fill));
+        assert!((width(&s, fit) - 200.0).abs() < 0.5, "{}", width(&s, fit));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
