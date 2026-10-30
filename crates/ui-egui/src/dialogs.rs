@@ -12,6 +12,7 @@ use crate::theme::semibold;
 
 mod options;
 mod style_cjk;
+pub(crate) mod word_import;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
 
 #[derive(Clone, Debug, Serialize)]
@@ -2248,7 +2249,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
         "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
-        "importOptions" => crate::i18n::tr(&app.ui.language, "Import Options"),
+        "importOptions" => &word_import::title(&app.ui.language, &d),
         "loadStyles" => crate::i18n::tr(&app.ui.language, "Load Styles"),
         "fittingOptions" => crate::i18n::tr(&app.ui.language, "Frame Fitting Options"),
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
@@ -2676,86 +2677,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             }
                         });
                     }
-                    "importOptions" => {
-                        ui.label(egui::RichText::new(d.s("path")).size(10.5));
-                        check(ui, &mut d, "removeStyles", crate::i18n::tr(&app.ui.language, "Remove Styles and Formatting from Text and Tables"));
-                        if !d.b("removeStyles") {
-                            crate::rtl::label(
-                                ui,
-                                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Name Conflicts")).font(semibold(12.0)),
-                            );
-                            let conflicts: Vec<String> = d
-                                .fields
-                                .get("conflicts")
-                                .and_then(Value::as_array)
-                                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-                                .unwrap_or_default();
-                            ui.label(if conflicts.is_empty() {
-                                crate::i18n::tr(&app.ui.language, "No conflicts").to_string()
-                            } else {
-                                crate::i18n::tr(&app.ui.language, "{count} conflict(s): {names}")
-                                    .replace("{count}", &conflicts.len().to_string())
-                                    .replace("{names}", &conflicts.join(", "))
-                            });
-                            let cur = d.s("styleConflicts");
-                            ui.horizontal(|ui| {
-                                for (v, l) in [
-                                    ("useExisting", "Use Document Style Definition"),
-                                    ("redefine", "Redefine Document Style"),
-                                    ("autoRename", "Auto Rename"),
-                                ] {
-                                    if ui.radio(cur == v, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-                                        d.fields.insert("styleConflicts".into(), json!(v));
-                                    }
-                                }
-                            });
-                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Style Mapping")).font(semibold(12.0)));
-                            let names: Vec<String> =
-                                app.session.active().map(|s| s.doc.styles.paragraph.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
-                            let imported: Vec<String> = d
-                                .fields
-                                .get("styles")
-                                .and_then(Value::as_array)
-                                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-                                .unwrap_or_default();
-                            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                                egui::Grid::new("imp_map").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                                    for w in &imported {
-                                        ui.label(w);
-                                        let mapped = d.fields.get("map").and_then(|m| m.get(w)).and_then(Value::as_str).unwrap_or("").to_string();
-                                        let shown = if mapped.is_empty() {
-                                            crate::i18n::tr(&app.ui.language, "(import)").to_string()
-                                        } else {
-                                            mapped.clone()
-                                        };
-                                        craft_ui::ComboBox::from_id_salt(("imp_map", w))
-                                            .selected_text(crate::rtl::widget(ui, &shown))
-                                            .width(170.0)
-                                            .show_ui(ui, |ui| {
-                                                if ui
-                                                    .selectable_label(
-                                                        mapped.is_empty(),
-                                                        crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "(import)")),
-                                                    )
-                                                    .clicked()
-                                                    && let Some(m) = d.fields.get_mut("map").and_then(Value::as_object_mut)
-                                                {
-                                                    m.remove(w);
-                                                }
-                                                for n in &names {
-                                                    if ui.selectable_label(*n == mapped, n).clicked()
-                                                        && let Some(m) = d.fields.get_mut("map").and_then(Value::as_object_mut)
-                                                    {
-                                                        m.insert(w.clone(), json!(n));
-                                                    }
-                                                }
-                                            });
-                                        ui.end_row();
-                                    }
-                                });
-                            });
-                        }
-                    }
+                    "importOptions" => word_import::show(app, ui, &mut d),
                     "loadStyles" => load_styles(app, ui, &mut d),
                     "closeDocument" => {
                         let text = crate::i18n::tr(&app.ui.language, "“{}” has changes that are not saved. Save them before closing?")
@@ -3812,10 +3734,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 json!({"path": d.s("path"), "paragraph": checked("paragraph"), "character": checked("character"), "conflicts": d.s("conflicts")}),
             )
         }
-        "importOptions" => app.open_file(
-            "file.place",
-            json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
-        ),
+        "importOptions" => app.open_file("file.place", word_import::params(&d)),
         "fittingOptions" => {
             let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
             app.run(
@@ -3836,9 +3755,12 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             }
             app.run("object.qrCode", p)
         }
-        "polygonSettings" => app.run("tool.polygonSettings", json!({"sides": d.n("sides").unwrap_or(6.0) as u64, "starInset": d.n("starInset").unwrap_or(0.0)})),
+        "polygonSettings" => {
+            app.run("tool.polygonSettings", json!({"sides": d.n("sides").unwrap_or(6.0) as u64, "starInset": d.n("starInset").unwrap_or(0.0)}))
+        }
         "findFont" => {
-            let result = app.run("font.replace", json!({"family": d.s("family"), "style": d.s("style"), "toFamily": d.s("toFamily"), "toStyle": d.s("toStyle")}));
+            let result = app
+                .run("font.replace", json!({"family": d.s("family"), "style": d.s("style"), "toFamily": d.s("toFamily"), "toStyle": d.s("toStyle")}));
             let mut d = d;
             match &result {
                 Ok(_) => {
@@ -3847,7 +3769,9 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     d.fields.remove("style");
                     d.fields.remove("error");
                 }
-                Err(error) => { d.fields.insert("error".into(), json!(error)); }
+                Err(error) => {
+                    d.fields.insert("error".into(), json!(error));
+                }
             }
             app.ui.dialog = Some(d);
             result

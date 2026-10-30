@@ -1,5 +1,90 @@
 use super::*;
 
+/// Microsoft Word Import Options that convert the text: styles removed with the local
+/// overrides kept, typographer's quotes, tables as tabbed text, page breaks left out, bullets
+/// and numbers as text; a linked file keeps them for Update Link.
+#[test]
+fn word_import_options_convert_the_text() {
+    let dir = std::env::temp_dir().join(format!("dc-word-opts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cookbook.rtf");
+    // RTF: bold text with straight quotes, a page break, a bulleted paragraph.
+    let rtf = r#"{\rtf1\ansi {\b "Yummy" eggs} aren't hard.\par\page Next page.\par}"#;
+    std::fs::write(&path, rtf).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 1})).unwrap();
+    let word = json!({"typographersQuotes": true, "preserveLocalOverrides": true, "pageBreaks": "none"});
+    let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "removeStyles": true, "word": word, "link": true})).unwrap();
+    let sid = StoryId(r["story"].as_u64().unwrap());
+    let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert!(st.text.contains("\u{201C}Yummy\u{201D}") && st.text.contains("aren\u{2019}t"), "{:?}", st.text);
+    assert!(!st.text.contains(designcraft_doc::PAGE_BREAK), "{:?}", st.text);
+    let bold = st.text.find("Yummy").unwrap();
+    assert_eq!(st.format_after(bold).over.font_style.as_deref(), Some("Bold"), "the bold local override is kept");
+    assert_eq!(st.file_link.as_ref().unwrap().options.page_breaks, designcraft_doc::PageBreakImport::None);
+    assert!(s.execute("file.place", &json!({"path": path.to_string_lossy(), "word": {"pageBreaks": "sideways"}})).is_err());
+
+    // Bullets and numbers as text; tables as tabbed text.
+    let mut st = Story::with_text(StoryId(0), "One\nTwo", ParaFormat::default());
+    st.format_paras(0..st.len(), |p| p.para.list_type = Some(designcraft_doc::ListType::Numbers));
+    let mut d = (*s.doc().unwrap().doc).clone();
+    let sid = StoryId(d.alloc());
+    st.id = sid;
+    d.stories.insert(sid, std::sync::Arc::new(st));
+    lists_to_text(&mut d, sid, None);
+    let st = d.story(sid).unwrap();
+    assert!(st.text.starts_with("1.") && st.text.contains("\n2."), "{:?}", st.text);
+    assert!(st.paras.iter().all(|p| p.para.list_type == Some(designcraft_doc::ListType::None)));
+    let t = designcraft_doc::Table::from_strings(1, &[vec!["a".into(), "b".into()]], 300.0, &ParaFormat::default(), &Default::default());
+    let mut imp = designcraft_textimport::Imported { story: Story::new(StoryId(0)), para_styles: vec![], char_styles: vec![], warnings: vec![] };
+    imp.story.insert_table(0, t);
+    convert(&mut imp, false, &designcraft_doc::TextImportOptions { tables_as_tabbed_text: true, ..Default::default() });
+    assert!(imp.story.tables.is_empty() && imp.story.text.contains("a\tb"), "{:?}", imp.story.text);
+}
+
+/// Convert Bullets & Numbers to Text at an insertion point touches only the placed text: the
+/// story's own list paragraphs stay in their list.
+#[test]
+fn bullets_to_text_at_an_insertion_point_leaves_the_storys_lists() {
+    let dir = std::env::temp_dir().join(format!("dc-word-lists-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("more.txt");
+    std::fs::write(&path, "New").unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "One\nTwo\n"})).unwrap();
+    let sid = StoryId(f["story"].as_u64().unwrap());
+    {
+        let doc = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = std::sync::Arc::make_mut(doc.stories.get_mut(&sid).unwrap());
+        st.format_paras(0..7, |p| p.para.list_type = Some(designcraft_doc::ListType::Numbers));
+    }
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 8})).unwrap();
+    s.execute("file.place", &json!({"path": path.to_string_lossy(), "word": {"bulletsToText": true}})).unwrap();
+    let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert_eq!(st.text, "One\nTwo\nNew");
+    assert!(st.paras[..2].iter().all(|p| p.para.list_type == Some(designcraft_doc::ListType::Numbers)), "{:?}", st.paras);
+}
+
+/// A linked file placed with Convert Bullets & Numbers to Text isn't reported as edited in the
+/// layout: the link records the text with its labels.
+#[test]
+fn bullets_to_text_keeps_a_new_link_unedited() {
+    let dir = std::env::temp_dir().join(format!("dc-word-lists-link-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("steps.txt");
+    std::fs::write(&path, "Mix\nBake").unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("style.paragraph.edit", &json!({"name": "[Basic Paragraph]", "para": {"listType": "numbers"}})).unwrap();
+    let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true, "word": {"bulletsToText": true}})).unwrap();
+    let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap().clone();
+    assert!(st.text.starts_with("1."), "{:?}", st.text);
+    let rows = s.execute("links.list", &json!({})).unwrap();
+    let row = rows.as_array().unwrap().iter().find(|r| r["story"].is_u64()).unwrap().clone();
+    assert_eq!(row["edited"], false, "{row}");
+}
+
 #[test]
 fn place_text_file_with_autoflow() {
     let dir = std::env::temp_dir().join(format!("dc-place-text-{}", std::process::id()));

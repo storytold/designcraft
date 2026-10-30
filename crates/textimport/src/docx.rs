@@ -232,10 +232,26 @@ fn para_attrs(ppr: Option<&El>) -> ParaAttrs {
     a
 }
 
+/// A Word field (`w:fldChar` begin … separate … end) the runs are in.
+struct Field {
+    /// Its instruction (`w:instrText`), as far as read.
+    instr: String,
+    /// Past `separate`: the runs are the field's result.
+    result: bool,
+    /// The result is left out (a Table of Contents or Index not included).
+    skip: bool,
+}
+
 struct Ctx {
     para_names: HashMap<String, String>,
     char_names: HashMap<String, String>,
     footnotes: HashMap<String, El>,
+    endnotes: HashMap<String, El>,
+    opts: designcraft_doc::TextImportOptions,
+    /// The fields the runs are in, outermost first.
+    fields: Vec<Field>,
+    /// Runs left out (as a left-out field's result) since the paragraph began.
+    skipped: usize,
     /// Footnote ids already imported, and how much note text has been built. A reference clones
     /// its note and walks it again, so one 1 MB footnote referenced 100k times meant ~100 GB
     /// (#1584). Word gives each note its own id and references it once; a second reference to the
@@ -283,6 +299,17 @@ fn note_bytes(s: &Story, depth: usize) -> usize {
 const MAX_WARNINGS: usize = 100;
 
 impl Ctx {
+    /// Whether the runs now are the result of a field that is left out.
+    fn skipping(&self) -> bool {
+        self.fields.iter().any(|f| f.result && f.skip)
+    }
+
+    /// Whether a field with instruction `instr` is left out (TOC or INDEX not included).
+    fn skips(&self, instr: &str) -> bool {
+        let kind = instr.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        (kind == "TOC" && !self.opts.toc) || (kind == "INDEX" && !self.opts.index)
+    }
+
     /// Report `message` once. Beyond [`MAX_WARNINGS`] distinct messages nothing further is kept,
     /// not even in the set, so neither the report nor the memory behind it grows with the
     /// document -- a footnote warning names an id, and a file can hold as many ids as it likes.
@@ -310,6 +337,8 @@ impl Ctx {
         for e in body.els() {
             match e.name.as_str() {
                 "p" => {
+                    let (before, was_first, skipping) = (st.len(), first, self.skipping());
+                    self.skipped = 0;
                     if !first {
                         let len = st.len();
                         st.insert(len, "\n");
@@ -335,6 +364,11 @@ impl Ctx {
                     if let Some(e) = expression {
                         st.format_paras(at..at, |f| f.para.number_expression = Some(e.clone()));
                     }
+                    // A paragraph of a Table of Contents or Index left out: nothing of it stays.
+                    if st.len() == at && (skipping || self.skipping() || self.skipped > 0) {
+                        st.delete(before..st.len());
+                        first = was_first;
+                    }
                 }
                 "tbl" => {
                     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -357,6 +391,11 @@ impl Ctx {
                     first = st.text.ends_with('\n');
                 }
                 "sdt" => {
+                    // Word's Table of Contents block, left out when not included.
+                    let gallery = e.child("sdtPr").and_then(|p| p.child("docPartObj")).and_then(|o| o.val("docPartGallery")).unwrap_or_default();
+                    if gallery.starts_with("Table of Contents") && !self.opts.toc {
+                        continue;
+                    }
                     if let Some(c) = e.child("sdtContent") {
                         self.blocks(c, st, allow_notes);
                     }
@@ -434,6 +473,7 @@ impl Ctx {
                 "r" => self.run(e, st, allow_notes),
                 // Tracked changes import as accepted: insertions and move destinations are kept,
                 // deletions (`del`) and move sources (`moveFrom`) are dropped.
+                "fldSimple" if self.skips(e.attr("instr").unwrap_or("")) => self.skipped += 1,
                 "hyperlink" | "smartTag" | "ins" | "moveTo" | "fldSimple" | "customXml" => self.inline(e, st, allow_notes),
                 // A content control (date picker, drop-down, plain text) keeps its runs in `sdtContent`.
                 "sdt" => {
@@ -451,6 +491,37 @@ impl Ctx {
         let style = rpr.and_then(|p| p.val("rStyle")).and_then(|id| self.char_names.get(&id).cloned()).unwrap_or_else(|| NO_CHAR_STYLE.into());
         let fmt = CharFormat { style, over: run_attrs(rpr) };
         for e in r.els() {
+            // Complex fields: a TOC or INDEX result that isn't included is skipped.
+            match e.name.as_str() {
+                "fldChar" => {
+                    match e.attr("fldCharType") {
+                        Some("begin") => self.fields.push(Field { instr: String::new(), result: false, skip: false }),
+                        Some("separate") => {
+                            let skip = self.fields.last().is_some_and(|f| self.skips(&f.instr));
+                            if let Some(f) = self.fields.last_mut() {
+                                f.result = true;
+                                f.skip = skip;
+                            }
+                        }
+                        Some("end") => {
+                            self.fields.pop();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                "instrText" => {
+                    if let Some(f) = self.fields.last_mut().filter(|f| !f.result) {
+                        f.instr.push_str(&e.text());
+                    }
+                    continue;
+                }
+                _ if self.skipping() => {
+                    self.skipped += 1;
+                    continue;
+                }
+                _ => {}
+            }
             let text = match e.name.as_str() {
                 "t" => e.text(),
                 "tab" => "\t".into(),
@@ -461,7 +532,28 @@ impl Ctx {
                 },
                 "noBreakHyphen" => "\u{2011}".into(),
                 "softHyphen" => "\u{AD}".into(),
-                "footnoteReference" if allow_notes => {
+                "footnoteReference" | "endnoteReference" if !allow_notes => continue,
+                "footnoteReference" if !self.opts.footnotes => continue,
+                "endnoteReference" if !self.opts.endnotes => continue,
+                "endnoteReference" => {
+                    if let Some(note) = e.attr("id").and_then(|id| self.endnotes.get(id).cloned()) {
+                        let mut ns = Story::new(StoryId(0));
+                        let counter = std::mem::take(&mut self.model_counter);
+                        self.blocks(&note, &mut ns, false);
+                        self.model_counter = counter;
+                        let len = st.len();
+                        match st.insert_endnote(len, "", ParaFormat::default()) {
+                            Some(id) => {
+                                if let Some(n) = st.endnote_mut(id) {
+                                    n.text = ns;
+                                }
+                            }
+                            None => self.warnings.push("An endnote in the Word file could not be imported.".into()),
+                        }
+                    }
+                    continue;
+                }
+                "footnoteReference" => {
                     const MAX_NOTE_BYTES: usize = 8 << 20;
                     let id = e.attr("id").unwrap_or_default().to_string();
                     // The note's text is built once per id, and only while the budget lasts. A
@@ -552,7 +644,12 @@ fn style_lists(styles: &El) -> HashMap<String, (Option<String>, Option<String>)>
     out
 }
 
+#[cfg(test)]
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
+    import_with(bytes, &designcraft_doc::TextImportOptions::default())
+}
+
+pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> Result<Imported, ImportError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| ImportError::Corrupt(e.to_string()))?;
     let doc = part(&mut zip, "word/document.xml")?.ok_or_else(|| ImportError::Corrupt("no word/document.xml (not a Word document)".into()))?;
     let doc = parse(&doc)?;
@@ -561,6 +658,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         para_names: HashMap::new(),
         char_names: HashMap::new(),
         footnotes: HashMap::new(),
+        endnotes: HashMap::new(),
+        opts: opts.clone(),
+        fields: Vec::new(),
+        skipped: 0,
         notes_done: std::collections::HashSet::new(),
         note_bytes: 0,
         warnings: vec![],
@@ -636,16 +737,30 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             }
         }
     }
+    // Endnotes (ids -1 / 0 are the separators).
+    if let Some(f) = part(&mut zip, "word/endnotes.xml")?.map(|s| parse(&s)).transpose()? {
+        for n in f.els().filter(|n| n.name == "endnote") {
+            if let Some(id) = n.attr("id").filter(|id| id.parse::<i64>().is_ok_and(|v| v > 0)) {
+                ctx.endnotes.insert(id.to_string(), n.clone());
+            }
+        }
+    }
     let body = doc.child("body").ok_or_else(|| ImportError::Corrupt("no document body".into()))?;
     let mut st = Story::new(StoryId(0));
     ctx.blocks(body, &mut st, true);
+    crate::page_breaks(&mut st, opts.page_breaks);
     // A page or column break ends its paragraph.
     st.end_paragraphs_at_breaks();
     // Only styles that are used, plus what they are based on.
-    let stories = || std::iter::once(&st).chain(st.notes.iter().map(|n| &n.text));
+    let stories = || std::iter::once(&st).chain(st.notes.iter().chain(&st.endnotes).map(|n| &n.text));
     let used_p: std::collections::HashSet<String> = stories().flat_map(|s| s.paras.iter().map(|p| p.style.clone())).collect();
     let used_c: std::collections::HashSet<String> = stories().flat_map(|s| s.runs().map(|(_, f)| f.style.clone())).collect();
+    let all = opts.unused_styles;
     let keep = |list: Vec<ImportedStyle>, used: &std::collections::HashSet<String>| {
+        // Import Unused Styles: every style.
+        if all {
+            return list;
+        }
         let mut want: std::collections::HashSet<String> = used.clone();
         loop {
             let more: Vec<String> =

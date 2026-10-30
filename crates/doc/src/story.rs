@@ -223,10 +223,74 @@ pub struct TextFileLink {
     pub style_conflicts: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remove_styles: bool,
+    /// The other Microsoft Word Import Options it was placed with (Update Link imports again
+    /// with them).
+    #[serde(default, skip_serializing_if = "TextImportOptions::is_default")]
+    pub options: TextImportOptions,
     /// Hash of the story's text and formatting right after the import: a different one means it
     /// was edited in the layout (an update replaces those edits).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub story_hash: String,
+}
+
+/// File › Place's Microsoft Word Import Options (also RTF), besides the style options: what to
+/// include and how the text is converted. The defaults import everything as it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TextImportOptions {
+    /// Include: Table of Contents Text, Index Text, Footnotes, Endnotes.
+    pub toc: bool,
+    pub index: bool,
+    pub footnotes: bool,
+    pub endnotes: bool,
+    /// Use Typographer's Quotes: straight quotes become curly ones.
+    pub typographers_quotes: bool,
+    /// With styles removed, Preserve Local Overrides keeps the text's own formatting (bold,
+    /// italic…).
+    pub preserve_local_overrides: bool,
+    /// Convert Tables To: Unformatted Tabbed Text (else unformatted tables).
+    pub tables_as_tabbed_text: bool,
+    /// Manual Page Breaks: preserve, convert to column breaks, or no breaks.
+    pub page_breaks: PageBreakImport,
+    /// Import Unused Styles (else only the styles the text uses).
+    pub unused_styles: bool,
+    /// Convert Bullets & Numbers to Text.
+    pub bullets_to_text: bool,
+}
+
+impl Default for TextImportOptions {
+    fn default() -> Self {
+        TextImportOptions {
+            toc: true,
+            index: true,
+            footnotes: true,
+            endnotes: true,
+            typographers_quotes: false,
+            preserve_local_overrides: false,
+            tables_as_tabbed_text: false,
+            page_breaks: PageBreakImport::Preserve,
+            unused_styles: false,
+            bullets_to_text: false,
+        }
+    }
+}
+
+impl TextImportOptions {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Manual Page Breaks of the Word Import Options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageBreakImport {
+    #[default]
+    Preserve,
+    /// Convert to Column Breaks.
+    Column,
+    /// No Breaks.
+    None,
 }
 
 fn is_zero_i64(v: &i64) -> bool {

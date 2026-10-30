@@ -1,6 +1,147 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
+        "Microsoft Word Import Options",
+        [
+            "Microsoft Word-Importoptionen",
+            "Options d'importation Microsoft Word",
+            "Opciones de importación de Microsoft Word",
+            "Microsoft Word 読み込みオプション",
+            "Microsoft Word 导入选项",
+        ],
+    ),
+    (
+        "RTF Import Options",
+        ["RTF-Importoptionen", "Options d'importation RTF", "Opciones de importación de RTF", "RTF 読み込みオプション", "RTF 导入选项"],
+    ),
+    ("[Custom]", ["[Benutzerdefiniert]", "[Personnalisé]", "[Personalizado]", "[カスタム]", "[自定]"]),
+    ("Include", ["Einschließen", "Inclure", "Incluir", "含める", "包含"]),
+    (
+        "Table of Contents Text",
+        ["Inhaltsverzeichnistext", "Texte de la table des matières", "Texto de tabla de contenido", "目次テキスト", "目录文本"],
+    ),
+    ("Index Text", ["Indextext", "Texte de l'index", "Texto de índice", "索引テキスト", "索引文本"]),
+    ("Formatting", ["Formatierung", "Mise en forme", "Formato", "書式", "格式"]),
+    (
+        "Preserve Local Overrides",
+        [
+            "Lokale Abweichungen beibehalten",
+            "Conserver les remplacements locaux",
+            "Conservar modificaciones locales",
+            "ローカルオーバーライドを保持",
+            "保留本地覆盖",
+        ],
+    ),
+    ("Convert Tables To:", ["Tabellen konvertieren in:", "Convertir les tableaux en :", "Convertir tablas en:", "表の変換 :", "将表转换为："]),
+    ("Unformatted Tables", ["Unformatierte Tabellen", "Tableaux non formatés", "Tablas sin formato", "書式なしの表", "无格式表"]),
+    (
+        "Unformatted Tabbed Text",
+        [
+            "Unformatierter Text mit Tabulatoren",
+            "Texte tabulé non formaté",
+            "Texto tabulado sin formato",
+            "書式なしのタブ区切りテキスト",
+            "无格式制表符分隔文本",
+        ],
+    ),
+    (
+        "Preserve Styles and Formatting from Text and Tables",
+        [
+            "Formate und Formatierung in Text und Tabellen beibehalten",
+            "Conserver les styles et la mise en forme du texte et des tableaux",
+            "Conservar estilos y formato del texto y las tablas",
+            "テキストと表のスタイルと書式を保持",
+            "保留文本和表的样式和格式",
+        ],
+    ),
+    (
+        "Manual Page Breaks:",
+        ["Manuelle Seitenumbrüche:", "Sauts de page manuels :", "Saltos de página manuales:", "手動ページ区切り :", "手动分页符："],
+    ),
+    (
+        "Preserve Page Breaks",
+        ["Seitenumbrüche beibehalten", "Conserver les sauts de page", "Conservar saltos de página", "ページ区切りを保持", "保留分页符"],
+    ),
+    (
+        "Convert to Column Breaks",
+        ["In Spaltenumbrüche konvertieren", "Convertir en sauts de colonne", "Convertir en saltos de columna", "段区切りに変換", "转换为分栏符"],
+    ),
+    ("No Breaks", ["Keine Umbrüche", "Aucun saut", "Sin saltos", "区切りなし", "无分隔符"]),
+    (
+        "Import Inline Graphics",
+        [
+            "Verankerte Grafiken importieren",
+            "Importer les graphiques incorporés",
+            "Importar gráficos integrados",
+            "インライングラフィックを読み込む",
+            "导入随文图",
+        ],
+    ),
+    (
+        "Import Unused Styles",
+        [
+            "Nicht verwendete Formate importieren",
+            "Importer les styles inutilisés",
+            "Importar estilos no utilizados",
+            "未使用のスタイルを読み込む",
+            "导入未使用的样式",
+        ],
+    ),
+    (
+        "Convert Bullets & Numbers to Text",
+        [
+            "Aufzählungszeichen und Nummern in Text konvertieren",
+            "Convertir les puces et numéros en texte",
+            "Convertir viñetas y números en texto",
+            "箇条書きと番号をテキストに変換",
+            "将项目符号和编号转换为文本",
+        ],
+    ),
+    (
+        "Style Name Conflicts:",
+        ["Formatnamenkonflikte:", "Conflits de noms de styles :", "Conflictos de nombres de estilos:", "スタイル名の競合 :", "样式名称冲突："],
+    ),
+    (
+        "Import Styles Automatically",
+        [
+            "Formate automatisch importieren",
+            "Importer les styles automatiquement",
+            "Importar estilos automáticamente",
+            "スタイルを自動的に読み込む",
+            "自动导入样式",
+        ],
+    ),
+    (
+        "Paragraph Style Conflicts:",
+        [
+            "Absatzformatkonflikte:",
+            "Conflits de styles de paragraphe :",
+            "Conflictos de estilos de párrafo:",
+            "段落スタイルの競合 :",
+            "段落样式冲突：",
+        ],
+    ),
+    (
+        "Character Style Conflicts:",
+        [
+            "Zeichenformatkonflikte:",
+            "Conflits de styles de caractère :",
+            "Conflictos de estilos de carácter:",
+            "文字スタイルの競合 :",
+            "字符样式冲突：",
+        ],
+    ),
+    (
+        "Customize Style Import",
+        [
+            "Formatimport anpassen",
+            "Personnaliser l'importation des styles",
+            "Personalizar importación de estilos",
+            "スタイルの読み込みをカスタマイズ",
+            "自定样式导入",
+        ],
+    ),
+    (
         "Character Formatting Controls",
         [
             "Steuerelemente für Zeichenformatierung",
