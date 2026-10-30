@@ -34,8 +34,10 @@ impl Renderer {
         let kind = f.doc.stroke_kind(&st.kind);
         let length = designcraft_doc::path_length_bound(bp);
         match &kind {
-            StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
-                stroke = stroke.with_dashes(0.0, pattern.iter().copied())
+            StrokeType::Dashed { .. } => {
+                if let Some(p) = kind.dashes(st.weight).filter(|p| StrokeType::expandable_dashes(p, length)) {
+                    stroke = stroke.with_dashes(0.0, p);
+                }
             }
             StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
                 stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)

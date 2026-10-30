@@ -476,8 +476,8 @@ impl<'a> Exporter<'a> {
         };
         let w = s.weight;
         let dash = match &s.kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|v| *v > 0.0) => {
-                let mut v: Vec<f64> = pattern.iter().map(|x| x.max(0.0)).collect();
+            StrokeType::Dashed { .. } if s.kind.dashes(w).is_some_and(|p| p.iter().any(|v| *v > 0.0)) => {
+                let mut v: Vec<f64> = s.kind.dashes(w).unwrap_or_default();
                 if v.len() % 2 == 1 {
                     v.extend(v.clone());
                 }

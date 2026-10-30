@@ -218,6 +218,35 @@ fn table_gradient_fill_exports_a_shading() {
     assert!(pdf.contains("/ShadingType 2") || pdf.contains("/ShadingType2"), "table fill must export a linear gradient");
 }
 
+/// A table edge's dashed stroke carries no dash array of its own, so matching the raw pattern
+/// exported it solid while the renderer dashed it -- the PDF disagreed with the screen (#1467,
+/// noted in review). The edge goes through `StrokeType::dashes` like every other stroke.
+#[test]
+fn a_dashed_table_edge_exports_dashed() {
+    let table = |kind: designcraft_doc::StrokeType| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+        t.rows[0].height = 40.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        t.options.border.weight = 2.0;
+        t.options.border.kind = kind;
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        uncompressed(&d, PdfOptions::default())
+    };
+    // `d` is the PDF dash operator; krilla writes it `[a b]0 d`, with no space before the phase.
+    let ops = |pdf: &str| pdf.replace("]0 d", "] 0 d");
+
+    // Dashed with no pattern of its own: three weights on, two off, as the renderer draws it.
+    let dashed = ops(&table(designcraft_doc::StrokeType::Dashed { pattern: vec![] }));
+    assert!(dashed.contains("] 0 d"), "a dashed edge exports a dash array");
+    assert!(dashed.contains("[6 4] 0 d"), "three weights on, two off at weight 2");
+
+    // A solid edge still writes no dash array, so the check above means something.
+    assert!(!ops(&table(designcraft_doc::StrokeType::Solid)).contains("] 0 d"), "a solid edge exports none");
+}
+
 #[test]
 fn tables_export_cell_text() {
     let mut d = Document::new(&NewDocument::default());

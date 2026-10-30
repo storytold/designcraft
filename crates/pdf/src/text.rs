@@ -386,22 +386,25 @@ impl Exporter<'_> {
                     s.set_fill(None);
                     continue;
                 }
-                let (cap, dash) = match &kind {
-                    designcraft_doc::StrokeType::Dashed { pattern }
-                        if designcraft_doc::StrokeType::expandable_dashes(pattern, seg.a.distance(seg.b)) =>
-                    {
-                        let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
-                        if pat.len() % 2 == 1 {
-                            pat.extend(pat.clone());
-                        }
-                        (krilla::paint::LineCap::Butt, Some(krilla::paint::StrokeDash { array: pat, offset: 0.0 }))
+                let len = seg.a.distance(seg.b);
+                let expandable = |p: &[f64]| designcraft_doc::StrokeType::expandable_dashes(p, len);
+                // Through the resolved pattern, so a `Dashed` with none of its own dashes by its
+                // weight here as well. Matching the raw pattern left a table edge exporting solid
+                // while the renderer and the item stroke dashed it (noted in review).
+                let dashed = kind.dashes(st.weight).filter(|p| expandable(p)).map(|pattern| {
+                    let mut pat: Vec<f32> = pattern.iter().map(|v| v.max(0.0) as f32).collect();
+                    if pat.len() % 2 == 1 {
+                        pat.extend(pat.clone());
                     }
-                    designcraft_doc::StrokeType::Dotted
-                        if designcraft_doc::StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], seg.a.distance(seg.b)) =>
-                    {
+                    (krilla::paint::LineCap::Butt, krilla::paint::StrokeDash { array: pat, offset: 0.0 })
+                });
+                let (cap, dash) = match dashed {
+                    Some((cap, d)) => (cap, Some(d)),
+                    // A pattern that cannot be expanded still draws solid, as before.
+                    None if matches!(kind, designcraft_doc::StrokeType::Dotted) && expandable(&[0.0, st.weight * 2.0]) => {
                         (krilla::paint::LineCap::Round, Some(krilla::paint::StrokeDash { array: vec![0.0, (st.weight * 2.0) as f32], offset: 0.0 }))
                     }
-                    _ => (krilla::paint::LineCap::Square, None),
+                    None => (krilla::paint::LineCap::Square, None),
                 };
                 s.set_fill(None);
                 s.set_stroke(Some(Stroke { paint: col.into(), width: st.weight as f32, line_cap: cap, dash, ..Default::default() }));
