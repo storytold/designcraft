@@ -122,7 +122,7 @@ impl CellLineExtent {
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
 fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
-    let spec = FrameSpec {
+    let mut spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
         opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
@@ -137,7 +137,15 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         right_page,
         page_rect: None,
     };
-    let cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
+    let mut cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
+    // The measuring frame is deliberately tall. Recompose at the actual content height so
+    // cell-local footnotes sit inside the row rather than at the measuring frame's bottom.
+    if let Some(frame) = cs.frames.first().filter(|f| !f.notes.is_empty()) {
+        let body = frame.lines.iter().map(|l| l.baseline + l.descent).fold(0.0, f64::max);
+        let note_top = frame.notes.first().map_or(spec.area.y1, |n| n.rect.y0);
+        spec.area.y1 = body + doc.footnote_options.space_before + (spec.area.y1 - note_top);
+        cs = crate::compose(doc, &cell.text, std::slice::from_ref(&spec), opts);
+    }
     let line_heights: Vec<f64> = cs
         .frames
         .first()
@@ -157,7 +165,8 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
     // extend below the final baseline when leading is fixed.
-    let content_h = line_heights.iter().copied().fold(0.0, f64::max);
+    let note_bottom = cs.frames.first().map_or(0.0, |f| f.notes.iter().map(|n| n.rect.y1).fold(0.0, f64::max));
+    let content_h = line_heights.iter().copied().fold(note_bottom, f64::max);
     CellLayout { text: Arc::new(cs), content_h, line_heights }
 }
 
@@ -174,6 +183,7 @@ pub(crate) fn place_table(
     cols: &[Vec<Rect>],
     cur: &mut Cursor,
     out: &mut ComposedStory,
+    notes: &mut crate::notes::Notes,
     opts: &ComposeOptions,
 ) -> bool {
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
@@ -292,6 +302,13 @@ pub(crate) fn place_table(
         }
     };
     place_rows(0..header, &mut y, false, &mut frag_rows);
+    // Table rows do not add story footnotes; cell-local notes are composed separately.
+    let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
+        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
+        let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
+        notes.reserve(doc, column, &[], opts)
+    };
+    let mut reserve = column_reserve(notes, cur, col);
     let mut r = header;
     loop {
         if r >= body_end {
@@ -299,9 +316,10 @@ pub(crate) fn place_table(
         }
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
+        let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        if y + gh + footer_h <= col.y1 + 0.01 || (body_placed == 0 && at_col_top) {
-            if y + gh + footer_h > col.y1 + 0.01 && body_placed == 0 && at_col_top && y + gh > col.y1 + 0.01 {
+        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
+            if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
                 return false;
             }
@@ -324,6 +342,7 @@ pub(crate) fn place_table(
             return false;
         }
         col = col_rect(cur);
+        reserve = column_reserve(notes, cur, col);
         y = col.y0;
         top = y;
         frag_rows.clear();
