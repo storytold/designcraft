@@ -12,9 +12,6 @@ pub enum Class {
     Layer(u8),
     /// Layer 0, and additionally may depend on no workspace crate at all.
     Standalone,
-    /// Test tooling: may depend on anything up to L5 (it sits at L6 for rule
-    /// purposes); other crates may use it only as a dev-dependency.
-    Testkit,
     /// Binaries and build tooling: exempt from the rules.
     Exempt,
 }
@@ -24,7 +21,6 @@ impl Class {
         match self {
             Class::Layer(l) => Some(l),
             Class::Standalone => Some(0),
-            Class::Testkit => Some(6),
             Class::Exempt => None,
         }
     }
@@ -50,7 +46,6 @@ pub const TABLE: &[(&str, Class)] = &[
     ("engine", Class::Layer(5)),
     ("ui-egui", Class::Layer(6)),
     ("mcp", Class::Layer(6)),
-    ("testkit", Class::Testkit),
     // L7 apps and tooling
     ("designcraft", Class::Exempt),
     ("cli", Class::Exempt),
@@ -121,7 +116,6 @@ pub enum Violation {
     Unregistered { krate: String },
     Upward { krate: String, dep: String, from: u8, to: u8, kind: DepKind },
     StandaloneHasWorkspaceDep { krate: String, dep: String },
-    TestkitAsNormalDep { krate: String },
     UiBelowL6 { krate: String, dep: String, layer: u8 },
 }
 
@@ -136,9 +130,6 @@ impl std::fmt::Display for Violation {
             }
             Violation::StandaloneHasWorkspaceDep { krate, dep } => {
                 write!(f, "{krate}: standalone crate must not depend on workspace crate {dep}")
-            }
-            Violation::TestkitAsNormalDep { krate } => {
-                write!(f, "{krate}: designcraft-testkit may only be a dev-dependency")
             }
             Violation::UiBelowL6 { krate, dep, layer } => {
                 write!(f, "{krate} (L{layer}) depends on UI crate `{dep}`; UI toolkits are only allowed in L6+")
@@ -172,10 +163,6 @@ pub fn check(crates: &[Crate]) -> Vec<Violation> {
                 match classify(&d.name) {
                     // Unregistered deps are reported on their own entry.
                     None => {}
-                    Some(Class::Testkit) if d.kind != DepKind::Dev => {
-                        out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() });
-                    }
-                    Some(Class::Testkit) => {}
                     Some(dc) => {
                         let to = dc.layer().unwrap_or(u8::MAX);
                         if to >= layer && !(to == layer && intra_layer_allowed(&c.name, &d.name)) {
@@ -227,7 +214,6 @@ pub fn describe(class: Option<Class>) -> String {
     match class {
         Some(Class::Layer(l)) => format!("L{l}"),
         Some(Class::Standalone) => "L0 standalone".into(),
-        Some(Class::Testkit) => "testkit".into(),
         Some(Class::Exempt) => "exempt".into(),
         None => "UNREGISTERED".into(),
     }
@@ -247,7 +233,7 @@ mod tests {
         let g = [
             c("designcraft-geom", &[("kurbo", Normal, false)]),
             c("designcraft-doc", &[("designcraft-geom", Normal, true)]),
-            c("designcraft-engine", &[("designcraft-doc", Normal, true), ("designcraft-testkit", Dev, true)]),
+            c("designcraft-engine", &[("designcraft-doc", Normal, true)]),
             c("designcraft-ui-egui", &[("designcraft-engine", Normal, true), ("egui", Normal, false)]),
             c("designcraft-cli", &[("designcraft-ui-egui", Normal, true)]),
         ];
@@ -302,19 +288,43 @@ mod tests {
     }
 
     #[test]
-    fn testkit_only_as_dev_dependency() {
-        let v = check(&[c("designcraft-render", &[("designcraft-testkit", Normal, true)])]);
-        assert!(matches!(v[..], [Violation::TestkitAsNormalDep { .. }]));
-        assert!(check(&[c("designcraft-render", &[("designcraft-testkit", Dev, true)])]).is_empty());
-        // testkit itself may use anything up to L5 but not L6 crates.
-        assert!(check(&[c("designcraft-testkit", &[("designcraft-engine", Normal, true)])]).is_empty());
-        assert!(!check(&[c("designcraft-testkit", &[("designcraft-ui-egui", Normal, true)])]).is_empty());
-    }
-
-    #[test]
     fn apps_and_xtask_exempt() {
         for app in ["designcraft", "designcraft-cli", "designcraft-web", "xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("designcraft-ui-egui", Normal, true)])]).is_empty());
+        }
+    }
+
+    /// Package names of the workspace members on disk (`crates/*`, `apps/*`, `xtask`).
+    fn member_packages(root: &std::path::Path) -> Vec<String> {
+        let mut dirs = vec![root.join("xtask")];
+        for group in ["crates", "apps"] {
+            for e in std::fs::read_dir(root.join(group)).unwrap() {
+                dirs.push(e.unwrap().path());
+            }
+        }
+        dirs.iter()
+            .filter_map(|d| std::fs::read_to_string(d.join("Cargo.toml")).ok())
+            .filter_map(|m| {
+                let line = m.lines().find(|l| l.trim_start().starts_with("name"))?;
+                Some(line.split('"').nth(1)?.to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn declared_crates_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        for line in manifest.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            if let Some(rest) = line.split("path = \"").nth(1) {
+                let path = rest.split('"').next().unwrap();
+                assert!(root.join(path).join("Cargo.toml").is_file(), "root Cargo.toml path `{path}` does not exist");
+            }
+        }
+        let members = member_packages(root);
+        for (name, _) in TABLE {
+            let found = members.iter().any(|m| short_name(m) == *name);
+            assert!(found, "layer table entry `{name}` has no workspace crate");
         }
     }
 
