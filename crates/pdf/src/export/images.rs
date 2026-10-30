@@ -214,6 +214,7 @@ mod image_content_cache_tests {
             pdfs: HashMap::new(),
             variants: HashMap::new(),
             has_optional_content: false,
+            state_ocgs: HashMap::new(),
             pdf_preparations: 0,
             layer_error: None,
             version: PdfVersion::Pdf17,

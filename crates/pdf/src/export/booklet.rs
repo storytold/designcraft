@@ -109,6 +109,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         pdfs: HashMap::new(),
         variants: HashMap::new(),
         has_optional_content: false,
+        state_ocgs: HashMap::new(),
         #[cfg(test)]
         pdf_preparations: 0,
         layer_error: None,

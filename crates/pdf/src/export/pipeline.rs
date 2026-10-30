@@ -127,16 +127,18 @@ pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) 
 fn add_form_fields(bytes: &mut Vec<u8>, warnings: &mut Vec<String>, doc: &Document, sheets: &[Sheet], opts: &PdfOptions) {
     let fields = crate::forms::collect(doc, sheets);
     let media = if opts.media { crate::forms::collect_media(doc, sheets) } else { Vec::new() };
-    if fields.is_empty() && media.is_empty() {
+    let (buttons, skipped) = crate::forms::collect_state_buttons(doc, sheets);
+    warnings.extend(skipped);
+    if fields.is_empty() && media.is_empty() && buttons.is_empty() {
         return;
     }
     match opts.standard {
-        Standard::PdfX4 => warnings.push("PDF/X-4: form fields and media were left out".into()),
-        Standard::PdfX1a => warnings.push("PDF/X-1a: form fields and media were left out".into()),
-        Standard::PdfA2b => warnings.push("PDF/A-2b: form fields and media were left out".into()),
-        _ => match crate::forms::add_fields(&*bytes, &fields, &media) {
+        Standard::PdfX4 => warnings.push("PDF/X-4: form fields, media and state buttons were left out".into()),
+        Standard::PdfX1a => warnings.push("PDF/X-1a: form fields, media and state buttons were left out".into()),
+        Standard::PdfA2b => warnings.push("PDF/A-2b: form fields, media and state buttons were left out".into()),
+        _ => match crate::forms::add_fields(&*bytes, &fields, &media, &buttons) {
             Some(b) => *bytes = b,
-            None => warnings.push("form fields and media couldn't be added to this PDF".into()),
+            None => warnings.push("form fields, media and state buttons couldn't be added to this PDF".into()),
         },
     }
 }
@@ -183,6 +185,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         pdfs: HashMap::new(),
         variants: HashMap::new(),
         has_optional_content: false,
+        state_ocgs: HashMap::new(),
         #[cfg(test)]
         pdf_preparations: 0,
         layer_error: None,
@@ -203,6 +206,22 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     }
     if let Some(o) = crate::links::outline(doc, &sheets) {
         pdf.set_outline(o);
+    }
+    // Interactive PDF: a multi-state object's states are layers (optional content), only the
+    // active one shown, so buttons can switch them (#1798). krilla needs the groups before the
+    // pages that mark content with them.
+    if opts.standard == Standard::None {
+        for sh in &sheets {
+            for (_, it) in exported_items(doc, sh.spread) {
+                for i in 0..it.states.len() {
+                    if ex.state_ocgs.contains_key(&(it.id, i)) {
+                        continue;
+                    }
+                    let group = pdf.add_optional_content_group(crate::forms::state_layer_name(it.id, i), i == it.active_state);
+                    ex.state_ocgs.insert((it.id, i), group);
+                }
+            }
+        }
     }
     for (sheet_idx, sh) in sheets.iter().enumerate() {
         let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;

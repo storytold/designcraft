@@ -732,6 +732,110 @@ fn based_on_parent_items_export_base_first() {
     assert!(cyan < magenta, "the base parent's item is drawn first");
 }
 
+/// A document with a multi-state object of `states` states (cyan, magenta, yellow fills, the
+/// first active) and one button per action in `buttons`: (the object, the button).
+fn multi_state_document(states: usize, buttons: &[fn(ItemId) -> designcraft_doc::ButtonAction]) -> (Document, ItemId, Vec<ItemId>) {
+    use designcraft_doc::{Content, Shape};
+    use designcraft_geom::shapes::rectangle;
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let mut kids = Vec::new();
+    for (i, swatch) in ["C=100 M=0 Y=0 K=0", "C=0 M=100 Y=0 K=0", "C=0 M=0 Y=100 K=0"].iter().enumerate().take(states) {
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, rectangle(Rect::new(72.0, 200.0, 272.0, 400.0)));
+        it.fill = Fill::swatch(swatch);
+        it.name = format!("state {i}");
+        kids.push(std::sync::Arc::new(it));
+    }
+    let mso = ItemId(d.alloc());
+    let mut g = Item::new(mso, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = Content::Group { items: kids };
+    g.states = (1..=states).map(|i| format!("State {i}")).collect();
+    g.active_state = 0;
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let mut ids = Vec::new();
+    for (i, make) in buttons.iter().enumerate() {
+        let y = 72.0 + 40.0 * i as f64;
+        let mut b = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, rectangle(Rect::new(300.0, y, 400.0, y + 24.0)));
+        b.name = format!("button {i}");
+        b.button = Some(make(mso));
+        ids.push(b.id);
+        d.insert_item(SpreadRef::Doc(0), b, None).unwrap();
+    }
+    (d, mso, ids)
+}
+
+/// The optional content groups of a PDF by name, and which of them its default configuration hides.
+fn layers(bytes: &[u8]) -> (Vec<(String, String)>, Vec<String>) {
+    use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier};
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let mut groups = Vec::new();
+    for object in pdf.objects() {
+        let Object::Dict(dict) = object else { continue };
+        if dict.get::<Name<'_>>(b"Type").as_ref().map(AsRef::as_ref) != Some(b"OCG") {
+            continue;
+        }
+        let name = String::from_utf8_lossy(dict.get::<hayro_syntax::object::String<'_>>(b"Name").unwrap().as_bytes()).into_owned();
+        let id = dict.obj_id().unwrap();
+        groups.push((name, format!("{} {} R", id.obj_number, id.gen_number)));
+    }
+    let xref = pdf.xref();
+    let catalog = xref.get::<Dict<'_>>(xref.root_id()).unwrap();
+    let off: Vec<ObjectIdentifier> = catalog
+        .get::<Dict<'_>>(b"OCProperties")
+        .and_then(|p| p.get::<Dict<'_>>(b"D"))
+        .and_then(|d| d.get::<Array<'_>>(b"OFF"))
+        .map(|a| a.raw_iter().map(|o| o.as_obj_ref().unwrap().into()).collect())
+        .unwrap_or_default();
+    let off = off.iter().map(|id| format!("{} {} R", id.obj_number, id.gen_number)).collect();
+    (groups, off)
+}
+
+/// #1798: in an interactive PDF a multi-state object's states are layers, only the active one
+/// shown, and Go To State / Next State / Previous State buttons switch them with `SetOCGState`.
+#[test]
+fn multi_state_objects_export_as_layers_with_state_buttons() {
+    use designcraft_doc::ButtonAction as B;
+    let (d, mso, buttons) = multi_state_document(2, &[|o| B::GoToState { object: o, state: 1 }, |o| B::GoToNextState { object: o, wrap: true }]);
+    let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress: false, ..PdfOptions::default() }).unwrap();
+    let text = String::from_utf8_lossy(&report.bytes).into_owned();
+    // Both states are drawn, each marked as its layer; only the first is on.
+    assert!(text.contains("1 0 0 0 k") && text.contains("0 1 0 0 k"), "both states' fills are in the page content");
+    let (groups, off) = layers(&report.bytes);
+    let name = |i: usize| crate::forms::state_layer_name(mso, i);
+    assert_eq!(groups.iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), [name(0), name(1)], "one group per state");
+    assert_eq!(off, [groups[1].1.clone()], "the inactive state is hidden");
+    assert_eq!(text.matches("/OC /").count() + text.matches("/OC/").count(), 2, "each state's content is marked once");
+    // The buttons: Go To State 2 turns everything off and state 2 on; Next State on two states toggles.
+    let show = format!("/SetOCGState/State[/OFF {} {} /ON {}]", groups[0].1, groups[1].1, groups[1].1);
+    let toggle = format!("/SetOCGState/State[/Toggle {} {}]", groups[0].1, groups[1].1);
+    assert!(text.contains(&show), "Go To State: {show}");
+    assert!(text.contains(&toggle), "Next State on two states: {toggle}");
+    assert_eq!(text.matches("/Subtype/Link/").count(), 2, "one link annotation per state button");
+    assert!(report.warnings.iter().all(|w| !w.contains("left out")), "{:?}", report.warnings);
+    let _ = buttons;
+
+    // Three states: Go To State still works; Next State can't be expressed and says so.
+    let (d, mso, _) = multi_state_document(3, &[|o| B::GoToState { object: o, state: 2 }, |o| B::GoToPreviousState { object: o, wrap: false }]);
+    let report = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress: false, ..PdfOptions::default() }).unwrap();
+    let (groups, off) = layers(&report.bytes);
+    assert_eq!(groups.len(), 3);
+    assert_eq!(off.len(), 2, "two of three states hidden");
+    let text = String::from_utf8_lossy(&report.bytes).into_owned();
+    assert_eq!(text.matches("/SetOCGState").count(), 1, "only the Go To State button exports");
+    assert!(text.contains(&format!("/ON {}]", groups[2].1)));
+    assert!(report.warnings.iter().any(|w| w.contains("button 1") && w.contains("3 states")), "{:?}", report.warnings);
+    let _ = mso;
+
+    // Print standards show the active state only, as before, and leave the buttons out.
+    let (d, _, _) = multi_state_document(2, &[|o| B::GoToState { object: o, state: 1 }]);
+    let report =
+        export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress: false, standard: Standard::PdfX4, ..PdfOptions::default() }).unwrap();
+    let text = String::from_utf8_lossy(&report.bytes).into_owned();
+    assert!(text.contains("1 0 0 0 k") && !text.contains("0 1 0 0 k"), "PDF/X-4: the active state only");
+    assert!(!text.contains("/SetOCGState"));
+    assert!(layers(&report.bytes).0.is_empty(), "no layers in a print PDF");
+}
+
 /// Form fields and buttons that don't print stay out of the PDF: inside a hidden group, on a
 /// hidden or non-printing layer, or non-printing themselves (#726).
 #[test]

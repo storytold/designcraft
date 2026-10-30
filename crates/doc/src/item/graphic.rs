@@ -298,12 +298,45 @@ pub fn media_mime(name: &str) -> Option<&'static str> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ButtonAction {
-    GoToPage { page: usize },
+    GoToPage {
+        page: usize,
+    },
     GoToFirstPage,
     GoToLastPage,
     GoToNextPage,
     GoToPreviousPage,
-    GoToUrl { url: String },
+    GoToUrl {
+        url: String,
+    },
+    /// A text anchor (a Hyperlinks panel destination): its page.
+    GoToDestination {
+        anchor: u64,
+    },
+    /// Show state `state` (0-based) of the multi-state object `object`.
+    GoToState {
+        object: crate::ids::ItemId,
+        state: usize,
+    },
+    /// Show the state after the active one of `object`; `wrap` goes round from the last to the first.
+    GoToNextState {
+        object: crate::ids::ItemId,
+        #[serde(default)]
+        wrap: bool,
+    },
+    /// Show the state before the active one of `object`; `wrap` goes round from the first to the last.
+    GoToPreviousState {
+        object: crate::ids::ItemId,
+        #[serde(default)]
+        wrap: bool,
+    },
+}
+
+impl ButtonAction {
+    /// Whether a reader older than format version 5 can decode this action (the state and
+    /// destination kinds are newer than the page and URL ones).
+    pub fn needs_version_5(&self) -> bool {
+        matches!(self, Self::GoToDestination { .. } | Self::GoToState { .. } | Self::GoToNextState { .. } | Self::GoToPreviousState { .. })
+    }
 }
 
 impl Graphic {

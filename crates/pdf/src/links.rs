@@ -107,6 +107,11 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
             B::GoToLastPage => total.checked_sub(1),
             B::GoToNextPage => here.map(|h| h + 1).filter(|p| *p < total),
             B::GoToPreviousPage => here.and_then(|h| h.checked_sub(1)),
+            // A text anchor's page, as cross-references resolve it.
+            B::GoToDestination { anchor } => cache.xref_index(doc).page_index(*anchor),
+            // State buttons set the layers of the object's states: `forms::add_fields` writes them
+            // as an incremental update, since krilla has no SetOCGState action (#1798).
+            B::GoToState { .. } | B::GoToNextState { .. } | B::GoToPreviousState { .. } => continue,
         };
         let Some(i) = page.and_then(|p| sheet_of_page(doc, sheets, p)) else { continue };
         let target = Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into());
