@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Bullets and Numbering dialog as InDesign's; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -48,7 +48,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Numeric fields: units, arithmetic, scrubbing | ✓ | 21 pt spinner fields with arithmetic | ✓ | |
 | Colour fields: hex, picker from any swatch field | ✓ | ✓ | ~ | hex entry and picker issues (#323, #190) |
 | Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs, Story | ✓ | all present | ~ | Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
-| Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | generated command dialogs fill the long tail; depth varies |
+| Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present; Bullets and Numbering laid out as InDesign's (Bullet Character grid with Add Bullets and Delete, Text After menus, Bullet or Number Position, Preview) | ~ | generated command dialogs fill the long tail; depth varies; bullets added with Add… last for the dialog only |
 | Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
 | Story Editor | ✓ | ✓ | ~ | depth ruler and View › Story Editor › Show/Hide Depth Ruler (`story_editor.rs` `depth_ruler_shows_and_hides_from_the_view_menu`); hiding or resizing the style-name column missing |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |

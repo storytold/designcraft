@@ -3521,3 +3521,110 @@ fn character_style_options_set_the_digits() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
+
+/// The course's chapter 21: Bullets and Numbering as InDesign's. The Bullet Character grid
+/// picks a bullet (the paragraph's font: a red "u"); Add… opens Add Bullets, whose OK adds the
+/// glyph with its font remembered and chooses it, and Delete takes an added one out; Text
+/// After's ▾ gives a white space; Preview shows the edits on the page, Cancel takes them back
+/// and OK makes them one undo step.
+#[test]
+fn bullets_dialog_has_the_grid_add_bullets_and_preview() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "4 eggs\n1 cup milk"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
+    app.run("type.para", json!({"attrs": {"listType": "bullets"}})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    let undo = app.session.doc().unwrap().history.undo.len();
+    app.run("app.bulletsNumberingDialog", json!({})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("bullets_dialog_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    for l in ["Bullet Character", "Add…", "Delete", "Text After:", "Bullet or Number Position", "Left Indent:", "Preview"] {
+        assert!(h.query_by_label(l).is_some(), "{l}");
+    }
+    let field = |h: &Harness<'_, DesignApp>, k: &str| h.state().ui.dialog.as_ref().unwrap().fields.get(k).cloned();
+    // The lozenge, InDesign's third bullet, in the paragraph's font.
+    h.get_by_label("U+25CA").click();
+    h.run_steps(3);
+    assert_eq!((field(&h, "p.bulletChar"), field(&h, "p.bulletFont")), (Some(json!("\u{25CA}")), Some(json!(""))));
+    // Add Bullets: a glyph from a font, remembered with it.
+    h.get_by_label("Add…").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Add Bullets").is_some() && h.query_by_label("Remember Font with Bullet").is_some());
+    let d = h.state_mut().ui.dialog.as_mut().unwrap();
+    d.fields.insert("addBulletChar".into(), json!("\u{2192}"));
+    d.fields.insert("addBulletFont".into(), json!("Source Serif 4"));
+    d.fields.insert("addBulletStyle".into(), json!("Regular"));
+    h.run_steps(3);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(
+        (field(&h, "p.bulletChar"), field(&h, "p.bulletFont"), field(&h, "addBullets")),
+        (Some(json!("\u{2192}")), Some(json!("Source Serif 4")), Some(json!(false)))
+    );
+    assert!(h.query_by_label("U+2192").is_some(), "the added bullet has a cell");
+    // In Add Bullets, Enter is its OK and Escape its Cancel: the dialog stays open.
+    for (key, added) in [(egui::Key::Enter, true), (egui::Key::Escape, false)] {
+        h.get_by_label("Add…").click();
+        h.run_steps(3);
+        let glyph = if added { "\u{2605}" } else { "\u{2606}" };
+        h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("addBulletChar".into(), json!(glyph));
+        h.run_steps(2);
+        h.key_press(key);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("paragraphLocal"), "{key:?}");
+        assert_eq!(field(&h, "addBullets"), Some(json!(false)), "{key:?} closes Add Bullets");
+        assert_eq!(field(&h, "p.bulletChar") == Some(json!(glyph)), added, "{key:?}");
+    }
+    // Delete: the added bullet goes, and the bullet goes back to InDesign's first. Enter above
+    // chose ★; the arrow is chosen again first.
+    h.get_by_label("U+2192").click();
+    h.run_steps(3);
+    h.get_by_label("Delete").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("U+2192").is_none());
+    assert_eq!(field(&h, "p.bulletChar"), Some(json!("\u{2022}")));
+    // Text After's ▾: an em space instead of the tab.
+    h.get_by_label("Insert White Space").click();
+    h.run_steps(3);
+    h.get_by_label("Em Space").click();
+    h.run_steps(3);
+    assert_eq!(field(&h, "p.listSeparator"), Some(json!("^m")));
+    // Preview: on the page, with no undo step; Cancel puts the page back.
+    h.get_by_label("Preview").click();
+    h.run_steps(3);
+    let sep = |h: &mut Harness<'_, DesignApp>| h.state_mut().run("type.selectionAttrs", json!({})).unwrap()["para"]["listSeparator"].clone();
+    assert_eq!(sep(&mut h), json!("^m"), "previewed");
+    assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo);
+    cancel(h.state_mut());
+    assert_eq!(h.state().session.doc().unwrap().doc, before);
+    // OK after a preview: one undo step.
+    h.state_mut().run("app.bulletsNumberingDialog", json!({})).unwrap();
+    let d = h.state_mut().ui.dialog.as_mut().unwrap();
+    d.fields.insert("preview".into(), json!(true));
+    d.fields.insert("p.listSeparator".into(), json!("^>"));
+    h.run_steps(3);
+    confirm(h.state_mut()).unwrap();
+    assert_eq!(sep(&mut h), json!("^>"));
+    assert_eq!(h.state().session.doc().unwrap().history.undo.len(), undo + 1);
+    // Numbers: the Number has its ▸ but no ▾ (a white space would replace its `^#`); Text After is
+    // the bullets' field.
+    h.state_mut().run("app.bulletsNumberingDialog", json!({})).unwrap();
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("p.listType".into(), json!("numbers"));
+    h.run_steps(3);
+    assert!(h.query_by_label("Number:").is_some());
+    assert_eq!(h.query_all_by_label("Insert Special Character").count(), 1);
+    assert_eq!(h.query_all_by_label("Insert White Space").count(), 0);
+}
