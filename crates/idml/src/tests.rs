@@ -2229,6 +2229,25 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// Layer Options › Lock Guides is IDML's `LockGuides`: read, and written back (it was always
+/// written as false).
+#[test]
+fn layer_lock_guides_round_trips() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Grid" LockGuides="true" ShowGuides="true"/>
+      <Layer Self="L2" Name="Art"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s"><Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/></Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let lock = |d: &Document, name: &str| d.layers.iter().find(|l| l.name == name).unwrap().lock_guides;
+    assert!(lock(&d, "Grid") && !lock(&d, "Art"));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert!(lock(&back, "Grid") && !lock(&back, "Art"));
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]

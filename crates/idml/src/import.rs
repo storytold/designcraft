@@ -444,6 +444,7 @@ impl<'r> Importer<'r> {
                 locked: e.get("Locked") == Some("true"),
                 printable: e.get("Printable") != Some("false"),
                 show_guides: e.get("ShowGuides") != Some("false"),
+                lock_guides: e.get("LockGuides") == Some("true"),
                 suppress_wrap_when_hidden: e.get("IgnoreWrap") == Some("true"),
             });
             if let Some(s) = e.get("Self") {
@@ -462,6 +463,7 @@ impl<'r> Importer<'r> {
                 locked: false,
                 printable: true,
                 show_guides: true,
+                lock_guides: false,
                 suppress_wrap_when_hidden: false,
             });
         }

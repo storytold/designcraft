@@ -613,6 +613,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         locked: false,
                         printable: true,
                         show_guides: true,
+                        lock_guides: false,
                         suppress_wrap_when_hidden: false,
                     },
                 );
@@ -626,7 +627,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layer Options…",
             [],
             None,
-            "{id, name?, color?: [r,g,b] | layer colour name (\"Light Blue\", \"Red\", …), visible?, locked?, printable?, showGuides?, suppressWrapWhenHidden?} — names are unique and not empty",
+            "{id, name?, color?: [r,g,b] | layer colour name (\"Light Blue\", \"Red\", …), visible?, locked?, printable?, showGuides?, lockGuides?, suppressWrapWhenHidden?} — names are unique and not empty",
             has_doc,
             set_layer
         ),

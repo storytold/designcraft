@@ -24,7 +24,7 @@ pub(super) fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_bool().map(Some).ok_or_else(|| bad(ID, format!("`{k}` is true or false"))),
     };
     let (visible, locked, printable) = (flag("visible")?, flag("locked")?, flag("printable")?);
-    let (guides, wrap) = (flag("showGuides")?, flag("suppressWrapWhenHidden")?);
+    let (guides, lock_guides, wrap) = (flag("showGuides")?, flag("lockGuides")?, flag("suppressWrapWhenHidden")?);
     s.edit(|d, _| {
         if let Some(n) = &name
             && d.layers.iter().any(|l| l.id != id && l.name == *n)
@@ -43,6 +43,7 @@ pub(super) fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {
             (&mut l.locked, locked),
             (&mut l.printable, printable),
             (&mut l.show_guides, guides),
+            (&mut l.lock_guides, lock_guides),
             (&mut l.suppress_wrap_when_hidden, wrap),
         ] {
             if let Some(v) = v {

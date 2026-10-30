@@ -174,6 +174,7 @@ impl Document {
             locked: false,
             printable: true,
             show_guides: true,
+            lock_guides: false,
             suppress_wrap_when_hidden: false,
         });
         // A-Parent.
