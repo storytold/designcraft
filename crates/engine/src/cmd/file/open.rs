@@ -83,7 +83,10 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
-        crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        warnings.extend(crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(path))));
+        if !d.settings.external_links {
+            crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
+        }
         crate::cmd::datamerge::resolve_sources_on_open(&mut d, Some(std::path::Path::new(path)));
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
@@ -147,7 +150,8 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    let (mut d, mut warnings) = load_bytes(&b)?;
+    warnings.extend(crate::cmd::native_links::resolve(&mut d, None));
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         d.title = n.to_string();

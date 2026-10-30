@@ -197,7 +197,8 @@ fn the_tools_panel_lays_out_like_indesigns() {
     for double in [false, true] {
         let h = test_window::open(app(double), vec2(1400.0, 900.0));
         let _ = rect(&h, "Gradient Swatch Tool (G)");
-        let _ = rect(&h, "Gradient Feather Tool (Shift+G)");
+        let shortcut = crate::menus::tool_shortcut_label(&h.state().app, "gradientFeather").unwrap();
+        let _ = rect(&h, &format!("Gradient Feather Tool ({shortcut})"));
         let _ = rect(&h, "View Options");
         let split = ["Content Placer Tool (B)", "Apply Color (,)", "Apply Gradient (.)", "Normal"];
         for label in split {

@@ -2582,7 +2582,12 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(v) = p.get(k).cloned() {
                     let _ = match which {
                         0 => serde_json::from_value(v).map(|x| o.vertical_justification = x),
-                        1 => serde_json::from_value(v).map(|x| o.first_baseline = x),
+                        1 => serde_json::from_value(v).map(|x| {
+                            if x != o.first_baseline {
+                                o.legacy_first_baseline = false;
+                            }
+                            o.first_baseline = x;
+                        }),
                         2 => serde_json::from_value(v).map(|x| o.auto_size = x),
                         _ => serde_json::from_value(v).map(|x| o.columns_kind = x),
                     };

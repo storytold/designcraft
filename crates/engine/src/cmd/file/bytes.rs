@@ -42,7 +42,7 @@ pub(super) const PREVIEW_PX: f64 = 320.0;
 
 /// [`to_bytes`] with a picture of the first page, which the start screen shows next to the file
 /// in its recent files. A page that can't be drawn just leaves the picture out.
-pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Result<Vec<u8>> {
+pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache, destination: &std::path::Path) -> Result<Vec<u8>> {
     let preview = d.page_loc(0).and_then(|(si, pi)| {
         let b = d.spreads.get(si)?.pages.get(pi)?.bounds();
         let side = b.width().max(b.height());
@@ -50,7 +50,11 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     });
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
-    save_bytes(d, png.as_deref())
+    #[cfg(test)]
+    if FAIL_TO_BYTES.with(std::cell::Cell::get) {
+        return Err(EngineError::Other("could not write the document: injected failure".into()));
+    }
+    crate::cmd::native_links::save_with_preview(d, destination, png.as_deref())
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {

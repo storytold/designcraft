@@ -20,7 +20,10 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         #[cfg(target_arch = "wasm32")]
         let b: Vec<u8> = vec![];
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.into());
-        (b, name, Some(path.to_string()))
+        // A path explicitly chosen by the caller is relative to the command's working
+        // directory. Store its absolute form before it becomes document-supplied data.
+        let link = std::path::absolute(path).map_err(|e| bad("file.place", e.to_string()))?;
+        (b, name, Some(link.to_string_lossy().into_owned()))
     } else {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
@@ -324,11 +327,15 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
     const ID: &str = "file.place";
-    let src = if name.to_lowercase().ends_with(".idml") {
+    let mut src = if name.to_lowercase().ends_with(".idml") {
         crate::cmd::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new)).map_err(|e| bad(ID, e.to_string()))?
     } else {
         from_bytes(bytes)?
     };
+    let warnings = crate::cmd::native_links::resolve(&mut src, str_param(p, "path").map(std::path::Path::new));
+    if !warnings.is_empty() {
+        return Err(bad(ID, warnings.join("; ")));
+    }
     let n = src.page_count();
     let page = p.get("layoutPage").and_then(Value::as_u64).unwrap_or(1) as usize;
     if page == 0 || page > n {

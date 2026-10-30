@@ -19,13 +19,11 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
 use fill::{FillReport, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
-use parse::{
-    Table, TileInput, extension, fingerprint_of, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects,
-    tile,
-};
+use parse::{Table, TileInput, extension, fingerprint_of, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use parse::fingerprint_from;
+pub(crate) use parse::relative_between;
 
 pub(crate) fn fingerprint_from_path(path: &str) -> Option<designcraft_doc::Fingerprint> {
     fingerprint_of(Path::new(path))

@@ -750,7 +750,7 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
     let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
     let mut h = harness(app);
     let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
-        // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+        // As egui-winit delivers the native Paste in Place chord: the chord's paste and the V release, no V press; here the
         // modifiers are released within the same frame.
         let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
         let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
@@ -761,12 +761,12 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
         assert_ne!(pasted.0, id);
         st.doc.item(pasted).unwrap().bounds()
     };
-    let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
-    assert_eq!(paste(&mut h, linux), original, "Paste in Place");
+    let chord = crate::test_window::command_modifiers() | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    assert_eq!(paste(&mut h, chord), original, "Paste in Place");
     let moved = paste(&mut h, egui::Modifiers::COMMAND);
     assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
     // The modifiers went down in an earlier frame than the paste.
-    h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+    h.event_modifiers(egui::Event::Paste(clip.clone()), chord);
     h.run_steps(2);
     let st = h.state().session.doc().unwrap();
     let pasted = *st.selection.items.first().expect("the copy is selected");

@@ -15,6 +15,20 @@ fn a_panel_link_keeps_its_open_flyout() {
     assert!(crate::panel_docking::showing(&app, "stroke"));
 }
 
+#[test]
+fn links_panel_can_choose_external_storage_and_undo_it() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut harness = Harness::builder().with_size(vec2(320.0, 300.0)).build_ui_state(|ui, app: &mut DesignApp| links_panel(app, ui), app);
+    harness.get_by_label("Linked-only saves need the original files. Keep them with the document: moving, deleting or changing them can leave artwork missing or changed when reopening. Use Package to collect originals, or Embed for a self-contained file.");
+    harness.get_by_label("Keep linked artwork external on save").click();
+    harness.run_steps(2);
+    assert!(harness.state().session.doc().unwrap().doc.settings.external_links);
+    harness.state_mut().run("edit.undo", json!({})).unwrap();
+    harness.run_steps(2);
+    assert!(!harness.state().session.doc().unwrap().doc.settings.external_links);
+}
+
 fn language(app: &mut DesignApp) -> Value {
     text_attrs(app).unwrap()["chars"]["language"].clone()
 }

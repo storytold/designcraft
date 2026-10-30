@@ -20,10 +20,13 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     crate::file_access::check_write(&path).map_err(EngineError::Other)?;
     // Prepare paths for the destination without changing the live document until persistence succeeds.
     let mut saved = (*st.doc).clone();
+    crate::cmd::native_links::save_options(&mut saved, p)?;
+    crate::cmd::native_links::prepare_paths(&mut saved, st.path.as_deref().map(std::path::Path::new))?;
     crate::cmd::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
-    let paths_changed = saved.data_merge != st.doc.data_merge;
+    let paths_changed =
+        saved.data_merge != st.doc.data_merge || saved.settings.external_links != st.doc.settings.external_links || saved.assets != st.doc.assets;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
-    let bytes = to_bytes_with_preview(&saved, &s.cache)?;
+    let bytes = to_bytes_with_preview(&saved, &s.cache, std::path::Path::new(&path))?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;
@@ -95,6 +98,7 @@ pub(super) fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         } else {
             from_bytes(&crate::io::read_file(&path).map_err(EngineError::Other)?)?
         };
+        let warnings = crate::cmd::native_links::resolve(&mut d, Some(std::path::Path::new(&path)));
         // As opened again: the fonts beside it now (unchanged files are shared, not read again).
         let (fonts, _, _) = load_document_fonts(&mut d, &path);
         let uid = s.doc()?.uid;
@@ -106,7 +110,7 @@ pub(super) fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         // A new state has a revision no state had before, so caches don't show the old document.
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         *s.doc_mut()? = fresh;
-        Ok(json!({"path": path}))
+        Ok(json!({"path": path, "warnings": warnings}))
     }
     #[cfg(target_arch = "wasm32")]
     {

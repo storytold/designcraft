@@ -7,6 +7,10 @@
 //! - `meta.json`: format version and generator
 //! - `preview.png` (optional): a small picture of the first page, for the start screen's recent files
 //!
+//! Working saves in external-link mode omit linked originals and require format 5. Portable
+//! saves retain them; ordinary embedded documents remain format 2. Migrated legacy baseline
+//! settings require format 5. Loading never follows links.
+//!
 //! Older single-file JSON documents (assets as base64 in `assetData`) still open. Documents
 //! from older format versions are upgraded on load so they lay out as they did.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -21,12 +25,11 @@ use designcraft_doc::{AssetId, Document, ParaAttrs, Story};
 use serde_json::{Value, json};
 
 pub const MIME: &str = "application/vnd.designcraft+zip";
-/// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
-/// version 3 adds rendering of retained EPS source assets; version 4 is one capability covering both
-/// retained placed-graphic layer options and explicit all-on placed-PDF layer choices, so a version 4
-/// reader understands both. Any later capability needs version 5. [`required_version`] is the only
-/// place that picks a version.
-pub const VERSION: u32 = 4;
+/// Latest reader capability. Version 2 pinned paragraph defaults; version 3 retains EPS source;
+/// version 4 preserves placed-graphic layer options and explicit all-on placed-PDF choices.
+/// Version 5 adds omitted external originals and legacy first-baseline settings.
+/// [`required_version`] selects document capabilities; working saves also account for omitted originals.
+pub const VERSION: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -61,18 +64,29 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, FormatError> {
     save_with_preview(doc, None)
 }
 
-/// [`save`], plus `preview` (PNG bytes) as `preview.png`.
+/// A portable save, including an optional first-page PNG for the recent-files screen.
 pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
     save_with_large_entries_from(doc, preview, LARGE_ENTRY)
 }
 
-/// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
-/// 4 GiB written without them; the margin covers deflate output that is larger than its input.
+/// Working saves may omit linked originals; portable saves always retain them.
+pub fn save_working(doc: &Document) -> Result<Vec<u8>, FormatError> {
+    save_working_with_preview(doc, None)
+}
+
+/// A native working save with the optional first-page PNG used by recent files.
+pub fn save_working_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    save_with_assets(doc, preview, !doc.settings.external_links, LARGE_ENTRY)
+}
+
 const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 
 /// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
 /// keep their older requirement so existing readers still open them.
 fn required_version(doc: &Document) -> u32 {
+    if legacy_baselines(doc) {
+        return VERSION;
+    }
     // Version 4 covers both of these: older readers ignore the unknown fields, so they would
     // silently drop retained graphic layer choices, or read an explicit all-on PDF layer choice
     // (empty hidden list) as "use the file's defaults". A nonempty hidden list stays readable.
@@ -86,11 +100,25 @@ fn required_version(doc: &Document) -> u32 {
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
-    // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
+    save_with_assets(doc, preview, true, large_entry)
+}
+
+fn save_with_assets(doc: &Document, preview: Option<&[u8]>, embed_links: bool, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    // Non-finite coordinates would serialize as null and make the file unreadable.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
     }
     let mut compact = doc.clone();
+    if !embed_links {
+        // These originals will not be written. Strip only the saved clone's cached buffers
+        // before compaction so saving links does not hash every full-resolution image.
+        let empty = Arc::new(Vec::new());
+        for asset in compact.assets.values_mut() {
+            if asset.link.is_some() && asset.is_linkable_graphic() {
+                Arc::make_mut(asset).data = empty.clone();
+            }
+        }
+    }
     compact.compact_assets();
     let doc = &compact;
     let io = |e: zip::result::ZipError| FormatError::Io(e.to_string());
@@ -102,7 +130,8 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.start_file("mimetype", stored).map_err(io)?;
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
-        let version = required_version(doc);
+        let omits_links = !embed_links && doc.assets.values().any(|a| a.link.is_some() && a.is_linkable_graphic());
+        let version = if omits_links { VERSION } else { required_version(doc) };
         let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
@@ -113,7 +142,7 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
-            if a.data.is_empty() {
+            if a.data.is_empty() || (!embed_links && a.link.is_some() && a.is_linkable_graphic()) {
                 continue;
             }
             // Already-compressed images are stored as-is.
@@ -262,7 +291,36 @@ fn upgrade(doc: &mut Document, from: u32) {
         // caps without Align Left Edge.
         pin_para_default(doc, |a| &mut a.keep_all_lines, true);
         pin_para_default(doc, |a| &mut a.drop_cap_align_left, false);
+        let mut frames = Vec::new();
+        for spread in doc.spreads.iter().chain(&doc.parents) {
+            for item in &spread.items {
+                item.walk(&mut |item| {
+                    if item.text_frame().is_some() {
+                        frames.push(item.id);
+                    }
+                });
+            }
+        }
+        for id in frames {
+            if let Some(frame) = doc.item_mut(id).and_then(|i| i.text_frame_mut()) {
+                frame.options.legacy_first_baseline = true;
+            }
+        }
     }
+}
+
+/// Older readers must refuse migrated layouts rather than ignore the compatibility setting
+/// and silently move their text. Ordinary current documents keep their existing format.
+fn legacy_baselines(doc: &Document) -> bool {
+    let mut found = false;
+    for spread in doc.spreads.iter().chain(&doc.parents) {
+        for item in &spread.items {
+            item.walk(&mut |item| {
+                found |= item.text_frame().is_some_and(|f| f.options.legacy_first_baseline);
+            });
+        }
+    }
+    found
 }
 
 /// Pin a paragraph attribute to the value an older format resolved it to where nothing set it:

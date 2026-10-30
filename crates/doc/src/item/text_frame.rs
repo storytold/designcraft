@@ -60,6 +60,10 @@ pub struct TextFrameOptions {
     pub vertical_justification: VerticalJustification,
     pub vj_paragraph_spacing_limit: f64,
     pub first_baseline: FirstBaseline,
+    /// Preserve the ascent-based first-baseline calculation of native format 1 documents.
+    /// New documents use typographic ascenders and measured cap/x heights.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_first_baseline: bool,
     pub first_baseline_min: f64,
     pub ignore_wrap: bool,
     pub auto_size: AutoSize,
@@ -218,6 +222,7 @@ impl Default for TextFrameOptions {
             vertical_justification: VerticalJustification::Top,
             vj_paragraph_spacing_limit: 0.0,
             first_baseline: FirstBaseline::Ascent,
+            legacy_first_baseline: false,
             first_baseline_min: 0.0,
             ignore_wrap: false,
             auto_size: AutoSize::Off,
