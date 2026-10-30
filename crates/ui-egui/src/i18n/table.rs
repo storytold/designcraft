@@ -146,6 +146,45 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Save a Copy…", ["Kopie speichern …", "Enregistrer une copie…", "Guardar una copia…", "コピーを保存…", "保存副本…"]),
     ("Revert", ["Zurück zur letzten Version", "Version précédente", "Volver a la versión guardada", "復帰", "恢复到上次保存"]),
     ("Place…", ["Platzieren …", "Importer…", "Colocar…", "配置…", "置入…"]),
+    (
+        "Place Contact Sheet…",
+        ["Kontaktbogen platzieren…", "Importer une planche-contact…", "Colocar hoja de contactos…", "コンタクトシートを配置…", "置入联系表…"],
+    ),
+    (
+        "Place Contact Sheet",
+        ["Kontaktbogen platzieren", "Importer une planche-contact", "Colocar hoja de contactos", "コンタクトシートを配置", "置入联系表"],
+    ),
+    (
+        "Place loaded images on new pages, in file order.",
+        [
+            "Geladene Bilder in Dateireihenfolge auf neuen Seiten platzieren.",
+            "Importer les images chargées sur de nouvelles pages, dans l’ordre des fichiers.",
+            "Colocar las imágenes cargadas en páginas nuevas, en el orden de los archivos.",
+            "読み込んだ画像をファイル順に新しいページに配置します。",
+            "按文件顺序将载入的图像置入新页面。",
+        ],
+    ),
+    ("Page margin", ["Seitenrand", "Marge de page", "Margen de página", "ページマージン", "页边距"]),
+    (
+        "Image import cancelled while a dialog is open",
+        [
+            "Bildimport bei geöffnetem Dialog abgebrochen",
+            "Importation des images annulée car une boîte de dialogue est ouverte",
+            "Importación de imágenes cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため画像の読み込みをキャンセルしました",
+            "对话框打开时已取消图像导入",
+        ],
+    ),
+    (
+        "Place cancelled while a dialog is open",
+        [
+            "Platzieren bei geöffnetem Dialog abgebrochen",
+            "Importation annulée car une boîte de dialogue est ouverte",
+            "Colocación cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため配置をキャンセルしました",
+            "对话框打开时已取消置入",
+        ],
+    ),
     ("Export PDF…", ["PDF exportieren …", "Exporter en PDF…", "Exportar PDF…", "PDF を書き出し…", "导出PDF…"]),
     ("Print…", ["Drucken …", "Imprimer…", "Imprimir…", "プリント…", "打印…"]),
     ("Document Setup…", ["Dokument einrichten …", "Format de document…", "Ajustar documento…", "ドキュメント設定…", "文档设置…"]),
