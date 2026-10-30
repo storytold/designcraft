@@ -128,6 +128,10 @@ pub struct Story {
     /// Story ▸ Optical Margin Alignment.
     #[serde(default, skip_serializing_if = "OpticalMargin::is_default")]
     pub optical_margin: OpticalMargin,
+    /// The story is a frame grid: its frames show this grid of character cells, and its
+    /// grid-aligned paragraphs set their lines on the grid's rows ([`crate::framegrid`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_grid: Option<crate::FrameGrid>,
     /// Bumped on every edit (composition cache key).
     #[serde(default)]
     pub rev: u64,
@@ -244,6 +248,7 @@ impl Story {
             direction: crate::TextDirection::LeftToRight,
             vertical: false,
             optical_margin: OpticalMargin::default(),
+            frame_grid: None,
             rev: 0,
             tables: BTreeMap::new(),
             notes: Vec::new(),
