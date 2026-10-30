@@ -11,6 +11,7 @@
 pub mod atomic;
 pub mod autosize;
 pub mod cmd;
+pub mod cover;
 pub mod dtd;
 pub mod file_access;
 pub mod guard;

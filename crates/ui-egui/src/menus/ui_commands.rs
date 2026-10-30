@@ -79,6 +79,8 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{path?} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
+    ("app.newCover", "New Book Cover…", None, "{} — a blank flat cover for a printer: trim size, page count and spine, with bleed and guides"),
+    ("app.coverResize", "Resize Book Cover…", None, "{} — widen or narrow a flat cover when the page count (and so the spine) changes"),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),
     ("window.uiScale", "UI Scaling", None, "{scale: 0.5–3 (1 = 100%)} — the size of the whole interface"),

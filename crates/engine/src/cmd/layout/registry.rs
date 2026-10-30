@@ -485,6 +485,15 @@ pub fn specs() -> Vec<CommandSpec> {
             page_size
         ),
         cmd!(
+            "layout.coverResize",
+            "Resize Book Cover",
+            [],
+            None,
+            "{page: 1-based (a one-page spread), oldSpine: pt, newSpine: pt (0 to 1000)} — the page grows by the spine change; items left of the spine stay, right of it move by the change, on it by half, and ones that cross it stretch; vertical guides follow, and a guide is added on each edge of the spine unless one is there. One undo step → {changed, width, spine, moved, stretched, unchanged, locked, guidesAdded}",
+            has_doc,
+            super::cover::cover_resize
+        ),
+        cmd!(
             "layout.pageOptions",
             "Page Options",
             [],

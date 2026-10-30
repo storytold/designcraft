@@ -39,6 +39,12 @@ impl Dialog {
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "documentSetup" => json!({}),
+            "coverResize" => {
+                json!({"printer": "lulu", "page": "1", "oldPages": "", "newPages": "", "oldSpine": "", "newSpine": ""})
+            }
+            "newCover" => {
+                json!({"printer": "lulu", "trimWidth": "", "trimHeight": "", "pages": "", "spine": "", "bleed": "9", "safe": "36"})
+            }
             "pdfExport" => {
                 json!({
                     "preset": "Desktop Printing",
@@ -1306,6 +1312,227 @@ pub fn open_document_setup(app: &mut DesignApp) {
     app.ui.dialog = Some(d);
 }
 
+/// File › Resize Book Cover…: the printer, the old and new page counts and, when the printer's
+/// rule is not wanted, the spines typed in. Acts on the page typed in (1 unless changed): a cover is
+/// one page, but the document may hold other pages too.
+pub fn open_cover_resize(app: &mut DesignApp) {
+    if app.session.active().is_none() {
+        app.status(crate::i18n::tr(&app.ui.language, "Open a document first."));
+        return;
+    }
+    app.ui.dialog = Some(Dialog::new("coverResize", json!({})));
+}
+
+use designcraft_engine::cover::{Printer, spine_pt};
+
+/// The printers the cover dialogs offer: the name the engine knows, and its label.
+const COVER_PRINTERS: [(&str, &str); 3] = [("lulu", "Lulu paperback"), ("hardback", "Lulu hardback"), ("other", "Other (type the spine)")];
+
+/// The spine on one side, in points, from the page count and the typed box: a side with a typed
+/// spine ("40.5", "0.5625 in") needs no page count.
+fn cover_side(d: &Dialog, printer: Printer, pages_key: &str, spine_key: &str, what: &str) -> Result<f64, String> {
+    let typed =
+        if d.s(spine_key).trim().is_empty() { None } else { Some(d.pt(spine_key).ok_or_else(|| format!("The {what} spine is not a number."))?) };
+    let pages = match (typed, d.s(pages_key).trim()) {
+        (Some(_), _) | (None, "") => None,
+        (None, raw) => Some(raw.parse::<u32>().map_err(|_| format!("The {what} page count is not a whole number."))?),
+    };
+    spine_pt(printer, pages, typed)
+}
+
+/// The old and new spine in points, from what the dialog holds.
+fn cover_spines(d: &Dialog) -> Result<(f64, f64), String> {
+    let printer = Printer::parse(&d.s("printer")).ok_or("Choose a printer.")?;
+    Ok((cover_side(d, printer, "oldPages", "oldSpine", "old")?, cover_side(d, printer, "newPages", "newSpine", "new")?))
+}
+
+/// What the printer's rule gives for the page count in `pages_key`, to show in an empty spine box.
+fn cover_spine_hint(d: &Dialog, pages_key: &str) -> Option<String> {
+    let printer = Printer::parse(&d.s("printer")).filter(|p| *p != Printer::Other)?;
+    let pages = d.s(pages_key).trim().parse::<u32>().ok()?;
+    spine_pt(printer, Some(pages), None).ok().map(|v| format!("{v:.2}"))
+}
+
+/// The Printer drop-down both cover dialogs open with.
+fn cover_printer_rows(ui: &mut egui::Ui, d: &mut Dialog, rtl: bool, label_w: f32, lang: &str) {
+    let tr = |s: &'static str| crate::i18n::tr(lang, s);
+    setup_row(ui, rtl, |ui| {
+        setup_caption(ui, tr("Printer:"), label_w);
+        let cur = d.s("printer");
+        let shown = COVER_PRINTERS.iter().find(|(v, _)| *v == cur).map_or("Lulu paperback", |(_, l)| *l);
+        craft_ui::ComboBox::from_id_salt("cover_printer").selected_text(crate::rtl::widget(ui, tr(shown))).width(150.0).show_ui(ui, |ui| {
+            for (v, l) in COVER_PRINTERS {
+                if ui.selectable_label(cur == v, crate::rtl::widget(ui, tr(l))).clicked() {
+                    d.fields.insert("printer".into(), json!(v));
+                }
+            }
+        });
+    });
+}
+
+/// The page the cover is on, 1-based.
+fn cover_page(d: &Dialog) -> Result<u64, String> {
+    d.s("page").trim().parse::<u64>().ok().filter(|n| *n >= 1).ok_or_else(|| "The page must be a whole number, 1 or more.".to_string())
+}
+
+fn cover_resize_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let tr = |s: &'static str| crate::i18n::tr(lang, s);
+    let rtl = crate::i18n::is_rtl(lang);
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let label_w = 130.0;
+    cover_printer_rows(ui, d, rtl, label_w, lang);
+    setup_row(ui, rtl, |ui| {
+        setup_caption(ui, tr("Cover page:"), label_w);
+        text_field(ui, d, "page", 70.0);
+    });
+    for (pages, spine, caption) in [("oldPages", "oldSpine", "Old pages:"), ("newPages", "newSpine", "New pages:")] {
+        setup_row(ui, rtl, |ui| {
+            setup_caption(ui, tr(caption), label_w);
+            text_field(ui, d, pages, 70.0);
+            ui.add_space(20.0);
+            setup_caption(ui, tr("Spine (type to override):"), 170.0);
+            let mut typed = d.s(spine);
+            let hint = cover_spine_hint(d, pages).unwrap_or_default();
+            if ui.add(egui::TextEdit::singleline(&mut typed).desired_width(90.0).hint_text(hint).align(egui::Align2::LEFT_TOP)).changed() {
+                d.fields.insert(spine.into(), Value::String(typed));
+            }
+        });
+    }
+    // The result, so the user sees the numbers before pressing OK.
+    let said = match cover_spines(d) {
+        Ok((o, n)) => format!("{} {o:.2} pt ({:.4} in) → {n:.2} pt ({:.4} in). {} {:+.2} pt", tr("Spine"), o / 72.0, n / 72.0, tr("Change:"), n - o),
+        Err(e) => e,
+    };
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(said).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+}
+
+/// Resize Book Cover's OK: `layout.coverResize` on the chosen page, then say what happened.
+fn confirm_cover_resize(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let page = cover_page(d)?;
+    let (old, new) = cover_spines(d)?;
+    let r = app.run("layout.coverResize", json!({"page": page, "oldSpine": old, "newSpine": new}))?;
+    let lang = app.ui.language.clone();
+    if r["changed"] == json!(false) {
+        app.status(crate::i18n::tr(&lang, "The spine did not change, so the cover is as it was."));
+    } else {
+        let n = |k: &str| r[k].as_u64().unwrap_or(0);
+        app.status(format!(
+            "{} {:.2} pt {} {:.2} pt). {} {}, {} {}, {} {}.",
+            crate::i18n::tr(&lang, "Cover is now"),
+            r["width"].as_f64().unwrap_or(0.0),
+            crate::i18n::tr(&lang, "wide (spine"),
+            r["spine"].as_f64().unwrap_or(0.0),
+            n("moved"),
+            crate::i18n::tr(&lang, "items moved"),
+            n("stretched"),
+            crate::i18n::tr(&lang, "stretched"),
+            n("unchanged"),
+            crate::i18n::tr(&lang, "unchanged"),
+        ));
+        if n("locked") > 0 {
+            let said = format!("{} {} {}", app.ui.status, n("locked"), crate::i18n::tr(&lang, "locked items were moved too."));
+            app.status(said);
+        }
+        if n("guidesAdded") > 0 {
+            let said = format!("{} {} {}", app.ui.status, n("guidesAdded"), crate::i18n::tr(&lang, "spine guides added."));
+            app.status(said);
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// File › New Book Cover…: a blank flat cover for a printer, sized from its trim and page count.
+pub fn open_new_cover(app: &mut DesignApp) {
+    app.ui.dialog = Some(Dialog::new("newCover", json!({})));
+}
+
+/// The spine for the New Book Cover dialog: typed, else the printer's rule for the page count.
+fn new_cover_spine(d: &Dialog) -> Result<f64, String> {
+    let printer = Printer::parse(&d.s("printer")).ok_or("Choose a printer.")?;
+    let typed = if d.s("spine").trim().is_empty() { None } else { Some(d.pt("spine").ok_or("The spine is not a number.")?) };
+    let pages = match (typed, d.s("pages").trim()) {
+        (Some(_), _) | (None, "") => None,
+        (None, raw) => Some(raw.parse::<u32>().map_err(|_| "The page count is not a whole number.")?),
+    };
+    spine_pt(printer, pages, typed)
+}
+
+/// `file.newCover`'s parameters from the dialog. The spine is always sent worked out.
+fn new_cover_params(d: &Dialog) -> Result<Value, String> {
+    let size = |k: &str, what: &str| d.pt(k).filter(|v| *v > 0.0).ok_or_else(|| format!("The {what} is not a number."));
+    let edge = |k: &str, what: &str| d.pt(k).filter(|v| *v >= 0.0).ok_or_else(|| format!("The {what} is not a number."));
+    Ok(json!({
+        "printer": d.s("printer"),
+        "trimWidth": size("trimWidth", "trim width")?,
+        "trimHeight": size("trimHeight", "trim height")?,
+        "spine": new_cover_spine(d)?,
+        "bleed": edge("bleed", "bleed")?,
+        "safe": edge("safe", "safe margin")?,
+    }))
+}
+
+fn new_cover_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let tr = |s: &'static str| crate::i18n::tr(lang, s);
+    let rtl = crate::i18n::is_rtl(lang);
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let label_w = 130.0;
+    cover_printer_rows(ui, d, rtl, label_w, lang);
+    for (key, caption) in [("trimWidth", "Trim width:"), ("trimHeight", "Trim height:")] {
+        setup_row(ui, rtl, |ui| {
+            setup_caption(ui, tr(caption), label_w);
+            let mut typed = d.s(key);
+            if ui.add(egui::TextEdit::singleline(&mut typed).desired_width(90.0).hint_text("8.5 in").align(egui::Align2::LEFT_TOP)).changed() {
+                d.fields.insert(key.into(), Value::String(typed));
+            }
+        });
+    }
+    setup_row(ui, rtl, |ui| {
+        setup_caption(ui, tr("Pages:"), label_w);
+        text_field(ui, d, "pages", 70.0);
+        ui.add_space(20.0);
+        setup_caption(ui, tr("Spine (type to override):"), 170.0);
+        let mut typed = d.s("spine");
+        let hint = cover_spine_hint(d, "pages").unwrap_or_default();
+        if ui.add(egui::TextEdit::singleline(&mut typed).desired_width(90.0).hint_text(hint).align(egui::Align2::LEFT_TOP)).changed() {
+            d.fields.insert("spine".into(), Value::String(typed));
+        }
+    });
+    for (key, caption) in [("bleed", "Bleed:"), ("safe", "Safe margin:")] {
+        setup_row(ui, rtl, |ui| {
+            setup_caption(ui, tr(caption), label_w);
+            text_field(ui, d, key, 90.0);
+        });
+    }
+    let said = match new_cover_params(d) {
+        Ok(p) => {
+            let (tw, th, sp) = (p["trimWidth"].as_f64().unwrap_or(0.0), p["trimHeight"].as_f64().unwrap_or(0.0), p["spine"].as_f64().unwrap_or(0.0));
+            let w = 2.0 * tw + sp;
+            format!("{} {w:.2} × {th:.2} pt ({:.3} × {:.3} in), {} {sp:.2} pt", tr("Flat cover"), w / 72.0, th / 72.0, tr("spine"))
+        }
+        Err(e) => e,
+    };
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(said).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+}
+
+/// New Book Cover's Create: `file.newCover`, then say what was made.
+fn confirm_new_cover(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    let r = app.run("file.newCover", new_cover_params(d)?)?;
+    let lang = app.ui.language.clone();
+    app.status(format!(
+        "{} {:.2} × {:.2} pt, {} {:.2} pt.",
+        crate::i18n::tr(&lang, "New cover:"),
+        r["width"].as_f64().unwrap_or(0.0),
+        r["height"].as_f64().unwrap_or(0.0),
+        crate::i18n::tr(&lang, "spine"),
+        r["spine"].as_f64().unwrap_or(0.0),
+    ));
+    Ok(Value::Null)
+}
+
 /// The fields of File › File Info, in the order the dialog shows them, with their labels.
 const FILE_INFO_FIELDS: [(&str, &str); 6] = [
     ("documentTitle", "Document Title:"),
@@ -2216,6 +2443,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
         "colorTheme" => crate::i18n::tr(&app.ui.language, "Color Theme"),
         "documentSetup" => crate::i18n::tr(&app.ui.language, "Document Setup"),
+        "coverResize" => crate::i18n::tr(&app.ui.language, "Resize Book Cover"),
+        "newCover" => crate::i18n::tr(&app.ui.language, "New Book Cover"),
         "fileInfo" => crate::i18n::tr(&app.ui.language, "File Info"),
         "numberingSection" => crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
         "findChange" => crate::i18n::tr(&app.ui.language, "Find/Change"),
@@ -2990,6 +3219,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                     }
                     "fileInfo" => file_info_dialog(app, ui, &mut d),
+                    "coverResize" => cover_resize_dialog(app, ui, &mut d),
+                    "newCover" => new_cover_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
                     "pdfExport" => pdf_export(app, ui, &mut d),
                     "epubExport" => epub_export(app, ui, &mut d),
@@ -3335,6 +3566,23 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         "documentSetup" => {
             // On an error the dialog stays open to be corrected.
             let r = confirm_document_setup(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        "coverResize" => {
+            // On an error the dialog stays open to be corrected.
+            let r = confirm_cover_resize(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                app.ui.dialog = Some(d);
+            }
+            r
+        }
+        "newCover" => {
+            let r = confirm_new_cover(app, &d);
             if let Err(e) = &r {
                 app.status(e.clone());
                 app.ui.dialog = Some(d);

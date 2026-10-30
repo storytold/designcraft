@@ -35,6 +35,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "<",
             "-",
             "cmd:layout.documentSetup",
+            "ui:app.newCover",
+            "ui:app.coverResize",
             "cmd:file.info",
         ],
     ),

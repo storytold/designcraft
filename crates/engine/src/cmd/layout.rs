@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, ok, str_param};
 use crate::{Result, Session};
 
+mod cover;
 mod layers;
 mod margins;
 mod pages;

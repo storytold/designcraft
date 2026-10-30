@@ -58,6 +58,34 @@ fn target(rule: LiquidRule, b: Rect, old: Rect, new: Rect, liquid: Option<Object
     }
 }
 
+/// Put `it`, which now fills `b`, at `to`. A group carries the matrix; any other item stretches
+/// its frame and a graphic inside is re-fitted. `scale` is Liquid Layout's Scale rule, which
+/// scales the content too.
+pub(crate) fn place_item(it: &mut Item, b: Rect, to: Rect, scale: bool) {
+    // A flat item (a horizontal or vertical line) has nothing to scale on its flat axis.
+    let ratio = |n: f64, o: f64| if o.abs() < 1e-9 { 1.0 } else { n / o };
+    let m = Affine::translate((to.x0, to.y0))
+        * Affine::scale_non_uniform(ratio(to.width(), b.width()), ratio(to.height(), b.height()))
+        * Affine::translate((-b.x0, -b.y0));
+    if scale {
+        super::object::scale_item(it, m, ratio(to.width(), b.width()).abs(), false);
+    } else if matches!(it.content, Content::Group { .. }) {
+        it.xf = m * it.xf;
+    } else {
+        // The frame stretches; content keeps its size unless the frame auto-fits it.
+        let inner = it.xf.inverse() * m * it.xf;
+        super::object::bake(it, inner);
+        let ib = it.inner_bounds();
+        if let Content::Graphic(g) = &mut it.content {
+            let o = inner * designcraft_geom::Point::ZERO;
+            g.xf = Affine::translate(o.to_vec2()) * g.xf;
+            if let Some(xf) = g.fitted(ib, g.auto_fit) {
+                g.xf = xf;
+            }
+        }
+    }
+}
+
 /// Re-flow page `pi` of spread `sr` after it went from `old` to its current bounds (objects are
 /// still placed relative to `old`). Nothing happens with the rule off.
 pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
@@ -72,7 +100,6 @@ pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
     // The page's objects: centres within its old horizontal extent (outer pages take the pasteboard).
     let last = sp.pages.len() - 1;
     let (lo, hi) = (if pi == 0 { f64::NEG_INFINITY } else { old.x0 }, if pi == last { f64::INFINITY } else { old.x1 });
-    let strokes = false;
     let Some(sp) = d.spread_mut(sr) else { return };
     for it in &mut sp.items {
         let b = it.bounds();
@@ -84,27 +111,7 @@ pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
         if to == b {
             continue;
         }
-        let m = Affine::translate((to.x0, to.y0))
-            * Affine::scale_non_uniform(to.width() / b.width(), to.height() / b.height())
-            * Affine::translate((-b.x0, -b.y0));
-        let it: &mut Item = Arc::make_mut(it);
-        if rule == LiquidRule::Scale {
-            super::object::scale_item(it, m, (to.width() / b.width()).abs(), strokes);
-        } else if matches!(it.content, Content::Group { .. }) {
-            it.xf = m * it.xf;
-        } else {
-            // The frame stretches; content keeps its size unless the frame auto-fits it.
-            let inner = it.xf.inverse() * m * it.xf;
-            super::object::bake(it, inner);
-            let ib = it.inner_bounds();
-            if let Content::Graphic(g) = &mut it.content {
-                let o = inner * designcraft_geom::Point::ZERO;
-                g.xf = Affine::translate(o.to_vec2()) * g.xf;
-                if let Some(xf) = g.fitted(ib, g.auto_fit) {
-                    g.xf = xf;
-                }
-            }
-        }
+        place_item(Arc::make_mut(it), b, to, rule == LiquidRule::Scale);
     }
 }
 

@@ -1,7 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::EngineError;
 use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
-use super::new::{file_new, file_sample, save_preset};
+use super::new::{file_new, file_new_cover, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
 use super::place::{file_place, place_drop, place_load, read_source};
 use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
@@ -13,6 +13,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
             "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?, primaryTextFrame?: bool}",
             always, file_new),
+        cmd!(noundo "file.newCover", "New Book Cover", [], None,
+            "{printer: lulu|hardback|other, trimWidth, trimHeight (pt, 18 to 4000), pages? (Lulu's rule for the spine), spine? (pt, typed: needed for other), bleed? (pt, default 9), safe? (safe margin pt, default 36), title?} — a blank one-page flat cover: back, spine, front, with the bleed and margins set and guides on the spine edges → {index, width, height, spine}",
+            always, file_new_cover),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
         cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
             let mut presets: Vec<Value> = PRESETS.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect();

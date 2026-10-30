@@ -3521,3 +3521,185 @@ fn character_style_options_set_the_digits() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
+
+fn cover_test_app() -> DesignApp {
+    DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
+}
+
+fn cover_dialog(printer: &str, old_pages: &str, new_pages: &str, old_spine: &str, new_spine: &str) -> Dialog {
+    Dialog::new(
+        "coverResize",
+        json!({"printer": printer, "oldPages": old_pages, "newPages": new_pages, "oldSpine": old_spine, "newSpine": new_spine}),
+    )
+}
+
+fn app_with_cover() -> DesignApp {
+    let mut app = cover_test_app();
+    app.session.execute("file.new", &json!({"width": 1264.5, "height": 792, "facingPages": false})).unwrap();
+    app
+}
+
+#[test]
+fn typed_spines_win_and_bad_ones_are_errors() {
+    let (o, n) = cover_spines(&cover_dialog("lulu", "224", "230", "", "")).unwrap();
+    assert!((o - 40.644).abs() < 1e-9 && (n - 41.616).abs() < 1e-9, "{o} {n}");
+    let (o, n) = cover_spines(&cover_dialog("lulu", "224", "230", "40.5", "0.5625 in")).unwrap();
+    assert_eq!((o, n), (40.5, 40.5), "typed points and typed inches");
+    assert!(cover_spines(&cover_dialog("other", "", "", "", "30")).is_err(), "other needs both spines");
+    assert!(cover_spines(&cover_dialog("lulu", "224", "abc", "", "")).is_err(), "page count not a number");
+    assert!(cover_spines(&cover_dialog("lulu", "224", "230", "wide", "")).is_err(), "spine not a number");
+    assert!(cover_spines(&cover_dialog("lulu", "0", "230", "", "")).is_err(), "zero pages");
+}
+
+#[test]
+fn confirming_resizes_the_cover_and_reports_it() {
+    let mut app = app_with_cover();
+    app.ui.dialog = Some(cover_dialog("lulu", "224", "230", "40.5", ""));
+    confirm(&mut app).unwrap();
+    let w = app.session.active().unwrap().doc.spreads[0].pages[0].width;
+    assert!((w - (1264.5 + 41.616 - 40.5)).abs() < 1e-6, "{w}");
+    assert!(app.ui.status.contains("Cover is now"), "{}", app.ui.status);
+}
+
+#[test]
+fn a_bad_entry_keeps_the_dialog_open_and_changes_nothing() {
+    let mut app = app_with_cover();
+    app.ui.dialog = Some(cover_dialog("lulu", "224", "abc", "", ""));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert_eq!(app.session.active().unwrap().doc.spreads[0].pages[0].width, 1264.5);
+}
+
+#[test]
+fn the_menu_opens_the_dialog_with_lulu_selected() {
+    let mut app = app_with_cover();
+    open_cover_resize(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.id.as_str(), d.s("printer").as_str()), ("coverResize", "lulu"));
+}
+
+#[test]
+fn the_cover_page_can_be_chosen() {
+    let mut app = cover_test_app();
+    app.session.execute("file.new", &json!({"width": 1264.5, "height": 792, "pages": 3, "facingPages": false})).unwrap();
+    let mut d = cover_dialog("lulu", "224", "230", "40.5", "");
+    d.fields.insert("page".into(), json!("2"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    let widths: Vec<f64> = app.session.active().unwrap().doc.spreads.iter().map(|sp| sp.pages[0].width).collect();
+    assert_eq!(widths[0], 1264.5);
+    assert!((widths[1] - (1264.5 + 41.616 - 40.5)).abs() < 1e-6, "{widths:?}");
+    assert_eq!(widths[2], 1264.5);
+}
+
+#[test]
+fn a_page_that_is_not_a_number_keeps_the_dialog_open() {
+    let mut app = app_with_cover();
+    let mut d = cover_dialog("lulu", "224", "230", "40.5", "");
+    d.fields.insert("page".into(), json!("front"));
+    app.ui.dialog = Some(d);
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert_eq!(app.session.active().unwrap().doc.spreads[0].pages[0].width, 1264.5);
+}
+
+#[test]
+fn a_spine_that_is_not_a_number_keeps_the_dialog_open() {
+    let mut app = app_with_cover();
+    app.ui.dialog = Some(cover_dialog("lulu", "224", "230", "wide", ""));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert_eq!(app.session.active().unwrap().doc.spreads[0].pages[0].width, 1264.5);
+}
+
+#[test]
+fn locked_items_are_mentioned_in_the_status() {
+    let mut app = app_with_cover();
+    app.session.execute("frame.create", &json!({"rect": [900, 100, 1000, 200]})).unwrap();
+    app.session
+        .edit(|d, _| {
+            let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+            for it in &mut sp.items {
+                std::sync::Arc::make_mut(it).locked = true;
+            }
+            Ok(Value::Null)
+        })
+        .unwrap();
+    app.ui.dialog = Some(cover_dialog("lulu", "224", "230", "40.5", ""));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.status.contains("1 locked"), "{}", app.ui.status);
+}
+
+#[test]
+fn page_counts_are_not_read_for_a_side_whose_spine_is_typed() {
+    // Other printers have no page rule: the page fields can hold anything.
+    assert_eq!(cover_spines(&cover_dialog("other", "abc", "xyz", "40", "42")).unwrap(), (40.0, 42.0));
+    // A typed old spine does not excuse a bad new page count.
+    assert!(cover_spines(&cover_dialog("lulu", "abc", "xyz", "40", "")).is_err());
+    assert_eq!(cover_spines(&cover_dialog("lulu", "abc", "230", "40.5", "")).unwrap().0, 40.5);
+}
+
+#[test]
+fn the_formula_spine_is_offered_as_a_hint() {
+    assert_eq!(cover_spine_hint(&cover_dialog("lulu", "224", "230", "", ""), "oldPages").as_deref(), Some("40.64"));
+    assert_eq!(cover_spine_hint(&cover_dialog("lulu", "abc", "230", "", ""), "oldPages"), None);
+    assert_eq!(cover_spine_hint(&cover_dialog("other", "224", "230", "", ""), "oldPages"), None);
+}
+
+#[test]
+fn a_hardback_takes_its_spine_from_lulus_table() {
+    assert_eq!(cover_spines(&cover_dialog("hardback", "224", "260", "", "")).unwrap(), (58.5, 63.0));
+    assert_eq!(cover_spine_hint(&cover_dialog("hardback", "224", "260", "", ""), "oldPages").as_deref(), Some("58.50"));
+    assert!(cover_spines(&cover_dialog("hardback", "20", "260", "", "")).is_err(), "under 24 pages");
+}
+
+#[test]
+fn new_book_cover_reads_its_fields_and_names_what_is_wrong() {
+    let mut d = Dialog::new("newCover", json!({}));
+    for (k, v) in [("trimWidth", "8.5 in"), ("trimHeight", "11 in"), ("pages", "224")] {
+        d.fields.insert(k.into(), json!(v));
+    }
+    let p = new_cover_params(&d).unwrap();
+    assert_eq!(
+        (p["trimWidth"].as_f64(), p["trimHeight"].as_f64(), p["bleed"].as_f64(), p["safe"].as_f64()),
+        (Some(612.0), Some(792.0), Some(9.0), Some(36.0))
+    );
+    assert!((p["spine"].as_f64().unwrap() - 40.644).abs() < 1e-9);
+    d.fields.insert("trimWidth".into(), json!(""));
+    assert!(new_cover_params(&d).unwrap_err().contains("trim width"));
+    d.fields.insert("trimWidth".into(), json!("8.5 in"));
+    d.fields.insert("pages".into(), json!("many"));
+    assert!(new_cover_params(&d).unwrap_err().contains("page count"));
+    d.fields.insert("spine".into(), json!("40"));
+    assert_eq!(new_cover_params(&d).unwrap()["spine"].as_f64(), Some(40.0), "a typed spine needs no page count");
+}
+
+#[test]
+fn new_book_cover_opens_a_cover_document_even_with_nothing_open() {
+    let mut app = cover_test_app();
+    open_new_cover(&mut app);
+    let mut d = app.ui.dialog.take().unwrap();
+    assert_eq!(d.id.as_str(), "newCover");
+    for (k, v) in [("trimWidth", "612"), ("trimHeight", "792"), ("pages", "224")] {
+        d.fields.insert(k.into(), json!(v));
+    }
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    let pg = app.session.doc().unwrap().doc.page(0).unwrap().clone();
+    assert!((pg.width - (1224.0 + 40.644)).abs() < 1e-9 && pg.height == 792.0, "{}", pg.width);
+    assert!(app.ui.status.contains("New cover"), "{}", app.ui.status);
+}
+
+#[test]
+fn resizing_a_cover_says_when_it_added_the_spine_guides() {
+    let mut app = app_with_cover();
+    app.ui.dialog = Some(cover_dialog("lulu", "224", "230", "40.5", ""));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.status.contains("2 spine guides added"), "{}", app.ui.status);
+    let guides = app.session.doc().unwrap().doc.spreads[0].pages[0].guides.len();
+    assert_eq!(guides, 2);
+    // Run again with the spine unchanged: nothing is added and nothing is said.
+    app.ui.dialog = Some(cover_dialog("lulu", "230", "236", "", ""));
+    confirm(&mut app).unwrap();
+    assert!(!app.ui.status.contains("spine guides added"), "{}", app.ui.status);
+}

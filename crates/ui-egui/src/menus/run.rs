@@ -470,6 +470,14 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 export_pdf(app, p)
             }
         }
+        "app.newCover" => {
+            crate::dialogs::open_new_cover(app);
+            Ok(Value::Null)
+        }
+        "app.coverResize" => {
+            crate::dialogs::open_cover_resize(app);
+            Ok(Value::Null)
+        }
         "app.palette" => {
             app.ui.palette = Some(String::new());
             Ok(Value::Null)
