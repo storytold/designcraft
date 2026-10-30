@@ -1,7 +1,7 @@
 //! Structure and XML: tags on frames (Tags panel), paragraph styles mapped to tags, the structure
 //! tree, XML export and import (content flows into the frames with matching tags).
 
-use designcraft_doc::{Content, Document, Item, ItemId, ParaFormat, Story, StoryId, XmlTag};
+use designcraft_doc::{Content, Document, Item, ItemId, Story, StoryId, XmlTag};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, has_doc, ids_param, ok, str_param};
@@ -626,22 +626,58 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
 fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<(Option<String>, String)>)>) -> Result<()> {
     s.edit(|d, _| {
         for (sid, paras) in fills {
-            let Some(st) = d.story_mut(sid) else { continue };
-            let base = st.paras.first().cloned().unwrap_or_default();
-            let text = paras.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-            let frames = std::mem::take(&mut st.frames);
-            let mut fresh = Story::with_text(sid, &text, ParaFormat { table: None, ..base.clone() });
-            for (i, (style, _)) in paras.iter().enumerate() {
-                if let (Some(sty), Some(pf)) = (style, fresh.paras.get_mut(i)) {
-                    pf.style = sty.clone();
-                }
+            if let Some(st) = d.story_mut(sid) {
+                fill_story(st, &paras);
             }
-            fresh.frames = frames;
-            fresh.rev = st.rev.wrapping_add(1);
-            *st = fresh;
         }
         Ok(())
     })
+}
+
+/// Byte lengths of the longest common start of `a` and `b`, and of the longest common end of
+/// what is left, on character boundaries.
+fn common_ends(a: &str, b: &str) -> (usize, usize) {
+    let pre: usize = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
+    let suf: usize = a[pre..].chars().rev().zip(b[pre..].chars().rev()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
+    (pre, suf)
+}
+
+/// Puts the paragraphs into the story in place, so the template's formatting stays: paragraph
+/// `i` replaces old paragraph `i` (only the part that differs, which takes the format of the
+/// first character it replaces), extra paragraphs copy the last one's formats, surplus old
+/// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays.
+fn fill_story(st: &mut Story, paras: &[(Option<String>, String)]) {
+    let ranges = st.para_ranges();
+    let keep_last = ranges.len() > 1 && ranges.last().is_some_and(|r| r.is_empty());
+    let old_n = ranges.len() - usize::from(keep_last);
+    for (i, (_, new)) in paras.iter().enumerate() {
+        let ranges = st.para_ranges();
+        if i < old_n {
+            let r = ranges[i].clone();
+            let (pre, suf) = common_ends(&st.text[r.clone()], new);
+            let (a, b) = (r.start + pre, r.end - suf);
+            let repl = &new[pre..new.len() - suf];
+            if a < b {
+                st.replace(a..b, repl);
+            } else if !repl.is_empty() {
+                let fmt = if pre > 0 { st.char_format_at(a).clone() } else { st.format_after(a).clone() };
+                st.insert_with(a, repl, fmt);
+            }
+        } else if let Some(prev) = i.checked_sub(1).and_then(|p| ranges.get(p)) {
+            st.insert(prev.end, &format!("\n{new}"));
+        }
+    }
+    if old_n > paras.len() {
+        let ranges = st.para_ranges();
+        if let (Some(keep), Some(last)) = (paras.len().checked_sub(1).and_then(|k| ranges.get(k)), ranges.get(old_n - 1)) {
+            st.delete(keep.end..last.end);
+        }
+    }
+    for (i, (style, _)) in paras.iter().enumerate() {
+        if let (Some(sty), Some(pf)) = (style, st.paras.get_mut(i)) {
+            pf.style = sty.clone();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -731,6 +767,47 @@ mod tests {
         // The tagged frames take imported XML.
         let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
         assert_eq!(r["placed"], 2);
+    }
+
+    #[test]
+    fn import_xml_keeps_the_frames_character_formatting() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Contains: 300 g/L\nSecond\n", "caret": false}))
+            .unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 25})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20.0}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        let before = s.doc().unwrap().doc.stories[&sid].clone();
+        let story = |s: &Session| s.doc().unwrap().doc.stories[&sid].clone();
+        let size = |st: &designcraft_doc::Story, at: usize| st.format_after(at).over.size;
+        let style = |st: &designcraft_doc::Story, at: usize| st.format_after(at).over.font_style.clone();
+
+        // The same text changes nothing.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Contains: 300 g/L\nSecond</c></Root>"})).unwrap();
+        assert_eq!(story(&s).text, before.text);
+        assert_eq!(story(&s).chars, before.chars, "runs unchanged");
+
+        // A changed number keeps the bold label and the size; a new paragraph copies the last.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Contains: 400 g/L\nSecond\nThird</c></Root>"})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "Contains: 400 g/L\nSecond\nThird\n", "the trailing return stays");
+        assert_eq!(style(&st, 0), before.format_after(0).over.font_style, "label stays bold");
+        assert_ne!(style(&st, 10), style(&st, 0), "the number stays regular");
+        assert_eq!(size(&st, 10), Some(20.0));
+        assert_eq!(size(&st, st.text.find("Third").unwrap()), Some(20.0), "a new paragraph takes the last one's format");
+
+        // Fewer paragraphs: the surplus goes, formatting stays.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Enthält: 300 g/L</c></Root>"})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "Enthält: 300 g/L\n");
+        assert_eq!(size(&st, 0), Some(20.0));
+        assert_eq!(st.paras.len(), 2);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
