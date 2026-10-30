@@ -4,7 +4,7 @@
 use designcraft_doc::{Content, Document, Item, ItemId, ParaFormat, Story, StoryId, XmlTag};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, ids_param, ok, str_param};
+use super::{CommandSpec, bad, bool_or, cmd, has_doc, ids_param, ok, str_param};
 use crate::{Result, Session};
 
 const COLORS: [[u8; 3]; 6] = [[230, 120, 40], [60, 140, 220], [70, 170, 90], [200, 70, 160], [150, 110, 220], [200, 170, 40]];
@@ -20,12 +20,17 @@ fn valid_name(n: &str) -> bool {
 
 /// Tagged objects in reading order (pages, then top to bottom, left to right), nested ones included.
 fn tagged(d: &Document) -> Vec<ItemId> {
+    in_reading_order(d, |it| !it.xml_tag.is_empty())
+}
+
+/// Document-page objects that pass `keep`, in reading order, nested ones included.
+fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     let mut keyed: Vec<((usize, i64, i64), ItemId)> = Vec::new();
     for (si, sp) in d.spreads.iter().enumerate() {
         let first = d.first_page_of_spread(si);
         for top in &sp.items {
             top.walk(&mut |it: &Item| {
-                if !it.xml_tag.is_empty() {
+                if keep(it) {
                     let b = it.bounds();
                     let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
                     keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it.id));
@@ -35,6 +40,78 @@ fn tagged(d: &Document) -> Vec<ItemId> {
     }
     keyed.sort_by_key(|(k, _)| *k);
     keyed.into_iter().map(|(_, i)| i).collect()
+}
+
+/// `text` for text frames, `image` for frames holding a graphic and empty graphic frames (an
+/// unassigned frame in the document's default graphic frame style), `None` for anything else.
+fn frame_kind(d: &Document, it: &Item) -> Option<&'static str> {
+    match &it.content {
+        Content::Text(_) => Some("text"),
+        Content::Graphic(_) => Some("image"),
+        Content::Unassigned if it.object_style == d.styles.default_graphic_frame => Some("image"),
+        _ => None,
+    }
+}
+
+/// `xml.autoTag`: tags text and graphic frames on the document pages, by their Layers panel name
+/// when that is a valid XML name, otherwise `text_1`, `image_1`, … in reading order.
+fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "xml.autoTag";
+    let kinds: Vec<String> = match p.get("kinds") {
+        None | Some(Value::Null) => vec!["text".into(), "image".into()],
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        Some(_) => return Err(bad(ID, "`kinds` is a list: [\"text\", \"image\"]")),
+    };
+    if let Some(k) = kinds.iter().find(|k| !matches!(k.as_str(), "text" | "image")) {
+        return Err(bad(ID, format!("unknown kind `{k}` (text, image)")));
+    }
+    let overwrite = bool_or(p, "overwrite", false);
+    let use_names = bool_or(p, "useNames", true);
+    let d = &s.doc()?.doc;
+    let wanted = |it: &Item| frame_kind(d, it).is_some_and(|k| kinds.iter().any(|w| w == k)) && (overwrite || it.xml_tag.is_empty());
+    let ids = in_reading_order(d, wanted);
+    // Numbers already taken by tags that stay, so `text_3` isn't given twice.
+    let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
+        .into_iter()
+        .filter(|i| !ids.contains(i))
+        .filter_map(|i| d.item(i))
+        .map(|it| it.xml_tag.clone())
+        .collect();
+    let mut next = [("text", 0usize), ("image", 0usize)];
+    let mut plan: Vec<(ItemId, String, &'static str)> = Vec::new();
+    for id in ids {
+        let Some(it) = d.item(id) else { continue };
+        let Some(kind) = frame_kind(d, it) else { continue };
+        let name = it.name.trim();
+        let tag = if use_names && valid_name(name) {
+            name.to_string()
+        } else {
+            let counter = next.iter_mut().find(|(k, _)| *k == kind).map(|(_, n)| n);
+            let Some(n) = counter else { continue };
+            loop {
+                *n += 1;
+                let t = format!("{kind}_{n}");
+                if !used.contains(&t) {
+                    break t;
+                }
+            }
+        };
+        used.insert(tag.clone());
+        plan.push((id, tag, kind));
+    }
+    s.edit(|d, _| {
+        for (id, tag, _) in &plan {
+            if !d.xml.tags.iter().any(|x| x.name == *tag) {
+                let color = COLORS[d.xml.tags.len() % COLORS.len()];
+                d.xml.tags.push(XmlTag { name: tag.clone(), color });
+            }
+            if let Some(it) = d.item_mut(*id) {
+                it.xml_tag = tag.clone();
+            }
+        }
+        let tagged: Vec<Value> = plan.iter().map(|(id, tag, kind)| json!({"id": id.0, "tag": tag, "kind": kind})).collect();
+        Ok(json!({"tagged": tagged}))
+    })
 }
 
 /// Escapes markup characters and drops characters XML 1.0 cannot hold.
@@ -271,6 +348,15 @@ pub fn specs() -> Vec<CommandSpec> {
                 ok()
             })
         }),
+        cmd!(
+            "xml.autoTag",
+            "Auto Tag Frames",
+            [],
+            None,
+            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
+            has_doc,
+            auto_tag
+        ),
         cmd!(
             "xml.mapStyle",
             "Map Styles to Tags",
@@ -516,6 +602,40 @@ mod tests {
         assert!(d.xml.tags.iter().all(|t| t.name != "a b><x"));
         s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
         assert_eq!(s.doc().unwrap().doc.xml.style_map.len(), 1);
+    }
+
+    #[test]
+    fn auto_tag_names_text_and_graphic_frames() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, rect: [i32; 4], content: &str| {
+            s.execute("frame.create", &json!({"rect": rect, "content": content, "text": "x", "caret": false})).unwrap()["id"].clone()
+        };
+        let body = frame(&mut s, [72, 300, 400, 350], "text");
+        let head = frame(&mut s, [72, 72, 400, 120], "text");
+        let photo = frame(&mut s, [72, 400, 300, 600], "graphic");
+        let kept = frame(&mut s, [72, 700, 400, 740], "text");
+        let shape = frame(&mut s, [450, 72, 500, 120], "unassigned");
+        s.execute("object.rename", &json!({"id": head, "name": "headline"})).unwrap();
+        s.execute("object.rename", &json!({"id": body, "name": "not a tag"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "text_1", "ids": [kept]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tags: Vec<(serde_json::Value, String)> =
+            r["tagged"].as_array().unwrap().iter().map(|t| (t["id"].clone(), t["tag"].as_str().unwrap().to_string())).collect();
+        // Reading order; a valid name is the tag; `text_1` is taken, so the counter skips it.
+        assert_eq!(tags, vec![(head.clone(), "headline".into()), (body.clone(), "text_2".into()), (photo.clone(), "image_1".into())]);
+        let d = &s.doc().unwrap().doc;
+        assert!(d.item(designcraft_doc::ItemId(shape.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "a plain shape stays untagged");
+        assert_eq!(d.item(designcraft_doc::ItemId(kept.as_u64().unwrap())).unwrap().xml_tag, "text_1");
+        assert!(d.xml.tags.iter().any(|t| t.name == "headline") && d.xml.tags.iter().any(|t| t.name == "image_1"));
+        // Running again tags nothing new; overwrite with only images retags the photo.
+        assert_eq!(s.execute("xml.autoTag", &json!({})).unwrap()["tagged"].as_array().unwrap().len(), 0);
+        let r = s.execute("xml.autoTag", &json!({"kinds": ["image"], "overwrite": true, "useNames": false})).unwrap();
+        assert_eq!(r["tagged"][0]["tag"], "image_1");
+        assert!(s.execute("xml.autoTag", &json!({"kinds": ["table"]})).is_err());
+        // The tagged frames take imported XML.
+        let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
+        assert_eq!(r["placed"], 2);
     }
 
     #[test]
