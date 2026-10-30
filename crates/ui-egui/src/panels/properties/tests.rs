@@ -3,6 +3,7 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+use super::links::{file_size, link_format, middle_ellipsis};
 use super::*;
 
 /// A link to a panel whose flyout is open leaves the flyout open.
@@ -84,6 +85,70 @@ fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
 }
 
 /// With the caret in text, the Stroke panel offers the text's stroke options, not an empty panel.
+/// A link whose data doesn't decode has no thumbnail, and that is remembered: the next frame
+/// reads the cache rather than decoding it again.
+#[test]
+fn an_undecodable_link_thumbnail_is_cached_as_none() {
+    use designcraft_doc::{Asset, AssetId};
+    let mut s = designcraft_engine::Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let mut doc = (*s.doc().unwrap().doc).clone();
+    let aid = AssetId(doc.alloc());
+    let a = Asset {
+        id: aid,
+        name: "broken.png".into(),
+        mime: "image/png".into(),
+        data: std::sync::Arc::new(b"not a png".to_vec()),
+        ..Default::default()
+    };
+    doc.assets.insert(aid, std::sync::Arc::new(a));
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let ctx = ui.ctx();
+        assert!(super::links::link_thumb(ctx, &doc, aid.0).is_none());
+        let key = super::links::link_thumb_key(&doc.assets[&aid]);
+        assert!(ctx.data(|d| d.get_temp::<super::links::LinkThumb>(key)).is_some_and(|(_, t)| t.is_none()), "cached as none");
+        assert!(super::links::link_thumb(ctx, &doc, aid.0).is_none());
+    });
+    out.textures_delta.clear();
+}
+
+/// A thumbnail cache entry belongs to the image data it was made from. An entry left at the
+/// same key by data that is gone (its address reused) is stale: the link's own data is
+/// decoded rather than the old result shown.
+#[test]
+fn a_link_thumbnail_entry_of_data_that_is_gone_is_stale() {
+    use designcraft_doc::{Asset, AssetId};
+    use std::sync::Arc;
+    let mut s = designcraft_engine::Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let mut doc = (*s.doc().unwrap().doc).clone();
+    let aid = AssetId(doc.alloc());
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#4488cc"/></svg>"##;
+    let a = Asset {
+        id: aid,
+        name: "photo.svg".into(),
+        mime: "image/svg+xml".into(),
+        data: Arc::new(svg.to_vec()),
+        pixels: Some((32, 32)),
+        ..Default::default()
+    };
+    doc.assets.insert(aid, Arc::new(a));
+    let key = super::links::link_thumb_key(&doc.assets[&aid]);
+    // What an undecodable file left at this key before its data was freed: no thumbnail, and
+    // a reference to data that is gone.
+    let gone = Arc::downgrade(&Arc::new(b"not a png".to_vec()));
+    let ctx = egui::Context::default();
+    ctx.data_mut(|d| d.insert_temp::<super::links::LinkThumb>(key, (gone, None)));
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let ctx = ui.ctx();
+        assert!(super::links::link_thumb(ctx, &doc, aid.0).is_some(), "the link's own image, not the stale none");
+        let (data, t) = ctx.data(|d| d.get_temp::<super::links::LinkThumb>(key)).expect("the new entry");
+        assert!(t.is_some() && data.upgrade().is_some_and(|d| Arc::ptr_eq(&d, &doc.assets[&aid].data)), "made from this data");
+    });
+    out.textures_delta.clear();
+}
+
 /// The first and last line indents take negative values, as InDesign's (and the Paragraph
 /// panel's) do; the left and right indents and the spacing don't.
 #[test]
@@ -155,23 +220,27 @@ fn links_panel_distinguishes_same_named_sources_and_keeps_link_actions() {
     let second = "/project/assets/studio-b/photo.svg";
     let (app, items, assets) = linked_graphics(&[Some(first), Some(second), None]);
     let mut h = links_harness(app, 320.0);
-    assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
-    assert!(h.query_by_label(first).is_some(), "the first source path is visible in the row");
-    h.get_by_label(second).click();
+    // Same-named sources show their folder; the embedded one its name alone.
+    let _ = h.get_by_label("photo.svg — studio-a");
+    assert_eq!(h.get_all_by_label("photo.svg").count(), 1);
+    h.get_by_label("photo.svg — studio-b").click();
     h.run_steps(3);
-    h.get_by_label("Go To").click();
+    assert!(h.query_by_label(second).is_some(), "Link Info shows the chosen source's path");
+    h.get_by_label("Go To Link").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
-    h.get_by_label("Embed").click();
+    h.get_by_label("More Link Options").click();
+    h.run_steps(3);
+    h.get_by_label("Embed Link").click();
     h.run_steps(3);
     assert!(h.state().session.active().unwrap().doc.assets[&assets[1]].link.is_none());
     assert_eq!(h.state().session.active().unwrap().doc.assets[&assets[0]].link.as_deref(), Some(first));
     assert!(h.query_by_label(second).is_none(), "an embedded graphic no longer shows a source path");
-    assert_eq!(h.get_all_by_label("Embedded").count(), 2);
-    assert_eq!(h.get_all_by_label("photo.svg").count(), 3);
-    h.get_by_label(first).click();
+    // Two rows marked embedded, and the chosen one's Link Info says so too.
+    assert_eq!(h.get_all_by_label("Embedded").count(), 3);
+    h.get_by_label("photo.svg — studio-a").click();
     h.run_steps(3);
-    h.get_by_label("Go To").click();
+    h.get_by_label("Go To Link").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[0]]);
 }
@@ -181,13 +250,120 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
     let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
     let (app, _, _) = linked_graphics(&[Some(path)]);
     let mut h = links_harness(app, 240.0);
-    let source = h.get_by_label(path).rect();
-    assert!(source.width() < 150.0, "the source is truncated to its column: {source:?}");
-    assert!(source.right() <= 240.0, "the source stays inside the narrow panel: {source:?}");
-    assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
-    h.get_by_label(path).click();
+    assert!(h.get_by_label("photo.svg").rect().right() <= 240.0, "the row stays inside the narrow panel");
+    h.get_by_label("photo.svg").click();
     h.run_steps(3);
-    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
+    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "Link Info paints the path in full and wraps it inside the panel");
+}
+
+/// The Links panel as InDesign's: one row per link with its page, the selection count and the
+/// Relink, Go To Link and Update Link buttons, and Link Info with the chosen link's details;
+/// ◀ ▶ step through the links.
+#[test]
+fn links_panel_has_indesigns_footer_and_link_info() {
+    let (app, _, _) = linked_graphics(&[Some("/project/a/first.svg"), Some("/project/a/second.svg")]);
+    let mut h = links_harness(app, 320.0);
+    let _ = h.get_by_label("0 Selected");
+    for b in ["Relink…", "Go To Link", "Update Link"] {
+        use egui_kittest::kittest::NodeT;
+        assert!(h.get_by_label(b).accesskit_node().is_disabled(), "{b} waits for a link to be chosen");
+    }
+    let _ = h.get_by_label("Choose a link.");
+    h.get_by_label("Next Link").click();
+    h.run_steps(3);
+    let _ = h.get_by_label("1 Selected");
+    for v in ["Format:", "SVG", "Dimensions:", "32 × 32", "Page:", "Path:", "/project/a/first.svg"] {
+        assert!(h.query_by_label(v).is_some(), "Link Info shows {v}");
+    }
+    h.get_by_label("Next Link").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("/project/a/second.svg").is_some(), "▶ goes to the next link");
+}
+
+/// Relinking one of several missing pictures finds the others in the same folder, as
+/// InDesign's Search for Missing Links in This Folder, and says how many it relinked.
+#[test]
+fn relinking_a_missing_link_finds_the_others_in_its_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (old, new) = (dir.path().join("old"), dir.path().join("moved"));
+    std::fs::create_dir_all(&old).unwrap();
+    let png = designcraft_render::Rendered { width: 8, height: 8, pixels: vec![120; 8 * 8 * 4] }.to_png();
+    let picked = new.join("a.png").to_string_lossy().to_string();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    // Relink's file dialog answers with `picked`.
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
+    app.run("file.new", json!({})).unwrap();
+    for (k, name) in ["a.png", "b.png", "c.png"].iter().enumerate() {
+        std::fs::write(old.join(name), &png).unwrap();
+        let x = 72 + 120 * k as u64;
+        let f = app.run("frame.create", json!({"rect": [x, 72, x + 100, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": old.join(name).to_string_lossy(), "frame": f})).unwrap();
+    }
+    // The folder moves: all three links go missing.
+    std::fs::rename(&old, &new).unwrap();
+    let mut h = links_harness(app, 320.0);
+    assert_eq!(h.get_all_by_label("Missing").count(), 3);
+    h.get_by_label("a.png").click();
+    h.run_steps(3);
+    h.get_by_label("Relink…").click();
+    h.run_steps(3);
+    h.state_mut().settle_dialogs();
+    h.run_steps(2);
+    let st = h.state().session.active().unwrap();
+    for a in st.doc.assets.values() {
+        let link = a.link.clone().unwrap_or_default();
+        assert!(link.contains("moved"), "{} relinked to the new folder: {link}", a.name);
+    }
+    let d = h.state().ui.dialog.clone().expect("an alert says how many were found");
+    assert!(d.s("message").contains("relinked 2 missing links"), "{}", d.s("message"));
+}
+
+/// A missing linked text file doesn't set off the folder search after a relink: that only
+/// looks for pictures, so there'd be nothing to report.
+#[test]
+fn a_missing_text_link_alone_starts_no_folder_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = designcraft_render::Rendered { width: 8, height: 8, pixels: vec![120; 8 * 8 * 4] }.to_png();
+    let (gone, found) = (dir.path().join("gone.png"), dir.path().join("found.png"));
+    std::fs::write(&gone, &png).unwrap();
+    let text = dir.path().join("notes.txt");
+    std::fs::write(&text, "Notes").unwrap();
+    let picked = found.to_string_lossy().to_string();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    // Relink's file dialog answers with `picked`.
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": gone.to_string_lossy(), "frame": f})).unwrap();
+    app.run("file.place", json!({"path": text.to_string_lossy(), "link": true, "rect": [72, 300, 300, 400]})).unwrap();
+    std::fs::rename(&gone, &found).unwrap();
+    std::fs::remove_file(&text).unwrap();
+    let mut h = links_harness(app, 320.0);
+    assert_eq!(h.get_all_by_label("Missing").count(), 2, "the picture and the text file");
+    h.get_by_label("gone.png").click();
+    h.run_steps(3);
+    h.get_by_label("Relink…").click();
+    h.run_steps(3);
+    h.state_mut().settle_dialogs();
+    h.run_steps(2);
+    assert!(h.state().ui.dialog.is_none(), "no 'relinked 0' alert");
+}
+
+/// Long names are shortened in the middle, keeping the start and the extension.
+#[test]
+fn long_link_names_are_shortened_in_the_middle() {
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let font = egui::FontId::proportional(12.0);
+        let s = middle_ellipsis(ui.painter(), "AdobeStock_108372417.jpg", &font, 90.0);
+        assert!(s.contains('…') && s.starts_with("Ado") && s.ends_with(".jpg"), "{s}");
+        assert_eq!(middle_ellipsis(ui.painter(), "a.jpg", &font, 90.0), "a.jpg");
+    });
+    out.textures_delta.clear();
+    assert_eq!(link_format("image/jpeg"), "JPEG");
+    assert_eq!(link_format("image/x-icon"), "X-ICON");
+    assert_eq!(file_size(1500), "2 KB");
+    assert_eq!(file_size(3 * 1024 * 1024), "3.0 MB");
 }
 
 #[test]

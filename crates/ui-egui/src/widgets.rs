@@ -627,7 +627,7 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
     let s = (size.y - 4.0).min(17.0);
     crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, if on { t.text_strong } else { t.icon });
     // Named by its tooltip, for screen readers.
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, tip));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tip));
     if tip.is_empty() {
         resp
     } else {

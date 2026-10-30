@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Links panel laid out as InDesign's; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -32,6 +32,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
+| Links panel: rows with thumbnail, status and page; Relink / Go To Link / Update Link footer; Link Info | ✓ | ✓ the same layout; Embed Link, Relink to Folder and Update All Links behind the footer's last button; no Relink from CC Libraries or Edit Original | ~ | Learn Skills Daily course, chapter 13 |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
@@ -56,7 +57,7 @@ basics of editing fail for too many users on Windows and Linux.
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-11: 28 rows, 12 ✓, 14 ~, 2 ✗ → **68% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+Counted 2026-10-21: 30 rows, 14 ✓, 15 ~, 1 ✗ → **72% presence**, scoring ✓ = 1, ~ = 0.5. Ready
 for real work is lower, ~45%, because threading is missing and three of the ~ rows (copy/paste,
 context menus, typing at a caret) are things a layout artist does every minute, and their failures stop work.
 
@@ -122,6 +123,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Added the Links panel row (~: InDesign's layout, no CC Libraries relink or Edit Original); recounted the checklist |
 | 2026-10-24 | minor | Panels row: Story panel (Optical Margin Alignment and its size) |
 | 2026-10-21 | minor | Chrome row: the text Control panel's A/¶ modes; Properties row: ••• expands Character and Paragraph in place |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
