@@ -751,11 +751,12 @@ impl Session {
         let r = f(&mut doc, &mut sel)?;
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
-        doc.sync_endnote_story();
         // Text and frames copied or deleted: anchored items keep ids and stories of their own.
         if st.doc.has_anchored_items() || doc.has_anchored_items() {
             doc.fix_anchored_text_frames();
         }
+        // After the repair, which copies and removes stories with their endnotes.
+        doc.sync_endnote_story();
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();

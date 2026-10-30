@@ -436,6 +436,29 @@ mod text_frame_tests {
         assert_eq!(shown(&s).len(), 10);
     }
 
+    /// The endnote frame lists the endnotes of anchored stories copied or deleted with their
+    /// text at once: it used to be brought up to date before the copies were made.
+    #[test]
+    fn the_endnote_frame_follows_anchored_stories_copied_and_deleted() {
+        let (mut s, host, sid, _) = session();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "A note"})).unwrap();
+        let notes = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            d.story(d.endnote_story.unwrap()).unwrap().text.matches("A note").count()
+        };
+        assert_eq!(notes(&s), 1);
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(notes(&s), 2, "copied");
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert_eq!(notes(&s), 1, "deleted");
+    }
+
     #[test]
     fn deleted_anchored_text_frames_take_their_stories_along() {
         let (mut s, host, sid, _) = session();
