@@ -169,6 +169,16 @@ impl<'a> Ex<'a> {
                 .attr("SubscriptSize", num(a.subscript_size))
                 .attr("SubscriptPosition", num(a.subscript_position)),
         );
+        // InDesign always writes the document's default story preference; readers such as Okapi's IDML
+        // filter take the spread reading order from it and fail without it.
+        root.push(
+            El::new("StoryPreference")
+                .attr("OpticalMarginAlignment", "false")
+                .attr("OpticalMarginSize", "12")
+                .attr("FrameType", "TextFrameType")
+                .attr("StoryOrientation", "Horizontal")
+                .attr("StoryDirection", "LeftToRightDirection"),
+        );
         document(&root)
     }
 }
