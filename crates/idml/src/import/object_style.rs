@@ -5,11 +5,18 @@ use super::{Corner, DirectionalFeather, DropShadow, Effects, El, GradientFeather
 pub(super) const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
 /// The four corners of a paragraph border or shading (`prefix` `ParagraphBorder` /
-/// `ParagraphShading`): top left, top right, bottom right, bottom left. Unset when none is given.
+/// `ParagraphShading`), or an object style (no prefix): top left, top right, bottom right,
+/// bottom left. Unset when none is given.
 pub(super) fn corners(e: &El, prefix: &str) -> Option<[Corner; 4]> {
+    corners_in(&[e], prefix)
+}
+
+/// [`corners`] over `levels` (an object style, then the styles it is based on): each corner's
+/// shape and size from the first level that gives it.
+pub(super) fn corners_in(levels: &[&El], prefix: &str) -> Option<[Corner; 4]> {
     let keys = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-    let shapes = keys.map(|n| e.prop(&format!("{prefix}{n}CornerOption")));
-    let sizes = keys.map(|n| e.num(&format!("{prefix}{n}CornerRadius")));
+    let shapes = keys.map(|n| levels.iter().find_map(|e| e.prop(&format!("{prefix}{n}CornerOption"))));
+    let sizes = keys.map(|n| levels.iter().find_map(|e| e.num(&format!("{prefix}{n}CornerRadius"))));
     if shapes.iter().all(Option::is_none) && sizes.iter().all(Option::is_none) {
         return None;
     }

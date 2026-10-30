@@ -112,6 +112,13 @@ impl<'a> Ex<'a> {
             el.set("EnableStroke", bool_s(os.stroke.is_some()));
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
+            if let Some(c) = &os.corners {
+                el.set("EnableStrokeAndCornerOptions", "true");
+                for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
+                    el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{n}CornerRadius"), num(c.size));
+                }
+            }
             if let Some(f) = &os.fill {
                 el.set("FillColor", self.sw(&f.swatch));
                 el.set("FillTint", pct(f.tint as f64));

@@ -290,6 +290,10 @@ impl Effects {
         ds.size = len("dropShadow.size", ds.size)?;
         ds.spread = pct("dropShadow.spread", ds.spread)?;
         self.feather = len("feather", self.feather)?;
+        // As IDML import reads it, so a round trip keeps it.
+        self.feather_options.choke = pct("featherOptions.choke", self.feather_options.choke)?;
+        // As IDML import reads it, so a round trip keeps it.
+        self.feather_options.choke = pct("featherOptions.choke", self.feather_options.choke)?;
         let e = &mut self.inner_shadow;
         e.opacity = opacity("innerShadow.opacity", e.opacity)?;
         e.angle = finite("innerShadow.angle", e.angle)?;
