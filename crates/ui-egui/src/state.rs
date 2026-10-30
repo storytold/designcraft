@@ -226,6 +226,13 @@ pub struct UiState {
     pub story_editor_size: f32,
     /// View › Story Editor › Show/Hide Depth Ruler.
     pub story_editor_depth_ruler: bool,
+    /// View › Story Editor › Show/Hide Style Name Column.
+    pub story_editor_style_column: bool,
+    /// Width of the Story Editor's style name column, in screen points (set by dragging its bar or by
+    /// `view.storyEditorStyleColumn` `width`).
+    pub story_editor_style_width: f32,
+    /// View › Story Editor › Show/Hide Paragraph Break Marks.
+    pub story_editor_paragraph_marks: bool,
     /// Preferences › General › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
@@ -399,6 +406,9 @@ impl Default for UiState {
             show_full_menus: false,
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
+            story_editor_style_column: true,
+            story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_paragraph_marks: false,
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
                 ("Two-column grid".into(), "# Four text frames in a 2 × 2 grid.\nframe.grid {\"rect\": [36, 36, 576, 756], \"cols\": 2, \"rows\": 2, \"gutter\": 12}".into()),

@@ -233,10 +233,22 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
     (
+        "view.storyEditorStyleColumn",
+        "Show/Hide Style Name Column",
+        None,
+        "{on?: bool, width?: 40–400 (points)} — the Story Editor's column of paragraph style names; toggles without either → {on, width}",
+    ),
+    (
         "view.storyEditorDepthRuler",
         "Show/Hide Depth Ruler",
         None,
         "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
+    ),
+    (
+        "view.storyEditorParagraphMarks",
+        "Show/Hide Paragraph Break Marks",
+        None,
+        "{} — a ¶ after each paragraph that a paragraph break ends, in the Story Editor",
     ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),

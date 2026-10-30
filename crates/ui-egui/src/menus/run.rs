@@ -664,7 +664,26 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorStyleColumn" => {
+            let on = p.get("on");
+            let width = p.get("width");
+            if on.is_some_and(|v| !v.is_boolean()) || width.is_some_and(|v| !v.is_number()) {
+                return Some(Err(format!("{id}: `on` is a bool and `width` a number")));
+            }
+            match (on.and_then(Value::as_bool), width.and_then(Value::as_f64)) {
+                (None, None) => app.ui.story_editor_style_column = !app.ui.story_editor_style_column,
+                (on, width) => {
+                    app.ui.story_editor_style_column = on.unwrap_or(app.ui.story_editor_style_column);
+                    if let Some(w) = width {
+                        app.ui.story_editor_style_width =
+                            crate::story_editor::style_column_width(w.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32);
+                    }
+                }
+            }
+            Ok(json!({"on": app.ui.story_editor_style_column, "width": app.ui.story_editor_style_width}))
+        }
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
+        "view.storyEditorParagraphMarks" => flag(&mut app.ui.story_editor_paragraph_marks),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
