@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-28 · **Change:** minor (Turkish interface catalog added; earlier language counts retain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,8 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,it,ja,ka,pt_br,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and per-language files under
+`crates/ui-egui/src/i18n/`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -19,9 +20,11 @@ in the UI crate appear in no catalog (some are test data or proper names), so th
 somewhat higher and every percentage below is a slight overestimate. Help: DesignCraft has no
 help content in any language (Help ▸ opens the project's pages).
 
-A missing translation never fails a test, a build or a release. `cargo xtask i18n-report` (also
-a step of `cargo xtask ci`, so the list is in every gate log) prints how many interface strings
-each language lacks, then the strings.
+For existing partial catalogs, a missing translation falls back to English and does not fail a
+build. The Turkish catalog has a regression test requiring coverage of the current catalog and
+statically collected interface keys. `cargo xtask i18n-report` (also a step of `cargo xtask ci`,
+so the list is in every gate log) prints how many interface strings each language lacks, then the
+strings.
 
 InDesign 2026 ships 25 interface localizations (`.lproj` folders: cs, da, de, el, en, en_GB, es,
 fi, fr, hu, it, ja, ko, nb, nl, pl, pt, ro, ru, sq, sv, tr, uk, zh_CN, zh_TW); Arabic and Hebrew
@@ -61,8 +64,9 @@ craft-fonts. The language totals above retain their dated measurement; this is a
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
 | Polish | pl | 1,717 (99%), count captions category-first; AI-drafted, awaiting native review | partial |
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
+| Turkish | tr | 2,521 catalog rows, covering the current catalog and statically collected interface keys; source union differs from the 2026-10-10 measurement | partial (native-speaker and runtime review pending) |
 
-DesignCraft ships **5** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **6** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
@@ -89,6 +93,7 @@ locale shaping. See [typography-parity.md](typography-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-28 | minor | Turkish (`tr`) interface catalog, language picker and regression checks added; runtime and native-speaker review pending |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-14 | minor | Georgian (`ka`) interface added |
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |

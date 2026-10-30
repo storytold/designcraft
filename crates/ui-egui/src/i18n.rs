@@ -18,6 +18,8 @@ mod ka;
 mod pl;
 mod pt_br;
 mod ru;
+#[path = "i18n/tr.rs"]
+mod turkish;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -36,6 +38,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("cs", "Čeština"),
     ("pl", "Polski"),
     ("ka", "ქართული"),
+    ("tr", "Türkçe"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -90,6 +93,10 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static TURKISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    if lang == "tr" {
+        return TURKISH.get_or_init(|| turkish::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -145,6 +152,7 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     let contexts = match lang {
+        "tr" => turkish::CONTEXT,
         "uk" => uk::CONTEXT,
         "ru" => ru::CONTEXT,
         "cs" => cs::CONTEXT,

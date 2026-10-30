@@ -331,8 +331,9 @@ measured); Ready estimated.
 ## Languages
 
 Interface strings translated, of 1,724 measured. Detail: [docs/localization-parity.md](docs/localization-parity.md).
-A string without a translation shows in English and fails no check; `cargo xtask i18n-report`
-(also a `cargo xtask ci` step) lists the missing strings per language.
+A string without a translation shows in English; the Turkish catalog also has a completeness
+regression test. `cargo xtask i18n-report` (also a `cargo xtask ci` step) lists the missing strings
+per language.
 
 | Language | Code | Status | Translated |
 |---|---|---|---|
@@ -349,8 +350,8 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Korean | ko | none | 0% |
 | Vietnamese | vi | none | 0% |
 
-Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
-Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%).
+Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%), Georgian (100%),
+and Turkish (new catalog; native-speaker and runtime review pending).
 
 ## Upcoming
 
@@ -380,6 +381,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-28** · Turkish (`tr`) interface catalog and language picker added, with catalog coverage, placeholder, context and Unicode regression checks. Native-speaker and runtime review remain open; no readiness percentage change.
 - **2026-10-27** · An iconic panel's flyout stays open while you work in the canvas or a text field: Auto-Collapse Iconic Panels is off by default, and preferences saved with it on start with it off. Preferences › Interface › Panels holds the setting next to the column bar's menu item. No readiness percentage change.
 - **2026-10-24** · Column rules run from the top line's ascent to the bottom line's descent, as InDesign draws them, instead of from the top to the bottom of the columns, on screen, in PDF and in PowerPoint export. The top and bottom insets shorten the rule from those lines. Existing documents draw their column rules at the new length. No readiness percentage change.
 - **2026-10-20** · Edit › Keyboard Shortcuts is craft-keymap's shared dialog: commands grouped by menu with Show and Filter, recording that asks before taking a key from another command, undo and redo, named shortcut sets (edits of Default become Custom; an imported set becomes a set of its own), an on-screen US keyboard, InDesign Show Set files reviewed before they apply, JSON export and an HTML summary. ui.json keeps the `shortcuts` map earlier versions read, for the active set. No readiness percentage change.

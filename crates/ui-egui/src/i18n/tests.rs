@@ -13,12 +13,20 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("pl", pl::TABLE),
     ("pt-br", pt_br::TABLE),
     ("ru", ru::TABLE),
+    ("tr", turkish::TABLE),
     ("uk", uk::TABLE),
 ];
 
 /// Every per-language table `tr_context` looks up.
-const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] =
-    &[("ar", ar::CONTEXT), ("cs", cs::CONTEXT), ("ja", ja::CONTEXT), ("pl", pl::CONTEXT), ("ru", ru::CONTEXT), ("uk", uk::CONTEXT)];
+const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
+    ("ar", ar::CONTEXT),
+    ("cs", cs::CONTEXT),
+    ("ja", ja::CONTEXT),
+    ("pl", pl::CONTEXT),
+    ("ru", ru::CONTEXT),
+    ("tr", turkish::CONTEXT),
+    ("uk", uk::CONTEXT),
+];
 
 /// The languages of the shared tables' columns, in column order.
 const SHARED_COLUMNS: [&str; 5] = ["de", "fr", "es", "ja", "zh"];
@@ -122,8 +130,9 @@ fn entries() -> Vec<(&'static str, &'static str, &'static str)> {
 }
 
 /// Every catalog has one row per key and keeps the English placeholders. A string a catalog
-/// doesn't translate shows in English, so a missing or empty row fails nothing here; the
-/// `missing_translations_report` lists them.
+/// doesn't translate shows in English, so a missing or empty row fails nothing in this general
+/// check; the Turkish catalog has an additional completeness test below. The
+/// `missing_translations_report` lists omissions for every language.
 #[test]
 fn every_catalog_has_unique_keys_and_keeps_placeholders() {
     for (lang, i) in SHARED_COLUMNS.iter().zip(0..) {
@@ -354,4 +363,49 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// Turkish must cover the command/tool labels and every existing catalog key. Intentional
+/// identities (PDF/X-4, OpenType, product names) are rows, rather than accidental fallbacks.
+#[test]
+fn turkish_covers_the_interface_and_existing_catalogs() {
+    let keys: HashSet<_> = turkish::TABLE.iter().map(|(key, _)| *key).collect();
+    let mut source = interface_strings();
+    source.extend(TABLE.iter().map(|(key, _)| *key));
+    source.extend(LANGUAGE_TABLES.iter().flat_map(|(_, table)| table.iter().map(|(key, _)| *key)));
+    source.extend(CONTEXT_TABLES.iter().flat_map(|(_, table)| table.iter().map(|(key, _, _)| *key)));
+    let mut missing: Vec<_> = source.difference(&keys).copied().collect();
+    missing.sort_unstable();
+    assert!(missing.is_empty(), "Turkish catalog is missing: {missing:?}");
+    assert!(turkish::TABLE.iter().all(|(_, text)| !text.trim().is_empty()));
+}
+
+#[test]
+fn turkish_picker_unicode_context_and_fallback_are_preserved() {
+    assert_eq!(LANGUAGES.iter().filter(|(code, _)| *code == "tr").count(), 1);
+    assert!(picker_languages().contains(&("tr", "Türkçe")));
+    let order = picker_languages();
+    let position = |code| order.iter().position(|(candidate, _)| *candidate == code).unwrap();
+    assert!(position("pt-br") < position("tr") && position("tr") < position("ru"));
+    assert_eq!(name_sort_key("Türkçe"), "turkce");
+    assert_eq!(tr("tr", "Interface Language"), "Arayüz Dili");
+    assert_eq!(tr("tr", "Italic"), "İtalik");
+    assert_eq!(tr("tr", "Light Blue"), "Açık Mavi");
+    assert_eq!(tr("tr", "Number:"), "Numara:");
+    assert_eq!(tr_context("tr", "Number:", "count"), "Sayı:");
+    assert_eq!(tr_context("tr", "Group", "selection"), "Grup");
+    assert_eq!(tr_context("tr", "Group", "unknown"), "Grupla");
+    for count in [0, 1, 2, 11, 101] {
+        assert_eq!(count_label("tr", "pages", count), format!("{count} sayfa"));
+        assert_eq!(count_label("tr", "objects", count), format!("{count} nesne"));
+    }
+    let custom = String::from("İpek ışıltısı — müşteri stili");
+    assert!(std::ptr::eq(tr("tr", &custom), custom.as_str()));
+    assert_eq!(style_name("tr", &custom), custom);
+    assert_eq!(workspace_name("tr", &custom), custom);
+    assert_eq!(tr("", "File"), "File");
+    assert_eq!(tr("tr", "File"), "Dosya");
+    assert_eq!(tr("de", "File"), "Datei");
+    assert_eq!(tr("tr", "File"), "Dosya");
+    assert!(!is_rtl("tr") && !is_cjk("tr") && !category_first("tr"));
 }
