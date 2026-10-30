@@ -7788,6 +7788,64 @@ fn a_paragraph_that_isnt_world_ready_places_its_lines_from_the_left() {
     }
 }
 
+/// Outside a World-Ready paragraph a parenthesis in the drop cap is drawn unmirrored, like the
+/// same parenthesis in the line. The drop cap used to be split off before mirroring was resolved,
+/// so it kept the mirrored glyph of the right-to-left run it was shaped in.
+#[test]
+fn a_drop_cap_parenthesis_outside_a_world_ready_paragraph_isnt_mirrored() {
+    let text = "(\u{0627}\u{0628}) \u{0627}\u{0628}";
+    let first = |drop: bool| {
+        let mut para = if drop { drop_cap(2, 1) } else { ParaAttrs::default() };
+        para.world_ready = Some(false);
+        // One face for all of it (no fallback), so the parenthesis is shaped in the Arabic's run.
+        let (mut d, sid, _) = drop_doc(text, para);
+        d.settings.glyph_fallback = false;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let g = cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).cloned().unwrap();
+        (g.gid, g.face.glyph_for('('), g.face.glyph_for(')'))
+    };
+    let (gid, open, close) = first(false);
+    assert!(open != 0 && open != close && gid == open, "in the line: {gid} ( {open} ) {close}");
+    let (gid, open, _) = first(true);
+    assert_eq!(gid, open, "in the drop cap");
+}
+
+/// A paragraph that isn't World-Ready stretches no Arabic joins with kashidas: its letters
+/// stand apart.
+#[test]
+fn a_paragraph_that_isnt_world_ready_gets_no_kashidas() {
+    let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين";
+    let tatweels = |world_ready: bool| {
+        let para = ParaAttrs { align: Some(Align::LeftJustified), world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 160.0, 300.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.len == 0 && g.gid != 0 && g.face.glyph_for('\u{0640}') == g.gid).count()
+    };
+    assert!(tatweels(true) > 0, "World-Ready: kashidas");
+    assert_eq!(tatweels(false), 0, "not World-Ready");
+}
+
+/// A paragraph that isn't World-Ready keeps Hebrew in text order even inside a right-to-left
+/// isolate (U+2067 … U+2069) typed in the text: the isolate used to give it a right-to-left level
+/// inside the left-to-right override, and the line reordered it.
+#[test]
+fn bidi_controls_dont_reorder_a_paragraph_that_isnt_world_ready() {
+    let text = "a \u{2067}\u{05D0}\u{05D1}\u{2069} b";
+    let xs = |world_ready: bool| {
+        let para = ParaAttrs { world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let x = |byte: usize| cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == byte).map(|g| g.x).unwrap();
+        (x(5), x(7))
+    };
+    let (alef, bet) = xs(true);
+    assert!(alef > bet, "World-Ready: right to left {alef} {bet}");
+    let (alef, bet) = xs(false);
+    assert!(alef < bet, "not World-Ready: text order {alef} {bet}");
+}
+
 #[test]
 fn greek_text_gets_greek_hyphenation() {
     // Greek had no hyphenation at all: `hypher`'s Greek patterns were not among the features

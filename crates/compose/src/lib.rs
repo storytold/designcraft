@@ -2324,6 +2324,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // The drop cap's mirrored characters resolve in the whole paragraph, before it's split off.
+    if sp.glyphs.first().is_some_and(|g| g.byte < drop_end) {
+        paragraph_bidi(&mut sp.glyphs, &story.text, pp);
+    }
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2403,12 +2407,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
             g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
         }
     }
-    // Not World-Ready: the line runs left to right in text order, whatever the script.
-    if !pp.world_ready {
-        glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
-    }
-    let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
-    bidi::resolve_mirroring(&mut glyphs, &unicode_bidi::BidiInfo::new(&bidi_text, Some(bidi_level(pp))));
+    let bidi_text = paragraph_bidi(&mut glyphs, &story.text, pp);
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -4480,7 +4479,8 @@ fn page_alignment(align: Align, left_page: bool) -> Align {
 
 /// Allocate justified Arabic elongation before distributing the remaining space.
 fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, f64)> {
-    if !(*extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
+    // Not World-Ready, Arabic letters stand unjoined: there are no joins to stretch.
+    if !(*extra > 0.0 && pp.world_ready && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
         return Vec::new();
     }
     let points: Vec<usize> = kashida_points(line).into_iter().filter(|&i| i >= seg).collect();
@@ -4726,6 +4726,18 @@ fn lines_rtl(pp: &designcraft_doc::ParaProps) -> bool {
 /// The paragraph's base bidi level ([`lines_rtl`]).
 fn bidi_level(pp: &designcraft_doc::ParaProps) -> unicode_bidi::Level {
     if lines_rtl(pp) { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }
+}
+
+/// The paragraph's bidi input ([`bidi::paragraph_text`]), with its mirrored characters resolved
+/// at their levels. Not World-Ready, the line runs left to right in text order whatever the script:
+/// every glyph is set left to right and bidi controls in the text don't reorder it.
+fn paragraph_bidi(glyphs: &mut [Glyph], source: &str, pp: &designcraft_doc::ParaProps) -> String {
+    if !pp.world_ready {
+        glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
+    }
+    let text = bidi::paragraph_text(glyphs, source, pp.world_ready);
+    bidi::resolve_mirroring(glyphs, &unicode_bidi::BidiInfo::new(&text, Some(bidi_level(pp))));
+    text
 }
 
 /// Arabic letters that join the following letter (dual-joining).
