@@ -1202,35 +1202,11 @@ fn offer_parent_items(best: &mut Option<Best>, cx: &ToolContext, req: &SnapReque
 }
 
 /// Parent items drawn on `spread`, back to front, each with the x shift from its parent spread:
-/// a document page's parent and its bases, or a parent spread's bases. Same page and override
-/// filters as the renderer.
+/// a document page's parent and its bases, or a parent spread's bases. The renderer's list
+/// ([`Document::shown_parent_items`]) for each page.
 fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
-    let Some(sp) = doc.spread(spread) else { return Vec::new() };
-    let mut out = Vec::new();
-    for (pi, page) in sp.pages.iter().enumerate() {
-        if !page.show_parent_items {
-            continue;
-        }
-        for (ppi, ppage) in doc.shown_parent_pages(spread, pi) {
-            let Some(parent) = doc.parents.get(ppi) else { continue };
-            let Some(parent_page) = parent.pages.get(ppage) else { continue };
-            let dx = page.x - parent_page.x;
-            if !dx.is_finite() {
-                continue;
-            }
-            for item in &parent.items {
-                if page.overridden.contains(&item.id) {
-                    continue;
-                }
-                // A facing parent only shows items whose center sits on the parent page this page uses.
-                if parent.pages.len() > 1 && parent.page_at_x(item.bounds().center().x) != Some(ppage) {
-                    continue;
-                }
-                out.push((item.as_ref(), dx));
-            }
-        }
-    }
-    out
+    let pages = doc.spread(spread).map_or(0, |sp| sp.pages.len());
+    (0..pages).flat_map(|pi| doc.shown_parent_items(spread, pi)).filter(|s| s.dx.is_finite()).map(|s| (s.item, s.dx)).collect()
 }
 
 fn shift_x(r: Rect, dx: f64) -> Rect {

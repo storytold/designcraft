@@ -12,36 +12,21 @@ impl Exporter<'_> {
 
     /// The parent pages' items on `layer` shown on page `pi` of spread `si`: the parent's bases
     /// first, then the parent.
-    fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, page: &designcraft_doc::Page, layer: &designcraft_doc::Layer, first: usize) {
-        let doc = self.doc;
-        for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
-            let Some(parent) = doc.parents.get(ppi) else { continue };
-            let Some(ppg) = parent.pages.get(ppage) else { continue };
-            let dx = page.x - ppg.x;
-            for it in &parent.items {
-                if it.layer != layer.id || page.overridden.contains(&it.id) {
-                    continue;
-                }
-                // Parent items belong to the parent page they sit on.
-                if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                    continue;
-                }
-                self.top_item(s, it, Affine::translate((dx, 0.0)), Some(first + pi), true);
-            }
-        }
-    }
-
+    /// Document spread `si` onto `s`: layer by layer, the parent items each page shows, then the
+    /// spread's own items.
     pub(super) fn spread(&mut self, s: &mut Surface, si: usize) {
         let doc = self.doc;
         let Some(sp) = doc.spreads.get(si) else { return };
         let first = doc.first_page_of_spread(si);
+        // Parent items behind each page: the parent's bases first, then the parent.
+        let shown: Vec<_> = (0..sp.pages.len()).map(|pi| doc.shown_parent_items(SpreadRef::Doc(si), pi)).collect();
         for layer in doc.layers.iter().rev() {
             if !layer_exported(layer) {
                 continue;
             }
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if page.show_parent_items {
-                    self.parent_items(s, si, pi, page, layer, first);
+            for (pi, items) in shown.iter().enumerate() {
+                for p in items.iter().filter(|p| p.item.layer == layer.id) {
+                    self.top_item(s, p.item, Affine::translate((p.dx, 0.0)), Some(first + pi), true);
                 }
             }
             for it in &sp.items {

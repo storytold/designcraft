@@ -763,7 +763,9 @@ impl Document {
 
     /// Parent pages drawn behind page `page` of spread `sr`, back to front, as (parent index,
     /// parent page index). A document page shows its parent and that parent's bases; a parent page
-    /// shows the parents its spread is based on.
+    /// shows the parents its spread is based on. A parent page that hides its own parent's items
+    /// (Show Parent Items off) ends the walk: nothing behind it shows through. Whether the page
+    /// itself shows parent items is up to the caller ([`Self::shown_parent_items`] checks it).
     pub fn shown_parent_pages(&self, sr: SpreadRef, page: usize) -> Vec<(usize, usize)> {
         let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return Vec::new() };
         let chain = match sr {
@@ -777,7 +779,54 @@ impl Document {
                 c
             }
         };
-        chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_for_side(pg.side)?))).collect()
+        // Front to back, so that a parent page hiding its parent's items can end the walk.
+        let mut out = Vec::new();
+        for i in chain.into_iter().rev() {
+            let Some(ps) = self.parents.get(i) else { continue };
+            let Some(j) = ps.parent_page_for_side(pg.side) else { continue };
+            out.push((i, j));
+            if ps.pages.get(j).is_some_and(|p| !p.show_parent_items) {
+                break;
+            }
+        }
+        out.reverse();
+        out
+    }
+
+    /// The parent items drawn behind page `page` of spread `sr`, back to front: the deepest base
+    /// parent's first, each parent's in z-order. They are the items of [`Self::shown_parent_pages`]
+    /// on the parent page shown (on a facing parent, the page an item's centre is on), less those
+    /// the page overrides and those a parent page in front of theirs overrides (B based on A hides
+    /// the A items B's page overrides, wherever B shows). Empty when the page hides parent items.
+    /// Drawing, export, hit testing, snapping and overriding all go through this list.
+    pub fn shown_parent_items(&self, sr: SpreadRef, page: usize) -> Vec<ShownParentItem<'_>> {
+        let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return Vec::new() };
+        if !pg.show_parent_items {
+            return Vec::new();
+        }
+        let levels = self.shown_parent_pages(sr, page);
+        let mut out = Vec::new();
+        for (level, &(ppi, ppage)) in levels.iter().enumerate() {
+            let Some(parent) = self.parents.get(ppi) else { continue };
+            let Some(ppg) = parent.pages.get(ppage) else { continue };
+            let dx = pg.x - ppg.x;
+            // Overridden by the page, or by a parent page drawn in front of this one.
+            let above = levels.get(level + 1..).unwrap_or_default();
+            let hidden: Vec<&[ItemId]> = std::iter::once(pg.overridden.as_slice())
+                .chain(above.iter().filter_map(|&(i, j)| Some(self.parents.get(i)?.pages.get(j)?.overridden.as_slice())))
+                .collect();
+            for it in &parent.items {
+                // Parent items belong to the parent page they sit on.
+                if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {
+                    continue;
+                }
+                if hidden.iter().any(|ids| ids.contains(&it.id)) {
+                    continue;
+                }
+                out.push(ShownParentItem { item: it, dx });
+            }
+        }
+        out
     }
 
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).
@@ -820,6 +869,14 @@ impl Document {
         }
         warnings
     }
+}
+
+/// A parent item drawn behind a page (see [`Document::shown_parent_items`]).
+#[derive(Clone, Copy, Debug)]
+pub struct ShownParentItem<'a> {
+    pub item: &'a Item,
+    /// x offset from the item's parent spread to the spread showing it.
+    pub dx: f64,
 }
 
 /// Deepest `based_on` chain followed.
@@ -1012,6 +1069,72 @@ mod tests {
         assert!(d.parent_base_cycles(0, a));
         assert!(!d.parent_base_cycles(2, a));
         assert!(d.fix_parent_bases().is_empty());
+    }
+
+    /// Facing parents C ← B ← A (C based on B, B on A), one box on each right page. A page using
+    /// C shows all three boxes, deepest first. An override on the page or on a parent page in
+    /// front of the item hides it, also on a parent spread showing it; a parent page hiding its
+    /// parent's items ends the chain; a cycle in `based_on` ends the walk.
+    #[test]
+    fn nested_parents_show_their_whole_chain() {
+        let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+        let lid = d.default_layer();
+        let a = d.parents[0].id;
+        let b = d.add_parent("B", "Parent", 1, 0.0, Margins::uniform(36.0));
+        let c = d.add_parent("C", "Parent", 1, 0.0, Margins::uniform(36.0));
+        base(&mut d, 1, Some(a));
+        base(&mut d, 2, Some(b));
+        // One box on each parent's right page (x 612–1224), one on A's left page.
+        let mut ids = Vec::new();
+        for pi in 0..3 {
+            let id = ItemId(d.alloc());
+            let r = designcraft_geom::Rect::new(700.0, 100.0 + pi as f64 * 50.0, 800.0, 140.0 + pi as f64 * 50.0);
+            d.insert_item(SpreadRef::Parent(pi), Item::new(id, lid, crate::Shape::Rectangle, designcraft_geom::shapes::rectangle(r)), None).unwrap();
+            ids.push(id);
+        }
+        let left = ItemId(d.alloc());
+        let r = designcraft_geom::Rect::new(100.0, 100.0, 200.0, 140.0);
+        d.insert_item(SpreadRef::Parent(0), Item::new(left, lid, crate::Shape::Rectangle, designcraft_geom::shapes::rectangle(r)), None).unwrap();
+        // Page 3 is the right page of spread [2 3]; page 1 (a single right page at x 0) uses A.
+        d.apply_parent(&[2], Some(c)).unwrap();
+        let shown = |d: &Document, sr: SpreadRef, page: usize| -> Vec<ItemId> { d.shown_parent_items(sr, page).iter().map(|s| s.item.id).collect() };
+        assert_eq!(d.shown_parent_pages(SpreadRef::Doc(1), 1), vec![(0, 1), (1, 1), (2, 1)]);
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 1), ids);
+        assert_eq!(shown(&d, SpreadRef::Parent(2), 1), ids[..2]);
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 0), vec![left], "the left page shows A's left page");
+        let dx: Vec<f64> = d.shown_parent_items(SpreadRef::Doc(0), 0).iter().map(|s| s.dx).collect();
+        assert_eq!(dx, vec![-612.0], "page 1 shows A's right page 612 pt to the left");
+
+        // B's right page overrides A's box; the page overrides C's.
+        Arc::make_mut(&mut d.parents[1]).pages[1].overridden.push(ids[0]);
+        Arc::make_mut(&mut d.spreads[1]).pages[1].overridden.push(ids[2]);
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 1), vec![ids[1]]);
+        assert_eq!(shown(&d, SpreadRef::Parent(2), 1), vec![ids[1]], "C's spread hides what B overrides");
+        assert_eq!(shown(&d, SpreadRef::Doc(0), 0), vec![ids[0]], "A alone is not affected");
+        Arc::make_mut(&mut d.parents[1]).pages[1].overridden.clear();
+        Arc::make_mut(&mut d.spreads[1]).pages[1].overridden.clear();
+
+        // B's right page hides its parent's items: A's box is gone wherever B shows.
+        Arc::make_mut(&mut d.parents[1]).pages[1].show_parent_items = false;
+        assert_eq!(d.shown_parent_pages(SpreadRef::Doc(1), 1), vec![(1, 1), (2, 1)]);
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 1), ids[1..]);
+        assert_eq!(shown(&d, SpreadRef::Parent(2), 1), vec![ids[1]]);
+        assert!(shown(&d, SpreadRef::Parent(1), 1).is_empty());
+        assert_eq!(shown(&d, SpreadRef::Parent(1), 0), vec![left], "B's left page still shows A's");
+        // So does C's: only C's own box is left.
+        Arc::make_mut(&mut d.parents[2]).pages[1].show_parent_items = false;
+        assert_eq!(d.shown_parent_pages(SpreadRef::Doc(1), 1), vec![(2, 1)]);
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 1), vec![ids[2]]);
+        // The page hides parent items: nothing.
+        Arc::make_mut(&mut d.spreads[1]).pages[1].show_parent_items = false;
+        assert!(shown(&d, SpreadRef::Doc(1), 1).is_empty());
+        Arc::make_mut(&mut d.spreads[1]).pages[1].show_parent_items = true;
+        Arc::make_mut(&mut d.parents[1]).pages[1].show_parent_items = true;
+        Arc::make_mut(&mut d.parents[2]).pages[1].show_parent_items = true;
+
+        // A cycle (A based on C, as a damaged file may have it) ends the walk.
+        base(&mut d, 0, Some(c));
+        assert_eq!(shown(&d, SpreadRef::Doc(1), 1), ids);
     }
 
     /// A cycle or a dangling base from a file is cleared with a warning; walks stay bounded before that.

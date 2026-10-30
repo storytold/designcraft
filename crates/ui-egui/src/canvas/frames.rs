@@ -43,6 +43,7 @@ pub(super) fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
     out
 }
 
+/// Frame edges (Show/Hide Frame Edges): the items' outlines, parent items' dashed.
 pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     if !app.ui.frame_edges {
         return;
@@ -52,20 +53,13 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         let Some(sp) = doc.spread(slot.spread) else { continue };
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
-        for (pi, page) in sp.pages.iter().enumerate() {
-            for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
-                let Some(parent) = doc.parents.get(ppi) else { continue };
-                let Some(ppage) = parent.pages.get(ppg) else { continue };
-                let dx = page.x - ppage.x;
-                for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
-                        continue;
-                    }
-                    let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-                    for poly in path_screen(it, xf, a * Affine::translate((dx, 0.0))) {
-                        for w in poly.windows(2) {
-                            dashed(painter, w[0], w[1], Stroke::new(hair(painter), col.gamma_multiply(0.8)), 2.0, 2.0);
-                        }
+        for pi in 0..sp.pages.len() {
+            for shown in doc.shown_parent_items(slot.spread, pi) {
+                let it = shown.item;
+                let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
+                for poly in path_screen(it, xf, a * Affine::translate((shown.dx, 0.0))) {
+                    for w in poly.windows(2) {
+                        dashed(painter, w[0], w[1], Stroke::new(hair(painter), col.gamma_multiply(0.8)), 2.0, 2.0);
                     }
                 }
             }

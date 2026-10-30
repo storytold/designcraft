@@ -768,6 +768,40 @@ fn based_on_parent_items_export_base_first() {
     assert!(cyan < magenta, "the base parent's item is drawn first");
 }
 
+/// Parent B based on A, used by a page: an A item that B's page overrides, and every A item once
+/// B's page hides its parent's items, stays out of the PDF; B's own item is exported.
+#[test]
+fn base_items_a_parent_page_overrides_or_hides_do_not_export() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    d.swatches.push(Swatch::color("Base Cyan", Color::cmyk(1.0, 0.0, 0.0, 0.0)));
+    d.swatches.push(Swatch::color("Parent Magenta", Color::cmyk(0.0, 1.0, 0.0, 0.0)));
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let lid = d.default_layer();
+    let mut ids = Vec::new();
+    for (pi, swatch, r) in [(0, "Base Cyan", Rect::new(36.0, 36.0, 136.0, 136.0)), (1, "Parent Magenta", Rect::new(200.0, 36.0, 300.0, 136.0))] {
+        let mut it = Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+        it.fill = Fill::swatch(swatch);
+        ids.push(it.id);
+        d.insert_item(SpreadRef::Parent(pi), it, None).unwrap();
+    }
+    // A valid one-page PDF with B's magenta item and without A's cyan one.
+    let check = |d: &Document, why: &str| {
+        let bytes = export_pdf(d, &Cache::new(), &PdfOptions { compress: false, ..PdfOptions::default() }).expect("export");
+        let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("a valid PDF");
+        assert_eq!(pdf.pages().len(), 1, "{why}");
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(!s.contains("1 0 0 0 k") && s.contains("0 1 0 0 k"), "{why}");
+    };
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(ids[0]);
+    check(&d, "B overrides A's item");
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.clear();
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].show_parent_items = false;
+    check(&d, "B hides A's items");
+}
+
 /// Form fields and buttons that don't print stay out of the PDF: inside a hidden group, on a
 /// hidden or non-printing layer, or non-printing themselves (#726).
 #[test]
