@@ -11,9 +11,12 @@ impl DesignApp {
     /// later frame ([`Self::open_picked`]); in a browser the file arrives through the inbox.
     #[track_caller]
     pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
-        if let Some(open) = self.services.open_async.as_mut() {
-            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) };
-            open(request);
+        if self.services.open_async.is_some() {
+            // With the selection asked from: a place replaces its graphic when the file arrives.
+            let request = self.import_request(purpose);
+            if let Some(open) = self.services.open_async.as_mut() {
+                open(request);
+            }
             return Ok(Value::Null);
         }
         let bound = if purpose == "place" { file_dialogs::Bound::Document } else { file_dialogs::Bound::App };
@@ -47,7 +50,7 @@ impl DesignApp {
         designcraft_engine::cmd::has_doc(&self.session)?;
         if let Some(open) = self.services.open_async.as_mut() {
             let purpose = if kind.is_empty() { "styles".to_string() } else { format!("styles:{kind}") };
-            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid) });
+            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid), selection: None });
             return Ok(Value::Null);
         }
         let kind = kind.to_string();
@@ -63,7 +66,11 @@ impl DesignApp {
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
-        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
+        ImportRequest {
+            purpose: purpose.into(),
+            target: self.session.active().map(|d| d.uid),
+            selection: self.session.active().map(|d| d.selection.items.iter().map(|id| id.0).collect()),
+        }
     }
 
     pub(crate) fn activate_import_target(&mut self, request: &ImportRequest) -> Result<(), String> {
@@ -73,6 +80,11 @@ impl DesignApp {
             return Err(message.into());
         };
         self.run("file.activate", json!({"index": index}))?;
+        if request.purpose == "place"
+            && let Some(ids) = &request.selection
+        {
+            self.run("selection.set", json!({ "ids": ids }))?;
+        }
         Ok(())
     }
 
@@ -477,6 +489,20 @@ pub(crate) mod browser_import_tests {
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
         app.run("edit.redo", json!({})).unwrap();
         assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+    }
+
+    /// A place asked for with a frame selected fills that frame, even if the selection changed
+    /// while the file was being chosen (Properties › Import File on the web).
+    #[test]
+    fn delayed_place_fills_the_frame_selected_when_it_was_asked_for() {
+        let mut app = app();
+        let f = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [f]})).unwrap();
+        let request = app.import_request("place");
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        deliver(&mut app, request, "red.svg", image());
+        let doc = &app.session.doc().unwrap().doc;
+        assert!(doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().is_some(), "the frame selected at the time holds the image");
     }
 
     #[test]

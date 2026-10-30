@@ -224,7 +224,51 @@ fn services() -> Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        open_path: Some(Box::new(open_path)),
         ..Default::default()
+    }
+}
+
+/// Open `path` in its default application, or with `reveal` show it in the file manager, with
+/// the system's own opener (a browser would show an image instead of opening its editor).
+fn open_path(path: &std::path::Path, reveal: bool) -> Result<(), String> {
+    let mut cmd;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd = std::process::Command::new("explorer");
+        if reveal {
+            // Explorer reads `/select,` and the quoted path as one raw argument.
+            cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        } else {
+            cmd.arg(path);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        cmd = std::process::Command::new("open");
+        if reveal {
+            cmd.arg("-R");
+        }
+        cmd.arg(path);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        cmd = std::process::Command::new("xdg-open");
+        // No portable way to select the file: its folder opens.
+        cmd.arg(if reveal { reveal_folder(path) } else { path });
+    }
+    cmd.spawn().map(drop).map_err(|e| format!("couldn't open {}: {e}", path.display()))
+}
+
+/// The folder a reveal opens where the file can't be selected (Linux): the file's own, or the
+/// current directory for a bare file name, whose parent is empty.
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
+fn reveal_folder(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
+        Some(p) if p.as_os_str().is_empty() => std::path::Path::new("."),
+        Some(p) => p,
+        None => path,
     }
 }
 
@@ -474,6 +518,16 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
+    /// A reveal opens the file's folder; a bare file name's is the current directory, not an
+    /// empty path.
+    #[test]
+    fn reveal_opens_the_folder_of_the_file() {
+        use std::path::Path;
+        assert_eq!(super::reveal_folder(Path::new("/images/photo.jpg")), Path::new("/images"));
+        assert_eq!(super::reveal_folder(Path::new("photo.jpg")), Path::new("."));
+        assert_eq!(super::reveal_folder(Path::new("images/photo.jpg")), Path::new("images"));
+    }
+
     #[test]
     fn an_unreadable_ui_json_is_kept_beside_it() {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();

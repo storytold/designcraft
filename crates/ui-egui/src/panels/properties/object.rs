@@ -584,6 +584,10 @@ pub(super) fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo
         }
         return;
     }
+    if i.is_graphic && i.count == 1 {
+        super::text::image_actions(app, ui, hw);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);

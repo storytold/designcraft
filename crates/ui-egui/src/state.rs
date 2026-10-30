@@ -7,6 +7,10 @@ use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// The objects selected when the file was asked for: a "place" replaces their graphic even
+    /// if the selection changed while the file was being chosen (the web's file picker). `None`
+    /// leaves the document's selection as it is.
+    pub selection: Option<Vec<u64>>,
 }
 
 pub struct ImportedFile {
