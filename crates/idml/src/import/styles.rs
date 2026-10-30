@@ -202,8 +202,12 @@ impl<'r> Importer<'r> {
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
-        let b = e.prop("BasedOn")?;
-        let b = b.trim();
+        let raw = e.prop("BasedOn")?;
+        // Style names may end in a space: use the reference as written, or without the line
+        // breaks and indentation an indented file puts around it, when that names a style; only
+        // otherwise trim it.
+        let names = if para { &self.para_names } else { &self.char_names };
+        let b = [raw.as_str(), unindented(&raw)].into_iter().find(|r| names.contains_key(*r)).unwrap_or_else(|| raw.trim());
         if para {
             if let Some(n) = self.para_names.get(b) {
                 return Some(n.clone());
@@ -371,5 +375,17 @@ impl<'r> Importer<'r> {
             skip_first: el.num(&format!("SkipFirstAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
             skip_last: el.num(&format!("SkipLastAlternatingStroke{kind}s")).map(|v| v.max(0.0) as u32),
         }
+    }
+}
+
+/// `r` without the whitespace an indented file puts around an element's text: all of it before
+/// (a style reference never starts with a space), and after it from the first line break on (a
+/// name's own trailing spaces come before that).
+fn unindented(r: &str) -> &str {
+    let r = r.trim_start();
+    let text = r.trim_end().len();
+    match r.get(text..).and_then(|tail| tail.find(['\n', '\r'])) {
+        Some(i) => r.get(..text + i).unwrap_or(r),
+        None => r,
     }
 }

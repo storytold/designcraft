@@ -177,6 +177,9 @@ struct Importer<'r> {
     para_els: HashMap<String, El>,
     layers: Vec<Layer>,
     layer_ids: HashMap<String, LayerId>,
+    /// The layer of the group (or frame) whose children are being read: IDML gives children no
+    /// ItemLayer of their own, they sit on their parent's layer.
+    parent_layer: Option<LayerId>,
     stories: BTreeMap<StoryId, Story>,
     story_ids: HashMap<String, StoryId>,
     parents: Vec<Spread>,
@@ -261,6 +264,7 @@ impl<'r> Importer<'r> {
             para_els: HashMap::new(),
             layers: Vec::new(),
             layer_ids: HashMap::new(),
+            parent_layer: None,
             stories: BTreeMap::new(),
             story_ids: HashMap::new(),
             parents: Vec::new(),
