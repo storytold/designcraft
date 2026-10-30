@@ -525,6 +525,9 @@ pub struct Shown {
     pub origin: Point,
     pub zoom: f64,
     pub size: (f32, f32),
+    /// [`designcraft_render::images::generation`] when rendered: images decoded since are
+    /// drawn by rendering again.
+    pub images: u64,
 }
 
 impl CanvasCache {
