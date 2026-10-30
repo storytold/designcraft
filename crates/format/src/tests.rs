@@ -136,6 +136,23 @@ fn one_version_4_reader_keeps_both_explicit_all_on_and_graphic_layer_options() {
     d.assets.remove(&eps);
     d.remove_item(layered).unwrap();
     assert_eq!(required_version(&d), 2, "neither feature and no EPS: version 2");
+    // A Go To State, Next/Previous State or Destination button needs the version 5 reader (#1798);
+    // page and URL buttons don't.
+    let button = place(&mut d, pdf, 300.0);
+    d.item_mut(button).unwrap().button = Some(designcraft_doc::ButtonAction::GoToNextPage);
+    assert_eq!(required_version(&d), 2, "page buttons are version 2");
+    d.item_mut(button).unwrap().button = Some(designcraft_doc::ButtonAction::GoToNextState { object: button, wrap: true });
+    assert_eq!(required_version(&d), 5, "state buttons need version 5");
+    let bytes = save(&d).unwrap();
+    let mut z = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut meta = String::new();
+    z.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], 5);
+    assert_eq!(load(&bytes).unwrap().item(button).unwrap().button, Some(designcraft_doc::ButtonAction::GoToNextState { object: button, wrap: true }));
+    d.item_mut(button).unwrap().button = Some(designcraft_doc::ButtonAction::GoToDestination { anchor: 7 });
+    assert_eq!(required_version(&d), 5, "destination buttons need version 5");
+    d.remove_item(button).unwrap();
+    assert_eq!(required_version(&d), 2);
     // An explicit all-on choice on a parent spread also needs the version 4 reader.
     let mut parent_item = (*d.remove_item(all_on).unwrap()).clone();
     parent_item.pdf_layer_override = true;

@@ -196,14 +196,18 @@ fn paint_render(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Documen
     }
 }
 
-/// Presentation: a click shows the next spread, Shift-click the previous one.
+/// Presentation: a click on a button runs its action (#1798); any other click shows the next
+/// spread, Shift-click the previous one.
 fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect: Rect) {
     if resp.clicked() {
         // The release that made the click says whether Shift was down.
         let shift = ui.input(|i| {
             i.modifiers.shift || i.events.iter().any(|e| matches!(e, egui::Event::PointerButton { pressed: false, modifiers, .. } if modifiers.shift))
         });
-        step_spread(app, if shift { -1 } else { 1 });
+        match resp.interact_pointer_pos().and_then(|pos| input::button_at(app, rect, pos)) {
+            Some(id) => input::press_button(app, id),
+            None => step_spread(app, if shift { -1 } else { 1 }),
+        }
         present_fit(app, rect);
     }
 }
@@ -224,8 +228,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
     if presenting {
-        // One spread at a time, as large as the screen allows; a click shows the next one,
-        // Shift-click the previous one. Tools and selection don't see the input.
+        // One spread at a time, as large as the screen allows; a click on a button runs its
+        // action, any other click shows the next spread, Shift-click the previous one. Tools and
+        // selection don't see the input.
         present_fit(app, rect);
         present_click(app, ui, &resp, rect);
     } else {

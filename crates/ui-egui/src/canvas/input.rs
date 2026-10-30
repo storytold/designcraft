@@ -157,6 +157,32 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
     ContextMenu::Object
 }
 
+/// The button under screen point `pos`, if the frontmost item there is one (#1798).
+pub(super) fn button_at(app: &DesignApp, rect: Rect, pos: Pos2) -> Option<designcraft_doc::ItemId> {
+    let v = app.view()?;
+    let (id, _) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
+    app.session.active()?.doc.item(id)?.button.as_ref().map(|_| id)
+}
+
+/// Presentation mode: a click on a button. The engine runs the action (`button.press`: a state
+/// action shows the state) and says where the view goes; the view follows here.
+pub(super) fn press_button(app: &mut DesignApp, id: designcraft_doc::ItemId) {
+    let r = match app.run("button.press", json!({"id": id.0})) {
+        Ok(r) => r,
+        Err(e) => {
+            app.status_error("Buttons", e);
+            return;
+        }
+    };
+    if let Some(page) = r["page"].as_u64() {
+        super::go_to_page(app, page as usize);
+    } else if let Some(step) = r["relative"].as_i64() {
+        super::step_spread(app, step as isize);
+    } else if let Some(url) = r["url"].as_str() {
+        app.ui.pending_urls.push(url.to_string());
+    }
+}
+
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
 fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::ItemId, Point)> {
     let st = app.session.active()?;
