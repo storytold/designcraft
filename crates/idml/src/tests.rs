@@ -554,6 +554,14 @@ fn basic_paragraph_is_normal_paragraph_style() {
     assert_eq!(back.styles.paragraph.iter().filter(|p| p.name == st::BASIC_PARAGRAPH).count(), 1);
 }
 
+/// Like InDesign, the export carries the document's default story preference, which IDML readers expect.
+#[test]
+fn export_writes_the_document_story_preference() {
+    let d = import_idml_with(&fixture(), &|_| None).unwrap();
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"<StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="TextFrameType" StoryOrientation="Horizontal" StoryDirection="LeftToRightDirection"/>"#), "{prefs}");
+}
+
 /// Page items, frames, tables and preferences an IDML file leaves unset are InDesign's defaults
 /// for a new document.
 #[test]
