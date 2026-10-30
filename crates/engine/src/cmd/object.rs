@@ -695,7 +695,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Distribute",
             ["Window", "Object & Layout", "Align"],
             None,
-            "{axis: horizontal|vertical, by?: centers|spacing, spacing?: points, ids?}",
+            "{axis: horizontal|vertical, by?: centers|spacing, edge?: top|vcenter|bottom|left|hcenter|right (Distribute Objects: that line of each object, evenly between the outermost ones or `spacing` apart from the first; `axis` follows from it), spacing?: points, ids?}",
             has_selection,
             distribute
         ),
@@ -3176,12 +3176,21 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    if ids.len() < 3 && p.get("spacing").is_none() {
+    // `spacing` is a number of points for both modes; anything else is an error, not "even".
+    let fixed = match p.get("spacing") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| bad("object.distribute", "spacing must be a finite number"))?),
+    };
+    if ids.len() < 3 && fixed.is_none() {
         return Err(bad("object.distribute", "select at least three objects"));
     }
+    match p.get("edge") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(edge)) => return distribute_by_edge(s, &ids, edge, fixed),
+        Some(v) => return Err(bad("object.distribute", format!("edge must be left, hcenter, right, top, vcenter or bottom, not {v}"))),
+    }
     let horizontal = str_param(p, "axis") != Some("vertical");
-    let by_spacing = str_param(p, "by") == Some("spacing") || p.get("spacing").is_some();
-    let fixed = p.get("spacing").and_then(Value::as_f64);
+    let by_spacing = str_param(p, "by") == Some("spacing") || fixed.is_some();
     s.edit(|d, _| {
         let mut items: Vec<(ItemId, Rect)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, it.bounds()))).collect();
         let key = |r: &Rect| if horizontal { r.x0 } else { r.y0 };
@@ -3210,18 +3219,65 @@ fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
                 targets.push(c0 + (c1 - c0) * k as f64 / (n - 1) as f64 - size(r) / 2.0);
             }
         }
-        for ((id, r), t) in items.iter().zip(targets) {
-            let delta = t - lo(r);
-            if let Some(it) = d.item_mut(*id) {
-                // Keep locked items in the spacing calculation, as align does for its reference.
-                if it.locked {
-                    continue;
-                }
-                let v = if horizontal { Vec2::new(delta, 0.0) } else { Vec2::new(0.0, delta) };
-                it.xf = Affine::translate(v) * it.xf;
-            }
+        let moves: Vec<(ItemId, f64)> = items.iter().zip(targets).map(|((id, r), t)| (*id, t - lo(r))).collect();
+        // Keep locked items in the spacing calculation, as align does for its reference.
+        move_along(d, &moves, horizontal)
+    })
+}
+
+/// Moves each item by its distance along the axis (locked ones stay); a distance that isn't
+/// finite (a spacing too large to add up) is an error before anything moves.
+fn move_along(d: &mut designcraft_doc::Document, moves: &[(ItemId, f64)], horizontal: bool) -> Result<Value> {
+    if moves.iter().any(|(_, delta)| !delta.is_finite()) {
+        return Err(bad("object.distribute", "the spacing puts objects out of range"));
+    }
+    for (id, delta) in moves {
+        if let Some(it) = d.item_mut(*id)
+            && !it.locked
+        {
+            let v = if horizontal { Vec2::new(*delta, 0.0) } else { Vec2::new(0.0, *delta) };
+            it.xf = Affine::translate(v) * it.xf;
         }
-        ok()
+    }
+    ok()
+}
+
+/// Distribute Objects by a line of each object, as InDesign's six buttons: its top, vertical
+/// centre or bottom (or left, horizontal centre, right), evenly between the outermost objects'
+/// lines, or `spacing` apart from the first one's.
+fn distribute_by_edge(s: &mut Session, ids: &[ItemId], edge: &str, spacing: Option<f64>) -> Result<Value> {
+    const ID: &str = "object.distribute";
+    let (horizontal, at) = match edge {
+        "left" => (true, 0.0),
+        "hcenter" => (true, 0.5),
+        "right" => (true, 1.0),
+        "top" => (false, 0.0),
+        "vcenter" => (false, 0.5),
+        "bottom" => (false, 1.0),
+        other => return Err(bad(ID, format!("unknown edge `{other}`"))),
+    };
+    s.edit(|d, _| {
+        let line = |r: &Rect| if horizontal { r.x0 + (r.x1 - r.x0) * at } else { r.y0 + (r.y1 - r.y0) * at };
+        let mut items: Vec<(ItemId, f64)> = ids.iter().filter_map(|i| d.item(*i).map(|it| (*i, line(&it.bounds())))).collect();
+        items.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let n = items.len();
+        let (Some(&(_, first)), Some(&(_, last))) = (items.first(), items.last()) else { return ok() };
+        if n < 2 {
+            return ok();
+        }
+        let moves: Vec<(ItemId, f64)> = items
+            .iter()
+            .enumerate()
+            .map(|(k, (id, cur))| {
+                let target = match spacing {
+                    Some(gap) => first + gap * k as f64,
+                    None => first + (last - first) * k as f64 / (n - 1) as f64,
+                };
+                (*id, target - cur)
+            })
+            .collect();
+        // Locked items count as references but stay where they are, as with align.
+        move_along(d, &moves, horizontal)
     })
 }
 
@@ -3715,6 +3771,46 @@ mod arrange_tests {
 #[cfg(test)]
 mod step_repeat_tests {
     use super::*;
+
+    /// Distribute Objects by an edge: the tops evenly between the outermost ones, or a set
+    /// distance apart (two objects suffice then); a centre line works the same.
+    #[test]
+    fn distribute_objects_by_their_edges_or_a_spacing() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let ids: Vec<u64> = [(72.0, 72.0, 40.0), (200.0, 90.0, 80.0), (320.0, 300.0, 20.0)]
+            .iter()
+            .map(|(x, y, h)| s.execute("frame.create", &json!({"rect": [x, y, x + 60.0, y + h]})).unwrap()["id"].as_u64().unwrap())
+            .collect();
+        let top = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds().y0;
+        let mid = |s: &Session, id: u64| {
+            let r = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+            (r.y0 + r.y1) / 2.0
+        };
+        s.execute("object.distribute", &json!({"edge": "top", "ids": ids})).unwrap();
+        assert_eq!([top(&s, ids[0]), top(&s, ids[1]), top(&s, ids[2])], [72.0, 186.0, 300.0], "the tops evenly spaced");
+        s.execute("object.distribute", &json!({"edge": "vcenter", "ids": ids})).unwrap();
+        let m = [mid(&s, ids[0]), mid(&s, ids[1]), mid(&s, ids[2])];
+        assert!((m[1] - m[0] - (m[2] - m[1])).abs() < 1e-9, "the centres evenly spaced: {m:?}");
+        s.execute("object.distribute", &json!({"edge": "top", "spacing": 50, "ids": [ids[0], ids[1]]})).unwrap();
+        assert_eq!(top(&s, ids[1]) - top(&s, ids[0]), 50.0, "Use Spacing: two objects, 50 pt apart");
+        assert!(s.execute("object.distribute", &json!({"edge": "middle", "ids": ids})).is_err());
+        let before = s.doc().unwrap().doc.clone();
+        for spacing in [json!("50"), json!(true), json!([1])] {
+            for edge in [json!("top"), Value::Null] {
+                let e = s.execute("object.distribute", &json!({"edge": edge, "spacing": spacing, "ids": ids})).unwrap_err();
+                assert!(e.to_string().contains("spacing must be a finite number"), "{e}");
+            }
+        }
+        // An edge that isn't a name, and a spacing too large to add up: errors, nothing moves.
+        for edge in [json!(42), json!(true)] {
+            assert!(s.execute("object.distribute", &json!({"edge": edge, "ids": ids})).is_err(), "{edge}");
+        }
+        for edge in [json!("top"), Value::Null] {
+            assert!(s.execute("object.distribute", &json!({"edge": edge, "spacing": f64::MAX, "ids": ids})).is_err(), "{edge}");
+        }
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing moved");
+    }
 
     /// With nothing selected, fill and stroke set the colours new shapes are drawn with, as
     /// InDesign's document defaults; frames for graphics and text keep theirs.

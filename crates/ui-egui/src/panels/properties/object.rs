@@ -497,6 +497,68 @@ pub(super) fn align_row(app: &mut DesignApp, ui: &mut Ui) {
     });
 }
 
+/// Properties › Align with several objects selected, as InDesign's: Distribute Objects (by an
+/// edge or the centres) and Distribute Spacing (equal gaps), each with Use Spacing and its
+/// amount in the document's units.
+pub(super) fn distribute_rows(app: &mut DesignApp, ui: &mut Ui, count: usize) {
+    let lang = app.ui.language.clone();
+    let unit = units(app);
+    let mut run = None;
+    let groups: [(&str, &str, &[(&str, &str, &str)]); 2] = [
+        (
+            "Distribute Objects:",
+            "props_distribute_objects",
+            &[
+                ("dist-top", "top", "Distribute top edges"),
+                ("dist-vcenter", "vcenter", "Distribute vertical centers"),
+                ("dist-bottom", "bottom", "Distribute bottom edges"),
+                ("dist-left", "left", "Distribute left edges"),
+                ("dist-hcenter", "hcenter", "Distribute horizontal centers"),
+                ("dist-right", "right", "Distribute right edges"),
+            ],
+        ),
+        (
+            "Distribute Spacing:",
+            "props_distribute_spacing",
+            &[("objdistribute-v", "vertical", "Distribute vertical space"), ("objdistribute-h", "horizontal", "Distribute horizontal space")],
+        ),
+    ];
+    for (title, key, buttons) in groups {
+        let id = egui::Id::unique(key);
+        let (mut on, mut amount): (bool, f64) = ui.data(|d| d.get_temp(id)).unwrap_or((false, 0.0));
+        ui.add_space(6.0);
+        widgets::caption(ui, crate::i18n::tr(&lang, title));
+        // Two objects are distributed only by a spacing, as in InDesign: without Use Spacing the
+        // buttons need three or more.
+        let enabled = on || count >= 3;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for (icon, what, tip) in buttons {
+                let b = ui.add_enabled_ui(enabled, |ui| icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip))).inner;
+                if b.on_disabled_hover_text(crate::i18n::tr(&lang, "Select three or more objects, or use spacing.")).clicked() {
+                    let mut p = if key == "props_distribute_objects" { json!({"edge": what}) } else { json!({"axis": what, "by": "spacing"}) };
+                    if on {
+                        p["spacing"] = json!(amount);
+                    }
+                    run = Some(p);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            widgets::checkbox(ui, &mut on, crate::i18n::tr(&lang, "Use Spacing"));
+            ui.add_enabled_ui(on, |ui| {
+                if let Some(v) = widgets::spin_measure(ui, &format!("{key}_amount"), Some(amount), unit, 84.0) {
+                    amount = v;
+                }
+            });
+        });
+        ui.data_mut(|d| d.insert_temp(id, (on, amount)));
+    }
+    if let Some(p) = run {
+        let _ = app.run("object.distribute", p);
+    }
+}
+
 pub(super) fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.0;

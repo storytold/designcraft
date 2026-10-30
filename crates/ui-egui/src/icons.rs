@@ -321,6 +321,33 @@ fn paint_tools(pen: &mut Pen, name: &str) -> bool {
             pen.frect(5.0, 5.0, 15.0, 9.0);
             pen.frect(5.0, 11.0, 11.0, 15.0);
         }
+        // Distribute Objects by an edge or centre: two objects, a line through each at that edge.
+        "dist-top" | "dist-vcenter" | "dist-bottom" => {
+            let (a, b) = ((4.0, 8.0), (12.0, 16.0));
+            pen.frect(5.0, a.0, 15.0, a.1);
+            pen.frect(7.0, b.0, 13.0, b.1);
+            let at = |r: (f32, f32)| match name {
+                "dist-top" => r.0 - 1.5,
+                "dist-vcenter" => (r.0 + r.1) / 2.0,
+                _ => r.1 + 1.5,
+            };
+            for r in [a, b] {
+                pen.line(&[(2.0, at(r)), (18.0, at(r))]);
+            }
+        }
+        "dist-left" | "dist-hcenter" | "dist-right" => {
+            let (a, b) = ((4.0, 8.0), (12.0, 16.0));
+            pen.frect(a.0, 5.0, a.1, 15.0);
+            pen.frect(b.0, 7.0, b.1, 13.0);
+            let at = |r: (f32, f32)| match name {
+                "dist-left" => r.0 - 1.5,
+                "dist-hcenter" => (r.0 + r.1) / 2.0,
+                _ => r.1 + 1.5,
+            };
+            for r in [a, b] {
+                pen.line(&[(at(r), 2.0), (at(r), 18.0)]);
+            }
+        }
         "objdistribute-h" => {
             pen.frect(2.5, 5.0, 6.0, 15.0);
             pen.frect(14.0, 5.0, 17.5, 15.0);
@@ -1300,6 +1327,24 @@ mod tests {
     fn selection_arrow_is_filled_and_direct_selection_hollow() {
         assert!(arrow_filled("tool-selection"), "Selection draws a hollow arrow");
         assert!(!arrow_filled("tool-direct"), "Direct Selection draws a filled arrow");
+    }
+
+    /// The six Distribute Objects glyphs (Properties › Align) are real drawings, each its own and
+    /// none an align glyph.
+    #[test]
+    fn distribute_edge_icons_are_distinct() {
+        let names = ["dist-top", "dist-vcenter", "dist-bottom", "dist-left", "dist-hcenter", "dist-right"];
+        let unknown = drawing("no-such-icon");
+        let glyphs: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        for (k, g) in glyphs.iter().enumerate() {
+            assert_ne!(*g, unknown, "{} falls back to the placeholder", names[k]);
+            for (j, other) in glyphs.iter().enumerate().skip(k + 1) {
+                assert_ne!(g, other, "{} and {} draw alike", names[k], names[j]);
+            }
+            for an in ["objalign-left", "objalign-hcenter", "objalign-right", "objalign-top", "objalign-vcenter", "objalign-bottom"] {
+                assert_ne!(*g, drawing(an), "{} draws like {an}", names[k]);
+            }
+        }
     }
 
     #[test]

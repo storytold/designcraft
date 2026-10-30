@@ -1,5 +1,43 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Distribute Objects:", ["Objekte verteilen:", "Répartir les objets :", "Distribuir objetos:", "オブジェクトの分布:", "分布对象："]),
+    ("Distribute Spacing:", ["Abstand verteilen:", "Répartir l’espacement :", "Distribuir espaciado:", "等間隔に分布:", "分布间距："]),
+    ("Use Spacing", ["Abstand verwenden", "Utiliser l’espacement", "Usar espaciado", "間隔を指定", "使用间距"]),
+    ("Distribute top edges", ["Obere Kanten verteilen", "Répartir les bords supérieurs", "Distribuir bordes superiores", "上端を分布", "按顶分布"]),
+    (
+        "Distribute vertical centers",
+        ["Vertikale Mittelpunkte verteilen", "Répartir les centres verticaux", "Distribuir centros verticales", "垂直方向中央を分布", "垂直居中分布"],
+    ),
+    (
+        "Distribute bottom edges",
+        ["Untere Kanten verteilen", "Répartir les bords inférieurs", "Distribuir bordes inferiores", "下端を分布", "按底分布"],
+    ),
+    ("Distribute left edges", ["Linke Kanten verteilen", "Répartir les bords gauches", "Distribuir bordes izquierdos", "左端を分布", "按左分布"]),
+    (
+        "Distribute horizontal centers",
+        [
+            "Horizontale Mittelpunkte verteilen",
+            "Répartir les centres horizontaux",
+            "Distribuir centros horizontales",
+            "水平方向中央を分布",
+            "水平居中分布",
+        ],
+    ),
+    ("Distribute right edges", ["Rechte Kanten verteilen", "Répartir les bords droits", "Distribuir bordes derechos", "右端を分布", "按右分布"]),
+    (
+        "Distribute vertical space",
+        ["Vertikalen Abstand verteilen", "Répartir l’espacement vertical", "Distribuir espacio vertical", "垂直方向に等間隔に分布", "垂直分布间距"],
+    ),
+    (
+        "Distribute horizontal space",
+        [
+            "Horizontalen Abstand verteilen",
+            "Répartir l’espacement horizontal",
+            "Distribuir espacio horizontal",
+            "水平方向に等間隔に分布",
+            "水平分布间距",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [
@@ -1223,6 +1261,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
         "Hyphenate Across Column",
         ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
+    ),
+    (
+        "Select three or more objects, or use spacing.",
+        [
+            "Wählen Sie mindestens drei Objekte aus oder verwenden Sie einen Abstand.",
+            "Sélectionnez au moins trois objets ou utilisez l'espacement.",
+            "Seleccione tres o más objetos o use el espaciado.",
+            "3 つ以上のオブジェクトを選択するか、間隔を使用してください。",
+            "请选择三个或更多对象，或使用间距。",
+        ],
     ),
     (
         "Differs from this document",
