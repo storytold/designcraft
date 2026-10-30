@@ -8065,6 +8065,77 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+/// An introduction, a heading kept with the paragraph after it, that paragraph starting under a
+/// picture that wraps the left column, and a paragraph spanning the columns after them, as on
+/// page 11 of Learn Skills Daily's long-document exercise (Hansel & Petal). Balancing the columns
+/// above the spanning paragraph tries bottoms above the picture's. The body's first line can't
+/// start there: that is the trial's failure, not a reason to move the heading on to the next
+/// column. Moving it on left that trial behind, which then rewound forward past paragraphs not
+/// laid out yet and indexed out of bounds.
+#[test]
+fn balancing_above_a_spanning_paragraph_keeps_a_heading_with_text_under_a_wrap() {
+    let body = [LOREM; 2].join(" ");
+    let intro = "The readiest way to increase these plants is to take the young and dwarf growths from the woody crown of the roots.";
+    let text = [intro, "Campanula Speciosa", &body, "A sidebar across the columns", &body].join(
+        "
+",
+    );
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(36.0, 36.0, 576.0, 756.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    {
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..text.len(), |f| {
+            f.over.size = Some(10.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(12.0));
+        });
+        st.paras[0].para.span_columns = Some(SpanColumns::Span(0));
+        st.paras[1].para.keep_with_next = Some(1);
+        st.paras[3].para.span_columns = Some(SpanColumns::Span(0));
+    }
+    // A picture over the left column, under the heading, with a 15 pt wrap.
+    add_wrap_objects(&mut d, &[(Rect::new(36.0, 80.0, 348.0, 330.0), [15.0; 4], WrapMode::BoundingBox)]);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let first = |p: usize| ft.lines.iter().find(|l| l.para == p).expect("the paragraph is in the frame");
+    assert_eq!((first(1).column, first(2).column), (0, 0), "the heading and its text start in the left column");
+    assert!(first(1).baseline < 80.0, "the heading stays under the introduction: {}", first(1).baseline);
+    assert!(first(2).baseline > 330.0 + 15.0, "the text starts under the picture's wrap: {}", first(2).baseline);
+    assert!(ft.lines.iter().any(|l| l.para == 3), "the spanning paragraph follows in the frame");
+    assert!(!cs.is_overset());
+}
+
+/// Balance Columns after a column break (the band's tail, the last two of three columns), with a
+/// heading kept with the paragraph after it near the balanced bottom. A trial bottom that leaves
+/// the heading alone at the foot of a column moves it on to the next column, as without
+/// balancing; that layout fits, so balancing keeps it: the columns end within two lines of each
+/// other and the heading stays with its text. Failing the trial instead would keep the heading
+/// low in the middle column and leave the last one four lines short.
+#[test]
+fn balanced_columns_after_a_break_move_a_kept_heading_on() {
+    let pre: String = LOREM.split(' ').cycle().take(85).collect::<Vec<_>>().join(" ");
+    let text = format!(
+        "{LOREM}{}
+{pre}
+Heading
+{LOREM}
+{LOREM}",
+        designcraft_doc::story::COLUMN_BREAK
+    );
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 540.0, 500.0), ParaAttrs::default());
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.columns = 3;
+    o.balance_columns = true;
+    d.story_mut(sid).unwrap().paras[2].para.keep_with_next = Some(2);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert_no_overlap(ft);
+    let first = |p: usize| ft.lines.iter().find(|l| l.para == p).expect("the paragraph is in the frame");
+    assert_eq!((first(2).column, first(3).column), (2, 2), "the heading starts the last column with its text");
+    let ends = column_ends(ft);
+    assert!((ends[2] - ends[1]).abs() <= 2.0 * 14.4 + 1e-6, "the balanced columns end within two lines: {ends:?}");
+}
+
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
 /// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
 /// (an INDD project list whose rules crossed the previous paragraph's text).

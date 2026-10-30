@@ -1560,7 +1560,10 @@ struct LineFitInput<'a> {
     split_limits: &'a mut Rc<Vec<(SplitKey, f64)>>,
     split_runs: &'a mut usize,
     split_budget: usize,
-    balance_runs: usize,
+    trial: &'a mut Option<Trial>,
+    limits: &'a mut Rc<Vec<(BandKey, f64)>>,
+    balance_runs: &'a mut usize,
+    balance_budget: usize,
     hyph_relays: &'a mut usize,
     restores: &'a mut usize,
     paragraph_count: usize,
@@ -1607,7 +1610,10 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         split_limits,
         split_runs,
         split_budget,
+        trial,
+        limits,
         balance_runs,
+        balance_budget,
         restores,
         paragraph_count,
         info,
@@ -1684,9 +1690,20 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             remaining: remaining_lines,
             here: (cur.fi, cur.col),
         };
-        if *restores < (4 * paragraph_count + 64) * (balance_runs + 1)
-            && let Some(action) = keep_violation(&ctx, pp, info, force_col, line_cap)
+        let action =
+            if *restores < (4 * paragraph_count + 64) * (*balance_runs + 1) { keep_violation(&ctx, pp, info, force_col, line_cap) } else { None };
+        // Columns a balancing trial shortened break keep options the band would keep with more
+        // room: the trial fails and the band is laid out again lower, before keep options move
+        // paragraphs on.
+        if action.is_some()
+            && trial.as_ref().is_some_and(|t| t.key == cur.band_key())
+            && let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget)
         {
+            *balance_runs += 1;
+            rewind(j, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+            return LineFit::Restart(j);
+        }
+        if let Some(action) = action {
             let j = match action {
                 KeepAction::Force(j) => {
                     force_col[j] = true;
@@ -2014,7 +2031,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 split_limits,
                 split_runs,
                 split_budget,
-                balance_runs: *balance_runs,
+                trial,
+                limits,
+                balance_runs,
+                balance_budget,
                 hyph_relays,
                 restores,
                 paragraph_count: np,
@@ -2694,6 +2714,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut span_paras = vec![false; np];
     let mut split_paras = vec![false; np];
     'paras: while pi <= np {
+        drop_trial_after(&mut trial, &mut limits, pi);
+        drop_trial_after(&mut split_trial, &mut split_limits, pi);
         cur.pi = pi;
         cur.limits = Rc::clone(&limits);
         cur.split_limits = Rc::clone(&split_limits);
@@ -3582,7 +3604,7 @@ fn keep_violation(ctx: &KeepCtx, pp: &ParaProps, info: &[ParaInfo], force_col: &
     let total_lines = ctx.line_no + ctx.remaining;
     // Keep with next: the previous paragraph's last line must share a column with our first lines.
     if ctx.started_here && ctx.pi > 0 {
-        let prev = &info[ctx.pi - 1];
+        let prev = info.get(ctx.pi - 1)?;
         let need = (prev.keep_with_next as usize).min(total_lines);
         if prev.keep_with_next > 0 && prev.end == ctx.here && ctx.line_no < need {
             let j = chain_start(ctx.pi);
@@ -3863,6 +3885,17 @@ fn balance_end(
     }
     *trial = Some(t);
     Some(key.1)
+}
+
+/// A rewind to before a balancing trial's paragraph (keep options) lays that paragraph out again:
+/// its trial and the bottoms it found are stale. Left in place, the trial would rewind forward to
+/// its paragraph when it fails, past paragraphs not laid out yet.
+fn drop_trial_after<K: TrialKey>(trial: &mut Option<Trial<K>>, limits: &mut Rc<Vec<(K, f64)>>, pi: usize) {
+    if trial.as_ref().is_some_and(|t| t.key.para() > pi)
+        && let Some(t) = trial.take()
+    {
+        set_limit(limits, t.key, None);
+    }
 }
 
 fn set_limit<K: TrialKey>(limits: &mut Rc<Vec<(K, f64)>>, key: K, bottom: Option<f64>) {
