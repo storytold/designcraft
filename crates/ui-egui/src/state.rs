@@ -232,6 +232,9 @@ pub struct UiState {
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
+    /// Export PDF presets imported from Adobe `.joboptions` files (see
+    /// `designcraft_pdf::joboptions`). Saved as `pdfPresets`.
+    pub pdf_presets: Vec<designcraft_pdf::joboptions::ImportedPreset>,
     /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
     pub style_preview: bool,
     /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
@@ -417,6 +420,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
+            pdf_presets: Vec::new(),
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,

@@ -3521,3 +3521,140 @@ fn character_style_options_set_the_digits() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
+
+fn fixture_app() -> DesignApp {
+    DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
+}
+
+fn lulu() -> designcraft_pdf::joboptions::ImportedPreset {
+    designcraft_pdf::joboptions::ImportedPreset {
+        name: "Lulu Interior".into(),
+        standard: Some("none".into()),
+        compress_images: Some(true),
+        bleed: Some(true),
+        marks_crop: Some(false),
+        marks_weight: Some("0.25".into()),
+        marks_offset: Some("6".into()),
+        tagged: Some(false),
+        flatten: Some("high".into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn imported_preset_sets_the_fields_it_names() {
+    let mut d = Dialog::new("pdfExport", json!({}));
+    apply_imported_preset(&mut d, &lulu());
+    assert_eq!(d.s("standard"), "none");
+    assert!(d.b("compressImages"));
+    assert!(d.b("bleed"));
+    assert!(!d.b("marksCrop"));
+    assert_eq!(d.s("marksWeight"), "0.25");
+    assert_eq!(d.s("marksOffset"), "6");
+    assert!(!d.b("tagged"));
+    assert_eq!(d.s("flatten"), "high");
+}
+
+#[test]
+fn imported_preset_leaves_unnamed_fields_alone() {
+    let mut d = Dialog::new("pdfExport", json!({"spreads": true, "marksPageInfo": true, "standard": "x4", "flatten": "medium"}));
+    let only_bleed = designcraft_pdf::joboptions::ImportedPreset { name: "Tiny".into(), bleed: Some(false), ..Default::default() };
+    apply_imported_preset(&mut d, &only_bleed);
+    assert!(!d.b("bleed"));
+    assert!(d.b("spreads"));
+    assert!(d.b("marksPageInfo"));
+    assert_eq!(d.s("standard"), "x4");
+    assert_eq!(d.s("flatten"), "medium");
+}
+
+#[test]
+fn imported_preset_ignores_an_unknown_standard() {
+    let mut d = Dialog::new("pdfExport", json!({}));
+    let bad = designcraft_pdf::joboptions::ImportedPreset {
+        name: "Bad".into(),
+        standard: Some("weird".into()),
+        flatten: Some("ultra".into()),
+        ..Default::default()
+    };
+    apply_imported_preset(&mut d, &bad);
+    assert_eq!(d.s("standard"), "none", "the default stays");
+    assert_eq!(d.s("flatten"), "", "an unknown flattener stays at the default");
+}
+
+#[test]
+fn preset_name_comes_from_the_file_name() {
+    assert_eq!(imported_preset_name("/x/Lulu-Interior-Job-Options.joboptions", &[]), "Lulu-Interior-Job-Options");
+    assert_eq!(imported_preset_name("C:\\p\\Blurb_PDF_Export.joboptions", &[]), "Blurb_PDF_Export");
+}
+
+#[test]
+fn preset_name_falls_back_when_there_is_no_stem() {
+    assert_eq!(imported_preset_name("/x/.joboptions", &[]), "Imported preset");
+    assert_eq!(imported_preset_name("", &[]), "Imported preset");
+}
+
+#[test]
+fn preset_name_never_clashes_with_a_built_in() {
+    assert_eq!(imported_preset_name("/x/PDF-X-4.joboptions", &["PDF/X-4"]), "PDF-X-4");
+    assert_eq!(imported_preset_name("/x/Custom.joboptions", &["Custom"]), "Custom (imported)");
+    assert_eq!(imported_preset_name("/x/Desktop Printing.joboptions", &["Desktop Printing"]), "Desktop Printing (imported)");
+}
+
+const LULU_FILE: &str = include_str!("../../../pdf/tests/fixtures/joboptions/lulu-interior.joboptions");
+
+fn app_that_reads(text: &'static str) -> DesignApp {
+    let mut app = fixture_app();
+    app.services.read = Some(Box::new(move |_: &str| Ok(text.as_bytes().to_vec())));
+    app.ui.dialog = Some(Dialog::new("pdfExport", json!({})));
+    app
+}
+
+#[test]
+fn importing_a_file_adds_the_preset_and_selects_it() {
+    let mut app = app_that_reads(LULU_FILE);
+    import_pdf_preset(&mut app, "/x/Lulu Interior.joboptions".into()).unwrap();
+    assert_eq!(app.ui.pdf_presets.len(), 1);
+    assert_eq!(app.ui.pdf_presets[0].name, "Lulu Interior");
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("preset"), "Lulu Interior");
+    assert_eq!(d.s("standard"), "none");
+    assert!(d.b("bleed"));
+    assert_eq!(d.s("flatten"), "high");
+}
+
+#[test]
+fn importing_twice_replaces() {
+    let mut app = app_that_reads(LULU_FILE);
+    import_pdf_preset(&mut app, "/x/Lulu Interior.joboptions".into()).unwrap();
+    assert!(app.ui.status.starts_with("Imported"), "{}", app.ui.status);
+    import_pdf_preset(&mut app, "/y/Lulu Interior.joboptions".into()).unwrap();
+    assert_eq!(app.ui.pdf_presets.len(), 1);
+    assert!(app.ui.status.starts_with("Replaced"), "{}", app.ui.status);
+}
+
+#[test]
+fn a_file_that_is_not_a_joboptions_file_changes_nothing() {
+    let mut app = app_that_reads("this is not a settings file");
+    import_pdf_preset(&mut app, "/x/notes.joboptions".into()).unwrap();
+    assert!(app.ui.pdf_presets.is_empty());
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("preset"), "Desktop Printing");
+}
+
+#[test]
+fn a_file_that_cannot_be_read_changes_nothing() {
+    let mut app = fixture_app();
+    app.services.read = Some(Box::new(|_: &str| Err("no such file".to_string())));
+    app.ui.dialog = Some(Dialog::new("pdfExport", json!({})));
+    import_pdf_preset(&mut app, "/x/gone.joboptions".into()).unwrap();
+    assert!(app.ui.pdf_presets.is_empty());
+}
+
+#[test]
+fn the_import_button_reads_the_chosen_file() {
+    let mut app = app_that_reads(LULU_FILE);
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/x/Lulu Interior.joboptions".into())));
+    app.ask_open("joboptions", Bound::App, import_pdf_preset).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_presets.len(), 1);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("preset"), "Lulu Interior");
+}

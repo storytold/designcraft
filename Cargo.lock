@@ -1543,6 +1543,8 @@ dependencies = [
  "krilla-svg",
  "kurbo",
  "log",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tiff",
 ]
@@ -1622,6 +1624,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "designcraft-idml",
+ "designcraft-pdf",
  "designcraft-render",
  "designcraft-tools",
  "egui",

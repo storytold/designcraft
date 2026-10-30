@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (.joboptions import; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -217,7 +217,7 @@ table is the one summed.
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Diagonal Lines, Edit Header/Footer |
 | Long documents | 100% | 45% | 30–50 | Books are shallow (sync, book pagination, book PDF/TOC/index); Table of Contents Styles |
 | Interactivity & digital | 100% | 40% | 30–50 | HTML export basic (#314); fixed-layout EPUB is page images; no animation, timing, media playback |
-| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), with visible unembedded font detection (below); no PDF/print presets or `.joboptions`, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
+| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), with visible unembedded font detection (below); `.joboptions` import only (no save, no PDF/X-3, no downsampling), print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
 | XML & automation | 100% | 35% | (ecosystem dimension) | no ExtendScript/UXP; XML structure depth |
 | View & navigation | 100% | 65% | 10–20 | Navigator, display badges, Show/Hide extras (content grabber, live corners) |
 | Undo, history, saving | 100% | 70% | 5–10 | Undo/Redo name the action |

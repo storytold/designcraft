@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (Adobe .joboptions presets import; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -41,7 +41,7 @@ layer survive interchange; literal XML and round-trip tests are in
 
 | Format | Ext | InDesign | DesignCraft | Fidelity / tests | Weight |
 |---|---|---|---|---|---|
-| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF; **PDF/X-1a:2003** flattened in its inks by craft-prepress | 53 tests in `crates/pdf`; no PDF/X-3; no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
+| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF; **PDF/X-1a:2003** flattened in its inks by craft-prepress | 53 tests in `crates/pdf`; no PDF/X-3; `.joboptions` import only (no save, no downsampling); no external validator (veraPDF / callas) in CI | 18% |
 | PDF (interactive) | `.pdf` | ✓ | ✓ links, bookmarks, buttons, AcroForm fields, page transitions, object states | | 2% |
 | JPEG / PNG | `.jpg`, `.png` | ✓ | PNG from the UI; JPEG from the CLI only | no resolution / colour space options dialog for JPEG | 3% |
 | EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | | 2% |
@@ -90,7 +90,7 @@ external PDF/X certification.
 | Colour books | `.acb` | read (17 libraries ship) | ✗ (licensed libraries; Pantone etc. out of scope, own libraries possible) |
 | ICC profiles | `.icc`, `.icm` | read | ✓ (also profiles embedded in placed images) |
 | Colour settings | `.csf` | read/write | ✗ |
-| PDF presets | `.joboptions`, `.pdfs` | read/write | ✗ |
+| PDF presets | `.joboptions`, `.pdfs` | read/write | import only: `.joboptions` via Export PDF › Preset › Import preset… (`designcraft_pdf::joboptions`); no save, no `.pdfs` |
 | Print / flattener / document presets | `.prst`, `.flst`, `.dcst` | read/write | ✗ |
 | Preflight profiles | `.idpp` | read/write | ✗ (own profiles in the document) |
 | Keyboard shortcut sets | `.indk`; Show Set `.txt` | read/write; write | ~ (imports a Show Set `.txt`; own JSON) |

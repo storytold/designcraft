@@ -407,10 +407,99 @@ fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     }
 }
 
+/// The standards the Export PDF dialog offers (`standard` field values).
+const PDF_STANDARDS: &[&str] = &["none", "x1a", "x4", "a2b"];
+/// The Transparency Flattener values the dialog offers (`flatten` field values).
+const PDF_FLATTENERS: &[&str] = &["", "high", "medium", "low"];
+
+/// Apply an imported preset: set the dialog fields the file named and leave every other field as
+/// the user has it. A `standard` or `flatten` this version does not know (a hand-edited
+/// `ui.json`) is ignored.
+fn apply_imported_preset(d: &mut Dialog, p: &designcraft_pdf::joboptions::ImportedPreset) {
+    if let Some(s) = p.standard.as_deref().filter(|s| PDF_STANDARDS.contains(s)) {
+        d.fields.insert("standard".into(), json!(s));
+    }
+    if let Some(f) = p.flatten.as_deref().filter(|f| PDF_FLATTENERS.contains(f)) {
+        d.fields.insert("flatten".into(), json!(f));
+    }
+    for (key, value) in [
+        ("compressImages", p.compress_images),
+        ("bleed", p.bleed),
+        ("marksCrop", p.marks_crop),
+        ("marksBleed", p.marks_bleed),
+        ("marksPageInfo", p.marks_page_info),
+        ("tagged", p.tagged),
+    ] {
+        if let Some(v) = value {
+            d.fields.insert(key.into(), json!(v));
+        }
+    }
+    for (key, value) in [("marksWeight", &p.marks_weight), ("marksOffset", &p.marks_offset)] {
+        if let Some(v) = value {
+            d.fields.insert(key.into(), json!(v));
+        }
+    }
+}
+
+/// The Preset menu name for an imported file: its name without the extension. A file with no
+/// name ("`.joboptions`") is "Imported preset"; a name a built-in preset already has gets
+/// " (imported)" after it.
+fn imported_preset_name(path: &str, taken: &[&str]) -> String {
+    let file = path.rsplit(['/', '\\']).next().unwrap_or("");
+    let stem = file.strip_suffix(".joboptions").or_else(|| file.rsplit_once('.').map(|(s, _)| s)).unwrap_or(file).trim();
+    let name = if stem.is_empty() { "Imported preset" } else { stem };
+    if taken.contains(&name) { format!("{name} (imported)") } else { name.to_string() }
+}
+
+/// What the Export PDF dialog asks the app to do once it has been drawn (it draws with `&DesignApp`).
+enum PdfExportAction {
+    None,
+    Import,
+    Remove(String),
+}
+
+/// Export PDF › Preset › Import preset…: read the chosen `.joboptions` file, keep it as a preset
+/// and select it in the dialog. A file that cannot be read or parsed leaves everything as it was
+/// and is reported in the status bar.
+fn import_pdf_preset(app: &mut DesignApp, path: String) -> Result<Value, String> {
+    let read = app.services.read.as_ref().map(|r| r(&path));
+    let bytes = match read {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(e)) => {
+            app.status_error("Export PDF", e);
+            return Ok(Value::Null);
+        }
+        None => {
+            app.status_error("Export PDF", "this build cannot read files");
+            return Ok(Value::Null);
+        }
+    };
+    let jo = match designcraft_pdf::joboptions::parse_bytes(&bytes) {
+        Ok(jo) => jo,
+        Err(e) => {
+            app.status_error("Export PDF", e);
+            return Ok(Value::Null);
+        }
+    };
+    let name = imported_preset_name(&path, PDF_EXPORT_PRESETS);
+    let preset = designcraft_pdf::joboptions::to_preset(&name, &jo);
+    let replaced = app.ui.pdf_presets.iter().any(|p| p.name == name);
+    app.ui.pdf_presets.retain(|p| p.name != name);
+    app.ui.pdf_presets.push(preset.clone());
+    if let Some(d) = app.ui.dialog.as_mut().filter(|d| d.id == "pdfExport") {
+        d.fields.insert("preset".into(), json!(name));
+        apply_imported_preset(d, &preset);
+    }
+    let lang = app.ui.language.clone();
+    let said = if replaced { "Replaced PDF preset {name}" } else { "Imported PDF preset {name}" };
+    app.status(crate::i18n::tr(&lang, said).replace("{name}", &name));
+    Ok(Value::Null)
+}
+
 /// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
 /// Advanced). Selecting a preset fills the dependent fields; editing any other control flips the
 /// preset back to "Custom".
-fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> PdfExportAction {
     let lang = app.ui.language.as_str();
     let head = |ui: &mut egui::Ui, t: &str| {
         ui.add_space(6.0);
@@ -419,6 +508,8 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     // Snapshot the non-preset fields so a manual edit can be detected after drawing.
     let before = d.fields.clone();
     let mut preset_clicked = false;
+    let mut action = PdfExportAction::None;
+    let mut imported_clicked: Option<designcraft_pdf::joboptions::ImportedPreset> = None;
 
     head(ui, "General");
     ui.horizontal(|ui| {
@@ -433,12 +524,46 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         preset_clicked = true;
                     }
                 }
+                if !app.ui.pdf_presets.is_empty() {
+                    ui.separator();
+                    for p in &app.ui.pdf_presets {
+                        if ui.selectable_label(cur == p.name, crate::rtl::widget(ui, p.name.as_str())).clicked() {
+                            d.fields.insert("preset".into(), json!(p.name));
+                            preset_clicked = true;
+                            imported_clicked = Some(p.clone());
+                        }
+                    }
+                }
+                ui.separator();
+                if ui.selectable_label(false, crate::rtl::widget(ui, crate::i18n::tr(lang, "Import preset…"))).clicked() {
+                    action = PdfExportAction::Import;
+                }
             },
         );
     });
     if preset_clicked {
         let p = d.s("preset");
         apply_pdf_preset(d, &p);
+        if let Some(imported) = &imported_clicked {
+            apply_imported_preset(d, imported);
+        }
+    }
+    // An imported preset shows what DesignCraft could not do, and can be removed.
+    let current = d.s("preset");
+    if let Some(p) = app.ui.pdf_presets.iter().find(|p| p.name == current) {
+        if !p.not_applied.is_empty() {
+            egui::CollapsingHeader::new(format!("{} ({})", crate::i18n::tr(lang, "Not applied"), p.not_applied.len()))
+                .id_salt("pdf_preset_not_applied")
+                .default_open(p.not_applied.len() <= 3)
+                .show(ui, |ui| {
+                    for line in &p.not_applied {
+                        crate::rtl::label(ui, egui::RichText::new(format!("• {line}")).weak());
+                    }
+                });
+        }
+        if ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(lang, "Remove this preset"))).clicked() {
+            action = PdfExportAction::Remove(current.clone());
+        }
     }
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Page Range:"));
@@ -486,6 +611,7 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if !preset_clicked && d.fields != before {
         d.fields.insert("preset".into(), json!("Custom"));
     }
+    action
 }
 
 /// The selected text frame's width (its own, before rotation).
@@ -2991,7 +3117,18 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     }
                     "fileInfo" => file_info_dialog(app, ui, &mut d),
                     "numberingSection" => crate::section_options::body(app, ui, &mut d),
-                    "pdfExport" => pdf_export(app, ui, &mut d),
+                    "pdfExport" => match pdf_export(app, ui, &mut d) {
+                        PdfExportAction::None => {}
+                        PdfExportAction::Import => {
+                            if let Err(e) = app.ask_open("joboptions", Bound::App, import_pdf_preset) {
+                                app.status_error("Export PDF", e);
+                            }
+                        }
+                        PdfExportAction::Remove(name) => {
+                            app.ui.pdf_presets.retain(|p| p.name != name);
+                            d.fields.insert("preset".into(), json!("Custom"));
+                        }
+                    },
                     "epubExport" => epub_export(app, ui, &mut d),
                     "alert" => {
                         let file = d.s("file");

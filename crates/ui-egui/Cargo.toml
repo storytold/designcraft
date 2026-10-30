@@ -21,6 +21,7 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
+designcraft-pdf = { workspace = true }
 craft-prepress = { workspace = true }
 # The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
 # them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.

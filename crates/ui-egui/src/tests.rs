@@ -737,6 +737,29 @@ fn pdf_export_settings_survive_missing_key() {
     assert_eq!(ui.pdf_export, PdfExportSettings::default());
 }
 
+#[test]
+fn pdf_presets_default_to_none_and_survive_a_missing_key() {
+    assert!(UiState::default().pdf_presets.is_empty());
+    let ui: UiState = serde_json::from_str(r#"{ "language": "en" }"#).unwrap();
+    assert!(ui.pdf_presets.is_empty());
+}
+
+#[test]
+fn imported_pdf_presets_round_trip_through_preferences() {
+    let mut ui = UiState::default();
+    ui.pdf_presets.push(designcraft_pdf::joboptions::ImportedPreset {
+        name: "Lulu Interior".into(),
+        standard: Some("none".into()),
+        bleed: Some(true),
+        not_applied: vec!["Fast web view is not supported.".into()],
+        ..Default::default()
+    });
+    let bytes = serde_json::to_vec(&ui).unwrap();
+    let back = UiState::from_preferences_json(&bytes).unwrap();
+    assert_eq!(back.pdf_presets, ui.pdf_presets);
+    assert!(String::from_utf8_lossy(&bytes).contains("\"pdfPresets\""));
+}
+
 /// A temporary file named `name` whose bytes aren't a document or a graphic.
 fn unreadable_file(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("designcraft-ui-{}-{name}", std::process::id()));

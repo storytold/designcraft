@@ -337,6 +337,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
         "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
+        "joboptions" => &[OpenFilter { name: "Adobe PDF settings", extensions: &["joboptions"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],
@@ -490,6 +491,12 @@ mod tests {
 
     use super::testing::answer_with;
     use super::{ALL_FILES, open_filters, picked_save_path, save_dialog_start, suggested_extension};
+
+    #[test]
+    fn joboptions_open_dialog_lists_joboptions_files() {
+        let exts: Vec<&str> = open_filters("joboptions").iter().flat_map(|filter| filter.extensions.iter().copied()).collect();
+        assert_eq!(exts, vec!["joboptions"]);
+    }
 
     #[test]
     fn relink_open_dialog_lists_graphics() {
