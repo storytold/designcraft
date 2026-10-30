@@ -262,10 +262,11 @@ pub fn text_attrs(app: &mut DesignApp) -> Option<Value> {
 
 /// Count preflight errors: overset stories (more checks land with the Preflight panel).
 pub fn preflight_errors(app: &DesignApp) -> usize {
-    // Memoized per document snapshot (the status bar asks every frame).
-    static MEMO: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
+    // Memoized per document state, `(uid, revision)` (the status bar asks every frame; an edit can
+    // keep the document's allocation, so its address isn't enough).
+    static MEMO: std::sync::Mutex<Option<((u64, u64), usize)>> = std::sync::Mutex::new(None);
     let Some(st) = app.session.active() else { return 0 };
-    let key = std::sync::Arc::as_ptr(&st.doc) as usize;
+    let key = (st.uid, st.revision);
     let mut g = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((k, n)) = *g
         && k == key

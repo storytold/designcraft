@@ -190,6 +190,51 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
     assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
 }
 
+/// The Preflight panel as InDesign's: issues in a category › rule › object tree with their
+/// pages, Info telling the problem and the fix, the count, and On to turn preflight off.
+#[test]
+fn preflight_lists_issues_by_category_and_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = designcraft_render::Rendered { width: 8, height: 8, pixels: vec![120; 8 * 8 * 4] }.to_png();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut frames = Vec::new();
+    for (k, name) in ["first.png", "second.png"].iter().enumerate() {
+        let path = dir.path().join(name);
+        std::fs::write(&path, &png).unwrap();
+        let x = 72 + 120 * k as u64;
+        let f = app.run("frame.create", json!({"rect": [x, 72, x + 100, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "frame": f})).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        frames.push(f);
+    }
+    let mut h = panel_harness(app, preflight_panel);
+    h.run_steps(3);
+    for l in ["LINKS (2)", "Missing link (2)", "first.png", "second.png", "2 errors"] {
+        assert!(h.query_by_label(l).is_some(), "{l}");
+    }
+    assert_eq!(h.get_all_by_label("Page 1").count(), 2, "each object's page");
+    h.get_by_label("second.png").click();
+    h.run_steps(3);
+    let _ = h.get_by_label("The linked file can't be found.");
+    // Deleting the first object keeps the second one chosen, though its row moved up.
+    h.state_mut().run("edit.clear", json!({"ids": [frames[0]]})).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label("first.png").is_none());
+    assert!(h.query_by_label("The linked file can't be found.").is_some(), "Info still shows the chosen issue");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.run_steps(3);
+    // The rule folds away.
+    h.get_by_label("Missing link (2)").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("first.png").is_none());
+    // On unticked: nothing is checked.
+    h.state_mut().ui.preflight_off = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("LINKS (2)").is_none());
+    let _ = h.get_by_label("Preflight off");
+}
+
 #[test]
 fn properties_character_section_sets_the_language() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

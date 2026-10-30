@@ -1,5 +1,59 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Profile:", ["Profil:", "Profil :", "Perfil:", "プロファイル:", "配置文件："]),
+    ("[Basic] (working)", ["[Einfach] (Arbeitsprofil)", "[Standard] (de travail)", "[Básico] (de trabajo)", "[基本] (作業用)", "[基本] (工作)"]),
+    ("Error", ["Fehler", "Erreur", "Error", "エラー", "错误"]),
+    ("Problem:", ["Problem:", "Problème :", "Problema:", "問題:", "问题："]),
+    ("Fix:", ["Behebung:", "Correctif :", "Solución:", "修正:", "修复："]),
+    ("Details:", ["Details:", "Détails :", "Detalles:", "詳細:", "详细信息："]),
+    ("Preflight off", ["Preflight aus", "Contrôle en amont désactivé", "Comprobación preliminar desactivada", "プリフライトオフ", "印前检查已关闭"]),
+    ("LINKS", ["VERKNÜPFUNGEN", "LIENS", "VÍNCULOS", "リンク", "链接"]),
+    ("IMAGES and OBJECTS", ["BILDER und OBJEKTE", "IMAGES et OBJETS", "IMÁGENES y OBJETOS", "画像とオブジェクト", "图像和对象"]),
+    ("COLOR", ["FARBE", "COULEUR", "COLOR", "カラー", "颜色"]),
+    ("TEXT", ["TEXT", "TEXTE", "TEXTO", "テキスト", "文本"]),
+    ("DOCUMENT", ["DOKUMENT", "DOCUMENT", "DOCUMENTO", "ドキュメント", "文档"]),
+    ("Missing link", ["Fehlende Verknüpfung", "Lien manquant", "Vínculo que falta", "リンク切れ", "缺失的链接"]),
+    ("Image resolution", ["Bildauflösung", "Résolution de l’image", "Resolución de imagen", "画像の解像度", "图像分辨率"]),
+    ("RGB swatch", ["RGB-Farbfeld", "Nuance RVB", "Muestra RGB", "RGB スウォッチ", "RGB 色板"]),
+    ("Overset text", ["Übersatztext", "Texte en excès", "Texto desbordado", "オーバーセットテキスト", "溢流文本"]),
+    ("Unplaced text", ["Nicht platzierter Text", "Texte non placé", "Texto sin colocar", "配置されていないテキスト", "未置入的文本"]),
+    ("Font missing", ["Schriftart fehlt", "Police manquante", "Falta la fuente", "フォントがありません", "缺少字体"]),
+    (
+        "Font style missing",
+        ["Schriftschnitt fehlt", "Style de police manquant", "Falta el estilo de fuente", "フォントスタイルがありません", "缺少字体样式"],
+    ),
+    ("Missing glyph", ["Fehlende Glyphe", "Glyphe manquant", "Falta el glifo", "グリフがありません", "缺少字形"]),
+    ("Empty text frame", ["Leerer Textrahmen", "Bloc de texte vide", "Marco de texto vacío", "空のテキストフレーム", "空文本框"]),
+    (
+        "Unsupported typography",
+        [
+            "Nicht unterstützte Typografie",
+            "Typographie non prise en charge",
+            "Tipografía no admitida",
+            "サポートされていないタイポグラフィ",
+            "不支持的排版",
+        ],
+    ),
+    (
+        "The linked file can't be found.",
+        [
+            "Die verknüpfte Datei wurde nicht gefunden.",
+            "Le fichier lié est introuvable.",
+            "No se encuentra el archivo vinculado.",
+            "リンクされたファイルが見つかりません。",
+            "找不到链接的文件。",
+        ],
+    ),
+    (
+        "Relink it in the Links panel.",
+        [
+            "Im Verknüpfungen-Bedienfeld neu verknüpfen.",
+            "Rééditez le lien dans le panneau Liens.",
+            "Vuelva a vincularlo en el panel Vínculos.",
+            "リンクパネルで再リンクしてください。",
+            "在“链接”面板中重新链接。",
+        ],
+    ),
     (
         "Character Formatting Controls",
         [
@@ -3073,7 +3127,6 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Welcome to DesignCraft", "Bienvenue dans DesignCraft", "Welcome to DesignCraft", "Welcome to DesignCraft", "欢迎使用 DesignCraft"],
     ),
     ("When Scaling", ["When Scaling", "Lors du redimensionnement", "When Scaling", "When Scaling", "缩放时"]),
-    ("[Basic] (working) ▾", ["[Basic] (working) ▾", "[De base] (de travail) ▾", "[Basic] (working) ▾", "[Basic] (working) ▾", "[基本] (工作区) ▾"]),
     ("[Black] Overprint", ["[Black] Overprint", "Surimpression de [Noir]", "[Black] Overprint", "[Black] Overprint", "[黑] 叠印"]),
     ("[No Group]", ["[No Group]", "[Aucun groupe]", "[No Group]", "[No Group]", "[无组]"]),
     ("[None]", ["[None]", "[Aucun]", "[None]", "[None]", "[无]"]),

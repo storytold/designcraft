@@ -190,6 +190,8 @@ pub struct UiState {
     pub baseline_grid: bool,
     pub document_grid: bool,
     pub text_threads: bool,
+    /// Preflight panel › On unticked: no live preflight (the status bar says so).
+    pub preflight_off: bool,
     pub hidden_characters: bool,
     /// View › Structure › Show Tagged Frames.
     pub tagged_frames: bool,
@@ -393,6 +395,7 @@ impl Default for UiState {
             baseline_grid: false,
             document_grid: false,
             text_threads: false,
+            preflight_off: false,
             hidden_characters: false,
             tagged_frames: false,
             hidden_menu_items: Vec::new(),

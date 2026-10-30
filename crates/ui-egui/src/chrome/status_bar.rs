@@ -137,17 +137,29 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     crate::canvas::go_to_page(app, n - 1);
                 }
                 ui.add_space(12.0);
-                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "[Basic] (working) ▾")).font(small.clone()));
+                crate::rtl::label(
+                    ui,
+                    egui::RichText::new(format!("{} ▾", crate::i18n::tr(&app.ui.language, "[Basic] (working)"))).font(small.clone()),
+                );
                 ui.add_space(8.0);
                 // Preflight: overset text is an error.
-                let errors = panels::preflight_errors(app);
+                let off = app.ui.preflight_off;
+                let errors = if off { 0 } else { panels::preflight_errors(app) };
                 let (r, dot) = ui.allocate_exact_size(vec2(9.0, 9.0), Sense::click());
                 ui.painter().circle_filled(
                     r.center(),
                     4.0,
-                    if errors == 0 { Color32::from_rgb(60, 200, 90) } else { Color32::from_rgb(235, 50, 50) },
+                    if off {
+                        Color32::from_gray(140)
+                    } else if errors == 0 {
+                        Color32::from_rgb(60, 200, 90)
+                    } else {
+                        Color32::from_rgb(235, 50, 50)
+                    },
                 );
-                let count = if errors == 0 {
+                let count = if off {
+                    format!("{} ▾", crate::i18n::tr(&app.ui.language, "Preflight off"))
+                } else if errors == 0 {
                     format!("{} ▾", crate::i18n::tr(&app.ui.language, "No errors"))
                 } else {
                     format!(

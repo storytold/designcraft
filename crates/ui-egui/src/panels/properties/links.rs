@@ -1,4 +1,4 @@
-use super::{DesignApp, Sense, Tokens, Value, divider, json, sel_info, units, vec2};
+use super::{DesignApp, Rect, Sense, Stroke, Tokens, Value, divider, json, pos2, sel_info, units, vec2, widgets};
 use crate::app::file_dialogs::Bound;
 
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
@@ -263,43 +263,262 @@ pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let issues = designcraft_engine::cmd::preflight::check(&app.session, 150.0);
+    let lang = app.ui.language.clone();
+    // On and the profile, as InDesign's top row (one built-in profile).
+    ui.horizontal(|ui| {
+        let mut on = !app.ui.preflight_off;
+        if widgets::checkbox(ui, &mut on, crate::i18n::tr(&lang, "On")).clicked() {
+            app.ui.preflight_off = !on;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "[Basic] (working)")).size(11.5));
+            widgets::caption(ui, crate::i18n::tr(&lang, "Profile:"));
+        });
+    });
+    let issues = if app.ui.preflight_off { Vec::new() } else { designcraft_engine::cmd::preflight::check(&app.session, 150.0) };
     let errors = issues.iter().filter(|i| i.severity == "error").count();
+    let w = ui.available_width();
+    let page_col = 40.0;
+    let (hdr, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    ui.painter().text(
+        hdr.left_center() + vec2(6.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        crate::i18n::tr(&lang, "Error"),
+        egui::FontId::proportional(11.5),
+        t.text,
+    );
+    ui.painter().text(
+        pos2(hdr.right() - page_col + 4.0, hdr.center().y),
+        egui::Align2::LEFT_CENTER,
+        crate::i18n::tr(&lang, "Page"),
+        egui::FontId::proportional(11.5),
+        t.text,
+    );
+    ui.painter().line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, t.section_divider));
+    // The issues as InDesign's tree: category, then rule, then each object.
+    let mut tree: Vec<(&'static str, Vec<(&'static str, Vec<usize>)>)> = Vec::new();
+    for (k, i) in issues.iter().enumerate() {
+        let (cat, rule) = preflight_rule(i.kind);
+        let c = match tree.iter().position(|(n, _)| *n == cat) {
+            Some(c) => c,
+            None => {
+                tree.push((cat, Vec::new()));
+                tree.len() - 1
+            }
+        };
+        let Some((_, rules)) = tree.get_mut(c) else { continue };
+        match rules.iter_mut().find(|(n, _)| *n == rule) {
+            Some((_, v)) => v.push(k),
+            None => rules.push((rule, vec![k])),
+        }
+    }
+    // The chosen issue by what it is (kind, object, message), not its row: the list is checked
+    // again every frame, and an edit can remove the rows before it.
+    let sel_key = egui::Id::unique("preflight_sel");
+    let identity = |i: &designcraft_engine::cmd::preflight::Issue| (i.kind.to_string(), i.item, i.message.clone());
+    let mut chosen: Option<usize> =
+        ui.data(|d| d.get_temp::<(String, Option<u64>, String)>(sel_key)).and_then(|want| issues.iter().position(|i| identity(i) == want));
+    let mut go: Option<usize> = None;
+    let row = |ui: &mut egui::Ui, depth: f32, label: &str, open: Option<bool>, selected: bool| {
+        let (r, resp) = ui.allocate_exact_size(vec2(w, 21.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
+        if selected {
+            ui.painter().rect_filled(r, 0.0, t.row_selected);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(r, 0.0, t.hover);
+        }
+        let x = r.min.x + 8.0 + 16.0 * depth;
+        if let Some(open) = open {
+            let c = pos2(x + 4.0, r.center().y);
+            let tri = if open {
+                vec![c + vec2(-4.0, -2.0), c + vec2(4.0, -2.0), c + vec2(0.0, 3.0)]
+            } else {
+                vec![c + vec2(-2.0, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.0, 4.0)]
+            };
+            ui.painter().add(egui::Shape::convex_polygon(tri, t.icon, Stroke::NONE));
+        }
+        let text_w = (r.right() - page_col - x - 16.0).max(20.0);
+        let shown = middle_ellipsis(ui.painter(), label, &egui::FontId::proportional(12.0), text_w);
+        ui.painter().text(pos2(x + 14.0, r.center().y), egui::Align2::LEFT_CENTER, shown, egui::FontId::proportional(12.0), t.text);
+        (r, resp)
+    };
+    egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+        for (cat, rules) in &tree {
+            let n: usize = rules.iter().map(|(_, v)| v.len()).sum();
+            let cat_id = egui::Id::unique(("preflight_open", *cat));
+            let cat_open = ui.data(|d| d.get_temp::<bool>(cat_id)).unwrap_or(true);
+            let (_, resp) = row(ui, 0.0, &format!("{} ({n})", crate::i18n::tr(&lang, cat)), Some(cat_open), false);
+            if resp.clicked() {
+                ui.data_mut(|d| d.insert_temp(cat_id, !cat_open));
+            }
+            if !cat_open {
+                continue;
+            }
+            for (rule, ks) in rules {
+                let rule_id = egui::Id::unique(("preflight_open", *cat, *rule));
+                let rule_open = ui.data(|d| d.get_temp::<bool>(rule_id)).unwrap_or(true);
+                let (_, resp) = row(ui, 1.0, &format!("{} ({})", crate::i18n::tr(&lang, rule), ks.len()), Some(rule_open), false);
+                if resp.clicked() {
+                    ui.data_mut(|d| d.insert_temp(rule_id, !rule_open));
+                }
+                if !rule_open {
+                    continue;
+                }
+                for &k in ks {
+                    let Some(i) = issues.get(k) else { continue };
+                    let (r, resp) = row(ui, 2.0, &preflight_label(i), None, chosen == Some(k));
+                    if resp.clicked() {
+                        chosen = Some(k);
+                    }
+                    if resp.double_clicked() {
+                        go = Some(k);
+                    }
+                    // The page, in InDesign's orange: a click goes to the object.
+                    if let Some(p) = i.page.filter(|_| app.session.active().is_some()) {
+                        let label = app.session.page_label(p);
+                        let pr = Rect::from_min_max(pos2(r.right() - page_col, r.min.y), r.max);
+                        let presp = ui.interact(pr, ui.scope_id().with(("preflight_page", k)), Sense::click());
+                        presp.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{} {label}", crate::i18n::tr(&lang, "Page")))
+                        });
+                        ui.painter().text(
+                            pr.left_center() + vec2(4.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            &label,
+                            egui::FontId::proportional(11.5),
+                            egui::Color32::from_rgb(0xe8, 0xa0, 0x3a),
+                        );
+                        if presp.clicked() {
+                            chosen = Some(k);
+                            go = Some(k);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    if let Some(i) = chosen.and_then(|k| issues.get(k)) {
+        ui.data_mut(|d| d.insert_temp(sel_key, identity(i)));
+    }
+    if let Some(i) = go.and_then(|k| issues.get(k)) {
+        if let Some(id) = i.item {
+            let _ = app.run("selection.set", json!({"ids": [id]}));
+        }
+        if let Some(p) = i.page {
+            crate::canvas::go_to_page(app, p);
+        }
+    }
+    // Info: what the problem is and how to fix it, for the chosen row.
+    divider(ui);
+    widgets::caption(ui, crate::i18n::tr(&lang, "Info"));
+    if let Some(i) = chosen.and_then(|k| issues.get(k)) {
+        let (problem, fix) = preflight_help(i.kind);
+        for (k, v) in [("Problem:", crate::i18n::tr(&lang, problem).to_string()), ("Fix:", crate::i18n::tr(&lang, fix).to_string())] {
+            ui.horizontal_wrapped(|ui| {
+                crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, k)).strong().size(11.0));
+                ui.add(egui::Label::new(egui::RichText::new(v).size(11.0)).wrap());
+            });
+        }
+        // The message in full (a path can be long): under its caption, wrapping in the panel.
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Details:")).strong().size(11.0));
+        ui.add(egui::Label::new(egui::RichText::new(&i.message).size(11.0).color(t.text_dim)).wrap());
+    }
+    // The count and the pages checked, as InDesign's footer.
+    divider(ui);
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(
-            r.center(),
-            4.5,
-            if errors == 0 { egui::Color32::from_rgb(60, 200, 90) } else { egui::Color32::from_rgb(235, 50, 50) },
-        );
-        crate::rtl::label(
-            ui,
-            if issues.is_empty() {
-                crate::i18n::tr(&app.ui.language, "No errors").to_string()
-            } else {
-                format!(
-                    "{}, {}",
-                    crate::i18n::count_label(&app.ui.language, "errors", errors),
-                    crate::i18n::count_label(&app.ui.language, "warnings", issues.len() - errors)
-                )
-            },
-        );
+        let col = if app.ui.preflight_off {
+            egui::Color32::from_gray(140)
+        } else if errors == 0 {
+            egui::Color32::from_rgb(60, 200, 90)
+        } else {
+            egui::Color32::from_rgb(235, 50, 50)
+        };
+        ui.painter().circle_filled(r.center(), 4.5, col);
+        let text = if app.ui.preflight_off {
+            crate::i18n::tr(&lang, "Preflight off").to_string()
+        } else if issues.is_empty() {
+            crate::i18n::tr(&lang, "No errors").to_string()
+        } else {
+            let warnings = issues.len() - errors;
+            let e = crate::i18n::count_label(&lang, "errors", errors);
+            if warnings == 0 { e } else { format!("{e}, {}", crate::i18n::count_label(&lang, "warnings", warnings)) }
+        };
+        crate::rtl::label(ui, text);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "All")).size(11.0));
+            widgets::caption(ui, crate::i18n::tr(&lang, "Pages:"));
+        });
     });
-    divider(ui);
-    for i in issues {
-        let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
-        let text = format!("{}  {}", if i.severity == "error" { "⛔" } else { "⚠" }, i.message);
-        let resp = ui.add(egui::Button::new(egui::RichText::new(text).size(11.0)).frame(false));
-        if let Some(pg) = &page {
-            crate::rtl::label(ui, egui::RichText::new(format!("   page {pg}")).size(10.0).color(t.text_dim));
+}
+
+/// `text` shortened in the middle to fit `max` points, keeping its start and its end.
+fn middle_ellipsis(painter: &egui::Painter, text: &str, font: &egui::FontId, max: f32) -> String {
+    let width = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE).size().x;
+    if width(text) <= max {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut keep = chars.len();
+    while keep > 1 {
+        keep -= 1;
+        let head = keep.div_ceil(2);
+        let tail = keep / 2;
+        let s: String = chars.iter().take(head).chain(std::iter::once(&'…')).chain(chars.iter().skip(chars.len() - tail)).collect();
+        if width(&s) <= max {
+            return s;
         }
-        if resp.clicked() {
-            if let Some(id) = i.item {
-                let _ = app.run("selection.set", json!({"ids": [id]}));
-            }
-            if let Some(p) = i.page {
-                crate::canvas::go_to_page(app, p);
-            }
-        }
+    }
+    "…".to_string()
+}
+
+/// The category and rule a preflight issue is listed under, as InDesign's [Basic] profile
+/// groups them.
+fn preflight_rule(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "missingLink" => ("LINKS", "Missing link"),
+        "lowResolution" => ("IMAGES and OBJECTS", "Image resolution"),
+        "rgbColor" => ("COLOR", "RGB swatch"),
+        "overset" => ("TEXT", "Overset text"),
+        "unplacedStory" => ("TEXT", "Unplaced text"),
+        "missingFont" => ("TEXT", "Font missing"),
+        "missingFontStyle" => ("TEXT", "Font style missing"),
+        "missingGlyphs" => ("TEXT", "Missing glyph"),
+        "emptyText" => ("TEXT", "Empty text frame"),
+        "unsupportedTypography" => ("TEXT", "Unsupported typography"),
+        _ => ("DOCUMENT", "Other"),
+    }
+}
+
+/// A preflight issue's row: the object it's about, by name where the message has one (a
+/// file, a font, a swatch), as InDesign lists them.
+fn preflight_label(i: &designcraft_engine::cmd::preflight::Issue) -> String {
+    let m = i.message.as_str();
+    let after = |prefix: &str| m.strip_prefix(prefix).map(str::trim);
+    let file = |p: &str| std::path::Path::new(p).file_name().map_or_else(|| p.to_string(), |f| f.to_string_lossy().to_string());
+    match i.kind {
+        "missingLink" => after("Missing link:").map(file).unwrap_or_else(|| m.to_string()),
+        "lowResolution" => m.split(':').next().unwrap_or(m).to_string(),
+        "rgbColor" => m.rsplit(": ").next().unwrap_or(m).to_string(),
+        "missingFont" => after("Missing font:").unwrap_or(m).to_string(),
+        "missingFontStyle" => after("Missing font style:").map(|r| r.split(" (").next().unwrap_or(r).to_string()).unwrap_or_else(|| m.to_string()),
+        "missingGlyphs" => after("Missing glyphs in").map(|r| r.split(':').next().unwrap_or(r).to_string()).unwrap_or_else(|| m.to_string()),
+        "overset" | "emptyText" => "Text Frame".to_string(),
+        _ => m.to_string(),
+    }
+}
+
+/// Preflight panel › Info: what a rule's problem is and how to fix it.
+fn preflight_help(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "missingLink" => ("The linked file can't be found.", "Relink it in the Links panel."),
+        "lowResolution" => ("The image shows at a lower resolution than the profile asks for.", "Place a sharper image, or show this one smaller."),
+        "rgbColor" => ("An RGB swatch in a document meant for print.", "Change the swatch to CMYK in Swatch Options."),
+        "overset" => ("The text doesn't fit in its frames.", "Enlarge the frame, thread it to another one, or shorten the text."),
+        "unplacedStory" => ("A story isn't in any text frame.", "Place it in a frame, or delete it."),
+        "missingFont" | "missingFontStyle" => ("The font isn't available.", "Install it, or choose another font in Type › Find Font."),
+        "missingGlyphs" => ("Some characters have no glyph in their font.", "Choose a font that has them."),
+        "emptyText" => ("A text frame holds no text.", "Add text, or delete the frame."),
+        _ => ("DesignCraft can't set some of this text yet.", "Check how it looks in Preview."),
     }
 }
