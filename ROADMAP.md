@@ -14,7 +14,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 
 - **2026-10-31** · Serbian: text in Latin script breaks between `nj` or `dž` where they are two
   letters (`kon-ju-ga-ci-ja`, `nad-ži-ve-ti`), as the Cyrillic spelling shows, also past an
-  installed Latin pattern file; typographer's quotes are „…” and ’…’, as the Pravopis prints them;
+  installed Latin pattern file; `lj`, `nj`, `dž` count as one letter against the word limits, and
+  compounds break at the join (`pred-uslov`); typographer's quotes are „…” and ’…’, as the Pravopis prints them;
   LibreOffice's Serbian pattern files load as they are (ISO 8859-2 and -5). Placed Word files keep
   the languages of their text (`w:lang`), so Serbian arrives as Serbian. No readiness percentage
   change.

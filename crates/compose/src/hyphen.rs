@@ -204,9 +204,9 @@ fn installed_bundled(i: u16) -> Option<hypher::Lang> {
 /// marks the pair. These only start a word: `an|jon` is not in `kanjon`, nor `od|žal` in `odžak`.
 /// Checked against the ~190,000 stems of the Serbian Hunspell dictionaries: they touch no word with
 /// one letter but the variants коњугација and коњунктив, which break as the words they vary. A list,
-/// not a dictionary lookup, so that a text breaks the same on every machine. `pod|že`, `pod|ži` and
-/// `pod|žu` are short on purpose, for words past those dictionaries (поджелудачни): no word there
-/// begins поџе, поџи or поџу.
+/// not a dictionary lookup, so that a text breaks the same on every machine. The headwords of the
+/// Rečnik srpskoga jezika (Matica srpska, 2011) raise no other case. A root stays long enough to
+/// leave foreign names alone (Поџи).
 const TWO_LETTERS_AT_START: &[&str] = &[
     "an|jon",
     "and|žej",
@@ -222,17 +222,20 @@ const TWO_LETTERS_AT_START: &[&str] = &[
     "od|živ",
     "pan|jug",
     "pod|žanr",
+    "pod|žar",
     "pod|ždrel",
-    "pod|že",
-    "pod|ži",
-    "pod|žu",
+    "pod|žel",
+    "pod|žup",
     "pred|žalb",
-    "pred|želu",
+    "pred|žel",
+    "pred|žet",
+    "pred|živ",
     "šen|jan",
     "šen|jeng",
     "tan|jug",
     "van|jed",
     "van|jez",
+    "van|jugo",
 ];
 
 /// The same, anywhere in a word (`mikroin|jekcija`, `hiperkon|jugacija`).
@@ -247,6 +250,56 @@ fn serbian_two_letters(word: &[char]) -> Vec<usize> {
         out.extend(TWO_LETTERS_ANYWHERE.iter().filter(|r| is_at(r, at)).map(|r| at + mark(r)));
     }
     out
+}
+
+/// Compounds the patterns don't see, in Cyrillic: `|` is where the prefix ends. Pravopis srpskoga
+/// jezika, §186е: a transparent compound breaks at the join.
+const COMPOUNDS: &[&str] = &["над|индивид", "над|истор", "под|одбор", "под|одељ", "под|одјељ", "под|оцењ", "под|оцен", "пред|инфаркт"];
+
+/// Prefixes that keep their join before a vowel.
+const PREFIXES: &[&str] = &["без", "из", "над", "об", "обез", "од", "под", "пред", "раз"];
+
+/// Is `lang` Serbian?
+fn is_serbian(lang: Lang) -> bool {
+    match lang {
+        Lang::Patterns(l) => l == hypher::Lang::Serbian,
+        Lang::Installed(i) => installed_bundled(i) == Some(hypher::Lang::Serbian),
+        _ => false,
+    }
+}
+
+/// `pts` of a lowercase Serbian `core`, with the join of a compound as §186е has it: `пред-услов`,
+/// never `преду-слов`, though the patterns allow both. A vowel alone between two breaks after a
+/// prefix belongs to the second word, so the break after it goes.
+fn serbian_compound_breaks(core: &[char], pts: Vec<usize>) -> Vec<usize> {
+    let latin = core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c));
+    let (word, at) = if latin {
+        match serbian_cyrillic(core) {
+            Some(x) => x,
+            None => return pts,
+        }
+    } else {
+        (core.to_vec(), (0..core.len()).collect())
+    };
+    let mut marks: Vec<usize> = pts.iter().filter_map(|p| at.iter().position(|a| a == p)).collect();
+    let starts = |s: &str, from: usize| s.chars().enumerate().all(|(i, c)| word.get(from + i) == Some(&c));
+    for root in COMPOUNDS {
+        let (prefix, rest) = root.split_once('|').unwrap_or((root, ""));
+        let n = prefix.chars().count();
+        if starts(prefix, 0) && starts(rest, n) {
+            marks.retain(|&p| p > n);
+            marks.push(n);
+        }
+    }
+    for prefix in PREFIXES {
+        let n = prefix.chars().count();
+        if starts(prefix, 0) && word.get(n).is_some_and(|c| "аеиоу".contains(*c)) && marks.contains(&n) {
+            marks.retain(|&p| p != n + 1);
+        }
+    }
+    marks.sort_unstable();
+    marks.dedup();
+    marks.into_iter().filter_map(|p| at.get(p).copied()).collect()
 }
 
 /// A lowercase Serbian Latin word in Cyrillic, letter for letter (`lj`, `nj`, `dž` are one
@@ -428,7 +481,10 @@ pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
             b -= 1;
         }
         let core: Vec<char> = chars[a..b].iter().map(|&c| if is_apostrophe(c) { '\'' } else { c.to_lowercase().next().unwrap_or(c) }).collect();
-        let (pts, s) = core_breaks(&core, lang);
+        let (mut pts, s) = core_breaks(&core, lang);
+        if is_serbian(lang) {
+            pts = serbian_compound_breaks(&core, pts);
+        }
         if src == Source::None {
             src = s;
         }
@@ -480,7 +536,13 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
         .filter(|&p| {
             let (a, b) = run_of(p);
             let run = &chars[a..b];
-            let letters = run.iter().filter(|c| c.is_alphabetic()).count();
+            // Serbian `lj`, `nj` and `dž` are one letter each (Pravopis, §186г).
+            let digraphs = is_serbian(lang).then(|| {
+                let core: Vec<char> = run.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+                serbian_cyrillic(&core).map(|(_, at)| at)
+            });
+            let digraphs = digraphs.flatten();
+            let letters = digraphs.as_ref().map_or_else(|| run.iter().filter(|c| c.is_alphabetic()).count(), Vec::len);
             if letters < lim.min_word.max(2) {
                 return false;
             }
@@ -489,8 +551,10 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
             if !lim.capitalized && run[0].is_uppercase() {
                 return false;
             }
-            let before = chars[a..p].iter().filter(|c| c.is_alphabetic()).count();
-            let after = chars[p..b].iter().filter(|c| c.is_alphabetic()).count();
+            let before = digraphs
+                .as_ref()
+                .map_or_else(|| chars[a..p].iter().filter(|c| c.is_alphabetic()).count(), |at| at.iter().filter(|&&i| i < p - a).count());
+            let after = letters - before;
             before >= min_before && after >= min_after
         })
         .collect()
@@ -853,8 +917,13 @@ mod tests {
             ("injektor", "in-jek-tor"),
             ("odžaliti", "od-ža-li-ti"),
             ("podžupan", "pod-žu-pan"),
-            ("podželudačni", "pod-že-lu-dač-ni"),
             ("nadživljavati", "nad-ži-vlja-va-ti"),
+            ("predživot", "pred-ži-vot"),
+            ("predžetveni", "pred-že-tve-ni"),
+            ("podželudačni", "pod-že-lu-dač-ni"),
+            ("podžariti", "pod-ža-ri-ti"),
+            ("vanjugoslovenski", "van-ju-go-slo-ven-ski"),
+            ("injunktiv", "in-junk-tiv"),
             // Inflected and with a prefix.
             ("konjunkcijama", "kon-junk-ci-ja-ma"),
             ("podžanrovi", "pod-žan-ro-vi"),
@@ -895,9 +964,54 @@ mod tests {
         assert_eq!(marked("Džudista", lat), "Džu-di-sta");
     }
 
+    /// A foreign name may look like a root's start, but no root reaches it.
+    #[test]
+    fn serbian_latin_leaves_names_alone() {
+        let lat = Lang::for_language("Serbian: Latin").unwrap();
+        let lim = Limits { min_word: 2, after_first: 1, before_last: 1, capitalized: true };
+        let pts = hyphen_points_in("Podži", &lim, lat);
+        assert!(!pts.contains(&3), "dž is one letter here: {pts:?}");
+    }
+
+    /// `lj`, `nj` and `dž` count as one letter against the limits, so both scripts agree.
+    #[test]
+    fn serbian_digraphs_count_as_one_letter() {
+        let (lat, cyr) = (Lang::for_language("Serbian: Latin").unwrap(), Lang::for_language("Serbian: Cyrillic").unwrap());
+        for (latin, cyrillic) in [("njive", "њиве"), ("ljudi", "људи"), ("konja", "коња"), ("Džaci", "Џаци")] {
+            assert_eq!(marked(latin, lat), latin);
+            assert_eq!(marked(cyrillic, cyr), cyrillic);
+        }
+        // Two letters still count as two.
+        assert_eq!(marked("Njegovan", lat), "Nje-go-van");
+        assert_eq!(marked("injekcija", lat), "in-jek-ci-ja");
+    }
+
+    /// Pravopis, §186е: a transparent compound breaks at the join, an opaque one by the rules.
+    #[test]
+    fn serbian_compounds_break_at_the_join() {
+        let (lat, cyr) = (Lang::for_language("Serbian: Latin").unwrap(), Lang::for_language("Serbian: Cyrillic").unwrap());
+        for (cyrillic, broken, latin) in [
+            ("предуслов", "пред-услов", "pred-uslov"),
+            ("предизборни", "пред-избор-ни", "pred-izbor-ni"),
+            ("предуговор", "пред-уго-вор", "pred-ugo-vor"),
+            ("подофицир", "под-офи-цир", "pod-ofi-cir"),
+            ("подоцењивати", "под-оце-њи-ва-ти", "pod-oce-nji-va-ti"),
+            ("пододбор", "под-од-бор", "pod-od-bor"),
+            ("изиграти", "из-игра-ти", "iz-igra-ti"),
+            ("разиграти", "раз-игра-ти", "raz-igra-ti"),
+        ] {
+            assert_eq!(marked(cyrillic, cyr), broken);
+            assert_eq!(marked(&latin.replace('-', ""), lat), latin);
+        }
+        // `по-`, `пре-` and `на-` come before the д here, and these keep their breaks.
+        for (word, broken) in [("разорити", "ра-зо-ри-ти"), ("предузети", "пре-ду-зе-ти"), ("подаци", "по-да-ци"), ("надовезати", "на-до-ве-за-ти")]
+        {
+            assert_eq!(marked(word, cyr), broken);
+        }
+    }
+
     /// The examples of Pravopis srpskoga jezika (Matica srpska, 2002), §186: the breaks it gives and
-    /// those it forbids, in both scripts. `преду-слов`, which it also forbids, is not among them:
-    /// the patterns give пред-у-слов, with the right break and one more.
+    /// those it forbids, in both scripts.
     #[test]
     fn serbian_follows_the_examples_of_the_pravopis() {
         const GOOD: &str = "ва-љати де-војка о-вако у-са-дити мо-лити са-мица брат-ство брат-ски град-ски голф-ски екав-ски бугар-ски \
@@ -907,7 +1021,7 @@ mod tests {
         const FORBIDDEN: &str = "исписа-о миса-о чу-о с-купити радо-ст ваљ-ати дев-ојка ов-ако ус-адити мол-ити сам-ица братс-тво бра-тство \
                                  братс-ки бра-тски градс-ки гра-дски голфс-ки го-лфски екавс-ки ека-вски бугарс-ки буга-рски умртвљ-ен \
                                  умр-твљен пољс-ки по-љски трамв-ај тра-мвај ма-чји ма-јка то-рба дово-љно па-ртија и-збацити и-зградити \
-                                 и-стући о-дводити";
+                                 и-стући о-дводити преду-слов";
         const WHOLE: &str = "пришт пласт склад склоп грозд власт чврст сласт страст";
         // One vowel may stay at the end of a line, one letter may not go to the next.
         let lim = Limits { min_word: 3, after_first: 1, before_last: 2, capitalized: true };
@@ -942,7 +1056,7 @@ mod tests {
         check("Serbian: Latin", &latin);
         let lat = Lang::for_language("Serbian: Latin").unwrap();
         assert_eq!(marked("voljom", lat), "vo-ljom");
-        assert_eq!(marked("hodža", lat), "ho-dža");
+        assert_eq!(marked("hodžama", lat), "ho-dža-ma");
     }
 
     #[test]

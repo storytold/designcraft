@@ -13,6 +13,6 @@ fn a_word_with_two_letters_goes_past_installed_latin_patterns() {
         let pts = hyphen_points_in(w, &lim, lang);
         w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
     };
-    assert_eq!(marked("kanjon"), "k-a-n-j-o-n", "other words use the installed patterns");
+    assert_eq!(marked("kanjon"), "k-a-nj-o-n", "other words use the installed patterns, and `nj` stays whole");
     assert_eq!(marked("konjugacija"), "kon-ju-ga-ci-ja", "the Cyrillic spelling decides this one");
 }
