@@ -260,6 +260,7 @@ pub fn recent_items(app: &DesignApp) -> Vec<Item> {
 /// The recent files at the top of File › Open Recent: file names (not translated), the full path
 /// as tooltip, dimmed when the file is gone (choosing it then says so).
 fn recent_menu_items(app: &mut DesignApp, ui: &mut egui::Ui) {
+    app.file_providers.recent_ui(ui);
     let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
     for it in recent_items(app) {
         match it {

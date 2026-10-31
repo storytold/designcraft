@@ -3,6 +3,9 @@ use super::{DesignApp, UiRequest, Value, canvas, dialogs, json, menus};
 impl DesignApp {
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.file_providers.busy() && matches!(id, "file.close" | "file.revert" | "app.close" | "app.revert") {
+            return Err("finish or cancel the pending provider operation before closing or reverting".into());
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
             return r;
         }

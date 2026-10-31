@@ -24,6 +24,7 @@ impl DesignApp {
 
     /// Work whose identity is a consumed queue item, revision or deadline.
     pub(super) fn logic_tick(&mut self, ctx: &egui::Context) {
+        crate::file_provider_app::tick(self);
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);

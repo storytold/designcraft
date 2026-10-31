@@ -50,6 +50,8 @@ impl DesignApp {
             session,
             ui: UiState::default(),
             services,
+            file_providers: crate::file_providers::Host::default(),
+            provider_after: std::collections::HashMap::new(),
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),

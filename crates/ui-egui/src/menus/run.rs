@@ -39,6 +39,9 @@ fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Res
 /// `after` once it is written. A save dialog answers on a later frame; Cancel runs nothing.
 #[track_caller]
 pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    if app.file_providers.enabled() && !app.in_control {
+        return crate::file_provider_app::save(app, false, Some(Box::new(after)));
+    }
     if app.services.download.is_some() {
         download_document(app)?;
         return after(app);
@@ -155,6 +158,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 json!({"path": path, "styles": info["paragraph"], "charStyles": info["character"], "conflicts": info["conflicts"], "styleConflicts": "useExisting", "removeStyles": false, "map": {}}),
             ));
             Ok(Value::Null)
+        }
+        "app.save" | "app.saveDialog" if app.file_providers.enabled() && !app.in_control => {
+            crate::file_provider_app::save(app, id == "app.saveDialog", None)
         }
         "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
         "app.save" => {

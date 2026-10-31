@@ -10,7 +10,7 @@ impl DesignApp {
     /// keep documents whose earlier answer was Don't Save, including their history and recovery.
     pub(crate) fn handle_quit(&mut self, ctx: &egui::Context) {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if self.host_order_pending() {
+        if self.host_order_pending() || self.file_providers.busy() {
             if close_requested {
                 self.close_requested_pending = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -105,7 +105,7 @@ impl DesignApp {
             .map(|(i, d)| (i, d.uid))
     }
 
-    fn cancel_quit(&mut self) {
+    pub(crate) fn cancel_quit(&mut self) {
         let Some(q) = self.quitting.take() else { return };
         if let Some(i) = q.original_active.and_then(|uid| self.session.documents().iter().position(|d| d.uid == uid)) {
             let _ = self.run("file.activate", json!({"index": i}));
