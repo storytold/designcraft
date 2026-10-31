@@ -32,7 +32,7 @@ pub(crate) use links::run_update_links;
 pub use links::{info_panel, links_panel, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
-use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
+use object::{align_row, appearance_section, guide_section, qr_section, quick_actions_object, transform_section, wrap_section};
 pub(crate) use object::{corner_shape_button, corner_type_dropdown, paint_corner_shape, preview_row, ref_point_proxy, stroke_type_dropdown};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 use object_panels::{anchor_point_sections, pathfinder_row};
@@ -178,6 +178,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
     appearance_section(app, ui, &i);
     divider(ui);
+    let qr = (i.count == 1)
+        .then(|| app.session.active().and_then(|st| st.selection.items.first().and_then(|id| designcraft_engine::cmd::qr::parts(&st.doc, *id))))
+        .flatten();
+    if let Some(parts) = qr {
+        section(ui, crate::i18n::tr(&app.ui.language, "QR Code"), true);
+        qr_section(app, ui, parts);
+        divider(ui);
+    }
     if i.is_text && i.count == 1 {
         section(ui, crate::i18n::tr(&app.ui.language, "Character"), true);
         character_section(app, ui);

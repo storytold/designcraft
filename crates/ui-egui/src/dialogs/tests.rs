@@ -1,5 +1,29 @@
 use super::*;
 
+/// Generate QR Code makes a styled code, and opened on that code it starts from its style.
+#[test]
+fn the_qr_dialog_makes_a_styled_code_and_reopens_with_its_style() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dialog =
+        Some(Dialog::new("qrCode", json!({"content": "https://example.com", "modules": "dots", "finder": "circle", "ecc": "high", "logoSize": 0.2})));
+    let r = confirm(&mut app).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    // A paper background by default: the fill of the code's frame.
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.item(id).unwrap().fill.swatch, "[Paper]");
+    let q = d.item(id).unwrap().children().iter().find_map(|c| c.qr).unwrap();
+    use designcraft_geom::qr::{Ecc, Finder, Modules};
+    assert_eq!((q.modules, q.finder, q.ecc), (Modules::Dots, Finder::Circle, Ecc::High));
+    assert!((q.logo - 0.2).abs() < 1e-9);
+    // Reopened on the code: its style, not the defaults.
+    app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+    crate::menus::activate(&mut app, "app.qrCode", &Value::Null);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("modules"), d.s("finder"), d.s("ecc")), ("dots".to_string(), "circle".to_string(), "high".to_string()));
+    assert_eq!((d.s("type"), d.s("content"), d.s("background")), ("url".to_string(), "https://example.com".to_string(), "[Paper]".to_string()));
+}
+
 #[test]
 fn paragraph_style_settings_show_captured_color_and_pending_spacing_without_changing_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

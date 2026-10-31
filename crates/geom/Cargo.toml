@@ -16,5 +16,9 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# An open-source QR reader: the styled codes must still read.
+rqrr = { workspace = true }
+# ZXing in Rust: the reading most phone scanners do.
+rxing = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
