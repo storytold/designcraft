@@ -99,6 +99,8 @@ fn page_png_export_has_no_edge_fringe_on_fractional_page_sizes() {
     r.threads = 0;
     let img = r.render_page(&d, &cache, 0, 2.0, false, &RenderOptions::default()).unwrap();
     let ink = |p: [u8; 4]| p[0] > 180 && p[1] < 80 && p[2] > 100;
+    let center = img.pixel(img.width / 2, img.height / 2);
+    let matches_center = |p: [u8; 4]| p[..3].iter().zip(center[..3].iter()).all(|(a, b)| a.abs_diff(*b) <= 4);
     // Interior and every border pixel must be solid ink — not a light AA fringe against void.
     for (x, y) in [
         (0, 0),
@@ -112,7 +114,7 @@ fn page_png_export_has_no_edge_fringe_on_fractional_page_sizes() {
         (img.width / 2, img.height / 2),
     ] {
         let p = img.pixel(x, y);
-        assert!(ink(p), "fringe at ({x},{y}): {p:?} size={}×{}", img.width, img.height);
+        assert!(ink(p) && matches_center(p), "fringe at ({x},{y}): {p:?} size={}×{}", img.width, img.height);
     }
 }
 

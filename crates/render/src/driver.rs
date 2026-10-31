@@ -152,8 +152,6 @@ impl Renderer {
         let sx = w as f64 / r.width().max(1e-12);
         let sy = h as f64 / r.height().max(1e-12);
         let view = Affine::scale_non_uniform(sx, sy) * Affine::translate(-r.origin().to_vec2());
-        let mut o = opts.clone();
-        o.background = Some([255, 255, 255, 255]);
-        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, &o))
+        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, opts))
     }
 }
