@@ -16,6 +16,8 @@
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
 //! designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]   # the built-in PDF/X-4 or PDF/X-1a checks (default: the
 //!                                      # file's own GTS_PDFXVersion)
+//! designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]   # the file's first-page preview, fitted to SIZE
+//!                                      # (the freedesktop thumbnailer for Linux file managers)
 //! designcraft-cli links                   # Discord, website, app page and GitHub links
 //! designcraft-cli --version               # print the version
 //! ```
@@ -40,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -124,6 +126,7 @@ fn main() -> ExitCode {
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
         Some("validate-pdf") => report(validate_pdf(args.get(1..).unwrap_or_default())),
+        Some("thumbnail") => report(thumbnail(&args[1..])),
         Some("links") => {
             use designcraft_engine::links::{APP_PAGE, DISCORD, GITHUB, ISSUES, WEBSITE};
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
@@ -186,6 +189,61 @@ fn validate_pdf(args: &[String]) -> Result<(), String> {
     let report = json!({"path": path, "standard": name, "valid": valid, "issues": issues, "warnings": warnings});
     outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
     if valid { Ok(()) } else { Err(format!("{path} failed {name} validation")) }
+}
+
+/// `thumbnail FILE OUT [SIZE]`: the first-page preview saved in a `.designcraft` file, as a PNG
+/// whose longer side is at most SIZE pixels (never enlarged). It is the freedesktop thumbnailer
+/// (`packaging/linux/ai.storyteller.designcraft.thumbnailer`), so it only reads the preview: a file
+/// without one fails, and the file manager keeps the file type's icon.
+fn thumbnail(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]";
+    let [input, out, rest @ ..] = args else { return Err(USAGE.into()) };
+    let size = match rest {
+        [] => None,
+        [s] => Some(s.parse::<u32>().ok().filter(|s| *s > 0).ok_or_else(|| format!("bad SIZE `{s}`: expected a positive number of pixels"))?),
+        _ => return Err(USAGE.into()),
+    };
+    if names_the_same_file(input.as_ref(), out.as_ref()) {
+        return Err(format!("{out} is the document {input}: the thumbnail would replace it"));
+    }
+    let file = std::fs::File::open(input).map_err(|e| format!("{input}: {e}"))?;
+    let preview = designcraft_format::read_preview(std::io::BufReader::new(file))
+        .ok_or_else(|| format!("{input} has no preview (a DesignCraft file saved before they had one, or not a DesignCraft file)"))?;
+    let png = fit_png(preview, size).map_err(|e| format!("{input}: the preview can't be read: {e}"))?;
+    designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &png).map_err(|e| format!("{out}: {e}"))
+}
+
+/// Whether `out` is the file `input` names: the same path, a symlink to it or, on Unix, a hard
+/// link (the same device and inode). An `out` that doesn't exist yet can't be the input.
+fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(out)) else { return false };
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(&a), std::fs::metadata(&b)) {
+            return (a.dev(), a.ino()) == (b.dev(), b.ino());
+        }
+    }
+    false
+}
+
+/// `png` with its longer side brought down to `size`. A picture already that small is returned
+/// as it is; it is decoded anyway, so a broken one is an error rather than an unreadable thumbnail.
+fn fit_png(png: Vec<u8>, size: Option<u32>) -> Result<Vec<u8>, String> {
+    // The preview comes from the file: it may claim any size.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| e.to_string())?;
+    let Some(size) = size.filter(|s| img.width().max(img.height()) > *s) else { return Ok(png) };
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.resize(size, size, image::imageops::FilterType::Triangle).write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
