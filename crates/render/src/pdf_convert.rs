@@ -16,7 +16,7 @@ pub const MAX_PDF_ART_OBJECTS: usize = 50_000;
 /// Soft cap on decoded raster pixels kept for one page's images.
 pub const MAX_PDF_ART_IMAGE_PIXELS: u64 = 16_000_000;
 
-/// Solid paint taken from a PDF colour (patterns use their first colour when possible).
+/// Solid paint taken from a PDF colour. Pattern paints are skipped (not converted).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PdfArtPaint {
     pub rgb: [u8; 3],
@@ -113,8 +113,26 @@ pub enum PdfConvertError {
     Empty,
 }
 
+/// Shared object / image-pixel budget across pages of one PDF open.
+#[derive(Clone, Debug)]
+struct PdfArtBudget {
+    objects: usize,
+    image_pixels: u64,
+    capped: bool,
+}
+
+impl PdfArtBudget {
+    fn fresh() -> Self {
+        Self { objects: 0, image_pixels: 0, capped: false }
+    }
+}
+
 /// Convert PDF page `page` (0-based) into editable paths and images.
 pub fn pdf_page_art(bytes: &[u8], page: usize) -> Result<PdfPageArt, PdfConvertError> {
+    pdf_page_art_with_budget(bytes, page, &mut PdfArtBudget::fresh())
+}
+
+fn pdf_page_art_with_budget(bytes: &[u8], page: usize, budget: &mut PdfArtBudget) -> Result<PdfPageArt, PdfConvertError> {
     check_pdf_input_size(bytes.len()).map_err(|e| match e {
         super::PdfRasterError::Input(err) => PdfConvertError::Input(err),
         _ => PdfConvertError::InvalidPage,
@@ -130,24 +148,38 @@ pub fn pdf_page_art(bytes: &[u8], page: usize) -> Result<PdfPageArt, PdfConvertE
     let page_rect = kurbo::Rect::new(0.0, 0.0, w, h);
     let cache = InterpreterCache::new();
     let mut ctx = Context::new(initial, page_rect, &cache, p.xref(), InterpreterSettings::default());
-    let mut art = Collector { ops: Vec::new(), warnings: Notes::default(), hidden: Vec::new(), image_pixels: 0, capped: false };
+    let mut art = Collector { ops: Vec::new(), warnings: Notes::default(), hidden: Vec::new(), budget };
     interpret_page(p, &mut ctx, &mut art);
+    let capped = art.budget.capped;
     let mut warnings = art.warnings.into_warnings();
-    if art.capped {
+    if capped {
         warnings.push(format!("stopped after {MAX_PDF_ART_OBJECTS} objects (further drawing left out)"));
     }
     Ok(PdfPageArt { width: w, height: h, ops: art.ops, warnings })
 }
 
 /// Convert every page of a PDF. An empty file is an error.
+/// Object and image-pixel caps are shared across the whole document.
 pub fn pdf_document_art(bytes: &[u8]) -> Result<Vec<PdfPageArt>, PdfConvertError> {
     let count = super::pdf_page_count(bytes).ok_or(PdfConvertError::InvalidPage)?;
     if count == 0 {
         return Err(PdfConvertError::Empty);
     }
-    let mut pages = Vec::new();
+    let mut budget = PdfArtBudget::fresh();
+    let mut pages: Vec<PdfPageArt> = Vec::new();
     for i in 0..count {
-        pages.push(pdf_page_art(bytes, i)?);
+        if budget.capped {
+            let mut skipped = PdfPageArt::default();
+            // Keep page size from the previous page when possible so open still builds a sheet.
+            if let Some(prev) = pages.last() {
+                skipped.width = prev.width;
+                skipped.height = prev.height;
+            }
+            skipped.warnings.push(format!("page {}: left out (document conversion budget exhausted)", i + 1));
+            pages.push(skipped);
+            continue;
+        }
+        pages.push(pdf_page_art_with_budget(bytes, i, &mut budget)?);
     }
     Ok(pages)
 }
@@ -167,7 +199,7 @@ impl Notes {
     fn into_warnings(self) -> Vec<String> {
         let mut w = Vec::new();
         if self.patterns > 0 {
-            w.push(format!("{} pattern paint(s) converted as their first colour or skipped", self.patterns));
+            w.push(format!("{} pattern paint(s) skipped (paths using them left out)", self.patterns));
         }
         if self.soft_masks > 0 {
             w.push(format!("{} soft mask(s) ignored", self.soft_masks));
@@ -185,21 +217,20 @@ impl Notes {
     }
 }
 
-struct Collector {
+struct Collector<'b> {
     ops: Vec<PdfArtOp>,
     warnings: Notes,
     hidden: Vec<bool>,
-    image_pixels: u64,
-    capped: bool,
+    budget: &'b mut PdfArtBudget,
 }
 
-impl Collector {
+impl Collector<'_> {
     fn room(&mut self) -> bool {
-        if self.capped {
+        if self.budget.capped {
             return false;
         }
-        if self.ops.len() >= MAX_PDF_ART_OBJECTS {
-            self.capped = true;
+        if self.budget.objects >= MAX_PDF_ART_OBJECTS {
+            self.budget.capped = true;
             return false;
         }
         true
@@ -229,7 +260,8 @@ impl Collector {
     fn stroke_style(s: &craft_pdf::interpret::StrokeProps, transform: kurbo::Affine) -> PdfArtStroke {
         let scale = transform.determinant().abs().sqrt();
         let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
-        let width = round(f64::from(s.line_width.max(0.0)) * scale);
+        // PDF width 0 is a device hairline; the engine hides weight <= 0, so keep a visible minimum.
+        let width = round(f64::from(s.line_width.max(0.0)) * scale).max(0.25);
         let dashes = if s.dash_array.is_empty() { None } else { Some(s.dash_array.iter().map(|v| round(f64::from(*v) * scale)).collect()) };
         PdfArtStroke {
             width,
@@ -268,10 +300,11 @@ impl Collector {
             }
         };
         self.ops.push(PdfArtOp::Path(PdfArtPath { path: mapped, fill, stroke, opacity: 1.0, even_odd }));
+        self.budget.objects = self.budget.objects.saturating_add(1);
     }
 }
 
-impl<'a> Device<'a> for Collector {
+impl<'a> Device<'a> for Collector<'_> {
     fn set_soft_mask(&mut self, mask: Option<SoftMask<'a>>) {
         if mask.is_some() {
             self.warnings.soft_masks += 1;
@@ -332,7 +365,7 @@ impl<'a> Device<'a> for Collector {
                             return;
                         }
                         let pixels = u64::from(w).saturating_mul(u64::from(h));
-                        if self.image_pixels.saturating_add(pixels) > MAX_PDF_ART_IMAGE_PIXELS {
+                        if self.budget.image_pixels.saturating_add(pixels) > MAX_PDF_ART_IMAGE_PIXELS {
                             self.warnings.images_skipped += 1;
                             return;
                         }
@@ -348,7 +381,7 @@ impl<'a> Device<'a> for Collector {
                             self.warnings.images_skipped += 1;
                             return;
                         }
-                        self.image_pixels = self.image_pixels.saturating_add(pixels);
+                        self.budget.image_pixels = self.budget.image_pixels.saturating_add(pixels);
                         let (sx, sy) = data.scale_factors();
                         let scale = Affine::scale_non_uniform(f64::from(sx), f64::from(sy));
                         let xf = to_affine(transform) * scale;
@@ -358,6 +391,7 @@ impl<'a> Device<'a> for Collector {
                 );
                 if let Some(img) = captured {
                     self.ops.push(PdfArtOp::Image(img));
+                    self.budget.objects = self.budget.objects.saturating_add(1);
                 } else if !saw {
                     self.warnings.images_skipped += 1;
                 }

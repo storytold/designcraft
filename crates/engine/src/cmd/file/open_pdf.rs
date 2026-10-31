@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Asset, AssetId, Content, Fill, Graphic, Item, ItemId, Margins, Selection, Shape, SpreadRef, Stroke, StrokeType};
-use designcraft_geom::{Affine, PathData, Point, Rect, Shape as GeomShape, shapes};
+use designcraft_geom::{shapes, Affine, PathData, Point, Rect, Shape as GeomShape};
 use designcraft_render::{PdfArtCap, PdfArtImage, PdfArtJoin, PdfArtOp, PdfArtPaint, PdfArtPath, PdfArtStroke, PdfPageArt};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{DocState, Document, Result, Session, bad, str_param};
-use crate::cmd::{EngineError, base64_decode, id_param};
+use super::{bad, str_param, DocState, Document, Result, Session};
+use crate::cmd::{base64_decode, id_param, EngineError};
 
 const ID: &str = "file.openPdf";
 
@@ -217,7 +217,10 @@ fn read_pdf(p: &Value) -> Result<(Vec<u8>, String)> {
     if let Some(path) = str_param(p, "path") {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
+            // Cap the read so an oversized native file cannot exhaust memory before the PDF limit runs.
+            let cap = designcraft_render::MAX_PDF_INPUT_BYTES as u64;
+            let bytes = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            designcraft_render::check_pdf_input_size(bytes.len()).map_err(|e| bad(ID, e.to_string()))?;
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
             return Ok((bytes, name));
         }
@@ -265,11 +268,15 @@ pub(crate) fn convert_placed_pdf(s: &mut Session, p: &Value) -> Result<Value> {
                 continue;
             }
             let page = asset.page as usize;
+            let gxf = g.xf;
+            let frame_xf = it.xf;
+            let Some(loc) = d.find(id) else { continue };
             let art = designcraft_render::pdf_page_art(&asset.data, page).map_err(|e| bad(CID, e.to_string()))?;
             warnings.extend(art.warnings.iter().cloned());
-            let shift = g.xf;
-            let spread = d.find(id).map(|loc| loc.spread).unwrap_or(SpreadRef::Doc(0));
-            let new_ids = place_page_art(d, &art, layer, shift, spread)?;
+            // Graphic xf maps into the frame; include frame and parent so moved/rotated/grouped
+            // placements convert where they appear on the pasteboard.
+            let shift = d.parent_xf(&loc) * frame_xf * gxf;
+            let new_ids = place_page_art(d, &art, layer, shift, loc.spread)?;
             out.extend(new_ids);
             remove.push(id);
         }
@@ -344,5 +351,39 @@ mod tests {
         let r = s.execute("object.convertPdf", &json!({"id": id.0})).unwrap();
         assert!(r["ids"].as_array().unwrap().len() >= 1, "{r}");
         assert!(s.doc().unwrap().doc.item(id).is_none(), "placed graphic removed");
+    }
+
+    #[test]
+    fn convert_placed_pdf_keeps_frame_transform() {
+        let b64 = crate::cmd::base64_encode(&pdf_rect());
+        let convert_at = |dx: f64, dy: f64| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"width": 400.0, "height": 300.0, "facingPages": false})).unwrap();
+            let placed = s.execute("file.place", &json!({"base64": b64, "name": "box.pdf", "x": 0, "y": 0, "width": 200})).unwrap();
+            let id = ItemId(placed["id"].as_u64().unwrap());
+            if dx != 0.0 || dy != 0.0 {
+                s.execute("transform.move", &json!({"ids": [id.0], "dx": dx, "dy": dy})).unwrap();
+            }
+            let r = s.execute("object.convertPdf", &json!({"id": id.0})).unwrap();
+            let new_id = ItemId(r["ids"][0].as_u64().unwrap());
+            s.doc().unwrap().doc.item(new_id).unwrap().bounds()
+        };
+        let origin = convert_at(0.0, 0.0);
+        let moved = convert_at(80.0, 40.0);
+        assert!((moved.x0 - origin.x0 - 80.0).abs() < 1.0, "dx: origin={origin:?} moved={moved:?}");
+        assert!((moved.y0 - origin.y0 - 40.0).abs() < 1.0, "dy: origin={origin:?} moved={moved:?}");
+    }
+
+    #[test]
+    fn open_recent_reopens_a_pdf_path() {
+        let mut s = Session::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent-box.pdf");
+        std::fs::write(&path, pdf_rect()).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        s.prefs.note_recent_file(&path);
+        let r = s.execute("file.openRecent", &json!({"index": 0})).unwrap();
+        assert_eq!(r["pages"], 1, "{r}");
+        assert!(!s.doc().unwrap().doc.all_items().is_empty());
     }
 }

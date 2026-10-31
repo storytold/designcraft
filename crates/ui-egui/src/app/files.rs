@@ -1,10 +1,10 @@
-use super::{DesignApp, ImportRequest, ImportedFile, Value, canvas, dialogs, file_dialogs, json, shortcut_import};
+use super::{canvas, dialogs, file_dialogs, json, shortcut_import, DesignApp, ImportRequest, ImportedFile, Value};
 #[cfg(test)]
 use super::{Services, Session};
 #[cfg(test)]
-use crate::Inbox;
-#[cfg(test)]
 use crate::test_window;
+#[cfg(test)]
+use crate::Inbox;
 
 impl DesignApp {
     /// Ask the host for a file to open (`open`) or place (`place`). A native dialog answers on a
@@ -102,7 +102,15 @@ impl DesignApp {
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| "the PDF was not placed as a page item, so it cannot be converted to editable objects".to_string())?;
-        self.run("object.convertPdf", json!({"id": id}))
+        match self.run("object.convertPdf", json!({"id": id})) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                // `file.place` already committed the graphic; drop it so a failed convert does not
+                // leave a stuck placed PDF from an editable Place / Open flow.
+                let _ = self.run("edit.clear", json!({"ids": [id]}));
+                Err(e)
+            }
+        }
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than

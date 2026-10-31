@@ -252,7 +252,7 @@ impl Exporter<'_> {
             && let Some(p) = &path
             && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
         {
-            self.fill_item_path(s, &it.fill, paint, p);
+            self.fill_item_path(s, &it.fill, paint, p, it.path.fill_rule);
         }
         s.pop();
         // The clip in page space, so the children keep their absolute transforms.
@@ -303,7 +303,7 @@ impl Exporter<'_> {
             && let Some(p) = path
             && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
         {
-            self.fill_item_path(s, &it.fill, paint, p);
+            self.fill_item_path(s, &it.fill, paint, p, it.path.fill_rule);
         }
         if frame_art {
             s.end_tagged();

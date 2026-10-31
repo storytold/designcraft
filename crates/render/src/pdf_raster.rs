@@ -1,5 +1,5 @@
 use super::types::Rendered;
-use super::{Affine, Arc, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
+use super::{pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu, Affine, Arc, HashMap, Pixmap, Rect};
 
 /// MIME type guess for encoded image bytes.
 /// Is this a PDF file (placed PDFs are graphics)?
@@ -48,7 +48,9 @@ pub enum PdfRasterError {
     MissingPage { page: usize },
     #[error("the selected PDF layers could not be hidden")]
     LayerRewrite,
-    #[error("an image could not be decoded or exceeded the PDF renderer's resource limits; repair or replace this placed PDF before exporting again")]
+    #[error(
+        "an image could not be decoded or exceeded the PDF renderer's resource limits; repair or replace this placed PDF before exporting again"
+    )]
     ImageDecode,
     #[error("the PDF renderer encountered an unsupported font")]
     UnsupportedFont,
@@ -57,6 +59,9 @@ pub enum PdfRasterError {
     )]
     ContentTruncated,
 }
+
+/// Soft cap on PDF bytes for open, place and convert (same as `craft_pdf::MAX_INPUT_BYTES`).
+pub const MAX_PDF_INPUT_BYTES: usize = craft_pdf::MAX_INPUT_BYTES;
 
 /// Reject oversized PDFs before placement, layer rewriting or output allocation.
 pub fn check_pdf_input_size(size: usize) -> Result<(), PdfRasterError> {
@@ -151,7 +156,7 @@ fn render_pdf_raster(bytes: &[u8], page: usize, max_side: u32) -> Result<craft_p
 /// from the top-left of the page as rendered (its visible crop box); missing boxes fall back to the
 /// crop box, as PDF readers do.
 pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, f64, f64)> {
-    use craft_pdf::syntax::object::{Rect as PRect, dict::keys};
+    use craft_pdf::syntax::object::{dict::keys, Rect as PRect};
     let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let p = pdf.pages().get(page)?;
     let visible = p.intersected_crop_box();
@@ -178,7 +183,7 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
 /// are the bounds of what the page draws, found from its drawing operations without rendering it
 /// (the whole page when it draws nothing).
 pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -> Option<([f64; 4], (f64, f64))> {
-    use craft_pdf::syntax::object::{Rect as PRect, dict::keys};
+    use craft_pdf::syntax::object::{dict::keys, Rect as PRect};
     use designcraft_doc::PdfCrop;
     const WHOLE: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
     let pdf = craft_pdf::open_slice(bytes, None).ok()?;

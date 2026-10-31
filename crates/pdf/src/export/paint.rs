@@ -3,11 +3,22 @@ use super::*;
 
 impl Exporter<'_> {
     /// Fill `p` with an item's fill paint, overprinting when the fill does.
-    pub(super) fn fill_item_path(&mut self, s: &mut Surface, fill: &designcraft_doc::Fill, paint: krilla::paint::Paint, p: &Path) {
+    pub(super) fn fill_item_path(
+        &mut self,
+        s: &mut Surface,
+        fill: &designcraft_doc::Fill,
+        paint: krilla::paint::Paint,
+        p: &Path,
+        rule: designcraft_geom::FillRule,
+    ) {
         let op = self.overprints(&fill.swatch, fill.tint, fill.overprint);
         let pushed = self.push_overprint(s, op, false);
+        let rule = match rule {
+            designcraft_geom::FillRule::EvenOdd => FillRule::EvenOdd,
+            designcraft_geom::FillRule::NonZero => FillRule::NonZero,
+        };
         s.set_stroke(None);
-        s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
+        s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule }));
         s.draw_path(p);
         s.set_fill(None);
         if pushed {
