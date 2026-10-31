@@ -138,7 +138,7 @@ debug = 0
 # Opt-in cancelable macOS termination on the pinned winit 0.30 line.
 [patch.crates-io]
 krilla = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.8.2" }
-winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+winit = { git = "https://github.com/storytold/winit.git", rev = "2732964c88457e3e4b796ac6b15ef7fb332a6aad" }
 # The hayro crates from craft-libs' vendor/ directory (pdfcraft's, plus the plate mode and decode
 # limits craft-pdf and craft-prepress need); same revision as craft-pdf.
 hayro = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.7.1" }
