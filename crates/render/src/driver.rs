@@ -89,8 +89,18 @@ impl Renderer {
         self.stories.clear();
         self.glyphs.tick();
         if let Some(bg) = opts.background {
+            // `background` is premultiplied; peniko's from_rgba8 wants straight colour + alpha.
             ctx.set_transform(Affine::IDENTITY);
-            ctx.set_paint(peniko::Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]));
+            let a = bg[3];
+            let (r, g, b) = if a == 0 {
+                (0, 0, 0)
+            } else if a == 255 {
+                (bg[0], bg[1], bg[2])
+            } else {
+                let un = |c: u8| ((u32::from(c) * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8;
+                (un(bg[0]), un(bg[1]), un(bg[2]))
+            };
+            ctx.set_paint(peniko::Color::from_rgba8(r, g, b, a));
             ctx.fill_rect(&kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
         }
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
@@ -146,9 +156,12 @@ impl Renderer {
             log::warn!("page {abs} at {scale} px/pt would be {w}×{h} pixels: too large to render");
             return None;
         }
-        let view = Affine::scale(scale) * Affine::translate(-r.origin().to_vec2());
-        let mut o = opts.clone();
-        o.background = Some([255, 255, 255, 255]);
-        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, &o))
+        // Snap X/Y scale independently so the page rectangle lands on integer pixel edges.
+        // Using `scale` alone after `(width*scale).round()` leaves a sub-pixel gap or overhang;
+        // AA then blends the last row/column into the transparent void (a light fringe on export).
+        let sx = w as f64 / r.width().max(1e-12);
+        let sy = h as f64 / r.height().max(1e-12);
+        let view = Affine::scale_non_uniform(sx, sy) * Affine::translate(-r.origin().to_vec2());
+        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, opts))
     }
 }
