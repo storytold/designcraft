@@ -879,6 +879,56 @@ mod tests {
         assert_eq!(marked("budžet", lat), "bu-džet");
     }
 
+    /// The examples of Pravopis srpskoga jezika (Matica srpska, 2002), §186: the breaks it gives and
+    /// those it forbids, in both scripts. `преду-слов`, which it also forbids, is not among them:
+    /// the patterns give пред-у-слов, with the right break and one more.
+    #[test]
+    fn serbian_follows_the_examples_of_the_pravopis() {
+        const GOOD: &str = "ва-љати де-војка о-вако у-са-дити мо-лити са-мица брат-ство брат-ски град-ски голф-ски екав-ски бугар-ски \
+                            умрт-вљен пољ-ски трам-вај мач-ји мај-ка тор-ба довољ-но пар-тија из-бацити из-градити из-ломити ис-тући \
+                            од-водити под-вући пред-услов пред-школски рас-познати раз-љутити бе-стидан беза-злен уза-стопно раза-гнати \
+                            о-тети о-творити ра-зорити у-зети мор-ски ин-стант рот-ква";
+        const FORBIDDEN: &str = "исписа-о миса-о чу-о с-купити радо-ст ваљ-ати дев-ојка ов-ако ус-адити мол-ити сам-ица братс-тво бра-тство \
+                                 братс-ки бра-тски градс-ки гра-дски голфс-ки го-лфски екавс-ки ека-вски бугарс-ки буга-рски умртвљ-ен \
+                                 умр-твљен пољс-ки по-љски трамв-ај тра-мвај ма-чји ма-јка то-рба дово-љно па-ртија и-збацити и-зградити \
+                                 и-стући о-дводити";
+        const WHOLE: &str = "пришт пласт склад склоп грозд власт чврст сласт страст";
+        // One vowel may stay at the end of a line, one letter may not go to the next.
+        let lim = Limits { min_word: 3, after_first: 1, before_last: 2, capitalized: true };
+        let latin = |w: &str| -> String {
+            let (from, to) = ("абвгдђежзијклмнопрстћуфхцчш", "abvgdđežzijklmnoprstćufhcčš");
+            w.chars()
+                .map(|c| match c {
+                    'љ' => "lj".to_string(),
+                    'њ' => "nj".to_string(),
+                    'џ' => "dž".to_string(),
+                    c => from.chars().position(|f| f == c).and_then(|i| to.chars().nth(i)).unwrap_or(c).to_string(),
+                })
+                .collect()
+        };
+        let check = |language: &str, spell: &dyn Fn(&str) -> String| {
+            let lang = Lang::for_language(language).unwrap();
+            let points = |w: &str| hyphen_points_in(&w.replace('-', ""), &lim, lang);
+            let at = |w: &str| w.split('-').next().unwrap().chars().count();
+            for w in GOOD.split_whitespace().map(spell) {
+                for (i, _) in w.match_indices('-') {
+                    assert!(points(&w).contains(&w[..i].chars().filter(|&c| c != '-').count()), "{w}");
+                }
+            }
+            for w in FORBIDDEN.split_whitespace().map(spell) {
+                assert!(!points(&w).contains(&at(&w)), "{w}");
+            }
+            for w in WHOLE.split_whitespace().map(spell) {
+                assert!(points(&w).is_empty(), "{w}");
+            }
+        };
+        check("Serbian: Cyrillic", &|w| w.to_string());
+        check("Serbian: Latin", &latin);
+        let lat = Lang::for_language("Serbian: Latin").unwrap();
+        assert_eq!(marked("voljom", lat), "vo-ljom");
+        assert_eq!(marked("hodža", lat), "ho-dža");
+    }
+
     #[test]
     fn serbian_latin_spells_in_cyrillic() {
         let w: Vec<char> = "džunglanja".chars().collect();
