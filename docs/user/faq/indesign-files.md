@@ -5,7 +5,7 @@ order: 30
 verified: 0.7.1
 ---
 
-Yes for IDML, the InDesign Markup format. DesignCraft can open `.idml` files and export them with **File**, then **Export**, then **Export IDML…**.
+Yes for IDML, the InDesign Markup format. DesignCraft can open `.idml` files and export them with **File**, then **Export IDML…**.
 
 The **Open…** dialog lists `.designcraft` and `.idml` files only, so it does not offer InDesign's own `.indd` files. See [Open a DesignCraft or InDesign (IDML) file](../guides/open-a-file.md).
 

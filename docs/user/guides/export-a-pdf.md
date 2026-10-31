@@ -5,13 +5,13 @@ order: 40
 verified: 0.7.1
 ---
 
-Choose **File**, then **Export**, then **Export PDF…**, pick a **Preset**, click **OK** and name the file.
+Choose **File**, then **Export PDF…**, pick a **Preset**, click **OK** and name the file.
 
 Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 
 ## Steps
 
-1. Open the **File** menu, then **Export**, and choose **Export PDF…**.
+1. Open the **File** menu and choose **Export PDF…**.
 2. In the **Export PDF** dialog, pick a **Preset:** (see the table below).
 3. Under **General**, leave **Page Range:** as `all`, or type the pages you want, for example `1-3,5`. **Spreads** is a checkbox in the same section.
 4. Under **Compression**, tick or clear **Compress images**.
@@ -35,4 +35,4 @@ Picking a preset fills in the other settings. Changing any setting by hand switc
 
 ## Other exports
 
-**File**, then **Export** also has **Export Page as PNG…** (Ctrl+E), **Export IDML…**, **Export EPUB…**, **Export EPUB (Fixed Layout)…**, **Export PDF (Interactive)…**, **Export HTML…**, **Export XML…** and **Export Text…**. **Print Booklet…** stays on the **File** menu itself.
+The **File** menu also has **Export Page as PNG…** (Ctrl+E), **Export IDML…**, **Export EPUB…**, **Export EPUB (Fixed Layout)…**, **Export PDF (Interactive)…**, **Export HTML…**, **Export XML…**, **Export Text…** and **Print Booklet…**.

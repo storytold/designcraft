@@ -203,6 +203,10 @@ fn file_exports_live_under_the_export_submenu() {
     ] {
         assert!(exports.contains(&id), "{id} is under File › Export");
     }
+    // Engine IDML export stays out of Quick Apply / search; `app.exportIdml` owns the dialog.
+    let searched: Vec<&str> = quick_commands().map(|c| c.0).collect();
+    assert!(!searched.contains(&"file.exportIdml"), "file.exportIdml must not appear in search");
+    assert!(searched.contains(&"app.exportIdml"), "app.exportIdml remains searchable");
 }
 
 /// A command's menu path names the menu entries that really hold it.

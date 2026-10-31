@@ -33,4 +33,4 @@ If the package has none of its spreads, there is nothing to open. DesignCraft th
 
 ## Save it again
 
-**File**, then **Save** (Ctrl+S) writes a `.designcraft` file. To hand the layout back to InDesign, use **File**, then **Export**, then **Export IDML…**.
+**File**, then **Save** (Ctrl+S) writes a `.designcraft` file. To hand the layout back to InDesign, use **File**, then **Export IDML…**.

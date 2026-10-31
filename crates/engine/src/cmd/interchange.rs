@@ -16,7 +16,9 @@ use crate::{DocState, EngineError, Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "file.exportIdml", "Export IDML…", ["File", "Export"], None,
+        // Empty menu: Quick Apply / search use `app.exportIdml` (save dialog). A File › Export
+        // path here would list this engine command first and skip the UI handler.
+        cmd!(query "file.exportIdml", "Export IDML…", [], None,
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
