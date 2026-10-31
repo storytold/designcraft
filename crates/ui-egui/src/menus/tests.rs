@@ -3140,6 +3140,34 @@ fn forwarded_keys_run_shortcuts() {
 }
 
 #[test]
+fn powerpoint_export_embeds_fonts_only_when_asked() {
+    // The menu's own call has no params: no embedding, as in PowerPoint's save.
+    // The text export's format still comes from the resolved path.
+}
+
+#[test]
+fn powerpoint_export_keeps_the_warnings_for_the_caller() {
+    // `file.exportPptx` reports warnings (objects drawn without their blend mode, effects
+    // PowerPoint has no objects for); the UI command writes the file itself, so it must pass
+    // them on rather than drop them.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200]})).unwrap();
+    app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+    app.run("object.opacity", json!({"opacity": 1.0, "blend": "multiply"})).unwrap();
+    let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = written.clone();
+    app.services.write = Some(Box::new(move |_, bytes: &[u8]| {
+        sink.lock().unwrap().extend_from_slice(bytes);
+        Ok(())
+    }));
+    let r = run_ui(&mut app, "app.exportPptx", &json!({"path": "/tmp/warnings.pptx"})).unwrap().unwrap();
+    let warnings = r["warnings"].as_array().expect("the engine's warnings reach the caller");
+    assert!(warnings.iter().any(|w| w.as_str().is_some_and(|w| w.contains("blend modes"))), "the blend-mode warning is kept: {r}");
+    assert!(!written.lock().unwrap().is_empty(), "the file is still written");
+}
+
+#[test]
 fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
     let file = |tree: Vec<(&'static str, Vec<Item>)>| {
         let mut out = Vec::new();
