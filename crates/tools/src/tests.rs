@@ -2615,4 +2615,32 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     // A quarter turn: the columns stack down the canvas.
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
+
+/// Locked objects can't be selected with the selection tools: a click on one selects nothing, or
+/// passes through it to an object behind it; a marquee leaves it out.
+#[test]
+fn locked_objects_are_not_selected_and_clicks_pass_through_them() {
+    let mut d = Document::new(&NewDocument::default());
+    let behind = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let front = add_rect(&mut d, Rect::new(150.0, 150.0, 300.0, 300.0));
+    for id in [behind, front] {
+        d.item_mut(id).unwrap().fill = designcraft_doc::Fill::swatch("[Black]");
+    }
+    d.item_mut(front).unwrap().locked = true;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    for tool in ["selection", "directSelection"] {
+        let mut t = create(tool);
+        let click = |t: &mut Box<dyn Tool>, x: f64, y: f64| {
+            let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x, y));
+            t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x, y));
+            a
+        };
+        let ids = |a: &[Action]| match a.first() {
+            Some(Action::Exec(cmd, p)) if cmd == "selection.set" => p["ids"].clone(),
+            other => panic!("{tool}: {other:?}"),
+        };
+        assert_eq!(ids(&click(&mut t, 250.0, 250.0)), serde_json::json!([]), "{tool}: only the locked object there");
+        assert_eq!(ids(&click(&mut t, 160.0, 160.0)), serde_json::json!([behind.0]), "{tool}: through it to the object behind");
+    }
 }
