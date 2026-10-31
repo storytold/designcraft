@@ -516,9 +516,15 @@ fn canvas_frame(app: &mut DesignApp, ctx: &egui::Context, m: egui::Modifiers, mu
 }
 
 /// The cursor icon the canvas sets for `c` on this platform (bitmap and painted cursors
-/// report their own icon).
+/// report their own icon), in a window with the focus as [`canvas_frame`]'s.
 fn shown(c: Cursor) -> egui::CursorIcon {
-    crate::cursors::show(&egui::Context::default(), &mut crate::cursors::Images::default(), c, Pos2::ZERO)
+    let ctx = egui::Context::default();
+    let mut icon = egui::CursorIcon::Default;
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        icon = crate::cursors::show(ui.ctx(), &mut crate::cursors::Images::default(), c, Pos2::ZERO);
+    });
+    output.textures_delta.clear();
+    icon
 }
 
 fn space_key(pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
