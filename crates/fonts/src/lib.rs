@@ -151,6 +151,10 @@ pub struct ShapeContext<'a> {
     pub before: &'a str,
     pub after: &'a str,
     pub language: Option<&'a str>,
+    /// Every character keeps its own cluster (a vowel mark isn't merged into its base letter's
+    /// cluster), so a run shaped across several styles can give each glyph its own character's
+    /// style (HarfBuzz's monotone-characters cluster level).
+    pub cluster_chars: bool,
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -175,8 +179,10 @@ pub fn shape_with_context(
             before: if r.start == 0 { context.before } else { &text[..r.start] },
             after: if r.end == text.len() { context.after } else { &text[r.end..] },
             language: context.language,
+            cluster_chars: context.cluster_chars,
         };
-        let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
+        let local_features = features_in(features, r.clone());
+        let mut g = shape_dir(face, &text[r.clone()], &local_features, &map, rtl, script, local);
         for x in &mut g {
             x.cluster += r.start;
         }
@@ -238,6 +244,9 @@ fn shape_dir(
             buf.set_language(language);
         }
         buf.set_flags(harfrust::BufferFlags::PRODUCE_SAFE_TO_INSERT_TATWEEL);
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+        }
         buf.guess_segment_properties();
         buf.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
         let gb = shaper.shape(buf, ShapeOptions::new().features(features));
@@ -296,6 +305,9 @@ pub fn shape_vertical(face: &FontFace, text: &str, features: &[Feature], map: im
         if let Some(language) = context.language.and_then(|t| t.parse::<Language>().ok()) {
             buf.set_language(language);
         }
+        if context.cluster_chars {
+            buf.set_cluster_level(harfrust::BufferClusterLevel::MonotoneCharacters);
+        }
         buf.guess_segment_properties();
         buf.set_direction(Direction::TopToBottom);
         let gb = shaper.shape(buf, ShapeOptions::new().features(features).font_funcs(Some(&mut funcs)));
@@ -346,9 +358,41 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
     chars.iter().map(|c| face.glyph_for(*c)).find(|g| *g != 0).unwrap_or(0)
 }
 
+/// `features` for the part `range` of the text they were given for: features over the whole text
+/// stay as they are; one over a byte range is clipped to `range` and counted from its start (or
+/// left out when it misses it).
+pub fn features_in(features: &[Feature], range: std::ops::Range<usize>) -> Vec<Feature> {
+    let (a, b) = (u32::try_from(range.start).unwrap_or(u32::MAX), u32::try_from(range.end).unwrap_or(u32::MAX));
+    features
+        .iter()
+        .filter_map(|f| {
+            if f.start == 0 && f.end == u32::MAX {
+                return Some(*f);
+            }
+            let (s, e) = (f.start.max(a), f.end.min(b));
+            (s < e).then(|| Feature { start: s - a, end: e - a, ..*f })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Features over a byte range follow the text into the part being shaped: clipped to it and
+    /// counted from its start; features over the whole text stay whole.
+    #[test]
+    fn ranged_features_follow_their_part() {
+        let tag = Tag::new(b"liga");
+        let whole = Feature { tag, value: 0, start: 0, end: u32::MAX };
+        let ranged = Feature { tag, value: 0, start: 4, end: 10 };
+        let got = features_in(&[whole, ranged], 6..20);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].start, got[0].end), (0, u32::MAX));
+        assert_eq!((got[1].start, got[1].end), (0, 4));
+        assert!(features_in(&[ranged], 10..20).is_empty(), "a range ending where the part starts misses it");
+        assert!(features_in(&[ranged], 12..20).is_empty(), "one ending before it too (it used to overflow)");
+    }
 
     #[test]
     fn arabic_keeps_contextual_alternates() {
