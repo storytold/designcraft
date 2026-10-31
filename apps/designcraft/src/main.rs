@@ -295,6 +295,15 @@ fn main() -> std::process::ExitCode {
             Err(e) => log::warn!("no log file: {e}"),
         }
     }
+    // Dictionaries the user installed in `<settings>/dictionaries/` (also in locale subfolders):
+    // hyphenation patterns (`hyph_*.dic`), read before any text is composed, and Hunspell spelling
+    // dictionaries (`<locale>.aff` + `.dic`), read on first use.
+    if let Some(dir) = profile::config_dir().filter(|_| !no_prefs()) {
+        let dir = dir.join("dictionaries");
+        for line in designcraft_engine::hyphenation::install_dir(&dir).into_iter().chain(designcraft_engine::dictionaries::install_dir(&dir)) {
+            log::info!("{line}");
+        }
+    }
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")

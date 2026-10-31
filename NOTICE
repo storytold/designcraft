@@ -118,6 +118,12 @@ list (author, source, license) is in ASSETS.md.
   AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- Serbian hyphenation patterns, embedded through the hypher crate (feature "serbian"):
+  hyph-sh-cyrl.tex 2.02 from hyph-utf8, https://github.com/hyphenation/tex-hyphen (patterns for
+  Serbian in Cyrillic script; hypher maps the language code "sr" to these, and DesignCraft applies
+  them to Serbian Latin text through its Cyrillic spelling).
+  Copyright (C) 1990, 2008 Dejan Muhamedagić. Distributed under the LaTeX Project Public License,
+  version 1 or (at your option) any later version, https://latex-project.org/lppl/.
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,
@@ -131,6 +137,9 @@ list (author, source, license) is in ASSETS.md.
 
 Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …) are permissively
 licensed (MIT/Apache-2.0/BSD/ISC/Zlib), fetched through crates.io or the pinned source below.
+The spellbook crate (Hunspell-compatible spell checking for installed dictionaries,
+https://github.com/helix-editor/spellbook) is under the Mozilla Public License 2.0, whose
+source-file copyleft keeps it apart from DesignCraft's own licence; its source is on crates.io.
 
 No Adobe icons, images or artwork are included.
 
