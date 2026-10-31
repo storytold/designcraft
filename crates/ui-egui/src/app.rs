@@ -69,6 +69,7 @@ impl DesignApp {
             color_applied: false,
             perf: Perf::default(),
             synthetic: vec![],
+            held_input: vec![],
             control_synthetic: vec![],
             native_actions: Default::default(),
             native_events_pending: Default::default(),

@@ -196,6 +196,8 @@ pub struct DesignApp {
     pub color_applied: bool,
     pub perf: Perf,
     pub synthetic: Vec<egui::Event>,
+    /// Input held back for the next frame (see [`DesignApp::pace_pointer_buttons`]).
+    held_input: Vec<egui::Event>,
     /// Control input stays separate from native-menu input until its frame is processed.
     pub(crate) control_synthetic: Vec<egui::Event>,
     /// Resolved native menu choices, kept stable across menu rebuilds until input settles.

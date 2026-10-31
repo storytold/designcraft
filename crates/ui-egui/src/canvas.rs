@@ -69,6 +69,9 @@ pub use view::{
 };
 
 pub const RULER: f32 = 15.0;
+/// The longest an edit may take to render on the UI thread (ms) before edits render on the
+/// worker: about three frames.
+pub const SYNC_BUDGET_MS: f64 = 50.0;
 /// Width of the view's scrollbars.
 pub const SCROLLBAR: f32 = 10.0;
 
@@ -497,6 +500,10 @@ mod parent_canvas_tests;
 #[cfg(test)]
 #[path = "guide_selection_tests.rs"]
 mod guide_selection_tests;
+
+#[cfg(test)]
+#[path = "slow_render_tests.rs"]
+mod slow_render_tests;
 
 #[cfg(test)]
 mod tests;

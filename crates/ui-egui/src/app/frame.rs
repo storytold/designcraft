@@ -48,6 +48,10 @@ impl DesignApp {
             new_document::end_stale_preview(self);
         }
         self.request_hidden_paint_for_pending_input(ctx);
+        // Input held back for the next frame (`pace_pointer_buttons`) needs that frame.
+        if !self.held_input.is_empty() {
+            ctx.request_repaint();
+        }
         self.handle_quit(ctx);
         self.flush_window_commands(ctx);
     }

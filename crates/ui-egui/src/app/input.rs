@@ -70,6 +70,8 @@ impl DesignApp {
                 }
             }
         }
+        // Presses and releases beyond the first button change wait for the next pass.
+        self.pace_pointer_buttons(raw);
         self.discard_stale_injected_batch(raw);
         // A batch acknowledged by the previous pass keeps its private provenance through that
         // pass's end hook (the clipboard guard), and is cleared at the next host iteration.
@@ -86,6 +88,12 @@ impl DesignApp {
         let private = !self.control_synthetic.is_empty();
         let events = if private { &mut self.control_synthetic } else { &mut self.synthetic };
         let Some(first) = events.first() else { return };
+        // A button change of the user's (or one held back from the last pass) is in this pass
+        // already: an injected one waits for the next, so no pass sees two (see
+        // `pace_pointer_buttons`). Pending injection keeps the passes coming.
+        if matches!(first, egui::Event::PointerButton { .. }) && raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. })) {
+            return;
+        }
         let n = match first {
             egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } => 1,
             _ => events.iter().position(|e| matches!(e, egui::Event::Key { pressed: false, .. })).map_or(events.len(), |i| i + 1),
@@ -180,6 +188,24 @@ impl DesignApp {
             document: self.active_document_epoch(),
             dialog: self.ui.dialog.as_ref().map(|dialog| egui::Id::unique(&dialog.id)),
             focus: self.egui_ctx.as_ref().and_then(|ctx| ctx.memory(|memory| memory.focused())),
+        }
+    }
+
+    /// One press or release of a mouse button per frame. While a frame is slow (a big render, a
+    /// save), everything the user does meanwhile arrives in the next frame at once: a press, the
+    /// moves and the release of a whole drag. egui then sees the button go down and up within one
+    /// frame, so a drag never starts (a guide pulled out of a ruler, a slider, an object moved)
+    /// and two clicks become one. The events from the second button change on wait for the next
+    /// frame, in order, so each frame holds at most one press or release.
+    fn pace_pointer_buttons(&mut self, raw: &mut egui::RawInput) {
+        if !self.held_input.is_empty() {
+            let mut held = std::mem::take(&mut self.held_input);
+            held.append(&mut raw.events);
+            raw.events = held;
+        }
+        let mut buttons = raw.events.iter().enumerate().filter(|(_, e)| matches!(e, egui::Event::PointerButton { .. }));
+        if let (Some(_), Some((second, _))) = (buttons.next(), buttons.next()) {
+            self.held_input = raw.events.split_off(second);
         }
     }
 

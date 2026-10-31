@@ -573,6 +573,8 @@ impl CanvasCache {
             patches: 0,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
+            sync_ms: 0.0,
+            patch_ms: 0.0,
         }
     }
 }
@@ -609,6 +611,10 @@ pub struct CanvasCache {
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
     /// it (ms): finished background decodes are taken up in batches, one render for many.
     pub images: (u64, f64),
+    /// How long the canvas last took to render whole, and to repaint an edit's regions (ms): past
+    /// [`canvas::SYNC_BUDGET_MS`], edits render on the worker instead of the UI thread.
+    pub sync_ms: f64,
+    pub patch_ms: f64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
