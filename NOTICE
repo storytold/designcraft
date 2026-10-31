@@ -118,6 +118,12 @@ list (author, source, license) is in ASSETS.md.
   AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- Serbian hyphenation patterns, embedded through the hypher crate (feature "serbian"):
+  hyph-sh-cyrl.tex 2.02 from hyph-utf8, https://github.com/hyphenation/tex-hyphen (patterns for
+  Serbian in Cyrillic script; hypher maps the language code "sr" to these, and DesignCraft applies
+  them to Serbian Latin text through its Cyrillic spelling).
+  Copyright (C) 1990, 2008 Dejan Muhamedagić. Distributed under the LaTeX Project Public License,
+  version 1 or (at your option) any later version, https://latex-project.org/lppl/.
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,

@@ -12,10 +12,21 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-31** · Serbian: text in Latin script breaks between `nj` or `dž` where they are two
+  letters (`kon-ju-ga-ci-ja`, `nad-ži-ve-ti`), as the Cyrillic spelling shows, also past an
+  installed Latin pattern file; typographer's quotes are „…” and ’…’, as the Pravopis prints them;
+  LibreOffice's Serbian pattern files load as they are (ISO 8859-2 and -5). No readiness percentage
+  change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
   paragraphs and table fragments above the footnote area. No readiness percentage change.
+- **2026-10-26** · Serbian hyphenation: Character › Language offers Serbian: Cyrillic and Serbian:
+  Latin, both hyphenated by the hyph-sh-cyrl patterns (Latin text through its Cyrillic spelling).
+  LibreOffice `hyph_<locale>.dic` pattern files in the settings folder's `dictionaries/` (or a
+  locale subfolder of it) come before the bundled patterns for their language (except English,
+  which keeps its dictionary), and patterns may now be 16 letters long instead of 9. No readiness
+  percentage change.
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.

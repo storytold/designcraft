@@ -49,6 +49,8 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "portuguese brazilian" => Some("pt-BR"),
         "norwegian bokmål" | "norwegian bokmal" => Some("nb"),
         "norwegian nynorsk" => Some("nn"),
+        "serbian cyrillic" | "sr cyrl" | "sr cyrl rs" => Some("sr-Cyrl"),
+        "serbian latin" | "sr latn" | "sr latn rs" => Some("sr-Latn"),
         _ => None,
     };
     if variant.is_some() {

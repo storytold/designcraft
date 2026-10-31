@@ -249,6 +249,8 @@ pub fn quote_marks(language: &str) -> [char; 4] {
     }
     match designcraft_doc::language_subtag(tag) {
         "de" | "cs" | "sk" | "bg" | "lt" => ['\u{201E}', '\u{201C}', '\u{201A}', '\u{2018}'],
+        // As Pravopis srpskoga jezika (Matica srpska, 2002) prints them, and as CLDR has them.
+        "sr" | "sh" => ['\u{201E}', '\u{201D}', '\u{2019}', '\u{2019}'],
         "fr" | "ru" | "uk" | "no" | "nb" | "nn" | "el" => ['\u{00AB}', '\u{00BB}', '\u{2039}', '\u{203A}'],
         "es" | "it" | "pt" | "ca" => ['\u{00AB}', '\u{00BB}', '\u{201C}', '\u{201D}'],
         "nl" | "pl" | "ro" | "hu" | "hr" => ['\u{201E}', '\u{201D}', '\u{201A}', '\u{2019}'],
@@ -546,6 +548,9 @@ mod language_tests {
     #[test]
     fn cjk_languages_have_their_quotes_and_no_english_rules() {
         use super::quote_marks;
+        for serbian in ["Serbian", "Serbian: Cyrillic", "Serbian: Latin", "Serbian (Latin)", "sr_RS", "sh_RS", "sr-Latn"] {
+            assert_eq!(quote_marks(serbian), ['\u{201E}', '\u{201D}', '\u{2019}', '\u{2019}'], "{serbian}");
+        }
         assert_eq!(quote_marks("Chinese: Simplified"), ['\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}']);
         assert_eq!(quote_marks("Chinese: Traditional"), ['\u{300C}', '\u{300D}', '\u{300E}', '\u{300F}']);
         assert_eq!(quote_marks("Chinese"), ['\u{300C}', '\u{300D}', '\u{300E}', '\u{300F}']);

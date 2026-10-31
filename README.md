@@ -158,6 +158,20 @@ The file stops growing at 16 MiB. `--version` writes no file.
 
 The logger is `apps/designcraft/src/logging.rs`; the web build logs to the browser console instead.
 
+### Hyphenation patterns
+
+LibreOffice/Hyphen pattern files (`hyph_<locale>.dic`, in UTF-8, ISO8859-2 or ISO8859-5, such as
+`hyph_sr_RS.dic` or `hyph_de_DE.dic`) in a `dictionaries` folder of the settings directory, or in its subfolders
+(one per locale, as InDesign's Hunspell folder keeps them: copy `sr_RS/` in as it is) (Linux
+`~/.config/designcraft/dictionaries/`; macOS `~/Library/Application Support/DesignCraft/dictionaries/`;
+Windows `%APPDATA%\DesignCraft\dictionaries\`) are read at start-up. Their patterns come before
+the bundled ones for text in that language; words their alphabet doesn't cover (the other script)
+still use the bundled patterns. English is the exception: it keeps its bundled dictionary, and a
+file for it is skipped. Serbian Latin words where `nj` or `dž` is two letters (`konjugacija`,
+`nadživeti`) break by their Cyrillic spelling even with a Latin file installed: Latin patterns
+can't tell them from `konj` and `budžet`. The log lists each file read and how many patterns it gave, and any file
+or folder that couldn't be read.
+
 ### Portable mode
 
 A file named `portable.txt` next to the executable (on macOS, next to `DesignCraft.app`) makes the install portable: settings, logs and
