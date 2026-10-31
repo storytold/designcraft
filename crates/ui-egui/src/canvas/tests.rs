@@ -1,6 +1,7 @@
 use designcraft_geom::Unit;
 use egui_kittest::{Harness, kittest::Queryable};
 
+use super::text_overlay::inverse_under;
 use super::*;
 
 /// A place-cursor drag past its 3-point threshold but short of egui's drag distance previews
@@ -3484,4 +3485,85 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     page_box_go(h.state_mut(), &b, 1);
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
+}
+
+/// Selected text shows what lies under it inverted: paper turns black, black turns white,
+/// and a half-covered pixel is half inverted.
+#[test]
+fn the_text_highlight_inverts_what_lies_under_it() {
+    let mask = [0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 128, 128, 128, 128, 255, 255, 255, 255];
+    let under = [9, 9, 9, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0];
+    let out = inverse_under(&mask, &under, [80, 80, 80]);
+    assert_eq!(&out[0..4], &[0, 0, 0, 0], "outside the highlight: untouched");
+    assert_eq!(&out[4..8], &[0, 0, 0, 255], "white paper turns black");
+    assert_eq!(&out[8..12], &[255, 255, 255, 255], "black turns white");
+    assert_eq!(&out[12..16], &[128, 128, 128, 128], "half covered: half the inverse");
+    assert_eq!(&out[16..20], &[175, 175, 175, 255], "transparent: the inverse of the pasteboard");
+}
+
+/// White text on a black frame used to turn black on a black highlight. Now the highlight is
+/// light there and the selected letters dark.
+#[test]
+fn selected_white_text_on_a_dark_fill_stays_readable() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let id = app
+        .run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "White text", "caret": true}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    app.run("type.char", serde_json::json!({"attrs": {"size": 28, "fill": "[Paper]"}})).unwrap();
+    app.run("object.fill", serde_json::json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    let app = &h.state().app;
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let canvas = app.session.layout().xf(designcraft_doc::SpreadRef::Doc(0));
+    let (a, b) = (xf.to_screen(canvas * Point::new(76.0, 78.0)), xf.to_screen(canvas * Point::new(180.0, 98.0)));
+    let image = match h.render() {
+        Ok(image) => image,
+        // CI has a renderer: there a missing one is a failure, not a silent pass.
+        Err(e) if std::env::var_os("CI").is_some() => panic!("no offscreen renderer in CI: {e}"),
+        Err(e) => {
+            eprintln!("skipped: no offscreen renderer ({e})");
+            return;
+        }
+    };
+    let (mut light, mut dark) = (0, 0);
+    for y in a.y as u32..b.y as u32 {
+        for x in a.x as u32..b.x as u32 {
+            let p = image.get_pixel(x, y);
+            let l = (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3;
+            if l > 200 {
+                light += 1;
+            } else if l < 60 {
+                dark += 1;
+            }
+        }
+    }
+    assert!(light > dark, "a light highlight under the selected white text: {light} light, {dark} dark");
+    assert!(dark > 0, "with the letters dark on it");
+}
+
+/// The highlight is drawn from a render of what lies under it: a display option that changes
+/// that render (Overprint Preview here) draws it again instead of keeping the old pixels.
+#[test]
+fn the_text_highlight_follows_the_display_options() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Some text", "caret": true})).unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    let cached = |h: &Harness<'_, crate::test_window::Window>| {
+        h.ctx.data(|d| d.get_temp::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex"))).map(|(k, _)| k)
+    };
+    let before = cached(&h).expect("the highlight is drawn");
+    h.run_steps(2);
+    assert_eq!(cached(&h), Some(before), "unchanged: the cached highlight is kept");
+    h.state_mut().app.ui.overprint_preview = !h.state().app.ui.overprint_preview;
+    h.run_steps(2);
+    let after = cached(&h).expect("the highlight is drawn");
+    assert_ne!(after, before, "a new display option: the highlight is drawn again");
 }

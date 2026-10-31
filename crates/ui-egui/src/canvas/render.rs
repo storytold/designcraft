@@ -95,7 +95,7 @@ pub struct DisplayKey {
     highlight_custom_tracking: bool,
 }
 
-fn display_key(app: &DesignApp) -> DisplayKey {
+pub(super) fn display_key(app: &DesignApp) -> DisplayKey {
     let (ui, prefs) = (&app.ui, &app.session.prefs);
     DisplayKey {
         quality: ui.display_quality,
@@ -318,6 +318,18 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     if let Some(tex) = app.canvas.texture.as_mut() {
         tex.set_partial([x0 as usize, y0 as usize], ci, egui::TextureOptions::LINEAR);
     }
+    // The same region in the canvas's own copy of its pixels.
+    if let Some(all) = app.canvas.pixels.as_mut() {
+        let all = std::sync::Arc::make_mut(all);
+        let (aw, pw) = (all.width as usize, img.width as usize);
+        for (row, src) in img.pixels.chunks_exact(pw * 4).enumerate() {
+            let start = ((y0 as usize + row) * aw + x0 as usize) * 4;
+            if let Some(dst) = all.pixels.get_mut(start..start + pw * 4) {
+                dst.copy_from_slice(src);
+            }
+        }
+        app.canvas.pixels_generation += 1;
+    }
     done(app);
     app.canvas.patches += 1;
     app.perf.render_ms = crate::now_ms() - t0;
@@ -351,4 +363,6 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
     }
+    app.canvas.pixels = Some(std::sync::Arc::new(img));
+    app.canvas.pixels_generation += 1;
 }
