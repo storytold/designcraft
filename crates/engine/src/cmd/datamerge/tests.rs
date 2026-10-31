@@ -85,6 +85,28 @@ fn csv_parsing() {
     assert_eq!(quoted[1][0], "Ada\nGrace");
 }
 
+/// #1997: a `.csv` using semicolons (semicolon-locale spreadsheets) separates fields
+/// instead of merging into one; comma files still default to comma.
+#[test]
+fn csv_name_sniffs_semicolon_separator() {
+    for (body, delimiter, names, rows) in [
+        ("Name;City\nAda;London\n", Delimiter::Semicolon, vec!["Name", "City"], vec![vec!["Ada", "London"]]),
+        ("\"Last, First\";City\n\"Ada, C.\";London\n", Delimiter::Semicolon, vec!["Last, First", "City"], vec![vec!["Ada, C.", "London"]]),
+        ("Name,City\nAda,London\n", Delimiter::Comma, vec!["Name", "City"], vec![vec!["Ada", "London"]]),
+    ] {
+        let automatic = parse::table_from_bytes(body.as_bytes(), "people.csv", None).unwrap();
+        let fields: Vec<_> = names.into_iter().map(|name| DataField { name: name.into(), kind: DataFieldKind::Text }).collect();
+        assert_eq!(automatic.delimiter, delimiter, "{body:?}");
+        assert_eq!(automatic.fields, fields, "{body:?}");
+        assert_eq!(automatic.rows, rows, "{body:?}");
+        let mut s = Session::new();
+        new_doc(&mut s, 1);
+        let result = select_csv(&mut s, body);
+        assert_eq!(result["records"], 1, "{body:?}");
+        assert_eq!(s.documents()[0].doc.data_merge.sources[0].delimiter, delimiter, "{body:?}");
+    }
+}
+
 #[test]
 fn data_source_sniffs_quoted_logical_headers() {
     for (body, delimiter, names) in [
@@ -350,10 +372,12 @@ fn data_source_discarded_quoted_fields_keep_records_and_warning_lines() {
 
 #[test]
 fn data_source_delimiter_override_and_known_extensions_win() {
+    // #1997: a `.csv` using semicolons sniffs to semicolon (semicolon-locale sheets);
+    // comma stays the fallback, and an explicit delimiter still wins.
     let body = "Name;City\nAda;London\n";
     let csv = parse::table_from_bytes(body.as_bytes(), "people.csv", None).unwrap();
-    assert_eq!(csv.delimiter, Delimiter::Comma);
-    assert_eq!(csv.rows, vec![vec!["Ada;London"]]);
+    assert_eq!(csv.delimiter, Delimiter::Semicolon);
+    assert_eq!(csv.rows, vec![vec!["Ada", "London"]]);
     let explicit = parse::table_from_bytes(body.as_bytes(), "people.csv", Some(Delimiter::Semicolon)).unwrap();
     assert_eq!(explicit.rows, vec![vec!["Ada", "London"]]);
     let tab = parse::table_from_bytes(b"Name,Title\tCity\nAda,Analyst\tLondon", "people.tsv", None).unwrap();
