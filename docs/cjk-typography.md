@@ -1,6 +1,6 @@
 # CJK import and composition
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (the JIS X 4051 禁則処理 push-in/push-out priority modes are applied by both composers over CJK text: the empty default and Push In First compose as push-in-first, Push Out First, Push Out Only and adjustment-amount as their names say; Latin paragraphs are not biased; preflight reports only unknown values) · **Target:** Adobe InDesign 2026
 
 Task: CJK1. This is incremental support, not a claim of InDesign composition parity.
 
@@ -27,6 +27,7 @@ invalidation. Font listing, replacement and preflight resolve component fonts.
 | Tsume | Compress nonnegative glyph sidebearings without scaling ink; full compression regression |
 | Jidori | Fixed group width with protected internal boundaries and justification advances; both composers tested |
 | Kinsoku sets | Custom character sets and independent common punctuation defaults for named sets; explicit disabling retained |
+| Kinsoku priorities | The four JIS X 4051 禁則処理 types, applied by both composers to CJK text: push-in-first (the empty default, as in InDesign) and push-out-first weight the break candidates by the adjustment direction, push-out-only turns the end-of-line compression off, and adjustment-amount (調整量優先) takes the candidate with the smallest adjustment; Latin paragraphs are not biased. Regressions pin the breaks, the line-end fits and the mode mapping |
 | Bunri kinshi / rensuuji | Protect repeated dash/ellipsis pairs and numeric sequences |
 | Hanging punctuation | Regular/forced edge allowance integrated with line breaking and placement |
 | Ideographic spaces | Paragraph switch controls whether fullwidth spaces participate in word spacing |
@@ -39,9 +40,14 @@ invalidation. Font listing, replacement and preflight resolve component fonts.
 - **Mojikumi**: definitions, base-set names, all override rows and paragraph references
   survive import/export. The numeric character-class spacing tables and their
   compression priorities are **not executed**. Preflight reports this explicitly.
-- **Kinsoku push-in/push-out priorities**: retained, but not used in candidate
-  selection. Preflight reports this explicitly. Boundary prohibition alone is not
-  equivalent to implementing this priority policy.
+- **Kinsoku priority policy** is applied as a line-cost weighting in the total-fit composer (and
+  as the single-line composer's early-break rule): push-in-first rates breaks that would have to
+  stretch the line worse than ones it can reach by compressing, push-out-first the other way,
+  push-out-only leaves no compression at the line end, and adjustment-amount rates every
+  candidate by its adjustment alone. It is a preference within the composer's other costs, not a
+  hard "always 追い込み before 追い出し" rule. Preflight reports only values it does not
+  know: the four JIS X 4051 modes are not reported as unapplied. Boundary prohibition, hanging
+  punctuation and the named sets are unchanged.
 - Named kinsoku defaults are clean-room common punctuation rules, not verified
   reproductions of every vendor preset. Explicit custom tables take precedence.
 - ICF alignment currently uses font ascender/descender metrics; exact ideographic
@@ -69,5 +75,6 @@ are not committed as fixtures.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | minor | 禁則処理 priority modes applied: the empty default and Push In First compose as push-in-first (as InDesign's Japanese default), Push Out First, Push Out Only and adjustment-amount (minimum adjustment) as their names say, for CJK text; Latin paragraphs are not biased; preflight reports only unknown values; breaks, line-end fits and the mode mapping regression-tested |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-07 | major | Created: CJK1: IDML CJK import and composition |
