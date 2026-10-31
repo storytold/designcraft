@@ -323,11 +323,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            designcraft_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
