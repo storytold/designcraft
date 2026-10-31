@@ -28,12 +28,22 @@ pub struct Remote {
     addr: String,
     conn: Option<(BufReader<TcpStream>, TcpStream)>,
     next_id: u64,
+    /// The launch's control token, sent as the first line of every connection (#1585).
+    token: Option<String>,
 }
 
 impl Remote {
     /// Connect to `addr` (`127.0.0.1:7979`), failing fast when nothing is listening.
+    ///
+    /// The app's control channel asks for the launch's token first (#1585), so pass it with
+    /// [`Self::connect_with_token`]; this stays for callers talking to a channel without one.
     pub fn connect(addr: &str) -> std::io::Result<Self> {
-        let mut r = Self { addr: addr.to_string(), conn: None, next_id: 1 };
+        Self::connect_with_token(addr, None)
+    }
+
+    /// [`Self::connect`], presenting `token` as the first line of the connection.
+    pub fn connect_with_token(addr: &str, token: Option<String>) -> std::io::Result<Self> {
+        let mut r = Self { addr: addr.to_string(), conn: None, next_id: 1, token };
         r.reconnect()?;
         Ok(r)
     }
@@ -53,12 +63,38 @@ impl Remote {
                     s.set_read_timeout(Some(Duration::from_secs(90))).ok();
                     let read = s.try_clone()?;
                     self.conn = Some((BufReader::new(read), s));
+                    self.greet()?;
                     return Ok(());
                 }
                 Err(e) => last = e,
             }
         }
         Err(last)
+    }
+
+    /// Present the token, if there is one, and read the app's answer. A channel that asks for a
+    /// token and does not get one closes, so a clear error here beats a mystery later.
+    fn greet(&mut self) -> std::io::Result<()> {
+        let Some(token) = self.token.clone() else { return Ok(()) };
+        let Some((reader, writer)) = self.conn.as_mut() else {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "no connection"));
+        };
+        writeln!(writer, "{}", serde_json::json!({"token": token}))?;
+        writer.flush()?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let ok = serde_json::from_str::<serde_json::Value>(line.trim())
+            .ok()
+            .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false);
+        if ok {
+            return Ok(());
+        }
+        self.conn = None;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the app refused the control token (it is in the profile directory, or pass DESIGNCRAFT_CONTROL_TOKEN)",
+        ))
     }
 
     fn prepare_connection(&mut self) -> std::io::Result<()> {

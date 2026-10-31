@@ -144,6 +144,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// The control token a client presents: `DESIGNCRAFT_CONTROL_TOKEN`, else the file the app wrote
+/// in its profile directory, named by `DESIGNCRAFT_CONTROL_TOKEN_FILE`. The app prints where that
+/// file is when it opens the channel (#1585).
+fn control_token() -> Option<String> {
+    if let Ok(t) = std::env::var("DESIGNCRAFT_CONTROL_TOKEN") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    let path = std::env::var_os("DESIGNCRAFT_CONTROL_TOKEN_FILE")?;
+    let t = std::fs::read_to_string(path).ok()?.trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
 fn report(r: Result<(), String>) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -223,7 +238,7 @@ so drop --connect (or use --connect without the roots)"
         Some(c) => {
             let addr = control_addr(&c);
             Box::new(
-                Remote::connect(&addr)
+                Remote::connect_with_token(&addr, control_token())
                     .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
             )
         }
@@ -506,7 +521,7 @@ fn script(args: &[String]) -> Result<(), String> {
         Some(c) => {
             let addr = control_addr(c);
             Box::new(
-                Remote::connect(&addr)
+                Remote::connect_with_token(&addr, control_token())
                     .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control PORT`)"))?,
             )
         }
@@ -567,7 +582,7 @@ fn app(args: &[String]) -> Result<(), String> {
         }
     }
     let addr = control_addr(&port);
-    let mut r = Remote::connect(&addr)
+    let mut r = Remote::connect_with_token(&addr, control_token())
         .map_err(|e| format!("cannot connect to the DesignCraft app at {addr}: {e} (start it with `designcraft --control {port}`)"))?;
     let json_arg =
         |s: Option<&String>| -> Result<Value, String> { s.map_or(Ok(json!({})), |t| serde_json::from_str(t).map_err(|e| format!("bad JSON: {e}"))) };
