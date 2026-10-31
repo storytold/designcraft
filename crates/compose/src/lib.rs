@@ -164,6 +164,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -4829,6 +4833,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                list_label: false,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -4965,6 +4970,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         len: g.len,
         generated_text: g.generated_text.clone(),
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,

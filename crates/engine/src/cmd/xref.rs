@@ -279,4 +279,127 @@ mod tests {
         let glyphs: usize = cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum();
         assert_eq!(glyphs, "SeeChapter".len());
     }
+
+    /// Every `/Rect` in an exported PDF, as `[x0, y0, x1, y1]`: the link annotations of a
+    /// document with nothing else annotated.
+    fn link_rects(s: &mut Session) -> Vec<[f64; 4]> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut out = Vec::new();
+        for part in text.split("/Rect[").skip(1) {
+            let Some(end) = part.find(']') else { continue };
+            let v: Vec<f64> = part[..end].split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            if let [x0, y0, x1, y1] = v[..] {
+                out.push([x0, y0, x1, y1]);
+            }
+        }
+        out
+    }
+
+    /// A cross-reference's link covered its first letter only: the source range is the one marker
+    /// character, and the glyphs of the text it generates all point at that character while only
+    /// the first of them owns it, so measuring the glyphs that own their bytes measured one glyph
+    /// — a ~7 pt link under ~40 pt of text (#1446).
+    #[test]
+    fn a_cross_references_link_covers_the_text_it_generated() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 200], "content": "text", "text": "Photo 1"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "See  for details."})).unwrap();
+        let src = r["story"].clone();
+        s.execute("text.select", &json!({"story": src, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("xref.defineFormat", &json!({"name": "Bare", "definition": "<paraText />"})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Photo 1", "format": "Bare"})).unwrap();
+        let generated = s.execute("xref.list", &json!({})).unwrap()[0]["text"].as_str().unwrap().to_string();
+        assert_eq!(generated, "Photo 1");
+        let xref_rects = link_rects(&mut s);
+        assert_eq!(xref_rects.len(), 1, "one link, for the cross-reference: {xref_rects:?}");
+        let xref_width = xref_rects[0][2] - xref_rects[0][0];
+
+        // The same text, written out and linked as text: the same letters in the same font at the
+        // same size, so the two links cover the same width.
+        let mut t = Session::new();
+        t.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let r = t
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": format!("See {generated} for details.")}))
+            .unwrap();
+        let story = r["story"].clone();
+        let (start, end) = (4, 4 + generated.len());
+        t.execute("text.select", &json!({"story": story, "anchor": start, "focus": end})).unwrap();
+        t.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+        let plain = link_rects(&mut t);
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        let plain_width = plain[0][2] - plain[0][0];
+
+        assert!(plain_width > 20.0, "the text is wider than one glyph: {plain_width}");
+        assert!((xref_width - plain_width).abs() < 1.0, "the cross-reference covers its text: {xref_width} vs {plain_width}");
+        // And it starts where the text starts.
+        assert!((xref_rects[0][0] - plain[0][0]).abs() < 1.0, "{:?} vs {:?}", xref_rects[0], plain[0]);
+    }
+
+    /// A link starting at the first character of a numbered paragraph took the number in: the
+    /// composer gives the list label that character's offset and no length, so the rectangle
+    /// reached over text outside the link (noted in review of #1446).
+    #[test]
+    fn a_links_rectangle_leaves_out_the_number_a_list_adds() {
+        // The same linked words twice: once in a plain paragraph, once in a numbered one.
+        let width = |numbered: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Linked words here"})).unwrap();
+            let story = r["story"].clone();
+            if numbered {
+                s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+                s.execute("type.para", &json!({"attrs": {"listType": "numbers"}})).unwrap();
+            }
+            // The link starts at the paragraph's first character, where the label also sits.
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Linked words".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (numbered: {numbered}): {rects:?}");
+            (rects[0][2] - rects[0][0], rects[0][0])
+        };
+
+        let (plain, plain_x0) = width(false);
+        let (listed, listed_x0) = width(true);
+        assert!(plain > 20.0, "the linked words are wider than one glyph: {plain}");
+        // The same letters at the same size, so the link is the same width either way. The label
+        // sits before the text and the paragraph is indented for it, so the rectangle starts
+        // further right -- but it covers the words and nothing else.
+        assert!((listed - plain).abs() < 1.0, "the number is not inside the link: {listed} vs {plain}");
+        assert!(listed_x0 >= plain_x0, "the numbered paragraph's text starts no earlier: {listed_x0} vs {plain_x0}");
+    }
+
+    /// The rectangle is the extent of the selected glyphs, not the first and the last of them.
+    /// Kenten marks and ruby are appended after a line's base glyphs, so with only the first
+    /// character marked the last glyph in the range was that mark, sitting over the first
+    /// character -- and the link ended there, leaving the rest of it unclickable (noted in
+    /// review of #1446).
+    #[test]
+    fn a_links_rectangle_spans_its_glyphs_whatever_order_they_are_in() {
+        let width = |marked: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Linked words here"})).unwrap();
+            let story = r["story"].clone();
+            if marked {
+                // The first character only, so its mark is the line's last glyph.
+                s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+                s.execute("type.char", &json!({"attrs": {"kenten": true}})).unwrap();
+            }
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Linked words".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (marked: {marked}): {rects:?}");
+            rects[0][2] - rects[0][0]
+        };
+
+        let plain = width(false);
+        assert!(plain > 20.0, "the linked words are wider than one glyph: {plain}");
+        // A mark over the first character does not shorten the link to that character.
+        let marked = width(true);
+        assert!((marked - plain).abs() < 1.0, "the link still covers its words: {marked} vs {plain}");
+    }
 }
