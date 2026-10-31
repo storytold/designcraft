@@ -751,7 +751,7 @@ mod nested_layer_tests {
         let mut actual = Vec::new();
         for index in 0..package.len() {
             let mut entry = package.by_index(index).unwrap();
-            if !entry.name().ends_with(".xml") {
+            if !entry.name().unwrap().ends_with(".xml") {
                 continue;
             }
             let mut xml = String::new();

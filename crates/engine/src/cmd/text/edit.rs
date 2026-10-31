@@ -609,7 +609,7 @@ mod language_tests {
             .map(|i| {
                 let mut f = z.by_index(i).unwrap();
                 let mut x = String::new();
-                if f.name().starts_with("Stories/") {
+                if f.name().unwrap().starts_with("Stories/") {
                     f.read_to_string(&mut x).unwrap();
                 }
                 x

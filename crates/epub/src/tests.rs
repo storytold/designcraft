@@ -13,7 +13,7 @@ fn exports_valid_package_in_reading_order() {
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "First\nline two", ParaFormat::default()).unwrap();
     let bytes = export_epub(&d, &EpubOptions::default()).unwrap();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    assert_eq!(z.by_index(0).unwrap().name(), "mimetype");
+    assert_eq!(z.by_index(0).unwrap().name().unwrap(), "mimetype");
     let mut html = String::new();
     z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut html).unwrap();
     let a = html.find("First").unwrap();
@@ -120,7 +120,7 @@ fn package_metadata_and_cover_image() {
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(d, opts).unwrap())).unwrap();
         let mut s = String::new();
         z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut s).unwrap();
-        let names: Vec<String> = z.file_names().map(str::to_string).collect();
+        let names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
         (s, names)
     };
     let id_of = |opf: &str| opf.split("<dc:identifier id=\"bookid\">").nth(1).and_then(|r| r.split('<').next()).unwrap_or_default().to_string();

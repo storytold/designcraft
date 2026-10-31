@@ -66,7 +66,7 @@ fn package_idml_links_the_links_folder_and_embeds_nothing() {
     let mut spreads = String::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).unwrap();
-        if f.name().starts_with("Spreads/") {
+        if f.name().unwrap().starts_with("Spreads/") {
             std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
         }
     }

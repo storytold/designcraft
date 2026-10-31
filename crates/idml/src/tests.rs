@@ -48,7 +48,7 @@ fn zip_text(bytes: &[u8], prefix: &str) -> String {
     let mut out = String::new();
     for i in 0..z.len() {
         let mut f = z.by_index(i).unwrap();
-        if f.name().starts_with(prefix) {
+        if f.name().unwrap().starts_with(prefix) {
             f.read_to_string(&mut out).unwrap();
         }
     }
@@ -1563,7 +1563,7 @@ fn left_aligned_anchored_x_offsets_flip_at_the_idml_boundary() {
     let mut stories = String::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).unwrap();
-        if f.name().starts_with("Stories/") {
+        if f.name().unwrap().starts_with("Stories/") {
             std::io::Read::read_to_string(&mut f, &mut stories).unwrap();
         }
     }
@@ -3807,7 +3807,7 @@ fn object_style_effects_round_trip() {
     let mut spreads = String::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).unwrap();
-        if f.name().starts_with("Spreads/") {
+        if f.name().unwrap().starts_with("Spreads/") {
             std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
         }
     }
@@ -4198,7 +4198,10 @@ fn oversized_part_is_refused() {
     }
     assert_eq!(patched, 2);
     let Err(err) = import_idml(&bytes) else { panic!("an oversized part imported") };
-    assert!(err.to_string().contains("limit"), "{err}");
+    // zip 9 stops at the declared size itself and reports the part as larger than it declares,
+    // before our limit: the refusal must come from that check.
+    let msg = err.to_string();
+    assert!(msg.contains("Stories/Story_big.xml") && msg.contains("declared uncompressed size"), "{err}");
 }
 
 /// A package with more entries than any document needs is refused before any is read.
