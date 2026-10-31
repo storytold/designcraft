@@ -2468,8 +2468,10 @@ fn preferences_first_setting_switches_interface_language() {
     // Choosing a language applies it at once; the dialog stays open.
     click_dialog(&mut app, &ctx, screen, combo.center());
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    for (_, name) in crate::i18n::LANGUAGES {
-        assert!(labels.iter().any(|(text, _, _)| text == name), "{name} is listed by its own name");
+    for (code, name) in crate::i18n::LANGUAGES {
+        // Korean and Traditional Chinese only with a face for their script (see `language_listed`).
+        let expected = crate::theme::language_listed(&ctx, code, name, &app.ui.language);
+        assert_eq!(labels.iter().any(|(text, _, _)| text == name), expected, "{name} is listed by its own name");
     }
     let deutsch = visible_label(&labels, screen, "Deutsch").center();
     click_dialog(&mut app, &ctx, screen, deutsch);
