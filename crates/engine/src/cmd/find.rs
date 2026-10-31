@@ -422,6 +422,11 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
                 repair_selection(t, st);
             }
+            if cell.is_none() {
+                for (range, new) in edits.iter().rev() {
+                    d.adjust_text_ranges(sid, range.clone(), new.len());
+                }
+            }
             // `first` is the first match of the whole search, not of each story.
             if first_only && count > 0 {
                 break;

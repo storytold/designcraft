@@ -38,6 +38,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         {
             r = r.start + 1..r.start + 1;
         }
+        let mut auto_edit = None;
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -56,6 +57,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                         to.clone()
                     };
                     st.replace(ws..r.start, &to);
+                    auto_edit = Some((ws..r.start, to.len()));
                     r = ws + to.len()..ws + to.len();
                 }
             }
@@ -83,7 +85,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let (at, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
             reserve_command_text(st, text.len())?;
             let mut fmt = st.insert_format_at(at).clone();
             if let Some(f) = &typing {
@@ -93,6 +95,62 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+
+            let redirect_links: Vec<u64> = if !r.is_empty() && !text.is_empty() {
+                d.hyperlinks
+                    .iter()
+                    .filter_map(|h| match &h.source {
+                        designcraft_doc::HyperlinkSource::Text { story: sid, start, end }
+                            if *sid == t.story && *start >= r.start && *end <= r.end =>
+                        {
+                            Some(h.id)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            let redirect_phs: Vec<u64> = if !r.is_empty() && !text.is_empty() {
+                d.data_merge
+                    .placeholders
+                    .iter()
+                    .filter_map(|ph| match &ph.anchor {
+                        designcraft_doc::PlaceholderAnchor::Text { story: sid, start, end }
+                            if *sid == t.story && *start >= r.start && *end <= r.end =>
+                        {
+                            Some(ph.id)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
+            d.adjust_text_ranges(t.story, at..at, text.len());
+            if !redirect_links.is_empty() || !redirect_phs.is_empty() {
+                let ins_span = at..at + text.len();
+                for id in redirect_links {
+                    if let Some(h) = d.hyperlinks.iter_mut().find(|h| h.id == id)
+                        && let designcraft_doc::HyperlinkSource::Text { start, end, .. } = &mut h.source
+                    {
+                        *start = ins_span.start;
+                        *end = ins_span.end;
+                    }
+                }
+                for id in redirect_phs {
+                    if let Some(ph) = d.data_merge.placeholders.iter_mut().find(|ph| ph.id == id)
+                        && let designcraft_doc::PlaceholderAnchor::Text { start, end, .. } = &mut ph.anchor
+                    {
+                        *start = ins_span.start;
+                        *end = ins_span.end;
+                    }
+                }
+            }
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
@@ -106,6 +164,12 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+        if t.cell.is_none() {
+            if let Some((range, len)) = auto_edit {
+                d.adjust_text_ranges(t.story, range, len);
+            }
+            d.adjust_text_ranges(t.story, a..b, text.len());
+        }
         Ok(json!({"pos": pos}))
     });
     // A preview (IME marked text) leaves the typing format to the text typed in the end.
@@ -264,11 +328,22 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
         let r = t.range();
+        let mut removed_ranges = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
-                crate::cmd::changes::mark_deleted(st, r.clone());
+                let (_, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
+                removed_ranges = removed;
             } else {
                 st.delete(r.clone());
+            }
+        }
+        if t.cell.is_none() {
+            if tracking {
+                for rr in removed_ranges {
+                    d.adjust_text_ranges(t.story, rr, 0);
+                }
+            } else {
+                d.adjust_text_ranges(t.story, r.clone(), 0);
             }
         }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
@@ -296,12 +371,18 @@ pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let (at, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
             let pos = if forward { at.max(r.end.min(st.len())) } else { r.start.min(at) };
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
             return ok();
         }
         st.delete(r.clone());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), 0);
+        }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
@@ -423,20 +504,36 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = format_targets(s);
     s.edit(|d, sel| {
         for t in &targets {
-            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
-            let r = t.range.start.min(st.len())..t.range.end.min(st.len());
-            let mapped = case_map(st.slice(r.clone()), &case);
-            // Replace run by run (from the end) so every run keeps its formatting.
-            let segs: Vec<std::ops::Range<usize>> =
-                st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
-            let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
-            let mut delta: isize = 0;
-            for seg in segs.iter().rev() {
-                let old = st.slice(seg.clone()).to_string();
-                let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
-                if new != old {
-                    delta += new.len() as isize - old.len() as isize;
-                    st.replace(seg.clone(), &new);
+            let (delta, r, changes) = {
+                let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+                let r = t.range.start.min(st.len())..t.range.end.min(st.len());
+                let mapped = case_map(st.slice(r.clone()), &case);
+                // Replace run by run (from the end) so every run keeps its formatting.
+                let segs: Vec<std::ops::Range<usize>> =
+                    st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
+                let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
+                let mut delta: isize = 0;
+                let mut changes = Vec::new();
+                for seg in segs.iter().rev() {
+                    let old = st.slice(seg.clone()).to_string();
+                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    if new != old {
+                        delta += new.len() as isize - old.len() as isize;
+                        st.replace(seg.clone(), &new);
+                        // Per-character changes (back to front), so ranges inside the run keep their boundaries.
+                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                            let ce = starts.get(i + 1).copied().unwrap_or(r.end);
+                            if m.len() != ce - b {
+                                changes.push((*b..ce, m.len()));
+                            }
+                        }
+                    }
+                }
+                (delta, r, changes)
+            };
+            if t.cell.is_none() {
+                for (range, new_len) in changes {
+                    d.adjust_text_ranges(t.story, range, new_len);
                 }
             }
             if let Some(ts) = sel.text.as_mut().filter(|ts| ts.story == t.story && ts.cell == t.cell && !ts.is_caret()) {

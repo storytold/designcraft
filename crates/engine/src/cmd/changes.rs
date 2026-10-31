@@ -1,16 +1,16 @@
 //! Type › Track Changes: record edits as inserted / deleted text; accept or reject them.
 
-use designcraft_doc::{ChangeMark, Story, StoryId};
+use designcraft_doc::{ChangeMark, Document, Story, StoryId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
 
-/// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
-/// the text after the range now starts.
-pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+/// Returns the new start of text after `r` and the list of physically removed byte ranges (in original offsets, last first)
+/// so callers can reconcile document-level text ranges.
+pub(crate) fn mark_deleted_reporting(st: &mut Story, r: std::ops::Range<usize>) -> (usize, Vec<std::ops::Range<usize>>) {
     if r.is_empty() {
-        return r.start;
+        return (r.start, Vec::new());
     }
     // Inserted pieces inside the range go away; the rest is marked deleted.
     let mut ins: Vec<std::ops::Range<usize>> = st
@@ -20,6 +20,7 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
         .collect();
     let mut end = r.end;
     ins.sort_by_key(|x| std::cmp::Reverse(x.start));
+    let removed = ins.clone();
     for x in ins {
         st.delete(x.clone());
         end -= x.len();
@@ -27,7 +28,13 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
     if end > r.start {
         st.format_chars(r.start..end, |f| f.over.change = Some(ChangeMark::Deleted));
     }
-    end
+    (end, removed)
+}
+
+/// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
+/// the text after the range now starts.
+pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+    mark_deleted_reporting(st, r).0
 }
 
 /// Ranges of `mark` in `st`, last first.
@@ -37,20 +44,31 @@ fn ranges(st: &Story, mark: ChangeMark) -> Vec<std::ops::Range<usize>> {
     v
 }
 
-/// Accept (or reject) every change in `st`.
-fn resolve(st: &mut Story, accept: bool) -> usize {
+/// Accept (or reject) every change in `sid`.
+fn resolve(d: &mut Document, sid: StoryId, accept: bool) -> usize {
     let (remove, keep) = if accept { (ChangeMark::Deleted, ChangeMark::Inserted) } else { (ChangeMark::Inserted, ChangeMark::Deleted) };
-    let removed = ranges(st, remove);
-    let n = removed.len() + ranges(st, keep).len();
-    for r in removed {
-        st.delete(r);
-    }
-    let len = st.len();
-    st.format_chars(0..len, |f| {
-        if f.over.change.is_some() {
-            f.over.change = None;
+    let (removed, keep_count) = {
+        let st = match d.story(sid) {
+            Some(st) => st,
+            None => return 0,
+        };
+        (ranges(st, remove), ranges(st, keep).len())
+    };
+    let n = removed.len() + keep_count;
+    if let Some(st) = d.story_mut(sid) {
+        for r in &removed {
+            st.delete(r.clone());
         }
-    });
+        let len = st.len();
+        st.format_chars(0..len, |f| {
+            if f.over.change.is_some() {
+                f.over.change = None;
+            }
+        });
+    }
+    for r in removed {
+        d.adjust_text_ranges(sid, r, 0);
+    }
     n
 }
 
@@ -60,17 +78,24 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
     let sid = p.get("story").and_then(Value::as_u64).map(StoryId).ok_or_else(|| super::bad(id, "`story` required"))?;
     let start = p.get("start").and_then(Value::as_u64).ok_or_else(|| super::bad(id, "`start` required"))? as usize;
     s.edit(|d, sel| {
-        let st = d.story_mut(sid).ok_or_else(|| super::bad(id, "no such story"))?;
-        let (r, mark) = st
-            .runs()
-            .find(|(r, f)| matches!(f.over.change, Some(ChangeMark::Inserted | ChangeMark::Deleted)) && r.start <= start && start < r.end)
-            .map(|(r, f)| (r, f.over.change.unwrap_or_default()))
-            .ok_or_else(|| super::bad(id, "no change there"))?;
+        let (r, mark) = {
+            let st = d.story(sid).ok_or_else(|| super::bad(id, "no such story"))?;
+            st.runs()
+                .find(|(r, f)| matches!(f.over.change, Some(ChangeMark::Inserted | ChangeMark::Deleted)) && r.start <= start && start < r.end)
+                .map(|(r, f)| (r, f.over.change.unwrap_or_default()))
+                .ok_or_else(|| super::bad(id, "no change there"))?
+        };
         // Accepting a deletion or rejecting an insertion removes the text; otherwise it stays, unmarked.
-        if (mark == ChangeMark::Deleted) == accept {
-            st.delete(r.clone());
-        } else {
-            st.format_chars(r.clone(), |f| f.over.change = None);
+        let delete = (mark == ChangeMark::Deleted) == accept;
+        if let Some(st) = d.story_mut(sid) {
+            if delete {
+                st.delete(r.clone());
+            } else {
+                st.format_chars(r.clone(), |f| f.over.change = None);
+            }
+        }
+        if delete {
+            d.adjust_text_ranges(sid, r.clone(), 0);
         }
         if let Some(t) = &mut sel.text
             && t.story == sid
@@ -137,9 +162,7 @@ fn all(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
         let ids: Vec<StoryId> = d.stories.keys().copied().filter(|id| only.is_none_or(|o| o == *id)).collect();
         let mut n = 0;
         for id in ids {
-            if let Some(st) = d.story_mut(id) {
-                n += resolve(st, accept);
-            }
+            n += resolve(d, id, accept);
         }
         // The caret may now be past the end.
         if let Some(t) = &mut sel.text

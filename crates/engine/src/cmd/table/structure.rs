@@ -38,8 +38,11 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             c.text.chars[0].format = cf.clone();
         }
         let r = t.range();
+        let len0 = st.len();
         st.delete(r.clone());
         st.insert_table(r.start, table);
+        let ins_len = st.len().saturating_sub(len0.saturating_sub(r.len()));
+        d.adjust_text_ranges(t.story, r, ins_len);
         *sel = Selection::text(TextSel { story: t.story, anchor: 0, focus: 0, frame: t.frame, cell: Some(CellAddr { table: id, row: 0, col: 0 }) });
         Ok(json!({"story": t.story.0, "table": id}))
     })
@@ -67,8 +70,11 @@ pub(super) fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
         let cf = st.format_after(a).clone();
         let mut table = Table::from_strings(id, &data, width, &pf, &cf);
         table.options.direction = direction;
+        let len0 = st.len();
         st.delete(a..b);
         let anchor = st.insert_table(a, table);
+        let ins_len = st.len().saturating_sub(len0.saturating_sub(b - a));
+        d.adjust_text_ranges(t.story, a..b, ins_len);
         *sel = Selection::text(TextSel::caret(t.story, anchor));
         Ok(json!({"table": id, "rows": data.len()}))
     })
@@ -80,7 +86,9 @@ pub(super) fn convert_to_text(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(g.story).ok_or_else(|| bad("table.convertToText", "no story"))?;
         let text = st.tables.get(&g.table).map(|t| t.plain_text()).unwrap_or_default();
         let a = st.table_anchor(g.table).ok_or_else(|| bad("table.convertToText", "no anchor"))?;
-        st.replace(a..a + designcraft_doc::TABLE_ANCHOR.len_utf8(), &text);
+        let len0 = designcraft_doc::TABLE_ANCHOR.len_utf8();
+        st.replace(a..a + len0, &text);
+        d.adjust_text_ranges(g.story, a..a + len0, text.len());
         *sel = Selection::text(TextSel::caret(g.story, a + text.len()));
         ok()
     })
@@ -89,22 +97,26 @@ pub(super) fn convert_to_text(s: &mut Session, p: &Value) -> Result<Value> {
 pub(super) fn delete_table(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.delete")?;
     s.edit(|d, sel| {
-        let st = d.story_mut(g.story).ok_or_else(|| bad("table.delete", "no story"))?;
-        let a = st.table_anchor(g.table).ok_or_else(|| bad("table.delete", "no anchor"))?;
-        // Remove the anchor paragraph (with one separator) so no empty paragraph is left behind.
-        let end = a + designcraft_doc::TABLE_ANCHOR.len_utf8();
-        let r = if &st.text[end..] == "\n" && a > 0 && st.text[..a].ends_with('\n') {
-            // Inserted at the end of the story: remove the empty paragraph after it too.
-            a - 1..end + 1
-        } else if st.text[end..].starts_with('\n') {
-            a..end + 1
-        } else if a > 0 && st.text[..a].ends_with('\n') {
-            a - 1..end
-        } else {
-            a..end
+        let (r, len) = {
+            let st = d.story_mut(g.story).ok_or_else(|| bad("table.delete", "no story"))?;
+            let a = st.table_anchor(g.table).ok_or_else(|| bad("table.delete", "no anchor"))?;
+            // Remove the anchor paragraph (with one separator) so no empty paragraph is left behind.
+            let end = a + designcraft_doc::TABLE_ANCHOR.len_utf8();
+            let r = if &st.text[end..] == "\n" && a > 0 && st.text[..a].ends_with('\n') {
+                // Inserted at the end of the story: remove the empty paragraph after it too.
+                a - 1..end + 1
+            } else if st.text[end..].starts_with('\n') {
+                a..end + 1
+            } else if a > 0 && st.text[..a].ends_with('\n') {
+                a - 1..end
+            } else {
+                a..end
+            };
+            st.delete(r.clone());
+            (r, st.len())
         };
-        st.delete(r.clone());
-        *sel = Selection::text(TextSel::caret(g.story, r.start.min(st.len())));
+        d.adjust_text_ranges(g.story, r.clone(), 0);
+        *sel = Selection::text(TextSel::caret(g.story, r.start.min(len)));
         ok()
     })
 }
