@@ -108,6 +108,9 @@ pub struct DocState {
     /// Recovery entries this state actually opened or published, for repeated-open and cleanup.
     /// Bounded, deduplicated checkpoint addresses; never inferred from uid alone.
     pub(crate) recovery_entries: Vec<(std::path::PathBuf, u64)>,
+    /// The recovery checkpoint written last. The app's timer leaves the entry alone while the
+    /// document is still that very `Arc` (an edit replaces it) and both files are as written.
+    pub(crate) last_checkpoint: Option<recovery::Checkpoint>,
     /// Unfilled document while data-merge preview is showing a record. Not saved.
     pub preview_stash: Option<Arc<Document>>,
     /// 1-based record currently previewed.
@@ -165,6 +168,7 @@ impl DocState {
             uid: identity_epoch,
             identity_epoch,
             recovery_entries: Vec::new(),
+            last_checkpoint: None,
             preview_stash: None,
             preview_record: None,
             fonts: None,
