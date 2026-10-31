@@ -1030,6 +1030,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         let id = ItemId(d.alloc());
         let mut it = Item::new(id, lid, sh, path);
         if content == "graphic" {
+            it.graphic_frame = true;
             it.object_style = d.styles.default_graphic_frame.clone();
             if let Some(e) = d.styles.object_effects(&it.object_style) {
                 it.effects = e.clone();
