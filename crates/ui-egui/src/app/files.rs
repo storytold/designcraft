@@ -16,27 +16,84 @@ impl DesignApp {
             open(request);
             return Ok(Value::Null);
         }
-        let bound = if purpose == "place" { file_dialogs::Bound::Document } else { file_dialogs::Bound::App };
+        // File › Place takes several files: they load the place cursor in the order chosen.
+        if purpose == "place" {
+            return self.ask_open_many(purpose, file_dialogs::Bound::Document, |app, paths| match paths.as_slice() {
+                [path] => app.open_picked("place", path.clone()),
+                _ => {
+                    app.place_paths(paths);
+                    Ok(Value::Null)
+                }
+            });
+        }
         let purpose_owned = purpose.to_string();
-        self.ask_open(purpose, bound, move |app, path| app.open_picked(&purpose_owned, path))
+        self.ask_open(purpose, file_dialogs::Bound::App, move |app, path| app.open_picked(&purpose_owned, path))
     }
 
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
     pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
+        if purpose == "place" {
+            return self.place_path(&path, false);
+        }
+        self.open_file("file.open", json!({"path": path}))
+    }
+
+    /// File › Place of the file at `path`, asking a multi-page PDF's Image Import Options first.
+    /// With `append`, an image that loads the cursor queues after the ones already loaded rather
+    /// than replacing them.
+    fn place_path(&mut self, path: &str, append: bool) -> Result<Value, String> {
         // Image Import Options: a multi-page PDF asks which page.
-        if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
+        if path.to_ascii_lowercase().ends_with(".pdf") {
             let target = self.session.active().map(|d| d.uid);
-            let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
+            let pages = self.services.read.as_mut().and_then(|r| r(path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
             if pages > 1 {
                 self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
                 return Ok(Value::Null);
             }
-            return self.place_file(json!({"path": path}));
         }
-        if purpose == "place" {
-            return self.place_file(json!({"path": path}));
+        self.place_file(if append { json!({"path": path, "append": true}) } else { json!({"path": path}) })
+    }
+
+    /// Place an ordered batch of files, as File › Place with several chosen. The batch stops when
+    /// a file opens a dialog (a multi-page PDF's Import Options, an alert), as the inbox's does;
+    /// every file that loads the cursor adds to what the earlier ones loaded, in the order the
+    /// files were chosen (images in a row load together, before the file after them).
+    pub(crate) fn place_paths(&mut self, paths: Vec<String>) {
+        let mut images = Vec::new();
+        // Images already in the place cursor stay: the batch queues after them.
+        let mut loaded = self.session.loaded.is_some();
+        // `None` at the end loads the images left.
+        for path in paths.into_iter().map(Some).chain([None]) {
+            if let Some(p) = &path
+                && is_cursor_image(p)
+            {
+                images.push(json!({"path": p}));
+                continue;
+            }
+            if path.is_none() && images.is_empty() {
+                break;
+            }
+            if self.ui.dialog.is_some() {
+                self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
+                return;
+            }
+            if !images.is_empty()
+                && let Ok(r) = self.load_place_cursor(std::mem::take(&mut images), loaded)
+            {
+                loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            }
+            if let Some(p) = path
+                && let Ok(r) = self.place_path(&p, loaded)
+            {
+                loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            }
         }
-        self.open_file("file.open", json!({"path": path}))
+    }
+
+    /// `place.load` of `files` (`{path}` or `{name, base64}` each), queued after the images
+    /// already loaded when `append`. An image that can't be read gets an alert, as a placed one does.
+    fn load_place_cursor(&mut self, files: Vec<Value>, append: bool) -> Result<Value, String> {
+        self.open_named_file("place.load", json!({"files": files, "append": append}), String::new())
     }
 
     /// Load Styles: ask the host for a document whose styles to load; `kind` is `paragraph`,
@@ -106,9 +163,48 @@ impl DesignApp {
         }
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for file in files {
+        let cursor_image = |file: &ImportedFile| {
+            matches!(file.request.purpose.as_str(), "place" | "drop")
+                && !file.name.to_ascii_lowercase().ends_with(".pdf")
+                && (is_cursor_image(&file.name) || designcraft_render::image_size(&file.bytes).is_some())
+        };
+        // In the order they came: consecutive images for the same document load the place
+        // cursor together; after the first placement into it, the later ones are added to it.
+        let mut append = false;
+        let mut files = files.into_iter().peekable();
+        while let Some(file) = files.next() {
             if file.request.purpose == "shortcuts" {
                 shortcut_import::import_delivered(self, &file.bytes);
+                continue;
+            }
+            let placing = matches!(file.request.purpose.as_str(), "place" | "drop");
+            let mut group = vec![];
+            if cursor_image(&file) {
+                while let Some(next) =
+                    files.next_if(|n| cursor_image(n) && n.request.target == file.request.target && n.request.purpose == file.request.purpose)
+                {
+                    group.push(next);
+                }
+            }
+            // Several images, or one dropped (a browser drop has no position to place it at or
+            // frame to fill): into the place cursor.
+            if !group.is_empty() || (file.request.purpose == "drop" && cursor_image(&file)) {
+                if self.ui.dialog.is_some() {
+                    self.status(crate::i18n::tr(&self.ui.language, "Image import cancelled while a dialog is open"));
+                    continue;
+                }
+                if self.activate_import_target(&file.request).is_err() {
+                    continue;
+                }
+                let sources: Vec<_> = std::iter::once(file)
+                    .chain(group)
+                    .map(|f| json!({"name": f.name, "base64": designcraft_engine::cmd::base64_encode(&f.bytes)}))
+                    .collect();
+                // They queue after images already in the cursor, as a native batch's do.
+                let queue_after = append || self.session.loaded.is_some();
+                if self.load_place_cursor(sources, queue_after).is_ok() {
+                    append = true;
+                }
                 continue;
             }
             if self.ui.dialog.is_some() {
@@ -119,13 +215,16 @@ impl DesignApp {
                 continue;
             }
             let name = file.name.clone();
-            if let Err(e) = self.import_file(file) {
-                self.status(format!("{name}: {e}"));
+            match self.import_file(file, append) {
+                Ok(_) if placing => append = true,
+                Ok(_) => {}
+                Err(e) => self.status(format!("{name}: {e}")),
             }
         }
     }
 
-    fn import_file(&mut self, file: ImportedFile) -> Result<Value, String> {
+    /// Imports `file`; a placed one is added to the place cursor when `append`.
+    fn import_file(&mut self, file: ImportedFile, append: bool) -> Result<Value, String> {
         let lower = file.name.to_ascii_lowercase();
         if let Some(kind) = file.request.purpose.strip_prefix("styles") {
             self.activate_import_target(&file.request)?;
@@ -157,7 +256,7 @@ impl DesignApp {
         if lower.ends_with(".ase") || file.request.purpose == "swatches" {
             self.run("swatch.load", json!({"base64": b64}))
         } else if file.request.purpose == "place" {
-            self.place_file(json!({"name": file.name, "base64": b64}))
+            self.place_file(json!({"name": file.name, "base64": b64, "append": append}))
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
         } else {
@@ -167,9 +266,9 @@ impl DesignApp {
     }
 
     /// A file dropped on the window: documents open, the swatches in a swatch exchange (.ase) file
-    /// are loaded, and anything else is placed on the spread in view (a parent spread while parents
-    /// are being edited). A file without an extension opens when its content is a DesignCraft or
-    /// IDML document.
+    /// are loaded, an image loads into the place cursor, and anything else is placed on the spread
+    /// in view (a parent spread while parents are being edited). A file without an extension
+    /// opens when its content is a DesignCraft or IDML document.
     pub fn open_dropped(&mut self, path: &str) -> Result<Value, String> {
         self.open_dropped_at(path, None)
     }
@@ -178,16 +277,32 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
-        for f in files {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.open_dropped_at(&p, pointer);
+        let paths = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect();
+        self.open_dropped_batch(paths, pointer);
+    }
+
+    /// Files dropped on the window together, in the order they came. Each that isn't an image
+    /// opens or is placed as [`Self::open_dropped_at`] does; then one image is dropped as that
+    /// does too (filling the frame under the pointer, else loading the place cursor), and several
+    /// load the place cursor together, after any images it already holds, whatever is under the
+    /// pointer: click to place them one by one, drag with the arrow keys for a grid.
+    pub fn open_dropped_batch(&mut self, paths: Vec<String>, pointer: Option<egui::Pos2>) {
+        let (images, others): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| is_cursor_image(p));
+        for path in others {
+            let _ = self.open_dropped_at(&path, pointer);
+        }
+        match images.as_slice() {
+            [] => {}
+            [path] => {
+                let _ = self.open_dropped_at(path, pointer);
             }
+            _ => self.place_paths(images),
         }
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it; elsewhere an image loads into the place cursor, and another graphic's top left lands
+    /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
@@ -198,6 +313,17 @@ impl DesignApp {
                     .is_ok_and(|b| designcraft_engine::cmd::is_document(&b)));
         if document {
             return self.open_file("file.open", json!({"path": path}));
+        }
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if designcraft_textimport::is_text_file(path) { None } else { canvas::drop_frame(self, pointer) };
+        if let Some(frame) = frame {
+            return self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+        }
+        // An image dropped anywhere else waits in the place cursor, after any it already holds.
+        if is_cursor_image(path) {
+            let append = self.session.loaded.is_some();
+            return self.open_file("place.load", json!({"path": path, "append": append}));
         }
         let mut params = json!({"path": path});
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
@@ -252,7 +378,7 @@ impl DesignApp {
     pub fn open_named_file(&mut self, cmd: &str, params: Value, file: String) -> Result<Value, String> {
         let r = self.run(cmd, params);
         if let Err(e) = &r {
-            let title = if cmd == "file.place" { "Can't Place the File" } else { "Can't Open the File" };
+            let title = if cmd == "file.place" || cmd == "place.load" { "Can't Place the File" } else { "Can't Open the File" };
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 self.session.reset_find_scope();
             }
@@ -285,6 +411,14 @@ impl DesignApp {
             ctx.send_viewport_cmd(command);
         }
     }
+}
+
+/// Graphics that can wait in the place cursor, several at a time: raster images, SVG, PSD and
+/// EPS. A PDF can't (it may ask which page), nor can text, media or documents.
+pub(crate) fn is_cursor_image(name: &str) -> bool {
+    std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "svg" | "psd" | "eps")
+    })
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
@@ -698,6 +832,196 @@ pub(crate) mod browser_import_tests {
         app.run("file.new", json!({})).unwrap();
         assert!(dialogs::confirm(&mut app).is_err());
         assert!(app.pending_pdf.is_none());
+        assert!(app.session.doc().unwrap().doc.assets.is_empty());
+    }
+
+    fn png(v: u8) -> Vec<u8> {
+        designcraft_render::Rendered { width: 10, height: 10, pixels: vec![v; 400] }.to_png()
+    }
+
+    /// The names of the images in the place cursor, the one a click places first.
+    fn loaded_names(app: &DesignApp) -> Vec<String> {
+        let doc = &app.session.doc().unwrap().doc;
+        app.session.loaded.iter().chain(app.session.loaded_queue.iter()).map(|g| doc.assets[&g.asset].name.clone()).collect()
+    }
+
+    #[test]
+    fn multi_image_inbox_loads_one_queue_on_its_original_document() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        for i in 0..3 {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                request: request.clone(),
+                name: format!("{i}.png"),
+                bytes: png(200),
+            });
+        }
+        app.drain_inbox();
+        assert_eq!(app.session.doc().unwrap().uid, request.target.unwrap());
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert_eq!(app.session.loaded_queue.len(), 2);
+        assert!(app.session.documents()[1].doc.assets.is_empty());
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let result = dialogs::confirm(&mut app).unwrap();
+        assert_eq!(result["images"], 3);
+        assert_eq!(result["pages"], 1);
+    }
+
+    /// Files dropped together are placed in the order they came: images around a PDF go into the
+    /// place cursor before and after it, and each adds to the cursor rather than replacing it.
+    #[test]
+    fn inbox_places_images_and_a_pdf_in_their_order_into_one_cursor() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("one.pdf", pdf_pages(1)), ("b.png", png(90))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A browser drop of one image (it has no position or frame under it) loads the place
+    /// cursor; images dropped together load it at once, after what it holds.
+    #[test]
+    fn browser_dropped_images_load_the_place_cursor() {
+        let mut app = app();
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "one.png", png(200));
+        assert_eq!(app.session.tool_id(), "placeGun");
+        assert!(app.session.doc().unwrap().doc.spreads[0].items.is_empty(), "nothing placed yet");
+        let request = app.import_request("drop");
+        for (name, v) in [("two.png", 90), ("three.png", 60)] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(v) });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["one.png", "two.png", "three.png"]);
+    }
+
+    #[test]
+    fn batch_cancel_status_uses_the_interface_language() {
+        let mut app = app();
+        app.ui.language = "de".into();
+        app.ui.dialog = Some(dialogs::Dialog::new("contactSheet", json!({})));
+        let request = app.import_request("place");
+        for name in ["one.png", "two.png"] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes: png(200) });
+        }
+        app.drain_inbox();
+        assert_eq!(app.ui.status, "Bildimport bei geöffnetem Dialog abgebrochen");
+        assert!(app.ui.dialog.is_some());
+        assert!(app.session.loaded.is_none());
+    }
+
+    #[test]
+    fn native_batch_stops_when_a_dialog_is_open_and_appends_to_the_cursor() {
+        let mut app = app();
+        app.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": "t", "message": "m"})));
+        app.place_paths(vec!["one.pdf".into(), "two.png".into()]);
+        assert_eq!(app.ui.status, "Place cancelled while a dialog is open");
+        assert!(app.session.loaded.is_none());
+        app.ui.dialog = None;
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("place.load", json!({"base64": b64, "name": "a.svg"})).unwrap();
+        let first = app.session.loaded.as_ref().unwrap().asset;
+        let files = json!([{"base64": b64, "name": "b.svg"}, {"base64": b64, "name": "c.svg"}]);
+        app.run("place.load", json!({"files": files, "append": true})).unwrap();
+        assert_eq!(app.session.loaded.as_ref().unwrap().asset, first);
+        assert_eq!(app.session.loaded_queue.len(), 2);
+        app.run("place.load", json!({"files": files})).unwrap();
+        assert_eq!(app.session.loaded_queue.len(), 1);
+    }
+
+    /// Images around a single-page PDF load into the cursor in the order they were chosen.
+    #[test]
+    fn native_batch_keeps_the_chosen_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]);
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg"]);
+        // A second batch queues after what the cursor still holds.
+        std::fs::write(path("c.svg"), image()).unwrap();
+        app.place_paths(vec![path("c.svg"), path("a.svg")]);
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg", "c.svg", "a.svg"]);
+    }
+
+    /// File › Place with several files chosen in the dialog loads them all into the place
+    /// cursor, in the order chosen; with one, it is placed as before.
+    #[test]
+    fn place_dialog_with_several_files_loads_them_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<std::path::PathBuf> = ["b.svg", "a.svg", "c.svg"].iter().map(|n| dir.path().join(n)).collect();
+        for p in &paths {
+            std::fs::write(p, image()).unwrap();
+        }
+        let mut app = app();
+        let answer = paths.clone();
+        app.answer_dialogs(move |_| craft_dialogs::Answer::Paths(answer.clone()));
+        app.run("app.placeDialog", json!({})).unwrap();
+        app.settle_dialogs();
+        assert_eq!(loaded_names(&app), ["b.svg", "a.svg", "c.svg"]);
+        assert_eq!(app.session.tool_id(), "placeGun");
+        // The same through the command's `paths`, as the control channel gives them.
+        let mut scripted = self::app();
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        scripted.run("app.placeDialog", json!({"paths": paths})).unwrap();
+        assert_eq!(loaded_names(&scripted), ["b.svg", "a.svg", "c.svg"]);
+    }
+
+    #[test]
+    fn contact_sheet_measures_use_the_document_unit() {
+        let mut app = app();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters"})).unwrap();
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.unit, designcraft_geom::Unit::Millimeters);
+        assert_eq!(d.s("gutter"), "6pt");
+    }
+
+    #[test]
+    fn contact_sheet_validation_preserves_fields_and_pending_images() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "image.png", png(200));
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        for (field, value) in [("rows", "bad"), ("rows", "0"), ("rows", "4"), ("margin", "999999pt")] {
+            app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
+            if field == "rows" && value == "4" {
+                continue;
+            }
+            assert!(dialogs::confirm(&mut app).is_err());
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.s(field), value);
+            assert!(!dialog.s("status").is_empty());
+            assert!(std::sync::Arc::ptr_eq(&before, &app.session.doc().unwrap().doc));
+            assert!(app.session.loaded.is_some());
+        }
+        app.ui.dialog.as_mut().unwrap().fields.insert("margin".into(), json!("36pt"));
+        assert!(dialogs::confirm(&mut app).is_ok());
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn multi_image_inbox_cancels_when_original_document_closed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        app.run("file.new", json!({"title": "B"})).unwrap();
+        app.run("file.close", json!({"index": 0})).unwrap();
+        for i in 0..2 {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                request: request.clone(),
+                name: format!("{i}.png"),
+                bytes: png(200),
+            });
+        }
+        app.drain_inbox();
+        assert!(app.session.loaded.is_none());
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
     }
 }

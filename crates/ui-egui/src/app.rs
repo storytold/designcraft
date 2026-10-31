@@ -210,12 +210,10 @@ impl DesignApp {
                 // Sample the generation once for the whole batch: placing the first valid file
                 // must not suppress later files that belong to the same captured batch.
                 let current = self.input_generation();
-                for drop in std::mem::take(&mut self.pending_drops) {
-                    if drop.generation != current {
-                        continue;
-                    }
-                    let _ = self.open_dropped_at(&drop.path, drop.pointer);
-                }
+                let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
+                // Dropped together, they go together: several images load the place cursor at once.
+                let pointer = drops.first().and_then(|d| d.pointer);
+                self.open_dropped_batch(drops.into_iter().map(|d| d.path).collect(), pointer);
             }
             menus::shortcuts(self, &ctx);
         }

@@ -135,10 +135,19 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
-        "app.placeDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.open_picked("place", path.to_string()),
-            None => app.pick_and_open("place"),
+        "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {
+            (Some(path), _) => app.open_picked("place", path.to_string()),
+            // Several files, as chosen together in the dialog: in their order.
+            (None, Some(paths)) => {
+                app.place_paths(paths.iter().filter_map(Value::as_str).map(str::to_string).collect());
+                Ok(Value::Null)
+            }
+            (None, None) => app.pick_and_open("place"),
         },
+        "app.contactSheetDialog" => {
+            crate::dialogs::open_contact_sheet(app);
+            Ok(Value::Null)
+        }
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };

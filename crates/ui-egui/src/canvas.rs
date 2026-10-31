@@ -20,6 +20,7 @@ mod guides;
 mod ime;
 mod input;
 mod page_decor;
+mod place_cursor;
 mod render;
 mod rulers;
 mod scroll;
@@ -36,6 +37,7 @@ use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guid
 use guides::{guide_at, guide_drag_delta, guide_measure};
 use ime::ime_canvas_pass;
 pub(crate) use ime::{CanvasIme, ime_observe};
+pub use input::drop_frame;
 pub(crate) use input::forwarded_keys;
 pub use input::{begin_frame, context_menu_open};
 use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};
@@ -413,6 +415,7 @@ fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &
         vec![pos2(inner.min.x, inner.max.y), pos2(inner.min.x + 3.5, inner.min.y + 2.5), pos2(inner.max.x, inner.max.y)],
         ink,
     ));
+    place_cursor::draw_loaded_count(app, painter, badge);
 }
 
 /// The loaded graphic's thumbnail texture, cached per image data.

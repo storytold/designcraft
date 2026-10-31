@@ -357,18 +357,29 @@ impl eframe::App for WebShell {
         let _ = self.graphics.run_if_healthy(|| {
             // Dropped files belong to this host iteration's raw input, not to stale logic input:
             // read them here once, before the batch is saved as pending for a hidden pass.
-            for f in std::mem::take(&mut raw.dropped_files) {
+            // Files dropped together arrive together, in their order, so several images load the
+            // place cursor as one batch.
+            let dropped = std::mem::take(&mut raw.dropped_files);
+            if !dropped.is_empty() {
                 let request = self.app.import_request("drop");
                 let inbox = self.inbox.clone();
                 let ctx = ctx.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
-                    match f.bytes_async().await {
-                        Ok(bytes) => {
-                            inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name, bytes });
+                    let files = crate::browser_policy::read_batch(dropped, |f| {
+                        let request = request.clone();
+                        async move {
+                            let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
+                            let bytes = f.bytes_async().await.map_err(|e| format!("couldn't read dropped file {name}: {e}"))?;
+                            Ok::<_, String>(ImportedFile { request, name, bytes })
+                        }
+                    })
+                    .await;
+                    match files {
+                        Ok(files) => {
+                            inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                             ctx.request_repaint();
                         }
-                        Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
+                        Err(error) => log::error!("{error}"),
                     }
                 });
             }
@@ -402,11 +413,18 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
                 rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
-                let Some(file) = dialog.pick_file().await else {
-                    return;
+                // Place takes several files, loaded into the place cursor in the order chosen.
+                let handles = if request.purpose == "place" {
+                    dialog.pick_files().await.unwrap_or_default()
+                } else {
+                    dialog.pick_file().await.into_iter().collect()
                 };
-                let bytes = file.read().await;
-                inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name: file.file_name(), bytes });
+                let mut files = Vec::with_capacity(handles.len());
+                for file in handles {
+                    let bytes = file.read().await;
+                    files.push(ImportedFile { request: request.clone(), name: file.file_name(), bytes });
+                }
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                 ctx.request_repaint();
             });
         })),
