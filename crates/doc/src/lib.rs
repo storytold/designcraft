@@ -59,7 +59,7 @@ pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
-pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions};
+pub use notes::{FOOTNOTE_REF, FOOTNOTE_TABLE, Footnote, FootnoteOptions, MAX_NOTE_DEPTH};
 pub use page::*;
 pub use selection::*;
 pub use story::*;
