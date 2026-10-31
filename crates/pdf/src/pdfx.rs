@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use hayro_syntax::content::UntypedIter;
 use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
 use hayro_syntax::page::Resources;
+use hayro_syntax::reader::ReaderExt;
 
 use craft_pdf::write::WriteError;
 use craft_pdf::write::backend as krilla;
@@ -115,16 +116,18 @@ pub fn has_rgb_groups(pdf: &[u8]) -> bool {
 pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     let mut issues = Vec::new();
     let text = String::from_utf8_lossy(pdf);
+    let file = hayro_syntax::Pdf::new(pdf.to_vec()).ok();
     if !pdf.starts_with(b"%PDF-1.") || pdf.get(7).is_none_or(|v| *v > b'6') {
         issues.push("the PDF version must be 1.6 or lower".into());
     }
-    if !text.contains("/S/GTS_PDFX") {
+    let intents = file.as_ref().map(pdfx_intents).unwrap_or_default();
+    if intents.is_empty() {
         issues.push("no PDF/X output intent".into());
     }
-    if !text.contains("/DestOutputProfile") {
+    if !intents.iter().any(|oi| oi.contains_key(b"DestOutputProfile")) {
         issues.push("the output intent has no destination profile".into());
     }
-    if !text.contains("/GTS_PDFXVersion(PDF/X-4)") {
+    if file.as_ref().and_then(|f| info_text(pdf, f, b"GTS_PDFXVersion")).as_deref() != Some("PDF/X-4") {
         issues.push("the document information doesn't name PDF/X-4".into());
     }
     if !text.contains("pdfxid:GTS_PDFXVersion>PDF/X-4<") {
@@ -150,9 +153,54 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     if text.contains("/Subtype/Type3") {
         issues.push("Type 3 fonts aren't allowed".into());
     }
-    issues.extend(device_rgb(pdf));
+    issues.extend(device_rgb(file.as_ref()));
     issues.extend(fonts::unembedded_fonts(pdf));
     issues
+}
+
+/// The document information's `GTS_PDFXVersion` (`PDF/X-4`, `PDF/X-1:2003`, …), read as an
+/// object; `None` when the file can't be read or doesn't name one.
+pub fn pdfx_version(pdf: &[u8]) -> Option<String> {
+    info_text(pdf, &hayro_syntax::Pdf::new(pdf.to_vec()).ok()?, b"GTS_PDFXVersion")
+}
+
+/// The catalog's `GTS_PDFX` output intents, read as objects (whitespace and object streams
+/// don't matter).
+pub(crate) fn pdfx_intents<'a>(file: &'a hayro_syntax::Pdf) -> Vec<Dict<'a>> {
+    let xref = file.xref();
+    let Some(catalog) = xref.get::<Dict<'_>>(xref.root_id()) else { return Vec::new() };
+    let Some(intents) = catalog.get::<Array<'_>>(b"OutputIntents") else { return Vec::new() };
+    intents.iter::<Dict<'_>>().filter(|oi| oi.get::<Name<'_>>(b"S").is_some_and(|s| s.as_ref() == b"GTS_PDFX")).collect()
+}
+
+/// The text entry `key` of the document information dictionary, trimmed: the `/Info` of the
+/// newest trailer that has one (classic or cross-reference stream, following `/Prev` a bounded
+/// number of times), else of the last `trailer` keyword in the file.
+pub(crate) fn info_text(pdf: &[u8], file: &hayro_syntax::Pdf, key: &[u8]) -> Option<String> {
+    let lookup = |trailer: &Dict<'_>| -> Option<String> {
+        let info = match trailer.get_ref(b"Info") {
+            Some(r) => file.xref().get::<Dict<'_>>(r.into())?,
+            None => trailer.get::<Dict<'_>>(b"Info")?,
+        };
+        let value = info.get::<hayro_syntax::object::String<'_>>(key)?;
+        Some(String::from_utf8_lossy(value.as_bytes()).trim().to_string())
+    };
+    let tail = pdf.get(rfind(pdf, b"startxref")?..).unwrap_or_default();
+    let mut offset = int_after(&String::from_utf8_lossy(tail), "startxref");
+    let mut seen = HashSet::new();
+    for _ in 0..32 {
+        let Some(at) = offset.filter(|at| seen.insert(*at)) else { break };
+        let Some(trailer) = crate::optional_content::trailer_at(pdf, at) else { break };
+        if trailer.contains_key(b"Info") {
+            return lookup(&trailer);
+        }
+        offset = trailer.get::<usize>(b"Prev");
+    }
+    // A damaged cross-reference offset: the dictionary after the last `trailer` keyword.
+    let at = rfind(pdf, b"trailer")? + b"trailer".len();
+    let mut reader = hayro_syntax::reader::Reader::new(pdf.get(at..)?);
+    reader.skip_white_spaces_and_comments();
+    lookup(&reader.read_without_context::<Dict<'_>>()?)
 }
 
 /// Device-dependent RGB under a CMYK output intent. PDF/X-4 (ISO 15930-7) lets RGB in only when
@@ -161,11 +209,11 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
 /// This walks every page's content, the images, forms, patterns, shadings and soft masks it uses,
 /// and the transparency groups, and reports each kind of device RGB it finds with the pages it is
 /// on. Nothing is reported when the file has no CMYK PDF/X output intent.
-fn device_rgb(pdf: &[u8]) -> Vec<String> {
-    let Ok(file) = hayro_syntax::Pdf::new(pdf.to_vec()) else {
+fn device_rgb(file: Option<&hayro_syntax::Pdf>) -> Vec<String> {
+    let Some(file) = file else {
         return vec!["the file couldn't be read to check its colour spaces".into()];
     };
-    if !cmyk_output_intent(&file) {
+    if !cmyk_output_intent(file) {
         return Vec::new();
     }
     let mut found: Vec<(String, Vec<usize>)> = Vec::new();
@@ -198,13 +246,7 @@ fn device_rgb(pdf: &[u8]) -> Vec<String> {
 
 /// Whether the file's PDF/X output intent has a four-channel (CMYK) destination profile.
 pub(crate) fn cmyk_output_intent(file: &hayro_syntax::Pdf) -> bool {
-    let xref = file.xref();
-    let Some(catalog) = xref.get::<Dict<'_>>(xref.root_id()) else { return false };
-    let Some(intents) = catalog.get::<Array<'_>>(b"OutputIntents") else { return false };
-    intents.iter::<Dict<'_>>().any(|oi| {
-        oi.get::<Name<'_>>(b"S").is_some_and(|s| s.as_ref() == b"GTS_PDFX")
-            && oi.get::<Stream<'_>>(b"DestOutputProfile").and_then(|p| p.dict().get::<i32>(b"N")) == Some(4)
-    })
+    pdfx_intents(file).iter().any(|oi| oi.get::<Stream<'_>>(b"DestOutputProfile").and_then(|p| p.dict().get::<i32>(b"N")) == Some(4))
 }
 
 /// Whether a colour space is device RGB: `/DeviceRGB` (`/RGB` in inline images), or an
