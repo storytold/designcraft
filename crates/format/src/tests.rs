@@ -762,6 +762,32 @@ fn too_many_entries_are_refused() {
     assert!(err.to_string().contains("entries"), "{err}");
 }
 
+#[test]
+fn toc_scope_legacy_defaults_native_roundtrip_and_required_version() {
+    use designcraft_doc::{Toc, TocEntry, TocScope};
+    let mut d = Document::new(&NewDocument::default());
+    let (_, story) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), d.default_layer(), "Contents", ParaFormat::default()).unwrap();
+    let legacy = json!({"story": story.0, "title": "Contents", "entries": [{"style": "Head", "level": 1}], "pageNumbers": true});
+    let toc: Toc = serde_json::from_value(legacy).unwrap();
+    assert_eq!(toc.scope, TocScope::CurrentDocument);
+    d.toc = Some(toc);
+    for (scope, version) in [(TocScope::CurrentDocument, 2), (TocScope::EntireBook, 5)] {
+        d.toc.as_mut().unwrap().scope = scope;
+        assert_eq!(required_version(&d), version);
+        let bytes = save(&d).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let mut meta = String::new();
+        zip.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], version);
+        let back = load(&bytes).unwrap();
+        assert_eq!(back.toc, d.toc);
+        assert_eq!(back.toc.as_ref().unwrap().entries, [TocEntry::new("Head", 1)]);
+    }
+    d.toc.as_mut().unwrap().scope = TocScope::CurrentDocument;
+    assert_eq!(required_version(&d), 2, "a local TOC does not require a new reader");
+}
+
 /// Every item id in `d` (spreads, parents, anchored), in walk order.
 fn all_item_ids(d: &Document) -> Vec<u64> {
     let mut ids = Vec::new();
@@ -862,4 +888,37 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     d.renumber_duplicate_items();
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
+}
+
+#[test]
+fn entire_book_toc_survives_duplicate_frame_ids_on_load() {
+    use designcraft_doc::{Toc, TocEntry, TocScope};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (first, source) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "Heading", ParaFormat::default()).unwrap();
+    let (_, toc_story) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "Contents", ParaFormat::default()).unwrap();
+    d.toc = Some(Toc {
+        story: toc_story,
+        scope: TocScope::EntireBook,
+        create_bookmarks: false,
+        entries: vec![TocEntry::new("Head", 1)],
+        title: "Contents".into(),
+        page_numbers: true,
+        title_style: None,
+    });
+    set_item_id(&mut d, 1, first);
+    d.story_mut(toc_story).unwrap().frames[0] = first;
+    for bytes in [save(&d).unwrap(), serde_json::to_vec(&d).unwrap()] {
+        let back = load(&bytes).unwrap();
+        back.check().unwrap();
+        assert_eq!(back.toc, d.toc);
+        assert_eq!(required_version(&back), 5);
+        assert_eq!(back.stories[&source].frames, vec![first]);
+        let repaired = back.stories[&toc_story].frames[0];
+        assert_ne!(repaired, first);
+        assert_eq!(back.item(repaired).and_then(|i| i.text_frame()).map(|f| f.story), Some(toc_story));
+        let roundtrip = load(&save(&back).unwrap()).unwrap();
+        assert_eq!(roundtrip.toc, back.toc);
+        assert_eq!(roundtrip.stories[&toc_story].frames, vec![repaired]);
+    }
 }

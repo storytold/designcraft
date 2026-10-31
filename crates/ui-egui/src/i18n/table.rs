@@ -27,6 +27,63 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     (
+        "Book Table of Contents refreshed.",
+        [
+            "Buch-Inhaltsverzeichnis aktualisiert.",
+            "Table des matières du livre actualisée.",
+            "Índice del libro actualizado.",
+            "ブックの目次を更新しました。",
+            "书籍目录已刷新。",
+        ],
+    ),
+    (
+        "Refresh Table of Contents",
+        ["Inhaltsverzeichnis aktualisieren", "Actualiser la table des matières", "Actualizar índice", "目次を更新", "刷新目录"],
+    ),
+    (
+        "Click to open; drag to reorder",
+        [
+            "Zum Öffnen klicken; zum Umsortieren ziehen",
+            "Cliquez pour ouvrir ; faites glisser pour réorganiser",
+            "Haga clic para abrir; arrastre para reordenar",
+            "クリックして開く、ドラッグして並べ替え",
+            "单击打开；拖动调整顺序",
+        ],
+    ),
+    (
+        "Book numbering or TOC needs updating: save the TOC, Update Numbering or Refresh Table of Contents.",
+        [
+            "Buchnummerierung oder Inhaltsverzeichnis muss aktualisiert werden: Inhaltsverzeichnis speichern, Nummerierung oder Inhaltsverzeichnis aktualisieren.",
+            "La numérotation du livre ou la table des matières doit être actualisée : enregistrez la table des matières, actualisez la numérotation ou la table des matières.",
+            "La numeración del libro o el índice necesita actualizarse: guarde el índice, actualice la numeración o actualice el índice.",
+            "ブックのページ番号または目次の更新が必要です。目次を保存するか、ページ番号または目次を更新してください。",
+            "书籍编号或目录需要更新：请保存目录、更新编号或刷新目录。",
+        ],
+    ),
+    ("Scope:", ["Umfang:", "Portée :", "Ámbito:", "対象範囲：", "范围："]),
+    ("Current Document", ["Aktuelles Dokument", "Document actif", "Documento actual", "現在のドキュメント", "当前文档"]),
+    ("Entire Book", ["Gesamtes Buch", "Livre entier", "Libro completo", "ブック全体", "整本书"]),
+    (
+        "Entire Book updates numbering and TOC layout automatically. Close other Book documents before updating.",
+        [
+            "Das gesamte Buch aktualisiert Nummerierung und Inhaltsverzeichnis automatisch. Schließen Sie vorher die anderen Buchdokumente.",
+            "Le livre entier actualise automatiquement la numérotation et la table des matières. Fermez les autres documents du livre avant l’actualisation.",
+            "El libro completo actualiza automáticamente la numeración y el índice. Cierre los demás documentos del libro antes de actualizar.",
+            "ブック全体のページ番号と目次レイアウトを自動更新します。更新前に他のブックドキュメントを閉じてください。",
+            "整本书会自动更新编号和目录布局。更新前请关闭书籍中的其他文档。",
+        ],
+    ),
+    (
+        "Entire Book preserves Book document order.",
+        [
+            "Das gesamte Buch behält die Dokumentreihenfolge bei.",
+            "Le livre entier conserve l’ordre des documents du livre.",
+            "El libro completo conserva el orden de los documentos.",
+            "ブック全体ではブック内のドキュメント順を保持します。",
+            "整本书保留书内文档的顺序。",
+        ],
+    ),
+    (
         "Character Formatting Controls",
         [
             "Steuerelemente für Zeichenformatierung",

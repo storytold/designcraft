@@ -301,7 +301,7 @@ impl<'a> Ex<'a> {
             .attr("TitleStyle", para(toc.title_style.as_deref().unwrap_or("TOC Title")))
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
-            .attr("IncludeBookDocuments", "false")
+            .attr("IncludeBookDocuments", if toc.scope == designcraft_doc::TocScope::EntireBook { "true" } else { "false" })
             .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));

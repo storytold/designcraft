@@ -427,6 +427,8 @@ pub struct Session {
     pub library: Option<cmd::library::Library>,
     /// The open book (File › Open Book).
     pub book: Option<cmd::book::Book>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_book_toc: Option<cmd::book::PendingToc>,
     /// Content Collector conveyor: collected objects as snippets (name, bytes).
     pub conveyor: Vec<(String, Vec<u8>)>,
     /// New Document's Preview: the preview document's uid and the uid of the document that was
@@ -476,6 +478,8 @@ impl Session {
             library: None,
             conveyor: Vec::new(),
             book: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_book_toc: None,
             untitled: 0,
             new_document_preview: None,
         }
@@ -615,6 +619,8 @@ impl Session {
         // Preview restoration can replace the document before a Find handler resolves bounds.
         self.discard_stale_find_scope();
         let before = self.active().map(|d| (d.uid, d.doc.clone(), d.selection.clone()));
+        let before_revision = self.active().map(|d| d.revision);
+        let stabilized_toc = cmd::toc::stabilizes(self, id, params);
         // What an undoable command runs is part of its undo step.
         let nested = self.in_undo_step;
         self.in_undo_step = nested || spec.undoable;
@@ -637,21 +643,22 @@ impl Session {
             st.active_layer = st.doc.default_layer();
         }
         self.record_transform(id, params);
-        if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
+        if !stabilized_toc {
+            self.layout_after_edit(spec, before.as_ref());
         }
-        // Live captions follow their sources.
-        if spec.undoable
-            && let Some(st) = self.active_mut()
-            && st.interaction.is_none()
-            && st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some()))
+        if !stabilized_toc
+            && matches!(id, "toc.generate" | "toc.update")
+            && let (Some((_, old, selection)), Some(st)) = (before.as_ref(), self.active_mut())
+            && let Err(e) = cmd::toc::validate_book_layout(old, &st.doc)
         {
-            let mut d = (*st.doc).clone();
-            if cmd::captions::refresh_live(&mut d) {
-                st.doc = Arc::new(d);
+            st.doc = old.clone();
+            st.selection = selection.clone();
+            if let Some(revision) = before_revision {
+                st.revision = revision;
             }
+            self.cache.clear();
+            return Err(e);
         }
-        self.autosize_changed(spec, before.as_ref());
         self.keep_guide_selection_valid(before.as_ref(), id);
         self.record_undo_step(spec, before, nested);
         if spec.journal {
@@ -675,6 +682,25 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// The same post-edit layout sequence for ordinary edits and isolated Book TOC candidates.
+    fn layout_after_edit(&mut self, spec: &CommandSpec, before: Option<&(u64, Arc<Document>, Selection)>) {
+        if self.prefs.smart_text_reflow && spec.undoable {
+            self.smart_reflow();
+        }
+        // Live captions follow their sources.
+        if spec.undoable
+            && let Some(st) = self.active_mut()
+            && st.interaction.is_none()
+            && st.doc.spreads.iter().any(|sp| sp.items.iter().any(|i| i.live_caption.is_some()))
+        {
+            let mut d = (*st.doc).clone();
+            if cmd::captions::refresh_live(&mut d) {
+                st.doc = Arc::new(d);
+            }
+        }
+        self.autosize_changed(spec, before);
     }
 
     /// Auto-size frames fit the text the command changed, in the same undo step.
