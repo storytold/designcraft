@@ -69,6 +69,8 @@ impl<'r> Importer<'r> {
         it.hidden = e.get("Visible") == Some("false");
         it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
         it.nonprinting = e.get("Nonprinting") == Some("true");
+        // A frame for a graphic, even while empty; `Unassigned` is a plain shape.
+        it.graphic_frame = e.get("ContentType") == Some("GraphicType");
         it.object_style = e
             .get("AppliedObjectStyle")
             .map(|r| {

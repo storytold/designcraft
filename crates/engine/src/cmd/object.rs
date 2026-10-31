@@ -1030,6 +1030,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         let id = ItemId(d.alloc());
         let mut it = Item::new(id, lid, sh, path);
         if content == "graphic" {
+            it.graphic_frame = true;
             it.object_style = d.styles.default_graphic_frame.clone();
             if let Some(e) = d.styles.object_effects(&it.object_style) {
                 it.effects = e.clone();
@@ -2959,6 +2960,11 @@ fn fitting_mode(s: &str) -> Option<designcraft_doc::Fitting> {
         "centerContent" => F::CenterContent,
         _ => return None,
     })
+}
+
+/// Whether `object.fit` takes `mode`: Fit Frame to Content, or a fitting other than none.
+pub(crate) fn fit_mode_known(mode: &str) -> bool {
+    mode == "fitFrameToContent" || fitting_mode(mode).is_some_and(|m| m != designcraft_doc::Fitting::None)
 }
 
 /// Frame Fitting Options: auto-fit, fitting, align from, crop amounts.
