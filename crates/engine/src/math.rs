@@ -916,6 +916,10 @@ pub fn to_svg(latex: &str, size: f64) -> (Vec<u8>, (f64, f64)) {
                     let face = f.face(c, *italic);
                     let fam = if std::ptr::eq(face, &*f.fallback) { FALLBACK } else { FAMILY };
                     let it = *italic && !std::ptr::eq(face, &*f.fallback);
+                    // XML 1.0 forbids most control characters and U+FFFE/U+FFFF.
+                    if !matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}') {
+                        continue;
+                    }
                     let _ = write!(
                         svg,
                         "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"'{fam}'\" font-size=\"{size:.3}\"{}>{}</text>",
