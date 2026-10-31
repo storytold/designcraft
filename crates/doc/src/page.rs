@@ -433,6 +433,21 @@ impl Spread {
             None => self.bounds().center().x,
         }
     }
+    /// The edges where two pages of the spread meet, left to right: the x of each shared edge and
+    /// the vertical span of the two pages together. Pages are taken in position order, so
+    /// right-to-left binding and any page count work; pages that don't touch (an imported spread
+    /// can keep gaps between them) share no edge.
+    pub fn page_seams(&self) -> Vec<(f64, f64, f64)> {
+        /// Facing edges this close (in points) meet: page positions are sums of widths.
+        const TOUCH: f64 = 1e-6;
+        let mut pages: Vec<Rect> = self.pages.iter().map(Page::bounds).collect();
+        pages.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+        pages
+            .windows(2)
+            .filter(|w| (w[1].x0 - w[0].x1).abs() <= TOUCH * w[0].x1.abs().max(1.0))
+            .map(|w| (w[1].x0, w[0].y0.min(w[1].y0), w[0].y1.max(w[1].y1)))
+            .collect()
+    }
     /// Indices of the leftmost and rightmost pages. A right-to-left bound spread lists its right
     /// page first, so list order says nothing about position.
     pub fn outer_page_indices(&self) -> Option<(usize, usize)> {
@@ -682,6 +697,28 @@ mod tests {
         assert_eq!(s.page_at_x(700.0), Some(1));
         assert_eq!(s.page_at_x(-50.0), Some(0));
         assert_eq!(s.page_at_x(5000.0), Some(1));
+    }
+
+    /// Seams are where two pages' facing edges meet, in position order: one per shared edge for
+    /// any page count or binding, none across a gap, spanning both pages' heights.
+    #[test]
+    fn page_seams_are_shared_edges_only() {
+        let spread = |pages| Spread { id: SpreadId(1), pages, items: vec![], parent: None, allow_shuffle: true };
+        let full = (0.0, 792.0);
+        // A facing pair, listed in either order (right-to-left binding lists the right page first).
+        for pages in [vec![page(PageSide::Left, 0.0), page(PageSide::Right, 612.0)], vec![page(PageSide::Right, 612.0), page(PageSide::Left, 0.0)]] {
+            assert_eq!(spread(pages).page_seams(), vec![(612.0, full.0, full.1)]);
+        }
+        // Three pages: two seams; a single page: none.
+        let three = spread(vec![page(PageSide::Left, 0.0), page(PageSide::Right, 612.0), page(PageSide::Right, 1224.0)]);
+        assert_eq!(three.page_seams(), vec![(612.0, 0.0, 792.0), (1224.0, 0.0, 792.0)]);
+        assert!(spread(vec![page(PageSide::Single, 0.0)]).page_seams().is_empty());
+        // A gap between the pages, as an import can keep: no shared edge.
+        assert!(spread(vec![page(PageSide::Left, 0.0), page(PageSide::Right, 700.0)]).page_seams().is_empty());
+        // Pages of different heights: the seam spans both.
+        let mut tall = page(PageSide::Right, 612.0);
+        tall.height = 1000.0;
+        assert_eq!(spread(vec![page(PageSide::Left, 0.0), tall]).page_seams(), vec![(612.0, 0.0, 1000.0)]);
     }
 
     /// The outside bleed goes on the leftmost and rightmost pages, also when right-to-left
