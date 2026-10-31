@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (mojikumi applied; consecutive punctuation) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -37,7 +37,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Vertical metrics and shaping | done: upright runs shaped top to bottom (`vert`; `vkrn`/`vpal` when asked) with `vmtx`/`VORG` advances and origins, centred on the ideographic em box (`BASE`, else OS/2); turned runs shaped horizontally, without `vrt2`; Horizontal Kana (`hkna`) takes the vertical kana (`vkna`) in upright runs. Default location of variable fonts only (no `VVAR`) |
 | Kinsoku | named (hard, soft, Chinese, Korean) and custom kinsoku sets, bunri-kinshi, rensuuji, hanging punctuation (regular, force); without a set, fixed no-start / no-end lists and a break anywhere between CJK characters; kinsoku type (push in / push out priorities) kept but not applied |
 | Korean line breaking | at spaces (Hangul everywhere, hanja in Korean text); per-paragraph character-based breaking (`koreanCharBreaks`); DesignCraft-only, not in IDML |
-| Mojikumi | tables and paragraph references kept through IDML; not applied (Preflight says so) |
+| Mojikumi | applied in composition: the built-in base sets (line end half-width, line end one em, Simplified and Traditional Chinese) and the document's tables with their override rows, kept through IDML; Preflight notes tables it can't apply. In the Japanese sets consecutive punctuation closes up (JLREQ 3.1.4: 」。, 「『 touch; 」・ a quarter em, 」「 half an em apart). Still open: 、・ and ・・ take the sum of both blanks in JLREQ (Table 1 notes) |
 | Aki, tsume, jidori | done ([cjk-typography.md](cjk-typography.md)) |
 | Character alignment, leading model | em box top / centre / bottom, ICF top / bottom (`BASE` `icft`/`icfb`, else the em box inset by 5%), roman baseline; aki above / below, centre (centre down as centre); under aki below a line's leading is the space to the line below it; with the Japanese composers (`Composer::Japanese`, `JapaneseSingleLine`, IDML `HL Composer J` / `HL Single J`), the others set lines baseline to baseline on the Roman baseline |
 | Tate-chu-yoko | manual, with offsets; auto tate-chu-yoko of short digit runs (with roman letters when asked) in vertical text, narrowed to fit the em (`type.autoTateChuYoko`, IDML `AutoTcy`, `AutoTcyIncludeRoman`); manual groups of 3+ digits overflow the em |
@@ -75,7 +75,7 @@ punctuation centred vs corner-placed).
 A *mojikumi set* is a table indexed by (class before, class after) giving the space between them
 as a min/optimum/max triple in em fractions, plus line-start and line-end rules. Sets are
 document resources (`Styles::mojikumi_tables`, read from and written to IDML with their override
-rows), referenced by name from the paragraph's `mojikumi`; what remains is applying them. We
+rows), referenced by name from the paragraph's `mojikumi`, and applied in composition. We
 ship a few built-in sets derived from JLREQ (no line-start indent, one-em indent, half-width
 punctuation, full-width punctuation…), all original data, for the IDML built-in names.
 
@@ -292,6 +292,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | minor | Mojikumi is applied (since #129); consecutive punctuation closes up in the Japanese sets |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |
