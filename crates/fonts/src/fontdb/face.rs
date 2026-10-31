@@ -278,6 +278,18 @@ impl FontFace {
             .get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| name(&f, &[StringId::POSTSCRIPT_NAME])) })
             .as_deref()
     }
+    /// The PostScript name of this face as an instance of its variable font (Adobe TN #5902), or
+    /// `None` for a static face or a point no named instance covers.
+    ///
+    /// [`Self::postscript_name`] is the file's own `name` ID 6, which names the font's default
+    /// instance: embedding by it put every weight of a variable font into a PDF under one name
+    /// (#1690).
+    pub fn instance_postscript_name(&self) -> Option<String> {
+        if !self.is_variable() {
+            return None;
+        }
+        crate::psname::instance_postscript_name(&self.skrifa()?, &self.coords)
+    }
 
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
