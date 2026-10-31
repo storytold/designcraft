@@ -1503,6 +1503,60 @@ fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
 
+/// Table › Go to Row…: opens on the target table's first selected row, numbered within its header,
+/// body or footer rows.
+pub fn open_go_to_row(app: &mut DesignApp) {
+    let Ok(t) = app.run("table.get", json!({"cells": false})) else { return };
+    let (h, f, r) = (count_at(&t, "headerRows"), count_at(&t, "footerRows"), count_at(&t["range"], "r0"));
+    let nr = t["rows"].as_array().map_or(0, Vec::len);
+    let (section, n) = if r < h {
+        ("header", r + 1)
+    } else if r >= nr.saturating_sub(f) {
+        ("footer", r + 1 - nr.saturating_sub(f))
+    } else {
+        ("body", r + 1 - h)
+    };
+    app.ui.dialog = Some(Dialog::new(
+        "goToRow",
+        json!({
+            "uid": app.session.active().map(|doc| doc.uid),
+            "story": t["story"],
+            "table": t["table"],
+            "section": section,
+            "row": n.to_string(),
+            "hasHeader": h > 0,
+            "hasFooter": f > 0
+        }),
+    ));
+}
+
+fn count_at(v: &Value, k: &str) -> usize {
+    v[k].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0)
+}
+
+/// The Go to Row dialog: the section menu shows when the table has header or footer rows.
+fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let tr = |s: &'static str| crate::i18n::tr(&app.ui.language, s);
+    ui.horizontal(|ui| {
+        if d.b("hasHeader") || d.b("hasFooter") {
+            let mut opts = Vec::new();
+            if d.b("hasHeader") {
+                opts.push(("header", tr("Header Rows")));
+            }
+            opts.push(("body", tr("Body Rows")));
+            if d.b("hasFooter") {
+                opts.push(("footer", tr("Footer Rows")));
+            }
+            combo(ui, d, "section", &opts);
+        }
+        crate::rtl::label(ui, tr("Row"));
+        text_field_named(ui, d, "row", 60.0, tr("Row"));
+    });
+    if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
+}
+
 /// Layout › Create Guides…: guides go on every page of the spread in view (or of the parent
 /// spread being edited), as InDesign's do; "This page" narrows them to
 /// the page in view. The gutters are typed in the document's ruler unit.
@@ -2821,6 +2875,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "ruby" => crate::i18n::tr(&app.ui.language, "Ruby"),
         "newDocument" => crate::i18n::tr(&app.ui.language, "New Document"),
         "frameSize" => crate::i18n::tr(&app.ui.language, "Rectangle"),
+        "goToRow" => crate::i18n::tr(&app.ui.language, "Go to Row"),
         "goToPage" => crate::i18n::tr(&app.ui.language, "Go to Page"),
         "insertPages" => crate::i18n::tr(&app.ui.language, "Insert Pages"),
         "insertTable" => crate::i18n::tr(&app.ui.language, "Insert Table…").trim_end_matches('…').trim_end(),
@@ -3654,6 +3709,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             text_field(ui, &mut d, "page", 80.0);
                         });
                     }
+                    "goToRow" => go_to_row_dialog(app, ui, &mut d),
                     "ruby" => style_cjk::ruby_dialog(app, ui, &mut d),
                     "insertTable" => insert_table_dialog(app, ui, &mut d),
                     "convertTextToTable" | "convertTableToText" => convert_table_dialog(app, ui, &mut d),
@@ -4227,6 +4283,36 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             )
         }
         "ruby" => app.run("type.ruby", style_cjk::ruby_params(&d)),
+        "goToRow" => {
+            // The story and table belong to the document the dialog was opened for: that document
+            // becomes active first, and when it has closed, nothing is selected.
+            let uid = d.fields.get("uid").and_then(Value::as_u64);
+            if uid.is_some() && uid != app.session.active().map(|doc| doc.uid) {
+                let Some(i) = app.session.documents().iter().position(|doc| Some(doc.uid) == uid) else { return Ok(Value::Null) };
+                app.run("file.activate", json!({"index": i}))?;
+            }
+            // Anything but a whole number goes as typed, and the command's message names the fault.
+            let typed = d.s("row").trim().to_string();
+            let row = typed.parse::<u64>().map_or_else(|_| json!(typed), |n| json!(n));
+            let p = json!({"story": d.fields.get("story"), "table": d.fields.get("table"), "section": d.s("section"), "row": row});
+            let r = app.run("table.goToRow", p);
+            match &r {
+                Ok(v) => {
+                    // The view moves when the row's page is not the page at the center of the view.
+                    if let Some(page) = v["page"].as_u64().and_then(|p| usize::try_from(p).ok()).and_then(|p| p.checked_sub(1))
+                        && crate::canvas::current_page(app) != Some(page)
+                    {
+                        crate::canvas::go_to_page(app, page);
+                    }
+                }
+                Err(e) => {
+                    let mut d = d.clone();
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                }
+            }
+            r
+        }
         "insertPages" => {
             let n = app.session.active().map_or(1, |st| st.doc.page_count());
             // The page the menu shows: a page past the end is the last.

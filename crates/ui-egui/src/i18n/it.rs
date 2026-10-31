@@ -810,6 +810,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Go To Source", "Vai all'origine"),
     ("Go to Footnote Reference", "Vai al riferimento della nota a piè di pagina"),
     ("Go to Page…", "Vai alla pagina…"),
+    ("Go to Row…", "Vai alla riga…"),
+    ("Go to Row", "Vai alla riga"),
     ("Gradient Feather", "Bordi sfocati con sfumatura"),
     ("Gridify", "Disponi a griglia"),
     ("Group Transparency", "Trasparenza gruppo"),

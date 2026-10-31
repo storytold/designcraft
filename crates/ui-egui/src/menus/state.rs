@@ -172,6 +172,10 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }
+    // Go to Row runs on a named table from anywhere; the menu item needs the selection in a table.
+    if id == "table.goToRow" {
+        return enabled(app, "table.selectColumn");
+    }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
     }

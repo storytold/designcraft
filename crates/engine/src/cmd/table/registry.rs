@@ -1,7 +1,7 @@
 use super::cell::{get_cell_stroke, set_cell};
 use super::content::{drop_cells, place_graphic, sort_rows};
 use super::options::{get, options};
-use super::selection::{move_rc, select, step_cell, toggle_selection};
+use super::selection::{go_to_row, move_rc, select, step_cell, toggle_selection};
 use super::sizing::{distribute_cols, distribute_rows, resize_border, set_col_width, set_row_height};
 use super::structure::{
     can_convert_rows, convert_from_text, convert_rows, convert_to_text, delete_cols, delete_rows, delete_table, insert, insert_col, insert_row,
@@ -396,6 +396,15 @@ fn table_specs() -> Vec<CommandSpec> {
         cmd!(noundo "table.selectColumn", "Select Column", ["Table", "Select"], None, "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}", in_table, |s, p| {
             select(s, &crate::cmd::with_param(p, "what", json!("column")))
         }),
+        cmd!(
+            noundo "table.goToRow",
+            "Go to Row…",
+            ["Table"],
+            None,
+            "{row: number (from 1, counted within the section), section?: header|body|footer (default: body), story?, table?}: selects the row → {story, table, range, page: the page showing the row (from 1), or null when the row is overset}",
+            in_table_or_ids,
+            go_to_row
+        ),
         cmd!(noundo "table.nextCell", "Next Cell", [], None, "{}", in_cell, |s, _| step_cell(s, true)),
         cmd!(noundo "table.prevCell", "Previous Cell", [], None, "{}", in_cell, |s, _| step_cell(s, false)),
         cmd!(
@@ -407,6 +416,6 @@ fn table_specs() -> Vec<CommandSpec> {
             in_cell,
             |s, _| toggle_selection(s)
         ),
-        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
+        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?, cells?: bool (false leaves out the cells)} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
     ]
 }

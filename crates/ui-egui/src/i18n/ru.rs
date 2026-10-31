@@ -669,6 +669,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Go To Source", "Перейти к источнику"),
     ("Go to Footnote Reference", "Перейти к ссылке на сноску"),
     ("Go to Page…", "Перейти к странице…"),
+    ("Go to Row…", "Перейти к строке…"),
+    ("Go to Row", "Перейти к строке"),
     ("Gradient Feather", "Градиентная растушевка"),
     ("Gridify", "Разместить в виде сетки"),
     ("Group Transparency", "Прозрачность группы"),

@@ -305,6 +305,17 @@ fn transform_menu_items_open_their_dialogs() {
 }
 
 #[test]
+fn go_to_row_is_enabled_in_a_table() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": "Notes"})).unwrap();
+    app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+    assert!(!menu_enabled(&app, "table.goToRow"), "the insertion point is not in a table");
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    assert!(menu_enabled(&app, "table.goToRow"));
+}
+
+#[test]
 fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     // No params: the menu item opens the options dialog.
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -2244,6 +2255,8 @@ fn the_table_menu_follows_indesigns_order() {
         "-",
         "Distribute Rows Evenly",
         "Distribute Columns Evenly",
+        "-",
+        "Go to Row…",
     ];
     assert_eq!(labels, expected);
     // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
