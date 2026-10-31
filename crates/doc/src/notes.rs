@@ -8,6 +8,11 @@
 //!
 //! Numbering and layout come from the document-wide [`FootnoteOptions`]
 //! (Type › Document Footnote Options).
+//!
+//! Footnotes nest: a footnote's text can hold footnote references of its own, down to
+//! [`MAX_NOTE_DEPTH`] levels (InDesign can't do this). A nested note is printed under the note it
+//! comes from and numbered in reading order. Footnote ids are unique across a story and all its
+//! nested notes, so an id alone ([`crate::CellAddr::footnote`]) finds a note at any depth.
 
 use std::sync::Arc;
 
@@ -33,6 +38,10 @@ pub struct Footnote {
     /// The footnote text (no frames).
     pub text: Story,
 }
+
+/// How deep footnotes nest: a footnote (depth 1) can hold notes down to this depth. Deeper notes
+/// in a file are kept but not shown or numbered.
+pub const MAX_NOTE_DEPTH: usize = 5;
 
 /// Restart Numbering Every.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,15 +158,146 @@ impl Story {
         self.text[..pos].matches(FOOTNOTE_REF).count()
     }
 
+    /// Footnote `id`, at any depth (nested notes included).
     pub fn note(&self, id: u64) -> Option<&Footnote> {
-        self.notes.iter().find(|n| n.id == id).map(|n| &**n)
+        let path = self.note_path(id)?;
+        let mut st = self;
+        let mut found = None;
+        for k in path {
+            let n = st.notes.get(k)?;
+            found = Some(&**n);
+            st = &n.text;
+        }
+        found
     }
 
-    /// Mutable footnote (copy-on-write); bumps the story revision.
+    /// Indices from this story down to footnote `id`: `notes[a]`, then that note's `notes[b]`,
+    /// and so on (at most [`MAX_NOTE_DEPTH`] + 1 steps).
+    pub fn note_path(&self, id: u64) -> Option<Vec<usize>> {
+        fn walk(st: &Story, id: u64, depth: usize, path: &mut Vec<usize>) -> bool {
+            for (k, n) in st.notes.iter().enumerate() {
+                path.push(k);
+                if n.id == id || (depth < MAX_NOTE_DEPTH && walk(&n.text, id, depth + 1, path)) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        let mut path = Vec::new();
+        walk(self, id, 1, &mut path).then_some(path)
+    }
+
+    /// Mutable footnote at any depth (copy-on-write along its path); bumps the revision of every
+    /// story on the way, so the compositions that show it are made again.
     pub fn note_mut(&mut self, id: u64) -> Option<&mut Footnote> {
-        let n = self.notes.iter_mut().find(|n| n.id == id)?;
-        self.rev = self.rev.wrapping_add(1);
-        Some(Arc::make_mut(n))
+        let path = self.note_path(id)?;
+        let (last, steps) = path.split_last()?;
+        let mut st = self;
+        for &k in steps {
+            st.rev = st.rev.wrapping_add(1);
+            st = &mut Arc::make_mut(st.notes.get_mut(k)?).text;
+        }
+        st.rev = st.rev.wrapping_add(1);
+        Some(Arc::make_mut(st.notes.get_mut(*last)?))
+    }
+
+    /// The story that holds footnote `id`'s reference: this story, or the text of the note it's
+    /// nested in.
+    pub fn note_holder(&self, id: u64) -> Option<&Story> {
+        let path = self.note_path(id)?;
+        let mut st = self;
+        for &k in &path[..path.len() - 1] {
+            st = &st.notes.get(k)?.text;
+        }
+        Some(st)
+    }
+
+    /// The id of the footnote whose text holds footnote `id`'s reference (`None` at the top level
+    /// or when there's no such note).
+    pub fn note_parent(&self, id: u64) -> Option<u64> {
+        let path = self.note_path(id)?;
+        let (_, up) = path.split_last()?;
+        let (&last, steps) = up.split_last()?;
+        let mut st = self;
+        for &k in steps {
+            st = &st.notes.get(k)?.text;
+        }
+        st.notes.get(last).map(|n| n.id)
+    }
+
+    /// How deep footnote `id` sits: 1 for a footnote of this story, 2 for one nested in it, …
+    pub fn note_depth(&self, id: u64) -> Option<usize> {
+        self.note_path(id).map(|p| p.len())
+    }
+
+    /// The footnotes nested in this story's footnotes, in reading order (each followed by its own
+    /// nested notes, before its next sibling), down to [`MAX_NOTE_DEPTH`].
+    pub fn nested_notes(&self) -> Vec<&Footnote> {
+        fn walk<'a>(st: &'a Story, depth: usize, out: &mut Vec<&'a Footnote>) {
+            if depth > MAX_NOTE_DEPTH {
+                return;
+            }
+            for n in &st.notes {
+                out.push(n);
+                walk(&n.text, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        for n in &self.notes {
+            walk(&n.text, 2, &mut out);
+        }
+        out
+    }
+
+    /// Every footnote id in this story and its nested notes.
+    fn note_ids_deep(&self) -> Vec<u64> {
+        fn walk(st: &Story, depth: usize, out: &mut Vec<u64>) {
+            for n in &st.notes {
+                out.push(n.id);
+                if depth < MAX_NOTE_DEPTH {
+                    walk(&n.text, depth + 1, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, 1, &mut out);
+        out
+    }
+
+    /// A footnote id no note of this story or its nested notes uses.
+    pub fn next_note_id_deep(&self) -> u64 {
+        crate::ids::next_local_id(self.note_ids_deep().into_iter())
+    }
+
+    /// Give each footnote a story-wide unique id again: a footnote pasted into a nested note
+    /// gets an id from that note's own text, which another note may already use. Of two notes
+    /// with one id, the later in reading order takes a new one. Returns whether any changed.
+    pub fn fix_note_ids(&mut self) -> bool {
+        fn walk(st: &mut Story, depth: usize, seen: &mut std::collections::HashSet<u64>, next: &mut u64) -> bool {
+            let mut changed = false;
+            for n in &mut st.notes {
+                if !seen.insert(n.id) {
+                    let n = Arc::make_mut(n);
+                    n.id = *next;
+                    *next = next.saturating_add(1);
+                    seen.insert(n.id);
+                    changed = true;
+                }
+                if depth < MAX_NOTE_DEPTH && !n.text.notes.is_empty() && walk(&mut Arc::make_mut(n).text, depth + 1, seen, next) {
+                    changed = true;
+                }
+            }
+            if changed {
+                st.rev = st.rev.wrapping_add(1);
+            }
+            changed
+        }
+        if !self.notes.iter().any(|n| !n.text.notes.is_empty()) {
+            return false;
+        }
+        let mut next = self.next_note_id_deep();
+        walk(self, 1, &mut std::collections::HashSet::new(), &mut next)
     }
 
     /// Byte offset of a footnote's reference character.
@@ -222,6 +362,16 @@ impl Story {
 }
 
 impl crate::Document {
+    /// [`Story::fix_note_ids`] for every story with nested footnotes (after an edit or a load).
+    pub fn fix_note_ids(&mut self) {
+        let ids: Vec<StoryId> = self.stories.iter().filter(|(_, st)| st.notes.iter().any(|n| !n.text.notes.is_empty())).map(|(id, _)| *id).collect();
+        for id in ids {
+            if let Some(st) = self.stories.get_mut(&id) {
+                Arc::make_mut(st).fix_note_ids();
+            }
+        }
+    }
+
     /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
     /// numbering carries on; a fresh count for lists that don't continue across stories.
     pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
@@ -310,6 +460,94 @@ mod tests {
         s.delete(0..n);
         s.check().unwrap();
         assert!(s.notes.is_empty());
+    }
+
+    /// A story with footnotes at "a" and "b"; the first holds a nested note at "c", which holds
+    /// one at "d" (reading order: a, c, d, b).
+    fn nested() -> (Story, [u64; 4]) {
+        let mut s = Story::with_text(StoryId(1), "a b", ParaFormat::default());
+        let a = s.insert_note(1, "c text", ParaFormat::default()).unwrap();
+        let b = s.insert_note(s.len(), "b text", ParaFormat::default()).unwrap();
+        let c_id = s.next_note_id_deep();
+        let c = {
+            let n = s.note_mut(a).unwrap();
+            let local = n.text.insert_note(1, "d text", ParaFormat::default()).unwrap();
+            Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = c_id;
+            c_id
+        };
+        let d_id = s.next_note_id_deep();
+        {
+            let n = s.note_mut(c).unwrap();
+            let local = n.text.insert_note(1, "deepest", ParaFormat::default()).unwrap();
+            Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = d_id;
+        }
+        (s, [a, b, c, d_id])
+    }
+
+    /// Nested footnotes are found by id at any depth, with their holder, parent and depth, and
+    /// listed in reading order.
+    #[test]
+    fn nested_notes_are_found_by_id() {
+        let (s, [a, b, c, d]) = nested();
+        assert_eq!(s.note(d).unwrap().text.text, "deepest");
+        assert_eq!(s.note_depth(a), Some(1));
+        assert_eq!(s.note_depth(c), Some(2));
+        assert_eq!(s.note_depth(d), Some(3));
+        assert_eq!(s.note_parent(a), None);
+        assert_eq!(s.note_parent(d), Some(c));
+        assert_eq!(s.note_holder(d).unwrap().text, s.note(c).unwrap().text.text);
+        assert_eq!(s.nested_notes().iter().map(|n| n.id).collect::<Vec<_>>(), [c, d]);
+        assert!(s.note(b).unwrap().text.notes.is_empty());
+        assert_eq!(s.note(999), None);
+    }
+
+    /// Editing a nested note marks every story above it changed (copy-on-write), so the
+    /// compositions that show it are made again.
+    #[test]
+    fn editing_a_nested_note_bumps_its_ancestors() {
+        let (mut s, [a, _, c, d]) = nested();
+        let before = (s.rev, s.note(a).unwrap().text.rev, s.note(c).unwrap().text.rev);
+        s.note_mut(d).unwrap().text.insert(0, "x");
+        assert_ne!(s.rev, before.0);
+        assert_ne!(s.note(a).unwrap().text.rev, before.1);
+        assert_ne!(s.note(c).unwrap().text.rev, before.2);
+        assert_eq!(s.note(d).unwrap().text.text, "xdeepest");
+    }
+
+    /// Ids stay unique across nested notes: a note pasted into a nested note's text takes an id
+    /// that note's text had free, which the repair replaces; the earlier note keeps its id.
+    #[test]
+    fn duplicate_nested_ids_are_repaired() {
+        let (mut s, [a, b, c, d]) = nested();
+        // Pasting a reference into note b's text gives the new note b's text's first free id: 1.
+        s.note_mut(b).unwrap().text.insert(0, &FOOTNOTE_REF.to_string());
+        let pasted = s.note(b).unwrap().text.notes[0].id;
+        assert_eq!(pasted, 1, "the same id as note a");
+        assert!(s.fix_note_ids());
+        let ids: Vec<u64> = [a, b, c, d].into_iter().chain([s.note(b).unwrap().text.notes[0].id]).collect();
+        let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), 5, "{ids:?}");
+        assert_eq!(s.note(a).unwrap().text.text, "c\u{E00A} text", "the earlier note keeps its id");
+        assert!(!s.fix_note_ids(), "nothing more to repair");
+    }
+
+    /// Notes nested past the depth limit are kept but not reached.
+    #[test]
+    fn nesting_is_bounded() {
+        let mut s = Story::with_text(StoryId(1), "x", ParaFormat::default());
+        let mut id = s.insert_note(1, "x", ParaFormat::default()).unwrap();
+        for _ in 0..MAX_NOTE_DEPTH + 2 {
+            let next = s.next_note_id_deep();
+            let n = s.note_mut(id).expect("reachable");
+            let local = n.text.insert_note(1, "x", ParaFormat::default()).unwrap();
+            Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = next;
+            if s.note(next).is_none() {
+                break;
+            }
+            id = next;
+        }
+        assert_eq!(s.note_depth(id), Some(MAX_NOTE_DEPTH), "the deepest reachable note");
+        assert_eq!(s.nested_notes().len(), MAX_NOTE_DEPTH - 1);
     }
 
     #[test]

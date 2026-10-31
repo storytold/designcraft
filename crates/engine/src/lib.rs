@@ -799,6 +799,7 @@ impl Session {
         crate::cmd::sync_placeholders(&mut doc);
         crate::cmd::flex::sync(&mut doc);
         doc.sync_endnote_story();
+        doc.fix_note_ids();
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();
