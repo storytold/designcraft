@@ -172,6 +172,10 @@ file for it is skipped. Serbian Latin words where `nj` or `dž` is two letters (
 can't tell them from `konj` and `budžet`. The log lists each file read and how many patterns it gave, and any file
 or folder that couldn't be read.
 
+InDesign can't tag text Serbian without Serbian dictionaries, so its IDML brings such text in as
+English. Choose Language in the Paragraph Style Options of `[Basic Paragraph]` to change it all at
+once; either Serbian entry covers both scripts. A Word file keeps the languages it was tagged with.
+
 ### Portable mode
 
 A file named `portable.txt` next to the executable (on macOS, next to `DesignCraft.app`) makes the install portable: settings, logs and

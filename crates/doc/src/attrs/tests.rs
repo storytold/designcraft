@@ -130,6 +130,8 @@ fn chinese_japanese_and_korean_names_map_in_their_common_spellings() {
         ("Serbian: Latin", Some("sr-Latn")),
         ("sr-Latn", Some("sr-Latn")),
         ("sr_Cyrl_RS", Some("sr-Cyrl")),
+        ("sr-Latn-BA", Some("sr-Latn")),
+        ("sr-Cyrl-ME", Some("sr-Cyrl")),
         ("[No Language]", None),
     ] {
         assert_eq!(language_tag(name), tag, "{name}");

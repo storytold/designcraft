@@ -15,7 +15,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - **2026-10-31** · Serbian: text in Latin script breaks between `nj` or `dž` where they are two
   letters (`kon-ju-ga-ci-ja`, `nad-ži-ve-ti`), as the Cyrillic spelling shows, also past an
   installed Latin pattern file; typographer's quotes are „…” and ’…’, as the Pravopis prints them;
-  LibreOffice's Serbian pattern files load as they are (ISO 8859-2 and -5). No readiness percentage
+  LibreOffice's Serbian pattern files load as they are (ISO 8859-2 and -5). Placed Word files keep
+  the languages of their text (`w:lang`), so Serbian arrives as Serbian. No readiness percentage
   change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
