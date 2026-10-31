@@ -44,6 +44,50 @@ pub struct Footnote {
 pub const MAX_NOTE_DEPTH: usize = 5;
 
 impl Footnote {
+    /// This footnote's text with its nested notes written out as InDesign can hold them, and as
+    /// GDT-style layouts do by hand: each nested reference becomes its mark as superscript text,
+    /// and each nested note follows the note it comes from after a forced line break: its mark
+    /// (superscript), `separator`, then its text (its first paragraph joins the paragraph it
+    /// follows; later ones stay paragraphs). `mark` gives a nested note's mark by id.
+    pub fn flattened(&self, mark: &dyn Fn(u64) -> String, separator: &str) -> Story {
+        fn superscript(st: &Story, at: usize) -> CharFormat {
+            let mut f = st.char_format_at(at).clone();
+            f.over.position = Some(Position::Superscript);
+            f
+        }
+        /// `st` with each footnote reference replaced by its mark (its notes go with it).
+        fn marked(st: &Story, mark: &dyn Fn(u64) -> String) -> Story {
+            let mut out = st.clone();
+            let refs: Vec<(usize, u64)> = st.text.match_indices(FOOTNOTE_REF).zip(&st.notes).map(|((at, _), n)| (at, n.id)).collect();
+            for (at, id) in refs.into_iter().rev() {
+                let f = superscript(&out, at);
+                out.delete(at..at + FOOTNOTE_REF.len_utf8());
+                out.insert_with(at, &mark(id), f);
+            }
+            out
+        }
+        fn append(out: &mut Story, st: &Story, depth: usize, mark: &dyn Fn(u64) -> String, separator: &str) {
+            if depth > MAX_NOTE_DEPTH {
+                return;
+            }
+            for n in &st.notes {
+                let end = out.len();
+                let f = out.char_format_at(end).clone();
+                out.insert_with(end, &crate::story::FORCED_LINE_BREAK.to_string(), f.clone());
+                let end = out.len();
+                out.insert_with(end, &mark(n.id), superscript(out, end));
+                let end = out.len();
+                out.insert_with(end, separator, f);
+                let end = out.len();
+                out.insert_story(end, &marked(&n.text, mark));
+                append(out, &n.text, depth + 1, mark, separator);
+            }
+        }
+        let mut out = marked(&self.text, mark);
+        append(&mut out, &self.text, 2, mark, separator);
+        out
+    }
+
     /// The footnotes nested in this (top-level) footnote, in reading order: each note, then the
     /// notes nested in it, before its next sibling, down to [`MAX_NOTE_DEPTH`]. Read in this order
     /// they are numbered and printed under it.
@@ -418,7 +462,13 @@ impl crate::Document {
         };
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
-        let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
+        // Nested notes take numbers too (see `Footnote::nested`).
+        let before: usize = self
+            .stories
+            .values()
+            .filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine)
+            .map(|st| st.notes.len() + st.nested_notes().len())
+            .sum();
         o.start_at.saturating_add(before as u32)
     }
 
@@ -555,6 +605,52 @@ mod tests {
         }
         assert_eq!(s.note_depth(id), Some(MAX_NOTE_DEPTH), "the deepest reachable note");
         assert_eq!(s.nested_notes().len(), MAX_NOTE_DEPTH - 1);
+    }
+
+    /// Written out for InDesign: nested references as superscript marks, each nested note after
+    /// a forced line break under the note it comes from (mark, separator, text).
+    #[test]
+    fn nested_notes_flatten_as_marks_and_line_breaks() {
+        let (s, [a, _, c, d]) = nested();
+        let mark = |id: u64| {
+            if id == c {
+                "2".to_string()
+            } else if id == d {
+                "3".to_string()
+            } else {
+                "?".to_string()
+            }
+        };
+        let flat = s.note(a).unwrap().flattened(&mark, "\t");
+        assert_eq!(flat.text, "c2 text\u{2028}2\td3 text\u{2028}3\tdeepest");
+        assert!(flat.notes.is_empty() && !flat.text.contains(FOOTNOTE_REF));
+        flat.check().unwrap();
+        // The format of the character at `at` (char_format_at gives the one before a position).
+        let sup = |at: usize| flat.char_format_at(at + flat.text[at..].chars().next().unwrap().len_utf8()).over.position;
+        let at = |needle: &str| flat.text.find(needle).unwrap();
+        assert_eq!(sup(at("2 text")), Some(Position::Superscript), "the reference's mark");
+        assert_eq!(sup(at("2\td")), Some(Position::Superscript), "the nested note's mark");
+        assert_eq!(sup(at("\td")), None, "the separator");
+        assert_eq!(sup(at("deepest")), None, "the text");
+        assert_eq!(flat.paras.len(), 1, "one paragraph: forced line breaks");
+    }
+
+    /// A story's footnotes are numbered after every footnote of the stories before it, nested
+    /// ones included.
+    #[test]
+    fn footnote_start_counts_nested_notes() {
+        let mut d = crate::Document::new(&crate::build::NewDocument::default());
+        let lid = d.default_layer();
+        let (_, first) =
+            d.add_text_frame(crate::SpreadRef::Doc(0), crate::geom::Rect::new(36.0, 36.0, 200.0, 100.0), lid, "a", ParaFormat::default()).unwrap();
+        let (_, second) =
+            d.add_text_frame(crate::SpreadRef::Doc(0), crate::geom::Rect::new(36.0, 300.0, 200.0, 400.0), lid, "b", ParaFormat::default()).unwrap();
+        let (st, _) = nested();
+        let first_story = d.story_mut(first).unwrap();
+        first_story.notes = st.notes.clone();
+        first_story.text = format!("a{FOOTNOTE_REF}b{FOOTNOTE_REF}");
+        first_story.chars[0].len = first_story.text.len();
+        assert_eq!(d.footnote_start(second), 1 + 2 + 2, "two footnotes and two nested in the first");
     }
 
     #[test]
