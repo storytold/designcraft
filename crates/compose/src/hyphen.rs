@@ -159,12 +159,13 @@ const MAX_LANGUAGES: usize = 256;
 /// patterns then come first for text in that language. Install before composing: hyphenated
 /// words are cached. Returns how many patterns were read and how many skipped. English is
 /// refused: it always uses the bundled dictionary ([`Lang::for_language`]).
-pub fn install_patterns(language: &str, text: &str) -> Result<(usize, usize), String> {
+pub fn install_patterns(language: &str, file: impl AsRef<[u8]>) -> Result<(usize, usize), String> {
     let sub = pattern_language(language).ok_or_else(|| format!("{language}: not a language"))?;
     if sub == "en" {
         return Err(format!("{language}: English uses the bundled dictionary"));
     }
-    let (pats, skipped) = Patterns::parse_hyphen_dic(text).ok_or_else(|| format!("{language}: not a UTF-8 pattern file"))?;
+    let (pats, skipped) =
+        Patterns::parse_hyphen_dic(file).ok_or_else(|| format!("{language}: not a pattern file in UTF-8, ISO8859-2 or ISO8859-5"))?;
     if pats.is_empty() {
         return Err(format!("{language}: no patterns"));
     }
@@ -891,7 +892,7 @@ mod tests {
     fn installed_patterns_come_first() {
         // A language no other test uses: installing is process-wide.
         assert!(Lang::for_language("tlh").is_none());
-        assert!(install_patterns("tlh", "ISO8859-5\n1a\n").is_err());
+        assert!(install_patterns("tlh", "KOI8-R\n1a\n").is_err());
         assert!(install_patterns("tlh", "UTF-8\nLEFTHYPHENMIN 2\n").is_err(), "no patterns");
         assert!(install_patterns("en_US", "UTF-8\n1ba\n").is_err(), "English keeps the bundled dictionary");
         assert_eq!(install_patterns("tlh", "UTF-8\nLEFTHYPHENMIN 2\n1ba\n1ga\n").unwrap(), (2, 0));

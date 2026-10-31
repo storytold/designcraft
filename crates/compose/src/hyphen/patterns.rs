@@ -98,6 +98,37 @@ pub struct Patterns {
     max_len: usize,
 }
 
+/// ISO 8859-2 from 0xA0: LibreOffice's Serbian Latin patterns use it.
+const ISO_8859_2: &str = "\u{A0}Ą˘Ł¤ĽŚ§¨ŠŞŤŹ\u{AD}ŽŻ°ą˛ł´ľśˇ¸šşťź˝žżŔÁÂĂÄĹĆÇČÉĘËĚÍÎĎĐŃŇÓÔŐÖ×ŘŮÚŰÜÝŢßŕáâăäĺćçčéęëěíîďđńňóôőö÷řůúűüýţ˙";
+
+/// One byte of ISO 8859-5, which LibreOffice's Serbian Cyrillic patterns use: Cyrillic from 0xA1,
+/// in Unicode's order, but for three signs.
+fn iso_8859_5(b: u8) -> char {
+    match b {
+        0..=0xA0 | 0xAD => char::from(b),
+        0xF0 => '№',
+        0xFD => '§',
+        _ => char::from_u32(0x0401 + u32::from(b - 0xA1)).unwrap_or('\u{FFFD}'),
+    }
+}
+
+/// The text of a pattern file, in the charset its first line names: UTF-8, ISO8859-2 or ISO8859-5.
+/// Other charsets (and bytes that aren't valid UTF-8 in a UTF-8 file) are None.
+fn decode_hyphen_dic(file: &[u8]) -> Option<String> {
+    let file = file.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(file);
+    let first = file.split(|&b| b == b'\n').next()?;
+    let charset = std::str::from_utf8(first).ok()?.trim().to_ascii_uppercase();
+    match charset.as_str() {
+        "UTF-8" => String::from_utf8(file.to_vec()).ok(),
+        "ISO8859-2" | "ISO-8859-2" => {
+            let high: Vec<char> = ISO_8859_2.chars().collect();
+            file.iter().map(|&b| if b < 0xA0 { Some(char::from(b)) } else { high.get(usize::from(b) - 0xA0).copied() }).collect()
+        }
+        "ISO8859-5" | "ISO-8859-5" => Some(file.iter().map(|&b| iso_8859_5(b)).collect()),
+        _ => None,
+    }
+}
+
 impl Patterns {
     /// Parse TeX-style patterns: whitespace-separated, `%`/`#` start a comment line.
     pub fn parse(text: &str) -> Patterns {
@@ -114,18 +145,14 @@ impl Patterns {
         p
     }
 
-    /// Parse a LibreOffice/Hyphen pattern file (`hyph_sr_RS.dic`): a charset line (only UTF-8 is
-    /// read), then patterns as for [`Patterns::parse`]. The `LEFTHYPHENMIN`-style keyword lines
+    /// Parse a LibreOffice/Hyphen pattern file (`hyph_sr_RS.dic`): a charset line ([`decode_hyphen_dic`]),
+    /// then patterns as for [`Patterns::parse`]. The `LEFTHYPHENMIN`-style keyword lines
     /// are skipped (the paragraph's limits apply instead); of a two-level file (`NEXTLEVEL`) only
     /// the second level, the word patterns, is read; non-standard patterns (`/`) are skipped.
     /// Returns the patterns and how many were skipped, or None for another charset.
-    pub fn parse_hyphen_dic(text: &str) -> Option<(Patterns, usize)> {
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let mut lines = text.lines();
-        if !lines.next()?.trim().eq_ignore_ascii_case("UTF-8") {
-            return None;
-        }
-        let body: Vec<&str> = lines.collect();
+    pub fn parse_hyphen_dic(file: impl AsRef<[u8]>) -> Option<(Patterns, usize)> {
+        let text = decode_hyphen_dic(file.as_ref())?;
+        let body: Vec<&str> = text.lines().skip(1).collect();
         let start = body.iter().rposition(|l| l.trim() == "NEXTLEVEL").map_or(0, |i| i + 1);
         let mut p = Patterns::default();
         let mut skipped = 0;
@@ -308,7 +335,20 @@ mod tests {
         // Two levels: the second holds the word patterns.
         let (p, _) = Patterns::parse_hyphen_dic("UTF-8\n1x\nNEXTLEVEL\n1b\n").unwrap();
         assert_eq!(p.to_tex(), vec!["1b".to_string()]);
-        assert!(Patterns::parse_hyphen_dic("ISO8859-5\n1a\n").is_none(), "only UTF-8 files");
+        assert!(Patterns::parse_hyphen_dic("KOI8-R\n1a\n").is_none(), "a charset we can't read");
+        assert!(Patterns::parse_hyphen_dic(b"UTF-8\n1\xFF\n").is_none(), "not UTF-8 after all");
         assert!(Patterns::parse_hyphen_dic("").is_none());
+    }
+
+    /// LibreOffice's Serbian files name these charsets on their first line.
+    #[test]
+    fn pattern_files_in_iso_8859() {
+        assert_eq!(decode_hyphen_dic(b"ISO8859-5\n\xBD\xD8\xF8\xF9\xFA\xFB\xFF\n").unwrap(), "ISO8859-5\nНијљњћџ\n");
+        assert_eq!(decode_hyphen_dic(b"ISO8859-2\n\xC8\xE8\xC6\xE6\xD0\xF0\xA9\xB9\xAE\xBE\n").unwrap(), "ISO8859-2\nČčĆćĐđŠšŽž\n");
+        assert_eq!(ISO_8859_2.chars().count(), 0x60, "every byte from 0xA0");
+        let (p, _) = Patterns::parse_hyphen_dic(b"ISO8859-2\na1\xE8\n").unwrap();
+        assert_eq!(p.points(&['a', 'č']), Some(vec![1]));
+        let (p, _) = Patterns::parse_hyphen_dic(b"ISO8859-5\n\xD01\xDD\n").unwrap();
+        assert_eq!(p.points(&['а', 'н']), Some(vec![1]));
     }
 }

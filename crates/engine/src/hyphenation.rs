@@ -73,13 +73,10 @@ pub fn install_dir(dir: &Path) -> Vec<String> {
         let line = match crate::io::read_capped(&path, MAX_FILE_BYTES) {
             Err(e) => format!("hyphenation: {name}: {e}"),
             Ok(bytes) if bytes.len() as u64 > MAX_FILE_BYTES => format!("hyphenation: {name} skipped: larger than {} MB", MAX_FILE_BYTES >> 20),
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Err(_) => format!("hyphenation: {name} skipped: not UTF-8"),
-                Ok(text) => match hyphen::install_patterns(locale, &text) {
-                    Ok((n, 0)) => format!("hyphenation: {name}: {n} patterns for {locale}"),
-                    Ok((n, skipped)) => format!("hyphenation: {name}: {n} patterns for {locale} ({skipped} not supported)"),
-                    Err(e) => format!("hyphenation: {name} skipped: {e}"),
-                },
+            Ok(bytes) => match hyphen::install_patterns(locale, &bytes) {
+                Ok((n, 0)) => format!("hyphenation: {name}: {n} patterns for {locale}"),
+                Ok((n, skipped)) => format!("hyphenation: {name}: {n} patterns for {locale} ({skipped} not supported)"),
+                Err(e) => format!("hyphenation: {name} skipped: {e}"),
             },
         };
         report.push(line);
@@ -116,6 +113,16 @@ mod tests {
         let lang = hyphen::Lang::for_language("tpi").unwrap();
         assert_eq!(hyphen::hyphen_points_in("papatapa", &hyphen::Limits::default(), lang), vec![2, 4, 6]);
         assert!(install_dir(&dir.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn a_file_in_iso_8859_is_read_and_an_unknown_charset_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hyph_tpi.dic"), b"ISO8859-5\n\xD01\xDD\n").unwrap();
+        std::fs::write(dir.path().join("hyph_tog.dic"), b"KOI8-R\n1a\n").unwrap();
+        let report = install_dir(dir.path());
+        assert!(report[0].contains("skipped") && report[0].contains("hyph_tog.dic"), "{report:?}");
+        assert!(report[1].contains("hyph_tpi.dic: 1 patterns"), "{report:?}");
     }
 
     #[test]
