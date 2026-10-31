@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
