@@ -750,7 +750,7 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
     let clip = app.object_clip_text.clone().expect("the copy's placeholder text");
     let mut h = harness(app);
     let paste = |h: &mut Harness<'static, DesignApp>, modifiers: egui::Modifiers| {
-        // As egui-winit delivers ⌃⌥⇧V: the chord's paste and the V release, no V press; here the
+        // As egui-winit delivers Cmd+Alt+Shift+V: the chord's paste and the V release, no V press; here the
         // modifiers are released within the same frame.
         let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers };
         let none = egui::Event::ModifiersChanged(egui::Modifiers::NONE);
@@ -761,12 +761,17 @@ fn the_paste_in_place_shortcut_pastes_in_place_and_plain_paste_offsets() {
         assert_ne!(pasted.0, id);
         st.doc.item(pasted).unwrap().bounds()
     };
-    let linux = egui::Modifiers { alt: true, ctrl: true, shift: true, mac_cmd: false, command: true };
-    assert_eq!(paste(&mut h, linux), original, "Paste in Place");
-    let moved = paste(&mut h, egui::Modifiers::COMMAND);
+    let command = if cfg!(target_os = "macos") {
+        egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
+    } else {
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+    };
+    let in_place = command | egui::Modifiers::ALT | egui::Modifiers::SHIFT;
+    assert_eq!(paste(&mut h, in_place), original, "Paste in Place");
+    let moved = paste(&mut h, command);
     assert!((moved.x0 - original.x0 - 12.0).abs() < 1e-9 && (moved.y0 - original.y0 - 12.0).abs() < 1e-9, "{moved:?}");
     // The modifiers went down in an earlier frame than the paste.
-    h.event_modifiers(egui::Event::Paste(clip.clone()), linux);
+    h.event_modifiers(egui::Event::Paste(clip.clone()), in_place);
     h.run_steps(2);
     let st = h.state().session.doc().unwrap();
     let pasted = *st.selection.items.first().expect("the copy is selected");
@@ -1042,7 +1047,20 @@ fn live_corner_widget_and_diamonds_draw() {
     app.run("frame.create", json!({"rect": [100, 100, 300, 250], "content": "graphic"})).unwrap();
     let id = app.session.doc().unwrap().doc.spreads[0].items[0].id;
     app.run("selection.set", json!({"ids": [id.0]})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_ui_state(
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let instance = pollster::block_on(setup.new_instance());
+    let config = egui_wgpu::WgpuConfiguration { wgpu_setup: setup, ..Default::default() };
+    let renderer = match pollster::block_on(egui_wgpu::RenderState::create(&config, &instance, None, egui_wgpu::RendererOptions::PREDICTABLE)) {
+        Ok(state) => egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state),
+        Err(egui_wgpu::WgpuError::CustomNativeAdapterSelectionError(reason))
+            if reason == "No adapter found" && (cfg!(target_os = "freebsd") || std::env::var_os("CI").is_none()) =>
+        {
+            eprintln!("skipped: no offscreen GPU adapter");
+            return;
+        }
+        Err(error) => panic!("failed to initialize offscreen renderer: {error}"),
+    };
+    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).renderer(renderer).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1059,20 +1077,13 @@ fn live_corner_widget_and_diamonds_draw() {
     };
     let widget = screen(&h, 300.0, 100.0) + vec2(0.0, 11.5);
     let diamond = screen(&h, 100.0, 100.0) + vec2(12.0, 0.0);
-    let yellow = |h: &mut Harness<'_, DesignApp>, p: Pos2| -> Option<bool> {
-        let img = match h.render() {
-            Ok(img) => img,
-            Err(e) => {
-                eprintln!("skipped: no offscreen renderer ({e})");
-                return None;
-            }
-        };
+    let yellow = |h: &mut Harness<'_, DesignApp>, p: Pos2| -> bool {
+        let img = h.render().expect("render UI screenshot");
         let px = img.get_pixel(p.x.round() as u32, p.y.round() as u32).0;
-        Some(px[0] > 200 && px[1] > 180 && px[2] < 100)
+        px[0] > 200 && px[1] > 180 && px[2] < 100
     };
-    let Some(w) = yellow(&mut h, widget) else { return };
-    assert!(w, "no widget at {widget:?}");
-    assert_eq!(yellow(&mut h, diamond), Some(false));
+    assert!(yellow(&mut h, widget), "no widget at {widget:?}");
+    assert!(!yellow(&mut h, diamond));
     h.hover_at(widget);
     h.step();
     for pressed in [true, false] {
@@ -1080,8 +1091,8 @@ fn live_corner_widget_and_diamonds_draw() {
         h.step();
     }
     h.run_steps(3);
-    assert_eq!(yellow(&mut h, diamond), Some(true), "no diamond at {diamond:?}");
-    assert_eq!(yellow(&mut h, widget), Some(false));
+    assert!(yellow(&mut h, diamond), "no diamond at {diamond:?}");
+    assert!(!yellow(&mut h, widget));
 }
 
 /// A harness whose frames are 1 ms apart, so two clicks make a double-click.

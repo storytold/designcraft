@@ -41,6 +41,8 @@ designcraft-idml = { workspace = true }
 zip = { workspace = true }
 # Headless (offscreen wgpu) rendering of the whole window for UI screenshots: `examples/ui_shot.rs`.
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
+egui-wgpu = { version = "0.37", default-features = false }
+pollster = "1.0"
 designcraft-fonts = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
