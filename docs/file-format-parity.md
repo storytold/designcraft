@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (Apple Pages import, file.openPages; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -30,6 +30,7 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+| Apple Pages | `.pages` (file or package folder) | ✗ | ~ (`designcraft-pages`; Pages 5.1 and later) | ✗ | Pages, placed shapes, text boxes, images (masks, opacity), groups, rotation, fill/stroke/opacity, paragraph and character formatting as local overrides. Not read: tables, charts, shadows, gradient and image fills (first colour shown), inline objects, footnotes, named styles; word-processing body text goes into one frame on page 1. Warnings name what was skipped. Synthetic-archive tests in `crates/pages/src/tests.rs`; checked by hand against one real two-page poster | — |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and

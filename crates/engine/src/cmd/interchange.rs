@@ -22,6 +22,9 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
             always, open_idml),
+        cmd!(noundo "file.openPages", "Open Pages Document", [], None,
+            "{path | base64, name?} — opens an Apple Pages document (.pages, Pages 5.1 and later) as a new, unsaved document: pages, shapes, text boxes, images and text formatting → {index, warnings: what didn't come over}",
+            always, open_pages),
     ]
 }
 
@@ -438,6 +441,75 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     st.fonts = fonts;
     let i = s.add_document(st);
     Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+}
+
+/// `file.openPages`: an Apple Pages document, converted into a new unsaved document.
+pub(crate) fn open_pages(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, title) = if let Some(b) = str_param(p, "base64") {
+        (base64_decode(b), without_pages_extension(str_param(p, "name").unwrap_or_default()).to_string())
+    } else if let Some(path) = str_param(p, "path") {
+        // A package folder is read file by file below.
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = if crate::io::is_dir(path) { Vec::new() } else { crate::io::read_file(path).map_err(EngineError::Other)? };
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        (b, std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    } else {
+        return Err(bad("file.openPages", "missing `path` or `base64`"));
+    };
+    let fonts = |ps: &str| designcraft_fonts::FontDb::global().postscript_face(ps);
+    #[cfg(not(target_arch = "wasm32"))]
+    let import = match str_param(p, "path").filter(|path| str_param(p, "base64").is_none() && crate::io::is_dir(path)) {
+        Some(path) => designcraft_pages::import_files(read_pages_package(path)?, &fonts),
+        None => designcraft_pages::import(&bytes, &fonts),
+    };
+    #[cfg(target_arch = "wasm32")]
+    let import = designcraft_pages::import(&bytes, &fonts);
+    let import = import.map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut d = import.document;
+    if !title.is_empty() {
+        d.title = title;
+    }
+    // Never save over the .pages file: the document starts unsaved.
+    let i = s.add_document(DocState::new(d, None));
+    Ok(json!({"index": i, "warnings": import.warnings}))
+}
+
+/// The most a Pages package folder's files may hold together.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_PAGES_PACKAGE_BYTES: u64 = 2 << 30;
+
+/// The files of a Pages document saved as a package folder: `Index/*.iwa` and `Data/*`.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_pages_package(path: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    let mut left = MAX_PAGES_PACKAGE_BYTES;
+    for dir in ["Index", "Data"] {
+        let Ok(entries) = crate::io::read_dir(std::path::Path::new(path).join(dir)) else { continue };
+        for e in entries.flatten() {
+            let name = format!("{dir}/{}", e.file_name().to_string_lossy());
+            if !designcraft_pages::wanted_file(&name) || !crate::io::is_file(e.path()) {
+                continue;
+            }
+            let bytes = crate::io::read_capped(e.path(), left).map_err(|err| EngineError::Other(format!("{name}: {err}")))?;
+            left = left.checked_sub(bytes.len() as u64).ok_or_else(|| EngineError::Other(format!("{path}: the package is too large")))?;
+            files.push((name, bytes));
+        }
+    }
+    Ok(files)
+}
+
+/// An Apple Pages document: a ZIP holding `Index/Document.iwa`, or a file named `.pages`.
+pub(crate) fn is_pages(name: &str, bytes: &[u8]) -> bool {
+    designcraft_pages::is_pages(bytes) || name.to_ascii_lowercase().ends_with(".pages")
+}
+
+/// `name` without a trailing .pages (any case).
+fn without_pages_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("pages") => stem,
+        _ => name,
+    }
 }
 
 /// An InDesign document or template (.indd, .indt): known by its signature, or by its name when

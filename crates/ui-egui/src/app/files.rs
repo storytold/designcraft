@@ -288,10 +288,10 @@ impl DesignApp {
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
-/// IDML, and InDesign documents and templates (converted to IDML on open).
+/// IDML, InDesign documents and templates (converted to IDML on open), and Apple Pages documents.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+    [".designcraft", ".idml", ".indd", ".indt", ".pages"].iter().any(|ext| n.ends_with(ext))
 }
 
 #[cfg(test)]

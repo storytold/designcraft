@@ -32,11 +32,17 @@ pub fn recent_preview(path: &str) -> Option<RecentPreview> {
     }
 }
 
+/// Is there a file at `path`, or a Pages package folder, that File › Open can read?
+#[cfg(not(target_arch = "wasm32"))]
+fn openable(path: &str) -> bool {
+    crate::io::is_file(path) || (crate::io::is_dir(path) && crate::cmd::interchange::is_pages(path, &[]))
+}
+
 /// One File › Open Recent row: the path, its file name and whether it is still there.
 pub(super) fn recent_entry(path: &str) -> Value {
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
     #[cfg(not(target_arch = "wasm32"))]
-    let exists = crate::io::is_file(path);
+    let exists = openable(path);
     #[cfg(target_arch = "wasm32")]
     let exists = false;
     json!({"path": path, "name": name, "exists": exists})
@@ -52,7 +58,7 @@ pub(super) fn file_open_recent(s: &mut Session, p: &Value) -> Result<Value> {
         .cloned()
         .ok_or_else(|| bad("file.openRecent", format!("no recent file {index} (the list has {})", s.prefs.recent_files.len())))?;
     #[cfg(not(target_arch = "wasm32"))]
-    if !crate::io::is_file(&path) {
+    if !openable(&path) {
         return Err(EngineError::Other(format!("{path} can't be found: it was moved, renamed or deleted, or its disk isn't connected")));
     }
     file_open(s, &json!({"path": path}))
@@ -71,13 +77,24 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // Pages can save a document as a package folder.
+        if crate::io::is_dir(path) && crate::cmd::interchange::is_pages(path, &[]) {
+            return crate::cmd::interchange::open_pages(s, p);
+        }
         let bytes = crate::io::read_file(path).map_err(EngineError::Other)?;
         // The content decides first: a file's extension may be missing or wrong. The extension
         // then routes files whose content isn't recognised to the reader that explains why.
         let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
         let native = designcraft_format::is_designcraft(&bytes) || bytes.trim_ascii_start().starts_with(b"{");
-        if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
+        // A Pages document is known by its content even under an InDesign name.
+        let pages = !native && designcraft_pages::is_pages(&bytes);
+        if !pages && (designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml"))) {
             return crate::cmd::interchange::open_idml(s, p);
+        }
+        if pages || (!native && crate::cmd::interchange::is_pages(path, &bytes)) {
+            // The Pages reader reads the file again; don't hold two copies.
+            drop(bytes);
+            return crate::cmd::interchange::open_pages(s, p);
         }
         if !native && ext != designcraft_format::EXTENSION {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
@@ -142,10 +159,17 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
-    // signature (or their name).
-    if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
+    let name = str_param(p, "name").unwrap_or_default();
+    let native = designcraft_format::is_designcraft(&b) || b.trim_ascii_start().starts_with(b"{");
+    // Pages documents are recognised by their content first, IDML packages by their stored
+    // `mimetype` first entry, INDD files by their signature (or their name). A native document
+    // under a .pages name stays native.
+    let pages = !native && designcraft_pages::is_pages(&b);
+    if !pages && (designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(name, &b)) {
         return crate::cmd::interchange::open_idml(s, p);
+    }
+    if pages || (!native && crate::cmd::interchange::is_pages(name, &b)) {
+        return crate::cmd::interchange::open_pages(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
@@ -265,6 +289,56 @@ mod document_fonts_tests {
         let e = s.execute("file.openBytes", &json!({"name": "Brochure.indt", "base64": ""})).unwrap_err().to_string();
         assert!(e.contains("InDesign Markup (IDML)"), "{e}");
         assert!(s.doc().is_err(), "nothing was opened");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pages_files_and_package_folders_go_to_the_pages_reader() {
+        // The name routes them; the reader then says what it couldn't read.
+        let dir = temp_dir("pages");
+        let file = dir.join("Poster.PAGES");
+        std::fs::write(&file, b"not a Pages document").unwrap();
+        let folder = dir.join("Flyer.pages");
+        std::fs::create_dir_all(folder.join("Index")).unwrap();
+        std::fs::write(folder.join("Index").join("Document.iwa"), [0u8, 9, 0, 0, 1]).unwrap();
+        let mut s = Session::new();
+        for path in [&file, &folder] {
+            let e = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap_err().to_string();
+            assert!(e.contains("Pages document"), "{e}");
+        }
+        let e = s.execute("file.openBytes", &json!({"name": "Poster.pages", "base64": ""})).unwrap_err().to_string();
+        assert!(e.contains("Pages document"), "{e}");
+        assert!(s.doc().is_err(), "nothing was opened");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ZIP holding `Index/Document.iwa`: a Pages document by its content (a damaged one).
+    fn pages_zip() -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut z = zip::ZipWriter::new(&mut buf);
+        z.start_file("Index/Document.iwa", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut z, &[0, 9, 0, 0, 1]).unwrap();
+        z.finish().unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn pages_content_wins_over_an_indesign_name_and_native_content_over_a_pages_name() {
+        let dir = temp_dir("pages-content");
+        let mut s = Session::new();
+        let base64 = |b: &[u8]| crate::cmd::file::base64_encode(b);
+        for name in ["Poster.indd", "Poster.indt", "Poster.idml"] {
+            let file = dir.join(name);
+            std::fs::write(&file, pages_zip()).unwrap();
+            let e = s.execute("file.open", &json!({"path": file.to_string_lossy()})).unwrap_err().to_string();
+            assert!(e.contains("Pages document"), "{name}: {e}");
+            let e = s.execute("file.openBytes", &json!({"name": name, "base64": base64(&pages_zip())})).unwrap_err().to_string();
+            assert!(e.contains("Pages document"), "{name}: {e}");
+        }
+        let native = dir.join("Native.designcraft");
+        write_document(&native, designcraft_fonts::DEFAULT_FAMILY);
+        let bytes = std::fs::read(&native).unwrap();
+        s.execute("file.openBytes", &json!({"name": "Native.pages", "base64": base64(&bytes)})).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -467,6 +541,14 @@ mod recent_tests {
         for index in [json!(2), json!(u64::MAX), json!(-1), json!("0"), json!(null)] {
             assert!(s.execute("file.openRecent", &json!({"index": index})).is_err(), "{index}");
         }
+        // A Pages package folder is a recent document like a file.
+        let folder = dir.join("Flyer.pages");
+        std::fs::create_dir_all(folder.join("Index")).unwrap();
+        std::fs::write(folder.join("Index").join("Document.iwa"), [0u8, 9, 0, 0, 1]).unwrap();
+        s.prefs.note_recent_file(&folder.to_string_lossy());
+        assert_eq!(s.execute("file.recentFiles", &json!({})).unwrap()[0]["exists"], true);
+        let e = s.execute("file.openRecent", &json!({"index": 0})).unwrap_err().to_string();
+        assert!(e.contains("Pages document"), "the Pages reader is reached: {e}");
         s.execute("file.clearRecent", &json!({})).unwrap();
         assert!(s.prefs.recent_files.is_empty());
         assert!(s.execute("file.openRecent", &json!({"index": 0})).is_err(), "disabled when empty");

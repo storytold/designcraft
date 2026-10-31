@@ -68,7 +68,7 @@ Most commands ignore parameters they do not know instead of rejecting them: chec
 with `designcraft-cli describe COMMAND`.
 
 Options:
-  --in FILE / --sample   open a document (.designcraft or .idml) or the sample first
+  --in FILE / --sample   open a document (.designcraft, .idml, .indd or .pages) or the sample first
   --save OUT             save as .designcraft after the script succeeds
   --export OUT           export after the script succeeds (.pdf, .idml, .epub, .pptx, .png, .jpg); repeatable
   --keep-going           run every step, recording failures as {"error": ...} results
