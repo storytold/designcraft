@@ -352,6 +352,30 @@ mod tests {
         assert_eq!(placed(&s, sid).len(), 3);
     }
 
+    /// On the canvas: a click on a nested note's text puts the caret in that note, and typing
+    /// goes there.
+    #[test]
+    fn clicking_a_nested_note_edits_it() {
+        let (mut s, sid) = session_with_text();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Outer"})).unwrap();
+        let c = s.execute("footnote.insert", &json!({"text": "Inner"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let fid = d.story(sid).unwrap().frames[0];
+        let cs = s.cache.get(&d, sid, None);
+        let n = cs.frames[0].notes.iter().find(|n| n.id == c).unwrap();
+        let l = &n.text.frames[0].lines[0];
+        // Inside the nested note's text, past its mark, in spread coordinates.
+        let inner = designcraft_geom::Point::new(n.origin.x + l.end_x - 1.0, n.origin.y + l.baseline - 2.0);
+        let pt = d.text_xf(d.item(fid).unwrap()) * inner;
+        s.execute("text.placeCaret", &json!({"frame": fid.0, "point": [pt.x, pt.y]})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(t.cell, Some(CellAddr::footnote(c)), "{t:?}");
+        s.execute("text.insert", &json!({"text": "!"})).unwrap();
+        assert!(s.doc().unwrap().doc.story(sid).unwrap().note(c).unwrap().text.text.contains('!'));
+    }
+
     /// Deleting a footnote deletes the notes nested in it; a caret in any of them goes to where
     /// the reference was.
     #[test]
