@@ -227,6 +227,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Parent's Font", "親文字と同じ"),
     ("Use OpenType Pro Ruby Glyphs", "OpenType Pro のルビ字形を使用"),
     ("Fit to Width", "幅に合わせる"),
+    ("Ruby Adjusts Leading", "ルビが行送りを調整"),
     ("Ruby Overhang:", "文字かけ処理:"),
     ("1 Ruby Character", "ルビ1文字分"),
     ("1/2 Ruby Character", "ルビ半文字分"),
