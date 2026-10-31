@@ -116,7 +116,9 @@ fn resolve(s: &Session, d: &Document, skip: Option<StoryId>) -> Vec<(StoryId, us
                 (Some(a), None) => Some((a, a)),
                 _ => None,
             };
-            out.push((st.id, pos, Resolved { r: (**r).clone(), pages }));
+            let para = st.paras.get(st.para_at(pos).min(st.paras.len().saturating_sub(1)));
+            let language = para.map(|p| d.styles.resolve_char(&d.styles.resolve_para(p).1, st.char_format_at(pos)).language).unwrap_or_default();
+            out.push((st.id, pos, Resolved { r: (**r).clone(), pages, language }));
         }
     }
     out
@@ -215,6 +217,28 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The language at a marker says whether Latin `lj` is one letter.
+    #[test]
+    fn the_language_at_a_marker_sorts_its_topic() {
+        let index = |language: &str| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let sp = s.doc().unwrap().doc.page_loc(0).unwrap().0;
+            let r = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 300], "content": "text", "text": "lopta ljubav"})).unwrap();
+            let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 12})).unwrap();
+            s.execute("type.char", &json!({"language": language})).unwrap();
+            for topic in ["ljubav", "lopta"] {
+                s.execute("text.select", &json!({"story": sid.0, "anchor": 3, "focus": 3})).unwrap();
+                s.execute("index.addReference", &json!({"topic": topic})).unwrap();
+            }
+            let r = s.execute("index.generate", &json!({"page": 2})).unwrap();
+            s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap().text.clone()
+        };
+        assert_eq!(index("Serbian: Latin"), "Index\nL\nlopta  1\nLj\nljubav  1");
+        assert_eq!(index("English: USA"), "Index\nL\nljubav  1\nlopta  1");
+    }
 
     #[test]
     fn page_references_build_an_index() {

@@ -16,7 +16,7 @@
 //! Serbian is `hyph-sh-cyrl.tex` 2.02 from hyph-utf8 (Dejan Muhamedagić), LPPL 1 or later; the
 //! patterns are for Cyrillic, so Serbian words in Latin script are hyphenated through their
 //! Cyrillic spelling ([`serbian_cyrillic`]), which also shows where `nj`, `lj` and `dž` are two
-//! letters ([`TWO_LETTERS_AT_START`]); such a word takes this route even past an installed Latin
+//! letters ([`designcraft_doc::serbian::two_letters`]); such a word takes this route even past an installed Latin
 //! pattern set, whose patterns can't tell.
 //!
 //! Pattern files can also be **installed** at run time ([`install_patterns`]): a
@@ -38,6 +38,7 @@ pub mod dict;
 pub mod patgen;
 pub mod patterns;
 
+use designcraft_doc::serbian::two_letters;
 use std::sync::{OnceLock, PoisonError, RwLock};
 
 pub use dict::Dictionary;
@@ -199,59 +200,6 @@ fn installed_bundled(i: u16) -> Option<hypher::Lang> {
     bundled(installed.get(usize::from(i))?.sub)
 }
 
-/// Roots of Serbian Latin words where `nj` or `dž` is two letters, not one: the Latin spelling
-/// doesn't show it, the Cyrillic does (конјугација, not коњугација; надживети, not наџивети). `|`
-/// marks the pair. These only start a word: `an|jon` is not in `kanjon`, nor `od|žal` in `odžak`.
-/// Checked against the ~190,000 stems of the Serbian Hunspell dictionaries: they touch no word with
-/// one letter but the variants коњугација and коњунктив, which break as the words they vary. A list,
-/// not a dictionary lookup, so that a text breaks the same on every machine. The headwords of the
-/// Rečnik srpskoga jezika (Matica srpska, 2011) raise no other case. A root stays long enough to
-/// leave foreign names alone (Поџи).
-const TWO_LETTERS_AT_START: &[&str] = &[
-    "an|jon",
-    "and|žej",
-    "feld|žandarm",
-    "man|jogan",
-    "nad|žet",
-    "nad|živ",
-    "nad|žnj",
-    "nad|žup",
-    "od|žali",
-    "od|žalj",
-    "od|žar",
-    "od|živ",
-    "pan|jug",
-    "pod|žanr",
-    "pod|žar",
-    "pod|ždrel",
-    "pod|žel",
-    "pod|žup",
-    "pred|žalb",
-    "pred|žel",
-    "pred|žet",
-    "pred|živ",
-    "šen|jan",
-    "šen|jeng",
-    "tan|jug",
-    "van|jed",
-    "van|jez",
-    "van|jugo",
-];
-
-/// The same, anywhere in a word (`mikroin|jekcija`, `hiperkon|jugacija`).
-const TWO_LETTERS_ANYWHERE: &[&str] = &["in|jek", "in|junk", "kon|jekt", "kon|jug", "kon|juk", "kon|junk", "kon|junt"];
-
-/// The index of the second letter of each such pair in a lowercase Serbian Latin word.
-fn serbian_two_letters(word: &[char]) -> Vec<usize> {
-    let is_at = |root: &str, at: usize| root.chars().filter(|&c| c != '|').enumerate().all(|(i, c)| word.get(at + i) == Some(&c));
-    let mark = |root: &str| root.chars().position(|c| c == '|').unwrap_or(0);
-    let mut out: Vec<usize> = TWO_LETTERS_AT_START.iter().filter(|r| is_at(r, 0)).map(|r| mark(r)).collect();
-    for at in 0..word.len() {
-        out.extend(TWO_LETTERS_ANYWHERE.iter().filter(|r| is_at(r, at)).map(|r| at + mark(r)));
-    }
-    out
-}
-
 /// Compounds the patterns don't see, in Cyrillic: `|` is where the prefix ends. Pravopis srpskoga
 /// jezika, §186е: a transparent compound breaks at the join.
 const COMPOUNDS: &[&str] = &["над|индивид", "над|истор", "под|одбор", "под|одељ", "под|одјељ", "под|оцењ", "под|оцен", "пред|инфаркт"];
@@ -303,16 +251,16 @@ fn serbian_compound_breaks(core: &[char], pts: Vec<usize>) -> Vec<usize> {
 }
 
 /// A lowercase Serbian Latin word in Cyrillic, letter for letter (`lj`, `nj`, `dž` are one
-/// letter each: љ, њ, џ, unless [`serbian_two_letters`] says otherwise), with the Latin index each
+/// letter each: љ, њ, џ, unless [`two_letters`] says otherwise), with the Latin index each
 /// Cyrillic letter starts at. None when the word has a letter outside the Serbian Latin alphabet.
 fn serbian_cyrillic(word: &[char]) -> Option<(Vec<char>, Vec<usize>)> {
-    let two_letters = serbian_two_letters(word);
+    let pairs = two_letters(word);
     let mut out = Vec::with_capacity(word.len());
     let mut at = Vec::with_capacity(word.len());
     let mut i = 0;
     while let Some(&c) = word.get(i) {
         let next = word.get(i + 1).copied();
-        let one_letter = !two_letters.contains(&(i + 1));
+        let one_letter = !pairs.contains(&(i + 1));
         let (cyr, len) = match (c, next) {
             ('l', Some('j')) if one_letter => ('љ', 2),
             ('n', Some('j')) if one_letter => ('њ', 2),
@@ -390,7 +338,7 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     }
     let lang = match lang {
         Lang::Installed(i) => {
-            if installed_bundled(i) == Some(hypher::Lang::Serbian) && !serbian_two_letters(core).is_empty() {
+            if installed_bundled(i) == Some(hypher::Lang::Serbian) && !two_letters(core).is_empty() {
                 return serbian_latin_breaks(core, lang);
             }
             if let Some(p) = installed_points(i, core) {

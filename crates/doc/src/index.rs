@@ -84,6 +84,8 @@ impl Default for IndexSpec {
 pub struct Resolved {
     pub r: IndexRef,
     pub pages: Option<(usize, usize)>,
+    /// The language of the text at the marker, which says whether `lj`, `nj` and `dž` are letters.
+    pub language: String,
 }
 
 #[derive(Default, Debug)]
@@ -95,9 +97,87 @@ struct Node {
     children: BTreeMap<String, Node>,
 }
 
-fn sort_key(s: &str) -> String {
+/// Does `language` treat `lj`, `nj` and `dž` as single letters (Serbian, Croatian, Bosnian)?
+fn has_digraphs(language: &str) -> bool {
+    crate::language_tag(language).is_some_and(|t| matches!(crate::language_subtag(t), "sr" | "sh" | "hr" | "bs"))
+}
+
+/// `s` lowercase and without leading punctuation, as a list of chars.
+fn sortable(s: &str) -> Vec<char> {
     let k: String = s.trim().trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-    if k.is_empty() { s.to_lowercase() } else { k }
+    if k.is_empty() { s.to_lowercase().chars().collect() } else { k.chars().collect() }
+}
+
+/// The indices of the first letter of each `lj`, `nj` and `dž` of `word` that is one letter.
+fn digraphs_of(word: &[char]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < word.len() {
+        let end = word[i..].iter().position(|c| !c.is_alphabetic()).map_or(word.len(), |n| i + n);
+        let two = crate::serbian::two_letters(&word[i..end]);
+        for a in i..end.saturating_sub(1) {
+            if matches!((word[a], word[a + 1]), ('l' | 'n', 'j') | ('d', 'ž')) && !two.contains(&(a + 1 - i)) {
+                out.push(a);
+            }
+        }
+        i = end + 1;
+    }
+    out
+}
+
+/// The sort key of `s`: code-point order, with the letters that order misplaces right after the
+/// one they follow (each is its base letter and a mark above every other char), so that Serbian
+/// follows its azbuka and abeceda (Pravopis srpskoga jezika, т. 4). None of these letters changes
+/// another alphabet's order. `digraphs`: `lj`, `nj` and `dž` are letters too, which in Latin only
+/// the language can tell.
+fn sort_key(s: &str, digraphs: bool) -> String {
+    const FIRST: char = '\u{10FFFE}';
+    const SECOND: char = '\u{10FFFF}';
+    let word = sortable(s);
+    let pairs = if digraphs { digraphs_of(&word) } else { vec![] };
+    let mut out = String::with_capacity(s.len() * 2);
+    let mut i = 0;
+    while let Some(&c) = word.get(i) {
+        if pairs.contains(&i) {
+            out.push(c);
+            out.push(if c == 'd' { FIRST } else { SECOND });
+            i += 2;
+            continue;
+        }
+        let (base, mark) = match c {
+            'č' => ('c', Some(FIRST)),
+            'ć' => ('c', Some(SECOND)),
+            'đ' => ('d', Some(SECOND)),
+            'š' => ('s', Some(SECOND)),
+            'ž' => ('z', Some(SECOND)),
+            'ђ' => ('д', Some(SECOND)),
+            'ј' => ('и', Some(SECOND)),
+            'љ' => ('л', Some(SECOND)),
+            'њ' => ('н', Some(SECOND)),
+            'ћ' => ('т', Some(SECOND)),
+            'џ' => ('ч', Some(SECOND)),
+            c => (c, None),
+        };
+        out.push(base);
+        out.extend(mark);
+        i += 1;
+    }
+    out
+}
+
+/// The section head of `s`, the alphabet's first letter of it (`Č`, `Lj`), or `#` for a symbol.
+fn section_head(s: &str, digraphs: bool) -> Option<String> {
+    let word = sortable(s);
+    let c = *word.first()?;
+    if !c.is_alphabetic() {
+        return Some("#".into());
+    }
+    // Georgian headings stay Mkhedruli (no capitals; Mtavruli is only for all-caps text).
+    let mut head: String = if crate::capitalizes(c) { c.to_uppercase().collect() } else { c.to_string() };
+    if digraphs && digraphs_of(&word).first() == Some(&0) {
+        head.extend(word.get(1));
+    }
+    Some(head)
 }
 
 /// Record one reference's see-target or page on its topic node.
@@ -122,16 +202,22 @@ fn record_ref(n: &mut Node, res: &Resolved) {
 /// The index as paragraphs `(style, text)`; `page_name` formats an absolute page.
 pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> String) -> Vec<(String, String)> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
+    let mut heads: BTreeMap<String, Option<String>> = BTreeMap::new();
     for res in refs {
         let topics: Vec<&String> = res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).collect();
         if topics.is_empty() {
             continue;
         }
+        let digraphs = has_digraphs(&res.language);
+        let source = |i: usize, t: &'_ String| res.r.sort.get(i).filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| t.to_string());
         let keys: Vec<(String, String)> = topics
             .iter()
             .enumerate()
-            .map(|(i, t)| (format!("{}\u{0}{}", sort_key(res.r.sort.get(i).filter(|s| !s.is_empty()).unwrap_or(t)), t.trim()), t.trim().to_string()))
+            .map(|(i, t)| (format!("{}\u{0}{}", sort_key(&source(i, t), digraphs), t.trim()), t.trim().to_string()))
             .collect();
+        if let (Some((key, _)), Some(t)) = (keys.first(), topics.first()) {
+            heads.entry(key.clone()).or_insert_with(|| section_head(&source(0, t), digraphs));
+        }
         let n = descend(&mut root, &keys);
         record_ref(n, res);
     }
@@ -139,19 +225,14 @@ pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> S
     if !spec.title.is_empty() {
         out.push(("Index Title".to_string(), spec.title.clone()));
     }
-    let mut heading: Option<char> = None;
+    let mut heading: Option<String> = None;
     for (key, n) in &root {
         if spec.section_headings {
-            // Georgian headings stay Mkhedruli (no capitals; Mtavruli is only for all-caps text).
-            let c = key.chars().next().map(|c| match c {
-                c if !c.is_alphabetic() => '#',
-                c if crate::capitalizes(c) => c.to_uppercase().next().unwrap_or(c),
-                c => c,
-            });
-            if c != heading {
-                heading = c;
-                if let Some(c) = c {
-                    out.push(("Index Section Head".into(), if c == '#' { "Symbols".into() } else { c.to_string() }));
+            let head = heads.get(key).cloned().flatten();
+            if head != heading {
+                heading = head.clone();
+                if let Some(head) = head {
+                    out.push(("Index Section Head".into(), if head == "#" { "Symbols".into() } else { head }));
                 }
             }
         }
@@ -221,7 +302,7 @@ mod tests {
     use super::*;
 
     fn r(topics: &[&str], range: IndexRange, pages: Option<(usize, usize)>) -> Resolved {
-        Resolved { r: IndexRef { topics: topics.iter().map(|s| s.to_string()).collect(), sort: vec![], range }, pages }
+        Resolved { r: IndexRef { topics: topics.iter().map(|s| s.to_string()).collect(), sort: vec![], range }, pages, language: String::new() }
     }
 
     #[test]
@@ -271,6 +352,82 @@ mod tests {
         let run_in = build(&IndexSpec { run_in: true, section_headings: false, title: String::new(), ..spec }, &refs[..2], &|p| (p + 1).to_string());
         assert_eq!(run_in, [("Index Level 1".to_string(), "Typography  2\u{2013}4: kerning  5".to_string())]);
     }
+    /// The entries and section heads of `topics` in `language`.
+    fn sorted(topics: &[&str], language: &str) -> (Vec<String>, Vec<String>) {
+        let refs: Vec<Resolved> =
+            topics.iter().map(|t| Resolved { language: language.into(), ..r(&[t], IndexRange::CurrentPage, Some((0, 0))) }).collect();
+        let spec = IndexSpec { title: String::new(), following_topic: "|".into(), ..Default::default() };
+        let out = build(&spec, &refs, &|p| (p + 1).to_string());
+        let of = |style: bool| {
+            out.iter().filter(|(s, _)| (s == "Index Section Head") == style).map(|(_, t)| t.split('|').next().unwrap_or(t).to_string()).collect()
+        };
+        (of(false), of(true))
+    }
+
+    #[test]
+    fn serbian_cyrillic_follows_the_azbuka_in_any_language() {
+        let want = [
+            "ангел",
+            "дан",
+            "ђак",
+            "евро",
+            "игра",
+            "јелен",
+            "кап",
+            "лав",
+            "љубав",
+            "мир",
+            "нос",
+            "њива",
+            "окно",
+            "тон",
+            "ћилим",
+            "ум",
+            "чај",
+            "џеп",
+            "шума",
+        ];
+        let mut shuffled = want;
+        shuffled.reverse();
+        for language in ["Serbian: Cyrillic", "English: USA", ""] {
+            let (entries, heads) = sorted(&shuffled, language);
+            assert_eq!(entries, want);
+            assert_eq!(heads[2], "Ђ");
+            assert_eq!(heads[8], "Љ");
+        }
+    }
+
+    #[test]
+    fn serbian_latin_follows_the_abeceda() {
+        let want = [
+            "ako", "cvet", "čaj", "ćup", "dan", "džep", "đak", "ime", "lav", "ljubav", "mir", "nos", "njiva", "oko", "sat", "šuma", "tužan", "zima",
+            "žaba",
+        ];
+        let mut shuffled = want;
+        shuffled.reverse();
+        let (entries, heads) = sorted(&shuffled, "Serbian: Latin");
+        assert_eq!(entries, want);
+        assert_eq!(heads, ["A", "C", "Č", "Ć", "D", "Dž", "Đ", "I", "L", "Lj", "M", "N", "Nj", "O", "S", "Š", "T", "Z", "Ž"]);
+    }
+
+    /// Where `nj` is two letters, the word sorts by them: `konjugacija` before `konj`.
+    #[test]
+    fn serbian_latin_knows_pairs_of_two_letters() {
+        let (entries, _) = sorted(&["konj", "konjugacija", "konopac", "kos"], "sr_RS");
+        assert_eq!(entries, ["konjugacija", "konopac", "konj", "kos"]);
+        let (entries, heads) = sorted(&["nadživeti", "nadžak", "Injekcija", "Njegoš"], "Serbian: Latin");
+        assert_eq!(entries, ["Injekcija", "nadživeti", "nadžak", "Njegoš"]);
+        assert_eq!(heads, ["I", "N", "Nj"]);
+    }
+
+    #[test]
+    fn croatian_shares_the_digraphs_and_english_does_not() {
+        assert_eq!(sorted(&["lopta", "ljubav"], "hr-HR").0, ["lopta", "ljubav"]);
+        assert_eq!(sorted(&["lopta", "Ljubljana"], "English: USA").0, ["Ljubljana", "lopta"]);
+        // The letters with marks follow their base letter in any language.
+        assert_eq!(sorted(&["dan", "cvet", "čaj"], "English: USA").0, ["cvet", "čaj", "dan"]);
+    }
+
     #[test]
     fn georgian_section_heads_stay_mkhedruli() {
         let refs = vec![r(&["ასო"], IndexRange::CurrentPage, Some((0, 0))), r(&["ბადე"], IndexRange::CurrentPage, Some((1, 1)))];

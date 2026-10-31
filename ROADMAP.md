@@ -12,6 +12,9 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-31** · The index sorts Serbian by azbuka and abeceda: `đ`, `č` and the rest follow their
+  letter in any language, and text in Serbian, Croatian or Bosnian has `lj`, `nj` and `dž` as letters
+  with section heads of their own. No readiness percentage change.
 - **2026-10-31** · Serbian: text in Latin script breaks between `nj` or `dž` where they are two
   letters (`kon-ju-ga-ci-ja`, `nad-ži-ve-ti`), as the Cyrillic spelling shows, also past an
   installed Latin pattern file; `lj`, `nj`, `dž` count as one letter against the word limits, and
