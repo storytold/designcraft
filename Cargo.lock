@@ -1585,6 +1585,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "designcraft-testkit"
+version = "0.14.0"
+
+[[package]]
 name = "designcraft-textimport"
 version = "0.14.0"
 dependencies = [

@@ -1,0 +1,10 @@
+[package]
+name = "designcraft-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft test helpers: per-process temp dirs, quiet panic capture"
+publish = false
+
+[lints]
+workspace = true

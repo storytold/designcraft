@@ -147,6 +147,43 @@ fn outside_stroke_retains_joins_dashes_and_transforms() {
     assert_eq!(img.pixel(22, 22), BLUE);
 }
 
+fn line_render(kind: StrokeType) -> Rendered {
+    let mut d = Document::new(&NewDocument { width: 96.0, height: 96.0, facing_pages: false, ..Default::default() });
+    d.swatches.push(Swatch::color("Red", Color::rgb8(255, 0, 0)));
+    let id = ItemId(d.alloc());
+    let mut item = Item::new(id, d.default_layer(), Shape::Path, shapes::line(Point::new(16.0, 48.0), Point::new(80.0, 48.0)));
+    item.fill = Fill::default();
+    item.stroke = Stroke { swatch: "Red".into(), weight: 6.0, kind, ..Default::default() };
+    item.opacity = 1.0;
+    d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+    let mut renderer = Renderer::new();
+    renderer.threads = 0;
+    renderer.render(
+        &d,
+        &Cache::new(),
+        &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
+        (96, 96),
+        Affine::IDENTITY,
+        &RenderOptions { paper: false, background: Some(BLUE), ..Default::default() },
+    )
+}
+
+#[test]
+fn dotted_line_paints_dots_and_leaves_gaps() {
+    // Dots every 12 pt (the weight-6 gap): dot centres at x = 16, 28, 40, ...
+    let img = line_render(StrokeType::Dotted);
+    assert_eq!(img.pixel(16, 48), RED, "a dot starts the line");
+    assert_eq!(img.pixel(40, 48), RED, "a later dot is painted");
+    assert_eq!(img.pixel(22, 48), BLUE, "the gap between dots stays background");
+}
+
+#[test]
+fn dashed_line_paints_dashes_and_leaves_gaps() {
+    let img = line_render(StrokeType::Dashed { pattern: vec![9.0, 6.0] });
+    assert_eq!(img.pixel(20, 48), RED, "inside a dash");
+    assert_eq!(img.pixel(28, 48), BLUE, "inside a gap");
+}
+
 #[test]
 fn outside_stroke_is_identical_with_multiple_render_threads() {
     let single = render(rectangle(), true, stroke(StrokeAlign::Outside), Affine::IDENTITY, 0);
