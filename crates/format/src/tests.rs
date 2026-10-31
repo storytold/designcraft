@@ -3,6 +3,38 @@ use designcraft_doc::build::NewDocument;
 use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, ParaFormat, SpreadRef};
 
+/// An asset entry that is present but unreadable (a bad CRC) was reported as absent: the
+/// image opened empty and the next save skipped it, so it was gone for good. The document
+/// still opens, the asset is marked, and saving refuses instead of writing the loss (#1592).
+#[test]
+fn a_corrupt_asset_is_not_silently_lost() {
+    let mut d = Document::new(&NewDocument::default());
+    let aid = png_asset(&mut d, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    place(&mut d, aid, 0.0);
+    let good = save(&d).unwrap();
+
+    // Corrupt the asset entry's bytes, leaving the archive's structure intact, so the entry
+    // is found and its CRC fails.
+    let at = good.windows(8).position(|w| w == [1, 2, 3, 4, 5, 6, 7, 8]).expect("the stored PNG bytes are in the file");
+    let mut broken = good.clone();
+    broken[at..at + 8].copy_from_slice(&[9, 9, 9, 9, 9, 9, 9, 9]);
+
+    let d2 = load(&broken).expect("the document still opens: the layout is all there");
+    let a = d2.assets.get(&aid).expect("the asset is still listed");
+    assert!(a.unreadable, "the asset is marked unreadable, not treated as absent");
+    assert!(a.data.is_empty(), "and it has no bytes");
+
+    // Saving would write the document without the image. It refuses, and says what to do.
+    let err = save(&d2).expect_err("saving a document with an unreadable asset is refused");
+    let msg = err.to_string();
+    assert!(msg.contains("x.png") && msg.contains("Relink"), "the error names the asset and the way out: {msg}");
+
+    // The intact file is unaffected: it opens with its bytes and saves again.
+    let d3 = load(&good).unwrap();
+    assert!(!d3.assets[&aid].unreadable && !d3.assets[&aid].data.is_empty());
+    assert!(save(&d3).is_ok());
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a =

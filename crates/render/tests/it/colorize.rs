@@ -44,6 +44,7 @@ fn shown(file: Vec<u8>, fill: Fill) -> Vec<[u8; 4]> {
             pixels: Some((3, 1)),
             pdf_crop: Default::default(),
             pdf_box: None,
+            unreadable: false,
         }),
     );
     let id = ItemId(d.alloc());
