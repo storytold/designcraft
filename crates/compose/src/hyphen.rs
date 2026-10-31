@@ -204,7 +204,9 @@ fn installed_bundled(i: u16) -> Option<hypher::Lang> {
 /// marks the pair. These only start a word: `an|jon` is not in `kanjon`, nor `od|žal` in `odžak`.
 /// Checked against the ~190,000 stems of the Serbian Hunspell dictionaries: they touch no word with
 /// one letter but the variants коњугација and коњунктив, which break as the words they vary. A list,
-/// not a dictionary lookup, so that a text breaks the same on every machine.
+/// not a dictionary lookup, so that a text breaks the same on every machine. `pod|že`, `pod|ži` and
+/// `pod|žu` are short on purpose, for words past those dictionaries (поджелудачни): no word there
+/// begins поџе, поџи or поџу.
 const TWO_LETTERS_AT_START: &[&str] = &[
     "an|jon",
     "and|žej",
@@ -221,7 +223,9 @@ const TWO_LETTERS_AT_START: &[&str] = &[
     "pan|jug",
     "pod|žanr",
     "pod|ždrel",
-    "pod|žup",
+    "pod|že",
+    "pod|ži",
+    "pod|žu",
     "pred|žalb",
     "pred|želu",
     "šen|jan",
@@ -844,11 +848,19 @@ mod tests {
             ("vanjezički", "van-je-zič-ki"),
             ("panjugoslovenski", "pan-ju-go-slo-ven-ski"),
             ("podžanr", "pod-žanr"),
+            ("Tanjug", "Tan-jug"),
+            ("konjektura", "kon-jek-tu-ra"),
+            ("injektor", "in-jek-tor"),
+            ("odžaliti", "od-ža-li-ti"),
+            ("podžupan", "pod-žu-pan"),
+            ("podželudačni", "pod-že-lu-dač-ni"),
+            ("nadživljavati", "nad-ži-vlja-va-ti"),
             // Inflected and with a prefix.
             ("konjunkcijama", "kon-junk-ci-ja-ma"),
             ("podžanrovi", "pod-žan-ro-vi"),
             ("mikroinjekcija", "mi-kro-in-jek-ci-ja"),
             ("Konjugacija", "Kon-ju-ga-ci-ja"),
+            ("PODŽUPAN", "POD-ŽU-PAN"),
             // A real digraph later in the word stays one letter.
             ("nadživljen", "nad-ži-vljen"),
             ("odžaljen", "od-ža-ljen"),
@@ -877,6 +889,10 @@ mod tests {
         }
         assert_eq!(marked("kanjon", lat), "ka-njon");
         assert_eq!(marked("budžet", lat), "bu-džet");
+        assert_eq!(marked("nadžak", lat), "na-džak");
+        assert_eq!(marked("Njegovan", lat), "Nje-go-van");
+        assert_eq!(marked("LJILJANA", lat), "LJI-LJA-NA");
+        assert_eq!(marked("Džudista", lat), "Džu-di-sta");
     }
 
     /// The examples of Pravopis srpskoga jezika (Matica srpska, 2002), §186: the breaks it gives and
