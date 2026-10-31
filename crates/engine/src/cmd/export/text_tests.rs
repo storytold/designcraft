@@ -376,3 +376,97 @@ fn export_story_as_text_and_rtf() {
     assert!(std::fs::read_to_string(&path).unwrap().starts_with("{\\rtf1"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn linked_effect_frame() -> (Session, designcraft_doc::ItemId) {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width": 72, "height": 72})).unwrap();
+    let frame = s.execute("frame.create", &json!({"rect": [10, 10, 30, 30], "content": "text", "text": "Link", "caret": false})).unwrap();
+    let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+    s.execute("hyperlink.create", &json!({"url": "https://example.com", "ids": [id.0]})).unwrap();
+    s.execute("object.feather", &json!({"ids": [id.0], "width": 2})).unwrap();
+    (s, id)
+}
+
+#[test]
+fn rasterized_links_leave_no_stand_in_for_other_formats() {
+    let (s, _) = linked_effect_frame();
+    let d = &s.doc().unwrap().doc;
+    let mut unlinked = (**d).clone();
+    unlinked.hyperlinks.clear();
+    for keep_wrap in [false, true] {
+        let (linked, n) = super::flatten::rasterize_where(d, &s.cache, 144.0, keep_wrap, |_| true);
+        let (plain, plain_n) = super::flatten::rasterize_where(&unlinked, &s.cache, 144.0, keep_wrap, |_| true);
+        assert_eq!(n, 1);
+        assert_eq!(plain_n, 1);
+        assert_eq!(linked.unwrap().spreads[0].items.len(), plain.unwrap().spreads[0].items.len(), "keep_wrap={keep_wrap}");
+    }
+}
+
+fn assert_link_stand_in_is_inert(item: &designcraft_doc::Item) {
+    assert!(item.nonprinting, "every stand-in item is nonprinting");
+    assert!(item.form_field.is_none(), "stand-ins must not emit form fields");
+    assert!(item.button.is_none(), "stand-ins must not emit buttons");
+    assert!(item.media.is_none(), "stand-ins must not emit media");
+    for child in item.children() {
+        assert_link_stand_in_is_inert(child);
+    }
+}
+
+#[test]
+fn rasterized_links_clear_interactivity_on_frames() {
+    let (mut s, id) = linked_effect_frame();
+    let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    let item = d.item_mut(id).unwrap();
+    item.button = Some(designcraft_doc::ButtonAction::GoToFirstPage);
+    item.media = Some(Default::default());
+    let story = item.text_frame().unwrap().story;
+    let (copy, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+    assert_eq!(n, 1);
+    let copy = copy.unwrap();
+    let stand_in = copy.item(id).unwrap();
+    assert_link_stand_in_is_inert(stand_in);
+    assert_eq!(stand_in.text_frame().unwrap().story, story);
+}
+
+#[test]
+fn rasterized_links_clear_interactivity_in_nested_groups() {
+    let (mut s, id) = linked_effect_frame();
+    let other = s.execute("frame.create", &json!({"rect": [35, 10, 45, 20]})).unwrap()["id"].clone();
+    let inner = s.execute("object.group", &json!({"ids": [id.0, other]})).unwrap()["id"].clone();
+    let other = s.execute("frame.create", &json!({"rect": [35, 25, 45, 35]})).unwrap()["id"].clone();
+    let group = s.execute("object.group", &json!({"ids": [inner, other]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.feather", &json!({"ids": [group], "width": 2})).unwrap();
+    let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+    let child = d.item_mut(id).unwrap();
+    child.form_field = Some(designcraft_doc::FormField {
+        kind: designcraft_doc::FieldKind::TextField,
+        name: "Field".into(),
+        value: String::new(),
+        options: Vec::new(),
+        multiline: false,
+        required: false,
+        font_size: 0.0,
+    });
+    child.button = Some(designcraft_doc::ButtonAction::GoToFirstPage);
+    child.media = Some(Default::default());
+    let story = child.text_frame().unwrap().story;
+    let (copy, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+    assert_eq!(n, 1);
+    let copy = copy.unwrap();
+    assert_link_stand_in_is_inert(copy.item(designcraft_doc::ItemId(group)).unwrap());
+    assert_eq!(copy.item(id).unwrap().text_frame().unwrap().story, story);
+}
+
+#[test]
+fn rasterized_links_keep_exactly_one_wrapping_stand_in() {
+    let (mut s, id) = linked_effect_frame();
+    s.execute("object.textWrap", &json!({"ids": [id.0], "mode": "boundingBox", "offset": 3})).unwrap();
+    let before = s.doc().unwrap().doc.item(id).unwrap().wrap.clone();
+    let (copy, n) = super::rasterize_effects(&s.doc().unwrap().doc, &s.cache, &Default::default());
+    assert_eq!(n, 1);
+    let copy = copy.unwrap();
+    assert_eq!(copy.spreads[0].items.len(), 2);
+    assert_eq!(copy.spreads[0].items.iter().filter(|it| it.nonprinting).count(), 1);
+    assert_eq!(copy.item(id).unwrap().wrap, before);
+    assert_ne!(before.mode, designcraft_doc::WrapMode::None);
+}

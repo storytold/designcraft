@@ -169,11 +169,13 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    pdf_report(&s.doc()?.doc, &s.cache, p)
+}
+
+pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;
-    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
-    let doc: &designcraft_doc::Document = &st.doc;
+    let mut r = print_pdf(doc, cache, &opts, ppi)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     // Interactive PDF view options.
     let mut cat = String::new();

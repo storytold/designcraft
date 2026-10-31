@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -53,7 +53,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | Text Only / RTF / Tagged Text | `.txt`, `.rtf` | ✓ | ✓ (`file.exportText` txt, rtf, tagged) | | 1% |
 | XML | `.xml` | ✓ | ✓ export and import, DTD validate | depth unmeasured | 1% |
 | Print / PostScript | | ✓ printers, PPDs, separations | ~ PDF to CUPS/Windows (craft-print; no PostScript) | | 3% |
-| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | | 2% |
+| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | PDF uses the regular export pipeline, including 300 ppi soft-effects images; warnings appear in the result and report. Frame and text-range hyperlinks keep their source bounds through rasterization, including inside groups. Synthetic shadow/feather/link regression in `crates/engine/src/cmd/package/tests.rs` | 2% |
 
 PDF/X-4 export warns about unembedded fonts that draw visible text, including inside placed PDF
 forms; `designcraft-cli validate-pdf FILE.pdf` reports the same issues, with font names and pages

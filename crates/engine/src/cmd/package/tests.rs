@@ -1,5 +1,100 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn soft_effect_link_rects(bytes: &[u8]) -> Vec<Vec<f32>> {
+    use hayro_syntax::object::{Array, Name};
+    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    pdf.objects()
+        .into_iter()
+        .filter_map(|o| o.into_dict())
+        .filter(|d| d.get::<Name<'_>>(b"Subtype").is_some_and(|n| n.as_ref() == b"Link"))
+        .map(|d| d.get::<Array<'_>>(b"Rect").unwrap().iter::<f32>().collect())
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_soft_effect_links(packaged: bool) {
+    for (text, grouped) in [(false, false), (true, false), (false, true), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"title": "LinkedEffects", "width": 144, "height": 144})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 100, 60], "content": "text", "text": "Visit us", "caret": false})).unwrap();
+        if text {
+            s.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 5})).unwrap();
+            s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap();
+        } else {
+            s.execute("hyperlink.create", &json!({"url": "https://example.com", "ids": [frame["id"]]})).unwrap();
+        }
+        let effect = if grouped {
+            let other = s.execute("frame.create", &json!({"rect": [100, 80, 110, 90]})).unwrap();
+            let group = s.execute("object.group", &json!({"ids": [frame["id"], other["id"]]})).unwrap()["id"].clone();
+            s.execute("transform.move", &json!({"ids": [group], "dx": 3, "dy": 4})).unwrap();
+            group
+        } else {
+            frame["id"].clone()
+        };
+        let before = s.execute("file.exportPdf", &json!({})).unwrap();
+        let before = soft_effect_link_rects(&super::super::base64_decode(before["base64"].as_str().unwrap()));
+        assert_eq!(before.len(), 1);
+        if !text {
+            assert_eq!(before[0], if grouped { vec![23.0, 80.0, 103.0, 120.0] } else { vec![20.0, 84.0, 100.0, 124.0] });
+        }
+        s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [effect]})).unwrap();
+        let bytes = if packaged {
+            s.execute("file.package", &json!({"dir": dir.path(), "pdf": true, "idml": false})).unwrap();
+            std::fs::read(dir.path().join("LinkedEffects.pdf")).unwrap()
+        } else {
+            let result = s.execute("file.exportPdf", &json!({})).unwrap();
+            super::super::base64_decode(result["base64"].as_str().unwrap())
+        };
+        assert_eq!(soft_effect_link_rects(&bytes), before, "text={text}, grouped={grouped}");
+        assert_eq!(String::from_utf8_lossy(&bytes).matches("/Subtype/Image").count(), 2, "one image and its soft mask");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn export_pdf_preserves_soft_effect_link_bounds() {
+    check_soft_effect_links(false);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn package_pdf_preserves_soft_effect_link_bounds() {
+    check_soft_effect_links(true);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn package_pdf_preserves_soft_effects_and_reports_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"title": "SoftEffects", "width": 144, "height": 144})).unwrap();
+    let shadow = s.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [shadow]})).unwrap();
+    s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [shadow]})).unwrap();
+    let feather = s.execute("frame.create", &json!({"rect": [80, 80, 120, 120], "shape": "ellipse"})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [feather]})).unwrap();
+    s.execute("object.feather", &json!({"width": 6, "ids": [feather]})).unwrap();
+    let exported = s.execute("file.exportPdf", &json!({})).unwrap();
+    let expected = super::super::base64_decode(exported["base64"].as_str().unwrap());
+
+    let packaged = s.execute("file.package", &json!({"dir": dir.path(), "pdf": true, "idml": false})).unwrap();
+
+    let actual = std::fs::read(dir.path().join("SoftEffects.pdf")).unwrap();
+    let images = |bytes: &[u8]| String::from_utf8_lossy(bytes).matches("/Subtype/Image").count();
+    assert_eq!(images(&expected), 4, "two images and their soft masks");
+    assert_eq!(images(&actual), images(&expected), "package must rasterise the same objects as export");
+    assert_eq!(packaged["warnings"], exported["warnings"]);
+    let warnings = packaged["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("2 object(s) with soft effects")));
+    let report = std::fs::read_to_string(dir.path().join("Instructions.txt")).unwrap();
+    assert_eq!(packaged["report"], report);
+    for warning in warnings {
+        assert!(report.contains(warning.as_str().unwrap()), "{report}");
+    }
+}
+
 #[test]
 fn relocated_packages_rebind_embedded_image_links_on_open() {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
@@ -291,6 +386,7 @@ fn package_copies_the_fallback_fonts_that_draw_text() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn packaged_fonts_keep_a_font_extension() {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
