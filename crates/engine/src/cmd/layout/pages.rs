@@ -342,7 +342,15 @@ mod page_size_tests {
         s.execute("layout.pageSize", &json!({"pages": [3], "preset": "A4"})).unwrap();
         let d = s.doc().unwrap().doc.clone();
         assert!((d.spreads[si].pages[1].width - 595.276).abs() < 0.01);
+        // A Japanese preset resizes the page to its millimetre size, like the other presets.
+        s.execute("layout.pageSize", &json!({"pages": [3], "preset": "japanese postcard (100 × 148 mm)"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let postcard = &d.spreads[si].pages[1];
+        let mm = designcraft_geom::units::PT_PER_MM;
+        assert!((postcard.width - 100.0 * mm).abs() < 0.01 * mm, "{} pt", postcard.width);
+        assert!((postcard.height - 148.0 * mm).abs() < 0.01 * mm, "{} pt", postcard.height);
         assert!(s.execute("layout.pageSize", &json!({"pages": [9], "width": 100})).is_err());
+        assert!(s.execute("layout.pageSize", &json!({"pages": [3], "preset": "No Such Size"})).is_err());
     }
 }
 

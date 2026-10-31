@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Text Frame Options layout, Preview and Paragraph Spacing Limit; Swatches rows show InDesign's type columns; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Text Frame Options layout, Preview and Paragraph Spacing Limit; Swatches rows show InDesign's type columns; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ New has Japanese print page-size presets: 文庫, 新書, 四六判, 菊判, AB判, ハガキ, 往復ハガキ, B6 (JIS) and 名刺; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -142,7 +142,7 @@ features), exchange edge cases, and everything excluded above.
 
 | Core feature | Weight | Depth | Evidence |
 |---|---|---|---|
-| Launch, welcome screen, new document from a preset | 10% | 80% | presets incl. A6 (#248) |
+| Launch, welcome screen, new document from a preset | 10% | 80% | presets incl. A6 (#248) and the Japanese print sizes (文庫, 新書, 四六判, 菊判, AB判, ハガキ, 往復ハガキ, B6, 名刺) |
 | Type text in a frame, select and edit it | 15% | 65% | caret formatting (#289), double-click selection in fields (#189) |
 | Font, size, colour, alignment | 15% | 65% | installed fonts not always found (#161, #110, #107) |
 | Place an image and fit it | 10% | 75% | place gun, fitting |
@@ -473,6 +473,7 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Japanese print page-size presets in New Document, the start screen, Document Setup, `file.new` and `layout.pageSize` (文庫, 新書, 四六判, 菊判, AB判, ハガキ, 往復ハガキ, B6 (JIS), 名刺); readiness unchanged |
 | 2026-10-19 | minor | Output assessment records visible unembedded font detection in PDF/X-4 export and `validate-pdf`, the invisible-text exemption, incomplete-check reporting at the operation and nesting-depth limits, and remaining placed-PDF font repair (#909); readiness and hours unchanged |
 | 2026-10-13 | minor | `.indd` and `.indt` open through storytold/indd-utils; INDD remaining work 10–30 h (real-file corpus); readiness unchanged until it is measured |
 | 2026-10-12 | minor | Text threads by hand; stage note and distance to alpha follow the gate (5–7 h, #165); percentages unchanged |

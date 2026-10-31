@@ -255,6 +255,40 @@ mod new_document_tests {
     }
 
     #[test]
+    fn japanese_page_presets_make_documents() {
+        use designcraft_geom::units::PT_PER_MM;
+
+        for (name, w_mm, h_mm) in [
+            ("Bunko (105 × 148 mm)", 105.0, 148.0),
+            ("Shinsho (103 × 182 mm)", 103.0, 182.0),
+            ("Yotsuro (127 × 188 mm)", 127.0, 188.0),
+            ("Kiku (152 × 227 mm)", 152.0, 227.0),
+            ("AB (210 × 257 mm)", 210.0, 257.0),
+            ("Japanese Postcard (100 × 148 mm)", 100.0, 148.0),
+            ("Japanese Double Postcard (148 × 200 mm)", 148.0, 200.0),
+            ("B6 (JIS 128 × 182 mm)", 128.0, 182.0),
+            ("Japanese Business Card (91 × 55 mm)", 91.0, 55.0),
+        ] {
+            let mut s = Session::new();
+            // The command resolves the name case-insensitively, as it always has.
+            s.execute("file.new", &json!({"preset": name.to_lowercase()})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            assert!((d.settings.page_width - w_mm * PT_PER_MM).abs() < 0.01 * PT_PER_MM, "{name}: {} pt", d.settings.page_width);
+            assert!((d.settings.page_height - h_mm * PT_PER_MM).abs() < 0.01 * PT_PER_MM, "{name}: {} pt", d.settings.page_height);
+            assert_eq!(d.settings.horizontal_units, designcraft_geom::Unit::Millimeters, "{name}");
+            assert!(d.settings.facing_pages, "{name}");
+            let page = d.page(0).unwrap();
+            assert_eq!((page.width, page.height), (d.settings.page_width, d.settings.page_height), "{name}");
+        }
+        // A preset that was here before still makes the document it did.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"preset": "Letter"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!((d.settings.page_width, d.settings.page_height), (612.0, 792.0));
+        assert_eq!(d.settings.horizontal_units, designcraft_geom::Unit::Picas);
+    }
+
+    #[test]
     fn new_document_takes_intent_units_start_page_bleed_and_slug() {
         let mut s = Session::new();
         let p = json!({"preset": "A4", "intent": "web", "units": "pixels", "startPage": 4, "bleed": [9, 0, 3, 6], "slug": 18});
