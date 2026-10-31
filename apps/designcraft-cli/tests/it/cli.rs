@@ -556,3 +556,152 @@ fn usage_lists_the_automation_root_flags() {
     let usage = String::from_utf8_lossy(&out.stdout);
     assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
 }
+
+/// Every file a run writes is reported on stdout as one JSON line, where a `--cmd` result already
+/// goes, so a script can read what was written without merging in stderr (#1214). The lines meant
+/// for a person stay on stderr.
+#[test]
+fn files_written_are_reported_on_stdout_as_json() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-wrote-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pages = dir.join("pages");
+    let out = cli().args(["run", "--sample", "--all-pages", pages.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::from_str(l).expect("each line is JSON")).collect();
+    assert!(!lines.is_empty(), "a page export says what it wrote: {stdout:?}");
+    assert_eq!(lines.len(), std::fs::read_dir(&pages).unwrap().count(), "one line per file written");
+    for (n, line) in lines.iter().enumerate() {
+        let path = line["wrote"].as_str().expect("the path it wrote");
+        assert!(std::path::Path::new(path).is_file(), "{path} exists");
+        assert_eq!(path, pages.join(format!("page-{:03}.png", n + 1)).to_string_lossy(), "in page order");
+        assert!(line["width"].as_u64().is_some_and(|w| w > 0) && line["height"].as_u64().is_some_and(|h| h > 0), "{line}");
+    }
+
+    // The human lines are still on stderr, and nothing machine-readable is mixed into them.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.lines().filter(|l| l.starts_with("wrote ")).count(), lines.len());
+    assert!(!stderr.lines().any(|l| l.starts_with('{')), "stderr carries no JSON: {stderr:?}");
+
+    // A PDF export says the same, with what a PDF has to report.
+    let pdf = dir.join("out.pdf");
+    let out = cli().args(["run", "--sample", "--export", pdf.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let line: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
+    assert_eq!(line["wrote"].as_str(), Some(pdf.to_string_lossy().as_ref()));
+    assert!(line["pages"].as_u64().is_some_and(|p| p > 0) && line["bytes"].as_u64().is_some_and(|b| b > 0), "{line}");
+    // `warnings` is an array whether the export reported any or not, as the documented shape of
+    // the line says: the result leaves it out when there are none.
+    assert!(line["warnings"].is_array(), "{line}");
+
+    // A deck and a saved document report in the same shape, with what each has to say.
+    let pptx = dir.join("out.pptx");
+    let saved = dir.join("out.designcraft");
+    let out = cli().args(["run", "--sample", "--export", pptx.to_str().unwrap(), "--export", saved.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::from_str(l).expect("each line is JSON")).collect();
+    assert_eq!(lines.len(), 2, "one line per file, in the order the exports were given: {stdout:?}");
+    assert_eq!(lines[0]["wrote"].as_str(), Some(pptx.to_string_lossy().as_ref()));
+    assert!(lines[0]["slides"].as_u64().is_some_and(|n| n > 0) && lines[0]["bytes"].as_u64().is_some_and(|b| b > 0), "{}", lines[0]);
+    assert!(lines[0]["warnings"].is_array(), "{}", lines[0]);
+    assert_eq!(lines[1]["wrote"].as_str(), Some(saved.to_string_lossy().as_ref()));
+    assert_eq!(lines[1]["saved"], serde_json::json!(true), "{}", lines[1]);
+    assert!(pptx.is_file() && saved.is_file());
+
+    // A --cmd that writes a file reports it as well: the command result is its own line, and the
+    // written file gets the same record an --export would have given it.
+    let cmd_pdf = dir.join("cmd.pdf");
+    let out = cli().args(["run", "--sample", "--cmd", &format!("file.exportPdf={{\"path\": {:?}}}", cmd_pdf.to_string_lossy())]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::from_str(l).expect("each line is JSON")).collect();
+    assert_eq!(lines.len(), 2, "the command result, then what it wrote: {stdout:?}");
+    assert!(lines[0]["path"].is_string() && lines[0]["wrote"].is_null(), "the command's own result first: {}", lines[0]);
+    assert_eq!(lines[1]["wrote"].as_str(), Some(cmd_pdf.to_string_lossy().as_ref()), "{}", lines[1]);
+    assert!(lines[1]["bytes"].as_u64().is_some_and(|b| b > 0) && lines[1]["warnings"].is_array(), "{}", lines[1]);
+    assert!(cmd_pdf.is_file());
+    assert!(String::from_utf8_lossy(&out.stderr).lines().any(|l| l.starts_with("wrote ")), "and a human line on stderr");
+
+    // A command that writes several files reports each of them. `file.package` writes a folder
+    // and answers with a list of paths, `links.copyTo` now names the files it copied as well --
+    // the run reports every file it writes, and a command the run cannot see the paths of is a
+    // command whose files go unreported (noted in review).
+    for (cmd, dirname) in [("file.package", "pkg"), ("links.copyTo", "copied")] {
+        let target = dir.join(dirname);
+        let out = cli().args(["run", "--sample", "--cmd", &format!("{cmd}={{\"dir\": {:?}}}", target.to_string_lossy())]).output().unwrap();
+        assert!(out.status.success(), "{cmd}: {}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let lines: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::from_str(l).expect("each line is JSON")).collect();
+        let written: Vec<&serde_json::Value> = lines.iter().filter(|l| !l["wrote"].is_null()).collect();
+        assert!(!written.is_empty(), "{cmd} says what it wrote: {stdout:?}");
+        for line in &written {
+            let path = line["wrote"].as_str().expect("the path it wrote");
+            assert!(std::path::Path::new(path).is_file(), "{cmd}: {path} exists");
+        }
+        // One line per file the command named, and a human line for each on stderr.
+        let named = lines.iter().find(|l| l["files"].is_array()).map(|l| l["files"].as_array().unwrap().len());
+        assert_eq!(named, Some(written.len()), "{cmd}: one line per file it named: {stdout:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.lines().filter(|l| l.starts_with("wrote ")).count(), written.len(), "{cmd}: {stderr:?}");
+    }
+
+    // The last line shape: an export that runs a command for the file type (.html, .rtf, .txt,
+    // .idml, .epub). Those report bytes and the warnings the export gives -- an EPUB or HTML
+    // export says what it left out -- and nothing else (#1304 review).
+    // `.rtf` and `.txt` go through `file.exportText`, which needs a text target ("edit text or
+    // select a text frame"), so they are not reachable from a bare `run --sample`.
+    for name in ["out.html", "out.idml", "out.epub"] {
+        let file = dir.join(name);
+        let out = cli().args(["run", "--sample", "--export", file.to_str().unwrap()]).output().unwrap();
+        assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let line: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{name}: {stdout:?}: {e}"));
+        assert_eq!(line["wrote"].as_str(), Some(file.to_string_lossy().as_ref()), "{name}: {line}");
+        assert!(line["bytes"].as_u64().is_some_and(|b| b > 0), "{name}: {line}");
+        // `warnings` is an array whichever way the command answers: the HTML and EPUB exports
+        // report what they left out, the text export reports nothing at all.
+        assert!(line["warnings"].is_array(), "{name}: {line}");
+        assert!(file.is_file(), "{name} exists");
+        // And the human line is still the one on stderr.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.lines().any(|l| l.starts_with("wrote ")), "{name}: {stderr:?}");
+        assert!(!stderr.lines().any(|l| l.starts_with('{')), "{name}: stderr carries no JSON: {stderr:?}");
+    }
+
+    // A command that writes a whole folder answers with the files it wrote, not one path, and
+    // every one of them is reported (#1304 review).
+    let pkg = dir.join("pkg");
+    let out = cli().args(["run", "--sample", "--cmd", &format!("file.package={{\"dir\": {:?}}}", pkg.to_string_lossy())]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<serde_json::Value> = stdout.lines().map(|l| serde_json::from_str(l).expect("each line is JSON")).collect();
+    let (results, written): (Vec<_>, Vec<_>) = lines.iter().partition(|l| l["wrote"].is_null());
+    assert_eq!(results.len(), 1, "the command's own result: {stdout:?}");
+    let files = results[0]["files"].as_array().expect("the files it wrote");
+    assert!(files.len() > 1, "the sample packages several files: {}", results[0]["files"]);
+    assert_eq!(written.len(), files.len(), "one record per file written: {stdout:?}");
+    for (record, file) in written.iter().zip(files) {
+        assert_eq!(record["wrote"], *file, "in the order the command reports them");
+        assert!(std::path::Path::new(file.as_str().unwrap_or("")).is_file(), "{file} exists");
+    }
+
+    // An EPUB or HTML export goes through its command, whose result can carry warnings: the line
+    // keeps them, as the PDF and deck lines do (#1304 review).
+    let epub = dir.join("out.epub");
+    let out = cli().args(["run", "--sample", "--export", epub.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let line: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
+    assert_eq!(line["wrote"].as_str(), Some(epub.to_string_lossy().as_ref()));
+    assert!(line["bytes"].as_u64().is_some_and(|b| b > 0) && line["warnings"].is_array(), "{line}");
+
+    // A --cmd that writes nothing still reports only its result.
+    let out = cli().args(["run", "--sample", "--cmd", "document.list"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout:?}");
+    assert!(!stdout.contains("wrote"), "{stdout:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

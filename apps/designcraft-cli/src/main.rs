@@ -40,7 +40,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n         stdout carries one JSON line per --cmd result and one {\"wrote\": PATH, ...} line per file written, including by a --cmd, in the order they happen;\n         the human lines stay on stderr\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -355,6 +355,53 @@ fn run(args: &[String]) -> Result<(), String> {
                 if !r.is_null() {
                     outln!("{}", serde_json::to_string(&r).unwrap_or_default());
                 }
+                // A command writes a file too, and a run reports every file it writes (#1214).
+                // The commands that do answer with the path they wrote -- which they may have
+                // normalised, so it is theirs and not the one asked for -- and the number of
+                // bytes that went into it. A command that only names a path it read (`file.open`,
+                // `book.list`) has no `bytes`, so it reports nothing here.
+                if let Some(path) = r.get("path").and_then(Value::as_str)
+                    && let Some(bytes) = r.get("bytes").cloned().filter(Value::is_number)
+                {
+                    eprintln!("wrote {path} ({bytes} bytes)");
+                    let mut line = json!({"wrote": path, "bytes": bytes});
+                    for key in ["pages", "sheets", "slides"] {
+                        if let Some(v) = r.get(key) {
+                            line[key] = v.clone();
+                        }
+                    }
+                    line["warnings"] = warnings(&r);
+                    wrote(line);
+                }
+                // A command that writes several files (file.package, links.copyTo, an export of
+                // every page) answers with the files it wrote rather than one `path`, so each of
+                // them is reported in turn -- the run reports every file it writes (#1214).
+                //
+                // An entry is a path, or a record that carries one along with what the command
+                // knows about it. Reading only the string form let a record-shaped list go by
+                // without a single line (noted in review).
+                for file in r.get("files").and_then(Value::as_array).into_iter().flatten() {
+                    let path = match file {
+                        Value::String(path) => path.as_str(),
+                        _ => match file.get("path").and_then(Value::as_str) {
+                            Some(path) => path,
+                            None => continue,
+                        },
+                    };
+                    let mut line = json!({"wrote": path});
+                    // Whatever the record says about the file it names; a plain path says only
+                    // its own name, and `bytes` is left out rather than guessed.
+                    for key in ["bytes", "page", "pages", "width", "height"] {
+                        if let Some(v) = file.get(key).filter(|v| !v.is_null()) {
+                            line[key] = v.clone();
+                        }
+                    }
+                    match line.get("bytes") {
+                        Some(bytes) => eprintln!("wrote {path} ({bytes} bytes)"),
+                        None => eprintln!("wrote {path}"),
+                    }
+                    wrote(line);
+                }
             }
             "--page" => page = val()?.parse().map_err(|_| "bad --page")?,
             "--scale" => {
@@ -398,10 +445,12 @@ fn handle_export(s: &mut Session, out: &str, page: usize, scale: f64, pdf_opts: 
             for w in r["warnings"].as_array().into_iter().flatten() {
                 eprintln!("warning: {}", w.as_str().unwrap_or_default());
             }
+            wrote(json!({"wrote": out, "pages": r["pages"], "bytes": r["bytes"], "warnings": warnings(&r)}));
         }
         Export::Document => {
             s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
             eprintln!("saved {out}");
+            wrote(json!({"wrote": out, "saved": true}));
         }
         Export::Pptx => {
             let r = s.execute("file.exportPptx", &json!({"path": out})).map_err(|e| e.to_string())?;
@@ -409,10 +458,17 @@ fn handle_export(s: &mut Session, out: &str, page: usize, scale: f64, pdf_opts: 
             for w in r["warnings"].as_array().into_iter().flatten() {
                 eprintln!("warning: {}", w.as_str().unwrap_or_default());
             }
+            wrote(json!({"wrote": out, "slides": r["slides"], "bytes": r["bytes"], "warnings": warnings(&r)}));
         }
         Export::Command(cmd) => {
             let r = s.execute(cmd, &json!({"path": out})).map_err(|e| e.to_string())?;
             eprintln!("wrote {out} ({} bytes)", r["bytes"]);
+            for w in r["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
+            // EPUB and HTML exports report what they left out: the line carries it as the PDF
+            // and deck lines do.
+            wrote(json!({"wrote": out, "bytes": r["bytes"], "warnings": warnings(&r)}));
         }
     }
     Ok(())
@@ -429,8 +485,24 @@ fn export(s: &mut Session, out: &str, page: usize, scale: f64) -> Result<(), Str
     let lower = out.to_lowercase();
     let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
     designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &bytes).map_err(|e| format!("{out}: {e}"))?;
-    eprintln!("wrote {out} ({}×{}, {:.1} ms, {} glyphs)", img.width, img.height, t.elapsed().as_secs_f64() * 1000.0, r.stats.glyphs);
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("wrote {out} ({}×{}, {ms:.1} ms, {} glyphs)", img.width, img.height, r.stats.glyphs);
+    wrote(json!({"wrote": out, "width": img.width, "height": img.height, "ms": ms, "glyphs": r.stats.glyphs}));
     Ok(())
+}
+
+/// The warnings of an export result, as an array whether it reported any or none: a command that
+/// returns none left `warnings` null, and a reader of these lines should not have to tell the two
+/// apart.
+fn warnings(r: &Value) -> Value {
+    Value::Array(r["warnings"].as_array().cloned().unwrap_or_default())
+}
+
+/// A file this run wrote, as one JSON line on stdout -- the same place a `--cmd` result goes, so a
+/// script can read what was written without merging in stderr (#1214). The line on stderr stays as
+/// it is, for anyone reading along.
+fn wrote(result: Value) {
+    outln!("{}", serde_json::to_string(&result).unwrap_or_default());
 }
 
 /// `describe ID`: one command's documentation.

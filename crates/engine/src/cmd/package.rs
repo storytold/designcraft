@@ -212,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Copy Link(s) To…",
             [],
             None,
-            "{dir, assets?: [asset ids] (default: all)} — write the placed files to `dir` and relink to the copies → {copied}",
+            "{dir, assets?: [asset ids] (default: all)} — write the placed files to `dir` and relink to the copies → {copied, files: [path]}",
             has_doc,
             copy_links
         ),
@@ -486,7 +486,10 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
         doc.assets = relinked.assets;
         Ok(())
     })?;
-    Ok(json!({"copied": written.len()}))
+    // The paths as well as the count: a caller that reports every file a run writes cannot
+    // report files the command does not name, and `write_links` already knows them (noted in
+    // review of #1214).
+    Ok(json!({"copied": written.len(), "files": written.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>()}))
 }
 
 #[cfg(test)]
