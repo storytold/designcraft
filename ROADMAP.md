@@ -52,7 +52,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   default layer queries find a placed PDF anywhere in mixed selections. Regression tests cover
   IDML export after rejection and both selection orders.
 
-## Status (2026-10-21)
+## Status (2026-11-03)
 
 **Working today**
 - Document model: facing/non-facing spreads, parent pages with page-number markers, sections, layers, frames (text / graphic / unassigned), threaded stories, paragraph/character/object styles with based-on, swatches (process/spot/tints/gradients), corner options, text wrap, drop shadow, opacity/blend.

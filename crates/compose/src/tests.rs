@@ -2325,6 +2325,34 @@ fn vertical_center_with_cap_height_centres_figures_without_corner_radius() {
     assert!(br + 0.01 >= b0 - 0.5, "radius must not leave text higher than the square-frame Centre: {br} vs {b0}");
 }
 
+/// Non-CapHeight Centre must keep equal metric slack (ascent/descent), not baseline-fit (#1999 follow-up).
+#[test]
+fn vertical_center_with_ascent_keeps_equal_metric_slack() {
+    use designcraft_doc::{FirstBaseline, VerticalJustification};
+    let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+    let (mut d, sid, fid) = doc_with("gypsy", rect, ParaAttrs::default());
+    {
+        let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+        tf.options.vertical_justification = VerticalJustification::Center;
+        tf.options.first_baseline = FirstBaseline::Ascent;
+        tf.options.inset = [0.0; 4];
+    }
+    d.story_mut(sid).unwrap().format_chars(0.."gypsy".len(), |f| {
+        f.over.size = Some(24.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(24.0));
+    });
+    let specs = frame_specs(&d, sid);
+    let area = specs[0].area;
+    let l = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    let top_slack = l.baseline - l.ascent - area.y0;
+    let bottom_slack = area.y1 - (l.baseline + l.descent);
+    assert!(
+        (top_slack - bottom_slack).abs() < 0.05,
+        "Ascent Centre must keep equal metric slack: top={top_slack} bottom={bottom_slack} baseline={}",
+        l.baseline
+    );
+}
+
 #[test]
 fn vertical_justification_counts_table_fragment_bottoms() {
     use designcraft_doc::VerticalJustification::{Bottom, Center, Justify};

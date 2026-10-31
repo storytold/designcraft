@@ -5515,10 +5515,15 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
         }
         let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         match f.opts.vertical_justification {
-            // Half the visual slack, but never so far that descenders cross `limit`.
+            // Cap Height centres by last baseline (figures have little ink below it; #1999).
+            // Other first-baseline modes keep equal metric slack above and below.
             VerticalJustification::Center => {
-                let visual = (limit - fit_bottom).max(0.0) / 2.0;
-                let shift = visual.min(metric_space);
+                let shift = if f.opts.first_baseline == FirstBaseline::CapHeight {
+                    let visual = (limit - fit_bottom).max(0.0) / 2.0;
+                    visual.min(metric_space)
+                } else {
+                    metric_space / 2.0
+                };
                 idx.iter().for_each(|&i| ft.lines[i].baseline += shift);
             }
             VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += metric_space),
