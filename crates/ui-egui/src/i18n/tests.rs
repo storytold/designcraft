@@ -254,6 +254,8 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::menus::UI_COMMANDS.iter().map(|(_, label, _, _)| *label));
     // Tool names reach `tr` from the Tools panel.
     keys.extend(designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()).map(|tool| tool.label));
+    // Unit names reach `tr` from the rulers' menus, which list every unit (Q and H among them).
+    keys.extend(designcraft_geom::Unit::ALL.iter().map(|unit| unit.label()));
     // So do the About window's tab names, app descriptions and the credits' column and sort labels.
     keys.extend(crate::about::ABOUT_TABS);
     keys.extend(crate::about::SIBLINGS.iter().map(|(_, _, what)| *what));
