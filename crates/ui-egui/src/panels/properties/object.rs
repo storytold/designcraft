@@ -383,7 +383,7 @@ pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) 
     }
     const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 100.0];
     if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::number("sw", Some(i.stroke_weight), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
+        NumField::points("sw", Some(i.stroke_weight), 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 800.0).show(ui)
     }) {
         let _ = app.run("object.stroke", json!({"weight": v}));
     }
