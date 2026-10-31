@@ -115,6 +115,8 @@ impl Cache {
                 let (s, k) = signature(doc, ns);
                 sig.push(usize::MAX - 1);
                 sig.extend(s);
+                // A neighbour's numbering moves its text, and with it the objects it wraps around.
+                sig.extend(list_starts(doc, ns));
                 keep_items.extend(k);
                 keep_stories.push(ns.clone());
             }
@@ -210,11 +212,7 @@ impl Cache {
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
         // Named lists continue from earlier stories.
-        for l in &doc.settings.lists {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&doc.list_start(sid, &l.name), &mut h);
-            sig.push(std::hash::Hasher::finish(&h) as usize);
-        }
+        sig.extend(list_starts(doc, story));
         {
             let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
             g.1 += 1;
@@ -421,4 +419,36 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         }
     }
     (sig, keep)
+}
+
+/// The start of each named list `story` numbers, for its signature: lists continue from earlier
+/// stories. Finding a start walks the stories before it, so lists the story doesn't number (whose
+/// start can't change its layout) are left out.
+fn list_starts(doc: &Document, story: &designcraft_doc::Story) -> Vec<usize> {
+    if doc.settings.lists.is_empty() {
+        return Vec::new();
+    }
+    let numbered = numbered_lists(doc, story);
+    doc.settings
+        .lists
+        .iter()
+        .filter(|l| numbered.contains(&l.name))
+        .map(|l| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&doc.list_start(story.id, &l.name), &mut h);
+            std::hash::Hasher::finish(&h) as usize
+        })
+        .collect()
+}
+
+/// The named lists whose numbers `story`'s own paragraphs show (as composing them asks
+/// [`Document::list_start`] for).
+fn numbered_lists(doc: &Document, story: &designcraft_doc::Story) -> std::collections::HashSet<String> {
+    story
+        .paras
+        .iter()
+        .map(|p| doc.styles.resolve_para(p).0)
+        .filter(|pp| pp.list_type == designcraft_doc::ListType::Numbers && !pp.list_name.is_empty())
+        .map(|pp| pp.list_name.clone())
+        .collect()
 }
