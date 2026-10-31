@@ -1,4 +1,6 @@
-use super::color::{HIDDEN_LAYERS, PLATE, color_of, overprints, plate_pixmap, screen_color, set_fill_paint};
+use super::color::{
+    HIDDEN_LAYERS, PLATE, color_of, effect_reach, image_effect_reach, overprints, plate_part, plate_pixmap, screen_color, set_fill_paint,
+};
 use super::pdf_raster::{is_pdf, shown_box_now};
 use super::prepare::Prepared;
 use super::types::{DisplayQuality, Frame};
@@ -273,7 +275,8 @@ impl Renderer {
                             Some(plate) => plate_pixmap(&pm, plate),
                             None => pm,
                         };
-                        paint_pixels(ctx, f, g, xf, page, width_pt, page_h, pm);
+                        let to_image = image_space(page, width_pt, page_h, &pm);
+                        paint_pixels(ctx, f, g, xf, page, to_image, pm);
                     }
                     None => loading(ctx),
                 }
@@ -293,38 +296,55 @@ impl Renderer {
             Prepared::Ready(coloured) => coloured,
             Prepared::Pending | Prepared::Failed => return loading(ctx),
         };
-        let pm = match (coloured, PLATE.with(std::cell::Cell::get)) {
-            (Some(coloured), _) => coloured,
-            (None, Some(plate)) => plate_pixmap(&pm, plate),
-            (None, None) => pm,
+        // Where the whole image's pixels sit in graphic space (a plate part is placed inside it).
+        let to_image = image_space(page, page_w, page_h, &pm);
+        let (pm, at) = match (coloured, PLATE.with(std::cell::Cell::get)) {
+            (Some(coloured), _) => (coloured, (0, 0)),
+            (None, Some(plate)) => {
+                // Spread space → the image's pixels.
+                let to_pixels = (xf * g.xf * to_image).inverse();
+                // The document is walked for effects only when a large image needs it.
+                let area = || {
+                    let reach = image_effect_reach(f.doc, g).unwrap_or_else(|| effect_reach(f.doc));
+                    f.visible.inflate(reach, reach)
+                };
+                match plate_part(&pm, plate, to_pixels, area) {
+                    Some(part) => part,
+                    None => return,
+                }
+            }
+            (None, None) => (pm, (0, 0)),
         };
-        paint_pixels(ctx, f, g, xf, page, page_w, page_h, pm);
+        paint_pixels(ctx, f, g, xf, page, to_image * Affine::translate((f64::from(at.0), f64::from(at.1))), pm);
     }
 }
 
-/// Draw `pm`, the pixels of a page `page_w` × `page_h` points at `page` in graphic `g`'s space.
-#[allow(clippy::too_many_arguments)]
+/// Graphic space of a page `page_w` × `page_h` points at `page` → the pixels of `pm`, its image.
+fn image_space(page: Rect, page_w: f64, page_h: f64, pm: &vello_cpu::Pixmap) -> Affine {
+    let sx = page_w / pm.width().max(1) as f64;
+    let sy = page_h / pm.height().max(1) as f64;
+    Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy)
+}
+
+/// Draw `pm` in graphic `g`'s space, its pixels placed by `to_image`, where the page at `page` is.
 fn paint_pixels(
     ctx: &mut RenderContext,
     f: &Frame,
     g: &designcraft_doc::Graphic,
     xf: Affine,
     page: Rect,
-    page_w: f64,
-    page_h: f64,
+    to_image: Affine,
     pm: std::sync::Arc<vello_cpu::Pixmap>,
 ) {
     // Only where the page is: a box reaching past it (a media box larger than the crop box)
     // shows nothing there.
     let rect = Rect::new(0.0, 0.0, g.size.0, g.size.1).intersect(page);
     ctx.set_transform(f.view * xf * g.xf);
-    let sx = page_w / pm.width().max(1) as f64;
-    let sy = page_h / pm.height().max(1) as f64;
     ctx.set_paint(vello_cpu::Image {
         image: vello_cpu::ImageSource::Pixmap(pm),
         sampler: peniko::ImageSampler::default().with_quality(peniko::ImageQuality::Medium),
     });
-    ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
+    ctx.set_paint_transform(to_image);
     ctx.fill_rect(&rect);
     ctx.reset_paint_transform();
 }
