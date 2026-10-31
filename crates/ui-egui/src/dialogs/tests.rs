@@ -441,6 +441,101 @@ fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() 
 }
 
 #[test]
+fn diagonal_lines_dialog_draws_and_applies_its_values_but_not_a_mixed_one() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.setCell", json!({"row": 0, "col": 0, "diagonal": {"color": "[Paper]"}})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let ctx = dialog_context("");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    // The first frame sizes the window without painting it.
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for shown in ["Line Stroke", "Weight:", "Draw:", "Diagonal In Front"] {
+        visible_label(&labels, screen, shown);
+    }
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, "diagonalLines");
+    assert_eq!((&d.fields["lines"], &d.fields["color"], &d.fields["inFront"]), (&json!("none"), &Value::Null, &json!(true)));
+    // The fourth line button, in the row above Line Stroke, is Crossed Diagonal Lines.
+    let caption = visible_label(&labels, screen, "Line Stroke");
+    let gap = ctx.global_style().spacing.item_spacing;
+    let crossed = egui::pos2(caption.left() + 3.0 * (32.0 + gap.x) + 16.0, caption.top() - 10.0 - gap.y - 16.0);
+    click_dialog(&mut app, &ctx, screen, crossed);
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["lines"], json!("crossed"));
+    d.fields.insert("inFront".into(), json!(false));
+    d.fields.insert("weight".into(), json!(0.5));
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(
+        t.cells
+            .iter()
+            .all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::Crossed && !c.diagonal.in_front && c.diagonal.stroke.weight == 0.5)
+    );
+    let colors: Vec<_> = t.cells.iter().map(|c| c.diagonal.stroke.color.as_str()).collect();
+    assert_eq!(colors, ["[Paper]", "[Black]", "[Black]", "[Black]"], "a mixed value is left as it is");
+}
+
+#[test]
+fn cell_options_menu_items_need_a_table_target() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let items = ["app.cellOptionsDialog", "app.diagonalLinesDialog", "app.graphicCell"];
+    for id in items {
+        assert!(!crate::menus::menu_enabled(&app, id), "{id} without a table");
+    }
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    for id in items {
+        assert!(crate::menus::menu_enabled(&app, id), "{id} in a table");
+    }
+}
+
+#[test]
+fn enter_on_a_diagonal_line_button_picks_it_and_leaves_the_dialog_open() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let ctx = dialog_context("");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    // Tab past the title bar and the first line button to Diagonal Line from Top Left to Bottom
+    // Right, then press Enter.
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Tab)]);
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Enter)]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().expect("Enter on a line button leaves the dialog open");
+    assert_eq!(d.fields["lines"], json!("topLeft"));
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::None), "nothing is applied yet");
+    // Enter with no line button focused still confirms.
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Enter)]);
+    assert!(app.ui.dialog.is_none());
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::TopLeft));
+}
+
+#[test]
 fn preferences_ok_saves_a_story_editor_size_that_loads_back() {
     // `ui.dialog.set` takes any value; a size that isn't finite is saved as `null`.
     let sizes = [(json!("nan"), 20.0), (json!("inf"), 20.0), (json!(null), 20.0), (json!(1e39), 36.0), (json!(3), 8.0), (json!(11), 11.0)];

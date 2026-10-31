@@ -128,6 +128,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{} — Cell Options › Strokes and Fills of the target cells: edge proxy, stroke weight, type, colour, tint, gap colour, gap tint, and cell fill (table.setCell)",
     ),
+    (
+        "app.diagonalLinesDialog",
+        "Diagonal Lines…",
+        None,
+        "{} — Cell Options › Diagonal Lines of the target cells: the line type, its weight, type, color, tint, gap color and gap tint, and Draw (table.setCell {diagonal})",
+    ),
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
     (

@@ -151,7 +151,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 12. Tables in depth (F)
 - **Missing:** anchored objects in cells not drawn (#163); Table ▸ Table Options and Cell Options
-  submenus as InDesign lays them out, Diagonal Lines, Edit Header/Footer,
+  submenus as InDesign lays them out, diagonal lines in IDML, Edit Header/Footer,
   Go to Row; general reliability (#20).
 - **Estimate:** 25–40 h.
 

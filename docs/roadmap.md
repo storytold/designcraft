@@ -65,7 +65,7 @@ set exists; depth gaps are in gaps.md.
 | M5 | Graphics & links | ✅ core; EPS preview only |
 | M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); PDF/X-1a ✅; PDF/X-3 and presets ✗ |
 | M7 | Long documents (sections, TOC, index, footnotes, books) | ✅ except Books (shallow) |
-| M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
+| M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines in IDML, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |
 | M10 | Find/Change, spelling, Preflight | ✅ (spelling English only) |
 | M11 | Layout power features (liquid/alternate layouts, data merge) | present, shallow; Flex Layout (new in InDesign 2026) ✗ |

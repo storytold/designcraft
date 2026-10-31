@@ -74,6 +74,55 @@ impl Default for CellStroke {
     }
 }
 
+/// Cell Options › Diagonal Lines: the diagonals drawn across a cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiagonalLines {
+    #[default]
+    None,
+    /// From the top left corner to the bottom right corner.
+    TopLeft,
+    /// From the top right corner to the bottom left corner.
+    TopRight,
+    /// Both diagonals.
+    Crossed,
+}
+
+/// A cell's diagonal lines, their stroke, and whether they are drawn in front of the cell's
+/// contents (Draw › Diagonal In Front) or behind them (Content In Front).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CellDiagonal {
+    pub lines: DiagonalLines,
+    pub stroke: CellStroke,
+    pub in_front: bool,
+}
+
+impl Default for CellDiagonal {
+    fn default() -> Self {
+        CellDiagonal { lines: DiagonalLines::None, stroke: CellStroke::default(), in_front: true }
+    }
+}
+
+impl CellDiagonal {
+    pub fn is_default(&self) -> bool {
+        *self == CellDiagonal::default()
+    }
+
+    /// The diagonals' ends in the cell rectangle `r`, as (start, end) pairs.
+    pub fn segments(&self, r: designcraft_geom::Rect) -> Vec<(designcraft_geom::Point, designcraft_geom::Point)> {
+        use designcraft_geom::Point;
+        let down = (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1));
+        let up = (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1));
+        match self.lines {
+            DiagonalLines::None => vec![],
+            DiagonalLines::TopLeft => vec![down],
+            DiagonalLines::TopRight => vec![up],
+            DiagonalLines::Crossed => vec![down, up],
+        }
+    }
+}
+
 impl CellStroke {
     pub fn none() -> Self {
         CellStroke { weight: 0.0, ..Default::default() }
@@ -207,6 +256,9 @@ pub struct Cell {
     /// content box, origin at the box's top left).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graphic: Option<crate::Graphic>,
+    /// Cell Options › Diagonal Lines.
+    #[serde(default, skip_serializing_if = "CellDiagonal::is_default")]
+    pub diagonal: CellDiagonal,
 }
 
 impl Default for Cell {
@@ -228,6 +280,7 @@ impl Default for Cell {
             stroke_defined: [false; 4],
             style: String::new(),
             graphic: None,
+            diagonal: CellDiagonal::default(),
         }
     }
 }
