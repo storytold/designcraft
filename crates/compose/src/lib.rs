@@ -5263,6 +5263,18 @@ fn hyphenation_points(
     if !pp.hyphenate {
         return out;
     }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // This paragraph's glyphs, not the whole story's text: judging the story would have turned
+    // hyphenation off in the English paragraphs of a Korean document, and left it on in the
+    // Korean paragraphs of a mostly-English one. The glyphs are what is actually set, so hidden
+    // text does not vote -- reading the paragraph's source let hidden Korean turn hyphenation
+    // off for the visible English around it (both noted in review).
+    if hyphen::mostly_hangul_chars(glyphs.iter().map(|g| g.ch)) {
+        return out;
+    }
     let lim = hyphen::Limits {
         min_word: pp.hyph_min_word as usize,
         after_first: pp.hyph_after_first as usize,
@@ -5307,6 +5319,14 @@ fn hyphenation_points(
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688).
+            let token_start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+            let token_end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+            if hyphen::keep_whole(&text[token_start..token_end]) {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
