@@ -151,6 +151,10 @@ pub struct ShapeContext<'a> {
     pub before: &'a str,
     pub after: &'a str,
     pub language: Option<&'a str>,
+    /// Letters of joining scripts (Arabic and the like) don't join: each takes its isolated form
+    /// and mandatory ligatures stay apart; marks are still placed. How InDesign's composers that
+    /// aren't World-Ready set them.
+    pub unjoined: bool,
 }
 
 /// Shape `text` with `face`. `chars` lets callers substitute characters (e.g. uppercase for All
@@ -175,6 +179,7 @@ pub fn shape_with_context(
             before: if r.start == 0 { context.before } else { &text[..r.start] },
             after: if r.end == text.len() { context.after } else { &text[r.end..] },
             language: context.language,
+            unjoined: context.unjoined,
         };
         let mut g = shape_dir(face, &text[r.clone()], features, &map, rtl, script, local);
         for x in &mut g {
@@ -199,9 +204,16 @@ pub fn shape_with_context(
 
 /// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
 /// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
-/// Contextual Alternates off, so `calt` off is dropped there.
-fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
+/// Contextual Alternates off, so `calt` off is dropped there. [`ShapeContext::unjoined`] turns the
+/// joining forms, mandatory ligatures and contextual alternates of a joining script off.
+fn script_features(features: &[Feature], script: unicode_script::Script, unjoined: bool) -> std::borrow::Cow<'_, [Feature]> {
     use unicode_script::Script;
+    let joining = matches!(script, Script::Adlam | Script::Arabic | Script::Syriac | Script::Nko | Script::Mandaic | Script::Mongolian);
+    if unjoined && joining {
+        let mut v = features.to_vec();
+        v.extend(["-init", "-medi", "-fina", "-med2", "-fin2", "-fin3", "-rlig", "-calt"].into_iter().filter_map(feature));
+        return v.into();
+    }
     let calt = Tag::new(b"calt");
     let off = |f: &Feature| f.tag == calt && f.value == 0;
     if script == Script::Arabic && features.iter().any(off) {
@@ -221,7 +233,7 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
-    let features = script_features(features, script);
+    let features = script_features(features, script, context.unjoined);
     let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
@@ -350,12 +362,23 @@ pub fn first_glyph(face: &FontFace, chars: &[char]) -> u32 {
 mod tests {
     use super::*;
 
+    /// Outside a World-Ready paragraph every joining script stands unjoined, Adlam too.
+    #[test]
+    fn unjoined_scripts_lose_their_joining_features() {
+        use unicode_script::Script;
+        for script in [Script::Adlam, Script::Arabic, Script::Syriac, Script::Nko, Script::Mandaic, Script::Mongolian] {
+            let tags: Vec<_> = script_features(&[], script, true).iter().map(|f| (f.tag, f.value)).collect();
+            assert!(tags.contains(&(Tag::new(b"fina"), 0)) && tags.contains(&(Tag::new(b"rlig"), 0)), "{script:?}: {tags:?}");
+        }
+        assert!(script_features(&[], Script::Latin, true).is_empty());
+    }
+
     #[test]
     fn arabic_keeps_contextual_alternates() {
         use unicode_script::Script;
         let off = feature("-calt").unwrap();
         let liga = feature("-liga").unwrap();
-        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        let tags = |s: Script| script_features(&[off, liga], s, false).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
         assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
         assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
     }

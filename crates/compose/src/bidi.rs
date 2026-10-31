@@ -2,7 +2,15 @@
 use super::shape::Glyph;
 use designcraft_doc::arabic::CharacterDirection as D;
 
-pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
+/// `explicit_controls`: the text's own explicit bidi controls (embeddings, overrides, isolates)
+/// take effect; otherwise each is replaced by a WORD JOINER (U+2060, as long in UTF-8), which
+/// doesn't change levels.
+pub fn paragraph_text(glyphs: &mut [Glyph], source: &str, explicit_controls: bool) -> String {
+    use unicode_bidi::BidiClass::{FSI, LRE, LRI, LRO, PDF, PDI, RLE, RLI, RLO};
+    let neutral = |c: char| match unicode_bidi::bidi_class(c) {
+        LRE | RLE | LRO | RLO | PDF | LRI | RLI | FSI | PDI if !explicit_controls => '\u{2060}',
+        _ => c,
+    };
     let mut text = String::new();
     let mut direction = D::Default;
     let mut previous: Option<(usize, usize, usize)> = None;
@@ -29,11 +37,11 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
         g.bidi_offset = text.len();
         if g.len > 0 && g.display_char == g.ch {
             match source.get(g.byte..g.byte.saturating_add(g.len)) {
-                Some(s) => text.push_str(s),
-                None => text.push(g.display_char),
+                Some(s) => text.extend(s.chars().map(neutral)),
+                None => text.push(neutral(g.display_char)),
             }
         } else {
-            text.push(g.display_char);
+            text.push(neutral(g.display_char));
         }
         g.bidi_end = text.len();
         previous = (g.len > 0).then_some((g.byte, g.bidi_offset, g.bidi_end));

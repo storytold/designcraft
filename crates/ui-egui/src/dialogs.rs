@@ -7478,7 +7478,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 13] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7489,6 +7489,7 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleDesired",
     "glyphScaleMax",
     "composer",
+    "worldReady",
     "kashidas",
     "koreanCharBreaks",
 ];
@@ -7715,6 +7716,15 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         }
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
             d.fields.insert(format!("{prefix}composer"), json!(single_line));
+        }
+        // World-Ready: right-to-left text and Arabic shaping (InDesign's World-Ready composers).
+        let v = cur(d, "worldReady");
+        let mut world_ready = v.as_bool().unwrap_or(true);
+        if ui
+            .add(egui::Checkbox::new(&mut world_ready, crate::rtl::widget(ui, crate::i18n::tr(lang, "World-Ready"))).indeterminate(v.is_null()))
+            .changed()
+        {
+            d.fields.insert(format!("{prefix}worldReady"), json!(world_ready));
         }
         ui.end_row();
         for (label, key, text, default) in [

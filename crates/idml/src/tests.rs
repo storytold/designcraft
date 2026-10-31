@@ -292,7 +292,7 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "DropCapCharacters": "0" => 0, "1" => 1, |r| r.0.drop_cap_chars;
         "DropcapDetail": "1" => (true, false), "2" => (false, true), |r| (r.0.drop_cap_align_left, r.0.drop_cap_scale_descenders);
         "GridAlignment": "None" => GridAlign::None, "AlignToBaseline" => GridAlign::AllLines, |r| r.0.grid_align;
-        "Composer": "HL Composer" => Composer::Paragraph, "HL Single" => Composer::SingleLine, |r| r.0.composer;
+        "Composer": "HL Composer" => (Composer::Paragraph, false), "HL Single Optyca" => (Composer::SingleLine, true), |r| (r.0.composer, r.0.world_ready);
         "Hyphenation": "true" => true, "false" => false, |r| r.0.hyphenate;
         "HyphenateWordsLongerThan": "5" => 5, "7" => 7, |r| r.0.hyph_min_word;
         "HyphenateAfterFirst": "2" => 2, "3" => 3, |r| r.0.hyph_after_first;
@@ -1668,6 +1668,56 @@ fn composers_import_by_kind_and_round_trip() {
         let got: Vec<_> = st.paras.iter().take(cases.len()).map(|p| p.para.composer).collect();
         assert_eq!(got, cases.iter().map(|(_, c)| Some(*c)).collect::<Vec<_>>());
     }
+}
+
+/// InDesign's Paragraph and Single-line Composers ("HL Composer", "HL Single") aren't World-Ready;
+/// the World-Ready ones end in "Optyca". Both come in and go back out.
+#[test]
+fn world_ready_composers_import_and_round_trip() {
+    let doc_with = |composer: &str| {
+        let story = format!(
+            r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
+      <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" Composer="{composer}">
+        <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>text</Content></CharacterStyleRange>
+      </ParagraphStyleRange></Story></idPkg:Story>"#
+        );
+        import_idml(&fixture_with_story(&story)).unwrap()
+    };
+    let attrs = |doc: &Document| {
+        let st = doc.stories.values().find(|s| s.text.contains("text")).unwrap();
+        (st.paras[0].para.composer, st.paras[0].para.world_ready)
+    };
+    use designcraft_doc::Composer;
+    for (name, want) in [
+        ("HL Composer", (Composer::Paragraph, false)),
+        ("HL Single", (Composer::SingleLine, false)),
+        ("HL Composer Optyca", (Composer::Paragraph, true)),
+        ("HL Single Optyca", (Composer::SingleLine, true)),
+    ] {
+        let doc = doc_with(name);
+        assert_eq!(attrs(&doc), (Some(want.0), Some(want.1)), "{name}");
+        let back = import_idml(&export_idml(&doc)).unwrap();
+        assert_eq!(attrs(&back), (Some(want.0), Some(want.1)), "{name} round trip");
+    }
+}
+
+/// A paragraph that only turns World-Ready off keeps its style's composer: the one Composer name
+/// it writes takes the composer from the style.
+#[test]
+fn world_ready_alone_keeps_the_styles_composer() {
+    use designcraft_doc::{Composer, ParaAttrs, ParagraphStyle};
+    let mut d = Document::new(&NewDocument::default());
+    let para = ParaAttrs { composer: Some(Composer::SingleLine), ..Default::default() };
+    let style = ParagraphStyle { name: "Single".into(), based_on: None, next_style: None, para, chars: Default::default(), shortcut: String::new() };
+    d.styles_mut().paragraph.push(style);
+    let lid = d.default_layer();
+    let format = ParaFormat { style: "Single".into(), para: ParaAttrs { world_ready: Some(false), ..Default::default() }, ..Default::default() };
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 100.0), lid, "text", format).unwrap();
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let st = back.stories.values().find(|s| s.text.contains("text")).unwrap();
+    let style = back.styles.resolve_para_style(&st.paras[0].style).0;
+    let para = &st.paras[0].para;
+    assert_eq!((para.composer.unwrap_or(style.composer), para.world_ready.unwrap_or(style.world_ready)), (Composer::SingleLine, false));
 }
 
 #[test]
