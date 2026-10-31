@@ -172,6 +172,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }
+    if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {
+        return enabled(app, "text.insert");
+    }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
     }
