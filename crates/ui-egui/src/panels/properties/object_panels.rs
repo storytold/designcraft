@@ -501,9 +501,12 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("object.dropShadow", json!({"on": on}));
     }
     if ds.on {
+        // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
+        // same in both.
+        let u = units(app);
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = number(ui, "dsd", Some(ds.distance), " pt", 56.0, 1) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -530,7 +533,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = number(ui, "dss", Some(ds.size), " pt", 50.0, 1) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
