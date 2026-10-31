@@ -2,7 +2,7 @@
 use super::PendingDrop;
 use super::clock::now_ms;
 use super::services::Services;
-use super::state::{CanvasCache, ImportRequest, ImportedFile, Perf, ScreenMode, UiState, View, second_window_viewport};
+use super::state::{CanvasCache, ImportRequest, ImportedFile, Perf, ScreenMode, UiState, View, WindowState, second_window_viewport};
 use super::{
     ControlRequest, ControlResponse, DesignApp, HashMap, InputGeneration, LivePreview, QuitState, Receiver, SCREENSHOT_MAX_AGGREGATE_BYTES,
     SCREENSHOT_MAX_IMAGE_BYTES, SCREENSHOT_MAX_REQUESTS, ScreenshotGeometry, Sender, Session, ShotRequest, UiRequest, Value, ViewInfo, about, canvas,
@@ -101,6 +101,9 @@ impl DesignApp {
             fonts_system: false,
             restyle: false,
             fonts_ready: false,
+            window_fitted: false,
+            window_frames: 0,
+            window_fit_pending: false,
             os_documents: Vec::new(),
             integrated_titlebar: false,
             custom_titlebar: false,
@@ -200,6 +203,47 @@ impl DesignApp {
         self.canvas_ime = false;
         self.ime_canvas = None;
         self.ime_interrupt = false;
+        // Once the window shows: maximized or full screen again if it was left so (some window
+        // systems, Wayland among them, ignore that when the window is created), else made to fit
+        // a smaller monitor than the one its size was saved on.
+        // (Wayland may not say which monitor the window is on: after a few frames it goes ahead.)
+        self.window_frames = self.window_frames.saturating_add(1);
+        let monitor_known = ctx.input(|i| i.viewport().monitor_size.is_some());
+        if !self.window_fitted && (monitor_known || self.window_frames > 3) {
+            let saved = self.ui.window.unwrap_or_default();
+            let content = ctx.content_rect().size();
+            let cmds = ctx.input(|i| saved.restore(i.viewport(), content));
+            for cmd in cmds {
+                log::info!("window: restoring {cmd:?}");
+                ctx.send_viewport_cmd(cmd);
+            }
+            self.window_fitted = true;
+            // Without the monitor's size an ordinary window can't be fitted yet: once it is known.
+            self.window_fit_pending = !monitor_known && !(saved.maximized || saved.fullscreen);
+        } else if self.window_fit_pending && monitor_known {
+            self.window_fit_pending = false;
+            let content = ctx.content_rect().size();
+            if let Some(cmd) = ctx.input(|i| WindowState::fit(i.viewport(), content)) {
+                log::info!("window: fitting {cmd:?}");
+                ctx.send_viewport_cmd(cmd);
+            }
+        }
+        // Only once the saved state is applied: before, the window shows as created (not yet
+        // maximized), which must not replace what was saved.
+        if self.window_fitted {
+            let content = ctx.content_rect().size();
+            let zoom = ctx.zoom_factor();
+            let window = ctx.input(|i| self.ui.window.unwrap_or_default().observe(i.viewport(), content, zoom));
+            // Leaving maximized or full screen brings back the ordinary size, which may have been
+            // saved on a bigger monitor: fit it again on the next pass.
+            if self.ui.window.is_some_and(|before| before.unmaximized_to(window)) {
+                self.window_fitted = false;
+                self.window_frames = u8::MAX;
+            }
+            if self.ui.window != Some(window) && window != WindowState::default() {
+                self.ui.window = Some(window);
+            }
+        }
         // Fonts/theme must be installed from the real UI pass, before the font gate below: doing
         // this only from a hidden logic tick would make the first shown pass wait forever.
         if ctx.current_pass_index() == 0 {

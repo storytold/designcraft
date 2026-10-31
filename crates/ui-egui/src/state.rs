@@ -92,6 +92,10 @@ pub struct SavedWorkspace {
     pub dock_expanded: bool,
     pub open_panel: Option<String>,
     pub floating: Vec<(String, [f32; 2])>,
+    /// Floating panel sizes (see [`UiState::panel_sizes`]). `None` in workspace files from before
+    /// sizes were kept: the panels keep the sizes they have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_sizes: Option<std::collections::BTreeMap<String, [f32; 2]>>,
     /// Custom panel membership and placement; absent in older workspace files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docking: Option<craft_ui::docking::Layout<String>>,
@@ -165,6 +169,76 @@ impl Default for PdfExportSettings {
 /// The viewport of New Window's OS window, which shows pane 1.
 pub(crate) fn second_window_viewport() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("designcraft_second_window")
+}
+
+/// The application window as it was left (see [`UiState::window`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WindowState {
+    /// Its inner size when neither maximized nor full screen, in the window system's logical
+    /// points (what the window is created with), not egui's points, which UI Scaling enlarges.
+    pub size: Option<[f32; 2]>,
+    pub maximized: bool,
+    pub fullscreen: bool,
+}
+
+impl WindowState {
+    /// The window as egui reports it this frame, over what was known (`self`): the size only
+    /// while it is an ordinary window, so restoring from maximized gets the size it had.
+    /// `content` is the window's content size, for window systems that report no window rect
+    /// (Wayland gives no position); `zoom` is UI Scaling's zoom factor, by which egui's points
+    /// are larger than the window system's.
+    pub fn observe(self, vp: &egui::ViewportInfo, content: egui::Vec2, zoom: f32) -> WindowState {
+        let maximized = vp.maximized.unwrap_or(self.maximized);
+        let fullscreen = vp.fullscreen.unwrap_or(self.fullscreen);
+        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+        let inner = vp.inner_rect.map_or(content, |r| r.size()) * zoom;
+        let size = if !maximized && !fullscreen && inner.x.is_finite() && inner.y.is_finite() && inner.x > 0.0 && inner.y > 0.0 {
+            Some([inner.x.round(), inner.y.round()])
+        } else {
+            self.size
+        };
+        WindowState { size, maximized, fullscreen }
+    }
+
+    /// Whether the window went from maximized or full screen (`self`) to an ordinary one (`now`).
+    pub fn unmaximized_to(self, now: WindowState) -> bool {
+        (self.maximized || self.fullscreen) && !(now.maximized || now.fullscreen)
+    }
+
+    /// What to tell the window that just opened (`vp`, `content` as in [`Self::observe`]) to be
+    /// as it was left (`self`): maximized or full screen when it isn't yet; else a size that fits
+    /// the monitor ([`Self::fit`]).
+    pub fn restore(self, vp: &egui::ViewportInfo, content: egui::Vec2) -> Vec<egui::ViewportCommand> {
+        if self.fullscreen && vp.fullscreen != Some(true) {
+            return vec![egui::ViewportCommand::Fullscreen(true)];
+        }
+        if self.maximized && vp.maximized != Some(true) {
+            return vec![egui::ViewportCommand::Maximized(true)];
+        }
+        if self.fullscreen || self.maximized {
+            return Vec::new();
+        }
+        Self::fit(vp, content).into_iter().collect()
+    }
+
+    /// A window larger than the monitor it opened on (its size saved on a bigger screen): the size
+    /// that fits, with a margin for the desktop's own bars. None when it fits, or is maximized or
+    /// full screen (those follow the monitor).
+    pub fn fit(vp: &egui::ViewportInfo, content: egui::Vec2) -> Option<egui::ViewportCommand> {
+        let monitor = vp.monitor_size.filter(|m| m.x > 0.0 && m.y > 0.0)?;
+        if vp.maximized == Some(true) || vp.fullscreen == Some(true) {
+            return None;
+        }
+        let inner = vp.inner_rect.map_or(content, |r| r.size());
+        let outer = vp.outer_rect.map_or(inner, |r| r.size());
+        if !(inner.x > 0.0 && inner.y > 0.0) || (outer.x <= monitor.x && outer.y <= monitor.y) {
+            return None;
+        }
+        let room = monitor * 0.92;
+        let deco = outer - inner;
+        Some(egui::ViewportCommand::InnerSize((room - deco).max(egui::vec2(400.0, 300.0)).min(inner)))
+    }
 }
 
 /// Persisted UI state.
@@ -282,6 +356,13 @@ pub struct UiState {
     /// Its floating panels, and the float-only panels' windows (Type › Tabs): (panel id,
     /// top-left position). A customized layout holds its own floating panels.
     pub floating: Vec<(String, [f32; 2])>,
+    /// The size (width, height) each panel last floated at: it floats at that size again, after a
+    /// restart, docking and floating it, or a change of workspace.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub panel_sizes: std::collections::BTreeMap<String, [f32; 2]>,
+    /// The application window as it was left: its size, maximized, full screen. It opens so again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowState>,
     /// The panel layout once the user customizes it; `None` is the workspace's default layout
     /// (`panel_docking::default_layout`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -452,6 +533,8 @@ impl Default for UiState {
             dock_tab: "properties".into(),
             open_panel: None,
             floating: Vec::new(),
+            panel_sizes: Default::default(),
+            window: None,
             docking: None,
             docking_hidden: Default::default(),
             docking_generation: 0,
