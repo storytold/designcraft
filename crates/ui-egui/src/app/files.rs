@@ -707,6 +707,62 @@ pub(crate) mod browser_import_tests {
         assert!(app.pending_pdf.is_none());
         assert!(app.session.doc().unwrap().doc.assets.is_empty());
     }
+
+    /// The `ViewportCommand::Title`s one logic tick sends to the window.
+    fn sent_titles(app: &mut DesignApp, ctx: &egui::Context) -> Vec<String> {
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+        let titles = out
+            .viewport_output
+            .values()
+            .flat_map(|v| &v.commands)
+            .filter_map(|c| match c {
+                egui::ViewportCommand::Title(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        out.drop_without_applying_deltas();
+        titles
+    }
+
+    /// #1356: the window title names the open document, with • while it has unsaved changes, so a
+    /// host embedding the web build can tell which file a drop opened. It goes out once per change.
+    #[test]
+    fn the_window_title_follows_a_dropped_document_and_its_changes() {
+        let mut app = DesignApp::new(Session::new(), Services { inbox: Some(Inbox::default()), ..Default::default() });
+        let ctx = egui::Context::default();
+        assert_eq!(sent_titles(&mut app, &ctx), ["DesignCraft"]);
+        assert!(sent_titles(&mut app, &ctx).is_empty(), "an unchanged title is not sent again");
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let bytes = designcraft_engine::cmd::base64_decode(s.execute("file.serialize", &json!({})).unwrap()["base64"].as_str().unwrap());
+        let request = app.import_request("drop");
+        deliver(&mut app, request, "Brochure.designcraft", bytes);
+        assert_eq!(sent_titles(&mut app, &ctx), ["Brochure — DesignCraft"]);
+
+        app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
+        assert_eq!(sent_titles(&mut app, &ctx), ["Brochure • — DesignCraft"]);
+        assert!(sent_titles(&mut app, &ctx).is_empty());
+
+        // Save As under another name renames it and clears the mark.
+        let dir = std::env::temp_dir().join(format!("designcraft-title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        app.run("file.saveAs", json!({"path": dir.join("Spring issue.designcraft")})).unwrap();
+        assert_eq!(sent_titles(&mut app, &ctx), ["Spring issue.designcraft — DesignCraft"]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        app.run("file.close", json!({})).unwrap();
+        assert_eq!(sent_titles(&mut app, &ctx), ["DesignCraft"]);
+    }
+
+    /// X11 window titles are C strings (a NUL panicked there in a sibling app): a title sent with a
+    /// NUL over the control channel must not carry it into the window title.
+    #[test]
+    fn the_window_title_drops_nul_characters() {
+        let mut app = app();
+        app.run("file.new", json!({"title": "Q3\u{0}issue"})).unwrap();
+        assert_eq!(app.window_title(), "Q3issue — DesignCraft");
+    }
 }
 
 #[cfg(test)]

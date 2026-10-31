@@ -226,6 +226,8 @@ pub struct DesignApp {
     pub custom_titlebar: bool,
     pub(crate) window_maximized: bool,
     pub(crate) pending_window_commands: Vec<egui::ViewportCommand>,
+    /// The window title last sent (`ViewportCommand::Title`), so it is sent only when it changes.
+    sent_title: String,
     /// The host installed a native menu bar (macOS): don't draw menus in the window.
     pub native_menu: bool,
     /// The commands the native menu bar gives a key equivalent, with that shortcut: the egui
