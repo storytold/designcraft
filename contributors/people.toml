@@ -66,6 +66,11 @@ real_name = "Marco Arnulfo"
 display_name = "Marco Arnulfo"
 sync_github_name = false
 
+[people.macrobi]
+real_name = "Veress Róbert"
+display_name = "Veress Róbert"
+sync_github_name = false
+
 [people.4waymedia]
 real_name = "Paul Gemignani"
 

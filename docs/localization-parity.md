@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-30 · **Change:** minor (current-main integration with retained catalogs and regression tests; older catalog counts retain their dated measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,it,ja,ka,pt_br,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,pl,pt_br,ru,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -19,9 +19,11 @@ in the UI crate appear in no catalog (some are test data or proper names), so th
 somewhat higher and every percentage below is a slight overestimate. Help: DesignCraft has no
 help content in any language (Help ▸ opens the project's pages).
 
-A missing translation never fails a test, a build or a release. `cargo xtask i18n-report` (also
-a step of `cargo xtask ci`, so the list is in every gate log) prints how many interface strings
-each language lacks, then the strings.
+Missing translations normally fall back to English and are reported without blocking a build.
+Targeted regression tests can require specific captions, such as the Data Merge arrangement
+label, in every registered interface language. `cargo xtask i18n-report` (also a step of
+`cargo xtask ci`, so the list is in every gate log) prints how many interface strings each
+language lacks, then the strings.
 
 InDesign 2026 ships 25 interface localizations (`.lproj` folders: cs, da, de, el, en, en_GB, es,
 fi, fr, hu, it, ja, ko, nb, nl, pl, pt, ro, ru, sq, sv, tr, uk, zh_CN, zh_TW); Arabic and Hebrew
@@ -52,17 +54,62 @@ caption, table row/column movement and row-height distribution now use the exist
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
 
+Hungarian follow-up (2026-10-17): `hu.rs` adds **1,917 entries and two context-specific
+captions**, including the 37 tool names. This is a partial interface catalog based on an earlier
+source snapshot, not a new coverage measurement against current main. It was prepared with AI
+assistance and initially reviewed by a native Hungarian contributor with over 30 years of DTP
+experience; further terminology and in-context review is welcome. Preferences lists `Magyar`;
+untranslated/new strings fall back to English. Hungarian spelling and hyphenation are separate
+follow-up work and are not enabled by selecting this interface language.
+Review corrections (2026-10-20) distinguish numbers from counts and text columns from grid
+columns, use formal Hungarian address consistently, and align translated menu paths with
+their visible labels. These corrections do not add new catalog keys or change coverage.
+Test integration (2026-10-23) registers Hungarian in the shared catalog checks and restores
+assertions from both merge parents. That snapshot has **1,904 entries and four context
+captions** after removing 11 untranslated interface-language names (the selector displays their
+native names directly) and two unused internal tint keys. Seventeen live UI labels are retained
+and added to the integrity test's known-label list. No used Hungarian translation was removed.
+
+Data Merge follow-up (2026-10-25): `Arrangement` is translated as `Elrendezés`, bringing the
+Hungarian catalog to **1,905 entries and four context captions**. The shared all-language
+arrangement check and the Hungarian catalog and toolbar tests are retained alongside the
+main-branch egui API update. This is a targeted addition, not a new coverage measurement.
+
+Georgian menu follow-up (2026-10-25): `File Info…` and `Check for Updates…` now have
+Georgian catalog entries. The existing complete-menu translation assertion is unchanged.
+This targeted addition retains the dated coverage figures below; the two new captions have
+not had a separate native-speaker review.
+
+Module-layout integration (2026-10-27): catalog lookup stays in `i18n.rs`, while the shared
+table and localization tests live in `i18n/table.rs` and `i18n/tests.rs`. Menu and toolbar
+regressions from both branches are retained in `menus/tests.rs` and `toolbar/tests.rs`.
+Hungarian catalog contents and the dated coverage measurements are unchanged. Toolbar
+coverage follows the current platform-specific keymap captions and checks a user-assigned
+chord alongside translated flyout text; row sizing measures the displayed shortcut.
+
+Main integration (2026-10-30): retain every prior Hungarian entry and both branches’
+localization, menu and toolbar regressions while adopting upstream’s current file-dialog test
+harness and toolbar proxy refactor. Add `Show/Hide Depth Ruler` as `Mélységmérő
+megjelenítése/elrejtése`, bringing the catalog to **1,906 entries and four context captions**.
+The upstream all-language depth-ruler assertion is retained. The unchanged complete Georgian
+menu assertions run through a helper so the existing language-switch test meets upstream’s
+new complexity limit. The two Georgian menu captions now also exist in main; retain each
+identical translation once, keeping the direct lookup and complete-menu assertions. The
+progress log keeps both branches’ dated entries; this targeted addition is not a new coverage
+measurement.
+
 ## Other shipped languages
 
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
+| Hungarian | hu | 1,906 entries + 4 context captions (2026-10-30); initial catalog native-reviewed | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
 | Polish | pl | 1,717 (99%), count captions category-first; AI-drafted, awaiting native review | partial |
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 
-DesignCraft ships **5** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **6** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
@@ -92,6 +139,13 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Integrate current main; retain both branches’ entries/tests; add Hungarian Depth Ruler caption (1,906 entries + four context captions) |
+| 2026-10-27 | minor | Adopt shared module layout; preserve both parents' tests and all Hungarian catalog entries |
+| 2026-10-25 | minor | Hungarian Data Merge arrangement caption added; 1,905 entries and four context captions; both merge parents' tests retained |
+| 2026-10-25 | minor | Georgian File Info and Check for Updates captions added; complete-menu regression retained |
+| 2026-10-20 | minor | Hungarian review: four context captions, formal address, consistent menu paths; corrected other-language count to six |
+| 2026-10-17 | minor | Hungarian (`hu`) interface added: 1,917 entries and two context captions; initial native-speaker review |
+| 2026-10-23 | minor | Hungarian test integration restored; 1,904 active catalog entries and four context captions after removing unused keys |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-14 | minor | Georgian (`ka`) interface added |
 | 2026-10-10 | major | Created: catalogs measured (1,724 strings), the twelve key languages plus Italian and Ukrainian |

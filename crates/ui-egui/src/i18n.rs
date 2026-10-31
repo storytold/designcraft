@@ -12,6 +12,7 @@ mod ar;
 mod cs;
 mod de;
 mod fr;
+mod hu;
 mod it;
 mod ja;
 mod ka;
@@ -36,6 +37,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("cs", "Čeština"),
     ("pl", "Polski"),
     ("ka", "ქართული"),
+    ("hu", "Magyar"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -77,6 +79,8 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if text.trim().is_empty() { s } else { text }
 }
 
+/// Looks up a label in lazily cached language tables, using the shared table where supported.
+/// Unknown languages and missing keys keep the source text; `tr` also handles blank entries.
 fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static GERMAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static JAPANESE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
@@ -90,6 +94,10 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static HUNGARIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    if lang == "hu" {
+        return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -145,6 +153,7 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
     let contexts = match lang {
+        "hu" => hu::CONTEXT,
         "uk" => uk::CONTEXT,
         "ru" => ru::CONTEXT,
         "cs" => cs::CONTEXT,

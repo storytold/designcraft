@@ -19,8 +19,98 @@ fn column_width(cols: f32) -> f32 {
     8.0 + super::BTN * cols + 4.0 * (cols - 1.0) + 8.0
 }
 
+/// Returns the bounds of the labeled test widget, failing if the label cannot be found.
 fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
     h.get_by_label(label).rect()
+}
+
+/// Checks translated tooltips and right-click flyout rows in both Tools-panel layouts,
+/// including painted labels, unchanged shortcuts and unclipped, nonoverlapping text.
+#[test]
+fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
+    use egui::{Event, Modifiers, PointerButton};
+
+    /// Collects painted text bounds and their clip rectangles, including nested shapes.
+    fn collect_text(shape: &egui::Shape, clip: egui::Rect, texts: &mut Vec<(String, egui::Rect, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push((text.galley.text().to_owned(), text.visual_bounding_rect(), clip)),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_text(shape, clip, texts)),
+            _ => {}
+        }
+    }
+
+    for double in [false, true] {
+        let mut app = app(double);
+        app.ui.language = "hu".into();
+        let mut h = test_window::open(app, vec2(1400.0, 1000.0));
+        for tool in designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()) {
+            h.state_mut().app.run("tool.select", serde_json::json!({"tool": tool.id})).unwrap();
+            h.run_steps(3);
+            let label = crate::i18n::tr("hu", tool.label);
+            assert_ne!(label, tool.label, "untranslated tool: {}", tool.id);
+            let shortcut = tool.shortcut.map(crate::menus::shortcut_text);
+            assert_eq!(crate::menus::tool_shortcut_label(&h.state().app, tool.id), shortcut, "default binding for {}", tool.id);
+            let tip = shortcut.map_or_else(|| label.to_owned(), |shortcut| format!("{label} ({shortcut})"));
+            assert!(rect(&h, &tip).is_finite(), "{tip}");
+        }
+        // A user-assigned chord also has to fit beside a translated flyout label.
+        let custom_shortcut = "Ctrl+Alt+Shift+F12";
+        h.state_mut()
+            .app
+            .run(
+                "window.setShortcut",
+                serde_json::json!({"id": "tool.select", "params": {"tool": "ellipseFrame"}, "shortcut": custom_shortcut, "steal": true}),
+            )
+            .unwrap();
+        for (gi, group) in designcraft_tools::TOOL_GROUPS.iter().enumerate() {
+            // Single tools have no flyout; the collector group is split into separate
+            // buttons in two-column mode and is covered by the tooltip checks above.
+            if group.len() < 2 || (double && designcraft_tools::SPLIT_IN_TWO_COLUMNS.contains(&group[0].id)) {
+                continue;
+            }
+            let first = group[0];
+            h.state_mut().app.run("tool.select", serde_json::json!({"tool": first.id})).unwrap();
+            h.run_steps(3);
+            let label = crate::i18n::tr("hu", first.label);
+            let tip = first.shortcut.map(crate::menus::shortcut_text).map_or_else(|| label.to_owned(), |shortcut| format!("{label} ({shortcut})"));
+            let at = rect(&h, &tip).center();
+            h.input_mut().events.push(Event::PointerMoved(at));
+            for pressed in [true, false] {
+                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            }
+            h.run_steps(3);
+            assert_eq!(h.state().app.ui.flyout, Some(gi), "right-click opens {} (double={double})", first.id);
+            let mut texts = Vec::new();
+            for shape in &h.output().shapes {
+                collect_text(&shape.shape, shape.clip_rect, &mut texts);
+            }
+            for tool in *group {
+                let label = crate::i18n::tr("hu", tool.label);
+                // Flyout accessibility labels omit the shortcut; inspect the painted
+                // text inside this row so another button cannot satisfy the assertion.
+                let row = rect(&h, label);
+                assert!(row.is_finite() && row.is_positive(), "{label}");
+                let painted = |expected: &str| {
+                    let (_, bounds, clip) = texts
+                        .iter()
+                        .find(|(text, bounds, _)| text == expected && row.contains(bounds.center()))
+                        .unwrap_or_else(|| panic!("missing flyout text {expected:?} for {} (double={double})", tool.id));
+                    assert!(row.contains_rect(*bounds) && clip.contains_rect(*bounds), "clipped flyout text {expected:?}: {bounds:?}");
+                    *bounds
+                };
+                let label_bounds = painted(label);
+                let binding = if tool.id == "ellipseFrame" { Some(custom_shortcut) } else { tool.shortcut };
+                if let Some(shortcut) = binding.map(crate::menus::shortcut_text) {
+                    let shortcut_bounds = painted(&shortcut);
+                    assert!(label_bounds.right() < shortcut_bounds.left(), "label overlaps shortcut for {} (double={double})", tool.id);
+                }
+            }
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            assert!(h.state().app.ui.flyout.is_none());
+        }
+        assert_eq!(crate::i18n::tr("hu", "Direct Selection Tool"), "Közvetlen kijelölő eszköz");
+    }
 }
 
 /// As InDesign's: a tool group's flyout closes on Esc and on a click outside it (the fill
@@ -197,7 +287,8 @@ fn the_tools_panel_lays_out_like_indesigns() {
     for double in [false, true] {
         let h = test_window::open(app(double), vec2(1400.0, 900.0));
         let _ = rect(&h, "Gradient Swatch Tool (G)");
-        let _ = rect(&h, "Gradient Feather Tool (Shift+G)");
+        let feather = format!("Gradient Feather Tool ({})", crate::menus::shortcut_text("Shift+G"));
+        let _ = rect(&h, &feather);
         let _ = rect(&h, "View Options");
         let split = ["Content Placer Tool (B)", "Apply Color (,)", "Apply Gradient (.)", "Normal"];
         for label in split {

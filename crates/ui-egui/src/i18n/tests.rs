@@ -7,6 +7,7 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("cs", cs::TABLE),
     ("de", de::TABLE),
     ("fr", fr::TABLE),
+    ("hu", hu::TABLE),
     ("it", it::TABLE),
     ("ja", ja::TABLE),
     ("ka", ka::TABLE),
@@ -17,8 +18,15 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
 ];
 
 /// Every per-language table `tr_context` looks up.
-const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] =
-    &[("ar", ar::CONTEXT), ("cs", cs::CONTEXT), ("ja", ja::CONTEXT), ("pl", pl::CONTEXT), ("ru", ru::CONTEXT), ("uk", uk::CONTEXT)];
+const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
+    ("ar", ar::CONTEXT),
+    ("cs", cs::CONTEXT),
+    ("hu", hu::CONTEXT),
+    ("ja", ja::CONTEXT),
+    ("pl", pl::CONTEXT),
+    ("ru", ru::CONTEXT),
+    ("uk", uk::CONTEXT),
+];
 
 /// The languages of the shared tables' columns, in column order.
 const SHARED_COLUMNS: [&str; 5] = ["de", "fr", "es", "ja", "zh"];
@@ -31,6 +39,7 @@ fn or_english<'a>(text: &'a str, english: &'a str) -> &'a str {
     if text.trim().is_empty() { english } else { text }
 }
 
+/// Checks cached catalog lookup across language switches, including source-text fallback.
 #[test]
 fn cached_lookup_preserves_every_translation_across_language_switches() {
     let own = |lang: &str, key: &str| {
@@ -52,12 +61,101 @@ fn cached_lookup_preserves_every_translation_across_language_switches() {
             assert_eq!(tr("", key), *key);
         }
     }
+    // Keep the repaired Georgian menu captions present with their exact translations.
+    assert_eq!(tr("ka", "File Info…"), "ფაილის ინფორმაცია…");
+    assert_eq!(tr("ka", "Check for Updates…"), "განახლებების შემოწმება…");
     // Strings no catalog has stay as they are, in every language.
     let unknown = String::from("A user-defined untranslated label");
     for lang in LANGUAGES.iter().map(|(code, _)| *code).chain(["en", "unknown"]) {
         assert!(std::ptr::eq(tr(lang, &unknown), unknown.as_str()), "{lang}");
         // Fixed standard names stay identical.
         assert_eq!(tr(lang, "PDF/X-4"), "PDF/X-4", "{lang}");
+    }
+}
+
+/// Checks Hungarian catalog integrity, context captions and count substitutions, including
+/// English fallback and preservation of user-defined style and workspace names.
+#[test]
+fn hungarian_catalog_preserves_placeholders_context_and_counts() {
+    let catalog: HashMap<_, _> = hu::TABLE.iter().copied().collect();
+    assert_eq!(catalog.len(), hu::TABLE.len(), "duplicate Hungarian keys");
+    let placeholders = |s: &str| {
+        let mut names: Vec<_> = s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect();
+        names.sort();
+        names
+    };
+    for (key, translation) in hu::TABLE {
+        assert!(!translation.trim().is_empty(), "empty {key}");
+        assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
+        assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
+    }
+    assert!(!is_rtl("hu"));
+    assert_eq!(tr("hu", "File"), "Fájl");
+    assert_eq!(tr("hu", "Bleed"), "Kifutó");
+    assert_eq!(tr("hu", "Arrangement"), "Elrendezés");
+    assert_eq!(tr("hu", "Unknown label"), "Unknown label");
+    assert_eq!(tr("hu", "Columns"), "Hasábok");
+    assert_eq!(tr_context("hu", "Columns", "table"), "Oszlopok");
+    assert_eq!(tr("hu", "Columns:"), "Hasábok:");
+    assert_eq!(tr_context("hu", "Columns:", "grid"), "Oszlopok:");
+    assert_eq!(tr_context("hu", "Columns:", "unknown"), "Hasábok:");
+    assert_eq!(tr("hu", "Group"), "Csoportosítás");
+    assert_eq!(tr_context("hu", "Group", "selection"), "Csoport");
+    assert_eq!(tr_context("hu", "Columns", "unknown"), "Hasábok");
+    assert_eq!(tr_context("", "Columns", "table"), "Columns");
+    for n in [0, 1, 2, 5, 21] {
+        assert_eq!(count_label("hu", "pages", n), format!("{n} oldal"));
+        assert_eq!(count_label("hu", "objects", n), format!("{n} objektum"));
+        assert_eq!(count_label("hu", "errors", n), format!("{n} hiba"));
+        assert_eq!(
+            tr("hu", "{pages} Pages in {spreads} Spreads").replace("{pages}", &n.to_string()).replace("{spreads}", &n.to_string()),
+            format!("{n} oldal, {n} oldalpáron")
+        );
+    }
+    assert_eq!(style_name("hu", "[Basic Paragraph]"), "[Alapbekezdés]");
+    assert_eq!(style_name("hu", "Saját stílus"), "Saját stílus");
+    assert_eq!(workspace_name("hu", "Essentials"), "Alapok");
+    assert_eq!(workspace_name("hu", "Saját munkaterület"), "Saját munkaterület");
+}
+
+/// Checks translated labels and source-text fallback, plus key uniqueness and nonempty rows
+/// in the shared, Arabic, Brazilian Portuguese and Italian catalogs.
+#[test]
+fn translates_known_strings_and_keeps_the_rest() {
+    assert_eq!(tr("de", "File"), "Datei");
+    assert_eq!(tr("ja", "Swatches"), "スウォッチ");
+    assert_eq!(tr("fr", "Something new"), "Something new");
+    assert_eq!(tr("", "File"), "File");
+    assert_eq!(tr("ar", "File"), "ملف");
+    assert_eq!(tr("ar", "Unknown label"), "Unknown label");
+    assert_eq!(tr("pt-br", "File"), "Arquivo");
+    assert_eq!(tr("pt-br", "New Document…"), "Novo documento…");
+    assert_eq!(tr("pt-br", "Unknown label"), "Unknown label");
+    assert_eq!(tr("it", "Edit"), "Modifica");
+    assert_eq!(tr("it", "New Document…"), "Nuovo documento…");
+    assert_eq!(tr("it", "Unknown label"), "Unknown label");
+    assert!(is_rtl("ar"));
+    for (i, (en, translation)) in ar::TABLE.iter().enumerate() {
+        assert!(ar::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
+        assert!(!translation.is_empty(), "{en}");
+    }
+    for (i, (en, translation)) in pt_br::TABLE.iter().enumerate() {
+        assert!(pt_br::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
+        assert!(!translation.is_empty(), "{en}");
+    }
+    for (i, (en, translation)) in it::TABLE.iter().enumerate() {
+        assert!(it::TABLE[..i].iter().all(|(key, _)| key != en), "duplicate {en}");
+        assert!(!translation.is_empty(), "{en}");
+    }
+    // Italian entries are for keys the shared or Arabic table knows. A new English string
+    // falls back to English until it is translated, so it doesn't fail here.
+    for (en, _) in it::TABLE {
+        assert!(TABLE.iter().any(|(key, _)| key == en) || ar::TABLE.iter().any(|(key, _)| key == en), "it: unknown key {en}");
+    }
+    // Every row is unique and complete.
+    for (i, (en, t)) in TABLE.iter().enumerate() {
+        assert!(TABLE[..i].iter().all(|(e, _)| e != en), "duplicate {en}");
+        assert!(t.iter().all(|x| !x.is_empty()), "{en}");
     }
 }
 
@@ -77,6 +175,7 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
     }
 }
 
+/// Checks language-specific context precedence and fallback to the plain translation.
 #[test]
 fn context_captions_come_from_their_context_or_the_plain_translation() {
     for (lang, table) in CONTEXT_TABLES {
@@ -108,6 +207,38 @@ fn context_captions_come_from_their_context_or_the_plain_translation() {
         }
         assert_eq!(tr_context("", key, "count"), key);
     }
+}
+
+/// Keeps quantity labels distinct from numeric values and checks translated Pages-panel captions.
+#[test]
+fn a_column_count_and_a_list_number_read_differently() {
+    for (lang, count, numeral) in [
+        ("hu", "Darabszám:", "Szám:"),
+        ("de", "Anzahl:", "Zahl:"),
+        ("ja", "数:", "番号:"),
+        ("uk", "Кількість:", "Номер:"),
+        ("ar", "العدد:", "الرقم:"),
+        ("fr", "Nombre :", "Numéro:"),
+        ("zh", "数量：", "编号："),
+    ] {
+        assert_eq!((tr_context(lang, "Number:", "count"), tr(lang, "Number:")), (count, numeral), "{lang}");
+    }
+    assert_eq!(tr_context("en", "Number:", "count"), "Number:");
+    assert_eq!(tr("de", "Gutter:"), "Spaltenabstand:");
+    // The Pages panel menu.
+    for key in [
+        "Insert Pages…",
+        "Move Pages…",
+        "New Parent…",
+        "Override All Parent Page Items",
+        "Remove All Local Overrides",
+        "Detach All Objects from Parent",
+        "Create Alternate Layout…",
+        "Allow Selected Spread to Shuffle",
+    ] {
+        assert_ne!(tr("pt-br", key), key);
+    }
+    assert_ne!(tr("ar", "Apply Parent to Pages"), "Apply Parent to Pages");
 }
 
 /// The tables `tr` reads, as (language, key, translation), context captions included.
@@ -263,6 +394,23 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
     // UI labels passed to `tr` that no other catalog has yet.
     keys.extend([
+        "180°",
+        "Create Links When Placing Text Files",
+        "Delete Character Style…",
+        "Delete Paragraph Style…",
+        "Delete the character style \"{name}\"?",
+        "Delete the paragraph style \"{name}\"?",
+        "IT",
+        "Replace with:",
+        "Show the Typography panel",
+        "Stroke Behind Fill",
+        "Stylistic Set",
+        "The selected fonts have no OpenType features.",
+        "This story was edited in the layout: you'll be asked before those edits are replaced",
+        "This style is in use. Text using it will be reassigned to:",
+        "VA",
+        "Y:",
+        "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.",
         "(any)",
         "(unchanged)",
         "[No Language]",
