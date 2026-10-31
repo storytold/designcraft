@@ -28,7 +28,7 @@ pub(crate) use format::{
     justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
     validate_justification_order, validate_para_values,
 };
-use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
+use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke, text_gradient};
 use opentype::{open_type, open_type_features, set_features};
 pub(crate) use story::set_story_direction;
 use story::{selection_attrs, story_direction, story_options};
@@ -212,6 +212,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(v)
         }),
         cmd!("type.fillWithPlaceholder", "Fill with Placeholder Text", ["Type"], None, "{frame?, story?}", has_text_or_frames, fill_placeholder),
+        cmd!(
+            "type.gradient",
+            "Gradient",
+            [],
+            None,
+            "{from: [x,y], to: [x,y] (spread coords: the Gradient Swatch tool's drag), reset?: bool} — where the selected text's gradient fill starts and ends (reset: across the frame again); sets the character attribute fillGradient. With text frames selected instead, their whole text",
+            super::has_text_or_frames,
+            text_gradient
+        ),
         cmd!(
             "type.char",
             "Character Formatting",
