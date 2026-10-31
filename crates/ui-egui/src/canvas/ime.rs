@@ -28,10 +28,35 @@ fn drop_stale_ime_events(app: &mut DesignApp) {
     app.ime_interrupt = true;
 }
 
+/// The text a key typed, given `text` as the window system reports it.
+///
+/// On macOS the Space key in a Japanese input mode types an ideographic space, but the window
+/// layer drops what the input method inserts when nothing is being composed and reports the key's
+/// own character, a plain space. While the text before it was Japanese the input method committed
+/// (`japanese_typing`), a plain space is therefore the ideographic one; with Shift it is the plain
+/// space, as the input methods have it. Letters typed straight from the keys (the Roman mode) end
+/// that. Chinese and Korean input methods type plain spaces (Korean separates words with them),
+/// and accents a Latin input method composes are no input mode at all: none of them start it.
+pub(crate) fn typed_text(text: &str, japanese_typing: bool, shift: bool, macos: bool) -> &str {
+    if macos && japanese_typing && !shift && text == " " { "\u{3000}" } else { text }
+}
+
+/// Kana: what a Japanese input method shows while composing (hiragana, katakana, half-width
+/// katakana). Chinese ones show pinyin, zhuyin or radicals, Korean ones jamo and syllables.
+pub(crate) fn has_kana(text: &str) -> bool {
+    text.chars().any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' | '\u{ff66}'..='\u{ff9f}'))
+}
+
 /// One input method event for the text caret: marked text previews in the story, a commit types.
 pub(super) fn ime_event(app: &mut DesignApp, ctx: &egui::Context, e: egui::ImeEvent, vi: designcraft_engine::ViewInfo) {
     let r = match e {
         egui::ImeEvent::Preedit { text, active_range_chars } => {
+            // A new composition: kana from one the input method cancelled (Escape) don't count.
+            // The empty preedit before a commit keeps them, as something is still marked then.
+            if app.ime_marked.is_none() {
+                app.ime_kana_seen = false;
+            }
+            app.ime_kana_seen |= has_kana(&text);
             if text.is_empty() {
                 app.ime_marked = None;
                 app.ime_target = None;
@@ -56,11 +81,15 @@ pub(super) fn ime_event(app: &mut DesignApp, ctx: &egui::Context, e: egui::ImeEv
         // A bare line break confirms the composition (Enter with some IMEs): the marked text, not
         // a new paragraph.
         egui::ImeEvent::Commit(t) if t == "\n" || t == "\r" => {
+            app.ime_japanese_typing = std::mem::take(&mut app.ime_kana_seen);
             finish_pending_ime_delete(app, ctx);
             keep_marked_text(app);
             Ok(())
         }
-        egui::ImeEvent::Commit(t) => ime_commit(app, ctx, &t, vi),
+        egui::ImeEvent::Commit(t) => {
+            app.ime_japanese_typing = std::mem::take(&mut app.ime_kana_seen) || has_kana(&t);
+            ime_commit(app, ctx, &t, vi)
+        }
         // The web text agent's corrections and mobile Backspace: characters around the caret go.
         // These are held for the Commit in the same batch so both mutations are one undo step.
         egui::ImeEvent::DeleteSurrounding { before_chars, after_chars } => {
@@ -328,6 +357,7 @@ fn ime_compare_window(after_text: &str, after_win: std::ops::Range<usize>, post:
 /// End a composition outside the IME (a click away, the canvas losing the keyboard): the marked
 /// text stays as typed, and the system IME is told to drop its copy.
 pub(crate) fn keep_marked_text(app: &mut DesignApp) {
+    app.ime_kana_seen = false;
     if app.ime_marked.take().is_some() {
         app.ime_discard = true;
     }
@@ -347,6 +377,16 @@ pub(crate) struct CanvasIme {
     viewport: egui::ViewportId,
     /// The caret's screen rectangle, when the canvas owns the text caret this pass.
     caret: Option<Rect>,
+}
+
+/// In another story (or document) the input mode may have changed unseen: Japanese typing starts
+/// over when the caret gets there.
+pub(super) fn ime_follow_caret(app: &mut DesignApp) {
+    let here = app.session.active_index().zip(app.session.active().and_then(|st| st.selection.text).map(|t| t.story));
+    if here != app.ime_caret_story {
+        app.ime_japanese_typing = false;
+        app.ime_caret_story = here;
+    }
 }
 
 /// While the text caret is in the canvas, let the system IME compose (egui-winit allows it only in
@@ -381,9 +421,12 @@ pub(crate) fn ime_observe(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(r) = canvas.caret.filter(|_| ours) else {
         // The IME goes away with its marked text: keep that text as typed, like a click away.
         keep_marked_text(app);
+        app.ime_japanese_typing = false;
+        app.ime_caret_story = None;
         app.ime_tracker.observe(viewport, None);
         return;
     };
+    ime_follow_caret(app);
     // The composition ended outside the IME (a click, a command): the IME drops what it has marked.
     let interrupt = app.ime_interrupt || (app.ime_marked.is_some() && !app.session.tool_composing());
     app.ime_interrupt = false;

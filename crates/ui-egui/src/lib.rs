@@ -252,6 +252,14 @@ pub struct DesignApp {
     /// The marked text the system IME last sent (`None` once it commits or clears). When the
     /// composition ends some other way (a click, a tool switch), the IME is told to drop it.
     pub(crate) ime_marked: Option<String>,
+    /// The text typed last was Japanese the input method committed (it is in its kana mode), not
+    /// letters straight from the keys: see [`canvas::typed_text`].
+    pub(crate) ime_japanese_typing: bool,
+    /// The composition under way has shown kana: the input method is a Japanese one.
+    pub(crate) ime_kana_seen: bool,
+    /// The document and story the text caret was in last frame. Moving to another one, or leaving
+    /// the text, ends `ime_japanese_typing`.
+    pub(crate) ime_caret_story: Option<(usize, designcraft_doc::StoryId)>,
     /// The system IME must drop its marked text (see [`Self::take_ime_discard`]).
     pub(crate) ime_discard: bool,
     /// The canvas asked for the system IME in the last frame (the web build's text input has the
