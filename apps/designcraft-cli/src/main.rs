@@ -96,8 +96,78 @@ fn stdout_failed(e: std::io::Error) -> ! {
     std::process::exit(1);
 }
 
+/// Options whose value is a path, and so can be written `./-name` when it starts with `-`, the
+/// shell's own way out. None of them has an `--opt=value` form (the automation roots, parsed in
+/// [`automation_args`], do and say so themselves).
+const PATH_OPTIONS: [&str; 4] = ["--in", "--export", "--all-pages", "--save"];
+
+/// An option's value, refusing the next token when it is another option: `--export --scale` used
+/// to write a file called `--scale`.
+fn value(a: &str, next: Option<&String>) -> Result<String, String> {
+    match next {
+        None => Err(format!("{a} needs a value")),
+        Some(v) if !can_be_value(v) => {
+            // The way out is worth offering only where the value could be such a name.
+            let out = if PATH_OPTIONS.contains(&a) { format!("; if you did mean that name, write `./{v}`") } else { String::new() };
+            Err(format!("{a} needs a value and `{v}` is another option{out}"))
+        }
+        Some(v) => Ok(v.clone()),
+    }
+}
+
+/// Whether a token can be an option's value. A negative number can; anything else that starts
+/// with `-` is another option. `-inf` and `-nan` parse as numbers too, so a bad `--scale` still
+/// reaches the check that reports it rather than being called an option.
+fn can_be_value(v: &str) -> bool {
+    !(v.starts_with('-') && v.len() > 1 && v.parse::<f64>().is_err())
+}
+
+/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
+/// subcommand, and the indented lines after it belong to it.
+/// The part of [`USAGE`] that describes `sub`, or `None` when it describes no such subcommand --
+/// which is how `<sub> --help` tells a real subcommand from a typo. Falling back to the whole
+/// usage made `bogus --help` print it and succeed, bypassing the unknown-command failure (noted
+/// in review).
+fn usage_for(sub: &str) -> Option<String> {
+    let mut out = Vec::new();
+    let mut keep = false;
+    for line in USAGE.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("usage: designcraft-cli ").or_else(|| trimmed.strip_prefix("designcraft-cli ")) {
+            keep = rest.split_whitespace().next() == Some(sub);
+        }
+        if keep {
+            out.push(line);
+        }
+    }
+    (!out.is_empty()).then(|| out.join("\n"))
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args` panics on an argument that is not UTF-8 ("called `Result::unwrap()` on an
+    // `Err` value"), which a Latin-1 file name on Linux or macOS is. Such a name cannot be passed
+    // through to the engine, whose paths are `str`, so it is a usage error here rather than a
+    // crash (photocraft#1108).
+    let mut args: Vec<String> = Vec::new();
+    for arg in std::env::args_os().skip(1) {
+        match arg.into_string() {
+            Ok(a) => args.push(a),
+            Err(bad) => {
+                eprintln!("designcraft-cli: `{}` is not valid UTF-8, so it cannot be used as an argument", bad.to_string_lossy());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
+    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.
+    if let Some(sub) = args.first().map(String::as_str)
+        && !matches!(sub, "--help" | "-h" | "help" | "script")
+        && args[1..].iter().any(|a| a == "--help" || a == "-h")
+        && let Some(text) = usage_for(sub)
+    {
+        outln!("{text}");
+        return ExitCode::SUCCESS;
+    }
     match args.first().map(String::as_str) {
         Some("--version" | "-V" | "version") => {
             outln!("designcraft-cli {}", env!("CARGO_PKG_VERSION"));
@@ -252,21 +322,28 @@ so drop --connect (or use --connect without the roots)"
 /// They apply to the exports that follow them, so one after the last export would do nothing.
 fn option_after_last_export(args: &[String]) -> Option<&str> {
     let mut unused = None;
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
+    // A value is skipped only where the next token can be one. Taking it whatever it is read
+    // `--scale --export out.png` as --scale applied to no export, so a missing value was
+    // reported as the order of the options -- and "put it before its --export" is advice for a
+    // list that already does that (photocraft#7071).
     while let Some(a) = it.next() {
+        let is_opt = matches!(a.as_str(), "--page" | "--scale" | "--pdf-options" | "--export" | "--all-pages" | "--in" | "--cmd");
         match a.as_str() {
-            "--page" | "--scale" | "--pdf-options" => {
-                unused = unused.or(Some(a.as_str()));
-                it.next();
-            }
-            "--export" | "--all-pages" => {
-                unused = None;
-                it.next();
-            }
-            "--in" | "--cmd" => {
-                it.next();
-            }
+            "--page" | "--scale" | "--pdf-options" => unused = unused.or(Some(a.as_str())),
+            "--export" | "--all-pages" => unused = None,
             _ => {}
+        }
+        if is_opt {
+            match it.peek() {
+                Some(v) if can_be_value(v.as_str()) => {
+                    it.next();
+                }
+                // The option has no value. That is what is wrong with the line, so this check
+                // stands aside and lets `value()` say so: reporting the order instead advised
+                // moving an option that is already where it belongs (photocraft#7071).
+                _ => return None,
+            }
         }
     }
     unused
@@ -328,7 +405,7 @@ fn run(args: &[String]) -> Result<(), String> {
     // Earlier --cmd results, for `$N.path` references.
     let mut results: Vec<Value> = Vec::new();
     while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+        let mut val = || value(a, it.next());
         match a.as_str() {
             "--in" => {
                 let p = val()?;
@@ -470,7 +547,7 @@ fn script(args: &[String]) -> Result<(), String> {
     let mut keep_going = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+        let mut val = || value(a, it.next());
         match a.as_str() {
             "--in" => {
                 let p = val()?;

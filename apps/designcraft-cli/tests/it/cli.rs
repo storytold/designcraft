@@ -556,3 +556,74 @@ fn usage_lists_the_automation_root_flags() {
     let usage = String::from_utf8_lossy(&out.stdout);
     assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
 }
+
+/// The argument bugs photocraft#7071 lists, measured here: every one of them was live in this
+/// parser too. Each case names the photocraft issue it comes from.
+#[test]
+fn the_argument_parser_refuses_what_it_cannot_mean() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-args-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // photocraft#423: `<sub> --help` was read as an unknown option. It asks about the
+    // subcommand, goes to stdout and succeeds.
+    for sub in ["run", "commands", "describe", "app", "mcp", "perf", "bench", "validate-pdf", "links"] {
+        let out = cli().args([sub, "--help"]).output().unwrap();
+        assert!(out.status.success(), "{sub} --help: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(&format!("designcraft-cli {sub}")), "{sub} --help names it: {text:?}");
+        assert!(!text.contains("unknown option"), "{sub} --help: {text:?}");
+    }
+    // `script --help` keeps its own longer help, which it had already.
+    let out = cli().args(["script", "--help"]).output().unwrap();
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Script text, one step per line"));
+
+    // photocraft#6944: an option took the next token whatever it was, so `--export --scale`
+    // wrote a file called `--scale` in the working directory.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "--scale"]).output().unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("another option") && err.contains("./--scale"), "{err:?}");
+    assert!(!dir.join("--scale").exists(), "nothing was written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no other file either");
+
+    // A name that really does start with `-` is still reachable, the way the shell reaches one.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "./-dash.png"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("-dash.png").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+
+    // A missing value is still a missing value, with the message it had.
+    let out = cli().args(["run", "--sample", "--export"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--export needs a value"));
+
+    // And a missing value in front of an export is still a missing value: the order of the
+    // options is beside the point until `--scale` has one, and "put it before its --export" was
+    // advice for a list that already does that.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--scale", "--export", "out.png"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err:?}");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert!(!err.contains("has no --export"), "{err:?}");
+    // `./--export` is a file name, which is no way out of a missing `--scale`.
+    assert!(!err.contains("./"), "{err:?}");
+    assert!(!dir.join("out.png").exists(), "and nothing is exported");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// photocraft#1108: an argument that is not UTF-8 panicked in `std::env::args` ("called
+/// `Result::unwrap()` on an `Err` value"). Such a name cannot reach the engine, whose paths are
+/// `str`, so it is a usage error.
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let out = cli().arg("info").arg(OsStr::from_bytes(b"/tmp/caf\xe9.designcraft")).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "an error, not a panic (101): {err:?}");
+    assert!(err.contains("not valid UTF-8"), "{err:?}");
+    assert!(!err.contains("panicked"), "{err:?}");
+}
