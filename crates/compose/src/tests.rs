@@ -8440,3 +8440,83 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Nested footnotes: a footnote's text holds a footnote reference, whose note holds another.
+/// They are numbered in reading order (the chain before the next reference in the text) and
+/// printed under the note they come from, a line's leading below it, as if after a forced line
+/// break; the footnote area makes room for them; picking and carets reach them by id.
+#[test]
+fn nested_footnotes_print_under_their_note_in_reading_order() {
+    let text = format!("Alpha beta gamma. {LOREM} {LOREM} {LOREM}");
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let (a, b, c, e) = {
+        let st = d.story_mut(sid).unwrap();
+        let b = st.insert_note(16, "Second.", ParaFormat::default()).unwrap();
+        let a = st.insert_note(5, "First note text.", ParaFormat::default()).unwrap();
+        // c nested in a, e nested in c, with story-wide unique ids.
+        let c = st.next_note_id_deep();
+        let n = st.note_mut(a).unwrap();
+        let local = n.text.insert_note(5, "Nested note.", ParaFormat::default()).unwrap();
+        std::sync::Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = c;
+        let e = st.next_note_id_deep();
+        let n = st.note_mut(c).unwrap();
+        let local = n.text.insert_note(6, "Deepest note.", ParaFormat::default()).unwrap();
+        std::sync::Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = e;
+        st.check().unwrap();
+        (a, b, c, e)
+    };
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let placed: Vec<(u64, &str)> = ft.notes.iter().map(|n| (n.id, n.label.as_str())).collect();
+    assert_eq!(placed, [(a, "1"), (c, "2"), (e, "3"), (b, "4")], "reading order, nested notes under their note");
+    // Each printed under the one before, its first baseline a line's leading below.
+    for w in ft.notes.windows(2) {
+        let (above, below) = (&w[0], &w[1]);
+        let last = above.origin.y + above.text.frames[0].lines.last().unwrap().baseline;
+        let l = &below.text.frames[0].lines[0];
+        let first = below.origin.y + l.baseline;
+        assert!(first > last, "{} below {}", below.label, above.label);
+        if below.id != b {
+            assert!((first - last - l.leading).abs() < 1e-6, "a line's leading: {first} - {last} vs {}", l.leading);
+            assert!(below.rect.y0 <= above.rect.y1 + 1e-6, "no gap to click into");
+        }
+    }
+    // The nested reference in the first note's text shows its number.
+    let in_note: String =
+        ft.notes[0].text.frames[0].lines.iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.visible).map(|g| g.rendered_char).collect();
+    assert!(in_note.contains('2'), "{in_note}");
+    // The body text makes room for all four.
+    let body = ft.lines.last().unwrap();
+    assert!(body.baseline + body.descent <= ft.notes[0].rect.y0 + 0.01);
+    assert!(ft.lines.len() < plain.frames[0].lines.len());
+    // Picking and carets reach a nested note by its id.
+    let n = &ft.notes[2];
+    let (id, _) = hit_note(&cs, 0, Point::new(n.rect.x0 + 30.0, n.origin.y + n.text.frames[0].lines[0].baseline - 2.0)).unwrap();
+    assert_eq!(id, e);
+    assert!(note_caret(&cs, e, 3).is_some());
+    // The first line of a nested note has no first-line indent, as after a forced line break.
+    std::sync::Arc::make_mut(&mut d.styles).paragraph.iter_mut().for_each(|p| p.para.first_line_indent = Some(12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let x0 = |n: &PlacedNote| n.text.frames[0].lines[0].glyphs.iter().find(|g| g.visible).unwrap().x;
+    assert!((x0(&ft.notes[1]) - x0(&ft.notes[0])).abs() > 1.0, "the footnote itself keeps its indent");
+    assert!(x0(&ft.notes[1]) < x0(&ft.notes[0]));
+}
+
+/// Restart numbering every page applies to nested notes as to footnotes, and Start at too.
+#[test]
+fn nested_footnotes_follow_start_at() {
+    let (mut d, sid, fid) = doc_with("One two.", Rect::new(36.0, 36.0, 300.0, 400.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let a = st.insert_note(3, "Outer.", ParaFormat::default()).unwrap();
+    let c = st.next_note_id_deep();
+    let n = st.note_mut(a).unwrap();
+    let local = n.text.insert_note(5, "Inner.", ParaFormat::default()).unwrap();
+    std::sync::Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = c;
+    st.insert_note(st.len(), "After.", ParaFormat::default()).unwrap();
+    d.footnote_options.start_at = 7;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let labels: Vec<&str> = cs.frame(fid).unwrap().notes.iter().map(|n| n.label.as_str()).collect();
+    assert_eq!(labels, ["7", "8", "9"]);
+}

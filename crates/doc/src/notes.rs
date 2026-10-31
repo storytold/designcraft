@@ -43,6 +43,26 @@ pub struct Footnote {
 /// in a file are kept but not shown or numbered.
 pub const MAX_NOTE_DEPTH: usize = 5;
 
+impl Footnote {
+    /// The footnotes nested in this (top-level) footnote, in reading order: each note, then the
+    /// notes nested in it, before its next sibling, down to [`MAX_NOTE_DEPTH`]. Read in this order
+    /// they are numbered and printed under it.
+    pub fn nested(&self) -> Vec<&Footnote> {
+        fn walk<'a>(st: &'a Story, depth: usize, out: &mut Vec<&'a Footnote>) {
+            if depth > MAX_NOTE_DEPTH {
+                return;
+            }
+            for n in &st.notes {
+                out.push(n);
+                walk(&n.text, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.text, 2, &mut out);
+        out
+    }
+}
+
 /// Restart Numbering Every.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -234,20 +254,7 @@ impl Story {
     /// The footnotes nested in this story's footnotes, in reading order (each followed by its own
     /// nested notes, before its next sibling), down to [`MAX_NOTE_DEPTH`].
     pub fn nested_notes(&self) -> Vec<&Footnote> {
-        fn walk<'a>(st: &'a Story, depth: usize, out: &mut Vec<&'a Footnote>) {
-            if depth > MAX_NOTE_DEPTH {
-                return;
-            }
-            for n in &st.notes {
-                out.push(n);
-                walk(&n.text, depth + 1, out);
-            }
-        }
-        let mut out = Vec::new();
-        for n in &self.notes {
-            walk(&n.text, 2, &mut out);
-        }
-        out
+        self.notes.iter().flat_map(|n| n.nested()).collect()
     }
 
     /// Every footnote id in this story and its nested notes.

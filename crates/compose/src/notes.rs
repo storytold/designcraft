@@ -31,7 +31,20 @@ pub(crate) struct Placed {
     fi: usize,
     col: usize,
     m: NoteMetrics,
+    parts: Arc<Vec<NotePart>>,
+}
+
+/// One footnote of a placed footnote's block: the footnote itself, then the footnotes nested in
+/// it in reading order, each printed under the one before as if after a forced line break.
+#[derive(Clone, Debug)]
+pub(crate) struct NotePart {
+    id: u64,
+    label: String,
     text: Arc<ComposedStory>,
+    source: Arc<str>,
+    /// Top of its composed text below the block's top.
+    dy: f64,
+    m: NoteMetrics,
 }
 
 /// Vertical metrics of a composed footnote, relative to the top of its composed text.
@@ -79,9 +92,14 @@ pub(crate) struct Notes {
     pub num: u32,
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
-    /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    /// Composed footnote blocks by (index, number, width, page sides).
+    cache: HashMap<(usize, u32, u64, bool, bool), (Arc<Vec<NotePart>>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
+    /// Numbers of the nested footnotes by id, assigned with the footnote they're nested in.
+    nested: Arc<HashMap<u64, u32>>,
+    /// Composing a footnote's own text: its references (nested notes) take these numbers, and
+    /// nothing is placed (the nested notes print under the footnote, see [`NotePart`]).
+    inner: Option<Arc<HashMap<u64, u32>>>,
     /// Footnotes span the columns of their frame.
     span: bool,
     /// Room a frame's earlier columns had to leave for spanning notes placed in a later column;
@@ -90,10 +108,13 @@ pub(crate) struct Notes {
 }
 
 impl Notes {
-    pub fn new(doc: &Document, story: &Story) -> Notes {
+    pub fn new(doc: &Document, story: &Story, opts: &ComposeOptions) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let inner = opts.note_numbers.clone();
+        let start = if refs.is_empty() || inner.is_some() { 1 } else { doc.footnote_start(story.id) };
         Notes {
+            nested: Arc::default(),
+            inner,
             numbers: vec![start; refs.len()],
             refs,
             num: start,
@@ -132,6 +153,17 @@ impl Notes {
         });
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
+        sub.note_position = o.ref_position;
+        sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
+        if let Some(numbers) = &self.inner {
+            // A footnote's own text: its nested notes' numbers were given with the footnote. A
+            // note past the depth limit has none and shows no mark.
+            for k in a..b {
+                let n = self.notes.get(k).and_then(|n| numbers.get(&n.id)).copied();
+                sub.notes.insert(self.refs[k], n.map_or_else(String::new, |n| o.label(n, false)));
+            }
+            return;
+        }
         for k in a..b {
             if o.restart != NoteRestart::Never && key != self.key {
                 self.key = key;
@@ -140,14 +172,27 @@ impl Notes {
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
             sub.notes.insert(self.refs[k], o.label(self.numbers[k], false));
+            // The notes nested in it take the next numbers, in reading order: each reference
+            // then the notes nested in its note, before the next reference.
+            if let Some(note) = self.notes.get(k)
+                && !note.text.notes.is_empty()
+            {
+                let nested = Arc::make_mut(&mut self.nested);
+                for n in note.nested() {
+                    nested.insert(n.id, self.num);
+                    self.num = self.num.saturating_add(1);
+                }
+            }
         }
-        sub.note_position = o.ref_position;
-        sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
     }
 
-    /// Footnote indices referenced by a line's glyphs.
+    /// Footnote indices referenced by a line's glyphs (none in a footnote's own text: nested
+    /// notes are printed with the footnote, not placed).
     pub fn refs_in(&self, glyphs: &[Glyph]) -> Vec<usize> {
         let mut v: Vec<usize> = Vec::new();
+        if self.inner.is_some() {
+            return v;
+        }
         for g in glyphs.iter().filter(|g| g.ch == FOOTNOTE_REF && g.len > 0) {
             if let Ok(k) = self.refs.binary_search(&g.byte)
                 && !v.contains(&k)
@@ -158,11 +203,14 @@ impl Notes {
         v
     }
 
-    fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
+    /// Footnote `k` composed at width `w`, with the footnotes nested in it printed under it
+    /// ([`NotePart`]), and the block's metrics.
+    fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<Vec<NotePart>>, NoteMetrics) {
         let o = &doc.footnote_options;
-        let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
+        let number = self.numbers.get(k).copied().unwrap_or(1);
+        let mark = o.label(number, true);
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
-        let key = (k, label.clone(), w.to_bits(), f.left_page, f.right_page);
+        let key = (k, number, w.to_bits(), f.left_page, f.right_page);
         if let Some(c) = self.cache.get(&key) {
             return c.clone();
         }
@@ -182,22 +230,47 @@ impl Notes {
             right_page: f.right_page,
             page_rect: None,
         };
-        let nopts = ComposeOptions {
-            page_name: opts.page_name.clone(),
-            section_marker: opts.section_marker.clone(),
-            page: opts.page,
-            running: opts.running.clone(),
-            label: Some(label),
-            xrefs: opts.xrefs.clone(),
-            placed: Vec::new(),
+        let nested = Arc::clone(&self.nested);
+        let compose_part = |story: &Story, label: String| {
+            let nopts = ComposeOptions {
+                page_name: opts.page_name.clone(),
+                section_marker: opts.section_marker.clone(),
+                page: opts.page,
+                running: opts.running.clone(),
+                label: Some(label),
+                xrefs: opts.xrefs.clone(),
+                placed: Vec::new(),
+                note_numbers: Some(Arc::clone(&nested)),
+            };
+            let cs = crate::compose(doc, story, std::slice::from_ref(&spec), &nopts);
+            let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
+            let m = match (lines.first(), lines.last()) {
+                (Some(a), Some(z)) => NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent },
+                _ => NoteMetrics::default(),
+            };
+            (Arc::new(cs), m)
         };
-        let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
-        let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
-        let m = match (lines.first(), lines.last()) {
-            (Some(a), Some(z)) => NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent },
-            _ => NoteMetrics::default(),
-        };
-        let v = (Arc::new(cs), m);
+        let Some(note) = self.notes.get(k) else { return (Arc::default(), NoteMetrics::default()) };
+        let (text, first) = compose_part(&note.text, format!("{mark}{}", o.separator));
+        let mut parts = vec![NotePart { id: note.id, label: mark, text, source: Arc::from(note.text.text.as_str()), dy: 0.0, m: first }];
+        for n in note.nested() {
+            let Some(&num) = self.nested.get(&n.id) else { continue };
+            let label = o.label(num, true);
+            // Printed as if after a forced line break: no first-line indent and no space before.
+            let mut story = n.text.clone();
+            if let Some(p) = story.paras.first_mut() {
+                p.para.first_line_indent = Some(0.0);
+                p.para.space_before = Some(0.0);
+            }
+            let (text, m) = compose_part(&story, format!("{label}{}", o.separator));
+            let Some(prev) = parts.last() else { continue };
+            // Its first baseline a line's leading below the previous part's last.
+            let dy = prev.dy + prev.m.last + m.lead - m.first;
+            parts.push(NotePart { id: n.id, label, text, source: Arc::from(n.text.text.as_str()), dy, m });
+        }
+        // The block: the footnote's first line to its last nested note's last.
+        let m = parts.last().map_or(first, |p| NoteMetrics { first: first.first, lead: first.lead, last: p.dy + p.m.last, descent: p.m.descent });
+        let v = (Arc::new(parts), m);
         self.cache.insert(key, v.clone());
         v
     }
@@ -234,8 +307,8 @@ impl Notes {
         if self.placed.iter().any(|p| p.k == k) {
             return;
         }
-        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
-        self.placed.push(Placed { k, fi: column.frame_index, col: column.column_index, m, text });
+        let (parts, m) = self.compose(doc, k, column.width, column.frame, opts);
+        self.placed.push(Placed { k, fi: column.frame_index, col: column.column_index, m, parts });
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.
@@ -267,7 +340,9 @@ impl Notes {
             // Previous footnote's last baseline and bottom.
             let mut prev: Option<(f64, f64)> = None;
             for p in here {
-                let Some(note) = story.notes.get(p.k) else { continue };
+                if story.notes.get(p.k).is_none() {
+                    continue;
+                }
                 let (y, y0) = match prev {
                     None => (top, top),
                     Some((last, bottom)) => {
@@ -275,17 +350,25 @@ impl Notes {
                         (first - p.m.first, (bottom + o.space_between).min(first))
                     }
                 };
+                // The footnote, then its nested notes under it, each from where the one before
+                // ends (so a click between them finds one).
+                let mut part_top = y0;
+                for part in p.parts.iter() {
+                    let py = y + part.dy;
+                    let bottom = py + part.m.last + part.m.descent;
+                    ft.notes.push(PlacedNote {
+                        id: part.id,
+                        index: p.k,
+                        column: p.col as u32,
+                        label: part.label.clone(),
+                        origin: Point::new(col.x0, py),
+                        rect: Rect::new(col.x0, part_top, col.x1, bottom.max(part_top)),
+                        text: part.text.clone(),
+                        source: part.source.clone(),
+                    });
+                    part_top = bottom;
+                }
                 let y1 = y + p.m.last + p.m.descent;
-                ft.notes.push(PlacedNote {
-                    id: note.id,
-                    index: p.k,
-                    column: p.col as u32,
-                    label: o.label(self.numbers[p.k], true),
-                    origin: Point::new(col.x0, y),
-                    rect: Rect::new(col.x0, y0, col.x1, y1),
-                    text: p.text.clone(),
-                    source: Arc::from(note.text.text.as_str()),
-                });
                 prev = Some((y + p.m.last, y1));
             }
         }
