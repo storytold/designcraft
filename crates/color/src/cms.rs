@@ -160,9 +160,111 @@ impl ColorSettings {
 pub struct OutputIntent {
     pub icc: Cow<'static, [u8]>,
     /// `OutputConditionIdentifier`: a registered characterisation, or `Custom`.
-    pub identifier: &'static str,
+    pub identifier: Cow<'static, str>,
     /// `OutputCondition` / `Info`: the profile's name.
     pub condition: String,
+}
+
+/// Registered characterisation reference names whose spelling in a profile description is the
+/// registry's own: <https://registry.color.org/cmyk-registry/>. FOGRA's data sets run past the
+/// registry -- FOGRA59, the one `eciCMYK v2` names, is not registered -- so a plausible-looking
+/// number is not a registered name and `FOGRA999` never was one.
+///
+/// The registry's names that contain spaces (`CGATS TR 001`, `APTEC Coated CardBoard`) are not
+/// looked for: finding a spaced name inside a free-form description is a different problem, and
+/// not finding one costs only `Custom`, which is what PDF/X asks for when the condition is not
+/// registered.
+const REGISTERED: &[&str] = &[
+    "FOGRA27",
+    "FOGRA28",
+    "FOGRA29",
+    "FOGRA30",
+    "FOGRA31",
+    "FOGRA32",
+    "FOGRA33",
+    "FOGRA34",
+    "FOGRA35",
+    "FOGRA36",
+    "FOGRA37",
+    "FOGRA38",
+    "FOGRA39",
+    "FOGRA40",
+    "FOGRA41",
+    "FOGRA42",
+    "FOGRA43",
+    "FOGRA44",
+    "FOGRA45",
+    "FOGRA46",
+    "FOGRA47",
+    "FOGRA48",
+    "FOGRA49",
+    "FOGRA50",
+    "FOGRA51",
+    "FOGRA52",
+    "FOGRA53",
+    "FOGRA54",
+    "IFRA26",
+    "JCN2002",
+    "JCW2003",
+    "JC200103",
+    "JC200104",
+    "JCS2011",
+    "EUROSB104",
+    "EUROSB204",
+    "APTEC_CTV_3",
+    "APTEC_CTV_4",
+    "APTEC_CTV_5",
+    "APTEC_CTV_6",
+    "APTEC_CTV_7",
+    "APTEC_CTV_8",
+];
+
+/// The CGATS.21-2 reference printing conditions, CRPC1 to CRPC7.
+const CRPCS: usize = 7;
+
+/// The registered characterisation identifier a profile names in its own description, spelled as
+/// the ICC registry spells it.
+///
+/// A print provider's preflight matches on the registered name, so `Custom` is only right when
+/// the profile names no registered characterisation: `PSOuncoated_v3_FOGRA52` is FOGRA52 and
+/// saying `Custom` for it loses the one field the provider reads (#1475). Nothing is guessed from
+/// a profile's other properties -- the identifier has to be in the description, which is where
+/// these profiles put it -- and nothing is emitted that the registry does not list, under the
+/// spelling the registry uses (noted in review).
+pub fn registered_identifier(description: &str) -> Option<String> {
+    // `to_ascii_uppercase` keeps every byte's position, so an offset into `upper` is an offset
+    // into `description` as well. Reading the name from a `Vec<char>` indexed by a byte offset
+    // went wrong as soon as anything before it was multi-byte -- "Coated (R) FOGRA39" gave
+    // FOGRA9 (review of #1475).
+    let upper: String = description.to_ascii_uppercase();
+    // `name`, somewhere in the description and not inside a longer word. The boundary after it
+    // counts as much as the one before: "FOGRA52extra" names no registered condition, and
+    // answering FOGRA52 for it put a PDF/X identifier on a profile that never claimed one.
+    let names = |name: &str| {
+        let bytes = upper.as_bytes();
+        let mut from = 0;
+        while let Some(at) = upper.get(from..).and_then(|s| s.find(name)).map(|i| i + from) {
+            from = at + name.len();
+            let before_is_word = at > 0 && bytes.get(at - 1).is_some_and(|b| b.is_ascii_alphanumeric());
+            let after_is_word = bytes.get(from).is_some_and(|b| b.is_ascii_alphanumeric());
+            if !before_is_word && !after_is_word {
+                return true;
+            }
+        }
+        false
+    };
+    if let Some(name) = REGISTERED.iter().find(|name| names(name)) {
+        return Some((*name).to_string());
+    }
+    // The registry spells these `CGATS21-2-CRPCn`; profile descriptions also write
+    // `CGATS21_CRPCn`. The spelling found is mapped to the registered one rather than emitted as
+    // it stands, which a preflight check for the registered name would not match (noted in
+    // review).
+    (1..=CRPCS).map(|n| format!("CGATS21-2-CRPC{n}")).find(|registered| {
+        [registered.replace("21-2-", "21_"), registered.replace('-', "_"), registered.replace("21-2-", "21-"), registered.clone()]
+            .iter()
+            .any(|s| names(s))
+    })
 }
 
 /// Target colour model for [`Cms::convert`].
@@ -332,12 +434,23 @@ impl Cms {
     /// described by the Generic CMYK one.
     pub fn output_intent(&self) -> Result<OutputIntent, CmsError> {
         Ok(match &self.cmyk {
-            CmykSpace::Icc(p) if p.name == COATED_FOGRA39 => {
-                OutputIntent { icc: Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC), identifier: "FOGRA39", condition: COATED_FOGRA39.into() }
-            }
-            CmykSpace::Icc(p) => OutputIntent { icc: Cow::Owned(p.profile().to_bytes().to_vec()), identifier: "Custom", condition: p.name.clone() },
+            CmykSpace::Icc(p) if p.name == COATED_FOGRA39 => OutputIntent {
+                icc: Cow::Borrowed(craft_cms::builtin::COATED_FOGRA39_ICC),
+                identifier: "FOGRA39".into(),
+                condition: COATED_FOGRA39.into(),
+            },
+            // The identifier comes from the profile's own embedded description, not from
+            // `p.name`: `register_icc` lets the caller name a profile what it likes, so reading
+            // the name let a caller put a registered PDF/X identifier on an unrelated profile --
+            // the identifier is a claim about the file's bytes. `p.name` stays the condition,
+            // which is the human-facing description (noted in review).
+            CmykSpace::Icc(p) => OutputIntent {
+                icc: Cow::Owned(p.profile().to_bytes().to_vec()),
+                identifier: registered_identifier(p.profile().description.trim_matches('\0').trim()).map_or(Cow::Borrowed("Custom"), Cow::Owned),
+                condition: p.name.clone(),
+            },
             CmykSpace::Generic(_) | CmykSpace::Device => {
-                OutputIntent { icc: Cow::Borrowed(icc_out::generic_cmyk_icc()?), identifier: "Custom", condition: GENERIC_CMYK.into() }
+                OutputIntent { icc: Cow::Borrowed(icc_out::generic_cmyk_icc()?), identifier: "Custom".into(), condition: GENERIC_CMYK.into() }
             }
         })
     }
