@@ -24,9 +24,9 @@ pub const MIME: &str = "application/vnd.designcraft+zip";
 /// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
 /// version 3 adds rendering of retained EPS source assets; version 4 is one capability covering both
 /// retained placed-graphic layer options and explicit all-on placed-PDF layer choices, so a version 4
-/// reader understands both. Any later capability needs version 5. [`required_version`] is the only
-/// place that picks a version.
-pub const VERSION: u32 = 4;
+/// reader understands both. Version 5 retains World-Ready composer identities. Any later capability
+/// needs version 6. [`required_version`] is the only place that picks a version.
+pub const VERSION: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -73,6 +73,12 @@ const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 /// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
 /// keep their older requirement so existing readers still open them.
 fn required_version(doc: &Document) -> u32 {
+    // Older serde readers cannot decode these enum variants. Even unused styles are serialized.
+    if doc.styles.paragraph.iter().any(|style| world_ready_composer(&style.para))
+        || doc.stories.values().any(|story| story_needs_world_ready_reader(story, 0))
+    {
+        return 5;
+    }
     // Version 4 covers both of these: older readers ignore the unknown fields, so they would
     // silently drop retained graphic layer choices, or read an explicit all-on PDF layer choice
     // (empty hidden list) as "use the file's defaults". A nonempty hidden list stays readable.
@@ -83,6 +89,20 @@ fn required_version(doc: &Document) -> u32 {
     // without EPS stay at 2 so their existing readers keep working; writing 1 would make a
     // reader re-run the version 2 paragraph upgrade over current defaults.
     if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { 3 } else { 2 }
+}
+
+/// Whether paragraph attributes contain a composer value introduced by the version-5 reader.
+fn world_ready_composer(attrs: &ParaAttrs) -> bool {
+    matches!(attrs.composer, Some(designcraft_doc::Composer::WorldReady | designcraft_doc::Composer::WorldReadySingleLine))
+}
+
+/// Include cell, footnote and endnote text. At the nesting limit, conservatively require the new
+/// reader rather than risk understating the file's capabilities or recursing without a bound.
+fn story_needs_world_ready_reader(story: &Story, depth: usize) -> bool {
+    depth >= 64
+        || story.paras.iter().any(|para| world_ready_composer(&para.para))
+        || story.tables.values().flat_map(|table| &table.cells).any(|cell| story_needs_world_ready_reader(&cell.text, depth + 1))
+        || story.notes.iter().chain(&story.endnotes).any(|note| story_needs_world_ready_reader(&note.text, depth + 1))
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {

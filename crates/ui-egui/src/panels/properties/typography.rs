@@ -349,12 +349,12 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     };
     let mut attrs = None;
     let mut command = None;
-    let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
+    let (single, _) = composer_choice(p["composer"].as_str());
     if item(ui, "Paragraph Composer", Some(!single), true) {
-        attrs = Some(json!({"composer": paragraph}));
+        attrs = Some(json!({"composerMode": "paragraph"}));
     }
     if item(ui, "Single-line Composer", Some(single), true) {
-        attrs = Some(json!({"composer": single_line}));
+        attrs = Some(json!({"composerMode": "singleLine"}));
     }
     ui.separator();
     let grid = p["gridAlign"].as_str().unwrap_or("none");
@@ -543,10 +543,16 @@ fn caption_cell(ui: &mut Ui, text: &str, width: f32) {
 }
 
 /// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
-/// paragraph and single-line composers of its kind (Japanese or not), for the composer choice.
+/// paragraph and single-line composers of its family, for the composer choice.
 pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2]) {
-    let single = matches!(composer, Some("singleLine" | "japaneseSingleLine"));
-    let kind = if composer.is_some_and(|c| c.starts_with("japanese")) { ["japanese", "japaneseSingleLine"] } else { ["paragraph", "singleLine"] };
+    let single = matches!(composer, Some("singleLine" | "japaneseSingleLine" | "worldReadySingleLine"));
+    let kind = if composer.is_some_and(|c| c.starts_with("japanese")) {
+        ["japanese", "japaneseSingleLine"]
+    } else if composer.is_some_and(|c| c.starts_with("worldReady")) {
+        ["worldReady", "worldReadySingleLine"]
+    } else {
+        ["paragraph", "singleLine"]
+    };
     (single, kind)
 }
 

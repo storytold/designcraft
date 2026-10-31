@@ -224,7 +224,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{attrs: {align?, leftIndent?, firstLineIndent?, spaceBefore?, spaceAfter?, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, composerMode?: paragraph|singleLine (keeps each paragraph's composer family; cannot combine with composer), opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),

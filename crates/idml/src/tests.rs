@@ -18,6 +18,7 @@ mod object_styles;
 mod rtl_binding;
 mod spread_rotation;
 mod variables;
+mod world_ready;
 mod wrap;
 
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
@@ -1653,8 +1654,11 @@ fn composers_import_by_kind_and_round_trip() {
     };
     let cases = [
         ("HL Composer", C::Paragraph),
-        ("HL Single Optyca", C::SingleLine),
-        ("HL Composer Optyca", C::Paragraph),
+        ("HL Single", C::SingleLine),
+        ("HL Single Optyca", C::WorldReadySingleLine),
+        ("HL Composer Optyca", C::WorldReady),
+        ("$ID/HL Composer Optyca", C::WorldReady),
+        ("$ID/HL Single Optyca", C::WorldReadySingleLine),
         ("HL Composer J", C::Japanese),
         ("$ID/HL Single J", C::JapaneseSingleLine),
     ];

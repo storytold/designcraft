@@ -1,5 +1,20 @@
 use super::*;
 
+/// World-Ready variants keep their serialized identity and line-breaking mode.
+#[test]
+fn world_ready_composers_keep_their_breaking_mode_and_json_identity() {
+    for (name, single) in [("worldReady", false), ("worldReadySingleLine", true)] {
+        let mut attrs = ParaAttrs::default();
+        attrs.set_json("composer", &serde_json::json!(name)).unwrap();
+        let composer = attrs.composer.unwrap();
+        assert_eq!(composer.single_line(), single);
+        assert!(!composer.japanese());
+        let json = serde_json::to_value(&attrs).unwrap();
+        assert_eq!(json["composer"], name);
+        assert_eq!(serde_json::from_value::<ParaAttrs>(json).unwrap(), attrs);
+    }
+}
+
 /// #777: an unknown attribute names the nearest one, or lists them all.
 #[test]
 fn unknown_attributes_suggest_the_right_name() {

@@ -376,6 +376,8 @@ impl<'a> Ex<'a> {
                 match c {
                     designcraft_doc::Composer::Paragraph => "HL Composer",
                     designcraft_doc::Composer::SingleLine => "HL Single",
+                    designcraft_doc::Composer::WorldReady => "HL Composer Optyca",
+                    designcraft_doc::Composer::WorldReadySingleLine => "HL Single Optyca",
                     designcraft_doc::Composer::Japanese => "HL Composer J",
                     designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
                 },
