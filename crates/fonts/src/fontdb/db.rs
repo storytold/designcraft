@@ -199,6 +199,11 @@ impl FontDb {
         self.scoped(0).fallback_for(c, exclude, language)
     }
 
+    /// [`ScopedFonts::fallback_for_styled`] on the shared scope.
+    pub fn fallback_for_styled(&self, c: char, exclude: u32, language: Option<&str>, prefer_sans: Option<bool>) -> Option<Arc<FontFace>> {
+        self.scoped(0).fallback_for_styled(c, exclude, language, prefer_sans)
+    }
+
     /// The box drawn for `face`'s missing glyph (.notdef) when the font's own has no outline, in
     /// font units, y-down: a hollow rectangle across the glyph's advance, cap height tall. `None`
     /// when the font draws its own.
