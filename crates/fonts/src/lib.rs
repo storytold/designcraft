@@ -670,6 +670,23 @@ mod resolution_tests {
     }
 
     #[test]
+    fn another_face_s_legacy_regular_does_not_stand_for_a_missing_regular() {
+        // Only the Black face is installed: a document's "Regular" is a missing style, drawn in
+        // the nearest weight, not satisfied by Black's RIBBI subfamily name.
+        let bytes = testing::with_names(
+            &testing::font_with("Legacy Sans", &['A']).unwrap(),
+            &[(3, 1, 0x409, 1, "Legacy Sans Black"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x409, 16, "Legacy Sans"), (3, 1, 0x409, 17, "Black")],
+        )
+        .unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(bytes);
+        let scope = db.scoped(0);
+        assert!(scope.has_family("Legacy Sans"));
+        assert!(!scope.has_style("Legacy Sans", "Regular"));
+        assert!(scope.has_style("Legacy Sans", "Black"));
+    }
+
+    #[test]
     fn known_substitution_preserves_missing_original_status() {
         let db = FontDb::with_font_dirs(Vec::new());
         db.add_font(testing::font_with("Carlito", &['A']).unwrap());
