@@ -46,6 +46,10 @@ impl Pen<'_> {
     fn circle(&self, x: f32, y: f32, r: f32) {
         self.p.circle_stroke(self.pt(x, y), r * self.s(), Stroke::new(self.w * self.s(), self.c));
     }
+    /// A circle of radius `r` (to the middle of its band) drawn as a band `width` thick.
+    fn ring(&self, x: f32, y: f32, r: f32, width: f32) {
+        self.p.circle_stroke(self.pt(x, y), r * self.s(), Stroke::new(width * self.s(), self.c));
+    }
     fn fcircle(&self, x: f32, y: f32, r: f32) {
         self.p.circle_filled(self.pt(x, y), r * self.s(), self.c);
     }
@@ -288,6 +292,26 @@ fn paint_tools(pen: &mut Pen, name: &str) -> bool {
         }
         "panel-effects" => pen.text(10.0, 10.0, "fx", 11.0),
         "panel-character" => pen.text(10.0, 10.5, "A", 15.0),
+        "panel-glyphs" => {
+            // A 2×2 grid of cells with the top-left cell open, and a bold "A" in that corner.
+            for (x0, y0, x1, y1) in [
+                (9.54, 3.75, 16.88, 5.05),
+                (9.54, 4.71, 10.84, 17.12),
+                (15.58, 4.71, 16.88, 17.12),
+                (3.51, 9.79, 9.88, 11.09),
+                (10.5, 9.79, 15.92, 11.09),
+                (3.51, 10.75, 4.81, 17.12),
+                (4.47, 15.82, 9.88, 17.12),
+                (10.5, 15.82, 15.92, 17.12),
+            ] {
+                pen.frect(x0, y0, x1, y1);
+            }
+            // The "A": two legs and a crossbar (the counter stays open), a small cap over their seam.
+            pen.fill(&[(4.34, 1.53), (4.94, 1.53), (4.94, 3.44), (3.91, 5.83), (3.35, 7.13), (2.76, 8.50), (1.16, 8.49)]);
+            pen.fill(&[(5.54, 1.53), (4.94, 1.53), (4.94, 3.44), (5.97, 5.83), (6.53, 7.13), (7.12, 8.50), (8.73, 8.49)]);
+            pen.fill(&[(4.50, 1.53), (5.38, 1.53), (4.94, 3.44)]);
+            pen.fill(&[(3.75, 5.83), (6.13, 5.83), (6.70, 7.13), (3.18, 7.13)]);
+        }
         "panel-typography" => pen.text(10.0, 10.5, "OT", 11.5),
         "panel-paragraph" => pen.text(10.0, 10.5, "¶", 15.0),
         "panel-pstyles" => {
@@ -374,11 +398,78 @@ fn paint_panels(pen: &mut Pen, name: &str) -> bool {
             pen.line(&[(11.0, 4.0), (9.0, 16.0)]);
         }
         "panel-articles" => {
-            // Numbered blocks in order.
-            pen.rect(3.0, 3.0, 11.0, 8.0);
-            pen.rect(3.0, 12.0, 11.0, 17.0);
-            pen.line(&[(14.0, 5.5), (17.0, 5.5)]);
-            pen.line(&[(14.0, 14.5), (17.0, 14.5)]);
+            // Three overlapping page frames stacked diagonally; three text bars on the front
+            // (bottom-left) page. Each page hides the ones behind it.
+            for (x0, y0, x1, y1) in [
+                (7.52, 1.06, 17.47, 2.36),
+                (7.52, 2.02, 8.82, 4.69),
+                (16.17, 2.02, 17.47, 14.33),
+                (8.48, 3.39, 15.06, 4.69),
+                (13.76, 4.35, 15.06, 14.67),
+                (14.72, 13.03, 16.51, 14.33),
+                (5.12, 3.39, 15.06, 4.69),
+                (5.12, 4.35, 6.42, 6.98),
+                (13.76, 4.35, 15.06, 16.65),
+                (6.08, 5.68, 12.48, 6.98),
+                (11.18, 6.64, 12.48, 16.99),
+                (12.14, 15.35, 14.1, 16.65),
+                (2.53, 5.68, 12.48, 6.98),
+                (2.53, 6.64, 3.83, 18.94),
+                (11.18, 6.64, 12.48, 18.94),
+                (3.49, 17.64, 11.52, 18.94),
+                (4.86, 7.68, 9.47, 8.98),
+                (4.86, 9.46, 9.47, 10.76),
+                (4.86, 11.22, 9.47, 12.52),
+            ] {
+                pen.frect(x0, y0, x1, y1);
+            }
+        }
+        "panel-states" => {
+            // A document frame with a gap on its right edge, a ring over its bottom-left
+            // corner, and three bars across the gap.
+            for (x0, y0, x1, y1) in [
+                (4.77, 0.8, 15.89, 2.1),
+                (4.77, 1.76, 6.08, 15.65),
+                (14.59, 1.76, 15.89, 3.3),
+                (14.59, 10.64, 15.89, 15.65),
+                (5.74, 14.35, 14.93, 15.65),
+                (10.84, 4.46, 18.84, 5.76),
+                (10.84, 6.45, 18.84, 7.76),
+                (10.84, 8.45, 18.84, 9.76),
+            ] {
+                pen.frect(x0, y0, x1, y1);
+            }
+            pen.ring(6.35, 14.01, 4.53, 1.32);
+        }
+        "panel-buttons" => {
+            // A push button.
+            pen.ellipse(10.0, 10.0, 8.0, 5.5);
+            pen.fcircle(10.0, 10.0, 1.8);
+        }
+        "panel-media" => {
+            // A picture in a frame.
+            pen.rect(3.0, 4.0, 17.0, 16.0);
+            pen.fcircle(7.5, 8.0, 1.7);
+            pen.line(&[(3.5, 15.0), (8.5, 10.5), (12.0, 13.5), (14.5, 11.0), (16.5, 13.0)]);
+        }
+        "panel-liquid" => {
+            // A droplet inside a bounding rectangle (liquid layout frame).
+            pen.rect(4.2, 2.6, 15.8, 17.0);
+            pen.closed(&[(10.0, 3.9), (12.6, 8.2), (13.2, 10.8), (12.1, 13.8), (10.0, 15.1), (7.9, 13.8), (6.8, 10.8), (7.4, 8.2)]);
+        }
+        "panel-transitions" => {
+            // Opposing flow arrows.
+            pen.line(&[(3.0, 7.0), (14.0, 7.0)]);
+            pen.line(&[(11.5, 4.5), (14.5, 7.0), (11.5, 9.5)]);
+            pen.line(&[(17.0, 13.0), (6.0, 13.0)]);
+            pen.line(&[(8.5, 10.5), (5.5, 13.0), (8.5, 15.5)]);
+        }
+        "panel-track" => {
+            // A pencil marking tracked changes.
+            pen.fill(&[(3.6, 16.4), (5.5, 14.5), (7.0, 16.0)]);
+            pen.line(&[(5.5, 14.5), (13.5, 6.5)]);
+            pen.line(&[(7.0, 16.0), (15.0, 8.0)]);
+            pen.line(&[(13.5, 6.5), (15.0, 8.0)]);
         }
         "panel-bookmarks" => {
             pen.closed(&[(6.0, 3.0), (14.0, 3.0), (14.0, 17.0), (10.0, 13.0), (6.0, 17.0)]);
@@ -388,6 +479,19 @@ fn paint_panels(pen: &mut Pen, name: &str) -> bool {
             pen.rect(3.0, 4.0, 7.0, 16.0);
             pen.rect(8.0, 6.0, 12.0, 16.0);
             pen.line(&[(13.0, 6.5), (17.0, 5.0), (17.5, 15.5), (13.5, 16.5)]);
+        }
+        "panel-book" => {
+            // An open book: two pages meeting at the spine (flipped vertically,
+            // pages droop down away from the spine).
+            pen.closed(&[(10.0, 15.5), (3.0, 13.5), (3.0, 4.5), (10.0, 6.5)]);
+            pen.closed(&[(10.0, 15.5), (17.0, 13.5), (17.0, 4.5), (10.0, 6.5)]);
+            pen.line(&[(10.0, 15.5), (10.0, 6.5)]);
+        }
+        "panel-scripts" => {
+            // A pair of faceted curly braces — the classic script/code glyph, clearly
+            // distinct from the angle brackets used by Tags.
+            pen.line(&[(8.5, 4.0), (6.5, 4.0), (6.5, 7.5), (4.5, 10.0), (6.5, 12.5), (6.5, 16.0), (8.5, 16.0)]);
+            pen.line(&[(11.5, 4.0), (13.5, 4.0), (13.5, 7.5), (15.5, 10.0), (13.5, 12.5), (13.5, 16.0), (11.5, 16.0)]);
         }
         "panel-notes" => {
             // A note with a folded corner.
@@ -1371,6 +1475,94 @@ mod tests {
             for an in &align {
                 let ag = drawing(an);
                 assert_ne!(*dn, ag, "distribute icon draws like {an}");
+            }
+        }
+    }
+
+    /// `name` rendered to a 40×40 bitmap (2× supersample of the 20×20 drawing space).
+    ///
+    /// The shapes are run through the tessellator — with the theme fonts installed, so
+    /// text glyphs are real triangle geometry — and a pixel counts as covered when its
+    /// center lands inside any output triangle.
+    fn pixels(name: &str) -> Vec<bool> {
+        const N: usize = 40;
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 20.0)), name, Color32::WHITE);
+        });
+        out.textures_delta.clear();
+        let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
+        for prim in ctx.tessellate(out.shapes, 2.0) {
+            if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
+                for c in mesh.indices.chunks_exact(3) {
+                    let (a, b, d) = (mesh.vertices[c[0] as usize], mesh.vertices[c[1] as usize], mesh.vertices[c[2] as usize]);
+                    tris.push([[a.pos.x, a.pos.y], [b.pos.x, b.pos.y], [d.pos.x, d.pos.y]]);
+                }
+            }
+        }
+        let mut bmp = vec![false; N * N];
+        for j in 0..N {
+            for i in 0..N {
+                let (px, py) = ((i as f32 + 0.5) / 2.0, (j as f32 + 0.5) / 2.0);
+                if tris.iter().any(|t| tri_contains(px, py, t)) {
+                    bmp[j * N + i] = true;
+                }
+            }
+        }
+        bmp
+    }
+
+    /// Whether point `(px, py)` is inside (or on) triangle `t`.
+    fn tri_contains(px: f32, py: f32, t: &[[f32; 2]; 3]) -> bool {
+        let ([ax, ay], [bx, by], [cx, cy]) = (t[0], t[1], t[2]);
+        let d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+        let d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+        let d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+        (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)
+    }
+
+    /// The icon names of every registered panel: the dock tabs and the collapsed icon column.
+    fn registered_panel_icons() -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = crate::dock::DOCK_TABS.iter().map(|p| p.2).collect();
+        for (_, _, icon) in crate::dock::ICON_PANELS {
+            if !names.contains(icon) {
+                names.push(icon);
+            }
+        }
+        names
+    }
+
+    /// Minimum number of pixels (on the 40×40 supersampled grid) by which two
+    /// registered panel icons may differ. The closest current pair is
+    /// `panel-pstyles` vs `panel-cstyles` at 100 px, so the threshold catches copied or
+    /// near-copied icons while leaving room for deliberate family resemblance.
+    const MIN_ICON_DISTANCE: usize = 25;
+
+    /// Every registered panel icon — the dock tabs and the collapsed icon column —
+    /// must render, must not fall back to the placeholder, and must be pairwise
+    /// distinct: neither pixel-identical nor closer than `MIN_ICON_DISTANCE`.
+    /// This keeps a future panel from quietly reusing another panel's shape.
+    #[test]
+    fn sidebar_panel_icons_are_pairwise_distinct() {
+        let names = registered_panel_icons();
+        let unknown = pixels("no-such-icon");
+        let unknown_shapes = drawing("no-such-icon");
+        let drawn: Vec<(String, Vec<bool>)> = names.iter().map(|n| (n.to_string(), pixels(n))).collect();
+
+        for (name, bmp) in &drawn {
+            assert!(bmp.iter().any(|&p| p), "{name} paints no pixels");
+            assert_ne!(*bmp, unknown, "{name} falls back to the placeholder");
+            assert_ne!(drawing(name), unknown_shapes, "{name} falls back to the placeholder");
+        }
+
+        for i in 0..drawn.len() {
+            for j in i + 1..drawn.len() {
+                let (a, aa) = (&drawn[i].0, &drawn[i].1);
+                let (b, bb) = (&drawn[j].0, &drawn[j].1);
+                let diff = aa.iter().zip(bb).filter(|(x, y)| x != y).count();
+                assert!(*aa != *bb, "{a} and {b} paint identical pixels");
+                assert!(diff >= MIN_ICON_DISTANCE, "{a} and {b} differ by only {diff} px (< {MIN_ICON_DISTANCE}); is one a copy of the other?");
             }
         }
     }
