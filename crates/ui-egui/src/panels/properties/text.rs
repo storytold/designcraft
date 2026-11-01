@@ -567,6 +567,8 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Greek",
     "Russian",
     "Ukrainian",
+    "Serbian: Cyrillic",
+    "Serbian: Latin",
     "Georgian",
     "Turkish",
     "Japanese",

@@ -295,6 +295,13 @@ fn main() -> std::process::ExitCode {
             Err(e) => log::warn!("no log file: {e}"),
         }
     }
+    // Hyphenation pattern files the user installed (`<settings>/dictionaries/hyph_*.dic`, also in
+    // locale subfolders), before any text is composed.
+    if let Some(dir) = profile::config_dir().filter(|_| !no_prefs()) {
+        for line in designcraft_engine::hyphenation::install_dir(&dir.join("dictionaries")) {
+            log::info!("{line}");
+        }
+    }
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")

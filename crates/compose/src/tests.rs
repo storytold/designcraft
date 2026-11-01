@@ -4993,6 +4993,29 @@ fn language_picks_localized_forms_through_the_word_cache() {
 }
 
 #[test]
+fn serbian_takes_its_cyrillic_letterforms() {
+    // Source Serif 4 has the Serbian italic б, г, д, п, т in `locl`, and an upright б.
+    let gids = |text: &str, style: &str, language: &str| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 100.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_style = Some(style.into());
+            f.over.language = Some(language.into());
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).map(|g| g.gid).collect::<Vec<_>>()
+    };
+    let russian = gids("бгдпт", "Italic", "Russian");
+    let serbian = gids("бгдпт", "Italic", "Serbian: Cyrillic");
+    assert_eq!(serbian.len(), 5);
+    assert!(serbian.iter().zip(&russian).all(|(s, r)| s != r), "{serbian:?} {russian:?}");
+    for name in ["Serbian", "Serbian: Latin", "Serbian (Cyrillic)", "Serbian (Latin)", "sr_RS", "sh_RS", "sr-Cyrl", "sr-Latn"] {
+        assert_eq!(gids("бгдпт", "Italic", name), serbian, "{name}");
+    }
+    assert_ne!(gids("б", "Regular", "Serbian: Cyrillic"), gids("б", "Regular", "Russian"), "upright б");
+    assert_eq!(gids("г", "Regular", "Serbian: Cyrillic"), gids("г", "Regular", "Russian"), "the rest of the upright set");
+}
+
+#[test]
 fn chinese_and_japanese_take_their_localized_forms() {
     // Noto Sans CJK SC (craft-fonts) draws 直 differently for Japanese (`locl`).
     let Some(noto) = designcraft_fonts::CRAFT_FONTS.iter().find(|f| f.family == "Noto Sans CJK SC") else { return };
