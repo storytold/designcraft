@@ -214,7 +214,13 @@ impl<'a> NumField<'a> {
         let t = Tokens::get(ui.ctx());
         let name = self.name.unwrap_or(self.id);
         let enabled = self.enabled && ui.is_enabled();
-        let key = crate::file_provider_app::drafts::field_key(ui, ui.scope_id().with(self.id));
+        let Some(key) = crate::file_provider_app::drafts::field_key(ui, ui.scope_id().with(self.id)) else {
+            // Capacity is checked before creating a TextEdit or its String buffer.
+            let value = self.value.map(|value| self.fmt(value)).unwrap_or_default();
+            ui.add_sized(vec2(self.width, FIELD_H), egui::Label::new(value))
+                .on_hover_text("Finish or cancel a pending numeric edit before starting another");
+            return None;
+        };
         let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);

@@ -86,7 +86,12 @@ for that document's draft to commit or cancel; another document's field does not
 Before the first opt-in the original numeric widget IDs and behavior stay in use. A focused legacy
 field is adopted without changing its ID when a provider connects. After opting in, document scopes
 stay stable through enable/disable and unregister, preserving open drafts; they are retired when the
-document identity closes. This bookkeeping adds no storage, account or authentication functionality.
+document identity closes. Once opted in, a new editor stays read-only at the 1,024-field admission
+limit before it can allocate an unowned String. Already-resident drafts are always adopted with their
+owner and remain protected; any temporary excess is bounded by those existing buffers. Confirming or
+cancelling drafts releases capacity without restarting, and a clean unrelated UID is not blocked.
+The limit does not change local fields before the first opt-in. This bookkeeping adds no storage,
+account or authentication functionality.
 
 The browser can still
 force-close/reload a tab; the host should provide an unsaved-work warning and must not acknowledge a
@@ -101,7 +106,15 @@ i18n lookup and RTL text shaping; untranslated keys keep the normal English fall
 and resource names remain user data and are not translated. Publish only the current account's native files
 with setResources; the editor never scans a VM or guesses a path from a name.
 
-A click emits openRequested with requestId and resourceId. After authorization, the provider fetches
+Home and File > Open Recent dispatch the discoverable UI command `file.openProviderResource`
+with `{connectionId, resourceId}`. The same command is listed by `engine.commands` and can be invoked
+through control/MCP `engine.execute`. It is disabled until the provider is enabled, validates the
+rendered connection and resource under the same host lock, and returns `{pending, requestId}`.
+Rejections remain in the application's status, rather than appearing for only the clicked frame.
+The Rust Recents renderers return a public `RecentChoice` and perform no IO; callers must dispatch
+that choice through `app.run`. No local `file.open`/programmatic behavior or JS protocol v1 changes.
+
+An admitted command emits openRequested with requestId and resourceId. After authorization, the provider fetches
 bytes and responds with openResource using that request ID. The editor parses the native project before
 emitting opened or openFailed. Selecting an already-bound open resource focuses its existing document
 without replacing unsaved edits. Unknown, duplicate or cancelled request replies are rejected.

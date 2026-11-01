@@ -411,3 +411,116 @@ fn admitted_close_continuations_are_bounded_even_after_their_transport_owners_fi
     assert!(save(&mut app, false, Some(After::Test(Box::new(|_| Ok(Value::Null))))).is_err());
     assert_eq!(app.provider_after.len(), MAX_CONTINUATIONS);
 }
+
+fn control(app: &mut DesignApp, method: &str, params: Value) -> Value {
+    let (request, _) = crate::control::ControlRequest::new(method, params);
+    match crate::control::handle(app, &egui::Context::default(), &request) {
+        crate::control::Outcome::Done(value) => value,
+        _ => panic!("expected a synchronous command response"),
+    }
+}
+
+fn provider_rows(app: &DesignApp) -> String {
+    let connection = app.file_providers.connection().unwrap();
+    app.file_providers
+        .set_resources(
+            &connection,
+            vec![crate::file_providers::Resource { id: "resource-1".into(), name: "Native.designcraft".into(), updated_at: String::new() }],
+        )
+        .unwrap();
+    connection
+}
+
+#[test]
+fn provider_recent_is_discoverable_and_control_engine_execute_emits_the_scoped_open_request() {
+    let mut app = app();
+    let connection = provider_rows(&app);
+    let catalog = control(&mut app, "engine.commands", json!({}));
+    let command = catalog["result"].as_array().unwrap().iter().find(|row| row["id"] == "file.openProviderResource").unwrap();
+    assert_eq!(command["ui"], true);
+    assert_eq!(command["enabled"], true);
+    assert!(command["params"].as_str().unwrap().contains("connectionId"));
+    let response = control(
+        &mut app,
+        "engine.execute",
+        json!({"command":"file.openProviderResource","params":{"connectionId":connection,"resourceId":"resource-1"}}),
+    );
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["pending"], "fileProvider");
+    let request = response["result"]["requestId"].as_str().unwrap();
+    let events = app.file_providers.take_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].metadata["type"], "openRequested");
+    assert_eq!(events[0].metadata["requestId"], request);
+    assert_eq!(events[0].metadata["connectionId"], connection);
+    assert_eq!(events[0].metadata["resourceId"], "resource-1");
+    assert_eq!(events[0].metadata["namespace"], "account");
+    assert!(events[0].bytes.is_none());
+    assert_eq!(app.session.documents().len(), 1);
+}
+
+#[test]
+fn provider_recent_command_is_disabled_by_default_and_refusal_remains_in_app_status() {
+    let mut app = app();
+    app.file_providers.disconnect().unwrap();
+    assert!(!crate::menus::enabled(&app, "file.openProviderResource"));
+    let catalog = control(&mut app, "engine.commands", json!({}));
+    let command = catalog["result"].as_array().unwrap().iter().find(|row| row["id"] == "file.openProviderResource").unwrap();
+    assert_eq!(command["enabled"], false);
+    let response = control(
+        &mut app,
+        "engine.execute",
+        json!({"command":"file.openProviderResource","params":{"connectionId":"stale","resourceId":"resource-1"}}),
+    );
+    assert_eq!(response["ok"], false);
+    assert_eq!(app.ui.status, response["error"].as_str().unwrap());
+    let error = app.ui.status.clone();
+    tick(&mut app);
+    assert_eq!(app.ui.status, error);
+    assert!(app.file_providers.take_events().is_empty());
+    assert_eq!(app.session.documents().len(), 1);
+    // The ordinary local command remains an engine command with its original path contract.
+    assert!(designcraft_engine::find_command("file.open").unwrap().params.contains("path"));
+}
+
+#[test]
+fn an_old_recent_choice_cannot_open_the_same_resource_id_in_a_new_account() {
+    let mut app = app();
+    let old_connection = provider_rows(&app);
+    app.file_providers.disconnect().unwrap();
+    app.file_providers.connect("test".into(), "Other account".into(), "account-b".into()).unwrap();
+    let current_connection = provider_rows(&app);
+    assert_ne!(old_connection, current_connection);
+    let stale = app.run("file.openProviderResource", json!({"connectionId":old_connection,"resourceId":"resource-1"})).unwrap_err();
+    assert_eq!(app.ui.status, stale);
+    tick(&mut app);
+    assert_eq!(app.ui.status, stale);
+    assert!(app.file_providers.take_events().is_empty());
+    app.run("file.openProviderResource", json!({"connectionId":current_connection,"resourceId":"resource-1"})).unwrap();
+    let events = app.file_providers.take_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].metadata["namespace"], "account-b");
+}
+
+#[test]
+fn malformed_unknown_and_backpressured_recent_requests_report_persistent_errors_without_fallback() {
+    let mut app = app();
+    let connection = provider_rows(&app);
+    for params in [
+        json!({}),
+        json!({"connectionId":connection}),
+        json!({"connectionId":17,"resourceId":"resource-1"}),
+        json!({"connectionId":connection,"resourceId":"unknown"}),
+    ] {
+        let error = app.run("file.openProviderResource", params).unwrap_err();
+        assert_eq!(app.ui.status, error);
+        assert!(app.file_providers.take_events().is_empty());
+    }
+    for _ in 0..16 {
+        app.run("file.openProviderResource", json!({"connectionId":connection,"resourceId":"resource-1"})).unwrap();
+    }
+    let error = app.run("file.openProviderResource", json!({"connectionId":connection,"resourceId":"resource-1"})).unwrap_err();
+    assert_eq!(app.ui.status, error);
+    assert_eq!(app.file_providers.take_events().len(), 16);
+    assert_eq!(app.session.documents().len(), 1);
+}

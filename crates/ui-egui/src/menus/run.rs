@@ -86,6 +86,7 @@ fn flag(b: &mut bool) -> Result<Value, String> {
 /// One slice of the UI commands: `None` if `id` isn't one of them.
 fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
+        "file.openProviderResource" => crate::file_provider_app::open_resource(app, p),
         "window.minimize" => {
             app.pending_window_commands.push(egui::ViewportCommand::Minimized(true));
             Ok(Value::Null)

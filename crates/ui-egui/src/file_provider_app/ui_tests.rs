@@ -20,7 +20,7 @@ fn window(app: DesignApp) -> Harness<'static, Window> {
             tick(&mut state.app);
             observe_ui(&state.app, &ctx);
             let original = ui.scope_id().with("providerDraft");
-            let key = drafts::field_key(ui, original);
+            let key = drafts::field_key(ui, original).unwrap();
             state.key = Some(key);
             if std::mem::take(&mut state.seed_focus) {
                 ui.memory_mut(|memory| memory.request_focus(key.with("te")));

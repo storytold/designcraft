@@ -123,6 +123,20 @@ pub(crate) fn save(app: &mut DesignApp, save_as: bool, after: Option<After>) -> 
     Ok(json!({"pending":"fileProvider","requestId":request}))
 }
 
+/// The single UI/control entrypoint for a provider Recent, scoped to the rendered connection.
+pub(crate) fn open_resource(app: &mut DesignApp, params: &Value) -> Result<Value, String> {
+    let result: Result<Value, String> = (|| {
+        let connection = params.get("connectionId").and_then(Value::as_str).ok_or("missing provider connectionId")?;
+        let resource = params.get("resourceId").and_then(Value::as_str).ok_or("missing provider resourceId")?;
+        let request = app.file_providers.request_open_for(connection, resource)?;
+        Ok(json!({"pending":"fileProvider","requestId":request}))
+    })();
+    if let Err(error) = &result {
+        app.status(error);
+    }
+    result
+}
+
 pub(crate) fn observe_ui(app: &DesignApp, ctx: &egui::Context) {
     let live: Vec<_> = app.session.documents().iter().map(|doc| (doc.uid, doc.identity_epoch)).collect();
     drafts::scope(ctx, active_identity(app), app.file_providers.connected(), &live);

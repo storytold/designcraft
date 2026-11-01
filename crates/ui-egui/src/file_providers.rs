@@ -22,6 +22,12 @@ pub struct Resource {
     #[serde(default)]
     pub updated_at: String,
 }
+/// An account-scoped choice rendered by Recents; dispatch through the application's command API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentChoice {
+    pub connection_id: String,
+    pub resource_id: String,
+}
 pub struct Event {
     pub metadata: Value,
     pub bytes: Option<Vec<u8>>,
@@ -306,9 +312,16 @@ impl Host {
         Ok(())
     }
     pub fn request_open(&self, resource: &str) -> Result<String, String> {
+        self.request_open_checked(None, resource)
+    }
+    pub(crate) fn request_open_for(&self, connection: &str, resource: &str) -> Result<String, String> {
+        self.request_open_checked(Some(connection), resource)
+    }
+    fn request_open_checked(&self, connection: Option<&str>, resource: &str) -> Result<String, String> {
         let mut s = self.state();
         if !s.enabled
             || s.provider.is_none()
+            || connection.is_some_and(|connection| connection != s.connection)
             || s.opens.len() >= MAX_PENDING
             || s.events.len() >= MAX_EVENTS
             || !s.resources.iter().any(|r| r.id == resource)
@@ -417,16 +430,18 @@ impl Host {
         s.finished.push_back(Terminal { request: request.into(), metadata, owner: TerminalOwner::Open });
         s.flush_finished();
     }
-    pub fn recent_ui(&self, ui: &mut egui::Ui) {
-        self.recent_ui_in(ui, "");
+    /// Draw Recents without issuing IO. The caller dispatches a returned choice with app.run.
+    pub fn recent_ui(&self, ui: &mut egui::Ui) -> Option<RecentChoice> {
+        self.recent_ui_in(ui, "")
     }
     /// Uses the application's selected language, with the ordinary untranslated-key fallback.
-    pub fn recent_ui_in(&self, ui: &mut egui::Ui, language: &str) {
-        let (label, resources, enabled) = {
+    pub fn recent_ui_in(&self, ui: &mut egui::Ui, language: &str) -> Option<RecentChoice> {
+        let (label, resources, enabled, connection) = {
             let s = self.state();
-            (s.provider.as_ref().map(|p| p.label.clone()), s.resources.clone(), s.enabled)
+            (s.provider.as_ref().map(|p| p.label.clone()), s.resources.clone(), s.enabled, s.connection.clone())
         };
-        let Some(label) = label.filter(|_| enabled) else { return };
+        let label = label.filter(|_| enabled)?;
+        let mut choice = None;
         ui.add_space(12.0);
         ui.label(crate::rtl::widget(ui, egui::RichText::new(recent_heading(language, &label)).strong()));
         if resources.is_empty() {
@@ -434,14 +449,12 @@ impl Host {
         }
         for resource in resources {
             if ui.button(crate::rtl::widget(ui, &resource.name)).on_hover_text(&resource.updated_at).clicked() {
-                if let Err(error) = self.request_open(&resource.id) {
-                    ui.label(error);
-                }
-                ui.ctx().request_repaint();
+                choice = Some(RecentChoice { connection_id: connection.clone(), resource_id: resource.id });
             }
         }
         ui.separator();
         ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(language, "Recent files on this device")).weak()));
+        choice
     }
 }
 fn recent_heading(language: &str, label: &str) -> String {
