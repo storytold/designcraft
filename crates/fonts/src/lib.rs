@@ -13,6 +13,7 @@ mod group;
 mod kind;
 #[cfg(target_os = "macos")]
 mod mac_fonts;
+pub mod psname;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod vertical;
