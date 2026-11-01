@@ -131,9 +131,8 @@ impl DesignApp {
                 q.pending = None;
                 q.saving = Some(uid);
             }
-            let saved = self
-                .run("file.activate", json!({"index": i}))
-                .and_then(|_| menus::save_then(self, crate::file_provider_app::After::Quit(uid)));
+            let saved =
+                self.run("file.activate", json!({"index": i})).and_then(|_| menus::save_then(self, crate::file_provider_app::After::Quit(uid)));
             if let Err(e) = saved {
                 self.cancel_quit();
                 return Err(e);

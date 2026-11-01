@@ -157,12 +157,7 @@ mod tests {
         scope(&ctx, Some(a), true, &[a, b]);
         let mut drafts = state(&ctx);
         for ordinal in 0..MAX_FIELDS {
-            assert!(admit_field(
-                &mut drafts,
-                egui::Id::unique(("filled", ordinal)),
-                Field { owner: a, viewport, dirty: true },
-                false,
-            ));
+            assert!(admit_field(&mut drafts, egui::Id::unique(("filled", ordinal)), Field { owner: a, viewport, dirty: true }, false,));
         }
         let fresh = egui::Id::unique("fresh");
         assert!(!admit_field(&mut drafts, fresh, Field { owner: b, viewport, dirty: false }, false));
@@ -214,5 +209,4 @@ mod tests {
         assert!(!drafts.armed);
         assert_eq!(drafts.fields.len(), MAX_FIELDS + 1);
     }
-
 }
