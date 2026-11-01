@@ -2237,6 +2237,72 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// A character style based on one whose name ends in a space ("arabic purple ") inherits from
+/// it: the reference was trimmed, the base went missing and its font and colour with it.
+#[test]
+fn based_on_a_style_name_ending_in_a_space() {
+    let styles = STYLES.replace(
+        r#"<CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+        r#"<CharacterStyle Self="CharacterStyle/purple " Name="purple " FillColor="Color/Brand">
+      <Properties><AppliedFont type="string">Source Sans 3</AppliedFont></Properties>
+    </CharacterStyle>
+    <CharacterStyle Self="CharacterStyle/purple 23 pt " Name="purple 23 pt " PointSize="23">
+      <Properties><BasedOn type="object">CharacterStyle/purple </BasedOn></Properties>
+    </CharacterStyle>
+    <CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+    );
+    let story = STORY.replace("CharacterStyle/Strong", "CharacterStyle/purple 23 pt ");
+    let pkg = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", &story),
+    ]);
+    let d = import_idml(&pkg).unwrap();
+    let st = d.styles.character.iter().find(|c| c.name == "purple 23 pt ").expect("the derived style");
+    assert_eq!(st.based_on.as_deref(), Some("purple "));
+    let sid = *d.stories.keys().next().unwrap();
+    let story = d.story(sid).unwrap();
+    let at = story.text.find("bold").unwrap();
+    let (_, base) = d.styles.resolve_para(&story.paras[0]);
+    let props = d.styles.resolve_char(&base, story.char_format_at(at + 1));
+    assert_eq!(props.font_family, "Source Sans 3");
+    let fill = d.styles.char_style_attrs("purple ").fill.expect("the base style's colour");
+    assert_eq!(props.fill, fill);
+}
+
+/// A BasedOn on lines of its own (an indented file) that names a style whose name ends in a
+/// space: only the line breaks and indentation around the reference go, not the name's space.
+#[test]
+fn based_on_on_lines_of_its_own_keeps_a_trailing_space() {
+    let styles = STYLES.replace(
+        r#"<CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+        &[
+            r#"<CharacterStyle Self="CharacterStyle/purple " Name="purple " FillColor="Color/Brand"/>"#,
+            r#"<CharacterStyle Self="CharacterStyle/purple 23 pt " Name="purple 23 pt " PointSize="23">"#,
+            "<Properties><BasedOn type=\"object\">\n        CharacterStyle/purple \n      </BasedOn></Properties>",
+            r#"</CharacterStyle><CharacterStyle Self="CharacterStyle/Strong" Name="Strong" FontStyle="Bold">"#,
+        ]
+        .concat(),
+    );
+    let pkg = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", &styles),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let d = import_idml(&pkg).unwrap();
+    let st = d.styles.character.iter().find(|c| c.name == "purple 23 pt ").expect("the derived style");
+    assert_eq!(st.based_on.as_deref(), Some("purple "));
+    assert!(d.styles.char_style_attrs("purple 23 pt ").fill.is_some(), "the base style's colour");
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
@@ -2882,6 +2948,46 @@ fn list_numbering_format_expression_and_bullet_import_and_round_trip() {
     let d = import_idml(&bytes).unwrap();
     check(&d);
     check(&import_idml(&export_idml(&d)).unwrap());
+}
+
+/// The items of a group, and those pasted into a frame, carry no ItemLayer in IDML: they sit on
+/// the group's or the frame's layer, not on the front layer (which may be hidden or locked and
+/// took their wrap and editing with it).
+#[test]
+fn group_children_sit_on_the_groups_layer() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Background"/>
+      <Layer Self="L2" Name="Hidden" Visible="false" Locked="true"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let rect = |me: &str| {
+        format!(
+            r#"<Rectangle Self="{me}"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+            </PathPointArray></GeometryPathType></PathGeometry></Properties></Rectangle>"#
+        )
+    };
+    let spread = format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Spread Self="s">
+        <Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/>
+        <Group Self="g" ItemLayer="L1" ItemTransform="1 0 0 1 0 0">{}<Group Self="g2" ItemTransform="1 0 0 1 0 0">{}</Group></Group>
+        {}
+        </Spread></idPkg:Spread>"#,
+        rect("a"),
+        rect("b"),
+        // A frame with an item pasted into it.
+        rect("f").replace(r#"Self="f""#, r#"Self="f" ItemLayer="L1""#).replace("</Rectangle>", &format!("{}</Rectangle>", rect("c")))
+    );
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", &spread)])).unwrap();
+    let background = d.layers.iter().find(|l| l.name == "Background").unwrap().id;
+    let items = &d.spreads[0].items;
+    assert!(items.len() == 2 && items[1].shape == Shape::Rectangle && items[1].has_nested_items(), "{items:?}");
+    let mut layers = Vec::new();
+    for it in items {
+        it.walk(&mut |i| layers.push(i.layer));
+    }
+    assert_eq!(layers.len(), 6);
+    assert!(layers.iter().all(|l| *l == background), "{layers:?}");
 }
 
 /// InDesign can write `AppliedFont` with its `$ID/` prefix (`$ID/Source Serif 4`). The text is
