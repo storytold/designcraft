@@ -4125,6 +4125,26 @@ fn a_trailing_forced_line_breaks_empty_line_keeps_the_leading_under_a_leading_mo
     }
 }
 
+/// An empty line whose paragraph mark is larger than the text around it takes its auto leading
+/// from the mark: an empty paragraph's line, and the line a trailing forced line break leaves.
+/// The line after it goes back to the text's own leading.
+#[test]
+fn an_empty_line_takes_its_auto_leading_from_a_larger_paragraph_mark() {
+    use designcraft_doc::story::FORCED_LINE_BREAK;
+    for text in ["Aaa\n\nBbb".to_string(), format!("Aaa{FORCED_LINE_BREAK}\nBbb")] {
+        let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 300.0), ParaAttrs::default());
+        let mark = text.find("\nB").unwrap();
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.size = Some(10.0));
+        story.format_chars(mark..mark + 1, |f| f.over.size = Some(20.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+        assert_eq!(base.len(), 3, "{text:?}: {base:?}");
+        assert!((base[1] - base[0] - 24.0).abs() < 1e-6, "{text:?}: {base:?}");
+        assert!((base[2] - base[1] - 12.0).abs() < 1e-6, "{text:?}: {base:?}");
+    }
+}
+
 /// In a vertical frame an empty paragraph measures from the upright em box (the font's
 /// ideographic em box), as the upright characters around it do. It measured from the font's
 /// ascender and descender, so it moved against the lines beside it.
