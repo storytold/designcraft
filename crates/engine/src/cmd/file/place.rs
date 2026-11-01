@@ -470,6 +470,46 @@ pub(super) mod image_place_tests {
     }
 
     #[test]
+    fn placed_photo_honors_its_embedded_resolution() {
+        // #1991: a placed graphic's embedded density sets its size (600 dpi: 40 px place
+        // 4.8 pt wide), instead of a pixel always becoming a point.
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [30, 90, 180, 255].repeat(800) }.to_png();
+        assert_eq!(&png[12..16], b"IHDR");
+        let mut phys = Vec::new();
+        phys.extend_from_slice(&23622u32.to_be_bytes());
+        phys.extend_from_slice(&23622u32.to_be_bytes());
+        phys.push(1);
+        let mut bytes = png[..33].to_vec();
+        bytes.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(b"pHYs");
+        bytes.extend_from_slice(&phys);
+        let mut c = b"pHYs".to_vec();
+        c.extend_from_slice(&phys);
+        bytes.extend_from_slice(&crc32(&c).to_be_bytes());
+        bytes.extend_from_slice(&png[33..]);
+        let file = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        std::fs::write(file.path(), bytes).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let placed = session.execute("file.place", &json!({"path": file.path(), "x": 10.0, "y": 20.0})).unwrap();
+        let document = &session.doc().unwrap().doc;
+        let item = document.item(ItemId(placed["id"].as_u64().unwrap())).unwrap();
+        let b = item.bounds();
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.y0 - 20.0).abs() < 1e-9, "{b:?}");
+        assert!((b.width() - 4.8).abs() < 0.01 && (b.height() - 2.4).abs() < 0.01, "{b:?}");
+    }
+
+    #[test]
     fn explicit_frame_wins_over_placement_and_selection() {
         let image = image_file().unwrap();
         let mut session = Session::new();
