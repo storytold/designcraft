@@ -246,6 +246,35 @@ mod document_fonts_tests {
     }
 
     #[test]
+    fn publisher_document_fonts_are_scoped_and_bytes_do_not_load_adjacent_fonts() {
+        const FAMILY: &str = "PubTst";
+        let dir = temp_dir("publisher");
+        let chars: Vec<_> = "Hello from DesignCraft".chars().collect();
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("pub.ttf"), font_with(FAMILY, &chars).unwrap()).unwrap();
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("bad.ttf"), b"not a font").unwrap();
+        let bytes = include_bytes!("../../../../pub/tests/data/hello.pub").to_vec();
+        let path = dir.join("Publication.pub");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut s = Session::new();
+        let result = open(&mut s, &path);
+        assert_eq!(result["documentFonts"], 1);
+        assert!(result["warnings"].to_string().contains("bad.ttf"));
+        assert!(s.doc().unwrap().fonts.is_some());
+        assert_ne!(s.doc().unwrap().doc.font_scope, 0);
+        let (&story, text) = s.doc().unwrap().doc.stories.iter().find(|(_, text)| !text.text.is_empty()).unwrap();
+        let end = text.text.len();
+        s.execute("text.select", &json!({"story": story.0, "anchor": 0, "focus": end})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": FAMILY, "fontStyle": "Regular"})).unwrap();
+        assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
+        assert!(glyph_faces(&s).iter().any(|(_, face)| face.family == FAMILY));
+        s.execute("file.openBytes", &json!({"name": path.to_string_lossy(), "base64": super::base64_encode(&bytes)})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.font_scope, 0);
+        assert!(s.doc().unwrap().fonts.is_none());
+        assert!(glyph_faces(&s).iter().all(|(_, face)| face.family != FAMILY));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn opening_an_idml_file_loads_its_document_fonts() {
         const FAMILY: &str = "DocFont IDML Test";
         let dir = temp_dir("idml");

@@ -457,12 +457,21 @@ pub(crate) fn open_pub(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("file.open", "missing `path` or `base64`"));
     };
-    let imp = designcraft_pub::import_pub(&bytes).map_err(|e| EngineError::Other(format!("can't open the Publisher file: {e}")))?;
+    let mut resources = (None, 0, Vec::new());
+    let imported = designcraft_pub::import_pub_with(&bytes, |d| {
+        if let Some(path) = str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+            resources = super::file::load_document_fonts(d, path);
+        }
+    });
+    let mut imp = imported.map_err(|e| EngineError::Other(format!("can't open the Publisher file: {e}")))?;
+    let (fonts, faces, font_warnings) = resources;
+    imp.warnings.extend(font_warnings);
     let mut d = imp.document;
     if !title.is_empty() {
         d.title = title;
     }
     let mut state = DocState::new(d, None);
+    state.fonts = fonts;
     state.import_notes = imp.notes.clone();
     state.import_notice = Some(designcraft_pub::CONVERSION_NOTICE);
     state.import_save_path = str_param(p, "path").filter(|_| str_param(p, "base64").is_none()).map(|path| {
@@ -476,7 +485,7 @@ pub(crate) fn open_pub(s: &mut Session, p: &Value) -> Result<Value> {
         }
     });
     let i = s.add_document(state);
-    Ok(json!({"index": i, "warnings": imp.warnings, "notes": imp.notes, "notice": designcraft_pub::CONVERSION_NOTICE}))
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": imp.warnings, "notes": imp.notes, "notice": designcraft_pub::CONVERSION_NOTICE}))
 }
 
 /// The frame an import warning is about, so it can be shown: the first frame of the story a

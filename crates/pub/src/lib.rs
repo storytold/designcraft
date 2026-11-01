@@ -206,9 +206,17 @@ pub fn read_publication(bytes: &[u8]) -> Result<Publication> {
 
 /// Import a Publisher publication.
 pub fn import_pub(bytes: &[u8]) -> Result<Imported> {
+    import_pub_with(bytes, |_| {})
+}
+
+/// Import with document-local resources prepared before building text and measuring overset.
+/// Callers own any resource guards and must retain them for the returned document's lifetime.
+/// The default importer does not consult adjacent files.
+pub fn import_pub_with(bytes: &[u8], prepare: impl FnOnce(&mut Document)) -> Result<Imported> {
     let p = read_publication(bytes)?;
     let (c, q, dr) = (&p.contents, &p.quill, &p.drawing);
     let mut b = Builder::new(c, q, dr)?;
+    prepare(&mut b.doc);
     b.warnings.extend(c.warnings.iter().cloned());
     b.warnings.extend(q.warnings.iter().cloned());
     b.warnings.extend(dr.warnings.iter().cloned());

@@ -49,6 +49,10 @@ Every open returns:
 - Text that does not fit its frame in DesignCraft is listed in `notes`; Publisher may fit it
   differently.
 
+Path-based opens load adjacent Document Fonts through the existing read-root checks before
+building text and computing overset diagnostics. Their scope is retained only by that document;
+byte-only imports do not load adjacent files. Skipped font files are reported as warnings.
+
 ## Limits on hostile input
 
 Files over 512 MB and streams over 256 MB are refused. Counts read from the file (pages, records,
