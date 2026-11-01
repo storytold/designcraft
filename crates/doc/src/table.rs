@@ -22,7 +22,7 @@ mod grid;
 mod merge;
 mod story;
 
-pub use cell::{AltFills, AltStrokes, Cell, CellStroke, Column, Row, RowHeightMode, RowKind, TableOptions};
+pub use cell::{AltFills, AltStrokes, Cell, CellDiagonal, CellStroke, Column, DiagonalLines, Row, RowHeightMode, RowKind, TableOptions};
 pub use grid::CellRange;
 
 /// Most rows a table holds, as InDesign allows.
@@ -358,5 +358,28 @@ mod tests {
         let back: Cell = serde_json::from_str(&serde_json::to_string(&explicit).unwrap()).unwrap();
         assert_eq!(back, explicit);
         assert_eq!(back.blank_like().border_overrides, explicit.border_overrides);
+    }
+
+    #[test]
+    fn cell_diagonal_lines_roundtrip_and_run_corner_to_corner() {
+        let plain = serde_json::to_value(Cell::default()).unwrap();
+        assert!(plain.get("diagonal").is_none(), "a cell without diagonal lines saves none");
+        let diagonal = CellDiagonal { lines: DiagonalLines::Crossed, stroke: CellStroke { weight: 2.0, ..Default::default() }, in_front: false };
+        let cell = Cell { diagonal: diagonal.clone(), ..Cell::default() };
+        let back: Cell = serde_json::from_str(&serde_json::to_string(&cell).unwrap()).unwrap();
+        assert_eq!(back.diagonal, diagonal);
+        assert_eq!(back.blank_like().diagonal, diagonal, "new cells take the cell's formatting");
+        let r = designcraft_geom::Rect::new(10.0, 20.0, 110.0, 70.0);
+        let p = designcraft_geom::Point::new;
+        let down = (p(10.0, 20.0), p(110.0, 70.0));
+        let up = (p(110.0, 20.0), p(10.0, 70.0));
+        for (lines, want) in [
+            (DiagonalLines::None, vec![]),
+            (DiagonalLines::TopLeft, vec![down]),
+            (DiagonalLines::TopRight, vec![up]),
+            (DiagonalLines::Crossed, vec![down, up]),
+        ] {
+            assert_eq!(CellDiagonal { lines, ..Default::default() }.segments(r), want, "{lines:?}");
+        }
     }
 }

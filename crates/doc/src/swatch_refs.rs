@@ -167,6 +167,7 @@ impl Names<'_> {
             for s in &mut c.strokes {
                 self.cell_stroke(s);
             }
+            self.cell_stroke(&mut c.diagonal.stroke);
         }
     }
     /// One story's own text, objects and tables (cell and note text are visited separately).
@@ -231,7 +232,7 @@ impl Document {
 
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
     /// styles, page items (fills, strokes, gaps, effects, column rules), text, kenten and ruby
-    /// colours, rules, shading, borders and border gaps, tables (with stroke gaps), footnotes,
+    /// colours, rules, shading, borders and border gaps, tables (with stroke gaps and diagonal lines), footnotes,
     /// gradient stops,
     /// endnotes and the footnote rule. The swatch itself is renamed by the
     /// caller.

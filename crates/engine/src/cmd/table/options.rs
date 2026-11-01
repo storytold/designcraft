@@ -77,7 +77,7 @@ pub(super) fn get(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|(r, c)| {
             let cell = t.cell(r, c)?;
             Some(json!({"row": r, "col": c, "rowSpan": cell.row_span, "colSpan": cell.col_span, "text": cell.text.text, "fill": cell.fill,
-                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style}))
+                "insets": cell.insets, "vj": cell.vj, "firstBaseline": cell.first_baseline, "firstBaselineMin": cell.first_baseline_min, "rotation": cell.rotation, "style": cell.style, "diagonal": cell.diagonal}))
         })
         .collect();
     Ok(json!({

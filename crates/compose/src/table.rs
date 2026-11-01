@@ -33,6 +33,10 @@ pub struct PlacedCell {
     pub repeated: bool,
     /// Graphic cell content (drawn at `clip`'s top left, clipped to it).
     pub graphic: Option<designcraft_doc::Graphic>,
+    /// The cell's diagonal lines (Cell Options › Diagonal Lines), corner to corner of `rect`.
+    pub diagonals: Vec<StrokeSeg>,
+    /// Whether the diagonals are drawn over the cell's contents (otherwise under them).
+    pub diagonals_in_front: bool,
 }
 
 /// One cell edge (or the table border) to stroke.
@@ -87,6 +91,10 @@ impl TableFrag {
             c.rect = c.rect + v;
             c.clip = c.clip + v;
             c.origin += v;
+            for s in &mut c.diagonals {
+                s.a += v;
+                s.b += v;
+            }
         }
         for s in &mut self.strokes {
             s.a += v;
@@ -460,6 +468,14 @@ fn emit(
                 overset,
                 repeated,
                 graphic: cell.graphic.clone(),
+                diagonals: cell
+                    .diagonal
+                    .segments(rect)
+                    .into_iter()
+                    .filter(|_| cell.diagonal.stroke.is_visible())
+                    .map(|(a, b)| StrokeSeg { a, b, stroke: cell.diagonal.stroke.clone() })
+                    .collect(),
+                diagonals_in_front: cell.diagonal.in_front,
             });
         }
     }
