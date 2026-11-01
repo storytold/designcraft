@@ -99,8 +99,10 @@ pub fn base64_decoded_len(s: &str) -> usize {
     n / 4 * 3 + n % 4 * 3 / 4
 }
 
+/// `s` decoded, with room reserved for exactly that: white space or junk in `s` reserves nothing
+/// more.
 pub fn base64_decode(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut out = Vec::with_capacity(base64_decoded_len(s));
     let mut buf = 0u32;
     let mut bits = 0;
     for b in s.bytes() {
@@ -190,5 +192,14 @@ mod base64_tests {
                 assert_eq!(base64_decoded_len(&s), base64_decode(&s).len(), "{s:?}");
             }
         }
+    }
+
+    #[test]
+    fn decoding_reserves_only_the_decoded_length() {
+        // One byte among 3 MiB of line breaks: the room reserved is for the one byte.
+        let s = format!("{}{}", "\n".repeat(3 << 20), base64_encode(b"a"));
+        let out = base64_decode(&s);
+        assert_eq!(out, b"a");
+        assert!(out.capacity() < 16, "reserved {} bytes for 1", out.capacity());
     }
 }
