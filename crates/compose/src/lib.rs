@@ -1147,6 +1147,8 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     range: Range<usize>,
     props: &'a designcraft_doc::ParaProps,
     para_chars: &'a designcraft_doc::CharProps,
+    /// The paragraph has CJK text, so its 禁則 priority applies.
+    cjk: bool,
     drop_end: usize,
     base_leading: f64,
     base_cap: f64,
@@ -1172,6 +1174,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         range: prange,
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -1194,7 +1197,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = spacing_for(pp, base_chars.size, story, cjk);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
@@ -2279,6 +2282,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         },
         &mut table,
     );
+    // The paragraph's script decides whether its 禁則 priority applies. Classify the shaped
+    // glyphs before split_drop_cap removes the drop cap and prepend_label adds the list
+    // label: a CJK drop cap is part of the paragraph, a generated label is not.
+    let cjk = paragraph_is_cjk(&sp.glyphs);
     // An empty paragraph has no glyphs of its own, so its only addressable character is its
     // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
     // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
@@ -2311,6 +2318,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         range: prange.clone(),
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -2425,7 +2433,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = spacing_for(pp, base_size, story, cjk);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3351,8 +3359,9 @@ fn optical_for(pp: &ParaProps, story: &Story) -> (bool, Option<f64>) {
     }
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
+/// Breaker parameters from the paragraph's settings; `cjk` says the paragraph has CJK text (so
+/// its 禁則 priority applies).
+fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story, cjk: bool) -> Spacing {
     let (optical, optical_size) = optical_for(pp, story);
     Spacing {
         justify: pp.align.is_justified(),
@@ -3374,13 +3383,48 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
         optical,
         optical_size,
         korean_char_breaks: pp.korean_char_breaks,
+        kinsoku_cjk: cjk,
+        // JIS X 4051 禁則処理: the empty value is InDesign's default and the UI's "Push In First",
+        // and 調整量優先 (adjustment amount) is the breaker's minimum-adjustment mode 0.
         kinsoku_priority: match pp.kinsoku_type.as_str() {
-            "KinsokuPushInFirst" => 1,
+            "" | "KinsokuPushInFirst" => 1,
             "KinsokuPushOutFirst" => 2,
             "KinsokuPushOutOnly" => 3,
+            "KinsokuPrioritizeAdjustmentAmount" => 0,
             _ => 0,
         },
     }
+}
+
+/// Whether the paragraph's own shaped glyphs contain CJK text, the gate for its 禁則 priority.
+/// Called before `split_drop_cap` and `prepend_label`, so a drop cap counts and generated list
+/// and story labels do not. A text variable or page number keeps its marker in [`Glyph::ch`], so
+/// its replacement text is what the paragraph shows; inspect that too.
+fn paragraph_is_cjk(glyphs: &[Glyph]) -> bool {
+    glyphs.iter().any(|g| is_cjk_char(g.ch) || g.generated_text.as_deref().is_some_and(|text| text.chars().any(is_cjk_char)))
+}
+
+/// Is `c` CJK text (the scripts the 禁則 line-start/line-end rules are about): ideographs, kana,
+/// CJK punctuation and full/half-width forms, bopomofo, Hangul.
+fn is_cjk_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1100..=0x11FF
+            | 0x2E80..=0x2FFF
+            | 0x3000..=0x30FF
+            | 0x3100..=0x318F
+            | 0x3190..=0x33FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xA000..=0xA4CF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFFEF
+            // Extension B 以降 (U+20000..)。breaker の Han の判定と同じ範囲にして、
+            // 補助面だけの段落でも禁則の指定が効くようにする
+            | 0x20000..=0x3FFFF
+    )
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).
@@ -4633,7 +4677,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
-    if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
+    if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
     if (justify_this || squeeze_last) && !spaces.is_empty() {
