@@ -88,6 +88,7 @@ fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
         let at = t.range().start.min(st.len());
         st.insert_index_ref(at, r.clone());
         let shift = INDEX_MARK.len_utf8();
+        d.adjust_text_ranges(t.story, at..at, shift);
         sel.text = Some(TextSel { anchor: t.anchor + shift, focus: t.focus + shift, ..t });
         Ok(json!({"pos": at}))
     })

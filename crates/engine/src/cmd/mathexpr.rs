@@ -80,9 +80,11 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
             let r = t.range();
+            let del = r.start.min(d.story(t.story).map_or(0, |st| st.len()))..r.end.min(d.story(t.story).map_or(0, |st| st.len()));
             if let Some(st) = d.story_mut(t.story) {
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                st.delete(del.clone());
             }
+            d.adjust_text_ranges(t.story, del, 0);
             let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));

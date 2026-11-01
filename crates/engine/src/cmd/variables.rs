@@ -52,7 +52,11 @@ pub fn specs() -> Vec<CommandSpec> {
                             continue;
                         }
                         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                        unvar(st, i, n, &value, 0);
+                        let mut replacements = Vec::new();
+                        unvar(st, i, n, &value, 0, &mut |pos, len| replacements.push((pos, len)));
+                        for (pos, tlen) in replacements {
+                            d.adjust_text_ranges(sid, pos..pos + tlen, value.len());
+                        }
                     }
                     d.text_variables.remove(i);
                     Ok(Value::Null)
@@ -352,14 +356,17 @@ fn needs_unvar(st: &designcraft_doc::Story, i: usize, depth: usize) -> bool {
 /// `i + 1..n` down by one, including table cells and foot/endnotes nested in the story. Only
 /// touches (and unshares) the parts that hold such instances; a story whose nested text changed
 /// gets a new revision.
-fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize) {
+fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth: usize, on_replace: &mut dyn FnMut(usize, usize)) {
     if depth > MAX_DEPTH {
         return;
     }
     if st.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
         let target = var_char(i).unwrap_or(' ').to_string();
-        while let Some(pos) = st.text.find(&target) {
+        let mut occurrences: Vec<usize> = st.text.match_indices(&target).map(|(pos, _)| pos).collect();
+        occurrences.reverse();
+        for pos in occurrences {
             st.replace(pos..pos + target.len(), value);
+            on_replace(pos, target.len());
         }
         for k in i + 1..n {
             let (from, to) = (var_char(k).unwrap_or(' ').to_string(), var_char(k - 1).unwrap_or(' ').to_string());
@@ -375,14 +382,14 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
         }
         for c in &mut std::sync::Arc::make_mut(t).cells {
             if needs_unvar(&c.text, i, depth + 1) {
-                unvar(&mut c.text, i, n, value, depth + 1);
+                unvar(&mut c.text, i, n, value, depth + 1, &mut |_, _| {});
             }
         }
         nested = true;
     }
     for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
         if needs_unvar(&note.text, i, depth + 1) {
-            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1);
+            unvar(&mut std::sync::Arc::make_mut(note).text, i, n, value, depth + 1, &mut |_, _| {});
             nested = true;
         }
     }

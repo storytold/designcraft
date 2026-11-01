@@ -705,6 +705,11 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
                 repair_selection(t, st);
             }
+            if cell.is_none() {
+                for (range, new) in edits.iter().rev() {
+                    d.adjust_text_ranges(sid, range.clone(), new.len());
+                }
+            }
             // Change leaves the changed text selected.
             if let Some((_, _, range)) = &found
                 && let Some((_, new)) = edits.first()

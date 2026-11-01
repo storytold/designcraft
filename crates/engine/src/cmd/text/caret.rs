@@ -215,18 +215,28 @@ pub(super) fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
-        let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
-        let mut at = b;
-        if !copy {
-            st.delete(r.clone());
-            if at > r.start {
-                at -= r.len().min(at - r.start);
+        let (piece_len, at, r) = {
+            let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+            let piece = st.extract(r.clone());
+            let mut at = b;
+            if !copy {
+                st.delete(r.clone());
+                if at > r.start {
+                    at -= r.len().min(at - r.start);
+                }
+            }
+            let end = st.insert_story(at, &piece);
+            sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
+            (piece.text.len(), at, r)
+        };
+        if cell.is_none() {
+            if copy {
+                d.adjust_text_ranges(sid, at..at, piece_len);
+            } else {
+                d.move_text_ranges(sid, r, at);
             }
         }
-        let end = st.insert_story(at, &piece);
-        sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
-        Ok(json!({"moved": piece.text.len(), "at": at}))
+        Ok(json!({"moved": piece_len, "at": at}))
     })
 }
 
