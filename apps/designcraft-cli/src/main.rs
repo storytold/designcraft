@@ -156,7 +156,6 @@ fn report(r: Result<(), String>) -> ExitCode {
 
 fn validate_pdf(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]";
-    const X1A: &[u8] = b"/GTS_PDFXVersion(PDF/X-1:";
     let mut path = None;
     let mut standard = None;
     let mut it = args.iter();
@@ -172,7 +171,7 @@ fn validate_pdf(args: &[String]) -> Result<(), String> {
     let standard = match standard.map(designcraft_pdf::Standard::parse) {
         Some(Some(s)) => s,
         Some(None) => return Err(USAGE.into()),
-        None if bytes.windows(X1A.len()).any(|w| w == X1A) => designcraft_pdf::Standard::PdfX1a,
+        None if designcraft_pdf::pdfx_version(&bytes).is_some_and(|v| v.starts_with("PDF/X-1:")) => designcraft_pdf::Standard::PdfX1a,
         None => designcraft_pdf::Standard::PdfX4,
     };
     let (name, issues) = match standard {

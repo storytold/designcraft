@@ -977,3 +977,21 @@ fn override_keeps_style_decorations_and_resets_tracking_and_caps() {
     assert_eq!(css::override_css(&d, "Base", &small), "text-transform: none; font-variant: normal; font-variant: small-caps;");
     assert_eq!(css::override_css(&d, "Small", &all), "text-transform: none; font-variant: normal; text-transform: uppercase;");
 }
+
+fn grouped_text(hidden: bool) -> Document {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "Grouped text", ParaFormat::default()).unwrap();
+    let child = Arc::make_mut(&mut d.spreads[0]).items.pop().unwrap();
+    let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, Default::default());
+    g.content = Content::Group { items: vec![child] };
+    g.hidden = hidden;
+    Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(g));
+    d
+}
+
+#[test]
+fn hidden_group_children_are_not_exported() {
+    assert!(html::reading_order(&grouped_text(true)).is_empty());
+    assert_eq!(html::reading_order(&grouped_text(false)).len(), 1);
+}

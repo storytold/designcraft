@@ -3,7 +3,7 @@
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
-//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
+//! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
 //! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
@@ -586,6 +586,28 @@ mod tests {
         assert_eq!(marked("Repubblica", it), "Re-pub-bli-ca");
         assert_eq!(marked("impaginazione", it), "im-pa-gi-na-zio-ne");
         assert_eq!(marked("dell'impaginazione", it), "dell'im-pa-gi-na-zio-ne", "after an elision");
+    }
+
+    #[test]
+    fn dutch_uses_the_hyph_nl_patterns() {
+        let nl = Lang::for_language("Dutch").unwrap();
+        // InDesign writes the 2005 spelling as `nl_NL_2005`.
+        assert_eq!(nl, Lang::for_language("nl_NL_2005").unwrap());
+        assert_ne!(nl, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nl);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("uitspraak"), "uit-spraak");
+        assert_eq!(h("kinderen"), "kin-de-ren");
+        assert_eq!(h("leesvaardigheid"), "lees-vaar-dig-heid");
+        assert_eq!(h("zelfvertrouwen"), "zelf-ver-trou-wen");
+        assert_eq!(h("Ontwikkelen"), "Ont-wik-ke-len");
+        // Long compounds break at their parts and at the syllables inside them.
+        assert_eq!(h("arbeidsongeschiktheidsverzekering"), "ar-beids-on-ge-schikt-heids-ver-ze-ke-ring");
+        assert_eq!(h("ziekenhuisopname"), "zie-ken-huis-op-na-me");
+        assert_eq!(h("gemeenteraadsverkiezingen"), "ge-meen-te-raads-ver-kie-zin-gen");
+        assert_eq!(h("kinderdagverblijf"), "kin-der-dag-ver-blijf");
     }
 
     #[test]

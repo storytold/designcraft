@@ -26,7 +26,8 @@ pub struct Step {
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
     // Windows tools save "UTF-8 with BOM"; `trim` keeps U+FEFF, which then became part of the
     // first command id.
-    let t = text.trim_start_matches('\u{feff}').trim();
+    let body = text.trim_start_matches('\u{feff}');
+    let t = body.trim();
     if t.starts_with('[') {
         let v: Value = serde_json::from_str(t).map_err(|e| format!("script: {e}"))?;
         return v
@@ -38,7 +39,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             .collect();
     }
     let mut out = Vec::new();
-    for (n, line) in t.lines().enumerate() {
+    // Number lines from the untrimmed text so leading blank lines still count.
+    for (n, line) in body.lines().enumerate() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') || l.starts_with("//") {
             continue;
@@ -184,6 +186,12 @@ impl crate::Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leading_blank_lines_keep_line_numbers() {
+        let e = parse("\n\n# c\nfile.new\nframe.create {bad").unwrap_err();
+        assert!(e.contains("line 5"), "{e}");
+    }
 
     #[test]
     fn parses_all_forms() {

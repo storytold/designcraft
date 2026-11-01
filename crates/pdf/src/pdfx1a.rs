@@ -116,16 +116,18 @@ pub fn check_pdfx1a(pdf: &[u8]) -> Vec<String> {
 fn checks(pdf: &[u8]) -> (Vec<String>, Vec<String>) {
     let mut issues = Vec::new();
     let text = String::from_utf8_lossy(pdf);
+    let file = hayro_syntax::Pdf::new(pdf.to_vec()).ok();
     if !pdf.starts_with(b"%PDF-1.") || pdf.get(7).is_none_or(|v| *v > b'4') {
         issues.push("the PDF version must be 1.4 or lower".into());
     }
-    if !text.contains("/S/GTS_PDFX") {
+    if file.as_ref().is_none_or(|f| crate::pdfx::pdfx_intents(f).is_empty()) {
         issues.push("no PDF/X output intent".into());
     }
-    if !text.contains(&format!("/GTS_PDFXVersion({VERSION})")) {
+    let info = |key: &[u8]| file.as_ref().and_then(|f| crate::pdfx::info_text(pdf, f, key));
+    if info(b"GTS_PDFXVersion").as_deref() != Some(VERSION) {
         issues.push(format!("the document information doesn't name {VERSION}"));
     }
-    if !text.contains(&format!("/GTS_PDFXConformance({CONFORMANCE})")) {
+    if info(b"GTS_PDFXConformance").as_deref() != Some(CONFORMANCE) {
         issues.push(format!("the document information doesn't name the conformance level {CONFORMANCE}"));
     }
     if !text.contains("/Trapped/False") && !text.contains("/Trapped/True") && !text.contains("/Trapped /False") && !text.contains("/Trapped /True") {
@@ -142,18 +144,18 @@ fn checks(pdf: &[u8]) -> (Vec<String>, Vec<String>) {
     if pages > 0 && trims < pages {
         issues.push("every page needs a trim box".into());
     }
-    let (content, fonts) = content(pdf);
+    let (content, fonts) = content(file.as_ref());
     issues.extend(fonts);
     (content, issues)
 }
 
 /// Transparency and color spaces, then the output intent and fonts, walked through every page's
 /// content and what it uses.
-fn content(pdf: &[u8]) -> (Vec<String>, Vec<String>) {
-    let Ok(file) = hayro_syntax::Pdf::new(pdf.to_vec()) else {
+fn content(file: Option<&hayro_syntax::Pdf>) -> (Vec<String>, Vec<String>) {
+    let Some(file) = file else {
         return (vec!["the file couldn't be read to check its transparency and color spaces".into()], Vec::new());
     };
-    let mut fonts = intent_issues(&file);
+    let mut fonts = intent_issues(file);
     let mut found: Vec<(String, Vec<usize>)> = Vec::new();
     let mut font_found: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, page) in file.pages().iter().enumerate() {
@@ -214,13 +216,9 @@ impl Intent {
 
 /// The catalog's `GTS_PDFX` output intents.
 fn pdfx_intents(file: &hayro_syntax::Pdf) -> Vec<Intent> {
-    let xref = file.xref();
-    let Some(catalog) = xref.get::<Dict<'_>>(xref.root_id()) else { return Vec::new() };
-    let Some(intents) = catalog.get::<Array<'_>>(b"OutputIntents") else { return Vec::new() };
     let number = |n: i32| usize::try_from(n).ok();
-    intents
-        .iter::<Dict<'_>>()
-        .filter(|oi| oi.get::<Name<'_>>(b"S").is_some_and(|s| s.as_ref() == b"GTS_PDFX"))
+    crate::pdfx::pdfx_intents(file)
+        .into_iter()
         .map(|oi| {
             let text = |key: &[u8]| {
                 oi.get::<hayro_syntax::object::String<'_>>(key)
