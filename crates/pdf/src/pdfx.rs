@@ -33,7 +33,7 @@ pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: boo
     let registered = space.identifier != "Custom";
     let color = PrintColor {
         profile: &space.icc,
-        condition_identifier: space.identifier,
+        condition_identifier: &space.identifier,
         condition: Some(&space.condition),
         registry_name: registered.then_some("http://www.color.org"),
         info: Some(&space.condition),
