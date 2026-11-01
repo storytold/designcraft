@@ -146,6 +146,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate Capitalized Words", "მთავრული სიტყვების დამარცვლა"),
     ("Hyphenate Last Word", "ბოლო სიტყვის დამარცვლა"),
     ("Hyphenate Across Column", "სვეტებს შორის დამარცვლა"),
+    ("Repeat Hyphen at Line Break", "დეფისის გამეორება ხაზის გადატანისას"),
     ("Character Formatting Controls", "სიმბოლოების ფორმატირების მართვა"),
     ("Paragraph Formatting Controls", "აბზაცების ფორმატირების მართვა"),
     ("Font Size", "შრიფტის ზომა"),

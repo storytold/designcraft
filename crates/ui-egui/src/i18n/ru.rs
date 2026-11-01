@@ -157,6 +157,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate Capitalized Words", "Переносить слова с прописной буквы"),
     ("Hyphenate Last Word", "Переносить последнее слово"),
     ("Hyphenate Across Column", "Переносить между колонками"),
+    ("Repeat Hyphen at Line Break", "Повторять дефис при переносе строки"),
     ("Character Formatting Controls", "Элементы управления форматированием символов"),
     ("Paragraph Formatting Controls", "Элементы управления форматированием абзацев"),
     ("Font Size", "Кегль"),

@@ -1436,6 +1436,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
     ),
     (
+        "Repeat Hyphen at Line Break",
+        [
+            "Bindestrich am Zeilenumbruch wiederholen",
+            "Répéter le trait d’union à la coupure de ligne",
+            "Repetir el guion en el salto de línea",
+            "行の折り返しでハイフンを繰り返す",
+            "在换行处重复连字符",
+        ],
+    ),
+    (
         "Differs from this document",
         ["Weicht von diesem Dokument ab", "Diffère de ce document", "Difiere de este documento", "このドキュメントと異なります", "与此文档不同"],
     ),

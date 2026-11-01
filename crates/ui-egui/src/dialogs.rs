@@ -7596,7 +7596,7 @@ fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), 
 }
 
 /// Paragraph attributes the Hyphenation Settings dialog sets.
-pub const HYPH_ATTRS: [&str; 10] = [
+pub const HYPH_ATTRS: [&str; 11] = [
     "hyphenate",
     "hyphMinWord",
     "hyphAfterFirst",
@@ -7607,12 +7607,13 @@ pub const HYPH_ATTRS: [&str; 10] = [
     "hyphCapitalized",
     "hyphLastWord",
     "hyphAcrossColumn",
+    "hyphRepeat",
 ];
 
 /// InDesign's Hyphenation Settings: Hyphenate; Words with at Least, After First and Before Last
 /// (letters), Hyphen Limit (hyphens) and Hyphenation Zone; the Better Spacing ↔ Fewer Hyphens
 /// slider (0–10, as InDesign's HyphenWeight); Hyphenate Capitalized Words, Last Word and Across
-/// Column. Edited fields are stored as `{prefix}{key}`; the others show `current` (a mixed value
+/// Column; and our own Repeat Hyphen at Line Break. Edited fields are stored as `{prefix}{key}`; the others show `current` (a mixed value
 /// is null and shows blank). The Hyphenation dialog for the selected paragraphs and Paragraph
 /// Style Options › Hyphenation both use it.
 fn hyphenation(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value, units: Unit) {
@@ -7698,6 +7699,7 @@ fn hyphenation(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, curr
         checkbox(ui, d, "hyphLastWord", "Hyphenate Last Word");
         ui.end_row();
         checkbox(ui, d, "hyphAcrossColumn", "Hyphenate Across Column");
+        checkbox(ui, d, "hyphRepeat", "Repeat Hyphen at Line Break");
         ui.end_row();
     });
 }

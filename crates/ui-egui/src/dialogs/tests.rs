@@ -946,10 +946,12 @@ fn hyphenation_settings_preview_apply_and_cancel_on_the_selected_paragraph() {
         "Hyphenate Capitalized Words",
         "Hyphenate Last Word",
         "Hyphenate Across Column",
+        "Repeat Hyphen at Line Break",
         "Preview",
     ] {
         assert!(labels.iter().any(|(t, _, _)| t == label), "{label}: {labels:?}");
     }
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["current"]["hyphRepeat"], json!(true), "Repeat Hyphen starts on");
     // Fewer Hyphens (9 of 10) with Preview: on the page, no undo step.
     let before = undo_steps(&app);
     let d = app.ui.dialog.as_mut().unwrap();
@@ -976,7 +978,7 @@ fn hyphenation_settings_preview_apply_and_cancel_on_the_selected_paragraph() {
         dialog_frame(&mut app, &ctx, screen, vec![]);
     }
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    for label in ["Hyphenation Zone:", "Better Spacing", "Fewer Hyphens", "Hyphenate Last Word", "Hyphenate Across Column"] {
+    for label in ["Hyphenation Zone:", "Better Spacing", "Fewer Hyphens", "Hyphenate Last Word", "Repeat Hyphen at Line Break"] {
         assert!(labels.iter().any(|(t, _, _)| t == label), "style options: {label}");
     }
     app.ui.dialog = None;

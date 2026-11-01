@@ -12,6 +12,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-01** · Serbian: a line broken at a hyphen starts with the hyphen again (`auto-` /
+  `-salon`), as the Pravopis asks (т. 186в), with all three breakers measuring it. Repeat Hyphen at
+  Line Break in Hyphenation Settings and paragraph styles turns it off; it is DesignCraft's own,
+  so IDML doesn't carry it. No readiness percentage change.
 - **2026-10-31** · Serbian: text in Latin script breaks between `nj` or `dž` where they are two
   letters (`kon-ju-ga-ci-ja`, `nad-ži-ve-ti`), as the Cyrillic spelling shows, also past an
   installed Latin pattern file; `lj`, `nj`, `dž` count as one letter against the word limits, and

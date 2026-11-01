@@ -153,6 +153,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate Capitalized Words", "Dziel wyrazy pisane wielką literą"),
     ("Hyphenate Last Word", "Dziel ostatni wyraz"),
     ("Hyphenate Across Column", "Dziel między łamami"),
+    ("Repeat Hyphen at Line Break", "Powtarzaj łącznik przy podziale wiersza"),
     ("Character Formatting Controls", "Elementy formatowania znaków"),
     ("Paragraph Formatting Controls", "Elementy formatowania akapitów"),
     ("Font Size", "Rozmiar czcionki"),

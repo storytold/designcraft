@@ -75,6 +75,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate Capitalized Words", "大文字で始まる単語をハイフネーション"),
     ("Hyphenate Last Word", "最後の単語をハイフネーション"),
     ("Hyphenate Across Column", "段をまたいでハイフネーション"),
+    ("Repeat Hyphen at Line Break", "行の折り返しでハイフンを繰り返す"),
     ("Apply Bullets", "箇条書きを適用"),
     ("Apply Numbers", "段落番号を適用"),
     ("Paste Vector Art", "ベクトルアートをペースト"),

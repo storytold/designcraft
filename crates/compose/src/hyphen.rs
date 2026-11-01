@@ -268,6 +268,12 @@ fn is_serbian(lang: Lang) -> bool {
     }
 }
 
+/// Does a line broken at a hyphen in `lang` start with the hyphen again? Serbian writes it at the
+/// end of the line and at the start of the next (Pravopis т. 186в: `ауто-` / `-салон`).
+pub fn repeats_hyphen(lang: Lang) -> bool {
+    is_serbian(lang)
+}
+
 /// `pts` of a lowercase Serbian `core`, with the join of a compound as §186е has it: `пред-услов`,
 /// never `преду-слов`, though the patterns allow both. A vowel alone between two breaks after a
 /// prefix belongs to the second word, so the break after it goes.

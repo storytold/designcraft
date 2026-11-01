@@ -152,6 +152,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hyphenate Capitalized Words", "Dělit slova s velkým počátečním písmenem"),
     ("Hyphenate Last Word", "Dělit poslední slovo"),
     ("Hyphenate Across Column", "Dělit přes sloupce"),
+    ("Repeat Hyphen at Line Break", "Opakovat spojovník při zalomení řádku"),
     ("Character Formatting Controls", "Ovládací prvky formátování znaků"),
     ("Paragraph Formatting Controls", "Ovládací prvky formátování odstavců"),
     ("Font Size", "Velikost písma"),

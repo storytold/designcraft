@@ -231,6 +231,8 @@ pub struct Line {
     pub para: usize,
     pub glyphs: Vec<PlacedGlyph>,
     pub hyphenated: bool,
+    /// Starts with a repeated hyphen, which isn't in the story.
+    pub repeated_hyphen: bool,
     pub first_in_para: bool,
     pub last_in_para: bool,
     /// x after the last glyph (caret at line end).
@@ -2136,6 +2138,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 para: pi,
                 glyphs: placed,
                 hyphenated: b.hyphen,
+                repeated_hyphen: glyphs.get(s).is_some_and(|g| g.line_start_hyphen > 0.0),
                 first_in_para: line_no == 0,
                 last_in_para: last,
                 end_x,
@@ -2422,8 +2425,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
+    if pp.hyph_repeat {
+        mark_repeated_hyphens(&mut glyphs, &foreign);
+    }
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story);
     // An empty paragraph takes its height from its paragraph mark's character format.
@@ -4591,6 +4598,12 @@ fn layout_line(
         let h = shape::hyphen_after(g);
         line.push(h);
     }
+    if e > s
+        && glyphs[s].line_start_hyphen > 0.0
+        && let Some(i) = s.checked_sub(1)
+    {
+        line.insert(0, shape::repeated_hyphen(&glyphs[i]));
+    }
     let measure = x1 - x0;
     // Optical margin alignment and hanging punctuation: the glyphs at the line's edges hang
     // outside the measure. A tab at an edge hangs nothing.
@@ -5255,6 +5268,21 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     for (h, g) in hy.iter_mut().zip(glyphs) {
         if *h && at.contains(&(g.byte + g.len)) {
             *h = false;
+        }
+    }
+}
+
+/// Mark the glyphs after a hyphen that a line break repeats, in the languages that ask for it.
+/// The hyphen must join two words or numbers: a minus sign or a suspended `auto-` isn't repeated.
+fn mark_repeated_hyphens(glyphs: &mut [Glyph], foreign: &[(Range<usize>, Option<hyphen::Lang>)]) {
+    for i in 1..glyphs.len().saturating_sub(1) {
+        let (before, hy, after) = (&glyphs[i - 1], &glyphs[i], &glyphs[i + 1]);
+        let joins = before.ch.is_alphanumeric() && after.ch.is_alphanumeric();
+        if !matches!(hy.ch, '-' | '\u{2010}') || !joins || hy.no_break || hy.break_after == Some(false) {
+            continue;
+        }
+        if foreign.iter().find(|(r, _)| r.contains(&hy.byte)).and_then(|(_, l)| *l).is_some_and(hyphen::repeats_hyphen) {
+            glyphs[i + 1].line_start_hyphen = hy.adv;
         }
     }
 }

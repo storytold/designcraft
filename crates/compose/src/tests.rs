@@ -4992,6 +4992,146 @@ fn language_picks_localized_forms_through_the_word_cache() {
     assert_eq!(all_lines(&cs)[0].glyphs[0].gid, gid_at(6), "Turkish i, shaped on its own");
 }
 
+const SERBIAN_COMPOUNDS: &str = "auto-salon radio-stanica sever-jug naučno-tehnički auto-salon radio-stanica sever-jug naučno-tehnički";
+
+/// `text` in `language`, set `width` wide.
+fn set_in(text: &str, language: &str, width: f64, para: ParaAttrs) -> ComposedStory {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 700.0), para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some(language.into()));
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+#[test]
+fn a_serbian_line_broken_at_a_hyphen_starts_with_it_again() {
+    let text = SERBIAN_COMPOUNDS;
+    let setups = [
+        ParaAttrs { align: Some(Align::Left), ..Default::default() },
+        ParaAttrs { align: Some(Align::Left), balance_ragged: Some(true), ..Default::default() },
+        ParaAttrs { align: Some(Align::Left), composer: Some(Composer::SingleLine), ..Default::default() },
+        ParaAttrs { align: Some(Align::LeftJustified), ..Default::default() },
+        ParaAttrs { align: Some(Align::LeftJustified), composer: Some(Composer::SingleLine), ..Default::default() },
+    ];
+    for para in setups {
+        let mut repeated = 0;
+        for w in 50..260 {
+            let cs = set_in(text, "Serbian: Latin", f64::from(w), para.clone());
+            for pair in all_lines(&cs).windows(2) {
+                let (above, l) = (pair[0], pair[1]);
+                assert_eq!(l.repeated_hyphen, above.range.end == l.range.start && text[..l.range.start].ends_with('-'), "{para:?} {w}");
+                assert!(l.end_x <= l.x1 + 0.01, "{para:?} {w}: {:?} overruns", &text[l.range.clone()]);
+                if !l.repeated_hyphen {
+                    continue;
+                }
+                repeated += 1;
+                let (hyphen, first) = (&l.glyphs[0], &l.glyphs[1]);
+                assert_eq!((hyphen.rendered_char, hyphen.len, hyphen.visible), ('-', 0, true));
+                assert!((hyphen.x - l.x0).abs() < 0.01, "{para:?} {w}");
+                assert!(first.x >= hyphen.x + hyphen.adv * 0.9, "{para:?} {w}");
+                assert_eq!((first.byte, caret_x(l, l.range.start)), (l.range.start, first.x));
+                assert_ne!(hyphen.byte, l.range.start, "a search by byte finds the letter");
+            }
+        }
+        assert!(repeated > 20, "{para:?}: {repeated}");
+    }
+}
+
+#[test]
+fn the_repeated_hyphen_follows_cyrillic_text_and_any_serbian_tag() {
+    let text = "ауто-салон радио-станица";
+    let repeats =
+        |language| (40..120).any(|w| all_lines(&set_in(text, language, f64::from(w), ParaAttrs::default())).iter().any(|l| l.repeated_hyphen));
+    for language in ["Serbian", "Serbian: Cyrillic", "sr-Cyrl-RS", "sr-Latn-BA", "sr_Latn_ME", "sh_RS"] {
+        assert!(repeats(language), "{language}");
+    }
+    for language in ["English: USA", "Russian", "Croatian", "Portuguese"] {
+        assert!(!repeats(language), "{language}");
+    }
+}
+
+#[test]
+fn turning_the_repeated_hyphen_off_leaves_the_break_alone() {
+    let off = ParaAttrs { hyph_repeat: Some(false), ..Default::default() };
+    let english = set_in(SERBIAN_COMPOUNDS, "English: USA", 90.0, ParaAttrs::default());
+    let serbian = set_in(SERBIAN_COMPOUNDS, "Serbian: Latin", 90.0, off);
+    assert!(all_lines(&serbian).iter().all(|l| !l.repeated_hyphen));
+    assert!(all_lines(&serbian).iter().any(|l| SERBIAN_COMPOUNDS[..l.range.end].ends_with('-')));
+    let hyphens = |cs: &ComposedStory| all_lines(cs).iter().filter(|l| l.glyphs.iter().any(|g| g.len == 0)).count();
+    assert_eq!(hyphens(&serbian), all_lines(&serbian).iter().filter(|l| l.hyphenated).count());
+    assert!(all_lines(&english).iter().all(|l| !l.repeated_hyphen));
+}
+
+#[test]
+fn only_a_hyphen_between_two_words_is_repeated() {
+    // A minus, a suspended hyphen, a dash and a nonbreaking hyphen are not the joining hyphen.
+    let text = "dva (-5) -7 auto- i moto-klub a–b a—b a\u{2011}b a/b moto\u{2010}klub";
+    let mut seen = [false; 2];
+    for w in 10..120 {
+        for l in all_lines(&set_in(text, "Serbian: Latin", f64::from(w), ParaAttrs::default())).iter().filter(|l| l.repeated_hyphen) {
+            let before = &text[..l.range.start];
+            assert!(before.ends_with("moto-") || before.ends_with("moto\u{2010}"), "{w}: {before:?}");
+            seen[usize::from(before.ends_with('-'))] = true;
+            assert_eq!(l.glyphs[0].rendered_char, if before.ends_with('-') { '-' } else { '\u{2010}' });
+        }
+    }
+    assert_eq!(seen, [true; 2]);
+}
+
+#[test]
+fn the_language_of_the_hyphen_decides_within_a_paragraph() {
+    let text = "well-known well-known well-known auto-salon auto-salon auto-salon";
+    let serbian = text.find("auto").unwrap()..text.len();
+    let mut repeated = 0;
+    for w in 40..200 {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, f64::from(w), 700.0), ParaAttrs::default());
+        d.story_mut(sid).unwrap().format_chars(serbian.clone(), |f| f.over.language = Some("Serbian: Latin".into()));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for l in all_lines(&cs).iter().filter(|l| l.repeated_hyphen) {
+            assert!(serbian.contains(&l.range.start), "{w}");
+            repeated += 1;
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
+fn a_hyphen_repeated_at_the_top_of_a_column_is_measured() {
+    // The rest of a paragraph is broken again at each new column, from the glyph after the hyphen.
+    for align in [Align::Left, Align::LeftJustified] {
+        let mut repeated = 0;
+        for w in (120..300).step_by(3) {
+            for h in [20.0, 34.0, 48.0] {
+                let para = ParaAttrs { align: Some(align), ..Default::default() };
+                let (mut d, sid, fid) = doc_with(SERBIAN_COMPOUNDS, Rect::new(0.0, 0.0, f64::from(w), h), para);
+                d.story_mut(sid).unwrap().format_chars(0..SERBIAN_COMPOUNDS.len(), |f| f.over.language = Some("Serbian: Latin".into()));
+                d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+                let cs = compose_story(&d, sid, &ComposeOptions::default());
+                let lines = all_lines(&cs);
+                for pair in lines.windows(2).filter(|p| p[0].column != p[1].column) {
+                    assert!(pair[1].end_x <= pair[1].x1 + 0.01, "{align:?} {w}×{h}");
+                    repeated += usize::from(pair[1].repeated_hyphen);
+                }
+            }
+        }
+        assert!(repeated > 0, "{align:?}");
+    }
+}
+
+#[test]
+fn a_repeated_hyphen_hangs_with_optical_margin_alignment() {
+    let para = ParaAttrs { align: Some(Align::Left), optical_margin: Some(true), ..Default::default() };
+    let mut repeated = 0;
+    for w in 60..200 {
+        let cs = set_in(SERBIAN_COMPOUNDS, "Serbian: Latin", f64::from(w), para.clone());
+        for l in all_lines(&cs).iter().filter(|l| l.repeated_hyphen) {
+            let hyphen = &l.glyphs[0];
+            assert!((l.x0 - hyphen.x - hyphen.adv * 0.75).abs() < 0.01, "{w}: {} {}", hyphen.x, l.x0);
+            assert!(l.end_x <= l.x1 + hyphen.adv + 0.01, "{w}");
+            repeated += 1;
+        }
+    }
+    assert!(repeated > 0);
+}
+
 #[test]
 fn serbian_takes_its_cyrillic_letterforms() {
     // Source Serif 4 has the Serbian italic б, г, д, п, т in `locl`, and an upright б.
