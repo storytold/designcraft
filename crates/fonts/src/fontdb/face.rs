@@ -391,7 +391,18 @@ pub(super) fn make_face(
         .or(axis(b"slnt").map(|v| v.abs() > 0.1))
         .unwrap_or(!matches!(a.style, skrifa::attribute::Style::Normal) || style_italic(&style));
     let family_aliases = aliases(&f, &[StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]);
-    let style_aliases = aliases(&f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]);
+    // A legacy subfamily (name ID 2) names the face within its RIBBI family (ID 1). When that
+    // family isn't the typographic one ("Legacy Sans Black" in "Legacy Sans"), its "Regular" is
+    // no style of this family: a document asking for a Regular the family lacks must see it missing.
+    let ribbi_family_differs = name(&f, &[StringId::TYPOGRAPHIC_FAMILY_NAME])
+        .zip(name(&f, &[StringId::FAMILY_NAME]))
+        .is_some_and(|(typographic, legacy)| !typographic.eq_ignore_ascii_case(&legacy));
+    let style_ids: &[StringId] = if ribbi_family_differs {
+        &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME]
+    } else {
+        &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]
+    };
+    let style_aliases = aliases(&f, style_ids);
     Some(FontFace {
         id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         family,
