@@ -8441,6 +8441,70 @@ fn cross_reference_text_breaks_at_its_spaces() {
     }
 }
 
+/// A story numbering list `list` (continuing across stories; Upper Roman, no tab after the
+/// number) in a frame at `r` on `page`.
+fn listed_story(d: &mut Document, page: usize, r: Rect, text: &str, list: &str) -> StoryId {
+    if !d.settings.lists.iter().any(|l| l.name == list) {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: list.into(), continue_across_stories: true });
+    }
+    let lid = d.default_layer();
+    let para = ParaAttrs { list_name: Some(list.into()), ..numbered(designcraft_doc::NumberStyle::UpperRoman, "^#. ") };
+    d.add_text_frame(SpreadRef::Doc(page), r, lid, text, ParaFormat { para, ..Default::default() }).unwrap().1
+}
+
+#[test]
+fn a_list_a_story_does_not_number_leaves_its_composition_cached() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let r = Rect::new(36.0, 36.0, 300.0, 300.0);
+    let other = listed_story(&mut d, 0, r, "a", "Other");
+    let steps = listed_story(&mut d, 0, Rect::new(36.0, 320.0, 300.0, 500.0), "b", "Steps");
+    let later = listed_story(&mut d, 1, r, "x\ny", "Steps");
+    let cache = Cache::new();
+    let before = cache.get(&d, later, None);
+    assert_eq!(list_labels(&before, LABEL_CHARS), ["II. ", "III. "]);
+    // An earlier story numbers more of a list `later` doesn't use: nothing to compose again.
+    let st = d.story_mut(other).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    assert!(Arc::ptr_eq(&before, &cache.get(&d, later, None)), "another list's numbering recomposed the story");
+    // More of its own list: composed again, with the new numbers.
+    let st = d.story_mut(steps).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    let after = cache.get(&d, later, None);
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(list_labels(&after, LABEL_CHARS), ["III. ", "IV. "]);
+}
+
+#[test]
+fn a_neighbours_numbering_moves_the_text_its_objects_wrap() {
+    // Regression: a story wrapped by a neighbour's anchored object kept its cached lines when
+    // only the neighbour's numbering changed (a list continuing from an earlier page), though
+    // the longer number pushed the object's anchor onto the next line.
+    let long = [LOREM; 3].join(" ");
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let first = listed_story(&mut d, 0, Rect::new(36.0, 36.0, 300.0, 300.0), "a", "Steps");
+    // A frame just wide enough for "II. Anchor", not for "XXXVIII. Anchor".
+    let a = listed_story(&mut d, 1, Rect::new(0.0, 0.0, 80.0, 400.0), "Anchor", "Steps");
+    let fa = d.story(a).unwrap().frames[0];
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    let end = d.story(a).unwrap().len();
+    anchor_box(&mut d, a, end, left - area.x0, 20.0, true, WrapMode::BoundingBox);
+    let cache = Cache::new();
+    let before = line_layout(&cache.get(&d, b, None));
+    assert_eq!(before, line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    // 36 more numbers on the first page: the neighbour's paragraph becomes XXXVIII.
+    let st = d.story_mut(first).unwrap();
+    let end = st.len();
+    st.insert(end, &"\nmore".repeat(36));
+    let fresh = line_layout(&compose_story(&d, b, &ComposeOptions::default()));
+    assert_ne!(fresh, before, "the longer number moves the object");
+    assert_eq!(line_layout(&cache.get(&d, b, None)), fresh);
+}
+
 #[test]
 fn many_stories_in_continuing_lists_compose_quickly() {
     // Regression: each story's cache lookup searched the whole item tree per story and per list

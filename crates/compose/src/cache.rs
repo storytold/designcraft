@@ -86,6 +86,30 @@ struct StartsEntry {
     starts: Arc<NumberStarts>,
 }
 
+/// Where each list that continues across stories and that `sid` numbers starts in it, hashed.
+fn list_signature(starts: &NumberStarts, sid: StoryId) -> impl Iterator<Item = usize> + '_ {
+    starts.lists_in(sid).map(|l| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        l.hash(&mut h);
+        h.finish() as usize
+    })
+}
+
+/// A neighbour's document-wide numbering (its lists, footnotes and endnotes), which sets how
+/// long its text is and so where its wrapping objects sit.
+fn numbering_signature(starts: &NumberStarts, story: &Story) -> Vec<usize> {
+    let mut sig = vec![usize::MAX - 2];
+    if !story.notes.is_empty() {
+        sig.push(starts.footnote(story.id) as usize);
+    }
+    if !story.endnotes.is_empty() {
+        sig.push(starts.endnote(story.id) as usize);
+    }
+    sig.extend(list_signature(starts, story.id));
+    sig
+}
+
 /// Everything page names and section markers are made from.
 fn sections_hash(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -121,12 +145,22 @@ impl Cache {
         let Some(story) = doc.stories.get(&sid) else { return Arc::new(ComposedStory { story: sid, ..Default::default() }) };
         let (mut sig, mut keep_items) = signature(doc, story);
         let neighbours = if cross { crate::wrap::neighbours(doc, sid) } else { Vec::new() };
+        // Numbering that continues from stories on earlier pages: this story's, and its
+        // neighbours' (their numbers move their text, and with it the objects that wrap this one).
+        let has_notes = |st: &Story| !st.notes.is_empty() || !st.endnotes.is_empty();
+        let starts = (doc.settings.lists.iter().any(|l| l.continue_across_stories)
+            || has_notes(story)
+            || neighbours.iter().any(|n| doc.stories.get(n).is_some_and(|st| has_notes(st))))
+        .then(|| self.number_starts(doc));
         let mut keep_stories = Vec::new();
         for n in &neighbours {
             if let Some(ns) = doc.stories.get(n) {
                 let (s, k) = signature(doc, ns);
                 sig.push(usize::MAX - 1);
                 sig.extend(s);
+                if let Some(starts) = &starts {
+                    sig.extend(numbering_signature(starts, ns));
+                }
                 keep_items.extend(k);
                 keep_stories.push(ns.clone());
             }
@@ -184,9 +218,6 @@ impl Cache {
                 sig.push(doc_signature(doc) as usize);
             }
         }
-        // Numbering that continues from stories on earlier pages.
-        let starts = (!story.notes.is_empty() || !story.endnotes.is_empty() || doc.settings.lists.iter().any(|l| l.continue_across_stories))
-            .then(|| self.number_starts(doc));
         let with_xrefs = crate::xref::has_xrefs(story);
         if with_xrefs {
             // Cross-references show other stories' text and pages.
@@ -225,11 +256,9 @@ impl Cache {
         sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].into_iter().flat_map(bits));
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
-        // Named lists continue from earlier stories.
-        for l in &doc.settings.lists {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&starts.as_ref().map(|s| s.list(sid, &l.name)).unwrap_or_default(), &mut h);
-            sig.push(std::hash::Hasher::finish(&h) as usize);
+        // Named lists continue from earlier stories: only the ones this story numbers.
+        if let Some(starts) = &starts {
+            sig.extend(list_signature(starts, sid));
         }
         {
             let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);

@@ -5,7 +5,7 @@
 //! every story's numbering starts, built in one pass over the items and stories, so composing a
 //! long document doesn't search the item tree once per story and per list.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::attrs::ListCounter;
@@ -21,8 +21,9 @@ pub struct NumberStarts {
     order: HashMap<StoryId, usize>,
     /// Per list that continues across stories: its numbering after each story that numbers a
     /// paragraph of it, by position. Stories that don't use a list add nothing, so the index
-    /// grows with the numbered paragraphs, not with lists times stories.
-    lists: HashMap<String, Vec<(usize, ListCounter)>>,
+    /// grows with the numbered paragraphs, not with lists times stories. Sorted by name, so
+    /// [`NumberStarts::lists_in`] lists them in the same order every time it is built.
+    lists: BTreeMap<String, Vec<(usize, ListCounter)>>,
     /// First footnote number per story (only when footnote numbering never restarts).
     footnotes: HashMap<StoryId, u32>,
     footnote_default: u32,
@@ -40,6 +41,19 @@ impl NumberStarts {
         // The last story before `sid` that numbered a paragraph of the list.
         let i = marks.partition_point(|(p, _)| p < pos);
         i.checked_sub(1).and_then(|i| marks.get(i)).map(|(_, n)| n.clone()).unwrap_or_default()
+    }
+
+    /// The lists that continue across stories and that story `sid` numbers a paragraph of, by
+    /// name, with where each starts in `sid`. Lists `sid` doesn't number can't change its layout.
+    pub fn lists_in(&self, sid: StoryId) -> impl Iterator<Item = (&str, ListCounter)> + '_ {
+        let pos = self.order.get(&sid).copied();
+        self.lists.iter().filter_map(move |(name, marks)| {
+            let pos = pos?;
+            let i = marks.binary_search_by_key(&pos, |(p, _)| *p).ok()?;
+            // The numbering after the story before it that numbered the list.
+            let start = i.checked_sub(1).and_then(|i| marks.get(i)).map(|(_, n)| n.clone()).unwrap_or_default();
+            Some((name.as_str(), start))
+        })
     }
 
     /// Number of the first footnote of story `sid`.
@@ -232,5 +246,10 @@ mod tests {
         };
         assert_eq!([a, b, c, e].map(next), [1, 3, 3, 3]);
         assert_eq!(n.list(e, "Unused7"), ListCounter::default());
+        // The lists each story numbers, with where they start in it.
+        assert_eq!(n.lists_in(b).count(), 0, "a list that doesn't continue isn't indexed");
+        assert_eq!(n.lists_in(a).collect::<Vec<_>>(), [("Steps", ListCounter::default())]);
+        assert_eq!(n.lists_in(e).collect::<Vec<_>>(), [("Steps", n.list(e, "Steps"))]);
+        assert_ne!(n.list(e, "Steps"), ListCounter::default());
     }
 }
