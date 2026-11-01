@@ -226,8 +226,28 @@ impl<'r> Importer<'r> {
                 *base = base_name;
             }
         }
+        // A gradient stop's `color` was computed while its swatch (directly, or as a tint's base)
+        // could still share its pre-disambiguation name with another one — the same ambiguity
+        // `color_for_ref`'s `pending` lookup has, just reached through a swatch already pushed to
+        // `self.swatches` instead. Every name is unique now, so recompute each stop's colour
+        // against the final swatches before resolving `swatch` from an id to that final name (the
+        // id is still in `stop.swatch` at this point, exactly so this lookup can use it).
+        let final_swatches = self.swatches.clone();
+        let resolved_color = |raw_ref: &str, swatch_names: &HashMap<String, String>| {
+            let name = swatch_names.get(raw_ref)?;
+            match &final_swatches.iter().find(|s| &s.name == name)?.value {
+                SwatchValue::Color { color, .. } => Some(*color),
+                SwatchValue::Tint { base, tint } => designcraft_color::swatch::resolve(&final_swatches, base, *tint),
+                _ => None,
+            }
+        };
         let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
             for stop in stops {
+                if let Some(raw_ref) = &stop.swatch
+                    && let Some(c) = resolved_color(raw_ref, ids)
+                {
+                    stop.color = c;
+                }
                 stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
             }
         };

@@ -1295,6 +1295,30 @@ fn a_gradient_stop_on_a_duplicate_resolves_to_the_kept_colour_even_when_its_name
     );
 }
 
+/// A gradient stop naming a *tint* directly, whose base colour's cleaned name is shared with an
+/// unrelated, literally-named colour (still undisambiguated when the stop's colour is first
+/// computed): the stop must end up with the tint's real colour, matching an independent
+/// `swatch::resolve` against the tint's own (now-final) base, not whichever of the two same-named
+/// colours `color_for_ref`'s lookup happened to find first.
+#[test]
+fn a_gradient_stop_on_a_tint_of_a_duplicate_named_colour_keeps_its_colour() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="1 1 1" Name="R=100 G=110 B=120"/>
+  <Color Self="Color/base" Model="Process" Space="RGB" ColorValue="100 110 120" Name="r100g110b120"/>
+  <Tint Self="Tint/OnBase" BaseColor="Color/base" TintValue="50" Name="OnBase 50%"/>
+  <Gradient Self="Gradient/OnTint" Type="Linear" Name="OnTint">
+    <GradientStop Self="gs0" StopColor="Tint/OnBase" Location="0"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Tint { base, tint } = &d.swatch("OnBase 50%").unwrap().value else { panic!("tint") };
+    let expected = designcraft_color::swatch::resolve(&d.swatches, base, *tint).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnTint").unwrap().value else { panic!("gradient") };
+    assert_eq!(gradient.stops[0].color, expected, "must match the tint's own (final) base, not the unrelated colour sharing its old name");
+}
+
 #[test]
 fn round_trips_overridden_parent_items() {
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
