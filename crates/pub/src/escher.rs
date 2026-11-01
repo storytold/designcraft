@@ -40,7 +40,8 @@ fn records(b: &[u8], start: usize, end: usize) -> Result<Vec<Rec>> {
     let end = end.min(b.len());
     let mut out = Vec::new();
     let mut at = start;
-    while at + 8 <= end {
+    slice(b, start, end.checked_sub(start).ok_or(PubError::Truncated)?)?;
+    while end.saturating_sub(at) >= 8 {
         let vi = u16_at(b, at)?;
         let ty = u16_at(b, at + 2)?;
         let len = u32_at(b, at + 4)? as usize;
@@ -51,7 +52,7 @@ fn records(b: &[u8], start: usize, end: usize) -> Result<Vec<Rec>> {
         }
         out.push(Rec { inst: vi >> 4, ty, data, len });
         at = stop;
-        if matches!(ty, DGG | DG) && at + 4 <= end {
+        if matches!(ty, DGG | DG) && end.saturating_sub(at) >= 4 {
             at += 4; // Publisher's trailing u32
         }
         if out.len() > 1_000_000 {
@@ -106,19 +107,16 @@ pub(crate) struct Picture {
 }
 
 fn props(b: &[u8], r: Rec, sh: &mut EShape) -> Result<()> {
+    let body = slice(b, r.data, r.len)?;
     let n = r.inst as usize;
+    let fixed = slice(body, 0, 6 * n)?;
     let mut complex_ids = Vec::new();
-    for i in 0..n {
-        let at = r.data + 6 * i;
-        if at + 6 > r.data + r.len {
-            break;
-        }
-        let id = u16_at(b, at)?;
-        let v = u32_at(b, at + 2)?;
+    for entry in fixed.chunks_exact(6) {
+        let id = u16_at(entry, 0)?;
+        let v = u32_at(entry, 2)?;
         let pid = id & 0x3fff;
         if pid & 0x3f == 0x3f {
-            // Boolean sets (…BF, …FF) appear in both the primary and tertiary tables, each
-            // setting only the flags whose "use" bit (value bit + 16) it carries: merge them.
+            // Boolean use bits merge independently across primary and tertiary tables.
             let old = sh.props.get(&pid).copied().unwrap_or(0);
             let used = v >> 16;
             sh.props.insert(pid, (old & !(used | used << 16)) | (v & (used | used << 16)));
@@ -129,23 +127,20 @@ fn props(b: &[u8], r: Rec, sh: &mut EShape) -> Result<()> {
             complex_ids.push((pid, v as usize));
         }
     }
-    let mut at = r.data + 6 * n;
+    let mut at = fixed.len();
     for (pid, len) in complex_ids {
-        let end = (r.data + r.len).min(at.saturating_add(len));
-        if let Ok(s) = slice(b, at, end.saturating_sub(at)) {
-            sh.complex.insert(pid, s.to_vec());
-        }
-        at = end;
+        let data = slice(body, at, len)?;
+        sh.complex.insert(pid, data.to_vec());
+        at = at.checked_add(len).ok_or(PubError::Truncated)?;
     }
     Ok(())
 }
 
 fn pairs(b: &[u8], r: Rec) -> Result<HashMap<u16, u32>> {
+    let body = slice(b, r.data, r.len)?;
     let mut m = HashMap::new();
-    let mut at = r.data + 4;
-    while at + 6 <= r.data + r.len {
-        m.insert(u16_at(b, at)?, u32_at(b, at + 2)?);
-        at += 6;
+    for entry in body.get(4..).ok_or(PubError::Truncated)?.chunks_exact(6) {
+        m.insert(u16_at(entry, 0)?, u32_at(entry, 2)?);
     }
     Ok(m)
 }
@@ -161,18 +156,19 @@ fn shape(b: &[u8], sp: Rec) -> Result<(EShape, Option<Emu>)> {
     let mut sh = EShape::default();
     let mut coord_system = None;
     for r in records(b, sp.data, sp.data + sp.len)? {
+        let body = slice(b, r.data, r.len)?;
         match r.ty {
             FSPGR => {
                 coord_system = Some(Emu {
-                    l: f64::from(i32_at(b, r.data)?),
-                    t: f64::from(i32_at(b, r.data + 4)?),
-                    r: f64::from(i32_at(b, r.data + 8)?),
-                    b: f64::from(i32_at(b, r.data + 12)?),
+                    l: f64::from(i32_at(body, 0)?),
+                    t: f64::from(i32_at(body, 4)?),
+                    r: f64::from(i32_at(body, 8)?),
+                    b: f64::from(i32_at(body, 12)?),
                 });
             }
             FSP => {
                 sh.kind = r.inst;
-                let flags = u32_at(b, r.data + 4)?;
+                let flags = u32_at(body, 4)?;
                 sh.is_group = flags & 0x1 != 0;
                 sh.flip_h = flags & 0x40 != 0;
                 sh.flip_v = flags & 0x80 != 0;
@@ -185,10 +181,10 @@ fn shape(b: &[u8], sp: Rec) -> Result<(EShape, Option<Emu>)> {
             }
             CHILD_ANCHOR => {
                 sh.anchor = Emu {
-                    l: f64::from(i32_at(b, r.data)?),
-                    t: f64::from(i32_at(b, r.data + 4)?),
-                    r: f64::from(i32_at(b, r.data + 8)?),
-                    b: f64::from(i32_at(b, r.data + 12)?),
+                    l: f64::from(i32_at(body, 0)?),
+                    t: f64::from(i32_at(body, 4)?),
+                    r: f64::from(i32_at(body, 8)?),
+                    b: f64::from(i32_at(body, 12)?),
                 };
             }
             CLIENT_DATA => sh.seq = pairs(b, r)?.get(&0x6801).copied(),
@@ -250,6 +246,10 @@ fn remap(sh: &mut EShape, from: Emu, to: Emu, apply: bool) {
 }
 
 pub(crate) fn parse(stm: &[u8], delay: &[u8]) -> Result<Drawing> {
+    parse_with_picture_budget(stm, delay, 256 * 1024 * 1024)
+}
+
+fn parse_with_picture_budget(stm: &[u8], delay: &[u8], mut picture_bytes: usize) -> Result<Drawing> {
     let mut d = Drawing::default();
     for top in records(stm, 0, stm.len())? {
         match top.ty {
@@ -261,12 +261,14 @@ pub(crate) fn parse(stm: &[u8], delay: &[u8]) -> Result<Drawing> {
                                 continue;
                             }
                             let id = u32::try_from(i + 1).unwrap_or(u32::MAX);
-                            match picture(stm, *bse, delay) {
+                            match picture(stm, *bse, delay, &mut picture_bytes) {
                                 Ok(Some(p)) => {
                                     d.pictures.insert(id, p);
                                 }
                                 Ok(None) => {}
-                                Err(e) => d.warnings.push(format!("A picture could not be read ({e}).")),
+                                Err(e @ PubError::Unsupported(_)) => return Err(e),
+                                Err(e) if d.warnings.len() < 128 => d.warnings.push(format!("A picture could not be read ({e}).")),
+                                Err(_) => {}
                             }
                         }
                     }
@@ -300,22 +302,25 @@ pub(crate) fn parse(stm: &[u8], delay: &[u8]) -> Result<Drawing> {
 }
 
 /// A BSE's picture: inline after the BSE header, or at `foDelay` in the delay stream.
-fn picture(stm: &[u8], bse: Rec, delay: &[u8]) -> Result<Option<Picture>> {
+fn picture(stm: &[u8], bse: Rec, delay: &[u8], budget: &mut usize) -> Result<Option<Picture>> {
     if bse.len < 36 {
         return Ok(None);
     }
-    let size = u32_at(stm, bse.data + 20)? as usize;
-    let fo_delay = u32_at(stm, bse.data + 28)? as usize;
-    let cb_name = stm.get(bse.data + 33).copied().unwrap_or(0) as usize;
+    let bse_body = slice(stm, bse.data, bse.len)?;
+    let size = u32_at(bse_body, 20)? as usize;
+    let fo_delay = u32_at(bse_body, 28)? as usize;
+    let cb_name = usize::from(*bse_body.get(33).ok_or(PubError::Truncated)?);
     if size == 0 {
         return Ok(None);
     }
-    let inline = bse.data + 36 + cb_name;
-    let (src, at) = if bse.len > 36 + cb_name + 8 { (stm, inline) } else { (delay, fo_delay) };
-    let kind = u16_at(src, at + 2)?;
-    let inst = u16_at(src, at)? >> 4;
-    let len = u32_at(src, at + 4)? as usize;
-    let body = slice(src, at + 8, len)?;
+    let inline = 36 + cb_name;
+    let (src, at) = if bse_body.len() > inline + 8 { (bse_body, inline) } else { (delay, fo_delay) };
+    // Bound the header before doing field-relative reads, including on 32-bit targets.
+    let header = slice(src, at, 8)?;
+    let kind = u16_at(header, 2)?;
+    let inst = u16_at(header, 0)? >> 4;
+    let len = u32_at(header, 4)? as usize;
+    let body = slice(src, at.checked_add(8).ok_or(PubError::Truncated)?, len)?;
     // Header after the record header: one or two 16-byte UIDs, then (bitmaps) a tag byte or
     // (metafiles) a 34-byte metafile header, which is kept for the metafile reader.
     let two_uids = match kind {
@@ -334,7 +339,9 @@ fn picture(stm: &[u8], bse: Rec, delay: &[u8]) -> Result<Option<Picture>> {
         0xF01A..=0xF01C => uids,
         _ => uids + 1,
     };
-    let data = body.get(skip..).unwrap_or_default().to_vec();
+    let payload = body.get(skip..).ok_or(PubError::Truncated)?;
+    *budget = budget.checked_sub(payload.len()).ok_or_else(|| PubError::Unsupported("aggregate picture byte limit exceeded".into()))?;
+    let data = payload.to_vec();
     Ok(Some(Picture { kind, data }))
 }
 
@@ -354,6 +361,29 @@ mod tests {
         let mut v = id.to_le_bytes().to_vec();
         v.extend(value.to_le_bytes());
         v
+    }
+
+    #[test]
+    fn delayed_picture_offsets_are_bounded_before_relative_reads() {
+        for offset in [u32::MAX, u32::MAX - 1, 0, 1, 7, 8] {
+            let mut bse = vec![0; 36];
+            bse[20..24].copy_from_slice(&1u32.to_le_bytes());
+            bse[28..32].copy_from_slice(&offset.to_le_bytes());
+            let r = Rec { inst: 0, ty: BSE, data: 0, len: bse.len() };
+            assert!(picture(&bse, r, &[0; 8], &mut 16).is_err());
+        }
+        assert!(records(&[], usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn repeated_delayed_pictures_exhaust_retained_bytes_and_abort() {
+        let blip = rec(0, 0, 0xF01E, &[vec![0; 17], vec![1; 8]].concat());
+        let mut bse = vec![0; 36];
+        bse[20..24].copy_from_slice(&(blip.len() as u32).to_le_bytes());
+        let store = rec(0, 0xf, BSTORE, &rec(0, 2, BSE, &bse).repeat(3));
+        let drawing = rec(0, 0xf, DGG, &store);
+        let error = parse_with_picture_budget(&drawing, &blip, 16).unwrap_err();
+        assert!(error.to_string().contains("aggregate picture byte limit"), "{error}");
     }
 
     #[test]

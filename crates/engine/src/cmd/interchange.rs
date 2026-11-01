@@ -466,7 +466,14 @@ pub(crate) fn open_pub(s: &mut Session, p: &Value) -> Result<Value> {
     state.import_notes = imp.notes.clone();
     state.import_notice = Some(designcraft_pub::CONVERSION_NOTICE);
     state.import_save_path = str_param(p, "path").filter(|_| str_param(p, "base64").is_none()).map(|path| {
-        std::path::absolute(path).unwrap_or_else(|_| std::path::PathBuf::from(path)).with_extension("designcraft").to_string_lossy().into_owned()
+        let source = std::path::absolute(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let converted = source.with_extension("designcraft");
+        if source.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("designcraft")) {
+            let name = format!("{}.converted.designcraft", source.file_stem().unwrap_or_default().to_string_lossy());
+            source.with_file_name(name).to_string_lossy().into_owned()
+        } else {
+            converted.to_string_lossy().into_owned()
+        }
     });
     let i = s.add_document(state);
     Ok(json!({"index": i, "warnings": imp.warnings, "notes": imp.notes, "notice": designcraft_pub::CONVERSION_NOTICE}))

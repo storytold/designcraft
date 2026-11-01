@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 /// Uncompressed metafiles larger than this are refused.
 const MAX_METAFILE: usize = 64 * 1024 * 1024;
-/// Output larger than this stops drawing (the picture keeps what was drawn).
+/// Aggregate retained SVG/path bytes are bounded; reaching the limit is reported.
 const MAX_SVG: usize = 32 * 1024 * 1024;
 const MAX_RECORDS: usize = 2_000_000;
 const MAX_SAVED: usize = 1024;
@@ -20,6 +20,8 @@ pub(crate) const BLIP_WMF: u16 = 0xF01B;
 
 pub(crate) const TEXT_LEFT_OUT: &str = "Text inside WMF/EMF pictures was left out.";
 pub(crate) const BITMAP_LEFT_OUT: &str = "Bitmaps inside WMF/EMF pictures were left out.";
+pub(crate) const LIMIT_LEFT_OUT: &str = "WMF/EMF conversion reached its size or work limit; remaining drawing was omitted.";
+
 pub(crate) const OTHER_LEFT_OUT: &str = "Arcs and pattern fills inside WMF/EMF pictures were left out.";
 
 /// A metafile converted to SVG: the document, its integer width and height, and what was
@@ -45,14 +47,29 @@ pub(crate) fn to_svg(kind: u16, blip: &[u8]) -> Option<Svg> {
     }
 }
 
+pub(crate) fn to_svg_report(kind: u16, blip: &[u8]) -> std::result::Result<Option<Svg>, &'static str> {
+    if blip.get(32) == Some(&0xFE)
+        && let Some(body) = blip.get(34..)
+        && let Some(save) = u32_at(blip, 28)
+        && body.len().min(save as usize) > MAX_METAFILE
+    {
+        return Err("WMF/EMF uncompressed picture exceeds the byte limit; its frame was kept empty.");
+    }
+    Ok(to_svg(kind, blip))
+}
+
 fn metafile_bytes(blip: &[u8]) -> Option<Vec<u8>> {
+    metafile_bytes_with_limit(blip, MAX_METAFILE)
+}
+
+fn metafile_bytes_with_limit(blip: &[u8], limit: usize) -> Option<Vec<u8>> {
     let save = usize::try_from(u32_at(blip, 28)?).ok()?;
     let compression = *blip.get(32)?;
     let body = blip.get(34..)?;
     let body = body.get(..save.min(body.len()))?;
     match compression {
-        0x00 => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(body, MAX_METAFILE).ok(),
-        0xFE => Some(body.to_vec()),
+        0x00 => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(body, limit).ok(),
+        0xFE if body.len() <= limit => Some(body.to_vec()),
         _ => None,
     }
 }
@@ -160,6 +177,7 @@ struct Canvas {
     hair: f64,
     warnings: Vec<&'static str>,
     full: bool,
+    limit: usize,
 }
 
 impl Canvas {
@@ -177,6 +195,7 @@ impl Canvas {
             hair: 1.0,
             warnings: Vec::new(),
             full: false,
+            limit: MAX_SVG,
         }
     }
 
@@ -213,6 +232,9 @@ impl Canvas {
 
     /// Path data for a polyline/polygon through logical points.
     fn poly_d(&mut self, pts: &[(f64, f64)], close: bool) -> String {
+        if !self.room(pts.len().saturating_mul(768)) {
+            return String::new();
+        }
         let xf = self.xf();
         let mut d = String::new();
         for (i, p) in pts.iter().enumerate() {
@@ -228,6 +250,9 @@ impl Canvas {
 
     /// Bézier segments through logical control points (groups of three after the start).
     fn bezier_d(&mut self, start: Option<(f64, f64)>, pts: &[(f64, f64)]) -> String {
+        if !self.room(pts.len().saturating_add(1).saturating_mul(768)) {
+            return String::new();
+        }
         let xf = self.xf();
         let mut d = String::new();
         let rest = match start {
@@ -307,10 +332,30 @@ impl Canvas {
         d
     }
 
+    fn room(&mut self, extra: usize) -> bool {
+        let retained = self
+            .body
+            .len()
+            .saturating_add(self.recording.as_ref().map_or(0, String::len))
+            .saturating_add(self.path.as_ref().map_or(0, String::len));
+        if self.full || retained.saturating_add(extra).saturating_add(512) > self.limit {
+            self.full = true;
+            self.warn(LIMIT_LEFT_OUT);
+            return false;
+        }
+        true
+    }
+
+    fn record_path(&mut self, data: &str) {
+        if self.room(data.len()) && let Some(recording) = &mut self.recording {
+            recording.push_str(data);
+        }
+    }
+
     /// Draw (or, inside an EMF path bracket, record) path data.
     fn draw(&mut self, d: &str, fill: bool, stroke: bool) {
-        if let Some(rec) = &mut self.recording {
-            rec.push_str(d);
+        if self.recording.is_some() {
+            self.record_path(d);
             return;
         }
         self.paint(d, fill, stroke);
@@ -324,6 +369,10 @@ impl Canvas {
         let pen = self.dc.pen;
         let stroke = pen.color.filter(|_| stroke);
         if fill.is_none() && stroke.is_none() {
+            return;
+        }
+        // Reserve an upper bound for attributes before appending any path bytes.
+        if !self.room(d.len().saturating_add(512)) {
             return;
         }
         let _ = write!(self.body, "<path d=\"{d}\"");
@@ -343,9 +392,6 @@ impl Canvas {
             let _ = write!(self.body, " stroke=\"{}\" stroke-width=\"{}\" stroke-linejoin=\"round\" stroke-linecap=\"round\"", hex(c), num(w));
         }
         self.body.push_str("/>\n");
-        if self.body.len() > MAX_SVG {
-            self.full = true;
-        }
     }
 
     fn save(&mut self) {
@@ -378,7 +424,7 @@ impl Canvas {
     }
 
     fn finish(self, vw: f64, vh: f64) -> Option<Svg> {
-        if self.body.is_empty() || !(vw.is_finite() && vh.is_finite()) || vw <= 0.0 || vh <= 0.0 {
+        if (self.body.is_empty() && !self.full) || !(vw.is_finite() && vh.is_finite()) || vw <= 0.0 || vh <= 0.0 {
             return None;
         }
         // Integer size with enough resolution for the aspect ratio.
@@ -456,11 +502,15 @@ fn wmf(raw: &[u8], bounds: [i32; 4], size_emu: (i32, i32)) -> Option<Svg> {
         wmf_record(&mut c, &mut table, func, rec);
         at = at.checked_add(len)?;
         n += 1;
-        if n > MAX_RECORDS || c.full {
+        if n > MAX_RECORDS {
+            c.full = true;
+            c.warn(LIMIT_LEFT_OUT);
+        }
+        if c.full {
             break;
         }
     }
-    let (_, ext) = c.frame?;
+    let ext = c.frame.map(|(_, ext)| ext).or_else(|| c.full.then_some(c.dc.win_ext.unwrap_or((1.0, 1.0))))?;
     c.finish(ext.0.abs(), ext.1.abs())
 }
 
@@ -568,7 +618,11 @@ fn wmf_draw(c: &mut Canvas, func: u16, rec: &[u8]) {
             for i in 0..polys {
                 let count = p(1 + i).map_or(0, |v| v as u16 as usize);
                 let pts = wmf_points(rec, at_pt, count);
-                d.push_str(&c.poly_d(&pts, true));
+                let part = c.poly_d(&pts, true);
+                if !c.room(d.len().saturating_add(part.len())) {
+                    return;
+                }
+                d.push_str(&part);
                 at_pt = at_pt.saturating_add(4 * count);
             }
             c.draw(&d, true, true);
@@ -640,14 +694,19 @@ fn emf(raw: &[u8], size_emu: (i32, i32)) -> Option<Svg> {
         if ty == 27 {
             let xf = c.xf();
             let (x, y) = Canvas::pt(&xf, c.cur);
-            if let Some(rec) = &mut c.recording {
-                rec.push('M');
-                push_xy(rec, x, y);
+            if c.recording.is_some() {
+                let mut part = String::from("M");
+                push_xy(&mut part, x, y);
+                c.record_path(&part);
             }
         }
         at = at.checked_add(len)?;
         n += 1;
-        if n > MAX_RECORDS || c.full {
+        if n > MAX_RECORDS {
+            c.full = true;
+            c.warn(LIMIT_LEFT_OUT);
+        }
+        if c.full {
             break;
         }
     }
@@ -676,6 +735,9 @@ fn emf_draw(c: &mut Canvas, ty: u32, rec: &[u8], len: usize) {
         2..=6 | 85..=89 => {
             let small = ty >= 85;
             let count = u(24).map_or(0, |v| v as usize);
+            if !c.room(count.saturating_mul(768)) {
+                return;
+            }
             let pts = emf_points(rec, 28, count, small);
             let kind = if small { ty - 83 } else { ty };
             let d = match kind {
@@ -683,6 +745,9 @@ fn emf_draw(c: &mut Canvas, ty: u32, rec: &[u8], len: usize) {
                 3 | 4 => c.poly_d(&pts, kind == 3),
                 5 => c.bezier_d(None, &pts),
                 _ => {
+                    if !c.room(pts.len().saturating_mul(768)) {
+                        return;
+                    }
                     let mut d = String::new();
                     let xf = c.xf();
                     for p in &pts {
@@ -715,8 +780,15 @@ fn emf_draw(c: &mut Canvas, ty: u32, rec: &[u8], len: usize) {
             let mut d = String::new();
             for k in 0..polys {
                 let count = u(32 + 4 * k).map_or(0, |v| v as usize);
+                if !c.room(count.saturating_mul(768)) {
+                    return;
+                }
                 let pts = emf_points(rec, at_pt, count, small);
-                d.push_str(&c.poly_d(&pts, matches!(ty, 8 | 91)));
+                let part = c.poly_d(&pts, matches!(ty, 8 | 91));
+                if !c.room(d.len().saturating_add(part.len())) {
+                    return;
+                }
+                d.push_str(&part);
                 at_pt = at_pt.saturating_add(count.saturating_mul(if small { 4 } else { 8 }));
             }
             c.draw(&d, matches!(ty, 8 | 91), true);
@@ -737,14 +809,14 @@ fn emf_draw(c: &mut Canvas, ty: u32, rec: &[u8], len: usize) {
                     let xf = c.xf();
                     let (x0, y0) = Canvas::pt(&xf, c.cur);
                     let (x, y) = Canvas::pt(&xf, p);
-                    if let Some(rec) = &mut c.recording {
-                        if rec.is_empty() {
-                            rec.push('M');
-                            push_xy(rec, x0, y0);
-                        }
-                        rec.push('L');
-                        push_xy(rec, x, y);
+                    let mut part = String::new();
+                    if c.recording.as_ref().is_some_and(String::is_empty) {
+                        part.push('M');
+                        push_xy(&mut part, x0, y0);
                     }
+                    part.push('L');
+                    push_xy(&mut part, x, y);
+                    c.record_path(&part);
                 } else {
                     let d = c.poly_d(&[c.cur, p], false);
                     c.draw(&d, false, true);
@@ -764,9 +836,7 @@ fn emf_path(c: &mut Canvas, ty: u32) {
         }
         60 => c.path = c.recording.take(),
         61 => {
-            if let Some(rec) = &mut c.recording {
-                rec.push('Z');
-            }
+            c.record_path("Z");
         }
         62..=64 => {
             if let Some(d) = c.path.take() {
@@ -862,10 +932,10 @@ fn emf_object(c: &mut Canvas, table: &mut HashMap<u32, Obj>, ty: u32, rec: &[u8]
 }
 
 fn emf_points(rec: &[u8], at: usize, count: usize, small: bool) -> Vec<(f64, f64)> {
-    let step = if small { 4 } else { 8 };
+    let step: usize = if small { 4 } else { 8 };
     let mut out = Vec::with_capacity(count.min(rec.len() / step));
     for k in 0..count {
-        let o = at.saturating_add(step * k);
+        let o = at.saturating_add(step.saturating_mul(k));
         let p = if small {
             i16_at(rec, o).zip(i16_at(rec, o.saturating_add(2)))
         } else {
@@ -880,6 +950,44 @@ fn emf_points(rec: &[u8], at: usize, count: usize, small: bool) -> Vec<(f64, f64
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_and_uncompressed_payloads_obey_the_same_limit() {
+        let raw = vec![1; 9];
+        let compressed = blip(&raw, [0; 4], (1, 1));
+        assert!(metafile_bytes_with_limit(&compressed, 8).is_none());
+        let mut plain = vec![0; 34];
+        plain[28..32].copy_from_slice(&9u32.to_le_bytes());
+        plain[32] = 0xfe;
+        plain.extend(&raw);
+        assert!(metafile_bytes_with_limit(&plain, 8).is_none());
+        assert_eq!(metafile_bytes_with_limit(&plain, 9).unwrap(), raw);
+    }
+
+    #[test]
+    fn path_and_output_limits_are_checked_before_append_and_reported() {
+        let mut c = Canvas::new(false);
+        c.limit = 1100;
+        c.recording = Some(String::new());
+        c.record_path(&"M".repeat(580));
+        assert!(!c.full);
+        c.record_path(&"L".repeat(9));
+        assert!(c.full);
+        assert_eq!(c.recording.as_ref().unwrap().len(), 580);
+        let svg = c.finish(10.0, 10.0).unwrap();
+        assert!(svg.warnings.contains(&LIMIT_LEFT_OUT));
+        assert!(svg.data.len() <= 1100);
+
+        let mut c = Canvas::new(false);
+        c.limit = 1100;
+        c.paint(&"M".repeat(100), true, true);
+        assert!(c.full && c.body.is_empty(), "reject before appending an oversized path");
+        assert!(c.finish(10.0, 10.0).unwrap().warnings.contains(&LIMIT_LEFT_OUT));
+        let mut c = Canvas::new(false);
+        c.limit = 1100;
+        assert!(c.poly_d(&[(0.0, 0.0); 2], false).is_empty());
+        assert!(c.full, "bound path construction before allocating its formatted points");
+    }
 
     /// A metafile blip body (after the UIDs): header plus zlib-compressed metafile.
     pub(crate) fn blip(raw: &[u8], bounds: [i32; 4], size_emu: (i32, i32)) -> Vec<u8> {

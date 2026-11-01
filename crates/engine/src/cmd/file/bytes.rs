@@ -174,6 +174,39 @@ mod extension_tests {
     }
 
     #[test]
+    fn native_bytes_named_pub_keep_native_content_and_pub_bytes_still_import() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [1, 2, 30, 40], "content": "text"})).unwrap();
+        let native = super::to_bytes(&s.doc().unwrap().doc).unwrap();
+        let mut opened = Session::new();
+        opened.execute("file.openBytes", &json!({"name": "Native.pub", "base64": super::base64_encode(&native)})).unwrap();
+        assert_eq!(item_count(&opened), 1);
+        assert!(opened.doc().unwrap().import_notice.is_none());
+        opened.execute("file.openBytes", &json!({"name": "Publisher.pub", "base64": super::base64_encode(PUB)})).unwrap();
+        assert_eq!(item_count(&opened), 2);
+        assert!(opened.doc().unwrap().import_notice.is_some());
+    }
+
+    #[test]
+    fn content_detected_publisher_with_native_extension_suggests_a_distinct_copy() {
+        let dir = std::env::temp_dir().join(format!("dc-pub-native-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["Source.designcraft", "Source.DesignCraft"] {
+            let source = dir.join(name);
+            std::fs::write(&source, PUB).unwrap();
+            let mut s = Session::new();
+            s.execute("file.open", &json!({"path": source.to_string_lossy()})).unwrap();
+            let state = s.doc().unwrap();
+            assert!(state.path.is_none());
+            assert_eq!(std::path::Path::new(state.import_save_path.as_deref().unwrap()).file_name().unwrap(), "Source.converted.designcraft");
+            assert_ne!(state.import_save_path.as_deref(), source.to_str());
+            assert_eq!(std::fs::read(&source).unwrap(), PUB, "opening must leave source bytes untouched");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn the_document_extension_is_added_when_missing_or_different() {
         assert_eq!(with_document_extension("/a/Brochure"), "/a/Brochure.designcraft");
         assert_eq!(with_document_extension("/a/Brochure.idml"), "/a/Brochure.idml.designcraft");

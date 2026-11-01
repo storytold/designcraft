@@ -56,6 +56,14 @@ properties, table cells, metafile records) are capped before anything is allocat
 groups nest at most 16 deep, and every read is bounds-checked: a damaged file is an error that
 names the format, never a crash.
 
+Contents directory parsing also has an aggregate 64 MiB byte-work budget and one million
+properties, counting repeated record references. Retained picture payloads have a shared
+256 MiB budget checked before copying. Exhausting either budget refuses the import rather than
+silently returning an incomplete publication. Individual malformed picture warnings are capped.
+WMF/EMF payloads, compressed or uncompressed, are limited to 64 MiB. Conversion retains at most
+32 MiB of SVG/path data; reaching that or the record-work limit explicitly warns that remaining
+drawing was omitted. These are parser/conversion limits, not a total process-memory guarantee.
+
 ## Provenance
 
 - The importer was written without any other Publisher reader. Nobody working on it read

@@ -222,8 +222,9 @@ fn sections(b: &[u8]) -> Result<Vec<Section<'_>>> {
         if seen.len() >= 64 || !seen.insert(at) {
             return Err(PubError::Malformed("Quill directory loop or depth limit".into()));
         }
-        let n = usize::from(u16_at(b, at + 2)?);
-        let entries = slice(b, at + 8, n * 24)?;
+        let header = slice(b, at, 8)?;
+        let n = usize::from(u16_at(header, 2)?);
+        let entries = slice(b, at.checked_add(8).ok_or(PubError::Truncated)?, n * 24)?;
         for e in entries.chunks_exact(24) {
             let pos = u32_at(e, 16)? as usize;
             out.push(Section { tag: slice(e, 2, 4)?, at: pos, data: slice(b, pos, u32_at(e, 20)? as usize)? });
@@ -231,7 +232,7 @@ fn sections(b: &[u8]) -> Result<Vec<Section<'_>>> {
                 return Err(PubError::Malformed("too many Quill sections".into()));
             }
         }
-        at = u32_at(b, at + 4)? as usize;
+        at = u32_at(header, 4)? as usize;
     }
     Ok(out)
 }
@@ -305,14 +306,14 @@ pub(crate) fn parse(b: &[u8]) -> Result<Quill> {
             let len = u32_at(s.data, at)? as usize;
             let value = if len < 4 { 0 } else { number(&properties(record(s.data, at)?)?, 1).unwrap_or(0) };
             q.colors.push(value);
-            at += len.max(4);
+            at = at.checked_add(len.max(4)).ok_or(PubError::Truncated)?;
         }
     }
     if let Some(s) = sections.iter().filter(|s| s.tag == b"STSH").nth(1) {
         let n = count(u32_at(s.data, 4)?, 100_000)?;
         slice(s.data, 20, n * 4)?;
         for i in 0..n.min(2) {
-            let at = 22 + u32_at(s.data, 20 + i * 4)? as usize;
+            let at = (u32_at(s.data, 20 + i * 4)? as usize).checked_add(22).ok_or(PubError::Truncated)?;
             let props = record(s.data, at)?;
             if i == 0 {
                 q.default_char = char_style(props)?;
@@ -331,7 +332,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<Quill> {
     if let (Some(ids), Some(lengths)) = (get(b"SYID"), get(b"STRS")) {
         let ni = count(u32_at(ids.data, 4)?, 100_000)?;
         let nl = count(u32_at(lengths.data, 0)?, 100_000)?;
-        let lengths_at = 4 + u32_at(lengths.data, 4)? as usize;
+        let lengths_at = (u32_at(lengths.data, 4)? as usize).checked_add(4).ok_or(PubError::Truncated)?;
         slice(ids.data, 8, ni * 4)?;
         slice(lengths.data, lengths_at, nl * 4)?;
         let mut start = 0usize;
@@ -400,6 +401,39 @@ pub(crate) fn parse(b: &[u8]) -> Result<Quill> {
 
 #[cfg(test)]
 mod tests {
+    fn stream(entries: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut b = vec![0; 32 + entries.len() * 24];
+        b[26..28].copy_from_slice(&(entries.len() as u16).to_le_bytes());
+        b[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        for (i, (tag, data)) in entries.iter().enumerate() {
+            let at = 32 + i * 24;
+            b[at + 2..at + 6].copy_from_slice(*tag);
+            let offset = b.len() as u32;
+            b[at + 16..at + 20].copy_from_slice(&offset.to_le_bytes());
+            b[at + 20..at + 24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            b.extend(data);
+        }
+        b
+    }
+
+    #[test]
+    fn maximal_directory_and_relative_style_offsets_are_rejected() {
+        for offset in [u32::MAX - 1, u32::MAX - 7, 31] {
+            let mut b = stream(&[]);
+            b[28..32].copy_from_slice(&offset.to_le_bytes());
+            assert!(sections(&b).is_err());
+        }
+        for offset in [u32::MAX, u32::MAX - 21, 24] {
+            let mut style = vec![0; 24];
+            style[4..8].copy_from_slice(&1u32.to_le_bytes());
+            style[20..24].copy_from_slice(&offset.to_le_bytes());
+            assert!(parse(&stream(&[(b"STSH", vec![]), (b"STSH", style)])).is_err());
+            let lengths = [1u32.to_le_bytes(), offset.to_le_bytes()].concat();
+            let ids = [0u32.to_le_bytes(), 1u32.to_le_bytes(), 1u32.to_le_bytes()].concat();
+            assert!(parse(&stream(&[(b"TEXT", vec![0, 0]), (b"STRS", lengths), (b"SYID", ids)])).is_err());
+        }
+    }
+
     #[test]
     fn warning_3c_is_quiet_only_when_justified_alignment_is_imported() {
         for value in [0x4832u16, 0x0032] {

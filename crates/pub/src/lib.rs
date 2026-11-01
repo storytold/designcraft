@@ -960,7 +960,14 @@ impl<'a> Builder<'a> {
         let data = match p.kind {
             0xF01F => dib_to_bmp(&p.data)?,
             metafile::BLIP_EMF | metafile::BLIP_WMF => {
-                let Some(svg) = metafile::to_svg(p.kind, &p.data) else {
+                let svg = match metafile::to_svg_report(p.kind, &p.data) {
+                    Ok(svg) => svg,
+                    Err(message) => {
+                        self.warnings.push(message.into());
+                        return None;
+                    }
+                };
+                let Some(svg) = svg else {
                     self.warnings.push("A WMF or EMF picture could not be read; its frame was kept empty.".into());
                     return None;
                 };

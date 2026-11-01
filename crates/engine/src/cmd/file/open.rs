@@ -145,12 +145,12 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
-    // signature (or their name).
-    if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
+    // Content takes precedence over misleading import extensions, as it does in file.open.
+    let native = designcraft_format::is_designcraft(&b) || b.trim_ascii_start().starts_with(b"{");
+    if !native && (designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b)) {
         return crate::cmd::interchange::open_idml(s, p);
     }
-    if designcraft_pub::is_pub(&b) || str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".pub")) {
+    if !native && (designcraft_pub::is_pub(&b) || str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".pub"))) {
         return crate::cmd::interchange::open_pub(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
