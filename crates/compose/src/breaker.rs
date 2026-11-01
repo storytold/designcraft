@@ -325,8 +325,12 @@ pub fn hang(c: char) -> (f64, f64) {
 /// How much more than [`hang`]'s proportions `g` hangs: the hang is set for
 /// [`Spacing::optical_size`] and grows with it, relative to the glyph's own size.
 pub(crate) fn optical_scale(g: &Glyph, sp: &Spacing) -> f64 {
+    optical_scale_at(g.size, sp)
+}
+
+fn optical_scale_at(size: f64, sp: &Spacing) -> f64 {
     match sp.optical_size {
-        Some(s) if s.is_finite() && g.size.is_finite() && g.size > 0.0 => s / g.size,
+        Some(s) if s.is_finite() && size.is_finite() && size > 0.0 => s / size,
         _ => 1.0,
     }
 }
@@ -340,7 +344,7 @@ pub(crate) fn hang_left(g: &Glyph, sp: &Spacing) -> f64 {
 /// own hang.
 fn start_hang(g: &Glyph, sp: &Spacing) -> f64 {
     if g.line_start_hyphen > 0.0 {
-        let hang = if sp.optical { hang('-').0 * g.line_start_hyphen * optical_scale(g, sp) } else { 0.0 };
+        let hang = if sp.optical { hang('-').0 * g.line_start_hyphen * optical_scale_at(g.line_start_hyphen_size, sp) } else { 0.0 };
         return hang - g.line_start_hyphen;
     }
     hang_left(g, sp)
@@ -580,6 +584,8 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
         match it.kind {
             Kind::Box => {
                 let g = ig.get(k).copied().unwrap_or(0);
+                // A line starting at this word starts with the hyphen repeated before it.
+                w += if seg.is_none() { glyphs.get(g).map_or(0.0, |g| g.line_start_hyphen) } else { 0.0 };
                 seg = Some(seg.map_or((g, g), |(a, _)| (a, g)));
                 w += it.w - it.sh.iter().sum::<f64>();
             }

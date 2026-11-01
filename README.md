@@ -169,7 +169,7 @@ the bundled ones for text in that language; words their alphabet doesn't cover (
 still use the bundled patterns. English is the exception: it keeps its bundled dictionary, and a
 file for it is skipped. Serbian Latin words where `nj` or `dž` is two letters (`konjugacija`,
 `nadživeti`) break by their Cyrillic spelling even with a Latin file installed: Latin patterns
-can't tell them from `konj` and `budžet`. Serbian `lj`, `nj` and `dž` count as one letter against the word limits, and compounds break at the join (`pred-uslov`). A Serbian line broken at a hyphen starts with the hyphen again (`auto-` / `-salon`), as the Pravopis asks; Repeat Hyphen at Line Break in Hyphenation Settings turns it off. The log lists each file read and how many patterns it gave, and any file
+can't tell them from `konj` and `budžet`. Serbian `lj`, `nj` and `dž` count as one letter against the word limits, and compounds break at the join (`pred-uslov`). A Serbian line broken at a hyphen starts with the hyphen again (`auto-` / `-salon`), and an ending after a hyphen (`ПКБ-а`, `60-их`) stays on its word, as the Pravopis asks; Repeat Hyphen at Line Break in Hyphenation Settings turns it off. The log lists each file read and how many patterns it gave, and any file
 or folder that couldn't be read.
 
 InDesign can't tag text Serbian without Serbian dictionaries, so its IDML brings such text in as

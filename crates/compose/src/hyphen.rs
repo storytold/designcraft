@@ -274,6 +274,43 @@ pub fn repeats_hyphen(lang: Lang) -> bool {
     is_serbian(lang)
 }
 
+/// Endings Serbian writes after a hyphen, on an abbreviation or a foreign name that keeps its
+/// spelling (Pravopis т. 161б: `ПКБ-а`, `Humboldt-ом`), in Latin letters. Their `ов` and `ев` forms
+/// (`ИБМ-овим`, `ДС-овац`) go by their start.
+const SERBIAN_ENDINGS: [&str; 16] = ["a", "ama", "e", "em", "i", "ih", "im", "ima", "ja", "je", "jem", "jom", "ju", "o", "om", "u"];
+
+/// Is `right`, the text after a hyphen that follows `left`, an ending and not a word of its own?
+/// An ending can't start a line, so no line breaks there. After a figure it's any short tail
+/// (`60-их`, `76-тој`, but `75-годишњи` is a word). A wrong yes only keeps a word together.
+pub fn serbian_ending(left: &str, right: &str) -> bool {
+    let rest = right.trim_start_matches(char::is_alphabetic);
+    let tail = &right[..right.len() - rest.len()];
+    if tail.is_empty() || rest.starts_with(['-', '\u{2010}']) {
+        return false;
+    }
+    let letters = tail.chars().count();
+    if left.ends_with(char::is_numeric) {
+        return letters <= 4;
+    }
+    let tail: String = tail
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'а' => 'a',
+            'в' => 'v',
+            'е' => 'e',
+            'и' => 'i',
+            'м' => 'm',
+            'о' => 'o',
+            'у' => 'u',
+            'х' => 'h',
+            'ј' => 'j',
+            c => c,
+        })
+        .collect();
+    SERBIAN_ENDINGS.contains(&tail.as_str()) || (letters <= 6 && (tail.starts_with("ov") || tail.starts_with("ev")))
+}
+
 /// `pts` of a lowercase Serbian `core`, with the join of a compound as §186е has it: `пред-услов`,
 /// never `преду-слов`, though the patterns allow both. A vowel alone between two breaks after a
 /// prefix belongs to the second word, so the break after it goes.
@@ -1063,6 +1100,67 @@ mod tests {
         let lat = Lang::for_language("Serbian: Latin").unwrap();
         assert_eq!(marked("voljom", lat), "vo-ljom");
         assert_eq!(marked("hodžama", lat), "ho-dža-ma");
+    }
+
+    #[test]
+    fn serbian_tells_an_ending_from_a_word() {
+        for (left, right) in [
+            ("СОШ", "у"),
+            ("ПКБ", "а"),
+            ("ПКБ", "А"),
+            ("ИБМ", "овим,"),
+            ("ДС", "овац"),
+            ("Humboldt", "ом."),
+            ("60", "их"),
+            ("76", "тој"),
+            ("SOŠ", "u"),
+            ("PKB", "a"),
+            ("IBM", "ovim"),
+            ("Humboldt", "om"),
+            ("60", "ih"),
+        ] {
+            assert!(serbian_ending(left, right), "{left}-{right}");
+        }
+        for (left, right) in [
+            ("вагон", "ресторан"),
+            ("ауто", "опрема"),
+            ("веш", "машина"),
+            ("црвено", "бели"),
+            ("француско", "немачки"),
+            ("културно", "историјске"),
+            ("руско", "српски"),
+            ("Шар", "планина"),
+            ("ауто", "мото"),
+            ("ролс", "ројс"),
+            ("Би", "Би-Си"),
+            ("Би-Би", "Си"),
+            ("бе", "се-же"),
+            ("бе-се", "же"),
+            ("бе", "ем-ве"),
+            ("корак", "два"),
+            ("75", "годишњи"),
+            ("500", "годишњица"),
+            ("1941", "1945"),
+            ("vagon", "restoran"),
+            ("auto", "oprema"),
+            ("veš", "mašina"),
+            ("crveno", "beli"),
+            ("francusko", "nemački"),
+            ("kulturno", "istorijske"),
+            ("rusko", "srpski"),
+            ("Šar", "planina"),
+            ("auto", "moto"),
+            ("rols", "rojs"),
+            ("Bi-Bi", "Si"),
+            ("be-se", "že"),
+            ("korak", "dva"),
+            ("sever", "jug"),
+            ("auto", "salon"),
+            ("75", "godišnji"),
+            ("500", "godišnjica"),
+        ] {
+            assert!(!serbian_ending(left, right), "{left}-{right}");
+        }
     }
 
     #[test]

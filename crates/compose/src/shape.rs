@@ -60,6 +60,8 @@ pub struct Glyph {
     /// The width a line starting here gives to the hyphen before this glyph, repeated at the
     /// line's start (0: none repeated).
     pub line_start_hyphen: f64,
+    /// The size of that hyphen.
+    pub line_start_hyphen_size: f64,
     pub cjk_hang: f64,
     pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
@@ -1108,6 +1110,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
         line_start_hyphen: 0.0,
+        line_start_hyphen_size: 0.0,
         cjk_hang: 0.0,
         moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
@@ -1271,6 +1274,7 @@ fn shape_segment(
             space,
             break_after: None,
             line_start_hyphen: 0.0,
+            line_start_hyphen_size: 0.0,
             cjk_hang: 0.0,
             moji: crate::mojikumi::Metrics {
                 body,

@@ -5117,6 +5117,122 @@ fn a_hyphen_repeated_at_the_top_of_a_column_is_measured() {
 }
 
 #[test]
+fn an_ending_stays_on_its_word() {
+    // Pravopis т. 161б and т. 116: `-а` or `-их` would otherwise start a line.
+    let text = "СОШ-у ПКБ-а ИБМ-овим Humboldt-ом 60-их 76-тој вагон-ресторан";
+    let breaks_at_hyphen = |language, para: ParaAttrs| {
+        let mut ends = std::collections::BTreeSet::new();
+        for w in 8..160 {
+            for l in all_lines(&set_in(text, language, f64::from(w), para.clone())) {
+                if text[..l.range.end].ends_with('-') && l.range.end < text.len() {
+                    ends.insert(text[..l.range.end].rsplit(' ').next().unwrap().to_owned());
+                }
+            }
+        }
+        ends.into_iter().collect::<Vec<_>>()
+    };
+    assert_eq!(breaks_at_hyphen("Serbian: Cyrillic", ParaAttrs::default()), ["вагон-"]);
+    assert_eq!(breaks_at_hyphen("Serbian: Cyrillic", ParaAttrs { hyph_repeat: Some(false), ..Default::default() }), ["вагон-"]);
+    assert!(breaks_at_hyphen("English: USA", ParaAttrs::default()).len() > 1, "only in Serbian");
+}
+
+#[test]
+fn a_hyphen_between_figures_stands_for_a_dash() {
+    // Pravopis т. 160г asks for a dash there, so the hyphen isn't repeated. It still breaks.
+    let years = "1941-1945 1941-1945 1941-1945 1941-1945";
+    let mut broken = 0;
+    for w in 30..120 {
+        for l in all_lines(&set_in(years, "Serbian: Latin", f64::from(w), ParaAttrs::default())) {
+            assert!(!l.repeated_hyphen, "{w}");
+            broken += usize::from(years[..l.range.end].ends_with('-'));
+        }
+    }
+    assert!(broken > 0);
+    let word = "75-godišnji 75-godišnji 75-godišnji";
+    assert!((30..120).any(|w| all_lines(&set_in(word, "Serbian: Latin", f64::from(w), ParaAttrs::default())).iter().any(|l| l.repeated_hyphen)));
+}
+
+#[test]
+fn a_word_too_wide_with_its_repeated_hyphen_takes_an_emergency_break() {
+    // Without hyphenation, `salon` can fit a measure that `-salon` doesn't.
+    let para = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), ..Default::default() };
+    let text = "auto-salon";
+    let mut repeated = 0;
+    for w in 60..240 {
+        let cs = set_in(text, "Serbian: Latin", f64::from(w) / 4.0, para.clone());
+        for l in all_lines(&cs) {
+            assert!(l.end_x <= l.x1 + 0.01, "{w}: {:?} overruns", &text[l.range.clone()]);
+            repeated += usize::from(l.repeated_hyphen);
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
+fn a_nested_line_style_covers_the_lines_the_repeated_hyphen_gives() {
+    // The style's trial breaks the lines as the layout does, repeated hyphens counted.
+    let text = SERBIAN_COMPOUNDS;
+    let compose = |w: f64| {
+        let para = ParaAttrs {
+            align: Some(Align::Left),
+            hyphenate: Some(false),
+            nested_line_styles: Some(vec![designcraft_doc::NestedLineStyle { style: "Lead".into(), lines: 2 }]),
+            ..Default::default()
+        };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, w, 700.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Serbian: Latin".into()));
+        let chars = designcraft_doc::CharAttrs { fill: Some("[Registration]".into()), ..Default::default() };
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: "Lead".into(),
+            based_on: None,
+            chars,
+            shortcut: String::new(),
+        });
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let mut checked = 0;
+    for w in (80..400).map(|w| f64::from(w) / 2.0) {
+        let cs = compose(w);
+        let lines = all_lines(&cs);
+        let lead = |l: &Line| {
+            l.glyphs.iter().filter(|g| g.len > 0 && g.visible).map(|g| cs.styles[g.style as usize].fill == "[Registration]").collect::<Vec<_>>()
+        };
+        if lines.len() > 3 {
+            assert!(lead(lines[0]).iter().chain(&lead(lines[1])).all(|l| *l), "{w}");
+            assert!(lead(lines[2]).iter().all(|l| !*l), "{w}");
+            checked += usize::from(lines[1].repeated_hyphen || lines[2].repeated_hyphen);
+        }
+    }
+    assert!(checked > 0);
+}
+
+#[test]
+fn a_repeated_hyphen_hangs_by_its_own_size() {
+    // Optical margin size set: the hang follows the hyphen's size, not the smaller word after it.
+    let text = SERBIAN_COMPOUNDS;
+    let small: Vec<_> = text.match_indices('-').map(|(i, _)| i + 1..text[i..].find(' ').map_or(text.len(), |n| i + n)).collect();
+    let mut repeated = 0;
+    for w in (120..600).map(|w| f64::from(w) / 2.0) {
+        let para = ParaAttrs { align: Some(Align::Left), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, w, 700.0), para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.language = Some("Serbian: Latin".into()));
+        for r in &small {
+            story.format_chars(r.clone(), |f| f.over.size = Some(4.0));
+        }
+        story.optical_margin = designcraft_doc::OpticalMargin { on: true, size: 24.0 };
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for l in all_lines(&cs).iter().filter(|l| l.repeated_hyphen) {
+            if l.glyphs.iter().rev().find(|g| !g.rendered_char.is_whitespace()).is_some_and(|g| g.rendered_char.is_alphabetic()) {
+                assert!(l.end_x <= l.x1 + 0.01, "{w}: {} {}", l.end_x, l.x1);
+                repeated += 1;
+            }
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
 fn a_repeated_hyphen_hangs_with_optical_margin_alignment() {
     let para = ParaAttrs { align: Some(Align::Left), optical_margin: Some(true), ..Default::default() };
     let mut repeated = 0;

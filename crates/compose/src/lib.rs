@@ -1212,8 +1212,10 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
+            apply_hyphen_rules(&story.text, &mut gl, &foreign, pp.hyph_repeat);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
                     let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
@@ -2428,9 +2430,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
-    if pp.hyph_repeat {
-        mark_repeated_hyphens(&mut glyphs, &foreign);
-    }
+    apply_hyphen_rules(&story.text, &mut glyphs, &foreign, pp.hyph_repeat);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story);
     // An empty paragraph takes its height from its paragraph mark's character format.
@@ -5272,17 +5272,27 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     }
 }
 
-/// Mark the glyphs after a hyphen that a line break repeats, in the languages that ask for it.
-/// The hyphen must join two words or numbers: a minus sign or a suspended `auto-` isn't repeated.
-fn mark_repeated_hyphens(glyphs: &mut [Glyph], foreign: &[(Range<usize>, Option<hyphen::Lang>)]) {
+/// What a language asks of a line break at a hyphen that joins two words or numbers (a minus sign
+/// or a suspended `auto-` has no such break). In Serbian an ending stays on its word (`ПКБ-а`).
+/// With `repeat`, the glyph after any other hyphen is marked to repeat it, unless figures stand on
+/// both sides: that hyphen was typed for a dash (`1941-1945`, Pravopis т. 160г).
+fn apply_hyphen_rules(text: &str, glyphs: &mut [Glyph], foreign: &[(Range<usize>, Option<hyphen::Lang>)], repeat: bool) {
     for i in 1..glyphs.len().saturating_sub(1) {
         let (before, hy, after) = (&glyphs[i - 1], &glyphs[i], &glyphs[i + 1]);
         let joins = before.ch.is_alphanumeric() && after.ch.is_alphanumeric();
         if !matches!(hy.ch, '-' | '\u{2010}') || !joins || hy.no_break || hy.break_after == Some(false) {
             continue;
         }
-        if foreign.iter().find(|(r, _)| r.contains(&hy.byte)).and_then(|(_, l)| *l).is_some_and(hyphen::repeats_hyphen) {
-            glyphs[i + 1].line_start_hyphen = hy.adv;
+        if !foreign.iter().find(|(r, _)| r.contains(&hy.byte)).and_then(|(_, l)| *l).is_some_and(hyphen::repeats_hyphen) {
+            continue;
+        }
+        let (left, right) = (text.get(..hy.byte).unwrap_or_default(), text.get(hy.byte + hy.len..).unwrap_or_default());
+        if hyphen::serbian_ending(left, right) {
+            glyphs[i].break_after = Some(false);
+        } else if repeat && !(before.ch.is_numeric() && after.ch.is_numeric()) {
+            let (adv, size) = (hy.adv, hy.size);
+            glyphs[i + 1].line_start_hyphen = adv;
+            glyphs[i + 1].line_start_hyphen_size = size;
         }
     }
 }
