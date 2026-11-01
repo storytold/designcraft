@@ -123,7 +123,8 @@ list (author, source, license) is in ASSETS.md.
   Serbian in Cyrillic script; hypher maps the language code "sr" to these, and DesignCraft applies
   them to Serbian Latin text through its Cyrillic spelling).
   Copyright (C) 1990, 2008 Dejan Muhamedagić. Distributed under the LaTeX Project Public License,
-  version 1 or (at your option) any later version, https://latex-project.org/lppl/.
+  version 1 or (at your option) any later version, https://latex-project.org/lppl/. DesignCraft
+  uses version 1.3c, approved by the Open Source Initiative.
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,
