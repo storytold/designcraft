@@ -294,10 +294,10 @@ impl DesignApp {
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
-/// IDML, and InDesign documents and templates (converted to IDML on open).
+/// IDML, InDesign documents and templates (converted to IDML on open) and Publisher files.
 pub fn opens_as_document(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [".designcraft", ".idml", ".indd", ".indt"].iter().any(|ext| n.ends_with(ext))
+    [".designcraft", ".idml", ".indd", ".indt", ".pub"].iter().any(|ext| n.ends_with(ext))
 }
 
 #[cfg(test)]
@@ -846,5 +846,81 @@ mod load_styles_tests {
         assert_eq!(app.session.active_index(), Some(0));
         assert_eq!(names(&app), (vec![], vec!["Lead".to_string()]));
         assert!(app.session.documents()[1].doc.styles.char_style("Lead").is_none());
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+
+    const HELLO: &[u8] = include_bytes!("../../../pub/tests/data/hello.pub");
+
+    #[test]
+    fn publisher_notice_is_visible_without_a_modal_and_stays_with_its_document() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut session = Session::new();
+        let result =
+            session.execute("file.openBytes", &json!({"name": "flyer.pub", "base64": designcraft_engine::cmd::base64_encode(HELLO)})).unwrap();
+        let notice = result["notice"].as_str().unwrap().to_string();
+        let mut h = crate::test_window::open(DesignApp::new(session, Services::default()), egui::vec2(1200.0, 800.0));
+        h.run_steps(3);
+        assert!(h.get_by_label(&notice).rect().width() > 0.0);
+        assert!(h.state().app.ui.dialog.is_none(), "the notice is not a modal dialog");
+        h.state_mut().app.run("file.new", json!({})).unwrap();
+        assert!(h.state().app.session.active().unwrap().import_notice.is_none());
+    }
+
+    #[test]
+    fn save_as_of_a_converted_publication_suggests_a_native_file_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("flyer.pub");
+        std::fs::write(&source, HELLO).unwrap();
+        let asked = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let seen = asked.clone();
+        let destination = dir.path().join("flyer.designcraft");
+        let answer = destination.to_string_lossy().to_string();
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.answer_dialogs(move |request| match request {
+            craft_dialogs::Request::File(d) => {
+                *seen.borrow_mut() = Some((d.directory.clone(), d.file_name.clone()));
+                craft_dialogs::Answer::Paths(vec![answer.clone().into()])
+            }
+            craft_dialogs::Request::Message(_) => craft_dialogs::Answer::Message(craft_dialogs::MessageResult::Yes),
+        });
+        app.run("file.open", json!({"path": source})).unwrap();
+        assert_eq!(app.session.active().unwrap().path, None, "the .pub is never the save destination");
+        app.run("app.save", json!({})).unwrap();
+        app.settle_dialogs();
+        assert_eq!(*asked.borrow(), Some((Some(dir.path().to_path_buf()), Some("flyer.designcraft".to_string()))));
+        assert_eq!(app.session.active().unwrap().path.as_deref(), destination.to_str());
+        assert_eq!(std::fs::read(&source).unwrap(), HELLO, "the original is unchanged");
+    }
+
+    #[test]
+    #[ignore = "needs PUB_CORPUS containing the pinned text__font-ArialBlack.pub sample"]
+    fn publisher_import_keeps_missing_names_and_offers_replacement_only_on_request() {
+        let folders = std::env::var("PUB_CORPUS").unwrap();
+        let file = folders.split(':').map(|p| std::path::Path::new(p).join("text__font-ArialBlack.pub")).find(|p| p.is_file()).unwrap();
+        let mut bytes = std::fs::read(file).unwrap();
+        let db = designcraft_fonts::FontDb::global().scoped(0);
+        let family = (0..10_000).map(|n| format!("Q{n:010}")).find(|name| !db.has_family(name)).unwrap();
+        let original: Vec<u8> = "Arial Black".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let replacement: Vec<u8> = family.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(original.len(), replacement.len());
+        // Replace only the same-length font names in memory, with a name known to be absent on
+        // this machine. The sample on disk is unchanged.
+        let offsets: Vec<_> = bytes.windows(original.len()).enumerate().filter_map(|(i, b)| (b == original).then_some(i)).collect();
+        assert_eq!(offsets.len(), 2);
+        for offset in offsets {
+            bytes[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        }
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.openBytes", json!({"name": "example.pub", "base64": designcraft_engine::cmd::base64_encode(&bytes)})).unwrap();
+        assert!(app.session.active().unwrap().import_notice.is_some());
+        let fonts = app.run("font.list", json!({})).unwrap();
+        assert!(fonts.as_array().unwrap().iter().any(|f| f["family"] == family && f["missing"] == true), "keep the absent requested family: {fonts}");
+        assert!(app.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont"), "a Publisher open does not stop on Find/Replace Font");
+        app.run("app.findFontDialog", json!({})).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "findFont", "the explicit command stays available");
     }
 }
