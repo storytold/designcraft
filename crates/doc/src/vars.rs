@@ -195,8 +195,12 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
         None | Some('Z') => Some(secs),
         Some(sign @ ('+' | '-')) => {
             let z = zone.get(1..)?;
-            let zh: i64 = z.get(0..2)?.parse().ok()?;
-            let zm: i64 = z.get(2..).map(|r| r.trim_start_matches(':')).filter(|r| !r.is_empty()).map_or(Some(0), |r| r.parse().ok())?;
+            let digits = |t: &str| -> Option<i64> { t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten() };
+            let zh = digits(z.get(0..2)?)?;
+            let zm = z.get(2..).map(|r| r.trim_start_matches(':')).filter(|r| !r.is_empty()).map_or(Some(0), digits)?;
+            if zh > 23 || zm > 59 {
+                return None;
+            }
             let off = zh * 3600 + zm * 60;
             Some(if sign == '+' { secs - off } else { secs + off })
         }
@@ -332,6 +336,13 @@ mod tests {
         assert_eq!(parse_iso_date("2000-02-29"), Some(951_782_400));
         assert_eq!(parse_iso_date("2019-12-16T09:48:02.5+01:00").map(|t| format_date(t, "MM/dd/yy HH:mm")), Some("12/16/19 08:48".into()));
         for bad in ["", "2019", "2019-13-01", "2019-12-16T25:00", "2019-12-16T09:48+0x", "２０１９-12-16"] {
+            assert_eq!(parse_iso_date(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn iso_date_rejects_malformed_zone() {
+        for bad in ["2019-12-16T09:48:02+-5:00", "2019-12-16T09:48:02+05:+30", "2019-12-16T09:48:02+24:00", "2019-12-16T09:48:02+05:60"] {
             assert_eq!(parse_iso_date(bad), None, "{bad}");
         }
     }
