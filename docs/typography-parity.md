@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Serbian hyphenation; installed `hyph_*.dic` pattern files and Hunspell dictionaries; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -36,8 +36,8 @@ Fidelity: **unmeasured** unless stated.
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531) |
-| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Greek (hyph-el-monoton), German 2006 (hyph-de-1996), French (hyph-fr) and Italian (hyph-it); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
-| Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
+| Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Greek (hyph-el-monoton), German 2006 (hyph-de-1996), French (hyph-fr), Italian (hyph-it) and Serbian (hyph-sh-cyrl, Latin text through its Cyrillic spelling, with a list of roots where `nj` and `dž` are two letters); LibreOffice `hyph_*.dic` files installed in `<settings>/dictionaries/` and its locale subfolders (patterns up to 16 letters); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
+| Spelling | per-language dictionaries | English (Moby) + document/user dictionary; installed Hunspell dictionaries (`<settings>/dictionaries/<locale>.aff`/`.dic`) for any language, through spellbook | ~ | |
 | Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: pairs pulled towards the font's stem gap, `crates/compose/src/optical.rs`), manual, none | ~ | Optical is an approximation of Adobe's algorithm (#181), not a match: imported display text can still break differently |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
 | Character fill and stroke | fill, stroke, tint, weight, stroke aligned to centre or outside | fill, stroke, tints, weight, stroke behind fill (screen, PNG, PDF, IDML `StrokeAlignment`) | ~ | text strokes have no join or miter limit settings (#619 for stroke behind fill) |
@@ -81,8 +81,8 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Optical kerning tuning against InDesign (measured pairs per class, once the oracle harness exists) | 5–10 |
 | Overset rule (baseline fits) and frame-fit parity | 5–10 |
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
-| Hyphenation patterns for the top 15 InDesign languages (permissive sources) | 20–35 |
-| Spelling dictionaries beyond English (licence review per language) | 10–20 (+ owner review) |
+| Bundled hyphenation patterns for the top 15 InDesign languages (permissive sources; installed `hyph_*.dic` files already work) | 20–35 |
+| Bundled spelling dictionaries beyond English (licence review per language; installed Hunspell dictionaries already work) | 10–20 (+ owner review) |
 | Tabs panel, list conversion commands | 8–15 |
 | **Total** | **120–200** |
 
@@ -92,3 +92,6 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 |---|---|---|
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
+| 2026-10-30 | minor | Serbian hyphenation in both scripts; installed `hyph_*.dic` pattern files |
+| 2026-10-30 | minor | Spelling in other languages with installed Hunspell dictionaries |
+| 2026-10-31 | minor | Serbian Latin words where `nj` or `dž` is two letters; pattern files in ISO 8859-2 and -5 |
