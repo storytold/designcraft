@@ -373,3 +373,53 @@ fn link_status_relink_update_embed() {
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Opening a document whose asset could not be read refuses to save, and tells the user to
+/// relink. Relink cloned the asset without clearing the mark, so the way out did not work and
+/// the document could never be saved again (#1592, noted in review).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn relinking_an_unreadable_asset_lets_the_document_be_saved_again() {
+    let dir = std::env::temp_dir().join(format!("dc-unreadable-relink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let img = dir.join("a.png");
+    let other = dir.join("b.png");
+    let doc = dir.join("d.designcraft");
+    let marker = png(10, 10);
+    std::fs::write(&img, &marker).unwrap();
+    std::fs::write(&other, png(20, 10)).unwrap();
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": img.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
+    s.execute("file.saveAs", &json!({"path": doc.to_string_lossy()})).unwrap();
+
+    // Corrupt the stored asset entry, leaving the archive's structure intact so the entry is
+    // found and only its CRC fails -- the same damage the format test reproduces.
+    // A PNG asset is stored uncompressed, so the whole image appears verbatim -- matched whole,
+    // since every PNG shares the signature the preview thumbnail starts with too.
+    let good = std::fs::read(&doc).unwrap();
+    let at = good.windows(marker.len()).position(|w| w == marker.as_slice()).expect("the stored PNG is in the file");
+    let mut broken = good.clone();
+    broken[at + 32..at + 48].copy_from_slice(&[9; 16]);
+    std::fs::write(&doc, &broken).unwrap();
+
+    let mut s = Session::new();
+    s.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+    let l = s.execute("links.list", &json!({})).unwrap();
+    let aid = l[0]["asset"].as_u64().unwrap();
+    let err = s.execute("file.save", &json!({})).expect_err("saving would drop the image");
+    assert!(err.to_string().contains("Relink"), "the refusal points at relink: {err}");
+
+    // Taking the advice works: the asset is readable again and the document saves.
+    s.execute("links.relink", &json!({"asset": aid, "path": other.to_string_lossy()})).unwrap();
+    s.execute("file.save", &json!({})).expect("the relinked document saves");
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+
+    // And what was written holds the new image, so the next open needs no relink at all.
+    let mut s = Session::new();
+    s.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+    s.execute("file.save", &json!({})).expect("and it keeps saving");
+    let _ = std::fs::remove_dir_all(&dir);
+}

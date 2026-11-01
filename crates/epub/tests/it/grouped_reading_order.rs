@@ -95,6 +95,7 @@ fn nested_and_item_rotations_are_combined_before_measuring_graphics() {
             page: 0,
             pdf_crop: Default::default(),
             pdf_box: None,
+            unreadable: false,
         }),
     );
     let image = ItemId(doc.alloc());

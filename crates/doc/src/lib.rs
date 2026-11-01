@@ -555,6 +555,11 @@ pub struct Asset {
     pub link: Option<String>,
     #[serde(skip)]
     pub data: Arc<Vec<u8>>,
+    /// The asset's bytes are in the file but could not be read (a bad CRC, a truncated archive).
+    /// Set when the document is opened; saving refuses rather than writing the document without
+    /// the image and losing it (#1592).
+    #[serde(skip)]
+    pub unreadable: bool,
     /// Pixel size for raster images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixels: Option<(u32, u32)>,

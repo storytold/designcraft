@@ -439,6 +439,9 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
         px
     };
     let mut a = a.clone();
+    // The bytes are here, so whatever could not be read when the document opened no longer
+    // stands in the way of saving -- which is what the refusal told the user to do (#1592).
+    a.unreadable = false;
     a.mime = designcraft_render::image_mime(&bytes).to_string();
     a.data = Arc::new(bytes);
     a.pixels = Some(px);
