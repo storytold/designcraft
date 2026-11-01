@@ -2780,7 +2780,11 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                         .height(400.0)
                         .selected_text(crate::rtl::widget(ui, current))
                         .show_ui(ui, |ui| {
-                            for (code, name) in crate::i18n::picker_languages() {
+                            let ctx = ui.ctx().clone();
+                            let listed = crate::i18n::picker_languages()
+                                .into_iter()
+                                .filter(|(code, name)| crate::theme::language_listed(&ctx, code, name, &app.ui.language));
+                            for (code, name) in listed {
                                 if ui.selectable_label(code == app.ui.language, crate::rtl::widget(ui, name)).clicked() {
                                     // Applied by `show` right after this frame, which has `&mut DesignApp`.
                                     d.fields.insert("applyLanguage".into(), json!(code));
