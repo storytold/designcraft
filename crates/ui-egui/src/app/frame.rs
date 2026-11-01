@@ -110,6 +110,21 @@ impl DesignApp {
         }
         if !presenting {
             chrome::doc_tabs(self, ui);
+            // A converted file (Publisher) says so above it, and lists its import notes.
+            if let Some(notice) = self.session.active().and_then(|d| d.import_notice) {
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new(notice).small());
+                });
+            }
+            if let Some(document) = self.session.active()
+                && !document.import_notes.is_empty()
+            {
+                ui.collapsing(format!("Import notes ({})", document.import_notes.len()), |ui| {
+                    for note in &document.import_notes {
+                        ui.small(note);
+                    }
+                });
+            }
         }
         let split_layout = (self.split && !presenting)
             .then(|| {

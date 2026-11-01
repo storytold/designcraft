@@ -30,6 +30,7 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+| Microsoft Publisher | `.pub` | — | ✓ Publisher 2002–2021, converted to an unsaved copy ([publisher-import.md](publisher-import.md)); 97/98/2000 refused | ✗ | Synthetic test files in `crates/pub/tests`; external pinned samples score 142/142 imports, 111/111 positions within 1 pt, 52/52 texts, 111/111 styles | <1% |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and

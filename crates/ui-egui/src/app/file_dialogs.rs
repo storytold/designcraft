@@ -162,7 +162,7 @@ impl DesignApp {
         let folder = self
             .session
             .active()
-            .and_then(|d| d.path.as_deref())
+            .and_then(|d| d.path.as_deref().or(d.import_save_path.as_deref()))
             .and_then(folder_of)
             .or_else(|| self.ui.last_save_folder.as_ref().map(PathBuf::from));
         match (folder, Path::new(name).file_name()) {
@@ -382,8 +382,9 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft, IDML or InDesign", extensions: &["designcraft", "idml", "indd", "indt"] },
+            OpenFilter { name: "DesignCraft, Publisher, IDML or InDesign", extensions: &["designcraft", "pub", "idml", "indd", "indt"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
+            OpenFilter { name: "Microsoft Publisher 2002+", extensions: &["pub"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
             OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
             // Files saved without an extension; `file.open` tells the formats apart by content.
@@ -511,7 +512,7 @@ mod tests {
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = open_filters("");
-        for ext in ["designcraft", "idml", "indd", "indt"] {
+        for ext in ["designcraft", "pub", "idml", "indd", "indt"] {
             assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
         }
         assert!(documents.last().is_some_and(|filter| filter.extensions == [ALL_FILES]), "files without an extension can be picked");

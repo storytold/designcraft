@@ -441,6 +441,53 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "warningItems": warning_items}))
 }
 
+/// A Microsoft Publisher 2002+ publication (`path` or `base64` + `name`), converted into a new
+/// document that starts unsaved, so Save never writes over the .pub → {index, warnings: what
+/// could not be converted, notes: other diagnostics, notice: that this is a converted copy}.
+pub(crate) fn open_pub(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, title) = if let Some(b) = str_param(p, "base64") {
+        let name = str_param(p, "name").unwrap_or_default();
+        (base64_decode(b), without_document_extension(name).to_string())
+    } else if let Some(path) = str_param(p, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        (b, std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    } else {
+        return Err(bad("file.open", "missing `path` or `base64`"));
+    };
+    let mut resources = (None, 0, Vec::new());
+    let imported = designcraft_pub::import_pub_with(&bytes, |d| {
+        if let Some(path) = str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+            resources = super::file::load_document_fonts(d, path);
+        }
+    });
+    let mut imp = imported.map_err(|e| EngineError::Other(format!("can't open the Publisher file: {e}")))?;
+    let (fonts, faces, font_warnings) = resources;
+    imp.warnings.extend(font_warnings);
+    let mut d = imp.document;
+    if !title.is_empty() {
+        d.title = title;
+    }
+    let mut state = DocState::new(d, None);
+    state.fonts = fonts;
+    state.import_notes = imp.notes.clone();
+    state.import_notice = Some(designcraft_pub::CONVERSION_NOTICE);
+    state.import_save_path = str_param(p, "path").filter(|_| str_param(p, "base64").is_none()).map(|path| {
+        let source = std::path::absolute(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+        let converted = source.with_extension("designcraft");
+        if source.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("designcraft")) {
+            let name = format!("{}.converted.designcraft", source.file_stem().unwrap_or_default().to_string_lossy());
+            source.with_file_name(name).to_string_lossy().into_owned()
+        } else {
+            converted.to_string_lossy().into_owned()
+        }
+    });
+    let i = s.add_document(state);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": imp.warnings, "notes": imp.notes, "notice": designcraft_pub::CONVERSION_NOTICE}))
+}
+
 /// The frame an import warning is about, so it can be shown: the first frame of the story a
 /// "story …: …" warning names, by the converter's INDD id (`story 30892`, which it writes to the
 /// IDML as `u78ac`) or by its IDML `Self` (`story u78ac`).
@@ -465,10 +512,10 @@ pub(crate) fn has_indd_extension(name: &str) -> bool {
     n.ends_with(".indd") || n.ends_with(".indt")
 }
 
-/// `name` without a trailing .idml, .indd or .indt (any case).
+/// `name` without a trailing .idml, .indd, .indt or .pub (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext)) if ["idml", "indd", "indt", "pub"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
         _ => name,
     }
 }
@@ -491,6 +538,20 @@ mod tests {
         })?;
         let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images });
         Ok((bytes, png))
+    }
+
+    #[test]
+    fn publisher_open_always_returns_notice_without_changing_diagnostics() {
+        let bytes = include_bytes!("../../../pub/tests/data/hello.pub");
+        let expected = designcraft_pub::import_pub(bytes).unwrap();
+        let mut session = Session::new();
+        let result = session.execute("file.openBytes", &json!({"name":"flyer.pub", "base64":base64_encode(bytes)})).unwrap();
+        assert_eq!(result["notice"], designcraft_pub::CONVERSION_NOTICE);
+        assert_eq!(result["warnings"], json!(expected.warnings));
+        assert_eq!(result["notes"], json!(expected.notes));
+        assert_eq!(session.active().unwrap().import_notice, Some(designcraft_pub::CONVERSION_NOTICE));
+        session.execute("file.new", &json!({})).unwrap();
+        assert!(session.active().unwrap().import_notice.is_none());
     }
 
     #[test]
