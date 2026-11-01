@@ -329,11 +329,33 @@ impl FontFace {
 /// axis settings.
 pub(super) type Found = (u32, String, String, Vec<([u8; 4], f32)>);
 
+/// Most raw members inspected in a font collection, matching the face loader's bound.
+const MAX_FACES: u32 = 1024;
+
+/// Whether every member of a font file permits packaging its outlines. Collections are checked
+/// by raw member index, including unnamed faces the font catalog cannot load. Malformed members
+/// and collections over the inspection bound are refused; absent or unreadable OS/2 tables keep
+/// the existing unrestricted policy. No Subsetting permits packaging the whole file.
+pub fn font_file_allows_packaging(data: &[u8]) -> bool {
+    use skrifa::raw::TableProvider;
+
+    let allows = |font: skrifa::FontRef<'_>| {
+        let fs_type = font.os2().ok().map_or(0, |table| table.fs_type());
+        let restricted = fs_type & 0x0002 != 0 && fs_type & 0x000C == 0;
+        !restricted && fs_type & 0x0200 == 0
+    };
+    match FileRef::new(data) {
+        Ok(FileRef::Font(font)) => allows(font),
+        Ok(FileRef::Collection(collection)) if !collection.is_empty() && collection.len() <= MAX_FACES => {
+            (0..collection.len()).all(|index| collection.get(index).is_ok_and(allows))
+        }
+        _ => false,
+    }
+}
+
 /// Parse every face in `data` (a font file or collection); a variable font yields one face per
 /// named instance (InDesign lists them as styles).
 pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
-    /// A collection's count is input: what a damaged one can make the loop try.
-    const MAX_FACES: u32 = 1024;
     let count = match FileRef::new(data) {
         Ok(FileRef::Font(_)) => 1,
         Ok(FileRef::Collection(c)) => c.len().min(MAX_FACES),
@@ -360,6 +382,49 @@ pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests_packaging {
+    use super::{MAX_FACES, enumerate_faces, font_file_allows_packaging};
+    use crate::testing::{font_collection, font_with, font_with_names, with_fs_type, with_table_len};
+
+    #[test]
+    fn packaging_checks_every_collection_members_licence() {
+        let free = font_with("Packaging Free", &['a']).unwrap();
+        for (bits, allowed) in [(0x0000, true), (0x0100, true), (0x0002, false), (0x0204, false), (0x0006, true), (0x000A, true)] {
+            let other = with_fs_type(font_with("Packaging Other", &['b']).unwrap(), bits).unwrap();
+            assert_eq!(font_file_allows_packaging(&other), allowed, "single face: {bits:04x}");
+            for files in [[free.as_slice(), other.as_slice()], [other.as_slice(), free.as_slice()]] {
+                let collection = font_collection(&files).unwrap();
+                assert_eq!(enumerate_faces(&collection).len(), 2, "both fixture faces load");
+                assert_eq!(font_file_allows_packaging(&collection), allowed, "collection: {bits:04x}");
+            }
+        }
+        // A member need not have a loadable name to carry a restriction on the whole file.
+        let unnamed = with_fs_type(font_with_names(&[(6, "PackagingUnnamed-Regular")], &['b']).unwrap(), 0x0002).unwrap();
+        let collection = font_collection(&[free.as_slice(), unnamed.as_slice()]).unwrap();
+        assert_eq!(enumerate_faces(&collection).len(), 1, "unnamed member is absent from the catalog");
+        assert!(!font_file_allows_packaging(&collection));
+    }
+
+    #[test]
+    fn packaging_keeps_unknown_os2_policy_but_refuses_uninspectable_members() {
+        let free = font_with("Packaging Unknown", &['a']).unwrap();
+        let unknown = with_table_len(free.clone(), b"OS/2", 0).unwrap();
+        assert!(font_file_allows_packaging(&unknown));
+        assert!(font_file_allows_packaging(&font_collection(&[&free, &unknown]).unwrap()));
+        let mut malformed = font_collection(&[&free, &free]).unwrap();
+        malformed.get_mut(16..20).unwrap().copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(!font_file_allows_packaging(&malformed), "a valid first face cannot hide a malformed member");
+        let mut over = b"ttcf\0\x01\0\0".to_vec();
+        over.extend_from_slice(&(MAX_FACES + 1).to_be_bytes());
+        over.resize(12 + (MAX_FACES as usize + 1) * 4, 0);
+        assert!(!font_file_allows_packaging(&over), "never copy an uninspected tail");
+        assert!(!font_file_allows_packaging(b"not a font"));
+        assert!(font_collection(&[]).is_none());
+        assert!(font_collection(&[b"not a font"]).is_none());
+    }
 }
 
 /// The compiled-in Source Sans 3 Regular, for a database that somehow has no faces at all.

@@ -136,7 +136,7 @@ mod system;
 pub(crate) use face::last_resort_face;
 pub use face::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, bundled,
+    MAX_DOCUMENT_FONTS_TOTAL, bundled, font_file_allows_packaging,
 };
 #[cfg(test)]
 use face::{FontBytes, make_face};
