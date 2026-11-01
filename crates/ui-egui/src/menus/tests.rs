@@ -145,6 +145,70 @@ fn submenu_paths(title: &str) -> Vec<String> {
     out
 }
 
+/// Command ids under a submenu path (`File/Export`), or at the menu's top level when `sub` is empty.
+fn menu_ids_under(title: &str, sub: &str) -> Vec<&'static str> {
+    let items = MENUS.iter().find(|(t, _)| *t == title).map(|(_, items)| *items).unwrap_or_default();
+    let want = if sub.is_empty() { title.to_string() } else { format!("{title}/{sub}") };
+    let mut stack = vec![title.to_string()];
+    let mut out = Vec::new();
+    for e in items {
+        if let Some(name) = e.strip_prefix('>') {
+            stack.push(format!("{}/{name}", stack.last().map_or("", String::as_str)));
+        } else if *e == "<" {
+            stack.pop();
+        } else if stack.last().is_some_and(|p| p == &want)
+            && let Some((_, rest)) = e.split_once(':')
+        {
+            out.push(rest.split('|').next().unwrap_or(rest));
+        }
+    }
+    out
+}
+
+#[test]
+fn file_exports_live_under_the_export_submenu() {
+    assert!(submenu_paths("File").contains(&"File/Export".to_string()));
+    let top = menu_ids_under("File", "");
+    for id in ["app.packageDialog", "app.printBooklet"] {
+        assert!(top.contains(&id), "{id} stays on File");
+    }
+    for id in [
+        "app.exportPdf",
+        "app.exportInteractivePdf",
+        "app.exportPng",
+        "app.exportIdml",
+        "app.exportEpub",
+        "app.exportFixedEpub",
+        "app.exportHtml",
+        "app.exportPptx",
+        "app.exportXml",
+        "app.exportText",
+        "snippet.export",
+    ] {
+        assert!(!top.contains(&id), "{id} is not a File top-level item");
+    }
+    let exports = menu_ids_under("File", "Export");
+    for id in [
+        "app.exportPdf",
+        "app.exportInteractivePdf",
+        "app.exportPng",
+        "app.exportIdml",
+        "app.exportEpub",
+        "app.exportFixedEpub",
+        "app.exportHtml",
+        "app.exportPptx",
+        "app.exportXml",
+        "app.exportText",
+        "snippet.export",
+    ] {
+        assert!(exports.contains(&id), "{id} is under File › Export");
+    }
+    // Engine IDML export stays out of Quick Apply / search; `app.exportIdml` owns the dialog.
+    let searched: Vec<&str> = quick_commands().map(|c| c.0).collect();
+    assert!(!searched.contains(&"file.exportIdml"), "file.exportIdml must not appear in search");
+    assert!(searched.contains(&"app.exportIdml"), "app.exportIdml remains searchable");
+}
+
 /// A command's menu path names the menu entries that really hold it.
 #[test]
 fn define_lists_command_path_matches_the_type_menu() {
