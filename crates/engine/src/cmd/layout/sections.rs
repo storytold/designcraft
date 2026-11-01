@@ -157,7 +157,7 @@ pub fn chapter_numbering(s: &Session) -> Result<Value> {
     let book = s
         .book
         .as_ref()
-        .filter(|b| st.path.as_deref().is_some_and(|p| b.documents.iter().any(|d| std::path::Path::new(d) == std::path::Path::new(p))))
+        .filter(|_| crate::cmd::book::active_member(s).is_ok())
         .map(|b| std::path::Path::new(&b.path).file_stem().map_or_else(|| b.path.clone(), |n| n.to_string_lossy().to_string()));
     Ok(
         json!({"chapterNumber": set.chapter_number.max(1), "label": st.doc.chapter_label(), "style": set.chapter_style, "source": set.chapter_source, "book": book}),

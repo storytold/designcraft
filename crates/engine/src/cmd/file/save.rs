@@ -40,6 +40,7 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         let index = s.active_index().ok_or(EngineError::NoDocument)?;
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
         s.prefs.note_recent_file(&path);
+        crate::cmd::book::finish_toc_save(s)?;
     }
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }

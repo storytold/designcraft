@@ -12,6 +12,7 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
+    ("app.exportBookPdf", "Export Book to PDF…", None, "{path?} — choose a destination, export the open Book, and show any failure in an alert"),
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),

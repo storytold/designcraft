@@ -30,6 +30,17 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if matches!(id, "toc.generate" | "toc.update") && r.as_ref().is_ok_and(|v| v["pendingSave"] == true) {
+            let page = self.session.active().and_then(|st| {
+                let toc = st.doc.toc.as_ref()?;
+                let frame = st.doc.story(toc.story)?.frames.first()?;
+                st.doc.page_of_item(*frame)
+            });
+            if let Some(page) = page {
+                canvas::go_to_page(self, page);
+            }
+            self.ui.status.clear();
+        }
         match &r {
             Err(e) => self.status(e.clone()),
             // Copied text goes to the system clipboard too, whichever way Copy was chosen.

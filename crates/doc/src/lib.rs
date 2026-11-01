@@ -820,9 +820,25 @@ fn one() -> u8 {
     1
 }
 
+/// Sources included when regenerating a table of contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TocScope {
+    #[default]
+    CurrentDocument,
+    EntireBook,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Toc {
+    #[serde(default)]
+    pub scope: TocScope,
+    /// Imported IDML `IncludeBookDocuments` preference, independent of execution scope.
+    /// Entire Book execution exports true; otherwise this value is retained (absent defaults
+    /// to false). This interchange preference alone does not require a newer native reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idml_include_book_documents: Option<bool>,
     pub story: StoryId,
     pub title: String,
     pub entries: Vec<TocEntry>,

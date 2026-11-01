@@ -15,6 +15,11 @@ pub struct Book {
     pub documents: Vec<String>,
     /// Index of the style source document.
     pub style_source: usize,
+    /// A manifest reorder invalidates numbering until successful pagination or Book TOC refresh.
+    pub numbering_needs_update: bool,
+    /// Bounded semantic checkpoint, recomputed from current sources before Book TOC export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toc_state: Option<Value>,
 }
 
 fn has_book(s: &Session) -> std::result::Result<(), String> {
@@ -47,6 +52,93 @@ fn chapter(b: &Book, path: &str) -> Result<String> {
 /// Every chapter's file ([`chapter`]), in order.
 fn chapters(b: &Book) -> Result<Vec<String>> {
     b.documents.iter().map(|path| chapter(b, path)).collect()
+}
+
+/// The same canonical identity policy is used for membership, duplicate detection and open tabs.
+#[cfg(not(target_arch = "wasm32"))]
+fn identity(path: &str) -> Result<std::path::PathBuf> {
+    crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+}
+
+/// Membership of the active document in the open Book is independent of other chapters' availability.
+/// Inaccessible entries cannot establish membership; full collection still validates every entry.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn active_member(s: &Session) -> Result<usize> {
+    let b = s.book.as_ref().ok_or_else(|| bad("toc", "Entire Book requires an open Book containing the active document"))?;
+    if b.documents.len() > MAX_BATCH_CHAPTERS {
+        return Err(bad("toc", "Entire Book supports at most 4096 chapters"));
+    }
+    let active = s.doc()?;
+    let path = active.path.as_deref().ok_or_else(|| bad("toc", "save the active document and add it to the open Book first"))?;
+    let active_identity = identity(path)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut member = None;
+    for (i, stored) in b.documents.iter().enumerate() {
+        let Ok(resolved) = chapter(b, stored).and_then(|path| identity(&path)) else { continue };
+        if !seen.insert(resolved.clone()) {
+            return Err(bad("toc", format!("duplicate Book chapter: {stored}")));
+        }
+        if resolved == active_identity {
+            member = Some(i);
+        }
+    }
+    member.ok_or_else(|| bad("toc", "the active document is not a member of the currently open Book"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn active_member(_: &Session) -> Result<usize> {
+    Err(bad("toc", "Entire Book requires a native file system"))
+}
+
+/// Complete traversal is stricter than membership: no missing/refused chapter may be skipped.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn toc_paths(s: &Session) -> Result<(Vec<String>, usize)> {
+    let member = active_member(s)?;
+    let b = s.book.as_ref().ok_or_else(no_book)?;
+    let paths = chapters(b)?;
+    for path in &paths {
+        identity(path)?;
+    }
+    Ok((paths, member))
+}
+
+/// Read-only, bounded-memory chapter traversal. The active chapter comes from its live model;
+/// other open chapters are refused, never read from potentially stale backing files.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn visit_toc(s: &Session, mut visit: impl FnMut(&str, &designcraft_doc::Document) -> Result<()>) -> Result<()> {
+    let (paths, member) = toc_paths(s)?;
+    let active = s.doc()?;
+    // Preflight every open identity before collecting any chapter.
+    for (i, path) in paths.iter().enumerate() {
+        let chapter_identity = identity(path)?;
+        for open in &s.docs {
+            if open.uid != active.uid && open.path.as_ref().is_some_and(|p| identity(p).is_ok_and(|p| p == chapter_identity)) {
+                return Err(bad("toc", format!("Book chapter {path} is open; save and close other Book chapters before using Entire Book")));
+            }
+        }
+        if i == member && active.interaction.is_some() {
+            return Err(bad("toc", "finish the active document interaction before using Entire Book"));
+        }
+    }
+    for (i, path) in paths.iter().enumerate() {
+        if i == member {
+            visit(path, &active.doc)?;
+        } else {
+            let mut d = load(path)?;
+            let (fonts, _, warnings) = super::file::load_document_fonts(&mut d, path);
+            if !warnings.is_empty() {
+                return Err(bad("toc", format!("cannot guarantee Book heading layout in {path}: {}", warnings.join("; "))));
+            }
+            visit(path, &d)?;
+            drop(fonts);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn visit_toc(_: &Session, _: impl FnMut(&str, &designcraft_doc::Document) -> Result<()>) -> Result<()> {
+    Err(bad("toc", "Entire Book requires a native file system"))
 }
 
 fn load(path: &str) -> Result<designcraft_doc::Document> {
@@ -149,32 +241,99 @@ fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "book/toc.rs"]
+mod toc;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use toc::PendingToc;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn active_toc(s: &mut Session, params: Option<&Value>) -> Result<Value> {
+    toc::active(s, params)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn finish_toc_save(s: &mut Session) -> Result<()> {
+    toc::finish_save(s)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct Numbering {
+    next: u32,
+    chapter: u32,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Numbering {
+    fn new() -> Self {
+        Self { next: 1, chapter: 0 }
+    }
+    fn apply(&mut self, d: &mut designcraft_doc::Document) -> Result<()> {
+        start_at(d, self.next);
+        let pages = u32::try_from(d.page_count()).map_err(|_| bad("book.paginate", "too many pages for continuous numbering"))?;
+        self.next = self.next.checked_add(pages).ok_or_else(|| bad("book.paginate", "too many pages for continuous numbering"))?;
+        self.chapter = match d.settings.chapter_source {
+            designcraft_doc::ChapterSource::Automatic => self.chapter.saturating_add(1),
+            designcraft_doc::ChapterSource::UserDefined => d.settings.chapter_number.max(1),
+            designcraft_doc::ChapterSource::SameAsPrevious => self.chapter.max(1),
+        };
+        d.settings.chapter_number = self.chapter;
+        Ok(())
+    }
+}
+
+fn refresh_available(s: &Session) -> std::result::Result<(), String> {
+    has_book(s)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        toc::closed(s).map_err(|e| e.to_string())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err("Book TOC refresh requires a native file system".into())
+    }
+}
+
+fn refresh_toc(s: &mut Session) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        toc::refresh(s)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = s;
+        Err(bad("book.refreshToc", "books need a file system"))
+    }
+}
+fn toc_freshness(s: &Session) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(toc::freshness(s))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = s;
+        Err(bad("book.tocFreshness", "books need a file system"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn paginate(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
     if b.documents.is_empty() {
         return Ok(json!({"pages": 0, "chapters": []}));
     }
     let mut batch = ChapterBatch::new(b.documents.len(), "book.paginate")?;
-    let mut next = 1u32;
-    let mut chapter = 0u32;
+    let mut numbering = Numbering::new();
     let mut chapters = Vec::with_capacity(b.documents.len());
     for path in &self::chapters(b)? {
         writable_chapter(s, path, "book.paginate")?;
         let mut d = load(path)?;
-        start_at(&mut d, next);
-        let pages = u32::try_from(d.page_count()).map_err(|_| bad("book.paginate", "too many pages for continuous numbering"))?;
-        next = next.checked_add(pages).ok_or_else(|| bad("book.paginate", "too many pages for continuous numbering"))?;
-        chapter = match d.settings.chapter_source {
-            designcraft_doc::ChapterSource::Automatic => chapter.saturating_add(1),
-            designcraft_doc::ChapterSource::UserDefined => d.settings.chapter_number.max(1),
-            designcraft_doc::ChapterSource::SameAsPrevious => chapter.max(1),
-        };
-        d.settings.chapter_number = chapter;
+        numbering.apply(&mut d)?;
         chapters.push(d.chapter_label());
         batch.stage(path, &d)?;
     }
     batch.commit()?;
-    Ok(json!({"pages": next - 1, "chapters": chapters}))
+    Ok(json!({"pages": numbering.next.saturating_sub(1), "chapters": chapters}))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -275,6 +434,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.book = Some(b);
             Ok(json!({"documents": n}))
         }),
+        cmd!(noundo "book.openDocument", "Open Book Document", [], None,
+        "{index} — open the chapter at this zero-based Book index, resolving its path relative to the Book file", has_book, |s, p| {
+            let index = p.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| bad("book.openDocument", "`index` required"))?;
+            let b = s.book.as_ref().ok_or_else(no_book)?;
+            let stored = b.documents.get(index).ok_or_else(|| bad("book.openDocument", format!("no document {index}")))?;
+            let path = chapter(b, stored)?;
+            s.execute("file.open", &json!({"path": path}))
+        }),
         cmd!(noundo "book.close", "Close Book", [], None, "{}", has_book, |s, _| {
             s.book = None;
             ok()
@@ -288,6 +456,31 @@ pub fn specs() -> Vec<CommandSpec> {
             save(&b)?;
             s.book = Some(b);
             ok()
+        }),
+        cmd!(noundo "book.move", "Move Book Document", [], None,
+        "{from, to} — zero-based indices; to is the final index after removal (0..document count). Saves only the manifest; then Update Numbering and TOC", has_book, |s, p| {
+            let index = |key| p.get(key).and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| bad("book.move", format!("`{key}` must be a non-negative index")));
+            let from = index("from")?;
+            let to = index("to")?;
+            let mut b = s.book.as_ref().ok_or_else(no_book)?.clone();
+            if from >= b.documents.len() || to >= b.documents.len() {
+                return Err(bad("book.move", "source and destination must be existing document indices"));
+            }
+            if from == to {
+                return Ok(json!({"moved": false, "numberingNeedsUpdate": b.numbering_needs_update}));
+            }
+            let document = b.documents.remove(from);
+            b.documents.insert(to, document);
+            b.style_source = if b.style_source == from { to }
+                else if from < b.style_source && b.style_source <= to { b.style_source.saturating_sub(1) }
+                else if to <= b.style_source && b.style_source < from { b.style_source.saturating_add(1) }
+                else { b.style_source };
+            b.numbering_needs_update = true;
+            // Commit the cloned manifest atomically before publishing any changed session state.
+            save(&b)?;
+            s.book = Some(b);
+            Ok(json!({"moved": true, "numberingNeedsUpdate": true}))
         }),
         cmd!(noundo "book.remove", "Remove Document", [], None, "{index}", has_book, |s, p| {
             let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("book.remove", "`index` required"))? as usize;
@@ -323,29 +516,50 @@ pub fn specs() -> Vec<CommandSpec> {
                 docs.push(json!({"path": p, "pages": pages, "firstPage": first}));
                 first = first.saturating_add(pages);
             }
-            Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
+            Ok(json!({"path": b.path, "styleSource": b.style_source, "numberingNeedsUpdate": b.numbering_needs_update, "documents": docs}))
         }),
         cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved) → {pages, chapters}", has_book, |s, _| {
-            paginate(s)
+            let result = paginate(s)?;
+            let mut b = s.book.as_ref().ok_or_else(no_book)?.clone();
+            if b.numbering_needs_update {
+                b.numbering_needs_update = false;
+                save(&b)?;
+                s.book = Some(b);
+            }
+            Ok(result)
         }),
         cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
             sync_styles(s)
         }),
+        cmd!(noundo "book.refreshToc", "Refresh Table of Contents", [], None,
+        "{} — close all Book documents first; stabilize one configured Entire Book TOC and Book numbering in at most four passes, then save", refresh_available, |s, _| refresh_toc(s)),
+        cmd!(query "book.tocFreshness", "Book Table of Contents Freshness", [], None,
+        "{} → {configured, fresh, reason?}; read-only validation of saved Book TOC sources, numbering and content", has_book, |s, _| toc_freshness(s)),
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
+            #[cfg(not(target_arch = "wasm32"))]
+            let validated = toc::export_snapshot(s)?;
             let b = s.book.clone().ok_or_else(no_book)?;
             let mut parts = Vec::new();
-            for path in &chapters(&b)? {
-                let mut d = load(path)?;
-                // The chapter's own fonts, for this export (skipped font files are logged).
+            for (index, path) in chapters(&b)?.iter().enumerate() {
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut d = match &validated { Some(snapshot) => snapshot.document(index)?.clone(), None => load(path)? };
+                #[cfg(target_arch = "wasm32")]
+                let mut d = { let _ = index; load(path)? };
+                // Keep the validated snapshot's font scopes alive; do not reload its sources.
+                #[cfg(not(target_arch = "wasm32"))]
+                let _fonts = if validated.is_none() { super::file::load_document_fonts(&mut d, path).0 } else { None };
+                #[cfg(target_arch = "wasm32")]
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
                 let cache = designcraft_compose::Cache::new();
-                let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
+                let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(format!("Book PDF preparation failed for {path}: {e}")))?;
                 let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
                 let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();
             let bytes = designcraft_pdf::merge_pdfs(&parts, None).map_err(|e| EngineError::Other(e.to_string()))?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(snapshot) = &validated { snapshot.verify(s)?; }
             match str_param(p, "path") {
                 Some(path) => {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -363,6 +577,73 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    fn reorder_fixture() -> std::result::Result<(tempfile::TempDir, Session), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("order.dcbook");
+        std::fs::write(&path, serde_json::to_vec(&json!({"documents":["A", "B", "C", "D", "E"], "styleSource":1}))?)?;
+        let mut s = Session::new();
+        s.execute("book.open", &json!({"path":path}))?;
+        Ok((dir, s))
+    }
+
+    #[test]
+    fn book_move_final_index_persists_reload_and_preserves_source() {
+        for (from, to, expected) in [
+            (0, 4, vec!["B", "C", "D", "E", "A"]),
+            (4, 0, vec!["E", "A", "B", "C", "D"]),
+            (3, 1, vec!["A", "D", "B", "C", "E"]),
+            (1, 3, vec!["A", "C", "D", "B", "E"]),
+            (2, 2, vec!["A", "B", "C", "D", "E"]),
+        ] {
+            let (_dir, mut s) = reorder_fixture().unwrap();
+            let path = s.book.as_ref().unwrap().path.clone();
+            let before = std::fs::read(&path).unwrap();
+            let result = s.execute("book.move", &json!({"from":from, "to":to})).unwrap();
+            assert_eq!(result["moved"], from != to);
+            let b = s.book.as_ref().unwrap();
+            assert_eq!(b.documents, expected);
+            assert_eq!(b.documents[b.style_source], "B");
+            assert_eq!(b.numbering_needs_update, from != to);
+            if from == to {
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+            s.execute("book.close", &json!({})).unwrap();
+            s.execute("book.open", &json!({"path":path})).unwrap();
+            let b = s.book.as_ref().unwrap();
+            assert_eq!(b.documents, expected);
+            assert_eq!(b.documents[b.style_source], "B");
+            assert_eq!(b.numbering_needs_update, from != to);
+        }
+    }
+
+    #[test]
+    fn book_move_invalid_indices_and_save_failure_leave_state_unchanged() {
+        let (dir, mut s) = reorder_fixture().unwrap();
+        let path = s.book.as_ref().unwrap().path.clone();
+        let before = std::fs::read(&path).unwrap();
+        for params in [
+            json!({"from":5,"to":0}),
+            json!({"from":0,"to":5}),
+            json!({"from":-1,"to":0}),
+            json!({"from":0,"to":-1}),
+            json!({"from":0}),
+            json!({"from":u64::MAX,"to":0}),
+        ] {
+            assert!(s.execute("book.move", &params).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(s.book.as_ref().unwrap().documents, ["A", "B", "C", "D", "E"]);
+        }
+        // A directory is an unwritable manifest destination on every supported platform.
+        s.book.as_mut().unwrap().path = dir.path().to_string_lossy().into_owned();
+        let error = s.execute("book.move", &json!({"from":0,"to":4})).unwrap_err();
+        assert!(!error.to_string().is_empty());
+        let b = s.book.as_ref().unwrap();
+        assert_eq!(b.documents, ["A", "B", "C", "D", "E"]);
+        assert_eq!(b.style_source, 1);
+        assert!(!b.numbering_needs_update);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
 
     #[test]
     fn book_numbering_resolves_chapter_numbers_in_order() {
@@ -428,5 +709,24 @@ mod tests {
         let mut t = Session::new();
         assert_eq!(t.execute("book.open", &json!({"path": p("book.dcbook")})).unwrap()["documents"], 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn book_pdf_preparation_error_names_member_and_placed_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let pdf = s.execute("file.exportPdf", &json!({})).unwrap();
+        let mut bytes = super::super::file::base64_decode(pdf["base64"].as_str().unwrap());
+        bytes[5..8].copy_from_slice(b"2.0");
+        s.execute("file.place", &json!({"base64":super::super::file::base64_encode(&bytes),"name":"unsupported-logo.pdf","x":72,"y":72})).unwrap();
+        s.execute("file.saveAs", &json!({"path":dir.path().join("bad-member.designcraft")})).unwrap();
+        s.execute("file.close", &json!({})).unwrap();
+        s.execute("book.new", &json!({"path":dir.path().join("test.dcbook")})).unwrap();
+        s.execute("book.add", &json!({"path":dir.path().join("bad-member.designcraft")})).unwrap();
+        let output = dir.path().join("must-not-exist.pdf");
+        let error = s.execute("book.exportPdf", &json!({"path":output})).unwrap_err().to_string();
+        assert!(error.contains("bad-member.designcraft") && error.contains("unsupported-logo.pdf") && error.contains("2.0"), "{error}");
+        assert!(!output.exists());
     }
 }

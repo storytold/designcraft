@@ -26,6 +26,9 @@ pub(super) fn window_control_available(app: &DesignApp, id: &str) -> bool {
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "app.exportBookPdf" {
+        return app.session.book.is_some();
+    }
     if waits_for_ime(app, id) {
         return false;
     }

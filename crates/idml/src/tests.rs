@@ -4977,3 +4977,20 @@ fn only_exactly_generated_cross_reference_text_is_regenerated() {
     let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
     assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }
+
+#[test]
+fn toc_import_retains_book_preference_without_activating_book_scope() {
+    use designcraft_doc::TocScope;
+    for preference in [None, Some(false), Some(true)] {
+        let attribute = preference.map_or(String::new(), |value| format!(" IncludeBookDocuments=\"{value}\""));
+        let styles = TOC_STYLES.replace("<TOCStyle Self=", &format!("<TOCStyle{attribute} Self="));
+        let doc = import_idml(&fixture_with_table_styles(&styles, TOC_STORY)).unwrap();
+        let toc = doc.toc.as_ref().unwrap();
+        assert_eq!(toc.scope, TocScope::CurrentDocument);
+        assert_eq!(toc.idml_include_book_documents, preference);
+        let exported = export_idml(&doc);
+        let back = import_idml(&exported).unwrap();
+        assert_eq!(back.toc.as_ref().unwrap().scope, TocScope::CurrentDocument);
+        assert_eq!(back.toc.as_ref().unwrap().idml_include_book_documents, Some(preference.unwrap_or(false)));
+    }
+}

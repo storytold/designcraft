@@ -63,7 +63,7 @@ pub mod table;
 pub mod tabs;
 pub mod text;
 mod thread;
-mod toc;
+pub(crate) mod toc;
 mod transitions;
 mod variables;
 mod xml;

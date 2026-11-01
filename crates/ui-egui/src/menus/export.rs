@@ -1,6 +1,23 @@
 use super::{DesignApp, Value, json};
 use crate::app::file_dialogs::{Bound, with_path};
 
+/// Both the native Save continuation and explicit control paths use this same result handler.
+pub(super) fn export_book_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let Some(path) = p.get("path").and_then(Value::as_str) else {
+        return app.ask_save("Book.pdf", Bound::App, |app, path| export_book_pdf(app, &json!({"path":path})));
+    };
+    let result = app.run("book.exportPdf", json!({"path":path}));
+    if let Err(error) = &result {
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            "alert",
+            json!({
+                "title":"Export Book to PDF…", "file":path, "message":error
+            }),
+        ));
+    }
+    result
+}
+
 pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
     let ser = app.run("file.serialize", json!({}))?;

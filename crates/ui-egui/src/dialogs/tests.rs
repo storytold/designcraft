@@ -1640,9 +1640,19 @@ fn dialog_context(language: &str) -> egui::Context {
 }
 
 fn dialog_frame(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, events: Vec<egui::Event>) -> Vec<(String, egui::Rect, egui::Rect)> {
+    test_ui_frame(app, ctx, screen, events, |app, ui| show(app, ui.ctx()))
+}
+
+fn test_ui_frame(
+    app: &mut DesignApp,
+    ctx: &egui::Context,
+    screen: egui::Rect,
+    events: Vec<egui::Event>,
+    mut body: impl FnMut(&mut DesignApp, &mut egui::Ui),
+) -> Vec<(String, egui::Rect, egui::Rect)> {
     let time = ctx.input(|i| i.time) + 1.0 / 60.0;
     let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| {
-        show(app, ui.ctx());
+        body(app, ui);
     });
     output.textures_delta.clear();
     fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
@@ -3754,6 +3764,375 @@ fn character_style_options_set_the_digits() {
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn toc_dialog_scope_membership_remote_styles_and_saved_preselection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    open_toc(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("scope"), "currentDocument");
+    assert!(!d.b("bookAvailable"));
+    app.ui.dialog = None;
+    app.run("style.paragraph.create", json!({"name": "Remote Only"})).unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("remote.designcraft")})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("toc.designcraft")})).unwrap();
+    app.run("book.new", json!({"path": dir.path().join("test.dcbook")})).unwrap();
+    for name in ["toc.designcraft", "remote.designcraft"] {
+        app.run("book.add", json!({"path": dir.path().join(name)})).unwrap();
+    }
+    app.run("file.close", json!({})).unwrap();
+    app.run("book.paginate", json!({})).unwrap();
+    app.run("file.open", json!({"path": dir.path().join("toc.designcraft")})).unwrap();
+    open_toc(&mut app);
+    let mut d = app.ui.dialog.take().unwrap();
+    assert!(d.b("bookAvailable"));
+    assert!(!d.fields["styles"].as_array().unwrap().contains(&json!("Remote Only")));
+    d.fields.insert("scope".into(), json!("entireBook"));
+    refresh_toc_sources(&mut app, &mut d);
+    assert!(d.fields["styles"].as_array().unwrap().contains(&json!("Remote Only")));
+    assert!(!d.fields["localStyles"].as_array().unwrap().contains(&json!("Remote Only")), "output styles remain local");
+    d.fields.insert("included".into(), json!([{"style":"Remote Only", "level":2, "sort":true}]));
+    let params = toc_params(&app, &d);
+    assert_eq!(params["scope"], "entireBook");
+    assert_eq!(params["createBookmarks"], false, "chapter-local destinations cannot become bookmarks in the TOC document");
+    assert!(params["entries"][0].get("sort").is_none(), "UI cannot request global Book sorting");
+    app.ui.status = "previous failed attempt".into();
+    app.ui.dialog = Some(d);
+    assert_eq!(confirm(&mut app).unwrap()["pendingSave"], true);
+    assert!(app.ui.status.is_empty());
+    assert!(app.session.doc().unwrap().is_dirty());
+    open_toc(&mut app);
+    let mut d = app.ui.dialog.take().unwrap();
+    assert_eq!(d.s("scope"), "entireBook");
+    assert!(d.fields["styles"].as_array().unwrap().contains(&json!("Remote Only")));
+    d.fields.insert("scope".into(), json!("currentDocument"));
+    refresh_toc_sources(&mut app, &mut d);
+    assert!(!d.fields["styles"].as_array().unwrap().contains(&json!("Remote Only")));
+    app.run("book.close", json!({})).unwrap();
+    open_toc(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("scope"), "entireBook", "saved scope is retained even without its Book");
+    assert!(!d.b("bookAvailable"));
+    assert!(d.s("status").contains("Book"));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn toc_dialog_after_real_book_panel_click_accepts_relative_member_with_missing_cover() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.saveAs", json!({"path":dir.path().join("02- Colofon.designcraft")})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    let manifest = dir.path().join("real-path.dcbook");
+    std::fs::write(&manifest, serde_json::to_vec(&json!({"documents":["missing-cover.designcraft", "./02- Colofon.designcraft"]})).unwrap()).unwrap();
+    app.run("book.open", json!({"path":manifest})).unwrap();
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+    let body = |app: &mut DesignApp, ui: &mut egui::Ui| crate::panels::library::book(app, ui);
+    test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    let pos = visible_label(&labels, screen, "02- Colofon").center();
+    for pressed in [true, false] {
+        test_ui_frame(
+            &mut app,
+            &ctx,
+            screen,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ],
+            body,
+        );
+    }
+    let active = app.session.doc().expect("clicking the panel opens the Book-relative chapter");
+    let path = std::path::Path::new(active.path.as_deref().unwrap());
+    assert!(path.is_absolute());
+    assert_eq!(std::fs::canonicalize(path).unwrap(), std::fs::canonicalize(dir.path().join("02- Colofon.designcraft")).unwrap());
+    open_toc(&mut app);
+    assert!(app.ui.dialog.as_ref().unwrap().b("bookAvailable"));
+    // Click the actual scope combo and option, not only its serialized field.
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Current Document").center());
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Entire Book").center());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("scope"), "entireBook");
+    assert!(d.s("status").contains("missing-cover.designcraft"), "missing input is reported without misclassifying membership");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn book_panel_drag_reorders_without_opening_and_click_still_opens() {
+    for (from, gap, expected) in [
+        (4, 1, vec!["A", "E", "B", "C", "D"]),
+        (0, 5, vec!["B", "C", "D", "E", "A"]),
+        (3, 1, vec!["A", "D", "B", "C", "E"]),
+        (1, 4, vec!["A", "C", "D", "B", "E"]),
+        (2, 2, vec!["A", "B", "C", "D", "E"]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        for name in ["A", "B", "C", "D", "E"] {
+            app.run("file.new", json!({})).unwrap();
+            app.run("file.saveAs", json!({"path":dir.path().join(format!("{name}.designcraft"))})).unwrap();
+            app.run("file.close", json!({})).unwrap();
+        }
+        let manifest = dir.path().join("drag.dcbook");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(
+                &json!({"documents":["A.designcraft","B.designcraft","C.designcraft","D.designcraft","E.designcraft"],"styleSource":1}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        app.run("book.open", json!({"path":manifest})).unwrap();
+        let ctx = dialog_context("en");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let body = |app: &mut DesignApp, ui: &mut egui::Ui| crate::panels::library::book(app, ui);
+        test_ui_frame(&mut app, &ctx, screen, vec![], body);
+        let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+        let rects = ["A", "B", "C", "D", "E"].map(|n| visible_label(&labels, screen, n));
+        let origin = rects[from].center();
+        let target = egui::pos2(origin.x, if gap == 5 { rects[4].bottom() + 4.0 } else { rects[gap].top() - 4.0 });
+        let button =
+            |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        test_ui_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(origin), button(origin, true)], body);
+        test_ui_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(origin + egui::vec2(12.0, 0.0))], body);
+        test_ui_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(target)], body);
+        assert!(app.session.active().is_none(), "drag must not open source");
+        test_ui_frame(&mut app, &ctx, screen, vec![button(target, false)], body);
+        let b = app.session.book.as_ref().unwrap();
+        let names = b.documents.iter().map(|p| std::path::Path::new(p).file_stem().unwrap().to_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(names, expected, "from {from}, gap {gap}");
+        assert_eq!(b.documents[b.style_source], "B.designcraft");
+        assert!(app.session.active().is_none());
+        let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+        let point = visible_label(&labels, screen, "B").center();
+        for pressed in [true, false] {
+            test_ui_frame(&mut app, &ctx, screen, vec![egui::Event::PointerMoved(point), button(point, pressed)], body);
+        }
+        assert_eq!(std::path::Path::new(app.session.doc().unwrap().path.as_deref().unwrap()).file_name().unwrap(), "B.designcraft");
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn book_panel_refresh_requires_closed_participants_and_runs_the_engine_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name":"Head"})).unwrap();
+    let frame = app.run("frame.create", json!({"rect":[36,36,400,400],"content":"text","text":"Chapter"})).unwrap();
+    app.run("text.select", json!({"story":frame["story"],"anchor":0,"focus":0})).unwrap();
+    app.run("style.paragraph.apply", json!({"name":"Head"})).unwrap();
+    app.run("file.saveAs", json!({"path":dir.path().join("chapter.designcraft")})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.saveAs", json!({"path":dir.path().join("toc.designcraft")})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    app.run("book.new", json!({"path":dir.path().join("book.dcbook")})).unwrap();
+    for name in ["toc.designcraft", "chapter.designcraft"] {
+        app.run("book.add", json!({"path":dir.path().join(name)})).unwrap();
+    }
+    app.run("book.paginate", json!({})).unwrap();
+    app.run("book.openDocument", json!({"index":0})).unwrap();
+    app.run("toc.generate", json!({"scope":"entireBook","styles":["Head"]})).unwrap();
+    app.run("file.save", json!({})).unwrap();
+    let info = designcraft_engine::find_command("book.refreshToc").unwrap().info(&app.session);
+    assert!(!info.enabled);
+    assert!(info.disabled_reason.unwrap().contains("close"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+    let body = |app: &mut DesignApp, ui: &mut egui::Ui| crate::panels::library::book(app, ui);
+    test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    assert!(labels.iter().any(|(label, _, _)| label == "Refresh Table of Contents"));
+    app.run("file.close", json!({})).unwrap();
+    let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    let point = visible_label(&labels, screen, "Refresh Table of Contents").center();
+    for pressed in [true, false] {
+        test_ui_frame(
+            &mut app,
+            &ctx,
+            screen,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ],
+            body,
+        );
+    }
+    assert_eq!(app.run("book.tocFreshness", json!({})).unwrap()["fresh"], true);
+    assert!(app.session.book.as_ref().unwrap().toc_state.is_some());
+    assert!(app.session.active().is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn book_export_test_app(dir: &std::path::Path, toc: bool) -> DesignApp {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name":"Head"})).unwrap();
+    let frame = app.run("frame.create", json!({"rect":[36,36,400,400],"content":"text","text":"Chapter"})).unwrap();
+    app.run("text.select", json!({"story":frame["story"],"anchor":0,"focus":7})).unwrap();
+    app.run("style.paragraph.apply", json!({"name":"Head"})).unwrap();
+    app.run("file.saveAs", json!({"path":dir.join("chapter.designcraft")})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    if toc {
+        app.run("file.new", json!({})).unwrap();
+        app.run("file.saveAs", json!({"path":dir.join("toc.designcraft")})).unwrap();
+        app.run("file.close", json!({})).unwrap();
+    }
+    app.run("book.new", json!({"path":dir.join("test.dcbook")})).unwrap();
+    if toc {
+        app.run("book.add", json!({"path":dir.join("toc.designcraft")})).unwrap();
+    }
+    app.run("book.add", json!({"path":dir.join("chapter.designcraft")})).unwrap();
+    app.run("book.paginate", json!({})).unwrap();
+    if toc {
+        app.run("book.openDocument", json!({"index":0})).unwrap();
+        app.run("toc.generate", json!({"scope":"entireBook","styles":["Head"]})).unwrap();
+        app.run("file.save", json!({})).unwrap();
+        app.run("file.close", json!({})).unwrap();
+    }
+    app
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn click_book_export(app: &mut DesignApp, destination: Option<String>) {
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(destination));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+    let body = |app: &mut DesignApp, ui: &mut egui::Ui| crate::panels::library::book(app, ui);
+    test_ui_frame(app, &ctx, screen, vec![], body);
+    let labels = test_ui_frame(app, &ctx, screen, vec![], body);
+    let point = visible_label(&labels, screen, "Export PDF…").center();
+    for pressed in [true, false] {
+        test_ui_frame(
+            app,
+            &ctx,
+            screen,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ],
+            body,
+        );
+    }
+    app.settle_dialogs();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn book_export_accepted_save_creates_pdf_or_surfaces_member_and_final_write_errors() {
+    for mode in ["valid", "missing", "rename", "cancel"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = book_export_test_app(dir.path(), false);
+        let path = dir.path().join("Böök – proef.pdf");
+        if mode == "missing" {
+            std::fs::remove_file(dir.path().join("chapter.designcraft")).unwrap();
+        }
+        if mode == "rename" {
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("keep"), b"untouched").unwrap();
+        }
+        click_book_export(&mut app, if mode == "cancel" { None } else { Some(path.to_string_lossy().to_string()) });
+        assert!(app.session.active().is_none());
+        if mode == "valid" {
+            assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+            assert!(app.ui.dialog.is_none());
+        } else if mode == "cancel" {
+            assert!(!path.exists());
+            assert!(app.ui.dialog.is_none());
+            assert!(app.ui.status.is_empty());
+        } else {
+            let alert = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(alert.id, "alert");
+            assert_eq!(alert.s("file"), path.to_string_lossy());
+            assert!(!alert.s("message").is_empty());
+            if mode == "missing" {
+                assert!(alert.s("message").contains("chapter.designcraft"));
+                assert!(!path.exists());
+            } else {
+                assert_eq!(std::fs::read(path.join("keep")).unwrap(), b"untouched");
+            }
+            assert!(!app.ui.status.is_empty());
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn book_export_fresh_toc_succeeds_and_stale_toc_alert_preserves_error_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = book_export_test_app(dir.path(), true);
+    assert_eq!(app.run("book.tocFreshness", json!({})).unwrap()["fresh"], true);
+    let fresh = dir.path().join("fresh.pdf");
+    click_book_export(&mut app, Some(fresh.to_string_lossy().to_string()));
+    assert!(std::fs::metadata(fresh).unwrap().len() > 100);
+    app.run("book.openDocument", json!({"index":0})).unwrap();
+    app.session
+        .edit(|d, _| {
+            d.toc.as_mut().unwrap().title = "Changed definition".into();
+            Ok(())
+        })
+        .unwrap();
+    app.run("file.save", json!({})).unwrap();
+    app.run("file.close", json!({})).unwrap();
+    assert_eq!(app.run("book.tocFreshness", json!({})).unwrap()["fresh"], false);
+    let before = std::fs::read(dir.path().join("toc.designcraft")).unwrap();
+    let stale = dir.path().join("stale.pdf");
+    click_book_export(&mut app, Some(stale.to_string_lossy().to_string()));
+    assert_eq!(app.ui.dialog.as_ref().unwrap().id, "alert");
+    assert!(app.ui.dialog.as_ref().unwrap().s("message").contains("out of date"));
+    assert!(!stale.exists());
+    app.ui.dialog = None;
+    assert!(app.run("app.exportBookPdf", json!({"path":stale})).is_err(), "a failed accepted destination is not Ok(null)");
+    assert_eq!(std::fs::read(dir.path().join("toc.designcraft")).unwrap(), before);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn book_panel_generic_reminder_covers_pending_toc_and_reorder() {
+    const MESSAGE: &str = "Book numbering or TOC needs updating: save the TOC, Update Numbering or Refresh Table of Contents.";
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = book_export_test_app(dir.path(), true);
+    let original_order = app.session.book.as_ref().unwrap().documents.clone();
+    app.run("book.openDocument", json!({"index":0})).unwrap();
+    app.run("toc.update", json!({})).unwrap();
+    assert_eq!(app.session.book.as_ref().unwrap().documents, original_order);
+    assert!(app.session.book.as_ref().unwrap().numbering_needs_update);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let body = |app: &mut DesignApp, ui: &mut egui::Ui| crate::panels::library::book(app, ui);
+    for &(lang, _) in crate::i18n::LANGUAGES {
+        app.ui.language = lang.into();
+        let ctx = dialog_context(lang);
+        test_ui_frame(&mut app, &ctx, screen, vec![], body);
+        let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+        let message = crate::i18n::tr(lang, MESSAGE);
+        if matches!(lang, "de" | "fr" | "es" | "ja" | "zh") {
+            assert_ne!(message, MESSAGE, "{lang}: translation must be available");
+        }
+        visible_label(&labels, screen, message);
+        assert!(!labels.iter().any(|(text, _, _)| text.contains("Order changed")));
+    }
+    app.ui.language = "".into();
+    let ctx = dialog_context("");
+    app.run("file.save", json!({})).unwrap();
+    let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    assert!(!labels.iter().any(|(text, _, _)| text == MESSAGE));
+    app.run("file.close", json!({})).unwrap();
+    app.run("book.move", json!({"from":1,"to":0})).unwrap();
+    let labels = test_ui_frame(&mut app, &ctx, screen, vec![], body);
+    visible_label(&labels, screen, MESSAGE);
+}
+
 #[test]
 fn import_warning_show_selects_the_frame_it_is_about() {
     use egui_kittest::{Harness, kittest::Queryable};
@@ -4930,4 +5309,26 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     assert_eq!(added.len(), 1, "one frame");
     let b = added[0].bounds();
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
+}
+
+#[test]
+fn imported_book_preference_does_not_select_entire_book_in_the_dialog() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    app.run("toc.generate", json!({"styles":["Headline"]})).unwrap();
+    app.session
+        .edit(|d, _| {
+            d.toc.as_mut().unwrap().idml_include_book_documents = Some(true);
+            Ok(())
+        })
+        .unwrap();
+    open_toc(&mut app);
+    let dialog = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(dialog.s("scope"), "currentDocument");
+    assert!(!dialog.b("bookAvailable"));
+    assert_eq!(toc_params(&app, dialog)["scope"], "currentDocument");
+    confirm(&mut app).unwrap();
+    let toc = app.session.doc().unwrap().doc.toc.as_ref().unwrap();
+    assert_eq!(toc.scope, designcraft_doc::TocScope::CurrentDocument);
+    assert_eq!(toc.idml_include_book_documents, Some(true));
 }

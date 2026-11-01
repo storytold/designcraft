@@ -140,16 +140,42 @@ fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
             let _ = app.run("book.paginate", json!({}));
         }
+        let availability = designcraft_engine::find_command("book.refreshToc").map(|c| c.info(&app.session));
+        let refresh = ui.add_enabled(
+            availability.as_ref().is_some_and(|c| c.enabled),
+            egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Refresh Table of Contents"))),
+        );
+        if refresh.on_disabled_hover_text(availability.and_then(|c| c.disabled_reason).unwrap_or_default()).clicked()
+            && app.run("book.refreshToc", json!({})).is_ok()
+        {
+            app.status(crate::i18n::tr(&app.ui.language, "Book Table of Contents refreshed.").to_string());
+        }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
             let _ = app.run("book.syncStyles", json!({}));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked() {
-            let asked = app.ask_save("Book.pdf", Bound::App, |app, path| {
-                app.run("book.exportPdf", json!({"path": path})).or_else(|e| report_err(app, "Book", e))
-            });
+            let asked = app.run("app.exportBookPdf", json!({}));
             report(app, "Book", asked);
         }
     });
+}
+
+#[derive(Clone)]
+struct BookDrag {
+    path: String,
+    index: usize,
+}
+
+/// Convert a pointer's insertion gap in the original list to the command's final index.
+fn book_drop_target(rows: &[egui::Rect], pointer: egui::Pos2, from: usize) -> Option<(usize, f32)> {
+    let first = rows.first()?;
+    let last = rows.last()?;
+    if !egui::Rect::from_min_max(first.min, last.max).expand(8.0).contains(pointer) || from >= rows.len() {
+        return None;
+    }
+    let gap = rows.iter().position(|r| pointer.y < r.center().y).unwrap_or(rows.len());
+    let y = rows.get(gap).map_or(last.bottom(), |r| r.top());
+    Some((if gap > from { gap.saturating_sub(1) } else { gap }, y))
 }
 
 /// Book panel: the open book's documents with their page ranges; numbering, synchronising and
@@ -163,11 +189,23 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     let source = info["styleSource"].as_u64().unwrap_or(0) as usize;
     ui.separator();
+    if info["numberingNeedsUpdate"].as_bool() == Some(true) {
+        crate::rtl::label(
+            ui,
+            egui::RichText::new(crate::i18n::tr(
+                &app.ui.language,
+                "Book numbering or TOC needs updating: save the TOC, Update Numbering or Refresh Table of Contents.",
+            ))
+            .color(t.accent),
+        );
+    }
+    let book_path = info["path"].as_str().unwrap_or_default();
+    let mut rows = Vec::new();
     for (i, d) in info["documents"].as_array().cloned().unwrap_or_default().iter().enumerate() {
         let path = d["path"].as_str().unwrap_or("").to_string();
         let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let (first, pages) = (d["firstPage"].as_u64().unwrap_or(1), d["pages"].as_u64().unwrap_or(0));
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             if ui
                 .selectable_label(i == source, if i == source { "◆" } else { "◇" })
                 .on_hover_ui(|ui| {
@@ -177,14 +215,12 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
             {
                 let _ = app.run("book.styleSource", json!({"index": i}));
             }
-            if ui
-                .selectable_label(false, &name)
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Open"));
-                })
-                .clicked()
-            {
-                let _ = app.run("file.open", json!({"path": path}));
+            let response = ui
+                .add(egui::Button::selectable(false, &name).sense(egui::Sense::click_and_drag()))
+                .on_hover_text(crate::i18n::tr(&app.ui.language, "Click to open; drag to reorder"));
+            response.dnd_set_drag_payload(BookDrag { path: book_path.to_string(), index: i });
+            if response.clicked() {
+                let _ = app.run("book.openDocument", json!({"index": i}));
             }
             crate::rtl::label(ui, egui::RichText::new(format!("{first}–{}", first + pages.saturating_sub(1))).size(10.5).color(t.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -193,6 +229,20 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
                 }
             });
         });
+        rows.push(row.response.rect);
+    }
+    // Same payload + insertion-line pattern as the Layers panel; execute only on release.
+    if let Some(drag) = egui::DragAndDrop::payload::<BookDrag>(ui.ctx())
+        && drag.path == book_path
+        && let Some(pointer) = ui.ctx().pointer_latest_pos()
+        && let Some((to, y)) = book_drop_target(&rows, pointer, drag.index)
+    {
+        let x = ui.max_rect().x_range();
+        ui.painter().line_segment([egui::pos2(x.min, y), egui::pos2(x.max, y)], egui::Stroke::new(2.0, t.accent));
+        if ui.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            let _ = app.run("book.move", json!({"from": drag.index, "to": to}));
+        }
     }
     ui.separator();
     book_action_buttons(app, ui);
@@ -261,4 +311,19 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
+}
+
+#[cfg(test)]
+mod book_drag_tests {
+    use super::book_drop_target;
+    #[test]
+    fn insertion_indicator_and_final_index_match_each_gap() {
+        let rows = (0..5).map(|i| egui::Rect::from_min_size(egui::pos2(0.0, i as f32 * 25.0), egui::vec2(200.0, 20.0))).collect::<Vec<_>>();
+        assert_eq!(book_drop_target(&rows, egui::pos2(50.0, 23.0), 4), Some((1, 25.0)));
+        assert_eq!(book_drop_target(&rows, egui::pos2(50.0, 120.0), 0), Some((4, 120.0)));
+        assert_eq!(book_drop_target(&rows, egui::pos2(50.0, 0.0), 4), Some((0, 0.0)));
+        assert_eq!(book_drop_target(&rows, egui::pos2(50.0, 49.0), 2), Some((2, 50.0)));
+        assert!(book_drop_target(&rows, egui::pos2(250.0, 49.0), 2).is_none());
+        assert!(book_drop_target(&[], egui::Pos2::ZERO, 0).is_none());
+    }
 }

@@ -1217,6 +1217,8 @@ mod delete_tests {
             d.endnote_options.heading_style = "Table Body".into();
             d.settings.epub_split = designcraft_doc::EpubSplit::Style("Table Body".into());
             d.toc = Some(Toc {
+                scope: Default::default(),
+                idml_include_book_documents: None,
                 story,
                 title: "Contents".into(),
                 entries: vec![TocEntry { entry_style: Some("Table Body".into()), ..TocEntry::new("Table Body", 1) }],
