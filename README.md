@@ -63,6 +63,7 @@
   <a href="#architecture">Architecture</a> ·
   <a href="#downloads">Downloads</a> ·
   <a href="#the-crafting-apps">The Crafting Apps</a> ·
+  <a href="#contributing">Contributing</a> ·
   <a href="#license-and-credits">License and credits</a>
 </p>
 
@@ -370,6 +371,11 @@ And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video stud
   <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
   <a href="https://getartcraft.com/apps/designcraft">DesignCraft</a>
 </p>
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting a change to find existing work and let
+other contributors know which part you are taking on.
 
 ## License and credits
 
