@@ -272,7 +272,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
     for slot in &layout.slots {
-        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
+        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, page_decor::PAGE_EDGE), StrokeKind::Outside);
     }
     if !preview {
         let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG)));
