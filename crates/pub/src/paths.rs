@@ -48,7 +48,7 @@ fn decode(sh: &EShape, frame: Rect, warnings: &mut Vec<String>) -> Result<PathDa
         return Err("invalid geometry scale");
     }
     let mut points = Vec::with_capacity(vertices.len() / 8);
-    for vertex in vertices.chunks_exact(8) {
+    for vertex in vertices.as_chunks::<8>().0 {
         let x = read::u32_at(vertex, 0).map_err(|_| "truncated vertex")?;
         let y = read::u32_at(vertex, 4).map_err(|_| "truncated vertex")?;
         if [x, y].iter().any(|v| (0x8000_0000..=0x8000_007f).contains(v)) {
@@ -67,7 +67,7 @@ fn decode(sh: &EShape, frame: Rect, warnings: &mut Vec<String>) -> Result<PathDa
     let mut ended = false;
     let mut stopped = false;
     let mut escape_codes = BTreeSet::new();
-    for segment in segments.chunks_exact(2) {
+    for segment in segments.as_chunks::<2>().0 {
         let word = read::u16_at(segment, 0).map_err(|_| "truncated segment")?;
         let (kind, count) = (word >> 13, word & 0x1fff);
         match kind {

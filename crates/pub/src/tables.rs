@@ -272,7 +272,7 @@ fn single_tcd(bytes: &[u8]) -> Result<Option<&[u8]>> {
         let header = slice(bytes, at, 8)?;
         let n = usize::from(u16_at(header, 2)?);
         let start = at.checked_add(8).ok_or_else(|| bad("section directory overflow"))?;
-        for entry in slice(bytes, start, n * 24)?.chunks_exact(24) {
+        for entry in slice(bytes, start, n * 24)?.as_chunks::<24>().0 {
             if entry.get(2..6) == Some(b"TCD ") {
                 if found.is_some() {
                     return Ok(None);

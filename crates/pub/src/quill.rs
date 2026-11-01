@@ -225,7 +225,7 @@ fn sections(b: &[u8]) -> Result<Vec<Section<'_>>> {
         let header = slice(b, at, 8)?;
         let n = usize::from(u16_at(header, 2)?);
         let entries = slice(b, at.checked_add(8).ok_or(PubError::Truncated)?, n * 24)?;
-        for e in entries.chunks_exact(24) {
+        for e in entries.as_chunks::<24>().0 {
             let pos = u32_at(e, 16)? as usize;
             out.push(Section { tag: slice(e, 2, 4)?, at: pos, data: slice(b, pos, u32_at(e, 20)? as usize)? });
             if out.len() > 100_000 {
@@ -293,7 +293,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<Quill> {
         slice(s.data, 20, 4 * n)?;
         for _ in 0..n {
             let len = usize::from(u16_at(s.data, at)?) * 2;
-            let units: Vec<_> = slice(s.data, at + 2, len)?.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+            let units: Vec<_> = slice(s.data, at + 2, len)?.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
             q.fonts.push(String::from_utf16_lossy(&units));
             slice(s.data, at + 2 + len, 4)?;
             at += 6 + len;
@@ -341,7 +341,7 @@ pub(crate) fn parse(b: &[u8]) -> Result<Quill> {
             let len = u32_at(lengths.data, lengths_at + 4 * i)? as usize;
             let end = start.saturating_add(len).min(text.data.len() / 2);
             let range = start..end;
-            let units = slice(text.data, start * 2, (end - start) * 2)?.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+            let units = slice(text.data, start * 2, (end - start) * 2)?.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
             q.stories.insert(id, QStory { units, chars: cut(&chars, &range), paras: cut(&paras, &range), ..Default::default() });
             start = end;
         }

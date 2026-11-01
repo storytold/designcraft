@@ -264,7 +264,7 @@ impl Canvas {
             }
             None => pts,
         };
-        for c in rest.chunks_exact(3) {
+        for c in rest.as_chunks::<3>().0 {
             d.push('C');
             for p in c {
                 let (x, y) = Self::pt(&xf, *p);

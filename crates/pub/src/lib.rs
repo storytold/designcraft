@@ -1187,7 +1187,7 @@ fn array(raw: &[u8]) -> Option<Vec<&[u8]>> {
 }
 
 fn utf16z(raw: &[u8]) -> String {
-    let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
+    let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
     String::from_utf16_lossy(&units)
 }
 

@@ -111,7 +111,7 @@ fn props(b: &[u8], r: Rec, sh: &mut EShape) -> Result<()> {
     let n = r.inst as usize;
     let fixed = slice(body, 0, 6 * n)?;
     let mut complex_ids = Vec::new();
-    for entry in fixed.chunks_exact(6) {
+    for entry in fixed.as_chunks::<6>().0 {
         let id = u16_at(entry, 0)?;
         let v = u32_at(entry, 2)?;
         let pid = id & 0x3fff;
@@ -139,7 +139,7 @@ fn props(b: &[u8], r: Rec, sh: &mut EShape) -> Result<()> {
 fn pairs(b: &[u8], r: Rec) -> Result<HashMap<u16, u32>> {
     let body = slice(b, r.data, r.len)?;
     let mut m = HashMap::new();
-    for entry in body.get(4..).ok_or(PubError::Truncated)?.chunks_exact(6) {
+    for entry in body.get(4..).ok_or(PubError::Truncated)?.as_chunks::<6>().0 {
         m.insert(u16_at(entry, 0)?, u32_at(entry, 2)?);
     }
     Ok(m)
