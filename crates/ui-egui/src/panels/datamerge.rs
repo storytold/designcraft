@@ -4,6 +4,7 @@ use egui::{Color32, Sense, Stroke, vec2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
+use crate::app::file_dialogs::Bound;
 use crate::theme::{Tokens, semibold};
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -186,18 +187,20 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 fn select_source(app: &mut DesignApp) {
-    let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("dataMerge")) else {
+    let asked = app.ask_open("dataMerge", Bound::Document, |app, path| {
+        let _ = app.run("data.source.select", json!({"path": path}));
+        Ok(Value::Null)
+    });
+    if asked.is_err() {
         app.status(tr(&app.ui.language, "Pass csv, rows, or bytes from the control channel."));
-        return;
-    };
-    let _ = app.run("data.source.select", json!({"path": path}));
+    }
 }
 
 /// Render a localized, named combo and return only a changed selection.
 fn choice(ui: &mut egui::Ui, id: &str, current: &str, options: &[(&str, &str)], lang: &str, name: &str) -> Option<String> {
     let label = options.iter().find(|(value, _)| *value == current).map(|(_, text)| tr(lang, text)).unwrap_or(current);
     let mut picked = None;
-    let combo = egui::ComboBox::from_id_salt(id).selected_text(label).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(label).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
         for (value, text) in options {
             if ui.selectable_label(*value == current, tr(lang, text)).clicked() {
                 picked = Some((*value).to_string());

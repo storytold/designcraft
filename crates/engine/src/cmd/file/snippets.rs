@@ -1,6 +1,8 @@
+#[cfg(not(target_arch = "wasm32"))]
+use super::EngineError;
 use super::bytes::{base64_encode, from_bytes, to_bytes};
 use super::place::read_source;
-use super::*;
+use super::{ItemId, Rect, Result, Selection, Session, Value, bad, json, str_param};
 
 /// The selection as `.designcraft` snippet bytes.
 pub(crate) fn snippet_bytes(s: &mut Session) -> Result<Vec<u8>> {

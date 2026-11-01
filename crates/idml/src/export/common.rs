@@ -1,4 +1,4 @@
-use super::*;
+use super::{Affine, Color, DOM_VERSION, El, Node, PKG_NS, escape_id, num};
 
 pub(crate) fn uid(n: u64) -> String {
     format!("u{n:x}")

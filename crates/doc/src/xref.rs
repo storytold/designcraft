@@ -29,13 +29,28 @@ pub struct TextAnchor {
     pub name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossRef {
     /// The destination anchor (0 = unresolved, e.g. pasted without its destination).
     pub target: u64,
     /// Name of the format in [`Document::xref_formats`].
     pub format: String,
+    /// Text typed over the generated text (InDesign keeps a cross-reference's edited text until
+    /// it is updated): shown as is, except that each `<pageNum />` shows the destination's page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The page last shown (for edited text whose destination is gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+/// The `<pageNum />` building block, as it appears in [`CrossRef::text`].
+pub const PAGE_NUM_BLOCK: &str = "<pageNum />";
+
+/// Edited cross-reference text with its page numbers filled in (quotes kept as typed).
+pub fn expand_edited(text: &str, page: &str) -> String {
+    text.replace(PAGE_NUM_BLOCK, page)
 }
 
 /// A cross-reference format: building blocks between literal text.
@@ -84,7 +99,7 @@ pub fn expand(definition: &str, v: &XrefValues) -> String {
     let mut rest = definition;
     while let Some(i) = rest.find('<') {
         out.push_str(&rest[..i]);
-        let Some(j) = rest[i..].find('>') else {
+        let Some(j) = tag_end(&rest[i..]) else {
             out.push_str(&rest[i..]);
             return out;
         };
@@ -118,6 +133,20 @@ pub fn expand(definition: &str, v: &XrefValues) -> String {
     }
     out.push_str(rest);
     typographic_quotes(&out)
+}
+
+/// Byte index of the `>` that ends the tag starting at `s`, skipping quoted attribute values.
+/// An unterminated quote falls back to the first `>`, so only that malformed tag is affected.
+fn tag_end(s: &str) -> Option<usize> {
+    let mut in_quote = false;
+    for (k, c) in s.char_indices() {
+        match c {
+            '"' => in_quote = !in_quote,
+            '>' if !in_quote => return Some(k),
+            _ => {}
+        }
+    }
+    s.find('>')
 }
 
 /// Straight double quotes in format text become typographer's quotes.
@@ -198,7 +227,7 @@ impl Story {
         if n > 0 {
             let k = self.marks_before(XREF_MARK, pos);
             for i in 0..n {
-                self.xrefs.insert(k + i, Arc::new(CrossRef { target: 0, format: String::new() }));
+                self.xrefs.insert(k + i, Arc::new(CrossRef::default()));
             }
         }
         let n = text.matches(crate::index::INDEX_MARK).count();
@@ -268,7 +297,7 @@ impl Story {
         let n = self.text.matches(XREF_MARK).count();
         self.xrefs.truncate(n);
         while self.xrefs.len() < n {
-            self.xrefs.push(Arc::new(CrossRef { target: 0, format: String::new() }));
+            self.xrefs.push(Arc::new(CrossRef::default()));
         }
         let n = self.text.matches(crate::index::INDEX_MARK).count();
         self.index_refs.truncate(n);
@@ -310,6 +339,35 @@ impl Story {
 }
 
 impl Document {
+    /// The text a cross-reference to `target` in `format` generates, with each page number as
+    /// [`PAGE_NUM_BLOCK`] (the form saved text takes); `None` when the destination is gone.
+    pub fn generated_xref_text(&self, target: u64, format: &str) -> Option<String> {
+        let mut v = self.xref_values(target)?;
+        v.page = PAGE_NUM_BLOCK.into();
+        Some(expand(self.xref_format(format).map_or("<fullPara />", |f| f.definition.as_str()), &v))
+    }
+
+    /// Forget saved cross-reference text that is exactly what its format generates for its
+    /// destination, so it is generated again (and follows edits to the destination). Any other
+    /// saved text was typed over the generated text, or its destination is gone: it is kept as
+    /// shown.
+    pub fn drop_generated_xref_text(&mut self) {
+        let generated: Vec<(StoryId, usize)> = self
+            .stories
+            .iter()
+            .flat_map(|(sid, st)| st.xrefs.iter().enumerate().map(move |(k, x)| (*sid, k, x)))
+            .filter(|(_, _, x)| x.text.as_ref().is_some_and(|t| self.generated_xref_text(x.target, &x.format).as_ref() == Some(t)))
+            .map(|(sid, k, _)| (sid, k))
+            .collect();
+        for (sid, k) in generated {
+            if let Some(x) = self.story_mut(sid).and_then(|st| st.xrefs.get_mut(k)) {
+                let x = Arc::make_mut(x);
+                x.text = None;
+                x.page = None;
+            }
+        }
+    }
+
     /// (story, byte) of anchor `id`.
     pub fn find_anchor(&self, id: u64) -> Option<(StoryId, usize)> {
         if id == 0 {
@@ -389,6 +447,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gt_inside_quoted_attribute_does_not_end_tag() {
+        let v = XrefValues { para: "Intro > the start".into(), ..Default::default() };
+        assert_eq!(expand("<partialPara delim=\">\" includeDelim=\"false\" />|", &v), "Intro |");
+    }
+
+    #[test]
+    fn unterminated_quote_only_affects_its_own_tag() {
+        let v = XrefValues { para: "Intro > the start".into(), ..Default::default() };
+        let out = expand("<x a=\"b> <fullPara />", &v);
+        assert!(out.contains("Intro > the start"), "{out}");
+    }
+
+    #[test]
+    fn edited_text_fills_in_its_page_numbers() {
+        assert_eq!(expand_edited("p. <pageNum /> and <pageNum />", "4"), "p. 4 and 4");
+    }
+
+    #[test]
     fn formats_expand() {
         let v =
             XrefValues { para: "Intro: the start".into(), page: "7".into(), para_num: "2.".into(), anchor_name: "A".into(), ..Default::default() };
@@ -407,7 +483,7 @@ mod tests {
         let mut s = Story::with_text(StoryId(3), "Heading\nBody text.", Default::default());
         let a = s.insert_anchor(0, "Heading");
         assert_eq!(a >> 24, 3);
-        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into() });
+        s.insert_xref(13, CrossRef { target: a, format: "Page Number".into(), ..Default::default() });
         s.check().unwrap();
         assert_eq!(s.anchor_pos(a), Some(0));
         s.insert(0, "New ");

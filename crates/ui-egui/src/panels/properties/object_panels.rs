@@ -1,4 +1,8 @@
-use super::*;
+use super::object::{anchor_transform_section, appearance_section};
+use super::{
+    Arrowhead, Cap, DesignApp, Join, SelInfo, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, full_width, icon_toggle,
+    icons, json, measure, number, outline_button, pos2, rule, section, section_row, sel_info, text_attrs, units, vec2, widgets,
+};
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
 pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -66,7 +70,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             StrokeType::Style { name } => name.clone(),
             k => k.label().to_string(),
         };
-        let combo = egui::ComboBox::from_id_salt("stype")
+        let combo = craft_ui::ComboBox::from_id_salt("stype")
             .selected_text(crate::rtl::widget(
                 ui,
                 if matches!(st.kind, StrokeType::Style { .. }) { &shown } else { crate::i18n::tr(&app.ui.language, &shown) },
@@ -106,7 +110,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         for (key, label, cur, flip) in [("start", "Start/End:", st.start, true), ("end", "", st.end, false)] {
             caption(ui, crate::i18n::tr(&app.ui.language, label));
-            let combo = egui::ComboBox::from_id_salt(key)
+            let combo = craft_ui::ComboBox::from_id_salt(key)
                 .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur.label())))
                 .width(140.0)
                 .show_ui(ui, |ui| {
@@ -305,7 +309,7 @@ fn wrap_combo(
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
         let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
-        let combo = egui::ComboBox::from_id_salt(salt)
+        let combo = craft_ui::ComboBox::from_id_salt(salt)
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown)))
             .width(170.0)
             .show_ui(ui, |ui| {
@@ -360,6 +364,37 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
     ("shape-line", "line", "Line"),
     ("shape-orthogonal", "orthogonalLine", "Orthogonal Line"),
 ];
+
+/// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
+/// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
+pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
+    anchor_transform_section(app, ui, i);
+    divider(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
+    appearance_section(app, ui, i);
+    divider(ui);
+    let mut kind = None;
+    let lang = app.ui.language.clone();
+    section_row(ui, crate::i18n::tr(&lang, "Convert Points"), |ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        // Laid out from the right: last first, so the row reads Plain … Symmetrical.
+        for (icon, k, tip) in CONVERT_POINT.iter().rev() {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                kind = Some(k);
+            }
+        }
+    });
+    if let Some(k) = kind {
+        let _ = app.run("path.convertPoints", json!({"kind": k}));
+    }
+    rule(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
+    let fw = full_width(ui);
+    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Delete Point(s)"), fw).clicked() {
+        let _ = app.run("path.deletePoints", json!({}));
+    }
+}
 
 /// Pathfinder panel › Convert Point: (icon, kind, tooltip).
 const CONVERT_POINT: [(&str, &str, &str); 4] = [
@@ -468,7 +503,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         B::Luminosity,
     ];
     ui.horizontal(|ui| {
-        let combo = egui::ComboBox::from_id_salt("blend")
+        let combo = craft_ui::ComboBox::from_id_salt("blend")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, it.blend.label())))
             .width(130.0)
             .show_ui(ui, |ui| {

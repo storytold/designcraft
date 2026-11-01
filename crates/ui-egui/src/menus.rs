@@ -31,6 +31,7 @@ pub use keys::{forwarded_shortcuts, shortcuts};
 use quick_apply::quick_commands;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
 pub use run::run_ui;
+pub(crate) use run::save_then;
 pub use state::{
     checked, default_shortcut, enabled, menu_enabled, native_menu_enabled, shortcut_label, shortcut_of, shortcut_text, tool_shortcut_label,
 };
@@ -38,7 +39,8 @@ pub use tables::{CLASSIC_GROUPS, MENUS, TYPOGRAPHY_GROUPS, WORKSPACE_OPEN_PANELS
 #[cfg(test)]
 use tree::menu_items;
 pub use tree::{
-    AppMenuItem, MAC_APP_MENU, OPEN_RECENT, all_menu_items, menu_key, menu_tree, native_label, native_menu_tree, recent_items, recent_label,
+    AppMenuItem, MAC_APP_MENU, OPEN_RECENT, all_menu_items, has_shown_item, menu_key, menu_tree, native_label, native_menu_tree, recent_items,
+    recent_label,
 };
 pub use ui_commands::{CJK_ONLY, UI_COMMANDS, shown, ui_label};
 

@@ -174,6 +174,40 @@ impl<'a> NumField<'a> {
         self.show_or_clear(ui).flatten()
     }
 
+    /// The spinner segment's up and down buttons; the value a click on one gives.
+    fn spinner_segment(&self, ui: &mut Ui, rect: Rect, key: egui::Id, enabled: bool, t: &Tokens) -> Option<f64> {
+        let name = self.name.unwrap_or(self.id);
+        let step = self.step.unwrap_or_else(|| self.kind.step());
+        let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
+        let mut out = None;
+        let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
+        ui.painter().rect_filled(seg, 0.0, t.input);
+        let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
+        let down = Rect::from_min_max(pos2(seg.min.x, seg.center().y), seg.max);
+        for (r, dir) in [(up, 1.0), (down, -1.0)] {
+            let resp = ui.interact(r, key.with(("spin", dir as i32)), if enabled { Sense::click() } else { Sense::hover() });
+            if resp.hovered() && enabled {
+                ui.painter().rect_filled(r.shrink(1.0), 0.0, t.hover);
+            }
+            let c = r.center();
+            let (a, b) = if dir > 0.0 { (2.5, -1.5) } else { (-2.5, 1.5) };
+            ui.painter()
+                .line_segment([pos2(c.x - 4.0, c.y + a * 0.6), pos2(c.x, c.y + b)], Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }));
+            ui.painter()
+                .line_segment([pos2(c.x, c.y + b), pos2(c.x + 4.0, c.y + a * 0.6)], Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }));
+            // The two spinner halves are real inputs: name them for screen readers and strict
+            // accessibility checks, which would otherwise see unnamed clickable nodes.
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{} {}", if dir > 0.0 { "Increase" } else { "Decrease" }, name))
+            });
+            if resp.clicked() {
+                let mul = if ui.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                out = Some(clamp(self.value.unwrap_or(0.0) + dir * step * mul));
+            }
+        }
+        out
+    }
+
     /// Like [`NumField::show`]; a field emptied while it had a value commits `Some(None)` (for
     /// values that may be unset, like a character style's attributes).
     pub fn show_or_clear(self, ui: &mut Ui) -> Option<Option<f64>> {
@@ -194,36 +228,8 @@ impl<'a> NumField<'a> {
         let fg = if enabled { fg } else { t.text_disabled };
         // Spinner segment.
         if self.spinner {
-            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
-            text_rect.min.x = seg.max.x;
-            ui.painter().rect_filled(seg, 0.0, t.input);
-            let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
-            let down = Rect::from_min_max(pos2(seg.min.x, seg.center().y), seg.max);
-            for (r, dir) in [(up, 1.0), (down, -1.0)] {
-                let resp = ui.interact(r, key.with(("spin", dir as i32)), if enabled { Sense::click() } else { Sense::hover() });
-                if resp.hovered() && enabled {
-                    ui.painter().rect_filled(r.shrink(1.0), 0.0, t.hover);
-                }
-                let c = r.center();
-                let (a, b) = if dir > 0.0 { (2.5, -1.5) } else { (-2.5, 1.5) };
-                ui.painter().line_segment(
-                    [pos2(c.x - 4.0, c.y + a * 0.6), pos2(c.x, c.y + b)],
-                    Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }),
-                );
-                ui.painter().line_segment(
-                    [pos2(c.x, c.y + b), pos2(c.x + 4.0, c.y + a * 0.6)],
-                    Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }),
-                );
-                // The two spinner halves are real inputs: name them for screen readers and strict
-                // accessibility checks, which would otherwise see unnamed clickable nodes.
-                resp.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{} {}", if dir > 0.0 { "Increase" } else { "Decrease" }, name))
-                });
-                if resp.clicked() {
-                    let mul = if ui.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
-                    out = Some(clamp(self.value.unwrap_or(0.0) + dir * step * mul));
-                }
-            }
+            text_rect.min.x = rect.min.x + SEG_W;
+            out = self.spinner_segment(ui, rect, key, enabled, &t).or(out);
         }
         // Preset segment.
         let mut preset_resp = None;

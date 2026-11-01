@@ -1,6 +1,6 @@
 //! The About window's credits: every contributor (GitHub login always; display and real names only
 //! with recorded consent) and the AI models that helped. The tables are baked into the binary by
-//! build.rs from contributors/contributors.json (craftrules standards/contributors.md); nothing is
+//! build.rs from contributors/contributors.json; nothing is
 //! read at run time.
 
 use std::cmp::Ordering;
@@ -223,7 +223,7 @@ fn controls(ui: &mut egui::Ui, v: &mut View, lang: &str) {
         }
         ui.separator();
         ui.label(tr(lang, "Sort"));
-        egui::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, tr(lang, k.label().0)).clicked() {
                     v.key = k;

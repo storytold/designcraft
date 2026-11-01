@@ -5,13 +5,15 @@ use super::names::has_face;
 #[cfg(not(target_arch = "wasm32"))]
 use super::names::has_wws_family;
 use super::outline::font_outline;
+#[cfg(target_os = "macos")]
+use super::platform_font_files;
 use super::scoped::ScopedFonts;
 #[cfg(not(target_arch = "wasm32"))]
 use super::system::CatalogEntry;
 #[cfg(not(target_os = "macos"))]
 use super::system::platform_font_files;
 use super::system::system_font_dirs;
-use super::*;
+use super::{Arc, AtomicU32, BezPath, FontDb, HashMap, Mutex, PoisonError, RwLock};
 
 pub(super) static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 

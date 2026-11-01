@@ -330,12 +330,19 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "RuleBelow": "false" => false, "true" => true, |r| r.0.rule_below.on;
         "RuleBelowColor": "Text Color" => designcraft_doc::TEXT_COLOR, "Color/Black" => "[Black]", |r| r.0.rule_below.color;
         "RuleBelowTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.tint;
+        "RuleBelowType": "StrokeStyle/$ID/Solid" => designcraft_doc::StrokeType::Solid, "StrokeStyle/$ID/Wavy" => designcraft_doc::StrokeType::Wavy, |r| r.0.rule_below.kind;
+        "RuleBelowGapColor": "Swatch/None" => "[None]", "Color/Black" => "[Black]", |r| r.0.rule_below.gap_color;
+        "RuleBelowGapTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.rule_below.gap_tint;
+        "KeepRuleAboveInFrame": "false" => false, "true" => true, |r| r.0.rule_above.keep_in_frame;
         "ParagraphShadingOn": "false" => false, "true" => true, |r| r.0.shading_on;
         "ParagraphShadingColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.shading_color;
         "ParagraphShadingTint": "20" => 0.2f32, "50" => 0.5f32, |r| r.0.shading_tint;
         "ParagraphBorderOn": "false" => false, "true" => true, |r| r.0.border_on;
         "ParagraphBorderColor": "Color/Black" => "[Black]", "Swatch/None" => "[None]", |r| r.0.border_color;
         "ParagraphBorderTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.0.border_tint;
+        "ParagraphShadingOverprint": "false" => false, "true" => true, |r| r.0.shading_overprint;
+        "ParagraphBorderOverprint": "false" => false, "true" => true, |r| r.0.border_overprint;
+        "ParagraphBorderGapOverprint": "false" => false, "true" => true, |r| r.0.border_gap_overprint;
         "FontStyle": "Regular" => "Regular", "Bold" => "Bold", |r| r.1.font_style;
         "PointSize": "12" => 12.0, "9" => 9.0, |r| r.1.size;
         "Leading": "Auto" => Leading::Auto, "14" => Leading::Points(14.0), |r| r.1.leading;
@@ -554,6 +561,14 @@ fn basic_paragraph_is_normal_paragraph_style() {
     assert_eq!(back.styles.paragraph.iter().filter(|p| p.name == st::BASIC_PARAGRAPH).count(), 1);
 }
 
+/// Like InDesign, the export carries the document's default story preference, which IDML readers expect.
+#[test]
+fn export_writes_the_document_story_preference() {
+    let d = import_idml_with(&fixture(), &|_| None).unwrap();
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"<StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="TextFrameType" StoryOrientation="Horizontal" StoryDirection="LeftToRightDirection"/>"#), "{prefs}");
+}
+
 /// Page items, frames, tables and preferences an IDML file leaves unset are InDesign's defaults
 /// for a new document.
 #[test]
@@ -733,6 +748,15 @@ fn kanji_page_numbers() {
 #[test]
 fn imports_hand_written_fixture() {
     let d = import_idml_with(&fixture(), &|_| None).unwrap();
+    assert_fixture_settings_and_pages(&d);
+    assert_fixture_sections_and_layers(&d);
+    assert_fixture_swatches(&d);
+    assert_fixture_styles(&d);
+    assert_fixture_text(&d);
+    assert_fixture_items(&d);
+}
+
+fn assert_fixture_settings_and_pages(d: &Document) {
     assert_eq!(d.title, "Fixture");
     assert!(d.settings.facing_pages);
     assert_eq!((d.settings.page_width, d.settings.page_height), (500.0, 700.0));
@@ -748,12 +772,18 @@ fn imports_hand_written_fixture() {
     assert_eq!(sp.pages[0].parent, Some(d.parents[0].id));
     let info = d.parents[0].parent.as_ref().unwrap();
     assert_eq!((info.prefix.as_str(), info.name.as_str()), ("A", "Parent"));
+}
+
+fn assert_fixture_sections_and_layers(d: &Document) {
     // Sections.
     assert_eq!(d.page_name(0), "v");
     assert_eq!(d.page_name(1), "vi");
     // Layers.
     assert_eq!(d.layers[0].name, "Art");
     assert_eq!(d.layers[0].color, [255, 0, 0]);
+}
+
+fn assert_fixture_swatches(d: &Document) {
     // Swatches.
     assert!(matches!(d.swatch("Brand").unwrap().value, SwatchValue::Color { color_type: designcraft_color::ColorType::Spot, .. }));
     assert!(matches!(&d.swatch("Brand 50%").unwrap().value, SwatchValue::Tint { base, tint } if base == "Brand" && *tint == 0.5));
@@ -767,6 +797,9 @@ fn imports_hand_written_fixture() {
     let mr = &d.parents[0].items[0];
     assert_eq!(mr.fill.swatch, "C=10 M=20 Y=30 K=40");
     assert_eq!(mr.bounds(), Rect::new(20.0, 20.0, 100.0, 50.0));
+}
+
+fn assert_fixture_styles(d: &Document) {
     // Styles.
     let body = d.styles.para("Text/Body").expect("grouped style");
     assert_eq!(body.based_on.as_deref(), Some(st::BASIC_PARAGRAPH));
@@ -774,6 +807,9 @@ fn imports_hand_written_fixture() {
     assert_eq!(body.chars.leading, Some(designcraft_doc::Leading::Points(13.0)));
     assert_eq!(body.para.align, Some(designcraft_doc::Align::LeftJustified));
     assert_eq!(d.styles.char_style("Strong").unwrap().chars.font_style.as_deref(), Some("Bold"));
+}
+
+fn assert_fixture_text(d: &Document) {
     // Frames, threads, text.
     let story = d.stories.values().next().unwrap();
     assert_eq!(story.text, format!("Hello & bold\nPage {}\tend{}\nafter", st::PAGE_NUMBER, st::FRAME_BREAK));
@@ -791,6 +827,10 @@ fn imports_hand_written_fixture() {
     let o = &f1.text_frame().unwrap().options;
     assert_eq!((o.columns, o.gutter, o.inset), (2, 8.0, [1.0, 2.0, 3.0, 4.0]));
     assert_eq!(d.item(story.frames[1]).unwrap().bounds(), Rect::new(550.0, 50.0, 650.0, 150.0));
+}
+
+fn assert_fixture_items(d: &Document) {
+    let sp = &d.spreads[0];
     // Group child keeps its own transform relative to the group.
     let g = sp.items.iter().find(|i| i.shape == Shape::Group).unwrap();
     assert_eq!(g.bounds(), Rect::new(510.0, 370.0, 560.0, 420.0));
@@ -1266,7 +1306,7 @@ fn round_trips_cross_references() {
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results: found\nSee .", ParaFormat::default()).unwrap();
     let target = d.paragraph_anchor(sid, 0).unwrap();
     let at = d.story(sid).unwrap().text.find(" .").unwrap() + 1;
-    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into() });
+    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into(), ..Default::default() });
     d.xref_formats.push(designcraft_doc::XrefFormat {
         name: "Mine".into(),
         definition: "(<partialPara delim=\":\" includeDelim=\"true\" />, p. <pageNum />)".into(),
@@ -1278,6 +1318,7 @@ fn round_trips_cross_references() {
     assert_eq!(s.text, d.story(sid).unwrap().text);
     assert_eq!(s.xrefs.len(), 1);
     assert_eq!(s.xrefs[0].format, "Paragraph Text");
+    assert_eq!(s.xrefs[0].text, None, "generated text reads back as generated");
     let (tsid, tpos) = back.find_anchor(s.xrefs[0].target).expect("target resolves");
     assert_eq!((tsid, tpos), (s.id, 0));
     let mine = back.xref_format("Mine").unwrap();
@@ -2431,7 +2472,20 @@ fn fixture_with_table_styles(styles: &str, story: &str) -> Vec<u8> {
 fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
     let d = import_idml(&fixture_with_table_styles(CASCADE_STYLES, CASCADE_STORY)).unwrap();
     d.check().unwrap();
-    let table = d.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+    let table = first_table(&d);
+    assert_cascade_table_options(table);
+    assert_cascade_header_cell(table);
+    assert_cascade_explicit_cell(table);
+    assert_cascade_local_cell(table);
+    assert_cascade_body_cells(table);
+    assert_cascade_round_trip(&d, table);
+}
+
+fn first_table(doc: &Document) -> &designcraft_doc::Table {
+    doc.stories.values().flat_map(|s| s.tables.values()).next().unwrap()
+}
+
+fn assert_cascade_table_options(table: &designcraft_doc::Table) {
     assert_eq!((table.nrows(), table.ncols()), (2, 3));
     assert_eq!(table.style, "Table");
     assert_eq!(table.options.space_before, 19.0);
@@ -2440,6 +2494,9 @@ fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
     let fills = table.options.alt_rows.as_ref().unwrap();
     assert_eq!((fills.first, fills.next, fills.first_tint), (1, 1, 0.2));
     assert_eq!(fills.first_color, "Brand");
+}
+
+fn assert_cascade_header_cell(table: &designcraft_doc::Table) {
     let header = table.cell(0, 0).unwrap();
     assert_eq!(header.fill, designcraft_color::swatch::PAPER, "header takes precedence over left region");
     assert!(header.style.is_empty(), "a table region does not become AppliedCellStyle");
@@ -2453,6 +2510,9 @@ fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
     assert_eq!(header.border_overrides, [true; 4]);
     assert_eq!(header.stroke_defined, [true; 4]);
     assert_eq!(header.stroke_priorities, [0; 4]);
+}
+
+fn assert_cascade_explicit_cell(table: &designcraft_doc::Table) {
     let explicit = table.cell(0, 1).unwrap();
     assert_eq!(explicit.fill, "Brand");
     assert_eq!(explicit.fill_tint, 0.75);
@@ -2461,6 +2521,9 @@ fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
     assert_eq!(explicit.strokes[0].color, designcraft_color::swatch::NONE);
     assert_eq!(explicit.strokes[3].weight, 5.0);
     assert_eq!(explicit.strokes[3].tint, 0.3);
+}
+
+fn assert_cascade_local_cell(table: &designcraft_doc::Table) {
     let local = table.cell(0, 2).unwrap();
     assert_eq!(local.fill, designcraft_color::swatch::NONE);
     assert_eq!(local.fill_tint, 0.0);
@@ -2470,13 +2533,18 @@ fn table_style_cascade_preserves_sparse_edges_and_local_overrides() {
     assert_eq!(local.strokes[3].color, designcraft_color::swatch::NONE);
     assert_eq!(local.stroke_priorities, [0, 0, 0, 7]);
     assert_eq!(local.text.paras[0].style, st::BASIC_PARAGRAPH, "explicit paragraph style wins");
+}
+
+fn assert_cascade_body_cells(table: &designcraft_doc::Table) {
     assert_eq!(table.cell(1, 0).unwrap().fill, designcraft_color::swatch::BLACK);
     assert_eq!(table.cell(1, 0).unwrap().strokes[1].weight, 0.0);
     assert_eq!(table.cell(1, 1).unwrap().fill_tint, 0.5);
     assert_eq!(table.cell(1, 2).unwrap().fill, "Brand");
+}
 
-    let back = import_idml(&export_idml(&d)).unwrap();
-    let roundtrip = back.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+fn assert_cascade_round_trip(d: &Document, table: &designcraft_doc::Table) {
+    let back = import_idml(&export_idml(d)).unwrap();
+    let roundtrip = first_table(&back);
     for (before, after) in table.cells.iter().zip(&roundtrip.cells) {
         assert_eq!(after.strokes, before.strokes);
         assert_eq!(after.border_overrides, before.border_overrides);
@@ -3000,14 +3068,22 @@ fn kenten_shatai_and_grid_settings_import_and_round_trip() {
 
 #[test]
 fn ruby_settings_import_from_idml_and_round_trip() {
-    use designcraft_doc::cjk_settings::AdornmentOverprint;
-    use designcraft_doc::ruby::{RubyAlignment, RubyOverhang, RubyParentSpacing, RubyPosition, RubyType};
     // InDesign's names: RubyFlag is a number, colours and fonts are properties.
     let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
       <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]">
         <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]" RubyFlag="1" RubyString="かん　じ" RubyType="PerCharacterRuby" RubyAlignment="RubyCenter" RubyPosition="BelowLeft" RubyYOffset="-1.4173228" RubyFontSize="-1" RubyXScale="90" RubyParentOverhangAmount="RubyOverhangNoLimit" RubyParentSpacing="RubyParentBothSides" RubyAutoAlign="false" RubyAutoScaling="true" RubyParentScalingPercent="40" RubyAutoTcyDigits="2" RubyTint="-1" RubyOverprintFill="Auto"><Properties><RubyFont type="string">$ID/</RubyFont><RubyFontStyle type="enumeration">Nothing</RubyFontStyle><RubyFill type="string">Text Color</RubyFill></Properties><Content>漢字</Content></CharacterStyleRange>
       </ParagraphStyleRange></Story></idPkg:Story>"#;
-    let doc = import_idml(&fixture_with_story(story)).unwrap();
+    let imported = import_idml(&fixture_with_story(story)).unwrap();
+    assert_imported_ruby_settings(&imported);
+
+    let doc = ruby_round_trip_document();
+    let back = import_idml(&export_idml(&doc)).unwrap();
+    assert_ruby_round_trip(&doc, &back);
+}
+
+fn assert_imported_ruby_settings(doc: &Document) {
+    use designcraft_doc::cjk_settings::AdornmentOverprint;
+    use designcraft_doc::ruby::{RubyAlignment, RubyOverhang, RubyParentSpacing, RubyPosition, RubyType};
     let a = doc.stories.values().find(|s| s.text.contains("漢字")).unwrap().runs().next().unwrap().1.over.clone();
     assert_eq!(a.ruby.as_deref(), Some("かん　じ"));
     assert_eq!(a.ruby_type, Some(RubyType::PerCharacter));
@@ -3022,8 +3098,11 @@ fn ruby_settings_import_from_idml_and_round_trip() {
     assert_eq!(a.ruby_auto_tcy_digits, Some(2));
     assert_eq!((a.ruby_font.as_deref(), a.ruby_font_style.as_deref(), a.ruby_fill.as_deref()), (Some(""), Some(""), Some("")));
     assert_eq!((a.ruby_fill_tint, a.ruby_overprint_fill), (Some(None), Some(AdornmentOverprint::Auto)));
+}
 
-    // Every setting survives export and import.
+fn ruby_round_trip_document() -> Document {
+    use designcraft_doc::cjk_settings::AdornmentOverprint;
+    use designcraft_doc::ruby::{RubyAlignment, RubyOverhang, RubyParentSpacing, RubyPosition, RubyType};
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "漢字", ParaFormat::default()).unwrap();
@@ -3058,8 +3137,11 @@ fn ruby_settings_import_from_idml_and_round_trip() {
         o.ruby_overprint_fill = Some(AdornmentOverprint::On);
         o.ruby_overprint_stroke = Some(AdornmentOverprint::Off);
     });
-    let a = d.stories[&sid].runs().next().unwrap().1.over.clone();
-    let back = import_idml(&export_idml(&d)).unwrap();
+    d
+}
+
+fn assert_ruby_round_trip(d: &Document, back: &Document) {
+    let a = d.stories.values().find(|s| s.text.contains("漢字")).unwrap().runs().next().unwrap().1.over.clone();
     let b = back.stories.values().find(|s| s.text.contains("漢字")).unwrap().runs().next().unwrap().1.over.clone();
     macro_rules! same {
         ($($f:ident),*) => { $( assert_eq!(a.$f, b.$f, stringify!($f)); )* };
@@ -3775,6 +3857,7 @@ fn object_style_effects_import_by_category_and_based_on() {
     let base = fx("Base").unwrap();
     assert!(base.drop_shadow.on && base.drop_shadow.size == 9.0 && (base.drop_shadow.distance - 5.0).abs() < 1e-9);
     assert_eq!(base.feather, 0.0, "EnableFeather=false");
+    assert_eq!(base.drop_shadow.mode, designcraft_color::BlendMode::Normal, "no BlendMode: Normal, as earlier exports rendered");
     let child = fx("Child").unwrap();
     assert_eq!((child.drop_shadow.size, child.feather), (9.0, 6.0), "settings from the BasedOn style");
     assert!(fx("Off").is_none());
@@ -3858,6 +3941,45 @@ fn style_names_ending_in_a_space_and_partial_rule_overrides_import() {
     assert!(black.on, "the rule stays on");
     assert_eq!((black.weight, black.offset), (16.0, -3.0), "weight and offset come from the base style");
     assert_ne!(black.color, white.color, "only the colour is overridden");
+}
+
+#[test]
+fn a_style_setting_only_a_rules_type_gap_or_keep_in_frame_overrides_it() {
+    let styles = STYLES.replace(
+        r#"  </RootParagraphStyleGroup>"#,
+        r#"    <ParagraphStyle Self="ParagraphStyle/Base" Name="Base" RuleBelow="true" RuleBelowLineWeight="3">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Wavy" Name="Wavy" RuleBelowType="StrokeStyle/$ID/Wavy">
+      <Properties><BasedOn type="object">ParagraphStyle/Base</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Gap" Name="Gap" RuleBelowGapColor="Color/Black">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Kept" Name="Kept" KeepRuleAboveInFrame="true">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn></Properties>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/TextGap" Name="TextGap" RuleBelowGapColor="$ID/Text Color" RuleAboveColor="$ID/Text Color">
+      <Properties><BasedOn type="string">$ID/[No paragraph style]</BasedOn><RuleAboveGapColor type="string">Text Color</RuleAboveGapColor></Properties>
+    </ParagraphStyle>
+  </RootParagraphStyleGroup>"#,
+    );
+    let d = import_idml(&fixture_with_table_styles(&styles, STORY)).unwrap();
+    let style = |n: &str| d.styles.paragraph.iter().find(|s| s.name == n).unwrap().para.clone();
+    let wavy = style("Wavy").rule_below.expect("the type alone overrides the rule");
+    assert_eq!((wavy.on, wavy.weight, wavy.kind), (true, 3.0, designcraft_doc::StrokeType::Wavy), "the rest from the based-on style");
+    let gap = style("Gap").rule_below.expect("the gap colour alone, with no on or weight in the chain");
+    assert!(!gap.on && gap.gap_color != designcraft_color::swatch::NONE, "{gap:?}");
+    assert!(style("Kept").rule_above.expect("Keep In Frame alone").keep_in_frame);
+    // Text Color, in either spelling, for a gap and a rule colour.
+    let text = style("TextGap");
+    let (below, above) = (text.rule_below.expect("rule below"), text.rule_above.expect("rule above"));
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR);
+    assert_eq!((above.gap_color.as_str(), above.color.as_str()), (designcraft_doc::TEXT_COLOR, designcraft_doc::TEXT_COLOR));
+    // And it is written back as Text Color, not as no swatch.
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let below = back.styles.paragraph.iter().find(|s| s.name == "TextGap").unwrap().para.rule_below.clone().unwrap();
+    assert_eq!(below.gap_color, designcraft_doc::TEXT_COLOR, "round-trips");
 }
 
 #[test]
@@ -4516,6 +4638,98 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
 }
 
+/// A TOC style as InDesign writes it: `$ID/`-prefixed separator (`^y`, the right indent tab) and entry style.
+const TOC_STYLES: &str = r#"<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<RootParagraphStyleGroup>
+  <ParagraphStyle Self="ParagraphStyle/Heading 1" Name="Heading 1"/>
+  <ParagraphStyleGroup Self="psg-toc" Name="TOC">
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC body text" Name="TOC:TOC body text" Capitalization="AllCaps"/>
+    <ParagraphStyle Self="ParagraphStyle/TOC%3aTOC Header" Name="TOC:TOC Header"/>
+  </ParagraphStyleGroup>
+</RootParagraphStyleGroup>
+<RootCharacterStyleGroup><CharacterStyle Self="CharacterStyle/TOC Page Number" Name="TOC Page Number"/></RootCharacterStyleGroup>
+<TOCStyle Self="TOCStyle/$ID/DefaultTOCStyleName" TitleStyle="ParagraphStyle/TOC%3aTOC Header" Title="Table of Contents" Name="$ID/DefaultTOCStyleName">
+  <TOCStyleEntry Self="e1" Name="Heading 1" Level="1" PageNumberPosition="AfterEntry" Separator="$ID/^y">
+    <Properties><FormatStyle type="object">ParagraphStyle/$ID/TOC%3aTOC body text</FormatStyle>
+    <PageNumberStyle type="object">CharacterStyle/TOC Page Number</PageNumberStyle>
+    <SeparatorStyle type="string">$ID/[Same Style]</SeparatorStyle></Properties>
+  </TOCStyleEntry>
+</TOCStyle></idPkg:Styles>"#;
+
+const TOC_STORY: &str = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+<Story Self="s1" AppliedTOCStyle="TOCStyle/$ID/DefaultTOCStyleName"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/TOC%3aTOC body text"><CharacterStyleRange><Content>Welcome</Content></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"#;
+
+#[test]
+fn toc_style_entries_read_id_prefixed_separators_and_styles() {
+    let d = import_idml(&fixture_with_table_styles(TOC_STYLES, TOC_STORY)).unwrap();
+    let toc = d.toc.as_ref().expect("the story's TOC style is imported");
+    let entry = toc.entries.iter().find(|e| e.style == "Heading 1").unwrap();
+    assert_eq!(entry.separator.as_deref(), Some("\u{E006}"), "right-indent tabs must not become ordinary tab stops");
+    assert_eq!(entry.entry_style.as_deref(), Some("TOC/TOC body text"));
+    assert_eq!(entry.page_number_style.as_deref(), Some("TOC Page Number"));
+    assert_eq!(toc.title_style.as_deref(), Some("TOC/TOC Header"));
+}
+
+#[test]
+fn toc_style_entries_fall_back_on_malformed_and_unsupported_values() {
+    let long = "x".repeat(65);
+    let entries = format!(
+        r#"<TOCStyleEntry Self="e1" Name="Heading 1" Level="abc" PageNumberPosition="Sideways" Separator="$ID/^q">
+    <Properties><FormatStyle type="object">ParagraphStyle/Missing</FormatStyle>
+    <PageNumberStyle type="object">CharacterStyle/$ID/[None]</PageNumberStyle>
+    <SeparatorStyle type="object">CharacterStyle/Missing</SeparatorStyle></Properties>
+  </TOCStyleEntry>
+  <TOCStyleEntry Self="e2" Name="TOC:TOC Header" Level="12" Separator="{long}"/>
+  <TOCStyleEntry Self="e3" Name="Heading 1" Level="2" Separator="^t"/>
+  <TOCStyleEntry Self="e4" Name="" Level="3"/>"#
+    );
+    let start = TOC_STYLES.find("<TOCStyleEntry").unwrap();
+    let end = TOC_STYLES.find("</TOCStyle>").unwrap();
+    let styles = format!("{}{entries}\n{}", &TOC_STYLES[..start], &TOC_STYLES[end..])
+        .replace(r#"TitleStyle="ParagraphStyle/TOC%3aTOC Header""#, r#"TitleStyle="ParagraphStyle/Missing""#);
+    let d = import_idml(&fixture_with_table_styles(&styles, TOC_STORY)).unwrap();
+    d.check().unwrap();
+    let toc = d.toc.as_ref().expect("the TOC style is still imported");
+    assert_eq!(toc.title_style, None, "a title style the document lacks is dropped");
+    assert_eq!(toc.entries.len(), 3, "an entry without a style name is skipped: {:?}", toc.entries);
+    let e1 = &toc.entries[0];
+    assert_eq!(e1.level, 1, "an unreadable level falls back to 1");
+    assert_eq!(e1.page_number, designcraft_doc::TocPageNumber::After, "an unknown page-number position falls back to After");
+    assert_eq!(e1.separator.as_deref(), Some("^q"), "an unknown special-character code is kept as written");
+    assert_eq!(
+        (e1.entry_style.as_deref(), e1.page_number_style.as_deref(), e1.separator_style.as_deref()),
+        (None, None, None),
+        "undefined and [None] styles are no style"
+    );
+    let e2 = &toc.entries[1];
+    assert_eq!(e2.level, 9, "a level past 9 is clamped");
+    assert_eq!(e2.separator, None, "an over-long separator is dropped");
+    assert_eq!((toc.entries[2].level, toc.entries[2].separator.as_deref()), (2, None), "a plain tab is the default separator");
+}
+
+#[test]
+fn toc_style_references_in_indented_properties_resolve() {
+    // Property children laid out on their own lines: the whitespace around a reference isn't
+    // part of the style name.
+    let styles = TOC_STYLES
+        .replace(
+            ">ParagraphStyle/$ID/TOC%3aTOC body text<",
+            ">
+      ParagraphStyle/$ID/TOC%3aTOC body text
+    <",
+        )
+        .replace(
+            ">CharacterStyle/TOC Page Number<",
+            ">
+      CharacterStyle/TOC Page Number
+    <",
+        );
+    let d = import_idml(&fixture_with_table_styles(&styles, TOC_STORY)).unwrap();
+    let entry = d.toc.as_ref().unwrap().entries.iter().find(|e| e.style == "Heading 1").unwrap();
+    assert_eq!(entry.entry_style.as_deref(), Some("TOC/TOC body text"));
+    assert_eq!(entry.page_number_style.as_deref(), Some("TOC Page Number"));
+}
+
 /// A graphic placed in a table cell is written into the cell, not dropped.
 #[test]
 fn exports_graphic_in_table_cell() {
@@ -4710,4 +4924,56 @@ fn epub_split_document_round_trips() {
         assert_eq!(d.settings.epub_split, want, "{attrs}");
         assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.epub_split, want, "{attrs}");
     }
+}
+
+/// Text typed over a cross-reference's generated text is kept as shown, its page number live
+/// (InDesign's cross-reference page number variable, found by its `AssociatedTextVariable`),
+/// tracked insertions in and deletions out. The edits survive export and import.
+#[test]
+fn keeps_edited_cross_reference_text() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+<CrossReferenceSource Self="x1" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Page </Content></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><TextVariableInstance Self="v1" Name="Seitenzahl" ResultText="7" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>: Bove, Vinny. </Content><Change Self="c1" ChangeType="InsertedText"><Content>"Advent Horizon."</Content></Change><Change Self="c2" ChangeType="DeletedText"><Content> (draft)</Content></Change><Content> 1996.</Content></CharacterStyleRange></CrossReferenceSource>
+<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content> and </Content></CharacterStyleRange>
+<CrossReferenceSource Self="x2" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>"Intro" on page </Content><TextVariableInstance Self="v2" Name="&lt;?AID 001b?&gt;TV XRefPageNumber" ResultText="3" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange></CrossReferenceSource>
+</ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    d.check().unwrap();
+    let s = d.stories.values().find(|s| !s.xrefs.is_empty()).expect("story with cross-references");
+    assert_eq!(s.xrefs.len(), 2);
+    assert_eq!(s.xrefs[0].text.as_deref(), Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996."));
+    assert_eq!(s.xrefs[0].page.as_deref(), Some("7"));
+    // Its destination is gone: the text and page it last showed.
+    assert_eq!(designcraft_compose::xref::xref_text(&d, &s.xrefs[0], None), "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996.");
+    assert_eq!(s.xrefs[1].text.as_deref(), Some("\"Intro\" on page <pageNum />"), "with no destination to generate from, the text as shown");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let b = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    assert_eq!(b.xrefs[0].text, s.xrefs[0].text);
+    assert_eq!(b.xrefs[0].page, s.xrefs[0].page);
+}
+
+/// Saved cross-reference text counts as generated only when it is exactly what its format
+/// generates for its destination: text added after it (or anywhere else) is an edit, and kept.
+#[test]
+fn only_exactly_generated_cross_reference_text_is_regenerated() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results\nSee", ParaFormat::default()).unwrap();
+    let target = d.paragraph_anchor(sid, 0).unwrap();
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Page".into(), definition: "Page <pageNum />".into() });
+    for t in ["Page <pageNum />, revised", "Page <pageNum />", "Seite <pageNum />"] {
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert(end, " ");
+        let x = designcraft_doc::CrossRef { target, format: "Page".into(), text: Some(t.into()), page: Some("1".into()) };
+        st.insert_xref(end + 1, x);
+    }
+    d.check().unwrap();
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
+    assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }

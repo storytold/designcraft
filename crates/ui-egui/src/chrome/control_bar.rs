@@ -1,4 +1,4 @@
-use super::*;
+use super::{Align, Color32, DesignApp, NumField, Sense, Stroke, Tokens, Unit, caption, icons, json, measure, panels, semibold, vec2};
 
 fn vsep(ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -38,7 +38,7 @@ fn page_preset_and_orientation(app: &mut DesignApp, ui: &mut egui::Ui, lang: &st
     let landscape = size.0 > size.1;
     ui.vertical(|ui| {
         let cur = panels::properties::preset_name(size.0, size.1);
-        egui::ComboBox::from_id_salt("ctl_page_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur))).width(130.0).show_ui(
+        craft_ui::ComboBox::from_id_salt("ctl_page_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur))).width(130.0).show_ui(
             ui,
             |ui| {
                 for (name, w, h) in panels::properties::PAGE_PRESETS {
@@ -105,7 +105,7 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.vertical(|ui| {
         caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
         let label = panels::interactive::liquid_rule_label(pg.liquid);
-        egui::ComboBox::from_id_salt("ctl_page_rule").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).width(150.0).show_ui(
+        craft_ui::ComboBox::from_id_salt("ctl_page_rule").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).width(150.0).show_ui(
             ui,
             |ui| {
                 for (r, l) in panels::interactive::LIQUID_RULES {
@@ -368,7 +368,7 @@ fn control_character(
         let cs = attrs.as_ref().and_then(|a| a["characterStyle"].as_str()).unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_string();
         let names: Vec<String> = app.session.active().map(|d| d.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
         let mut pick = None;
-        egui::ComboBox::from_id_salt("ctl_char_style")
+        craft_ui::ComboBox::from_id_salt("ctl_char_style")
             .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &cs)))
             .width(150.0)
             .show_ui(ui, |ui| {
@@ -382,7 +382,7 @@ fn control_character(
             let _ = app.run("style.character.apply", json!({"name": n}));
         }
         let lang = chars["language"].as_str().unwrap_or("English: USA").to_string();
-        egui::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| crate::panels::properties::language_menu(app, ui, &lang));
         });
     });

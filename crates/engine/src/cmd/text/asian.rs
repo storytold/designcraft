@@ -1,5 +1,5 @@
 use super::format::{char_flag_on, format_chars, format_paras, format_targets};
-use super::*;
+use super::{Result, Session, Value, bad, json};
 
 pub(super) fn warichu_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let has_opts = ["lines", "size", "lineSpacing", "align", "charsBeforeBreak", "charsAfterBreak"].iter().any(|k| p.get(k).is_some());

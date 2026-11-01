@@ -149,6 +149,83 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
     out
 }
 
+/// `ui.pointer`: canvas-space pointer events straight to the tool.
+fn control_pointer(app: &mut DesignApp, ctx: &egui::Context, p: &Value) -> Outcome {
+    let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
+    let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
+    let view = app.view_info();
+    let xf = app.canvas_rect.zip(app.view().copied()).map(|(rect, v)| Xf::new(rect, &v));
+    let mut last = None;
+    for e in events {
+        let kind = match e.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "down" => PointerKind::Down,
+            "drag" => PointerKind::Drag,
+            "up" => PointerKind::Up,
+            "move" => PointerKind::Move,
+            "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+            other => return err(format!("unknown pointer kind `{other}`")),
+        };
+        let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = e.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        let pos = if e.get("space").and_then(Value::as_str) == Some("screen") {
+            match xf {
+                Some(xf) => xf.to_canvas(egui::pos2(x as f32, y as f32)),
+                None => return err("no canvas yet"),
+            }
+        } else {
+            designcraft_geom::Point::new(x, y)
+        };
+        let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
+        let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
+        if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods, clicks }, view) {
+            return err(e);
+        }
+        app.after_engine();
+        last = Some((pos, mods));
+    }
+    ctx.request_repaint();
+    // The tool's cursor where the last event was.
+    let cursor = last.map(|(pos, mods)| app.session.cursor(pos, mods, view));
+    wrap(app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id(), "cursor": cursor})))
+}
+
+/// `ui.click` and `ui.drag`: screen-space pointer input through egui itself, which reaches every widget.
+fn control_click(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    let p = &req.params;
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    // Screen-space (egui points) pointer input through egui itself: reaches every widget.
+    let (count, steps) = match pointer_counts(p, req.method == "ui.drag", app.control_synthetic.len().saturating_add(app.synthetic.len())) {
+        Ok(counts) => counts,
+        Err(e) => return err(e),
+    };
+    let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let button = match s("button") {
+        Some("right") | Some("secondary") => egui::PointerButton::Secondary,
+        Some("middle") => egui::PointerButton::Middle,
+        _ => egui::PointerButton::Primary,
+    };
+    let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
+    let modifiers =
+        egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: b("cmd") && cfg!(target_os = "macos"), command: b("cmd") };
+    let a = egui::pos2(f("x"), f("y"));
+    let end = if req.method == "ui.drag" { egui::pos2(f("toX"), f("toY")) } else { a };
+    app.control_synthetic.push(egui::Event::PointerMoved(a));
+    app.control_synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
+    if req.method == "ui.drag" {
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            app.control_synthetic.push(egui::Event::PointerMoved(a + (end - a) * t));
+        }
+    }
+    app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
+    for _ in 1..count {
+        app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
+        app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
+    }
+    ctx.request_repaint();
+    ok(Value::Null)
+}
+
 fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -176,46 +253,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
         "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
-        "ui.pointer" => {
-            let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
-            let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-            let view = app.view_info();
-            let xf = app.canvas_rect.zip(app.view().copied()).map(|(rect, v)| Xf::new(rect, &v));
-            let mut last = None;
-            for e in events {
-                let kind = match e.get("kind").and_then(Value::as_str).unwrap_or("") {
-                    "down" => PointerKind::Down,
-                    "drag" => PointerKind::Drag,
-                    "up" => PointerKind::Up,
-                    "move" => PointerKind::Move,
-                    "doubleclick" | "dblclick" => PointerKind::DoubleClick,
-                    other => return err(format!("unknown pointer kind `{other}`")),
-                };
-                let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
-                let y = e.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-                let pos = if e.get("space").and_then(Value::as_str) == Some("screen") {
-                    match xf {
-                        Some(xf) => xf.to_canvas(egui::pos2(x as f32, y as f32)),
-                        None => return err("no canvas yet"),
-                    }
-                } else {
-                    designcraft_geom::Point::new(x, y)
-                };
-                let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
-                let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
-                if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods, clicks }, view) {
-                    return err(e);
-                }
-                app.after_engine();
-                last = Some((pos, mods));
-            }
-            ctx.request_repaint();
-            // The tool's cursor where the last event was.
-            let cursor = last.map(|(pos, mods)| app.session.cursor(pos, mods, view));
-            wrap(
-                app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id(), "cursor": cursor})),
-            )
-        }
+        "ui.pointer" => control_pointer(app, ctx, p),
         "ui.key" => {
             let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
             let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
@@ -248,44 +286,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             ctx.request_repaint();
             ok(Value::Null)
         }
-        "ui.click" | "ui.drag" => {
-            // Screen-space (egui points) pointer input through egui itself: reaches every widget.
-            let (count, steps) = match pointer_counts(p, req.method == "ui.drag", app.control_synthetic.len().saturating_add(app.synthetic.len())) {
-                Ok(counts) => counts,
-                Err(e) => return err(e),
-            };
-            let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
-            let button = match s("button") {
-                Some("right") | Some("secondary") => egui::PointerButton::Secondary,
-                Some("middle") => egui::PointerButton::Middle,
-                _ => egui::PointerButton::Primary,
-            };
-            let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
-            let modifiers = egui::Modifiers {
-                alt: b("alt"),
-                ctrl: b("ctrl"),
-                shift: b("shift"),
-                mac_cmd: b("cmd") && cfg!(target_os = "macos"),
-                command: b("cmd"),
-            };
-            let a = egui::pos2(f("x"), f("y"));
-            let end = if req.method == "ui.drag" { egui::pos2(f("toX"), f("toY")) } else { a };
-            app.control_synthetic.push(egui::Event::PointerMoved(a));
-            app.control_synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
-            if req.method == "ui.drag" {
-                for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
-                    app.control_synthetic.push(egui::Event::PointerMoved(a + (end - a) * t));
-                }
-            }
-            app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            for _ in 1..count {
-                app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
-                app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            }
-            ctx.request_repaint();
-            ok(Value::Null)
-        }
+        "ui.click" | "ui.drag" => control_click(app, ctx, req),
         "ui.text" => {
             let Some(text) = s("text") else { return err("missing `text`") };
             // Focused widgets retain the synthetic keyboard route. Document automation uses
@@ -388,7 +389,8 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             if id == "findChange" || app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 app.session.reset_find_scope();
             }
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)

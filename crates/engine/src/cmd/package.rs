@@ -203,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
             has_doc,
             package
         ),
@@ -390,6 +390,17 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
 fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("file.package", "missing `dir`"))?);
     let st = s.doc()?;
+    // The PDF: with the default settings, or with the options of a PDF preset, made as
+    // file.exportPdf makes it. Read first, so that bad options write nothing.
+    let pdf = match p.get("pdf") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(json!({})),
+        Some(o @ Value::Object(_)) => {
+            super::export::check_pdf_options(o, st.doc.page_count())?;
+            Some(o.clone())
+        }
+        Some(v) => return Err(bad("file.package", format!("`pdf` is true, false or PDF export options, not {v}"))),
+    };
     let root = OutputRoot::new(dir.clone())?;
     let display_title = st.doc.title.clone();
     let title = safe_component(&display_title, "Untitled");
@@ -441,18 +452,18 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
         }
     }
-    if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
+    if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
-        let bytes = designcraft_pdf::export_pdf(&super::interchange::with_pdf_boxes(&packed), &s.cache, &Default::default())
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        root.write(&path, &bytes)?;
+        root.write(&path, &super::export::pdf_report(&packed, &s.cache, &params)?.bytes)?;
         files.push(path);
     }
-    // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {display_title}\n\n");
+    // The printing instructions first, as the form gave them; then the report: fonts (missing
+    // first), links, preflight.
+    let mut r = String::new();
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
+    r += &format!("Package report: {display_title}\n\n");
     r += "Fonts\n";
     r += &font_lines.concat();
     if !fallback_lines.is_empty() {

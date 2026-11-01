@@ -103,22 +103,60 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 // on the tool (egui reports releases within 0.8 s as clicks).
                                 let hold_id = egui::Id::unique(("flyout_hold", gi));
                                 let ended_hold = resp.clicked() && ui.data_mut(|d| d.remove_temp::<bool>(hold_id)).unwrap_or(false);
-                                if resp.clicked() && !ended_hold {
-                                    chosen = Some(shown.id);
+                                // Plain click selects the shown tool; Alt/Option-click cycles the flyout
+                                // group, as the letter-key cycle does. Read the modifiers from the
+                                // primary-release event (Alt may already be up by the time this frame
+                                // reads i.modifiers), preferring a release on this slot; egui still
+                                // counts a click when the pointer drifts a little outside, so a release
+                                // whose press started here counts too, and one pressed elsewhere doesn't.
+                                let click_mods = ui.input(|i| {
+                                    let press_here = i.pointer.press_origin().is_some_and(|o| resp.rect.contains(o));
+                                    i.events
+                                        .iter()
+                                        .rev()
+                                        .find_map(|e| match e {
+                                            egui::Event::PointerButton {
+                                                pos,
+                                                button: egui::PointerButton::Primary,
+                                                pressed: false,
+                                                modifiers,
+                                                ..
+                                            } if resp.rect.contains(*pos) || press_here => Some(*modifiers),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(i.modifiers)
+                                });
+                                let alt = click_mods.alt;
+                                let modified = click_mods.alt || click_mods.shift || click_mods.ctrl || click_mods.command;
+                                // egui's double-click ignores modifiers: remember whether the previous
+                                // click was modified so dialogs only open for two plain clicks.
+                                let prev_mod_id = egui::Id::unique(("tool-click-mod", gi));
+                                let prev_modified = ui.data(|d| d.get_temp::<bool>(prev_mod_id)).unwrap_or(false);
+                                let slot_click = resp.clicked() && !ended_hold;
+                                if slot_click {
+                                    chosen = Some(if g.len() > 1 && alt {
+                                        let from = g.iter().position(|tl| tl.id == current).unwrap_or(0);
+                                        g[(from + 1) % g.len()].id
+                                    } else {
+                                        shown.id
+                                    });
                                 }
                                 if !resp.is_pointer_button_down_on() {
                                     ui.data_mut(|d| d.remove::<bool>(hold_id));
                                 }
                                 // Double-click a polygon tool: Polygon Settings.
-                                if resp.double_clicked() && matches!(shown.id, "polygon" | "polygonFrame") {
+                                // Modified clicks only cycle / select: exclude them from dialogs.
+                                let plain_double = resp.double_clicked() && !modified && !prev_modified;
+                                if plain_double && matches!(shown.id, "polygon" | "polygonFrame") {
                                     let cur = app.session.execute("tool.polygonSettings", &json!({})).unwrap_or_default();
                                     app.ui.dialog = Some(crate::dialogs::Dialog::new("polygonSettings", cur));
                                 }
                                 // Double-click a transform tool: its Object › Transform dialog.
-                                if resp.double_clicked()
-                                    && let Some(cmd) = transform_dialog_of(shown.id)
-                                {
+                                if plain_double && let Some(cmd) = transform_dialog_of(shown.id) {
                                     crate::menus::activate(app, cmd, &Value::Null);
+                                }
+                                if slot_click {
+                                    ui.data_mut(|d| d.insert_temp(prev_mod_id, modified));
                                 }
                                 let held =
                                     resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.press_start_time().is_some_and(|s| i.time - s > 0.35));
@@ -219,24 +257,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The area under the tools (InDesign 2026 §3 group 5): mini Default Fill/Stroke and Swap, the
-/// overlapping Fill/Stroke proxy, Formatting affects container / text, the Apply None well, a
-/// utility button and the Screen Mode well.
-fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: usize) {
-    let t = Tokens::get(ui.ctx());
-    let target = crate::panels::color_target(app);
-    let doc = app.session.active().map(|d| d.doc.clone());
-    let stroke_front = app.ui.stroke_front;
-    let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
-    let (fill_sw, stroke_sw) = match &target {
-        Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
-        // Nothing selected: the colours new shapes are drawn with.
-        None => doc
-            .as_ref()
-            .map_or(("[None]".to_string(), "[Black]".to_string()), |d| (d.settings.new_object.fill.clone(), d.settings.new_object.stroke.clone())),
-    };
-    let x0 = ui.max_rect().min.x + (width - 30.0) / 2.0;
-    // Row 1: default colours + swap.
+/// Row 1 of the proxy: the default-colours and swap buttons.
+fn proxy_default_swap(app: &mut DesignApp, ui: &mut egui::Ui, t: &Tokens, x0: f32, width: f32) {
     let (row, _) = ui.allocate_exact_size(vec2(width, 11.0), Sense::hover());
     let def = egui::Rect::from_min_size(egui::pos2(x0, row.min.y), vec2(10.0, 10.0));
     icons::paint(ui.painter(), def, "default-colors", t.icon);
@@ -260,6 +282,26 @@ fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: u
     {
         let _ = app.run("color.swapFillStroke", json!({}));
     }
+}
+
+/// The area under the tools (InDesign 2026 §3 group 5): mini Default Fill/Stroke and Swap, the
+/// overlapping Fill/Stroke proxy, Formatting affects container / text, the Apply None well, a
+/// utility button and the Screen Mode well.
+fn fill_stroke_proxy(app: &mut DesignApp, ui: &mut egui::Ui, width: f32, cols: usize) {
+    let t = Tokens::get(ui.ctx());
+    let target = crate::panels::color_target(app);
+    let doc = app.session.active().map(|d| d.doc.clone());
+    let stroke_front = app.ui.stroke_front;
+    let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
+    let (fill_sw, stroke_sw) = match &target {
+        Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
+        // Nothing selected: the colours new shapes are drawn with.
+        None => doc
+            .as_ref()
+            .map_or(("[None]".to_string(), "[Black]".to_string()), |d| (d.settings.new_object.fill.clone(), d.settings.new_object.stroke.clone())),
+    };
+    let x0 = ui.max_rect().min.x + (width - 30.0) / 2.0;
+    proxy_default_swap(app, ui, &t, x0, width);
     ui.add_space(2.0);
     // Proxy: 19.5 pt squares, fill top-left, stroke bottom-right.
     let (r, _) = ui.allocate_exact_size(vec2(width, 31.0), Sense::hover());

@@ -17,7 +17,7 @@ use object::{apply_object, clear_object_overrides, create_object, edit_object};
 use paragraph::{
     apply_char, apply_para, create_char, create_para, delete_char, delete_para, edit_char, edit_para, export_tag_key, group_styles, redefine,
 };
-pub(crate) use paragraph::{check_grep_styles, grep_style_warnings};
+pub(crate) use paragraph::{apply_char_style, apply_para_style, check_grep_styles, grep_style_warnings};
 pub use swatches::parse_color;
 use swatches::{add_to_swatches, create_swatch, load_swatches, new_swatch, save_swatches, swatch_options};
 
@@ -134,7 +134,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Style Options…",
             [],
             None,
-            "{name, rename?, basedOn?, nextStyle?, para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
+            "{name, rename?, basedOn?, nextStyle?: style | null ([Same style]), resetToBase?: bool (Reset To Base: the style sets nothing of its own; `para`/`chars` then apply over its Based On), para?: {paragraph attributes, as type.para names them: align, leftIndent, spaceBefore, ignoreOpticalMargin, …; ruleAbove?/ruleBelow?: only the named rule fields change; startAt?: null = continue numbering; kinsoku?: set | null (default rules); a grepStyles pattern that can't compile is an error}, chars?: {character attributes, as type.char names them: fontFamily, fontStyle, size, leading, tracking, fill, …}}",
             has_doc,
             edit_para
         ),

@@ -1,6 +1,6 @@
 use super::invoke::TEXT_FIELD_COMMANDS;
 use super::ui_commands::ui_label;
-use super::*;
+use super::{DesignApp, Value};
 
 /// Commands that act on the text being typed wait while an IME composes at the caret (its marked
 /// text isn't typed yet): Undo and Redo (the native menu takes ⌘Z ahead of the IME), the clipboard
@@ -103,6 +103,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
+        "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
         // to (selected text, cells or text frames) has it.
@@ -173,6 +174,15 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if id == "guide.selectAll" && (!app.ui.guides || app.ui.guides_locked) {
         return false;
+    }
+    // As InDesign's: Convert Text to Table wants selected text outside a table, Convert Table to
+    // Text a table.
+    if id == "app.convertTextToTableDialog" {
+        let selected = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| t.cell.is_none() && !t.is_caret());
+        return selected && enabled(app, "table.convertFromText");
+    }
+    if id == "app.convertTableToTextDialog" {
+        return enabled(app, "table.convertToText");
     }
     if id == "view.goBack" || id == "view.goForward" {
         return crate::canvas::can_go_through_history(app, if id == "view.goBack" { -1 } else { 1 });

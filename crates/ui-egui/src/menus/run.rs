@@ -1,9 +1,10 @@
 use super::export::{download_document, export_bytes, export_epub, export_idml, export_pdf, export_png, separations_view};
 use super::invoke::guide_spread;
-use super::state::{is_window_control, window_control_available};
+use super::state::{is_window_control, menu_enabled, window_control_available};
 use super::tables::{CLASSIC_GROUPS, TYPOGRAPHY_GROUPS, workspace_open_panel};
 use super::tree::recent_label;
-use super::*;
+use super::{DesignApp, ScreenMode, Value, json};
+use crate::app::file_dialogs::{Bound, with_path};
 
 /// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
 fn toggle_tabs_panel(app: &mut DesignApp) {
@@ -14,6 +15,39 @@ fn toggle_tabs_panel(app: &mut DesignApp) {
         app.ui.floating.push(("tabs".into(), [at.x, at.y]));
         app.ui.tabs_panel.snap_request = 2;
     }
+}
+
+/// Asks for a file to open for `purpose`, then runs the UI command `id` again with `p` and the
+/// chosen file under `key`.
+#[track_caller]
+fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key: &'static str) -> Result<Value, String> {
+    let (id, p) = (id.to_string(), p.clone());
+    app.ask_open(purpose, Bound::Document, move |app, path| run_ui(app, &id, &with_path(&p, key, path)).unwrap_or(Ok(Value::Null)))
+}
+
+/// File › Save As: asks where, saves there, then runs `after`.
+#[track_caller]
+fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
+    app.ask_save(&name, Bound::Document, move |app, path| {
+        app.run("file.saveAs", json!({"path": path}))?;
+        after(app)
+    })
+}
+
+/// Save the active document (a download in a browser; Save As for one never saved), then run
+/// `after` once it is written. A save dialog answers on a later frame; Cancel runs nothing.
+#[track_caller]
+pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    if app.services.download.is_some() {
+        download_document(app)?;
+        return after(app);
+    }
+    if app.session.active().is_some_and(|d| d.path.is_some()) {
+        app.run("file.save", json!({}))?;
+        return after(app);
+    }
+    save_as_dialog(app, after)
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -33,11 +67,21 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
     if let Some(result) = crate::panel_docking::command(app, id, p) {
         return Some(result);
     }
-    let rect = app.canvas_rect;
-    let flag = |b: &mut bool| {
-        *b = !*b;
-        Ok(json!(*b))
-    };
+    run_ui_part1(app, id, p)
+        .or_else(|| run_ui_part2(app, id, p))
+        .or_else(|| run_ui_part3(app, id, p))
+        .or_else(|| run_ui_part4(app, id, p))
+        .or_else(|| run_ui_part5(app, id, p))
+}
+
+/// Toggle `b`, answering its new value.
+fn flag(b: &mut bool) -> Result<Value, String> {
+    *b = !*b;
+    Ok(json!(*b))
+}
+
+/// One slice of the UI commands: `None` if `id` isn't one of them.
+fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
         "window.minimize" => {
             app.pending_window_commands.push(egui::ViewportCommand::Minimized(true));
@@ -72,10 +116,15 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.newDocumentDialog" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            // In the default units (Preferences with no document open).
+            let fields = crate::new_document::defaults_for(&app.session.default_new_document());
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", fields));
             Ok(Value::Null)
         }
-        "app.openDialog" => app.pick_and_open("open"),
+        "app.openDialog" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.open_picked("open", path.to_string()),
+            None => app.pick_and_open("open"),
+        },
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
             let name = index
@@ -86,10 +135,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
-        "app.placeDialog" => app.pick_and_open("place"),
+        "app.placeDialog" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.open_picked("place", path.to_string()),
+            None => app.pick_and_open("place"),
+        },
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
-            let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("place")) else { return Some(Ok(Value::Null)) };
+            let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };
             let l = path.to_lowercase();
             if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
                 return Some(app.place_file(json!({"path": path})));
@@ -111,24 +163,21 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             }
             return run_ui(app, "app.saveDialog", p);
         }
-        "app.saveDialog" => {
-            let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
-            if let Some(path) = app.pick_save(&name) {
-                return Some(app.run("file.saveAs", json!({"path": path})));
-            }
-            Ok(Value::Null)
-        }
+        "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.run("file.saveAs", json!({"path": path})),
+            None => save_as_dialog(app, |_| Ok(Value::Null)),
+        },
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)
         }
-        "app.saveCopyDialog" => {
-            let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
-            if let Some(path) = app.pick_save(&name) {
-                return Some(app.run("file.saveACopy", json!({"path": path})));
+        "app.saveCopyDialog" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.run("file.saveACopy", json!({"path": path})),
+            None => {
+                let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
+                app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path": path})))
             }
-            Ok(Value::Null)
-        }
+        },
         "app.exportPng" => export_png(app, p),
         "app.exportIdml" => export_idml(app, p),
         // From the menu, EPUB Export Options first; with a path, straight to the file.
@@ -198,21 +247,19 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
         "app.packageDialog" => {
-            let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
-            match app.pick_save(&name) {
-                Some(dir) => {
-                    let r = app.run("file.package", json!({"dir": dir}));
-                    if let Ok(v) = &r {
-                        app.status(
-                            crate::i18n::tr(&app.ui.language, "Packaged {count} files into {dir}")
-                                .replace("{count}", &v["files"].as_array().map_or(0, |f| f.len()).to_string())
-                                .replace("{dir}", v["dir"].as_str().unwrap_or("")),
-                        );
-                    }
-                    r
-                }
-                None => Ok(Value::Null),
+            // Without a folder, the Package dialog: what the package carries, then the folder.
+            let Some(dir) = p.get("dir").and_then(Value::as_str) else {
+                return Some(crate::package_dialog::open(app).map(|()| Value::Null));
+            };
+            let r = app.run("file.package", json!({"dir": dir}));
+            if let Ok(v) = &r {
+                app.status(
+                    crate::i18n::tr(&app.ui.language, "Packaged {count} files into {dir}")
+                        .replace("{count}", &v["files"].as_array().map_or(0, |f| f.len()).to_string())
+                        .replace("{dir}", v["dir"].as_str().unwrap_or("")),
+                );
             }
+            r
         }
         "app.language" => {
             let Some(v) = p.get("lang").and_then(Value::as_str) else { return Some(app.run("app.preferences", json!({}))) };
@@ -230,39 +277,42 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.flattener = v.to_string();
             Ok(json!(v))
         }
-        "app.graphicCell" => {
-            let Some(pick) = app.services.pick_open.as_mut() else { return Some(Err("needs a file picker".into())) };
-            match pick("place") {
-                Some(path) => app.run("table.placeGraphic", json!({"path": path})),
-                None => Ok(Value::Null),
-            }
-        }
+        "app.graphicCell" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.run("table.placeGraphic", json!({"path": path})),
+            None => rerun_with_path(app, "place", id, p, "path"),
+        },
         "effects.dialog" => {
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
         "app.loadSwatches" => {
-            if let Some(pick) = app.services.pick_open.as_mut() {
-                return Some(match pick("swatches") {
-                    Some(path) => app.run("swatch.load", json!({"path": path})),
-                    None => Ok(Value::Null),
-                });
+            if let Some(path) = p.get("path").and_then(Value::as_str) {
+                return Some(app.run("swatch.load", json!({"path": path})));
             }
             let request = app.import_request("swatches");
             if let Some(open) = app.services.open_async.as_mut() {
                 open(request);
+                return Some(Ok(Value::Null));
             }
-            Ok(Value::Null)
+            app.ask_open("swatches", Bound::Document, |app, path| app.run("swatch.load", json!({"path": path})))
         }
+        _ => return None,
+    })
+}
+
+/// One slice of the UI commands: `None` if `id` isn't one of them.
+fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    Some(match id {
         "app.loadParagraphStyles" => app.pick_styles("paragraph"),
         "app.loadCharacterStyles" => app.pick_styles("character"),
         "app.loadTextStyles" => app.pick_styles(""),
         "app.saveSwatches" => {
-            let path = match p.get("path").and_then(Value::as_str) {
-                Some(s) => Some(s.to_string()),
-                None => app.pick_save("Swatches.ase"),
+            let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+                let p = p.clone();
+                return Some(app.ask_save("Swatches.ase", Bound::Document, move |app, path| {
+                    run_ui(app, "app.saveSwatches", &with_path(&p, "path", path)).unwrap_or(Ok(Value::Null))
+                }));
             };
-            let Some(path) = path else { return Some(Ok(Value::Null)) };
             let r = match app.run("swatch.save", json!({})) {
                 Ok(r) => r,
                 Err(e) => return Some(Err(e)),
@@ -294,6 +344,20 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.findChange" => {
             app.session.reset_find_scope();
             app.ui.dialog = Some(crate::dialogs::Dialog::new("findChange", json!({})));
+            Ok(Value::Null)
+        }
+        "app.convertTextToTableDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("select the text to convert to a table".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTextToTable", p.clone()));
+            Ok(Value::Null)
+        }
+        "app.convertTableToTextDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in a table to convert it to text".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTableToText", p.clone()));
             Ok(Value::Null)
         }
         "app.insertTableDialog" => {
@@ -459,6 +523,15 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 }
                 f["pasteboard.h"] = m(&doc["pasteboard"][0]);
                 f["pasteboard.v"] = m(&doc["pasteboard"][1]);
+            } else {
+                // No document: Units & Increments are what new documents start with, as InDesign's.
+                let du = app.session.prefs.default_units;
+                f["defaults"] = json!(true);
+                f["horizontalUnits"] = json!(du.horizontal_units);
+                f["verticalUnits"] = json!(du.vertical_units);
+                f["rulerOrigin"] = json!(du.ruler_origin);
+                f["keyboardIncrement"] = json!(designcraft_geom::format_measure(du.keyboard_increment, designcraft_geom::Unit::Points));
+                f["kerningIncrement"] = json!(format!("{}", du.kerning_increment));
             }
             f["snap.alignEdges"] = json!(app.ui.align_edges);
             f["snap.alignCenters"] = json!(app.ui.align_centers);
@@ -472,6 +545,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
             f["autoCollapseIconicPanels"] = json!(app.ui.dock_auto_collapse);
+            // Interface: Cancel goes back to the theme Preferences opened with.
+            f["brightness"] = json!(app.ui.brightness.id());
+            f["openedBrightness"] = json!(app.ui.brightness.id());
+            f["toolsColumns"] = json!(if app.ui.tools_double_column { "double" } else { "single" });
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
@@ -488,6 +565,14 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.dialog = Some(crate::dialogs::Dialog::new("preferences", f));
             Ok(Value::Null)
         }
+        _ => return None,
+    })
+}
+
+/// One slice of the UI commands: `None` if `id` isn't one of them.
+fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    let rect = app.canvas_rect;
+    Some(match id {
         "view.zoomIn" | "view.zoomOut" => {
             if let Some(r) = rect {
                 crate::canvas::zoom_at(app, r.center(), if id == "view.zoomIn" { 1.5 } else { 1.0 / 1.5 });
@@ -590,6 +675,7 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
@@ -638,6 +724,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.canvas.shown = None;
             r.map(|v| v["rotation"].clone())
         }
+        _ => return None,
+    })
+}
+
+/// One slice of the UI commands: `None` if `id` isn't one of them.
+fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    Some(match id {
         "view.proofColors" => {
             app.ui.proof_colors = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.proof_colors);
             app.canvas.shown = None;
@@ -816,6 +909,13 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 "zone": ui.snap_zone,
             }))
         }
+        _ => return None,
+    })
+}
+
+/// One slice of the UI commands: `None` if `id` isn't one of them.
+fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    Some(match id {
         "app.formattingAffectsText" => {
             app.ui.formatting_affects_text = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.formatting_affects_text);
             Ok(json!({"on": app.ui.formatting_affects_text}))
@@ -910,7 +1010,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.pending_urls.push(url.clone());
             Ok(json!({"url": url}))
         }
-        "window.toolsDoubleColumn" => flag(&mut app.ui.tools_double_column),
+        "window.toolsDoubleColumn" => {
+            app.ui.tools_double_column = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.tools_double_column);
+            Ok(json!(app.ui.tools_double_column))
+        }
         "window.newWorkspace" => {
             let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
                 app.ui.dialog =

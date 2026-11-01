@@ -81,13 +81,91 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Common words the hyphenation word list (from the early 1990s) lacks: everyday short words
+/// such as "we", "us" and "if", titles, and words that came with computers and the web. Sorted,
+/// lowercase, base forms (the inflections below reach "emails", "downloaded", "bloggers").
+const COMMON: &[&str] = &[
+    "ah",
+    "bitmap",
+    "blog",
+    "bluetooth",
+    "chatbot",
+    "checkbox",
+    "cybersecurity",
+    "database",
+    "dataset",
+    "desktop",
+    "download",
+    "dr",
+    "dropdown",
+    "ebook",
+    "ecommerce",
+    "eh",
+    "email",
+    "emoji",
+    "firewall",
+    "gigabyte",
+    "hashtag",
+    "hm",
+    "hmm",
+    "homepage",
+    "hyperlink",
+    "if",
+    "inbox",
+    "internet",
+    "jr",
+    "kilobyte",
+    "laptop",
+    "livestream",
+    "login",
+    "logout",
+    "malware",
+    "megabyte",
+    "metadata",
+    "mr",
+    "offline",
+    "ok",
+    "online",
+    "ow",
+    "pm",
+    "podcast",
+    "popup",
+    "printout",
+    "screenshot",
+    "selfie",
+    "smartphone",
+    "smartwatch",
+    "spreadsheet",
+    "sr",
+    "startup",
+    "terabyte",
+    "touchscreen",
+    "um",
+    "upload",
+    "us",
+    "username",
+    "voicemail",
+    "vs",
+    "we",
+    "webinar",
+    "webmaster",
+    "webpage",
+    "website",
+    "wifi",
+    "workflow",
+    "yay",
+];
+
 /// Is `w` (lowercase) a known word, allowing common inflections of dictionary stems?
 pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
-    if w.len() <= 1 || dict.get(w).is_some() || user.iter().any(|u| u == w) {
+    // A typographer's apostrophe (don’t, we’re) is the word list's straight one.
+    let w = &w.replace('’', "'");
+    let has = |w: &str| dict.get(w).is_some() || COMMON.binary_search(&w).is_ok();
+    if w.len() <= 1 || has(w) || user.iter().any(|u| u.replace('’', "'") == *w) {
         return true;
     }
-    let w = w.trim_end_matches("'s").trim_end_matches("’s");
-    if dict.get(w).is_some() {
+    let w = w.trim_end_matches("'s");
+    if has(w) {
         return true;
     }
     let stems: [(&str, &[&str]); 9] = [
@@ -105,14 +183,14 @@ pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
         if let Some(base) = w.strip_suffix(suf) {
             for add in adds {
                 let cand = format!("{base}{add}");
-                if cand.len() > 1 && dict.get(&cand).is_some() {
+                if cand.len() > 1 && has(&cand) {
                     return true;
                 }
                 // Doubled consonant: "stopped" → "stop".
                 if let Some(c) = base.chars().last()
                     && base.len() > 2
                     && base.ends_with(&format!("{c}{c}"))
-                    && dict.get(&base[..base.len() - c.len_utf8()]).is_some()
+                    && has(&base[..base.len() - c.len_utf8()])
                 {
                     return true;
                 }
@@ -128,7 +206,7 @@ pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |c: Vec<char>| {
         let c: String = c.into_iter().collect();
-        if c != w && !out.contains(&c) && dict.get(&c).is_some() {
+        if c != w && !out.contains(&c) && (dict.get(&c).is_some() || COMMON.binary_search(&c.as_str()).is_ok()) {
             out.push(c);
         }
     };
@@ -238,6 +316,7 @@ mod tests {
         }
         assert!(!known(d, &[], "typograpy"));
         assert!(suggest(d, "typograpy").contains(&"typography".to_string()));
+        assert!(suggest(d, "emial").contains(&"email".to_string()), "words in COMMON are suggested too");
         assert!(known(d, &["designcraft".into()], "designcraft"));
     }
 
@@ -251,6 +330,53 @@ mod tests {
         story.insert(0, "zorbo qwzx");
         let bad = misspellings(&s.doc().unwrap().doc, &story, &s.doc().unwrap().doc.user_words);
         assert_eq!(bad, vec![6..10]);
+    }
+
+    /// Everyday words the hyphenation list lacks aren't misspelled ("we", "us", "if", "email"…),
+    /// with their inflections, and neither are contractions typed with a typographer's
+    /// apostrophe, which Use Typographer's Quotes turns ' into.
+    #[test]
+    fn common_words_and_curly_apostrophes_are_known() {
+        let d = Dictionary::en_us();
+        if d.is_empty() {
+            return; // data not bundled in this build
+        }
+        assert!(COMMON.is_sorted(), "COMMON is binary-searched");
+        for w in [
+            "we",
+            "us",
+            "if",
+            "ok",
+            "mr",
+            "email",
+            "emails",
+            "emailed",
+            "online",
+            "website",
+            "websites",
+            "downloaded",
+            "database",
+            "databases",
+            "blogger",
+            "don’t",
+            "can’t",
+            "i’m",
+            "we’re",
+            "they’ve",
+            "it’s",
+            "don't",
+        ] {
+            assert!(known(d, &[], w), "{w}");
+        }
+        for w in ["dont", "wee’re", "emial"] {
+            assert!(!known(d, &[], w), "{w}");
+        }
+        // A user word added with a typographer's apostrophe matches either form.
+        assert!(known(d, &["zorbo’s".into()], "zorbo's") && known(d, &["zorbo's".into()], "zorbo’s"));
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "We don’t email us if we’re online."})).unwrap();
+        assert_eq!(s.execute("spelling.check", &json!({})).unwrap(), json!([]));
     }
 
     #[test]

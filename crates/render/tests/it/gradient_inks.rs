@@ -23,8 +23,7 @@ fn a_cmyk_gradient_is_c50_m50_halfway() {
         &d,
         &Cache::new(),
         &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
-        100,
-        20,
+        (100, 20),
         Affine::IDENTITY,
         &RenderOptions { paper: false, background: Some([255; 4]), ..Default::default() },
     );

@@ -1,6 +1,9 @@
 use super::color::{HIDDEN_LAYERS, blend_mode, color_of, overprints, rect_overlaps, screen_color, set_fill_paint, spread_blends};
 use super::types::{DisplayQuality, Frame};
-use super::*;
+use super::{
+    Affine, Arc, BezPath, BlendMode, Compose, ComposedStory, Content, DcBlend, Item, Mix, RenderContext, Renderer, Shape, ShownOn, SpreadRef,
+    StoryId, Vec2, blendspace, corners, fx, grid, kurbo, peniko,
+};
 
 /// An item's fill under its content; an overprinting fill multiplies into what is beneath.
 fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {

@@ -1,5 +1,10 @@
 use super::*;
 
+fn shown_on_parent(s: &Session, d: &designcraft_doc::Document, sid: designcraft_doc::StoryId) -> usize {
+    let cs = s.cache.get(d, sid, None);
+    cs.frames.iter().flat_map(|f| f.lines.iter()).map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum()
+}
+
 /// A parent-page page-number marker follows Numbering & Section Options: changing a section's
 /// start number renames its pages without changing their index or the number of sections, and
 /// the marker composed for a page shows the new name.
@@ -350,7 +355,82 @@ fn running_header_on_parent_page_follows_headings() {
     assert_eq!(idx.value("Heading", false, Default::default(), 2), "Epsilon");
     let list = s.execute("variables.list", &json!({})).unwrap();
     assert!(list.as_array().unwrap().iter().any(|v| v["name"] == "Last Page Number" && v["value"] == "3"));
+    // On the parent page itself the header shows which variable it holds, not a blank. Text with
+    // no page that isn't on a parent shows the variable's text before and after, as before.
+    let head = d.variable("Chapter Head").unwrap();
+    assert_eq!(crate::compose::vars::values_shown(&d, None, true, Some(&idx))[head], "<Chapter Head>");
+    assert_eq!(crate::compose::vars::values_shown(&d, None, false, Some(&idx))[head], "");
+    assert_eq!(crate::compose::vars::values(&d, None, Some(&idx))[head], "", "values() is the no-parent case");
+    assert_eq!(crate::compose::vars::values_shown(&d, Some(2), true, Some(&idx))[head], "Epsilon", "composed for a page: its entry");
+    assert!(shown_on_parent(&s, &d, sid) > p1, "the parent shows <Chapter Head>, longer than Alpha");
     // Deleting a variable flattens its instances to text.
     s.execute("variables.delete", &json!({"name": "Last Page Number"})).unwrap();
     assert!(s.doc().unwrap().doc.story(sid).unwrap().text.ends_with(" · 3"));
+}
+
+/// A running header reads a page in text order: in a two-column frame the right column's
+/// headings come after the left column's, even when they sit higher on the page. (The first
+/// and last were picked by height, so a dictionary page's header named its left column's last
+/// entry, which sits lowest, instead of the right column's.)
+#[test]
+fn running_header_reads_columns_in_text_order() {
+    use designcraft_doc::story::COLUMN_BREAK;
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Heading"})).ok();
+    // Left column: a line, Alpha, a line, Beta (low). Right column: Gamma (at the top), a line.
+    let text = format!("x\nAlpha\nx\nBeta{COLUMN_BREAK}\nGamma\ny");
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 472, 400], "content": "text", "text": text})).unwrap();
+    s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2, "gutter": 20})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    for word in ["Alpha", "Beta", "Gamma"] {
+        let at = text.find(word).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at + word.len()})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Heading"})).unwrap();
+    }
+    s.execute("variables.define", &json!({"name": "Entry", "type": "runningHeader", "style": "Heading"})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    let cs = s.cache.get(&d, sid, None);
+    let y = |word: &str| crate::compose::caret(&cs, text.find(word).unwrap()).unwrap().2;
+    assert!(y("Gamma") < y("Beta") && y("Gamma") < y("Alpha"), "Gamma heads the right column, above the left column's headings");
+    let idx = s.cache.running_index(&d);
+    assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::FirstOnPage, 0), "Alpha");
+    assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::LastOnPage, 0), "Gamma");
+}
+/// Stories on one page are ordered by where each one's text starts there: a story whose first
+/// heading sits low in its first column comes after another story's heading above it, even
+/// though its later column starts higher still.
+#[test]
+fn running_header_orders_stories_by_their_first_heading() {
+    use designcraft_doc::story::COLUMN_BREAK;
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Heading"})).ok();
+    // Story A, two columns: filler, then Alpha low in column 1; Gamma at the top of column 2.
+    let a_text = format!("{}Alpha{COLUMN_BREAK}\nGamma\ny", "x\n".repeat(8));
+    let a = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": a_text})).unwrap();
+    s.execute("object.textFrameOptions", &json!({"ids": [a["id"]], "columns": 2, "gutter": 12})).unwrap();
+    // Story B beside it: Beta between Gamma's height and Alpha's.
+    let b_text = "Beta".to_string();
+    let b = s.execute("frame.create", &json!({"rect": [320, 120, 560, 160], "content": "text", "text": b_text})).unwrap();
+    let story =
+        |s: &Session, id: &Value| s.doc().unwrap().doc.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    let (sa, sb) = (story(&s, &a["id"]), story(&s, &b["id"]));
+    for (sid, text, word) in [(sa, &a_text, "Alpha"), (sa, &a_text, "Gamma"), (sb, &b_text, "Beta")] {
+        let at = text.find(word).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": at, "focus": at + word.len()})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Heading"})).unwrap();
+    }
+    s.execute("variables.define", &json!({"name": "Entry", "type": "runningHeader", "style": "Heading"})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    let y = |sid, text: &str, word: &str| {
+        let cs = s.cache.get(&d, sid, None);
+        let (fi, _, b, ..) = crate::compose::caret(&cs, text.find(word).unwrap()).unwrap();
+        d.item(cs.frames[fi].frame).unwrap().bounds().y0 + b
+    };
+    let (ya, yg, yb) = (y(sa, &a_text, "Alpha"), y(sa, &a_text, "Gamma"), y(sb, &b_text, "Beta"));
+    assert!(yg < yb && yb < ya, "Gamma {yg} above Beta {yb} above Alpha {ya}");
+    let idx = s.cache.running_index(&d);
+    assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::FirstOnPage, 0), "Beta");
+    assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::LastOnPage, 0), "Gamma");
 }

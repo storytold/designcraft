@@ -1,0 +1,62 @@
+{
+  "id": "designcraft",
+  "name": "DesignCraft",
+  "upgradeCode": "49E87D30-BB68-4896-AA1D-F45C833CFC3C",
+  "sources": [
+    "designcraft.wxs",
+    "installer-ui.wxs"
+  ],
+  "icon": "assets/app-icon/designcraft.ico",
+  "localization": [],
+  "extensions": [],
+  "payloads": [
+    "NOTICE",
+    "designcraft-cli.exe",
+    "designcraft.exe"
+  ],
+  "registry": [
+    [
+      "-1",
+      "Software\\Classes\\Designcraft.Idml\\shell\\open\\command",
+      "",
+      "\"[#DesigncraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\.idml\\OpenWithProgids",
+      "Designcraft.Idml",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\designcraft.exe",
+      "FriendlyAppName",
+      "DesignCraft"
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\designcraft.exe\\shell\\open\\command",
+      "",
+      "\"[#DesigncraftExe]\" \"%1\""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\designcraft.exe\\SupportedTypes",
+      ".designcraft",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Classes\\Applications\\designcraft.exe\\SupportedTypes",
+      ".idml",
+      ""
+    ],
+    [
+      "-1",
+      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\designcraft.exe",
+      "",
+      "[#DesigncraftExe]"
+    ]
+  ],
+  "mode": "dualScope"
+}

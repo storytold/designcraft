@@ -1,5 +1,5 @@
 use super::target::{edit_table, target};
-use super::*;
+use super::{Result, RowHeightMode, Session, Table, Value, bad, compose, json, ok, str_param};
 
 pub(super) fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.setRowHeight")?;
@@ -318,5 +318,51 @@ mod resize_border_tests {
         assert_eq!(table(&s), before);
         s.execute("object.setFlags", &json!({"ids": [f], "locked": true})).unwrap();
         assert!(s.execute("table.resizeBorder", &json!({"frame": f, "table": t, "axis": "column", "index": 0, "delta": 5})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod insert_size_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A table size that is given but is not one a table can have used to be corrected in
+    /// silence: `{"rows": 0}` made a one-row table, `-1` and `1.5` made the default four, and
+    /// 10000 was capped at 500 — so a caller's mistake became a table nobody asked for.
+    #[test]
+    fn a_table_size_insert_cannot_mean_is_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": ""})).unwrap();
+        let at = |s: &mut Session| {
+            s.execute("text.select", &json!({"story": frame["story"].clone(), "anchor": 0, "focus": 0})).unwrap();
+        };
+        for (params, names) in [
+            (json!({"rows": 0}), "rows 0: 1 to 500"),
+            (json!({"rows": -1}), "rows -1: 1 to 500"),
+            (json!({"rows": 1.5}), "rows 1.5: 1 to 500"),
+            (json!({"rows": 10000}), "rows 10000: 1 to 500"),
+            (json!({"cols": 0}), "cols 0: 1 to 200"),
+            (json!({"columns": 201}), "cols 201: 1 to 200"),
+            (json!({"headerRows": 101}), "headerRows 101: 0 to 100"),
+            (json!({"footerRows": -2}), "footerRows -2: 0 to 100"),
+        ] {
+            at(&mut s);
+            let e = s.execute("table.insert", &params).expect_err("refused").to_string();
+            assert!(e.contains(names), "{params}: {e}");
+        }
+        // Nothing was inserted by any of those.
+        at(&mut s);
+        assert!(s.execute("table.get", &json!({})).is_err(), "no table yet");
+        // The sizes a table can have still work, and absent means the default four by four.
+        at(&mut s);
+        s.execute("table.insert", &json!({})).unwrap();
+        let t = s.execute("table.get", &json!({})).unwrap();
+        assert_eq!(t["cells"].as_array().unwrap().len(), 16, "four by four");
+        at(&mut s);
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "headerRows": 1})).unwrap();
+        let t = s.execute("table.get", &json!({})).unwrap();
+        assert_eq!(t["cells"].as_array().unwrap().len(), 4, "one body row and one header row, two columns");
     }
 }

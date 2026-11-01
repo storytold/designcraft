@@ -50,8 +50,8 @@ fn raster(d: &Document, threads: u16) -> Rendered {
     renderer.threads = threads;
     let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
     let options = RenderOptions { paper: false, background: Some([255; 4]), greek_below_px: 0.0, ..Default::default() };
-    let first = renderer.render(d, &cache, &placed, 480, 480, Affine::scale(2.0), &options);
-    let cached = renderer.render(d, &cache, &placed, 480, 480, Affine::scale(2.0), &options);
+    let first = renderer.render(d, &cache, &placed, (480, 480), Affine::scale(2.0), &options);
+    let cached = renderer.render(d, &cache, &placed, (480, 480), Affine::scale(2.0), &options);
     assert_eq!(first.pixels, cached.pixels, "decoration cache hits must retain paint order");
     first
 }
@@ -185,7 +185,7 @@ fn an_underline_has_no_seams_between_letters() {
     let options = RenderOptions { paper: false, background: Some([255; 4]), greek_below_px: 0.0, ..Default::default() };
     // A fractional scale puts the letters' edges between pixels.
     let (w, h) = (543u32, 163u32);
-    let img = renderer.render(&d, &Cache::new(), &placed, w, h, Affine::scale(1.3579), &options);
+    let img = renderer.render(&d, &Cache::new(), &placed, (w, h), Affine::scale(1.3579), &options);
     let px = |x: u32, y: u32| {
         let i = ((y * w + x) * 4) as usize;
         [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2], img.pixels[i + 3]]

@@ -180,6 +180,51 @@ fn status_bar_error_count_opens_the_preflight_panel() {
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
 
+/// The course's chapter 25: while a parent is shown, the status bar's page box names it
+/// ("A-Parent"), as InDesign's. Its menu lists the pages, then the parents: a parent shows
+/// that parent, a page leaves the parents for that page.
+#[test]
+fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
+    use egui::accesskit::Role;
+    let mut app = app();
+    app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
+    app.run("layout.parents.new", serde_json::json!({"prefix": "B", "name": "Cover"})).unwrap();
+    app.ui.dock_tab = "properties".into();
+    let mut h = test_window::open(app, vec2(1200.0, 700.0));
+    let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+        let b = h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"));
+        b.value().unwrap_or_default()
+    };
+    assert_eq!(shown(&h), "1");
+    h.state_mut().app.run("layout.parents.edit", serde_json::json!({"on": true})).unwrap();
+    h.run_steps(6);
+    assert_eq!(shown(&h), "A-Parent");
+    // The menu: a parent.
+    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    h.run_steps(3);
+    for name in ["1", "2", "3", "4", "A-Parent"] {
+        // The canvas or a panel may show the name too: the menu lists it.
+        assert!(h.query_all_by_label(name).next().is_some(), "{name} is listed");
+    }
+    // The menu, drawn last, holds the last match.
+    h.get_all_by_label("B-Cover").last().unwrap().click();
+    h.run_steps(6);
+    assert_eq!(shown(&h), "B-Cover");
+    assert_eq!(crate::canvas::current_parent_page(&h.state().app).map(|(i, _)| i), Some(1));
+    // A page: the parents are left.
+    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    h.run_steps(3);
+    h.get_all_by_label("3").last().unwrap().click();
+    h.run_steps(6);
+    assert!(!h.state().app.session.active().unwrap().editing_parents);
+    assert_eq!(crate::canvas::current_page(&h.state().app), Some(2));
+    assert_eq!(shown(&h), "3");
+    // Its accessible name is in the interface's language.
+    h.state_mut().app.ui.language = "de".into();
+    h.run_steps(3);
+    assert!(h.query_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Seite")).is_some(), "the page box is Seite");
+}
+
 /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
 #[test]
 fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {

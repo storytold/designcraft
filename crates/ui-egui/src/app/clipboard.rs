@@ -1,4 +1,4 @@
-use super::*;
+use super::{DesignApp, Value, canvas, json};
 
 impl DesignApp {
     /// Paste without the clipboard's text (a menu, not the paste keys): read it here. With no

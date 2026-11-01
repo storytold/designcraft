@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(test)]
+use super::FAIL_TO_BYTES;
+use super::{Document, EngineError, Result};
 
 /// The document as `.designcraft` bytes, or an error when it can't be written; never an empty file.
 pub fn to_bytes(d: &Document) -> Result<Vec<u8>> {

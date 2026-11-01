@@ -1,5 +1,5 @@
 use super::values::{finite, tint};
-use super::*;
+use super::{Corner, DirectionalFeather, DropShadow, Effects, El, GradientFeather, HashMap, Importer, Node, Stroke, names};
 
 /// InDesign's corner size where a file gives a corner shape without one.
 pub(super) const INDESIGN_CORNER_SIZE: f64 = 12.0;
@@ -111,6 +111,9 @@ impl<'r> Importer<'r> {
                 size: ds.num("Size").unwrap_or(def.size),
                 spread: ds.num("Spread").unwrap_or(def.spread),
                 global_light: false,
+                // Without the attribute (earlier DesignCraft exports) the shadow stays Normal, as it
+                // rendered then; a new shadow's default is Multiply.
+                mode: ds.get("BlendMode").map_or(designcraft_color::BlendMode::Normal, names::blend_in),
             };
         }
         if let Some(f) = t.find("FeatherSetting")

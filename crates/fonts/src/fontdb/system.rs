@@ -1,15 +1,17 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::db::NEXT_SCOPE;
+use super::face::FontFace;
 #[cfg(not(target_arch = "wasm32"))]
 use super::face::{
-    DocumentFonts, FontBytes, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES, MAX_DOCUMENT_FONTS_TOTAL, enumerate_faces,
-    make_face,
+    DocumentFonts, FontBytes, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES, MAX_DOCUMENT_FONTS_TOTAL, enumerate_faces, make_face,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::fallback::SYSTEM_FALLBACKS;
 #[cfg(not(target_arch = "wasm32"))]
 use super::names::{aliases, face_names, in_catalog_family, name, norm, wws_names};
-use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use super::{Arc, FontGroup, MetadataProvider, Ordering, PoisonError, StringId};
+use super::{FontDb, ScopedFonts};
 
 impl FontFace {
     /// When the font file was added (created, else last modified): the font menus' Show Recently

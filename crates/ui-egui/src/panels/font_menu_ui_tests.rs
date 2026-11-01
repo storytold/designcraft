@@ -301,3 +301,66 @@ fn font_fields_in_panels_and_dialogs_search() {
         assert_eq!(h.state().app.ui.dialog.as_ref().map(|d| d.id.clone()), dialog_id, "{what}: Escape in the menu leaves the dialog open");
     }
 }
+
+/// The font rows the open menu shows under its search field `search`: how many, and the bottom
+/// of the lowest.
+fn rows_shown(h: &Harness<'static, Window>, search: egui::Rect) -> (usize, f32) {
+    let families: Vec<String> = crate::panels::font_menu(&h.state().app).iter().map(|f| f.label(true).to_string()).collect();
+    let rows: Vec<egui::Rect> = h
+        .query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().is_some_and(|l| families.contains(&l)))
+        .map(|n| n.rect())
+        .filter(|r| r.min.y > search.max.y)
+        .collect();
+    (rows.len(), rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max))
+}
+
+/// Opens the font menu of the field at `at`, searches for a font that doesn't exist and clears
+/// the search: the menu grows back to the rows it showed, with the search field where it was.
+/// The menu lists every family by its English name: the test UI has no CJK font for a system
+/// CJK family's native name.
+fn menu_regrows_after_a_search_with_no_matches(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) {
+    h.state_mut().app.session.prefs.show_font_names_in_english = true;
+    click_at(h, at.center());
+    h.run_steps(4);
+    let focused = |h: &Harness<'static, Window>| h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).map(|n| n.rect());
+    let field = focused(h).unwrap_or_else(|| panic!("{what}: the menu opens with the search field focused"));
+    let (count, bottom) = rows_shown(h, field);
+    assert!(count > 1, "{what}: the menu lists the fonts: {count}");
+
+    let query = "zzqqxxnomatch";
+    h.event(egui::Event::Text(query.into()));
+    h.run_steps(4);
+    assert!(h.query_by_label("No fonts match").is_some(), "{what}: nothing matches");
+    assert_eq!(rows_shown(h, field).0, 0, "{what}: no rows while nothing matches");
+
+    for _ in query.chars() {
+        h.key_press(egui::Key::Backspace);
+    }
+    h.run_steps(4);
+    assert_eq!(search(h), "", "{what}: the search is cleared");
+    let again = focused(h).unwrap_or_else(|| panic!("{what}: the menu is still open"));
+    assert!((again.min.y - field.min.y).abs() < 0.5, "{what}: the search field stays at {}, not {}", field.min.y, again.min.y);
+    let (count_again, bottom_again) = rows_shown(h, again);
+    assert_eq!(count_again, count, "{what}: the menu shows as many rows as before the search");
+    assert!((bottom_again - bottom).abs() < 1.0, "{what}: the menu grows back to {bottom}, not {bottom_again}");
+}
+
+#[test]
+fn the_font_field_menu_grows_back_after_a_search_with_no_matches() {
+    let (mut h, _) = typing();
+    let at = field(&h, designcraft_fonts::DEFAULT_FAMILY);
+    menu_regrows_after_a_search_with_no_matches(&mut h, at, "Control bar");
+}
+
+/// Paragraph Style Options › Basic Character Formats' Font Family combo box. The CJK style
+/// fields' combo box hosts the same menu the same way.
+#[test]
+fn the_style_dialog_font_menu_grows_back_after_a_search_with_no_matches() {
+    let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut h = test_window::open(app, vec2(1440.0, 900.0));
+    let section = json!({"name": designcraft_doc::BASIC_PARAGRAPH, "section": "chars"});
+    h.state_mut().app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphStyleOptions", section));
+    h.run_steps(4);
+    let at = *fields(&h, designcraft_fonts::DEFAULT_FAMILY).first().expect("the dialog's font field is shown");
+    menu_regrows_after_a_search_with_no_matches(&mut h, at, "Paragraph Style Options");
+}

@@ -1,6 +1,9 @@
 use super::common::{anchor_self, bool_s, change_type, topic_self, uid, with_props, xref_format_self};
 use super::graphics::graphic_layer_attribute_name;
-use super::*;
+use super::{
+    BTreeMap, CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, num,
+    st,
+};
 
 impl<'a> Ex<'a> {
     /// `<GraphicLayerOption>` of a placed graphic: its layer attributes and the nested layer tree.
@@ -189,295 +192,339 @@ impl<'a> Ex<'a> {
         el
     }
 
-    /// `ParagraphStyleRange`s of a story (or a table cell's story).
-    pub(super) fn story_paras(&mut self, s: &Story) -> Vec<El> {
-        let mut paras = Vec::new();
-        let ranges = s.para_ranges();
-        let n = ranges.len();
-        for (pi, r) in ranges.into_iter().enumerate() {
-            let pf = s.paras.get(pi).cloned().unwrap_or_default();
-            let mut psr = self.psr_el(&pf);
-            let last = pi + 1 == n;
-            let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
-            // Character runs intersecting the paragraph.
-            let mut segs: Vec<(std::ops::Range<usize>, CharFormat)> = Vec::new();
-            for (rr, f) in s.runs() {
-                let a = rr.start.max(r.start);
-                let b = rr.end.min(r.end);
-                if a < b {
-                    segs.push((a..b, f.clone()));
-                }
+    /// Write an index reference and record any cross-reference it declares.
+    fn index_reference(&mut self, s: &Story, k: usize) -> Option<El> {
+        if let Some(r) = s.index_refs.get(k).filter(|r| !r.topics.is_empty()) {
+            use designcraft_doc::index::IndexRange as R;
+            for n in 1..=r.topics.len() {
+                // A shared topic has one key: keep the first reference's
+                // value (even empty), rather than inventing a merged key.
+                self.index_topics.entry(r.topics[..n].to_vec()).or_insert_with(|| r.sort.get(n - 1).cloned().unwrap_or_default());
             }
-            if segs.is_empty() {
-                let f = s.char_format_at(r.start).clone();
-                segs.push((r.start..r.start, f));
+            let (kind, limit) = match &r.range {
+                R::CurrentPage => (Some("CurrentPage"), None),
+                R::ToEndOfStory => (Some("ToEndOfStory"), None),
+                R::NextParagraphs(n) => (Some("ForNextNParagraphs"), Some(*n)),
+                R::SuppressPageRange => (Some("SuppressPageNumbers"), None),
+                R::See(t) => {
+                    self.index_xrefs.push((r.topics.clone(), "See", t.clone()));
+                    (None, None)
+                }
+                R::SeeAlso(t) => {
+                    self.index_xrefs.push((r.topics.clone(), "SeeAlso", t.clone()));
+                    (Some("CurrentPage"), None)
+                }
+            };
+            if let Some(kind) = kind {
+                let mut el = El::new("PageReference")
+                    .attr("Self", self.fresh())
+                    .attr("PageReferenceType", kind)
+                    .attr("ReferencedTopic", topic_self(&r.topics))
+                    .attr("Id", k + 1);
+                if let Some(n) = limit {
+                    el.set("PageReferenceLimit", n);
+                }
+                return Some(el);
             }
-            let nseg = segs.len();
-            for (k, (rr, f)) in segs.into_iter().enumerate() {
-                let seg_start = rr.start;
-                let text = &s.text[rr];
-                // Split at break characters.
-                let mut cur = String::new();
-                let mut pending: Vec<Node> = Vec::new();
-                let mut csrs: Vec<El> = Vec::new();
-                let flush_text = |cur: &mut String, pending: &mut Vec<Node>| {
-                    if !cur.is_empty() {
-                        pending.push(Node::Text(std::mem::take(cur)));
-                    }
-                };
-                let flush_content = |pending: &mut Vec<Node>, out: &mut Vec<Node>| {
-                    if !pending.is_empty() {
-                        let mut c = El::new("Content");
-                        c.children = std::mem::take(pending);
-                        out.push(Node::El(c));
-                    }
-                };
-                let mut out: Vec<Node> = Vec::new();
-                for (ci, ch) in text.char_indices() {
-                    let ace = match ch {
-                        st::PAGE_NUMBER | st::NEXT_PAGE_NUMBER | st::PREV_PAGE_NUMBER => Some("18"),
-                        st::SECTION_MARKER => Some("19"),
-                        st::INDENT_HERE => Some("7"),
-                        st::RIGHT_INDENT_TAB => Some("8"),
-                        _ => None,
-                    };
-                    let brk = match ch {
-                        st::COLUMN_BREAK => Some("NextColumn"),
-                        st::FRAME_BREAK => Some("NextFrame"),
-                        st::PAGE_BREAK => Some("NextPage"),
-                        st::ODD_PAGE_BREAK => Some("NextOddPage"),
-                        st::EVEN_PAGE_BREAK => Some("NextEvenPage"),
-                        _ => None,
-                    };
-                    if let Some(code) = ace {
-                        flush_text(&mut cur, &mut pending);
-                        pending.push(Node::Pi("ACE".into(), code.into()));
-                    } else if ch == st::TABLE_ANCHOR {
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        if let Some(t) = s.para_table(pi) {
-                            out.push(Node::El(self.table_el(t)));
-                        }
-                    } else if ch == designcraft_doc::ANCHOR_MARK {
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
-                        if let Some(a) = s.anchors.get(k) {
-                            out.push(Node::El(
-                                El::new("HyperlinkTextDestination")
-                                    .attr("Self", anchor_self(a.id))
-                                    .attr("Name", &a.name)
-                                    .attr("Hidden", "false")
-                                    .attr("DestinationUniqueKey", a.id & 0xFFFF_FFFF),
-                            ));
-                        }
-                    } else if ch == designcraft_doc::OBJECT_MARK {
-                        // An anchored object: the item inside the range with its anchoring settings.
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::OBJECT_MARK).count();
-                        if let Some(o) = s.objects.get(k) {
-                            let mut e = self.item_el(&o.item, o.item.xf);
-                            use designcraft_doc::anchored::AnchorAlign as A;
-                            let setting = match &o.position {
-                                designcraft_doc::AnchorPosition::Inline { y_offset } => {
-                                    El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", num(*y_offset))
-                                }
-                                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
-                                    .attr("AnchoredPosition", "AboveLine")
-                                    .attr(
-                                        "HorizontalAlignment",
-                                        match align {
-                                            A::Left => "LeftAlign",
-                                            A::Center => "CenterAlign",
-                                            A::Right => "RightAlign",
-                                        },
-                                    )
-                                    .attr("AnchorSpaceAbove", num(*space_before))
-                                    .attr("AnchorYoffset", num(*space_after)),
-                                designcraft_doc::AnchorPosition::Custom {
-                                    x_relative,
-                                    y_relative,
-                                    x_offset,
-                                    y_offset,
-                                    object_point,
-                                    ref_point,
-                                    keep_within_column,
-                                    spine_relative,
-                                } => El::new("AnchoredObjectSetting")
-                                    .attr("AnchoredPosition", "Anchored")
-                                    .attr("AnchorPoint", names::anchor_out(*object_point))
-                                    .attr("HorizontalReferencePoint", names::anchor_rel_out(*x_relative, false))
-                                    .attr("VerticalReferencePoint", names::anchor_rel_out(*y_relative, true))
-                                    .attr("HorizontalAlignment", ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize])
-                                    .attr("VerticalAlignment", ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize])
-                                    // IDML measures a left-aligned object's X offset leftwards.
-                                    .attr("AnchorXoffset", num(if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset }))
-                                    .attr("AnchorYoffset", num(*y_offset))
-                                    .attr("PinPosition", bool_s(*keep_within_column))
-                                    .attr("SpineRelative", bool_s(*spine_relative)),
-                            };
-                            e.push(setting);
-                            out.push(Node::El(e));
-                        }
-                    } else if ch == designcraft_doc::INDEX_MARK {
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::INDEX_MARK).count();
-                        if let Some(r) = s.index_refs.get(k).filter(|r| !r.topics.is_empty()) {
-                            use designcraft_doc::index::IndexRange as R;
-                            for n in 1..=r.topics.len() {
-                                // A shared topic has one key: keep the first reference's
-                                // value (even empty), rather than inventing a merged key.
-                                self.index_topics.entry(r.topics[..n].to_vec()).or_insert_with(|| r.sort.get(n - 1).cloned().unwrap_or_default());
-                            }
-                            let (kind, limit) = match &r.range {
-                                R::CurrentPage => (Some("CurrentPage"), None),
-                                R::ToEndOfStory => (Some("ToEndOfStory"), None),
-                                R::NextParagraphs(n) => (Some("ForNextNParagraphs"), Some(*n)),
-                                R::SuppressPageRange => (Some("SuppressPageNumbers"), None),
-                                R::See(t) => {
-                                    self.index_xrefs.push((r.topics.clone(), "See", t.clone()));
-                                    (None, None)
-                                }
-                                R::SeeAlso(t) => {
-                                    self.index_xrefs.push((r.topics.clone(), "SeeAlso", t.clone()));
-                                    (Some("CurrentPage"), None)
-                                }
-                            };
-                            if let Some(kind) = kind {
-                                let mut el = El::new("PageReference")
-                                    .attr("Self", self.fresh())
-                                    .attr("PageReferenceType", kind)
-                                    .attr("ReferencedTopic", topic_self(&r.topics))
-                                    .attr("Id", k + 1);
-                                if let Some(n) = limit {
-                                    el.set("PageReferenceLimit", n);
-                                }
-                                out.push(Node::El(el));
-                            }
-                        }
-                    } else if ch == designcraft_doc::XREF_MARK {
-                        // A source wrapping its current text (InDesign regenerates it on update).
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        if !out.is_empty() {
-                            let mut c = self.csr_el(&f);
-                            c.children.append(&mut out);
-                            csrs.push(c);
-                        }
-                        let k = s.text[..seg_start + ci].matches(designcraft_doc::XREF_MARK).count();
-                        if let Some(x) = s.xrefs.get(k) {
-                            let me = self.fresh();
-                            let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
-                            let text = self.d.xref_values(x.target).map_or("??".into(), |mut v| {
-                                v.page = "?".into();
-                                designcraft_doc::xref::expand(self.d.xref_format(&x.format).map_or("<fullPara />", |ff| ff.definition.as_str()), &v)
-                            });
-                            let mut c = self.csr_el(&f);
-                            let mut content = El::new("Content");
-                            content.children.push(Node::Text(text));
-                            c.push(content);
-                            let mut src = El::new("CrossReferenceSource")
-                                .attr("Self", &me)
-                                .attr("AppliedFormat", fmt)
-                                .attr("Name", format!("Cross-Reference {}", self.xref_sources.len() + 1))
-                                .attr("Hidden", "false");
-                            src.push(c);
-                            csrs.push(src);
-                            self.xref_sources.push((me, x.target));
-                        }
-                    } else if let Some(vi) = designcraft_doc::vars::var_index(ch) {
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        if let Some(v) = self.d.text_variables.get(vi) {
-                            let result = self.d.variable_value(vi, None).unwrap_or_else(|| format!("{}{}", v.before, v.after));
-                            out.push(Node::El(
-                                El::new("TextVariableInstance")
-                                    .attr("Self", self.fresh())
-                                    .attr("Name", &v.name)
-                                    .attr("ResultText", result)
-                                    .attr("AssociatedTextVariable", format!("dTextVariablen{}", v.name)),
-                            ));
-                        }
-                    } else if ch == designcraft_doc::NOTE_MARK {
-                        // Editorial notes aren't written to IDML yet.
-                    } else if ch == designcraft_doc::ENDNOTE_REF {
-                        // Endnotes aren't written to IDML yet: the endnote frame keeps their text
-                        // (numbers included) and the references are left out.
-                    } else if ch == designcraft_doc::FOOTNOTE_REF {
-                        // The reference: its own range carrying the reference position.
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        if !out.is_empty() {
-                            let mut c = self.csr_el(&f);
-                            c.children.append(&mut out);
-                            csrs.push(c);
-                        }
-                        if let Some(n) = s.notes.get(s.notes_before(seg_start + ci)) {
-                            let mut c = self.csr_el(&f);
-                            let pos = self.d.footnote_options.ref_position;
-                            if pos != designcraft_doc::Position::Normal {
-                                c.set("Position", names::position_out(pos));
-                            }
-                            c.push(self.footnote_el(&n.text));
-                            csrs.push(c);
-                        }
-                    } else if let Some(bt) = brk {
-                        flush_text(&mut cur, &mut pending);
-                        flush_content(&mut pending, &mut out);
-                        if !out.is_empty() {
-                            let mut c = self.csr_el(&f);
-                            c.children.append(&mut out);
-                            csrs.push(c);
-                        }
-                        let mut c = self.csr_el(&f);
-                        c.set("ParagraphBreakType", bt);
-                        c.push(El::new("Br"));
-                        csrs.push(c);
-                    } else {
-                        cur.push(ch);
-                    }
+        }
+        None
+    }
+
+    fn anchored_object(&mut self, s: &Story, k: usize) -> Option<El> {
+        if let Some(o) = s.objects.get(k) {
+            let mut e = self.item_el(&o.item, o.item.xf);
+            use designcraft_doc::anchored::AnchorAlign as A;
+            let setting = match &o.position {
+                designcraft_doc::AnchorPosition::Inline { y_offset } => {
+                    El::new("AnchoredObjectSetting").attr("AnchoredPosition", "InlinePosition").attr("AnchorYoffset", num(*y_offset))
                 }
-                flush_text(&mut cur, &mut pending);
-                flush_content(&mut pending, &mut out);
-                let is_last_seg = k + 1 == nseg;
-                // A break character that ends the paragraph was written as its `Br`.
-                let para_br = is_last_seg && !last && !ends_with_break;
-                if !out.is_empty() || csrs.is_empty() || para_br {
-                    let mut c = self.csr_el(&f);
-                    c.children.extend(out);
-                    csrs.push(c);
-                }
-                // Tracked changes wrap the text they mark.
-                if let Some(kind) = change_type(f.over.change) {
-                    for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
+                designcraft_doc::AnchorPosition::AboveLine { align, space_before, space_after } => El::new("AnchoredObjectSetting")
+                    .attr("AnchoredPosition", "AboveLine")
+                    .attr(
+                        "HorizontalAlignment",
+                        match align {
+                            A::Left => "LeftAlign",
+                            A::Center => "CenterAlign",
+                            A::Right => "RightAlign",
+                        },
+                    )
+                    .attr("AnchorSpaceAbove", num(*space_before))
+                    .attr("AnchorYoffset", num(*space_after)),
+                designcraft_doc::AnchorPosition::Custom {
+                    x_relative,
+                    y_relative,
+                    x_offset,
+                    y_offset,
+                    object_point,
+                    ref_point,
+                    keep_within_column,
+                    spine_relative,
+                } => El::new("AnchoredObjectSetting")
+                    .attr("AnchoredPosition", "Anchored")
+                    .attr("AnchorPoint", names::anchor_out(*object_point))
+                    .attr("HorizontalReferencePoint", names::anchor_rel_out(*x_relative, false))
+                    .attr("VerticalReferencePoint", names::anchor_rel_out(*y_relative, true))
+                    .attr("HorizontalAlignment", ["LeftAlign", "CenterAlign", "RightAlign"][(*ref_point % 3) as usize])
+                    .attr("VerticalAlignment", ["TopAlign", "CenterAlign", "BottomAlign"][(*ref_point / 3).min(2) as usize])
+                    // IDML measures a left-aligned object's X offset leftwards.
+                    .attr("AnchorXoffset", num(if *ref_point % 3 == 0 { 0.0 - *x_offset } else { *x_offset }))
+                    .attr("AnchorYoffset", num(*y_offset))
+                    .attr("PinPosition", bool_s(*keep_within_column))
+                    .attr("SpineRelative", bool_s(*spine_relative)),
+            };
+            e.push(setting);
+            return Some(e);
+        }
+        None
+    }
+
+    fn apply_tracked_changes(&mut self, s: &Story, f: &CharFormat, csrs: &mut [El], para_br: bool, para_end: usize) {
+        // Tracked changes wrap the text they mark.
+        if let Some(kind) = change_type(f.over.change) {
+            for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
+                let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
+                ch.children = std::mem::take(&mut c.children);
+                c.push(ch);
+            }
+        }
+        if para_br && let Some(c) = csrs.last_mut() {
+            let nl = s.runs().find(|(rr, _)| rr.contains(&para_end)).and_then(|(_, nf)| change_type(nf.over.change));
+            match nl {
+                None => c.push(El::new("Br")),
+                Some(kind) => match c.children.last_mut() {
+                    Some(Node::El(ch)) if ch.name == "Change" && ch.get("ChangeType") == Some(kind) => ch.push(El::new("Br")),
+                    _ => {
                         let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
-                        ch.children = std::mem::take(&mut c.children);
+                        ch.push(El::new("Br"));
                         c.push(ch);
                     }
+                },
+            }
+        }
+    }
+
+    /// `ParagraphStyleRange`s of a story (or a table cell's story).
+    pub(super) fn story_paras(&mut self, s: &Story) -> Vec<El> {
+        let ranges = s.para_ranges();
+        let n = ranges.len();
+        ranges.into_iter().enumerate().map(|(pi, r)| self.story_para(s, pi, r, pi + 1 == n)).collect()
+    }
+
+    fn paragraph_runs(s: &Story, r: &std::ops::Range<usize>) -> Vec<(std::ops::Range<usize>, CharFormat)> {
+        // Character runs intersecting the paragraph.
+        let mut segs: Vec<(std::ops::Range<usize>, CharFormat)> = Vec::new();
+        for (rr, f) in s.runs() {
+            let a = rr.start.max(r.start);
+            let b = rr.end.min(r.end);
+            if a < b {
+                segs.push((a..b, f.clone()));
+            }
+        }
+        if segs.is_empty() {
+            let f = s.char_format_at(r.start).clone();
+            segs.push((r.start..r.start, f));
+        }
+        segs
+    }
+
+    /// A cross-reference source's text: what its format generates, or the text typed over it, its
+    /// page numbers as InDesign's live cross-reference page number (as InDesign writes them, so
+    /// generated text reads back as generated).
+    fn xref_content(&mut self, c: &mut El, x: &designcraft_doc::CrossRef) {
+        let t = match &x.text {
+            Some(t) => t.clone(),
+            None => self.d.generated_xref_text(x.target, &x.format).unwrap_or_else(|| "??".into()),
+        };
+        let page = x.page.clone().unwrap_or_else(|| "?".into());
+        for (n, part) in t.split(designcraft_doc::xref::PAGE_NUM_BLOCK).enumerate() {
+            if n > 0 {
+                c.push(
+                    El::new("TextVariableInstance")
+                        .attr("Self", self.fresh())
+                        .attr("Name", "<?AID 001b?>TV XRefPageNumber")
+                        .attr("ResultText", &page)
+                        .attr("AssociatedTextVariable", "dTextVariablen<?AID 001b?>TV XRefPageNumber"),
+                );
+            }
+            if !part.is_empty() {
+                let mut content = El::new("Content");
+                content.children.push(Node::Text(part.to_string()));
+                c.push(content);
+            }
+        }
+    }
+
+    fn story_para(&mut self, s: &Story, pi: usize, r: std::ops::Range<usize>, last: bool) -> El {
+        let pf = s.paras.get(pi).cloned().unwrap_or_default();
+        let mut psr = self.psr_el(&pf);
+        let ends_with_break = s.text.get(r.clone()).and_then(|t| t.chars().next_back()).is_some_and(st::is_break_char);
+        let segs = Self::paragraph_runs(s, &r);
+        let nseg = segs.len();
+        for (k, (rr, f)) in segs.into_iter().enumerate() {
+            let seg_start = rr.start;
+            let text = &s.text[rr];
+            // Split at break characters.
+            let mut cur = String::new();
+            let mut pending: Vec<Node> = Vec::new();
+            let mut csrs: Vec<El> = Vec::new();
+            let flush_text = |cur: &mut String, pending: &mut Vec<Node>| {
+                if !cur.is_empty() {
+                    pending.push(Node::Text(std::mem::take(cur)));
                 }
-                if para_br && let Some(c) = csrs.last_mut() {
-                    let nl = s.runs().find(|(rr, _)| rr.contains(&r.end)).and_then(|(_, nf)| change_type(nf.over.change));
-                    match nl {
-                        None => c.push(El::new("Br")),
-                        Some(kind) => match c.children.last_mut() {
-                            Some(Node::El(ch)) if ch.name == "Change" && ch.get("ChangeType") == Some(kind) => ch.push(El::new("Br")),
-                            _ => {
-                                let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
-                                ch.push(El::new("Br"));
-                                c.push(ch);
-                            }
-                        },
+            };
+            let flush_content = |pending: &mut Vec<Node>, out: &mut Vec<Node>| {
+                if !pending.is_empty() {
+                    let mut c = El::new("Content");
+                    c.children = std::mem::take(pending);
+                    out.push(Node::El(c));
+                }
+            };
+            let mut out: Vec<Node> = Vec::new();
+            for (ci, ch) in text.char_indices() {
+                let ace = match ch {
+                    st::PAGE_NUMBER | st::NEXT_PAGE_NUMBER | st::PREV_PAGE_NUMBER => Some("18"),
+                    st::SECTION_MARKER => Some("19"),
+                    st::INDENT_HERE => Some("7"),
+                    st::RIGHT_INDENT_TAB => Some("8"),
+                    _ => None,
+                };
+                let brk = match ch {
+                    st::COLUMN_BREAK => Some("NextColumn"),
+                    st::FRAME_BREAK => Some("NextFrame"),
+                    st::PAGE_BREAK => Some("NextPage"),
+                    st::ODD_PAGE_BREAK => Some("NextOddPage"),
+                    st::EVEN_PAGE_BREAK => Some("NextEvenPage"),
+                    _ => None,
+                };
+                if let Some(code) = ace {
+                    flush_text(&mut cur, &mut pending);
+                    pending.push(Node::Pi("ACE".into(), code.into()));
+                } else if ch == st::TABLE_ANCHOR {
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if let Some(t) = s.para_table(pi) {
+                        out.push(Node::El(self.table_el(t)));
                     }
-                }
-                for c in csrs {
-                    psr.push(c);
+                } else if ch == designcraft_doc::ANCHOR_MARK {
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    let k = s.text[..seg_start + ci].matches(designcraft_doc::ANCHOR_MARK).count();
+                    if let Some(a) = s.anchors.get(k) {
+                        out.push(Node::El(
+                            El::new("HyperlinkTextDestination")
+                                .attr("Self", anchor_self(a.id))
+                                .attr("Name", &a.name)
+                                .attr("Hidden", "false")
+                                .attr("DestinationUniqueKey", a.id & 0xFFFF_FFFF),
+                        ));
+                    }
+                } else if ch == designcraft_doc::OBJECT_MARK {
+                    // An anchored object: the item inside the range with its anchoring settings.
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    let k = s.text[..seg_start + ci].matches(designcraft_doc::OBJECT_MARK).count();
+                    if let Some(el) = self.anchored_object(s, k) {
+                        out.push(Node::El(el));
+                    }
+                } else if ch == designcraft_doc::INDEX_MARK {
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    let k = s.text[..seg_start + ci].matches(designcraft_doc::INDEX_MARK).count();
+                    if let Some(el) = self.index_reference(s, k) {
+                        out.push(Node::El(el));
+                    }
+                } else if ch == designcraft_doc::XREF_MARK {
+                    // A source wrapping its current text (InDesign regenerates it on update).
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    let k = s.text[..seg_start + ci].matches(designcraft_doc::XREF_MARK).count();
+                    if let Some(x) = s.xrefs.get(k) {
+                        let me = self.fresh();
+                        let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
+                        let mut c = self.csr_el(&f);
+                        self.xref_content(&mut c, x);
+                        let mut src = El::new("CrossReferenceSource")
+                            .attr("Self", &me)
+                            .attr("AppliedFormat", fmt)
+                            .attr("Name", format!("Cross-Reference {}", self.xref_sources.len() + 1))
+                            .attr("Hidden", "false");
+                        src.push(c);
+                        csrs.push(src);
+                        self.xref_sources.push((me, x.target));
+                    }
+                } else if let Some(vi) = designcraft_doc::vars::var_index(ch) {
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if let Some(v) = self.d.text_variables.get(vi) {
+                        let result = self.d.variable_value(vi, None).unwrap_or_else(|| format!("{}{}", v.before, v.after));
+                        out.push(Node::El(
+                            El::new("TextVariableInstance")
+                                .attr("Self", self.fresh())
+                                .attr("Name", &v.name)
+                                .attr("ResultText", result)
+                                .attr("AssociatedTextVariable", format!("dTextVariablen{}", v.name)),
+                        ));
+                    }
+                } else if ch == designcraft_doc::NOTE_MARK {
+                    // Editorial notes aren't written to IDML yet.
+                } else if ch == designcraft_doc::ENDNOTE_REF {
+                    // Endnotes aren't written to IDML yet: the endnote frame keeps their text
+                    // (numbers included) and the references are left out.
+                } else if ch == designcraft_doc::FOOTNOTE_REF {
+                    // The reference: its own range carrying the reference position.
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    if let Some(n) = s.notes.get(s.notes_before(seg_start + ci)) {
+                        let mut c = self.csr_el(&f);
+                        let pos = self.d.footnote_options.ref_position;
+                        if pos != designcraft_doc::Position::Normal {
+                            c.set("Position", names::position_out(pos));
+                        }
+                        c.push(self.footnote_el(&n.text));
+                        csrs.push(c);
+                    }
+                } else if let Some(bt) = brk {
+                    flush_text(&mut cur, &mut pending);
+                    flush_content(&mut pending, &mut out);
+                    if !out.is_empty() {
+                        let mut c = self.csr_el(&f);
+                        c.children.append(&mut out);
+                        csrs.push(c);
+                    }
+                    let mut c = self.csr_el(&f);
+                    c.set("ParagraphBreakType", bt);
+                    c.push(El::new("Br"));
+                    csrs.push(c);
+                } else {
+                    cur.push(ch);
                 }
             }
-            paras.push(psr);
+            flush_text(&mut cur, &mut pending);
+            flush_content(&mut pending, &mut out);
+            let is_last_seg = k + 1 == nseg;
+            // A break character that ends the paragraph was written as its `Br`.
+            let para_br = is_last_seg && !last && !ends_with_break;
+            if !out.is_empty() || csrs.is_empty() || para_br {
+                let mut c = self.csr_el(&f);
+                c.children.extend(out);
+                csrs.push(c);
+            }
+            self.apply_tracked_changes(s, &f, &mut csrs, para_br, r.end);
+            for c in csrs {
+                psr.push(c);
+            }
         }
-        paras
+        psr
     }
 
     pub(super) fn psr_el(&mut self, pf: &ParaFormat) -> El {

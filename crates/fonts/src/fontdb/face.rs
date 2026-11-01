@@ -1,7 +1,7 @@
 use super::db::NEXT_ID;
 use super::names::{aliases, face_names, name, norm, style_italic, style_weight, wws_names};
 use super::outline::has_serifs;
-use super::*;
+use super::{Arc, DrawSettings, FileRef, FontGroup, GlyphId, Location, LocationRef, MetadataProvider, Ordering, OutlinePen, Size, StringId};
 
 /// The family used when a requested family is unknown (the UI sans).
 pub const FALLBACK_FAMILY: &str = "Source Sans 3";

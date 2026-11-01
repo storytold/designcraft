@@ -1,6 +1,6 @@
 use super::state::waits_for_ime;
 use super::ui_commands::ui_label;
-use super::*;
+use super::{DesignApp, Value, json};
 
 /// Close document `index` (the active one when `None`) the way the user asks for it: with the
 /// tab's ×, File ▸ Close or its shortcut. A document with unsaved changes asks first, because
@@ -64,6 +64,11 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
     }
     if params.is_null() && id == "layout.section" {
         crate::section_options::open(app);
+        return;
+    }
+    if params.is_null() && id == "layout.pages.insert" {
+        let cur = crate::canvas::current_page(app).unwrap_or(0);
+        crate::dialogs::open_insert_pages(app, cur);
         return;
     }
     if params.is_null() && id == "layout.createGuides" {

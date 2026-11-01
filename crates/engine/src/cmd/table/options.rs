@@ -1,6 +1,6 @@
 use super::cell::StrokeEdit;
 use super::target::{color_param, edit_table, target};
-use super::*;
+use super::{AltFills, Result, Session, Value, bad, f64_or, json};
 
 fn parse_alt(v: &Value) -> Option<AltFills> {
     if v.is_null() {

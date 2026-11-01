@@ -102,19 +102,25 @@ impl Renderer {
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity));
+            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity));
+            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity, d.mode));
         }
-        for (off, size, pct, color, opacity) in below {
+        for (off, size, pct, color, opacity, mode) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
+            // The effect's blend sees what's behind the object: a layer around the filtered one.
+            let mix = crate::blend_mode(mode).mix;
+            if mix != Mix::Normal {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+            }
             self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
@@ -128,6 +134,9 @@ impl Renderer {
                 }
                 c.pop_layer();
             });
+            if mix != Mix::Normal {
+                ctx.pop_layer();
+            }
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
@@ -211,6 +220,9 @@ impl Renderer {
         if !it.path.is_closed() {
             return;
         }
+        // An image's edge is where it is opaque, not the frame: inner shadows, glows and bevels
+        // follow what is painted when the frame holds a graphic.
+        let painted = matches!(it.content, designcraft_doc::Content::Graphic(_)).then_some((it, page));
         // Inner shadow, clipped to the shape.
         if e.inner_shadow.on
             && let Some(c) = doc.resolve_color(&e.inner_shadow.color, 1.0)
@@ -218,7 +230,19 @@ impl Renderer {
             let s = &e.inner_shadow;
             let (sigma, choke) = split(s.size, s.choke);
             let off = offset(doc.light_angle(s.angle, s.global_light), s.distance);
-            self.inner_edge(ctx, f, reach, bp, xf, off, sigma, choke, color_of(&c, s.opacity.clamp(0.0, 1.0)), Mix::Normal);
+            self.inner_edge(
+                ctx,
+                f,
+                reach,
+                bp,
+                xf,
+                off,
+                sigma,
+                choke,
+                color_of(&c, s.opacity.clamp(0.0, 1.0)),
+                crate::blend_mode(s.mode).mix,
+                painted,
+            );
         }
         // Inner glow: from the edges inwards (or out from the centre), screened over the object.
         if e.inner_glow.on
@@ -248,7 +272,7 @@ impl Renderer {
                     c.pop_layer();
                 });
             } else {
-                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, mix);
+                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, mix, painted);
             }
         }
         // Satin: the shape shifted both ways along the angle, blurred, where exactly one covers.
@@ -289,16 +313,18 @@ impl Renderer {
             let sigma = b.size.max(0.0) / 2.0;
             if let Some(c) = doc.resolve_color(&b.highlight, 1.0) {
                 // The inverse shape moved away from the light lights the edges facing it.
-                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen);
+                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen, painted);
             }
             if let Some(c) = doc.resolve_color(&b.shadow, 1.0) {
-                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply);
+                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply, painted);
             }
         }
     }
 
     /// An inner shadow-like edge: everything outside the shape moved by `off`, blurred by
-    /// `sigma`, clipped to the shape and blended with `mix`.
+    /// `sigma`, clipped to the shape and blended with `mix`. With `painted` (an object and the
+    /// page it shows on), the shape is what the object paints, so a transparent part of an image
+    /// is outside it: the edge runs along the image's opaque pixels, not the frame.
     #[allow(clippy::too_many_arguments)]
     fn inner_edge(
         &mut self,
@@ -312,7 +338,33 @@ impl Renderer {
         choke: f64,
         paint: peniko::Color,
         mix: Mix,
+        painted: Option<(&Item, ShownOn)>,
     ) {
+        if let Some((it, page)) = painted {
+            self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |me, c, fr| {
+                let pad = sigma * 4.0 + choke + off.hypot() + 4.0 * fr.px;
+                let area = reach.inflate(pad, pad);
+                // The colour everywhere but under the painted pixels moved by `off`, blurred, ...
+                c.set_transform(fr.view);
+                c.push_layer(None, None, None, None, None);
+                c.push_layer(None, None, None, None, Some(blur(sigma)));
+                c.set_paint(paint);
+                c.fill_rect(&area);
+                c.set_transform(Affine::IDENTITY);
+                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
+                me.draw_body(c, &moved, it, bp, xf, page);
+                c.pop_layer();
+                c.pop_layer();
+                // ... kept only where the object paints.
+                c.set_transform(Affine::IDENTITY);
+                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+                me.draw_body(c, fr, it, bp, xf, page);
+                c.pop_layer();
+                c.pop_layer();
+            });
+            return;
+        }
         self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |_, c, fr| {
             c.set_transform(fr.view);
             c.push_layer(None, None, None, None, Some(blur(sigma)));
@@ -457,5 +509,69 @@ mod tests {
         // much padding again inside vello's filter layer. Drawn at 1/14.65 it is 1,024 px wide.
         let wide = Offscreen { x0: -14852.0, y0: -14852.0, scale: 15_002.0 / 1024.0, width: 2062, height: 2062 };
         assert_eq!(offscreen(object, 15_002.0, 1440, 900), Some(wide));
+    }
+
+    /// An inner shadow on a frame holding an image whose left half is transparent: the shadow
+    /// lines the image's opaque part (its edge in the middle of the frame), not only the frame.
+    #[test]
+    fn an_inner_shadow_follows_a_transparent_images_edge() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        // 20 × 20: transparent left half, opaque white right half.
+        let img = image::RgbaImage::from_fn(20, 20, |x, _| if x < 10 { image::Rgba([0, 0, 0, 0]) } else { image::Rgba([255, 255, 255, 255]) });
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let aid = designcraft_doc::AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            std::sync::Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "half.png".into(),
+                mime: "image/png".into(),
+                data: std::sync::Arc::new(png),
+                pixels: Some((20, 20)),
+                ..Default::default()
+            }),
+        );
+        let mut it = Item::new(
+            designcraft_doc::ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 300.0, 300.0)),
+        );
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (200.0, 200.0),
+            xf: Affine::translate((100.0, 100.0)),
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let s = &mut it.effects.inner_shadow;
+        s.on = true;
+        s.color = "[Black]".into();
+        s.opacity = 1.0;
+        s.distance = 0.0;
+        s.size = 20.0;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = crate::Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let page = r.render_page(&d, &cache, 0, 1.0, false, &crate::RenderOptions::default()).unwrap();
+        let lum = |x: u32| {
+            let p = page.pixel(x, 200);
+            u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+        };
+        // The image's opaque part starts at x = 200: just inside it the shadow darkens it; in its
+        // middle (x = 250, 50 pt from every edge but the frame's right one) it stays light.
+        assert!(lum(204) + 60 < lum(250), "shadow at the image's own edge: {} vs {}", lum(204), lum(250));
+        // The transparent half shows the page: no shadow painted there.
+        assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
     }
 }

@@ -1,7 +1,12 @@
+#[cfg(not(target_arch = "wasm32"))]
+use super::EngineError;
 #[cfg(test)]
 use super::bytes::base64_encode;
 use super::bytes::{base64_decode, from_bytes};
-use super::*;
+use super::{
+    Affine, Arc, Asset, AssetId, Content, Graphic, Item, ItemId, PdfCrop, Rect, Result, Selection, Session, Shape, Value, bad, json, ok, shapes,
+    str_param,
+};
 
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
@@ -271,7 +276,7 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Drag: fit proportionally; click: actual size at the point.
         let (r, k) = match rect {
-            Some(r) if r.width() > 2.0 && r.height() > 2.0 => {
+            Some(r) if r.width() > designcraft_tools::PLACE_DRAG_MIN && r.height() > designcraft_tools::PLACE_DRAG_MIN => {
                 let k = (r.width() / nw).min(r.height() / nh);
                 (Rect::new(r.x0, r.y0, r.x0 + nw * k, r.y0 + nh * k), k)
             }

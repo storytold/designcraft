@@ -1,6 +1,6 @@
 use super::flatten::{rasterize_where, threaded};
 use super::pdf::pages_param;
-use super::*;
+use super::{Arc, Cow, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.printBooklet";

@@ -1,5 +1,5 @@
 use super::values::tint;
-use super::*;
+use super::{Columns, ColumnsKind, El, Margins, TextFrameOptions, TextWrap, names};
 
 /// Drop-shadow angle (degrees) from IDML offsets (inverse of export's mapping).
 /// A `TextWrapPreference` element (of a page item or a placed graphic).

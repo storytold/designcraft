@@ -204,12 +204,12 @@ fn black_and_gold(pdf: &[u8]) -> Vec<(u8, u8)> {
     let mut out = Vec::new();
     for st in file.objects().into_iter().filter_map(|o| o.into_stream()) {
         let d = st.dict();
-        if !d.get::<Name<'_>>(b"Subtype").is_some_and(|n| n.as_ref() == b"Image") || d.get::<i32>(b"BitsPerComponent") != Some(8) {
+        if d.get::<Name<'_>>(b"Subtype").is_none_or(|n| n.as_ref() != b"Image") || d.get::<i32>(b"BitsPerComponent") != Some(8) {
             continue;
         }
         let Some(cs) = d.get::<Array<'_>>(b"ColorSpace") else { continue };
         let mut it = cs.iter::<Object<'_>>();
-        if !it.next().and_then(|o| o.into_name()).is_some_and(|n| n.as_ref() == b"DeviceN") {
+        if it.next().and_then(|o| o.into_name()).is_none_or(|n| n.as_ref() != b"DeviceN") {
             continue;
         }
         let Some(Object::Array(names)) = it.next() else { continue };

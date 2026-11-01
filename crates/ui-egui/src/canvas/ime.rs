@@ -1,5 +1,5 @@
 use super::input::{keyboard_pane, modal_open};
-use super::*;
+use super::{CommittedText, DesignApp, IMESurroundingText, ImeMutation, ImeMutationStamp, ImeObservation, ImeTarget, ImeTextContext, Rect, Xf};
 
 /// Has the composition these events belong to already ended outside the IME in this batch?
 ///

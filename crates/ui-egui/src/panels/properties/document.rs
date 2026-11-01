@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    DesignApp, FIELD_H, NumField, Rect, Sense, Tokens, Ui, Value, block, button_pair, divider, dropdown, full_width, icon_toggle, icons, json,
+    number, outline_button, place, pos2, rule, section, section_row, set_temp_bool, sub, temp_bool, units, vec2, widgets,
+};
 
 // ---------------------------------------------------------------- No Selection
 
@@ -129,6 +132,55 @@ pub(super) fn page_sections(app: &mut DesignApp, ui: &mut Ui, page: usize) {
     }
 }
 
+/// Page count field: add pages after the last one, or delete from the end, to reach `nv` (from `n`).
+fn resize_document(app: &mut DesignApp, n: usize, nv: f64) {
+    let want = (nv.round() as usize).clamp(1, 9999);
+    if want > n {
+        let _ = app.run("layout.pages.insert", json!({"count": want - n, "after": n - 1}));
+    } else if want < n {
+        let _ = app.run("layout.pages.delete", json!({"pages": (want..n).collect::<Vec<_>>()}));
+    }
+}
+
+/// The margins after field `k` (top, bottom, outside, inside) is set to `nv`; all four when linked.
+fn edited_margins(mut m: designcraft_doc::Margins, linked: bool, k: usize, nv: f64) -> designcraft_doc::Margins {
+    if linked {
+        return designcraft_doc::Margins { top: nv, bottom: nv, inside: nv, outside: nv };
+    }
+    match k {
+        0 => m.top = nv,
+        1 => m.bottom = nv,
+        2 => m.outside = nv,
+        _ => m.inside = nv,
+    }
+    m
+}
+
+/// The page-size preset menu; the width and height of the preset chosen.
+fn page_preset_menu(ui: &mut Ui, pw: f64, ph: f64) -> Option<(f64, f64)> {
+    let mut preset = None;
+    let resp = dropdown(ui, preset_name(pw, ph), 93.0);
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(140.0);
+        for p in PAGE_PRESETS {
+            if ui.selectable_label(preset_name(pw, ph) == p.0, p.0).clicked() {
+                preset = Some((p.1, p.2));
+                ui.close();
+            }
+        }
+    });
+    preset
+}
+
+/// As the status bar's page box: the page, or the parent shown ("A-Parent"); then the parents.
+fn page_box_field(app: &mut DesignApp, ui: &mut Ui, b: Rect) {
+    let Some(pb) = crate::canvas::page_box(app) else { return };
+    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| widgets::dropdown_list(ui, pb.current_name(), 93.0, &pb.names, Some(pb.current)));
+    if let Some(i) = picked {
+        crate::canvas::page_box_go(app, &pb, i);
+    }
+}
+
 pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     let u = units(app);
     let Some(st) = app.session.active() else { return };
@@ -137,19 +189,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     section(ui, crate::i18n::tr(&app.ui.language, "Document"), true);
     // Preset dropdown + orientation.
     let b = block(ui, FIELD_H);
-    let mut preset = None;
-    place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        let resp = dropdown(ui, preset_name(pw, ph), 93.0);
-        egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(140.0);
-            for p in PAGE_PRESETS {
-                if ui.selectable_label(preset_name(pw, ph) == p.0, p.0).clicked() {
-                    preset = Some((p.1, p.2));
-                    ui.close();
-                }
-            }
-        });
-    });
+    let preset = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| page_preset_menu(ui, pw, ph));
     let landscape = pw > ph;
     let mut orient = None;
     place(ui, sub(b, 126.0, 0.0, 52.0, FIELD_H), |ui| {
@@ -185,12 +225,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     icons::paint(ui.painter(), sub(b, 127.0, 2.0, 17.0, 17.0), "page-count", t.icon);
     let nv = place(ui, sub(b, 150.0, 0.0, 68.0, FIELD_H), |ui| number(ui, "pagecount", Some(n as f64), "", 68.0, 0));
     if let Some(nv) = nv {
-        let want = (nv.round() as usize).clamp(1, 9999);
-        if want > n {
-            let _ = app.run("layout.pages.insert", json!({"count": want - n, "after": n - 1}));
-        } else if want < n {
-            let _ = app.run("layout.pages.delete", json!({"pages": (want..n).collect::<Vec<_>>()}));
-        }
+        resize_document(app, n, nv);
     }
     let mut facing = d.settings.facing_pages;
     let changed = place(ui, sub(b, 126.0, 26.0, 100.0, FIELD_H), |ui| {
@@ -229,18 +264,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
                 NumField::measure(tip, Some(v), u).width(73.0).spinner().range(0.0, 8000.0).show(ui)
             });
             if let Some(nv) = nv {
-                let mut m = p.margins;
-                if linked {
-                    m = designcraft_doc::Margins { top: nv, bottom: nv, inside: nv, outside: nv };
-                } else {
-                    match k {
-                        0 => m.top = nv,
-                        1 => m.bottom = nv,
-                        2 => m.outside = nv,
-                        _ => m.inside = nv,
-                    }
-                }
-                set = Some(m);
+                set = Some(edited_margins(p.margins, linked, k, nv));
             }
         }
         let lr = sub(b, 99.0, 12.5, 22.0, FIELD_H);
@@ -272,13 +296,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     // Page.
     section(ui, crate::i18n::tr(&app.ui.language, "Page"), true);
     let b = block(ui, FIELD_H);
-    let names: Vec<String> = (0..d.page_count()).map(|i| app.session.page_label(i)).collect();
-    let picked = place(ui, sub(b, 0.0, 0.0, 93.0, FIELD_H), |ui| {
-        widgets::dropdown_list(ui, &names[cur.min(names.len().saturating_sub(1))], 93.0, &names, Some(cur))
-    });
-    if let Some(pg) = picked {
-        crate::canvas::go_to_page(app, pg);
-    }
+    page_box_field(app, ui, b);
     let (add, del) = place(ui, sub(b, 172.0, 0.0, 50.0, FIELD_H), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let a = widgets::icon_toggle_sized(ui, "style-new", false, "Insert Page", vec2(22.0, 21.0)).clicked();

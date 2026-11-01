@@ -1,4 +1,4 @@
-use super::*;
+use super::DesignApp;
 
 /// Menu and Quick Apply entries that only CJK typesetting uses: hidden unless
 /// [`crate::cjk_features`]. The commands still run from scripts, the control channel and MCP.
@@ -13,14 +13,14 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
-    ("app.openDialog", "Open…", Some("Cmd+O"), "{}"),
+    ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
-    ("app.placeDialog", "Place…", Some("Cmd+D"), "{}"),
-    ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{}"),
+    ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
+    ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
-    ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{} — choose where to write a copy (the document stays as it is)"),
-    ("app.loadSwatches", "Load Swatches…", None, "{} — pick a swatch exchange (.ase) file"),
+    ("app.saveCopyDialog", "Save a Copy…", Some("Cmd+Alt+S"), "{path?} — choose where to write a copy (the document stays as it is)"),
+    ("app.loadSwatches", "Load Swatches…", None, "{path?} — pick a swatch exchange (.ase) file"),
     (
         "app.loadParagraphStyles",
         "Load Paragraph Styles…",
@@ -35,7 +35,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
-    ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{} — choose the package folder to create (file.package)"),
+    (
+        "app.packageDialog",
+        "Package…",
+        Some("Cmd+Alt+Shift+P"),
+        "{dir?} — the Package dialog (what the package carries, printing instructions), then the folder to create; with dir, packages into it at once (file.package)",
+    ),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
@@ -74,9 +79,9 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{preset: \"\"|high|medium|low} — PDF export rasterises spreads with transparency at 300 / 150 / 72 ppi",
     ),
-    ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{} — pick an image for the target table cell"),
+    ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{path?} — pick an image for the target table cell"),
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
-    ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{} — Word/RTF style mapping before placing"),
+    ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{path?} — Word/RTF style mapping before placing"),
     ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
@@ -109,7 +114,14 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{path | text} — a set saved by InDesign's Show Set (.txt), imported as a new shortcut set, which becomes active: matched commands, panels (Window menu items) and tools (Tools items) take its Default shortcuts (an item without Default keys takes its Text keys), or none when every item matched to them has none; other commands lose keys it takes unless they share them as defaults → {set, imported, changed [{id, label, item, line, from, to}], conflictsCleared [{id, label, shortcut}], skipped [{id, item, line, shortcut, takenBy, reason}] (an earlier item whose keys a later one took, or a reserved key), failed [{id, label, change, shortcuts}], unmatched [{item, line, keys, reason: noMatch | ambiguous | tool | context}], unmatchedWithoutShortcut, unreadable [{item, line, keys, reason}], approximated [{item, line, keys, note}] (numeric keypad keys bound as the main keys), suggestions [{item, line, candidates}] (never applied), matchedWithoutChange [{id, label, item, line, reason}] (a keyless panel-menu item that clears nothing), truncated, shortcutSet (the new set's name)}; ids are command keys (`window.panel {\"panel\":\"layers\"}`)",
     ),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
-    ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
+    ("app.insertTableDialog", "Insert Table…", Some("Cmd+Alt+Shift+T"), "{} — Insert Table dialog (body/header/footer rows, columns, table style)"),
+    (
+        "app.convertTextToTableDialog",
+        "Convert Text to Table…",
+        None,
+        "{} — Convert Text to Table dialog (column and row separators, number of columns, table style)",
+    ),
+    ("app.convertTableToTextDialog", "Convert Table to Text…", None, "{} — Convert Table to Text dialog (column and row separators)"),
     (
         "app.cellOptionsDialog",
         "Strokes and Fills…",
@@ -232,6 +244,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
+    (
+        "view.storyEditorDepthRuler",
+        "Show/Hide Depth Ruler",
+        None,
+        "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
+    ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
     ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
@@ -366,7 +384,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
     ),
     ("help.checkForUpdates", "Check for Updates…", None, "{} — checks for newer releases and offers to update"),
-    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{}"),
+    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{on?: bool (default: toggle)} → whether the Tools panel has two columns"),
     (
         "window.workspace",
         "Workspace",

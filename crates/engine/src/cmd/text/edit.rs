@@ -1,6 +1,8 @@
 use super::caret::{next_char, next_word, prev_char, prev_word, story_of};
 use super::format::{apply_typing_format, format_targets, typing_format};
-use super::*;
+use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, id_param, json, ok, str_param};
+#[cfg(test)]
+use designcraft_doc::StoryId;
 
 // Each command edits a copy-on-write Story snapshot. Reserving its known final text growth
 // avoids retaining geometric String spare capacity in every independent undo snapshot.
@@ -11,10 +13,13 @@ fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> R
 
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = crate::cmd::text_param(p, "text");
-    // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`).
-    if text == "\t" && s.doc()?.selection.text.is_some_and(|t| t.cell.is_some()) {
+    // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`). Footnote text is
+    // addressed as a cell too: a Tab there is typed.
+    if text == "\t" && s.doc()?.selection.text.is_some_and(|t| t.cell.is_some_and(|c| c.footnote_id().is_none())) {
         return crate::cmd::table::step_cell(s, true);
     }
+    // Typing with one cell selected replaces its text, as InDesign.
+    crate::cmd::table::one_selected_cell_to_text(s)?;
     let raw = p.get("raw").and_then(Value::as_bool).unwrap_or(false);
     let text = if s.prefs.typographers_quotes && !raw { smart_quotes(s, &text) } else { text };
     let tracking = s.doc()?.doc.settings.track_changes;

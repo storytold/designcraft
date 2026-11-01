@@ -858,28 +858,25 @@ pub fn digits_in(s: &str) -> Option<designcraft_doc::Digits> {
     [Digits::Default, Digits::Arabic, Digits::Hindi, Digits::Farsi, Digits::Native].into_iter().find(|d| digits_out(*d) == s)
 }
 
-/// A TOC separator in IDML's special-character notation: `^t` is a tab, `^^` a caret.
+/// A TOC separator in IDML's special-character notation.
 pub fn toc_separator_out(s: &str) -> String {
-    s.replace('^', "^^").replace('\t', "^t")
+    designcraft_doc::story::toc_separator_notation(s)
 }
-/// IDML TOC separator → text (`^t` and `^y`, the right indent tab, are tabs; other codes stay).
+/// IDML may prefix a separator with its localized-string marker.
 pub fn toc_separator_in(s: &str) -> String {
-    let mut out = String::new();
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c != '^' {
-            out.push(c);
-            continue;
-        }
-        match it.next() {
-            Some('t' | 'y') => out.push('\t'),
-            Some('^') => out.push('^'),
-            Some(o) => {
-                out.push('^');
-                out.push(o);
-            }
-            None => out.push('^'),
-        }
+    designcraft_doc::story::toc_separator_text(s.strip_prefix("$ID/").unwrap_or(s))
+}
+
+#[cfg(test)]
+mod toc_separator_tests {
+    use super::*;
+
+    #[test]
+    fn localized_right_indent_tab_is_not_an_ordinary_tab() {
+        assert_eq!(toc_separator_in("$ID/^y"), "\u{E006}");
+        assert_eq!(toc_separator_in("$ID/ ^y "), " \u{E006} ");
+        assert_eq!(toc_separator_in("^t"), "\t");
+        assert_eq!(toc_separator_out("\u{E006}"), "^y");
+        assert_eq!(toc_separator_in("^^y ^q ^"), "^y ^q ^");
     }
-    out
 }

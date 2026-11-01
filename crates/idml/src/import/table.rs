@@ -1,5 +1,38 @@
 use super::values::{span, tint};
-use super::*;
+use super::{CellRange, El, Importer, RowHeightMode, StoryId, Table, names, swatch};
+
+/// Cells every table in one import may hold between them. A `Cell` carries a whole story, so
+/// it is 1,360 bytes: 400,000 of them is about 520 MB, which is the 512 MiB the package reader
+/// already allows one part of the file to decompress to, and the same count the spreadsheet
+/// importer collects at most.
+const MAX_IMPORT_TABLE_CELLS: usize = 400_000;
+
+/// Clamp warnings one import writes before it says the rest were the same.
+const MAX_TABLE_WARNINGS: usize = 20;
+
+/// How large a table of `rows` x `cols` may be read when `reserved` cells have already been
+/// taken, and whether the file-wide budget is what cut it down -- or `None` when the budget is
+/// spent and the table is not read at all.
+///
+/// The per-table cap leaves a file free to hold many capped tables, so each is also clamped
+/// against what is left. While there is budget, one row and one column are always kept: the table
+/// is then still in the document, still says where its text went, and a file pays one cell for a
+/// table it really does contain.
+///
+/// Past that there is nothing left to pay with. Keeping a 1 x 1 table for every further `<Table>`
+/// was unbounded in the one direction the budget was meant to close: `<Table></Table>` is fifteen
+/// bytes, so the 512 MiB a part may decompress to holds some 36 million of them, and a `Cell`
+/// each is tens of gigabytes with every table inside both caps (noted in review).
+fn budgeted_size(rows: usize, cols: usize, reserved: usize) -> Option<(usize, usize, bool)> {
+    let (mut nr, mut nc) = designcraft_doc::table::clamped_size(rows, cols);
+    let left = MAX_IMPORT_TABLE_CELLS.checked_sub(reserved).filter(|left| *left > 0)?;
+    let over_budget = nr.saturating_mul(nc) > left;
+    if over_budget {
+        nc = nc.min(left);
+        nr = nr.min((left / nc).max(1));
+    }
+    Some((nr, nc, over_budget))
+}
 
 /// Preserve the legacy uniform field only when all four sides explicitly specify every
 /// property. Partial records must stay sparse so they can inherit from a parent style.
@@ -21,12 +54,44 @@ pub(super) fn uniform_cell_stroke(edges: &[designcraft_doc::CellStrokeAttrs; 4])
 
 impl<'r> Importer<'r> {
     /// `<Table>`: rows, columns and cells (cell `Name` is `column:row`).
-    pub(super) fn table(&mut self, e: &El) -> Table {
-        let id = self.alloc();
+    pub(super) fn table(&mut self, e: &El) -> Option<Table> {
         let rows: Vec<&El> = e.find_all("Row").collect();
         let cols: Vec<&El> = e.find_all("Column").collect();
-        let nr = rows.len().max(1);
-        let nc = cols.len().max(1);
+        // A file's row and column counts are its claim, and a table of them is allocated whole: a
+        // story holding one `<Table>` with 5,000 of each asked for 25M cells, around 34 GB, which
+        // aborts the process instead of failing (#1583). What is read is clamped, and the rest of
+        // this function walks the clamped slices -- indexing `t.rows`/`t.columns` by the file's
+        // own counts would be out of bounds.
+        //
+        // Reserved before `Table::new`, so a cell's own story cannot spend the budget this table
+        // is counting on.
+        let Some((nr, nc, over_budget)) = budgeted_size(rows.len().max(1), cols.len().max(1), self.table_cells) else {
+            // Said once: the file that reaches this is the one with millions of tables in it.
+            if !self.table_budget_spent {
+                self.table_budget_spent = true;
+                self.warnings.push(format!(
+                    "the tables in this file claim more than {MAX_IMPORT_TABLE_CELLS} cells between them: the rest of them were not read"
+                ));
+            }
+            return None;
+        };
+        self.table_cells = self.table_cells.saturating_add(nr.saturating_mul(nc));
+        if nr < rows.len() || nc < cols.len() {
+            let why = if over_budget { "more than the tables in one file can hold between them" } else { "more than a table can hold" };
+            self.table_warnings += 1;
+            match self.table_warnings.cmp(&MAX_TABLE_WARNINGS) {
+                std::cmp::Ordering::Less => {
+                    self.warnings.push(format!("a table of {} rows and {} columns was read as {nr} x {nc}: {why}", rows.len(), cols.len()))
+                }
+                std::cmp::Ordering::Equal => {
+                    self.warnings.push(format!("more than {MAX_TABLE_WARNINGS} tables were read smaller than this file claims"))
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        let id = self.alloc();
+        let rows = &rows[..nr.min(rows.len())];
+        let cols = &cols[..nc.min(cols.len())];
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
         t.options.direction = if e.get("TableDirection") == Some("RightToLeftDirection") {
             designcraft_doc::TextDirection::RightToLeft
@@ -113,7 +178,7 @@ impl<'r> Importer<'r> {
         for rg in regions {
             let _ = t.merge(rg);
         }
-        t
+        Some(t)
     }
 
     /// A cell's local fill, insets, alignment, rotation and edge strokes.
@@ -154,6 +219,67 @@ impl<'r> Importer<'r> {
             // draw over an outer edge the cell explicitly hides (weight 0 or the None swatch), as InDesign draws nothing.
             let hidden = attrs.weight == Some(0.0) || attrs.color.as_deref() == Some(swatch::NONE);
             cell.border_overrides[i] |= border_unset && hidden;
+        }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{MAX_IMPORT_TABLE_CELLS, budgeted_size};
+
+    /// One table is capped, but a file chooses how many tables it has: three tables each at the
+    /// per-table cap asked for 750,000 cells, about 1 GB of `Cell`, with every table inside its
+    /// own limit (noted in review of #1583).
+    #[test]
+    fn the_tables_in_one_file_are_capped_between_them() {
+        let mut reserved = 0;
+        let mut sizes = Vec::new();
+        for _ in 0..4 {
+            let size = budgeted_size(500, 1000, reserved);
+            if let Some((nr, nc, _)) = size {
+                reserved += nr * nc;
+            }
+            sizes.push(size);
+        }
+        assert_eq!(sizes[0], Some((250, 1000, false)), "the first table is held by the per-table cap alone");
+        assert_eq!(sizes[1], Some((150, 1000, true)), "the second gets what is left of the file's budget");
+        assert_eq!(sizes[2], None, "and the third is not read: there is nothing left to pay for it");
+        assert_eq!(sizes[3], None, "nor any after it");
+        assert_eq!(reserved, MAX_IMPORT_TABLE_CELLS, "the budget is spent exactly, not overspent");
+    }
+
+    /// The budget is a hard limit, not a floor: keeping one cell for every further table was
+    /// unbounded in the one direction the budget exists to close, since a `<Table></Table>` is
+    /// fifteen bytes and a part may decompress to 512 MiB (noted in review).
+    #[test]
+    fn a_spent_budget_stops_reading_tables_altogether() {
+        let claims = [(0, 0), (1, 1), (7, 3), (usize::MAX, usize::MAX), (1, usize::MAX), (usize::MAX, 1), (10_000, 1_000), (2, 0)];
+        let mut reserved = 0usize;
+        let mut read = 0usize;
+        let mut skipped = 0usize;
+        // Every claim, several times over, in an order that exhausts the budget part way through.
+        for _ in 0..4 {
+            for (rows, cols) in claims {
+                match budgeted_size(rows.max(1), cols.max(1), reserved) {
+                    Some((nr, nc, _)) => {
+                        assert!(nr >= 1 && nc >= 1, "{rows} x {cols} was read as {nr} x {nc}: a table has nowhere to put its text");
+                        reserved += nr * nc;
+                        read += 1;
+                    }
+                    None => skipped += 1,
+                }
+                assert!(reserved <= MAX_IMPORT_TABLE_CELLS, "{read} tables reserved {reserved} cells, past the budget");
+            }
+        }
+        assert_eq!(reserved, MAX_IMPORT_TABLE_CELLS, "this sequence does reach the budget");
+        assert!(skipped > 0, "and does go on asking after it: {skipped} tables were not read");
+    }
+
+    /// Below the budget nothing is clamped by it, so an ordinary file is read exactly as before.
+    #[test]
+    fn an_ordinary_file_is_not_touched_by_the_budget() {
+        for (rows, cols) in [(1, 1), (2, 3), (50, 20), (250, 1000)] {
+            assert_eq!(budgeted_size(rows, cols, 0), Some((rows, cols, false)), "{rows} x {cols}");
         }
     }
 }

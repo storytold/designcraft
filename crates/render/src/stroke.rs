@@ -1,7 +1,10 @@
 use super::color::{HIDDEN_LAYERS, PLATE, color_of, overprints, plate_pixmap, screen_color, set_fill_paint};
 use super::pdf_raster::{is_pdf, shown_box};
 use super::types::{DisplayQuality, Frame};
-use super::*;
+use super::{
+    Affine, BezPath, BlendMode, Compose, Item, Mix, Rect, RenderContext, Renderer, Shape, StrokeAlign, StrokeType, colorize, images, kurbo,
+    pdf_layers, peniko, vello_cpu,
+};
 
 impl Renderer {
     pub(crate) fn draw_stroke(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {

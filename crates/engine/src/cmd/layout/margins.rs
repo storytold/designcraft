@@ -1,5 +1,5 @@
 use super::parents::parent_spread_index;
-use super::*;
+use super::{Margins, Result, Session, Value, bad, has_doc, json};
 
 /// Each page's margin box, by spread and page id.
 pub(super) fn margin_boxes(d: &designcraft_doc::Document) -> Vec<(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)> {

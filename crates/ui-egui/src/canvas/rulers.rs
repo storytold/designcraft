@@ -1,7 +1,7 @@
 use super::input::pointer_elsewhere;
 use super::page_decor::dashed;
 use super::view::current_slot;
-use super::*;
+use super::{CanvasLayout, DesignApp, Document, Point, Pos2, RULER, Rect, SpreadSlot, Stroke, Tokens, Value, Xf, json, pos2, vec2};
 
 /// Paint ruler bands and ticks, the zero-point crosshair, guide previews, and ticks restarted at each page origin.
 #[allow(clippy::too_many_arguments)]

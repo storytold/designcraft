@@ -38,7 +38,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
             st.family = f.family;
         }
-        let combo = egui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
+        let combo = craft_ui::ComboBox::from_id_salt("glyph_style").selected_text(&st.style).width(80.0).show_ui(ui, |ui| {
             for s in db.styles(&st.family) {
                 if ui.selectable_label(s == st.style, &s).clicked() {
                     st.style = s;

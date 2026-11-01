@@ -6,6 +6,25 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
+  <!-- UI translations are embedded in Rust; declare them for AppKit's system dialogs (open and
+       save panels, overwrite confirmation). Keep in sync with the interface languages. -->
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>ar</string>
+    <string>cs</string>
+    <string>de</string>
+    <string>es</string>
+    <string>fr</string>
+    <string>it</string>
+    <string>ja</string>
+    <string>ka</string>
+    <string>pl</string>
+    <string>pt-BR</string>
+    <string>ru</string>
+    <string>uk</string>
+    <string>zh-Hans</string>
+  </array>
   <key>CFBundleDisplayName</key>
   <string>DesignCraft</string>
   <key>CFBundleName</key>
@@ -71,6 +90,33 @@
       <string>Alternate</string>
       <key>LSItemContentTypes</key>
       <array><string>ai.storyteller.designcraft.idml</string></array>
+    </dict>
+    <!-- The same, by extension. When another installed app (InDesign) exports its own type for
+         .idml, files get that type instead of the one imported below, so the entry above no
+         longer matches them: Finder then won't drop them on the app's icon, and Open With leaves
+         DesignCraft out. An extension entry matches whatever type the file has. It must be a
+         dict of its own: where LSItemContentTypes is present, the extension keys are ignored. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IDML Document (by extension)</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>idml</string></array>
+    </dict>
+    <!-- InDesign documents and templates, converted to IDML on open (file.open); by extension
+         for the same reason as above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>indd</string><string>indt</string></array>
     </dict>
   </array>
 

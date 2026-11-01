@@ -1,7 +1,7 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
 use super::bytes::{base64_decode, load_bytes};
-use super::*;
+use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
     if s.prefs.recent_files.is_empty() { Err("no recent files".into()) } else { Ok(()) }
