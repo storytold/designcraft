@@ -620,6 +620,41 @@ impl<'r> Importer<'r> {
         // Cross-reference text the format generates exactly is generated again; any other was
         // typed over it and is kept (needs the destinations, resolved above).
         d.drop_generated_xref_text();
+        restore_nested_footnotes(&mut d, root, &self.story_ids);
         Ok(d)
     }
+}
+
+/// Nested footnotes DesignCraft wrote out for InDesign (marks and forced line breaks, see
+/// `Footnote::flattened`) and kept whole in a document label: each footnote whose text still reads
+/// as it was written (not edited in InDesign) gets its nested notes back. Ids are made unique
+/// again afterwards.
+fn restore_nested_footnotes(d: &mut Document, root: &El, story_ids: &HashMap<String, StoryId>) {
+    let Some(value) = root
+        .find("Properties")
+        .and_then(|p| p.find("Label"))
+        .and_then(|l| l.find_all("KeyValuePair").find(|kv| kv.get("Key") == Some(names::NESTED_FOOTNOTES_LABEL)))
+        .and_then(|kv| kv.get("Value"))
+    else {
+        return;
+    };
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str::<serde_json::Value>(value) else { return };
+    for e in entries {
+        let (Some(sid), Some(k), Some(flat)) = (
+            e.get("story").and_then(serde_json::Value::as_str).and_then(|s| story_ids.get(s)).copied(),
+            e.get("index").and_then(serde_json::Value::as_u64).and_then(|k| usize::try_from(k).ok()),
+            e.get("flat").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        let Some(Ok(text)) = e.get("text").cloned().map(serde_json::from_value::<designcraft_doc::Story>) else { continue };
+        if text.check().is_err() {
+            continue;
+        }
+        let Some(note) = d.story_mut(sid).and_then(|st| st.notes.get_mut(k)) else { continue };
+        if note.text.text == flat {
+            Arc::make_mut(note).text = text;
+        }
+    }
+    d.fix_note_ids();
 }

@@ -4977,3 +4977,58 @@ fn only_exactly_generated_cross_reference_text_is_regenerated() {
     let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
     assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }
+
+/// `bytes` (a package) with `from` replaced by `to` in every part whose name starts with `prefix`.
+fn rewrite_parts(bytes: &[u8], prefix: &str, from: &str, to: &str) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).unwrap();
+        let name = f.name().to_string();
+        let mut data = Vec::new();
+        f.read_to_end(&mut data).unwrap();
+        if name.starts_with(prefix) {
+            data = String::from_utf8(data).unwrap().replace(from, to).into_bytes();
+        }
+        w.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(&data).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+/// Nested footnotes, which InDesign can't hold: its footnotes get them written out (superscript
+/// marks, forced line breaks), the way GDT-style layouts do by hand, and a document label keeps
+/// them whole, so DesignCraft reads them back nested, unless the footnote was edited in InDesign.
+#[test]
+fn nested_footnotes_round_trip_written_out_for_indesign() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Body text.", ParaFormat::default()).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let a = st.insert_note(4, "Outer", ParaFormat::default()).unwrap();
+    let c = st.next_note_id_deep();
+    let n = st.note_mut(a).unwrap();
+    let local = n.text.insert_note(5, "Inner", ParaFormat::default()).unwrap();
+    std::sync::Arc::make_mut(n.text.notes.iter_mut().find(|x| x.id == local).unwrap()).id = c;
+    d.check().unwrap();
+    let bytes = export_idml(&d);
+    let stories = zip_text(&bytes, "Stories/");
+    // One footnote in InDesign's terms, holding the nested note written out.
+    assert_eq!(stories.matches("<Footnote>").count(), 1, "{stories}");
+    assert!(stories.contains('\u{2028}'), "a forced line break before the nested note");
+    assert!(stories.contains(r#"Position="Superscript""#), "superscript marks");
+    assert!(zip_text(&bytes, "designmap.xml").contains("designcraft.nestedFootnotes"));
+    // Read back: nested again.
+    let back = import_idml(&bytes).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+    assert_eq!(s.notes.len(), 1);
+    assert_eq!(s.notes[0].text.text, format!("Outer{}", designcraft_doc::FOOTNOTE_REF));
+    assert_eq!(s.nested_notes().iter().map(|n| n.text.text.as_str()).collect::<Vec<_>>(), ["Inner"]);
+    // Edited in InDesign: the footnote stays as it reads there, written out.
+    let edited = import_idml(&rewrite_parts(&bytes, "Stories/", "Outer", "Changed")).unwrap();
+    let s = edited.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+    assert!(s.notes[0].text.notes.is_empty());
+    assert!(s.notes[0].text.text.starts_with("Changed2\u{2028}2"), "{:?}", s.notes[0].text.text);
+}

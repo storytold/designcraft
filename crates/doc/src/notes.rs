@@ -449,6 +449,24 @@ impl crate::Document {
         n
     }
 
+    /// The numbers of the notes nested in story `sid`'s footnotes, by id, without layout: from
+    /// [`Document::footnote_start`], each footnote then its nested notes in reading order. Exact
+    /// when numbering doesn't restart; with a restart (per page, spread or section, which needs the
+    /// layout) the count starts at Start at and runs through the story.
+    pub fn nested_note_numbers(&self, sid: StoryId) -> std::collections::HashMap<u64, u32> {
+        let mut out = std::collections::HashMap::new();
+        let Some(st) = self.story(sid) else { return out };
+        let mut num = self.footnote_start(sid);
+        for n in &st.notes {
+            num = num.saturating_add(1);
+            for c in n.nested() {
+                out.insert(c.id, num);
+                num = num.saturating_add(1);
+            }
+        }
+        out
+    }
+
     /// Number of the first footnote of story `sid` when numbering runs through the document:
     /// the start number plus the footnotes of stories that start on earlier pages.
     pub fn footnote_start(&self, sid: StoryId) -> u32 {

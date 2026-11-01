@@ -18,6 +18,14 @@ impl<'a> Ex<'a> {
                 format!("{} {}", num(x), num(y))
             })
             .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
+        // Settings InDesign has no place for, kept as document labels it carries along.
+        if let Some(json) = nested_footnotes_label(d) {
+            let mut label = El::new("Label");
+            label.push(El::new("KeyValuePair").attr("Key", names::NESTED_FOOTNOTES_LABEL).attr("Value", json));
+            let mut props = El::new("Properties");
+            props.push(label);
+            root.push(props);
+        }
         root.push(
             El::new("Language")
                 .attr("Self", "Language/$ID/[No Language]")
@@ -377,4 +385,25 @@ mod tests {
     fn xref_format_well_formed_keeps_custom_text() {
         assert_eq!(custom_text("p <pageNum /> of <chapNum />"), "p  of ");
     }
+}
+
+/// The nested footnotes of `d` as written into the IDML's footnotes (see
+/// `Footnote::flattened`), kept whole for DesignCraft: for each footnote with nested notes, its
+/// story (`Self`), its index, its flattened text and its own text with the nested notes. `None`
+/// when no footnote has nested notes.
+fn nested_footnotes_label(d: &Document) -> Option<String> {
+    let o = &d.footnote_options;
+    let mut entries = Vec::new();
+    for st in d.stories.values() {
+        if !st.notes.iter().any(|n| !n.text.notes.is_empty()) {
+            continue;
+        }
+        let numbers = d.nested_note_numbers(st.id);
+        let mark = |id: u64| numbers.get(&id).map_or_else(String::new, |&k| o.label(k, false));
+        for (k, n) in st.notes.iter().enumerate().filter(|(_, n)| !n.text.notes.is_empty()) {
+            let flat = n.flattened(&mark, &o.separator);
+            entries.push(serde_json::json!({"story": uid(st.id.0), "index": k, "flat": flat.text, "text": n.text}));
+        }
+    }
+    (!entries.is_empty()).then(|| serde_json::Value::Array(entries).to_string())
 }
