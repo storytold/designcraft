@@ -807,6 +807,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "Показать/скрыть панели"),
     ("Show/Hide Panels Except Tools", "Показать/скрыть панели, кроме инструментов"),
     ("Show/Hide Rulers", "Показать/скрыть линейки"),
+    ("Show/Hide Style Name Column", "Показать/скрыть столбец имен стилей"),
     ("Show/Hide Tagged Frames", "Показать/скрыть рамки с тегами"),
     ("Show/Hide Text Threads", "Показать/скрыть связи текстовых рамок"),
     ("Smooth", "Сгладить"),
