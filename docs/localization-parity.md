@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-23 · **Change:** minor (missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-31 · **Change:** minor (Serbian hyphenation, quote marks and letterforms, and installed pattern files; missing translations are reported, never a failure; catalog counts remain the 2026-10-10 measurement) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -68,7 +68,7 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese, Serbian (Cyrillic and Latin) and Spanish**, plus any language whose LibreOffice `hyph_*.dic` pattern file is installed, and spell-checks **English** only. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
 German hyphenation accepts `German: 2006 Reform`, `German: Swiss 2006 Reform` and `de` locale
@@ -98,3 +98,5 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | 2026-10-11 | minor | Czech (cs) added: 1,722 strings, plural categories handled |
 | 2026-10-13 | minor | Polish interface added (1,717 strings) |
 | 2026-10-22 | minor | French and Italian hyphenation (hyph-fr, hyph-it): the French row and Document languages updated |
+| 2026-10-30 | minor | Serbian hyphenation in both scripts; installed `hyph_*.dic` pattern files |
+| 2026-10-31 | minor | Serbian quote marks; Latin words where `nj` or `dž` is two letters; pattern files in ISO 8859-2 and -5 |

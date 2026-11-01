@@ -168,6 +168,20 @@ pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, nam
 }
 
 /// Character attributes from `<w:rPr>`.
+/// A Word language tag (`sr-Latn-RS`) as a language of the document: the name InDesign and IDML
+/// write where the tag has a variant of its own, else the tag. None for what isn't a language
+/// (`x-none`).
+fn word_language(tag: &str) -> Option<String> {
+    let name = match designcraft_doc::language_tag(tag)? {
+        "en-US" => "English: USA",
+        "en-GB" => "English: UK",
+        "sr-Cyrl" => "Serbian: Cyrillic",
+        "sr-Latn" => "Serbian: Latin",
+        _ => tag,
+    };
+    Some(name.to_string())
+}
+
 fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     let mut a = CharAttrs::default();
     let Some(r) = rpr else { return a };
@@ -193,6 +207,7 @@ fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     if let Some(f) = r.child("rFonts").and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))) {
         a.font_family = Some(f.to_string());
     }
+    a.language = r.val("lang").and_then(|l| word_language(&l));
     if r.on("caps") == Some(true) {
         a.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
     }

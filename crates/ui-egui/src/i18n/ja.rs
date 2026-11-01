@@ -1578,6 +1578,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Portuguese: Brazilian", "ポルトガル語: ブラジル"),
     ("Rounded Rectangle", "角丸長方形"),
     ("Russian", "ロシア語"),
+    ("Serbian: Cyrillic", "セルビア語: キリル文字"),
+    ("Serbian: Latin", "セルビア語: ラテン文字"),
     ("Solid", "実線"),
     ("Spanish", "スペイン語"),
     ("Story Editor", "ストーリーエディター"),

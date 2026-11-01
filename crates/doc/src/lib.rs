@@ -31,6 +31,7 @@ pub mod otf;
 pub mod page;
 pub mod ruby;
 pub mod selection;
+pub mod serbian;
 mod slice;
 pub mod story;
 pub mod styles;

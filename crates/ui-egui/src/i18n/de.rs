@@ -1405,6 +1405,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Portuguese: Brazilian", "Portugiesisch: Brasilien"),
     ("Rounded Rectangle", "Abgerundetes Rechteck"),
     ("Russian", "Russisch"),
+    ("Serbian: Cyrillic", "Serbisch: Kyrillisch"),
+    ("Serbian: Latin", "Serbisch: Lateinisch"),
     ("Solid", "Durchgezogen"),
     ("Spanish", "Spanisch"),
     ("Story Editor", "Textmodus"),
