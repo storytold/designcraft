@@ -4465,7 +4465,10 @@ fn confirm_part2(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 app.ui.dialog = Some(d);
                 return Err(e);
             }
-            let attrs: Map<String, Value> = JUSTIFY_ATTRS.iter().filter_map(|k| d.fields.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+            let mut attrs: Map<String, Value> = JUSTIFY_ATTRS.iter().filter_map(|k| d.fields.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+            if let Some(mode) = d.fields.get("composerMode") {
+                attrs.insert("composerMode".into(), mode.clone());
+            }
             if attrs.is_empty() {
                 return Ok(Value::Null);
             }
@@ -7772,14 +7775,26 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         }
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
-        // Mixed (null) selects neither; a Japanese composer keeps its kind.
+        // Mixed (null) selects neither; switching modes keeps the imported composer family.
         let (single, [paragraph, single_line]) = crate::panels::properties::composer_choice(composer.as_str());
-        let known = !composer.is_null();
+        let mode = if prefix.is_empty() { d.fields.get("composerMode").and_then(Value::as_str) } else { None };
+        let single = mode.map_or(single, |mode| mode == "singleLine");
+        let known = mode.is_some() || !composer.is_null();
         if ui.selectable_label(known && !single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Paragraph Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(paragraph));
+            if prefix.is_empty() {
+                d.fields.remove("composer");
+                d.fields.insert("composerMode".into(), json!("paragraph"));
+            } else {
+                d.fields.insert(format!("{prefix}composer"), json!(paragraph));
+            }
         }
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(single_line));
+            if prefix.is_empty() {
+                d.fields.remove("composer");
+                d.fields.insert("composerMode".into(), json!("singleLine"));
+            } else {
+                d.fields.insert(format!("{prefix}composer"), json!(single_line));
+            }
         }
         ui.end_row();
         for (label, key, text, default) in [

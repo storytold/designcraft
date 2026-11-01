@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (World-Ready composer preservation, #2032; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -36,6 +36,17 @@ guides on document and parent pages. Guide positions, orientation, Fit to Page, 
 layer survive interchange; literal XML and round-trip tests are in
 `crates/idml/src/tests/liquid_guides.rs`. Object liquid pins and resize constraints remain unmapped
 (#872); this is not full liquid-layout interchange support.
+
+IDML retains Adobe World-Ready paragraph and single-line composer identities in paragraph styles
+and local overrides (#2032), including inherited styles, `$ID/` names and XML property elements.
+Native saves retain those identities too; switching paragraph versus single-line composition
+keeps each selected paragraph's composer family, including mixed selections in the Paragraph
+panel and Justification dialog. Synthetic regressions inspect the exported XML as well as
+reimporting it. This preserves the composer InDesign uses on reopening; DesignCraft continues
+to use its own shaping and line breaking, without Adobe's legacy shaping engine.
+Native files containing World-Ready composer values require the version-5 reader, so older apps
+show the update-required error before decoding them. Other files keep their existing version 2–4
+requirements.
 
 ## Output
 
@@ -122,6 +133,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Preserve World-Ready composer identities through IDML, native saves and paragraph/single-line switching; shaping-engine parity remains unmeasured (#2032) |
 | 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |

@@ -1095,6 +1095,44 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
     assert!(app.run("app.justificationDialog", json!({})).is_err());
 }
 
+/// The shared composer controls preserve mixed families while spacing edits remain one undo step.
+#[test]
+fn composer_dialog_preserves_mixed_families() {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    let (mut app, story) = two_paragraphs();
+    app.run("type.para", json!({"attrs": {"composer": "worldReady"}})).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 7})).unwrap();
+    app.run("app.justificationDialog", json!({})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    let steps = undo_steps(&app);
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("composer_dialog_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_label("Single-line Composer").click();
+    h.run_steps(3);
+    let app = h.state_mut();
+    app.ui.dialog.as_mut().unwrap().fields.insert("wordSpaceDesired".into(), json!(1.1));
+    confirm(app).unwrap();
+    assert_eq!(undo_steps(app), steps + 1);
+    assert_eq!(para_attr(app, &story, 0, "composer"), "worldReadySingleLine");
+    assert_eq!(para_attr(app, &story, 4, "composer"), "singleLine");
+    assert_eq!(para_attr(app, &story, 0, "wordSpaceDesired"), 1.1);
+    assert_eq!(para_attr(app, &story, 4, "wordSpaceDesired"), 1.1);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc, before);
+}
+
 #[test]
 fn justification_dialog_leaves_mixed_fields_alone_and_refuses_bad_values() {
     let (mut app, story) = two_paragraphs();

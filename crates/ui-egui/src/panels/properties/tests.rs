@@ -6,6 +6,16 @@ use egui_kittest::{
 use super::object::transform_anchors;
 use super::*;
 
+/// The existing mode controls retain the ordinary, Japanese and World-Ready composer families.
+#[test]
+fn composer_choice_retains_the_imported_family() {
+    for (paragraph, single) in [("paragraph", "singleLine"), ("japanese", "japaneseSingleLine"), ("worldReady", "worldReadySingleLine")] {
+        assert_eq!(composer_choice(Some(paragraph)), (false, [paragraph, single]));
+        assert_eq!(composer_choice(Some(single)), (true, [paragraph, single]));
+    }
+    assert_eq!(composer_choice(None), (false, ["paragraph", "singleLine"]));
+}
+
 /// A link to a panel whose flyout is open leaves the flyout open.
 #[test]
 fn a_panel_link_keeps_its_open_flyout() {
@@ -307,6 +317,35 @@ fn paragraph_panel_menu_toggles_ignore_optical_margin() {
     h.get_by_label("✓ Ignore Optical Margin").click();
     h.run_steps(3);
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["ignoreOpticalMargin"], false);
+}
+
+/// Choosing a mode in the actual panel menu preserves every selected paragraph's family.
+#[test]
+fn composer_menu_preserves_mixed_families() {
+    let mut app = text_app();
+    app.run("text.insert", json!({"text": "World\nPlain\nJapan"})).unwrap();
+    let sid = text_attrs(&mut app).unwrap()["story"].as_u64().unwrap();
+    for (at, composer) in [(0, "worldReady"), (12, "japanese")] {
+        app.run("text.select", json!({"story": sid, "anchor": at, "focus": at})).unwrap();
+        app.run("type.para", json!({"attrs": {"composer": composer}})).unwrap();
+    }
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut h = panel_harness(app, paragraph_panel);
+    h.run_steps(3);
+    for (label, expected) in [
+        ("   Single-line Composer", ["worldReadySingleLine", "singleLine", "japaneseSingleLine"]),
+        ("   Paragraph Composer", ["worldReady", "paragraph", "japanese"]),
+    ] {
+        h.get_by_label("☰").click();
+        h.run_steps(3);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+        let app = h.state_mut();
+        let document = &app.session.doc().unwrap().doc;
+        let story = document.story(designcraft_doc::StoryId(sid)).unwrap();
+        let actual: Vec<Value> = story.paras.iter().map(|p| json!(document.styles.resolve_para(p).0.composer)).collect();
+        assert_eq!(actual, expected.map(|value| json!(value)));
+    }
 }
 
 #[test]

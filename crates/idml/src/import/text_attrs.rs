@@ -444,14 +444,17 @@ pub(super) fn ace_char(v: &str) -> Option<char> {
 }
 
 /// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.
+/// Decode the vendor composer identifier without dropping its family or line-breaking mode.
 fn composer_in(name: &str) -> designcraft_doc::Composer {
     use designcraft_doc::Composer as C;
     let name = name.trim().trim_start_matches("$ID/");
-    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese")) {
-        (false, false) => C::Paragraph,
-        (true, false) => C::SingleLine,
-        (false, true) => C::Japanese,
-        (true, true) => C::JapaneseSingleLine,
+    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese"), name.ends_with(" Optyca")) {
+        (false, true, _) => C::Japanese,
+        (true, true, _) => C::JapaneseSingleLine,
+        (false, false, true) => C::WorldReady,
+        (true, false, true) => C::WorldReadySingleLine,
+        (false, false, false) => C::Paragraph,
+        (true, false, false) => C::SingleLine,
     }
 }
 

@@ -266,13 +266,23 @@ pub(crate) fn apply_char_attrs(d: &mut designcraft_doc::Document, targets: &[Tar
     }
 }
 
+/// Apply paragraph edits in one undo step; a composer mode keeps each paragraph's resolved family.
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
     let empty = serde_json::Map::new();
     let obj = attrs.as_object().unwrap_or(&empty);
+    let composer_mode = match obj.get("composerMode") {
+        None => None,
+        Some(Value::String(mode)) if mode == "paragraph" => Some(false),
+        Some(Value::String(mode)) if mode == "singleLine" => Some(true),
+        _ => return Err(bad("type.para", "`composerMode` must be `paragraph` or `singleLine`")),
+    };
+    if composer_mode.is_some() && obj.contains_key("composer") {
+        return Err(bad("type.para", "`composerMode` cannot be combined with `composer`"));
+    }
     // A rule object changes only the rule fields it names, so each paragraph gets its own attrs
     // over its resolved rule; this pass validates them.
     let mut a = ParaAttrs::default();
-    for (k, v) in obj {
+    for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "composerMode") {
         a.set_json_over(k, v, &designcraft_doc::ParaProps::default()).map_err(|e| bad("type.para", e))?;
     }
     crate::cmd::style::check_grep_styles("type.para", &a)?;
@@ -286,8 +296,19 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
                 st.format_paras(t.range.clone(), |p| {
                     let (current, _) = styles.resolve_para(p);
                     let mut a = a.clone();
-                    for (k, v) in obj {
+                    for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "composerMode") {
                         let _ = a.set_json_over(k, v, &current);
+                    }
+                    if let Some(single_line) = composer_mode {
+                        use designcraft_doc::Composer;
+                        a.composer = Some(match (current.composer, single_line) {
+                            (Composer::WorldReady | Composer::WorldReadySingleLine, false) => Composer::WorldReady,
+                            (Composer::WorldReady | Composer::WorldReadySingleLine, true) => Composer::WorldReadySingleLine,
+                            (Composer::Japanese | Composer::JapaneseSingleLine, false) => Composer::Japanese,
+                            (Composer::Japanese | Composer::JapaneseSingleLine, true) => Composer::JapaneseSingleLine,
+                            (Composer::Paragraph | Composer::SingleLine, false) => Composer::Paragraph,
+                            (Composer::Paragraph | Composer::SingleLine, true) => Composer::SingleLine,
+                        });
                     }
                     p.para.merge(&a);
                     for k in &cleared {
@@ -566,6 +587,67 @@ pub(super) fn link_style(s: &mut Session, p: &Value, bold: bool) -> Result<Value
 
 pub(crate) fn format_targets_pub(s: &Session) -> Vec<Target> {
     format_targets(s)
+}
+
+#[cfg(test)]
+mod composer_mode_tests {
+    use designcraft_doc::{Composer, StoryId};
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn composers(s: &Session, sid: StoryId) -> Vec<Composer> {
+        let document = &s.doc().unwrap().doc;
+        let story = document.story(sid).unwrap();
+        story.paras.iter().map(|paragraph| document.styles.resolve_para(paragraph).0.composer).collect()
+    }
+
+    /// Mixed style inheritance and local overrides keep their families in both modes and on undo.
+    #[test]
+    fn composer_mode_keeps_each_selected_paragraph_family() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "World\nPlain\nJapan"})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 4})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "World", "para": {"composer": "worldReady"}})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "World"})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 12, "focus": 16})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"composer": "japaneseSingleLine"}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 17})).unwrap();
+
+        let before = s.doc().unwrap().doc.clone();
+        let steps = s.doc().unwrap().history.undo.len();
+        s.execute("type.para", &json!({"attrs": {"composerMode": "singleLine", "spaceAfter": 6}})).unwrap();
+        assert_eq!(composers(&s, sid), [Composer::WorldReadySingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
+        assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+        assert_eq!(s.doc().unwrap().doc.styles.resolve_para_style("World").0.composer, Composer::WorldReady);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(composers(&s, sid), [Composer::WorldReadySingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
+
+        s.execute("type.para", &json!({"composerMode": "paragraph"})).unwrap();
+        assert_eq!(composers(&s, sid), [Composer::WorldReady, Composer::Paragraph, Composer::Japanese]);
+
+        let before = s.doc().unwrap().doc.clone();
+        let steps = s.doc().unwrap().history.undo.len();
+        for attrs in [
+            json!({"composerMode": null}),
+            json!({"composerMode": "invalid"}),
+            json!({"composerMode": true}),
+            json!({"composerMode": "paragraph", "composer": "singleLine"}),
+        ] {
+            assert!(s.execute("type.para", &json!({"attrs": attrs})).is_err());
+            assert_eq!(s.doc().unwrap().doc, before);
+            assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+        }
+
+        // An explicit composer assignment still deliberately changes the family.
+        s.execute("type.para", &json!({"attrs": {"composer": "paragraph"}})).unwrap();
+        assert_eq!(composers(&s, sid), [Composer::Paragraph; 3]);
+    }
 }
 
 #[cfg(test)]
