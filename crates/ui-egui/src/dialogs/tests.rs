@@ -4713,6 +4713,66 @@ fn on_a_page_without_a_section_the_window_is_new_section() {
     assert!(!labels.iter().any(|(t, _, _)| t == "New Section"));
 }
 
+/// Footnote Options › Style › Custom…: rows of marks with their character styles, added and
+/// removed, set on OK as the document's custom marks; reopening shows them; another style clears
+/// them.
+#[test]
+fn footnote_options_dialog_edits_custom_marks() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.character.create", json!({"name": "Music"})).unwrap();
+    app.run("app.footnoteOptionsDialog", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.s("style"), "arabic");
+        d.fields.insert("style".into(), json!("custom"));
+    }
+    // Drawn with Custom chosen: one empty row to start with (the window's first frame only
+    // measures it).
+    draw(&mut app, &ctx);
+    draw(&mut app, &ctx);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.n("markCount"), Some(1.0));
+        add_mark_row(d);
+        add_mark_row(d);
+        assert_eq!(d.n("markCount"), Some(3.0));
+        for (i, (text, style)) in [("\u{266A}", "Music"), ("drop me", "[None]"), ("[ii]", "[None]")].iter().enumerate() {
+            d.fields.insert(format!("mark.{i}.text"), json!(text));
+            d.fields.insert(format!("mark.{i}.charStyle"), json!(style));
+        }
+        d.fields.insert("marksAfter".into(), json!("numbers"));
+        // The second row goes: the third moves up.
+        remove_mark_row(d, 1);
+        assert_eq!((d.n("markCount"), d.s("mark.1.text").as_str()), (Some(2.0), "[ii]"));
+        remove_mark_row(d, 7);
+        assert_eq!(d.n("markCount"), Some(2.0), "no such row");
+    }
+    draw(&mut app, &ctx);
+    confirm(&mut app).unwrap();
+    let o = app.session.doc().unwrap().doc.footnote_options.clone();
+    assert_eq!(o.style, designcraft_doc::NumberStyle::Arabic, "the built-in style stays underneath");
+    assert_eq!([1, 2, 3].map(|n| o.label(n, false)), ["\u{266A}", "[ii]", "1"]);
+    assert_eq!(o.mark_style(1).as_deref(), Some("Music"));
+    // Reopened: Custom, with its rows.
+    app.run("app.footnoteOptionsDialog", json!({})).unwrap();
+    draw(&mut app, &ctx);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(
+            (d.s("style").as_str(), d.n("markCount"), d.s("mark.0.text").as_str(), d.s("mark.0.charStyle").as_str()),
+            ("custom", Some(2.0), "\u{266A}", "Music")
+        );
+        assert_eq!(d.s("marksAfter"), "numbers");
+        // Another style: the custom marks go.
+        d.fields.insert("style".into(), json!("symbols"));
+    }
+    confirm(&mut app).unwrap();
+    let o = app.session.doc().unwrap().doc.footnote_options.clone();
+    assert_eq!((o.custom_marks.is_none(), o.label(1, false).as_str()), (true, "*"));
+}
+
 /// Find/Change's Change and Change/Find, as InDesign's: Find Next selects a match, Change/Find
 /// changes it and selects the next, Change changes that one and keeps it selected. With no
 /// text selected they're off.

@@ -8410,6 +8410,54 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
 
+/// Custom footnote marks: the reference and the footnote text show the user's mark, each mark in
+/// its own character style on top of the reference's (a font that has the glyph), and the
+/// numbering rules (restart, start at) apply as to numbers.
+#[test]
+fn custom_footnote_marks_show_with_their_own_character_style() {
+    use designcraft_doc::{CustomMarks, MarksAfter, NoteMark};
+    let font = designcraft_fonts::testing::font_with("Custom Mark Glyphs", &['♪', '♫']).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let (mut d, sid, fid) = doc_with(&format!("{LOREM} {LOREM}"), Rect::new(36.0, 36.0, 300.0, 400.0), ParaAttrs::default());
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "Music".into(),
+        based_on: None,
+        chars: designcraft_doc::CharAttrs { font_family: Some("Custom Mark Glyphs".into()), ..Default::default() },
+        shortcut: String::new(),
+    });
+    let mark = |text: &str, char_style: &str| NoteMark { text: text.into(), char_style: char_style.into() };
+    d.footnote_options.custom_marks =
+        Some(CustomMarks { marks: vec![mark("♪", "Music"), mark("+", designcraft_doc::NO_CHAR_STYLE)], after: MarksAfter::Double });
+    {
+        let st = d.story_mut(sid).unwrap();
+        for at in [40, 20, 10] {
+            st.insert_note(at, "Note.", ParaFormat::default());
+        }
+        st.check().unwrap();
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let labels: Vec<&str> = ft.notes.iter().map(|n| n.label.as_str()).collect();
+    assert_eq!(labels, ["♪", "+", "♪♪"]);
+    // In the text: the first reference's mark from the Music style's font, the second's from the text's.
+    let refs: Vec<&PlacedGlyph> = ft.lines.iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.len > 0 && "♪+".contains(g.rendered_char)).collect();
+    let first = refs.iter().find(|g| g.rendered_char == '♪').unwrap();
+    assert_eq!(first.face.family, "Custom Mark Glyphs");
+    assert_ne!(first.gid, 0);
+    let second = refs.iter().find(|g| g.rendered_char == '+').unwrap();
+    assert_ne!(second.face.family, "Custom Mark Glyphs");
+    // Superscript still applies under the mark's style: the mark sits above the baseline.
+    assert!(first.y < -0.5, "raised from the baseline: {}", first.y);
+    // In the footnote text the label takes the mark's style too.
+    let note_mark = ft.notes[0].text.frames[0].lines[0].glyphs.iter().find(|g| g.rendered_char == '♪').unwrap();
+    assert_eq!(note_mark.face.family, "Custom Mark Glyphs");
+    // Start at and restart apply as to numbers.
+    d.footnote_options.start_at = 2;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let labels: Vec<String> = cs.frame(fid).unwrap().notes.iter().map(|n| n.label.clone()).collect();
+    assert_eq!(labels, ["+", "♪♪", "++"]);
+}
+
 /// A cross-reference's text breaks at its spaces like ordinary text (it is real text in
 /// InDesign), not inside words; edited text whose destination is gone shows its saved page.
 #[test]

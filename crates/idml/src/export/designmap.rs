@@ -18,6 +18,16 @@ impl<'a> Ex<'a> {
                 format!("{} {}", num(x), num(y))
             })
             .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
+        // Settings InDesign has no place for, kept as document labels it carries along.
+        if let Some(c) = d.footnote_options.custom()
+            && let Ok(json) = serde_json::to_string(c)
+        {
+            let mut label = El::new("Label");
+            label.push(El::new("KeyValuePair").attr("Key", names::FOOTNOTE_MARKS_LABEL).attr("Value", json));
+            let mut props = El::new("Properties");
+            props.push(label);
+            root.push(props);
+        }
         root.push(
             El::new("Language")
                 .attr("Self", "Language/$ID/[No Language]")

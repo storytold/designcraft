@@ -430,6 +430,7 @@ impl<'r> Importer<'r> {
         if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
             self.footnote_option(e);
         }
+        self.footnote_marks_label(_root);
         if let Some(e) = top.iter().find(|e| e.local() == "EPubExportPreference") {
             self.epub_split(e);
         }

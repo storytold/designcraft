@@ -180,6 +180,9 @@ pub struct SubstCtx {
     /// Footnote reference formatting: position and character style (`None` = the text's).
     pub note_position: designcraft_doc::Position,
     pub note_style: Option<String>,
+    /// The character style a reference's own mark adds on top of [`SubstCtx::note_style`]
+    /// (custom footnote marks), by story byte of the reference character.
+    pub note_mark_styles: HashMap<usize, String>,
     /// Cross-reference texts by story byte of the cross-reference mark.
     pub xrefs: HashMap<usize, String>,
     /// Anchored objects by story byte of their mark.
@@ -480,6 +483,23 @@ fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Ve
             if m.starts_with(designcraft_doc::ENDNOTE_REF) {
                 pieces.push(Piece { range: i..e, props: eprops.clone(), style: estyle, env: eenv, hidden: false, composite_note: false });
             } else {
+                // A custom mark's own character style, on top of the reference's.
+                let marked = sub.note_mark_styles.get(&i).map(|ms| {
+                    let mf = designcraft_doc::CharFormat {
+                        style: ms.clone(),
+                        over: designcraft_doc::CharAttrs { position: Some(sub.note_position), ..Default::default() },
+                    };
+                    let mprops = styles.resolve_char(&rprops, &mf);
+                    let mstyle = table.intern(db, &mprops);
+                    (mprops, mstyle)
+                });
+                let (rprops, rstyle, renv) = match marked {
+                    Some((mprops, mstyle)) => {
+                        let menv = table.env_for(auto_leading, mstyle);
+                        (mprops, mstyle, menv)
+                    }
+                    None => (rprops.clone(), rstyle, renv),
+                };
                 if styles.composite_font(&rprops.font_family).is_some() {
                     // Shaped entry by entry below, from the run's env: the composite font's own
                     // name is never an installed family, so `renv` would force glyph fallback.

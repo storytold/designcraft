@@ -78,6 +78,21 @@ impl Dialog {
             let sep = fields.get("separator").and_then(Value::as_str).unwrap_or("").to_string();
             fields.insert("separator".into(), json!(sep.replace('\t', "^t").replace('\u{2003}', "^m").replace('\u{2002}', "^>")));
             fields.entry("tab".to_string()).or_insert(json!("numbering"));
+            // Custom marks as rows (`mark.{i}.text`, `mark.{i}.charStyle`) and the Style menu's
+            // "Custom" entry; the built-in style stays for when Custom is left.
+            let base = fields.get("style").cloned().unwrap_or(json!("arabic"));
+            fields.insert("baseStyle".into(), base);
+            let custom = fields.remove("customMarks");
+            let marks = custom.as_ref().and_then(|c| c.get("marks")).and_then(Value::as_array).cloned().unwrap_or_default();
+            for (i, m) in marks.iter().enumerate() {
+                fields.insert(format!("mark.{i}.text"), m.get("text").cloned().unwrap_or(json!("")));
+                fields.insert(format!("mark.{i}.charStyle"), m.get("charStyle").cloned().unwrap_or(json!(designcraft_doc::NO_CHAR_STYLE)));
+            }
+            fields.insert("markCount".into(), json!(marks.len()));
+            fields.insert("marksAfter".into(), custom.as_ref().and_then(|c| c.get("after")).cloned().unwrap_or(json!("double")));
+            if !marks.is_empty() {
+                fields.insert("style".into(), json!(CUSTOM_MARKS));
+            }
         }
         if id == "paragraphStyleOptions" || id == "characterStyleOptions" {
             fields.entry("section".to_string()).or_insert(json!("general"));
@@ -4945,8 +4960,18 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "footnoteOptions" => {
             let pt = |k: &str| d.pt(k).map_or(Value::Null, |v| json!(v));
+            // Custom: the marks with text (none: back to the built-in style), and the built-in
+            // style kept underneath.
+            let custom = d.s("style") == CUSTOM_MARKS;
+            let marks = if custom { dialog_marks(&d) } else { Vec::new() };
+            let style = if custom { d.s("baseStyle") } else { d.s("style") };
+            let custom_marks = if marks.is_empty() {
+                Value::Null
+            } else {
+                json!({"marks": serde_json::to_value(&marks).unwrap_or_default(), "after": d.s("marksAfter")})
+            };
             let mut p = json!({
-                "style": d.s("style"), "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),
+                "style": style, "startAt": d.n("startAt").unwrap_or(1.0).max(0.0) as u32, "restart": d.s("restart"),
                 "prefix": d.s("prefix"), "suffix": d.s("suffix"), "affixIn": d.s("affixIn"), "refPosition": d.s("refPosition"),
                 "refCharStyle": d.s("refCharStyle"), "paraStyle": d.s("paraStyle"),
                 "separator": d.s("separator").replace("^t", "\t").replace("^m", "\u{2003}").replace("^>", "\u{2002}"),
@@ -4961,6 +4986,10 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             }
             if let Some(r) = p.get_mut("rule").and_then(Value::as_object_mut) {
                 r.retain(|_, v| !v.is_null());
+            }
+            // After the measures: null clears the custom marks.
+            if let Some(o) = p.as_object_mut() {
+                o.insert("customMarks".into(), custom_marks);
             }
             app.run("footnote.options", p)
         }
@@ -7964,6 +7993,111 @@ fn rule_types() -> Vec<designcraft_doc::StrokeType> {
 }
 
 /// Document Footnote Options: Numbering and Formatting / Layout tabs.
+/// The Style menu's entry for the marks the user defines (not a numbering style).
+const CUSTOM_MARKS: &str = "custom";
+
+/// Custom marks in the Footnote Options dialog's fields, in order, the ones without text left out.
+fn dialog_marks(d: &Dialog) -> Vec<designcraft_doc::NoteMark> {
+    let n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
+    (0..n)
+        .map(|i| {
+            let style = d.s(&format!("mark.{i}.charStyle"));
+            designcraft_doc::NoteMark {
+                text: d.s(&format!("mark.{i}.text")),
+                char_style: if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.into() } else { style },
+            }
+        })
+        .filter(|m| !m.text.is_empty())
+        .collect()
+}
+
+/// Footnote Options › Custom › Add Mark: an empty row at the end (at most [`MAX_CUSTOM_MARKS`]).
+///
+/// [`MAX_CUSTOM_MARKS`]: designcraft_doc::MAX_CUSTOM_MARKS
+fn add_mark_row(d: &mut Dialog) {
+    let n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
+    if n >= designcraft_doc::MAX_CUSTOM_MARKS {
+        return;
+    }
+    d.fields.insert(format!("mark.{n}.text"), json!(""));
+    d.fields.insert(format!("mark.{n}.charStyle"), json!(designcraft_doc::NO_CHAR_STYLE));
+    d.fields.insert("markCount".into(), json!(n + 1));
+}
+
+/// Footnote Options › Custom › −: row `r` goes and the later rows move up one.
+fn remove_mark_row(d: &mut Dialog, r: usize) {
+    let n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
+    if r >= n {
+        return;
+    }
+    for i in r..n - 1 {
+        for f in ["text", "charStyle"] {
+            let next = d.fields.get(&format!("mark.{}.{f}", i + 1)).cloned().unwrap_or(Value::Null);
+            d.fields.insert(format!("mark.{i}.{f}"), next);
+        }
+    }
+    for f in ["text", "charStyle"] {
+        d.fields.remove(&format!("mark.{}.{f}", n - 1));
+    }
+    d.fields.insert("markCount".into(), json!(n - 1));
+}
+
+/// Footnote Options › Custom: one row per mark (its text and character style), rows added and
+/// removed, what follows the last mark, and the first footnotes' marks as they will read.
+fn custom_marks_editor(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let mut n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
+    if n == 0 {
+        n = 1;
+        d.fields.insert("markCount".into(), json!(1));
+    }
+    ui.add_space(4.0);
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Custom Marks")).font(semibold(12.0)));
+    let mut remove = None;
+    egui::Grid::new("fn_marks").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+        for i in 0..n {
+            text_field_named(ui, d, &format!("mark.{i}.text"), 70.0, crate::i18n::tr(&lang, "Mark"));
+            let key = format!("mark.{i}.charStyle");
+            if d.s(&key).is_empty() {
+                d.fields.insert(key.clone(), json!(designcraft_doc::NO_CHAR_STYLE));
+            }
+            style_combo(app, ui, d, &key, true);
+            if n > 1 && ui.small_button("−").on_hover_text(crate::i18n::tr(&lang, "Remove this mark")).clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(r) = remove {
+        remove_mark_row(d, r);
+    }
+    if n < designcraft_doc::MAX_CUSTOM_MARKS && ui.button(crate::i18n::tr(&lang, "Add Mark")).clicked() {
+        add_mark_row(d);
+    }
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "After the Last Mark:"));
+        translated_combo(
+            &lang,
+            ui,
+            d,
+            "marksAfter",
+            &[
+                ("double", "Double Them (**, ††)"),
+                ("repeat", "Repeat Them"),
+                ("counter", "Add a Count (*2, †2)"),
+                ("numbers", "Then Numbers (1, 2, 3)"),
+            ],
+        );
+    });
+    // The first footnotes' marks as they will read.
+    let after = serde_json::from_value(json!(d.s("marksAfter"))).unwrap_or_default();
+    let marks = designcraft_doc::CustomMarks { marks: dialog_marks(d), after };
+    let preview: Vec<String> = (1..=8).filter_map(|k| marks.mark(k).map(|(m, _)| m)).collect();
+    if !preview.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&lang, "Preview:"), preview.join("  "))).size(11.0));
+    }
+}
+
 fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         for (tab, label) in [("numbering", "Numbering and Formatting"), ("layout", "Layout")] {
@@ -8048,6 +8182,7 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 ("arabicLeadingZero", "01, 02, 03..."),
                 ("symbols", "*, †, ‡, §..."),
                 ("kanji", "一, 二, 三, 四..."),
+                (CUSTOM_MARKS, "Custom…"),
             ],
         );
         ui.end_row();
@@ -8079,6 +8214,9 @@ fn footnote_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         text_field(ui, d, "suffix", 60.0);
         ui.end_row();
     });
+    if d.s("style") == CUSTOM_MARKS {
+        custom_marks_editor(app, ui, d);
+    }
     head(ui, "Footnote Reference Number in Text");
     egui::Grid::new("fn_ref").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Position:"));

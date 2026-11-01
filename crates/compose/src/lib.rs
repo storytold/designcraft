@@ -631,6 +631,9 @@ pub struct ComposeOptions {
     pub running: Option<std::sync::Arc<vars::RunningIndex>>,
     /// Generated text before the first paragraph (a footnote's number and separator).
     pub label: Option<String>,
+    /// The character style the label takes on top of the paragraph's (a custom footnote mark's
+    /// own style).
+    pub label_style: Option<String>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
@@ -2394,7 +2397,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     if paragraph == 0
         && let Some(label) = &opts.label
     {
-        prepend_label(db, &mut sp.glyphs, label, prange.start, base_chars, label_env, &mut table);
+        // A custom footnote mark's own character style, on top of the paragraph's.
+        let styled = opts
+            .label_style
+            .as_ref()
+            .map(|s| doc.styles.resolve_char(base_chars, &designcraft_doc::CharFormat { style: s.clone(), ..Default::default() }));
+        prepend_label(db, &mut sp.glyphs, label, prange.start, styled.as_ref().unwrap_or(base_chars), label_env, &mut table);
         label_aligned = 0;
     }
     let list_align = match pp.list_type {
