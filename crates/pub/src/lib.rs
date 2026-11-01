@@ -26,14 +26,14 @@
 //! score imports, never to infer format encoding.
 //!
 //! ## Not supported yet
-//! Tables (their text comes over as a text frame); non-default WordArt warps and exact stretching
-//! (default upward arch uses measured editable path text; other warps stay straight);
-//! pattern/texture fills (approximated by the fill colour); picture crops other than rectangular;
-//! PICT pictures (an empty graphic frame keeps their place); custom tab stops,
-//! numbering and unrecognized paragraph formatting. WMF/EMF pictures come over as vector SVG
-//! without their text, bitmaps, arcs and pattern fills (`metafile.rs`). Bullets and exact/multiple line spacing are
-//! imported. Groups (nested too) stay groups. Shaded fills become gradient swatches (centre and
-//! outline shades as radial approximations); dashes and arrowheads come over.
+//! Table cell fills, borders and unconfirmed cell formatting; non-default WordArt warps and exact
+//! stretching (default upward arch uses measured editable path text; other warps stay straight),
+//! pattern/texture fills (approximated by the fill colour), picture crops
+//! other than rectangular, PICT pictures (an empty graphic frame keeps their place), custom tab stops,
+//! numbering and unrecognized paragraph formatting. Bullets and exact/multiple line spacing are imported. WMF/EMF pictures come over as vector SVG without their text,
+//! bitmaps, arcs and pattern fills (`metafile.rs`). Groups (nested too) stay groups. Shaded
+//! fills become gradient swatches (centre and outline shades as radial approximations); dashes
+//! and arrowheads come over.
 //! Each omission is reported in [`Imported::warnings`].
 //!
 //! Linked text frames are supported: a story shown in several frames is imported once and
@@ -49,8 +49,6 @@ mod paths;
 mod presets;
 mod quill;
 mod read;
-// Table records are decoded; their conversion follows in a later change.
-#[allow(dead_code)]
 mod tables;
 mod wordart;
 
@@ -256,6 +254,9 @@ struct Builder<'a> {
     /// applied once they are threaded into the story.
     followers: Vec<(ItemId, [f64; 4], VerticalJustification)>,
     warnings: Vec<String>,
+    table_cells: usize,
+    table_units: usize,
+    table_work: usize,
 }
 
 fn pt(emu: f64) -> f64 {
@@ -296,6 +297,9 @@ impl<'a> Builder<'a> {
             chains: BTreeMap::new(),
             followers: Vec::new(),
             warnings: Vec::new(),
+            table_cells: 0,
+            table_units: 0,
+            table_work: 0,
         })
     }
 
@@ -421,12 +425,14 @@ impl<'a> Builder<'a> {
         // A text shown in several linked frames is imported once and threaded through them.
         let follower = text_id.is_some_and(|t| self.chains.contains_key(&t));
         let id = if let Some(tid) = text_id.filter(|_| !follower) {
-            if info.table.is_some() {
-                self.warnings.push("Publisher tables are not converted yet; their text was imported as a text frame.".into());
-            } else if info.is_table {
-                self.warnings.push("Unsupported Publisher table geometry was retained as text.".into());
+            if let Some(table) = &info.table {
+                self.table_frame(r, rect, tid, table)?
+            } else {
+                if info.is_table {
+                    self.warnings.push("Unsupported Publisher table geometry was retained as text.".into());
+                }
+                self.text_frame(r, rect, tid)?
             }
-            self.text_frame(r, rect, tid)?
         } else if let Some(text) = &wordart {
             self.wordart_frame(r, rect, sh, text)?
         } else {

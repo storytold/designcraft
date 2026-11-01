@@ -266,7 +266,7 @@ fn observed_warning_fields_match_real_fixtures() {
             assert!(imp.notes.iter().any(|w| w.contains("Publisher paragraph fields: defaults [0x30]; runs [none]")));
         }
         if name == "table__2x2" {
-            assert!(imp.warnings.iter().any(|w| w.contains("tables are not converted yet")), "{:?}", imp.warnings);
+            assert!(imp.warnings.iter().any(|w| w.contains("cell fills, borders")));
         }
     }
 }

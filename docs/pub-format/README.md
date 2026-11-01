@@ -10,6 +10,7 @@ What the importer does and does not support is in [../publisher-import.md](../pu
 |---|---|
 | `property-lists.md` | The key/kind/data encoding that the `Contents` stream and the Quill text store share. |
 | `contents-stream.md` | The `Contents` stream: header, record directory, document, pages and masters, objects, palette, colour references. |
+| `tables.md` | Table dimensions, cell rectangles and merges, `TCD ` cell text; what stays unconfirmed. |
 | `text-store.md` | The Quill text store: section directory, text, story ids and lengths, fonts, text colours, default styles, character and paragraph runs. |
 
 Every statement in these notes is marked with its source: a named sample file, the public
