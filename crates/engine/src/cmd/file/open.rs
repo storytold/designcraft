@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
-use super::bytes::{base64_decode, base64_decoded_len, load_bytes};
+use super::bytes::{base64_decode, base64_decoded_len, load_bytes, without_native_extension};
 use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
@@ -169,7 +169,8 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut d, mut warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
-        d.title = n.to_string();
+        // Titled as an IDML file opened from bytes is: without its extension.
+        d.title = without_native_extension(n).to_string();
     }
     let (fonts, faces, font_warnings) = load_supplied_fonts(&mut d, p, "file.openBytes")?;
     warnings.extend(font_warnings);
@@ -377,6 +378,8 @@ mod document_fonts_tests {
 
     #[test]
     fn documents_opened_from_bytes_bring_their_own_fonts() {
+        use designcraft_fonts::testing::with_fs_type;
+
         const FAMILY: &str = "DocFont Bytes";
         let b64 = super::super::bytes::base64_encode;
         let mut maker = Session::new();
@@ -384,7 +387,10 @@ mod document_fonts_tests {
         let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
         let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
         // A's version of the family has both letters, B's only `b` (the same name and style).
-        let (a_font, b_font) = (font_with(FAMILY, &['a', 'b']).unwrap(), font_with(FAMILY, &['b']).unwrap());
+        let (a_font, b_font) = (
+            with_fs_type(font_with(FAMILY, &['a', 'b']).unwrap(), 0x0108).unwrap(),
+            with_fs_type(font_with(FAMILY, &['b']).unwrap(), 0x0204).unwrap(),
+        );
 
         let mut s = Session::new();
         let r = s
@@ -404,9 +410,17 @@ mod document_fonts_tests {
         assert_eq!(r["documentFonts"], 1, "{r}");
         let f = font_entry(&mut s, FAMILY);
         assert_eq!((f["matchStatus"].clone(), f["source"].clone()), (json!("exact"), json!("document")), "{f}");
+        assert_eq!(f["fsType"], 0x0204, "B reports its own supplied face's embedding bits");
+        assert_eq!(f["bitmapOnly"], true);
+        assert_eq!(f["previewPrint"], true);
+        assert_eq!(f["restrictedLicence"], false);
         s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
         let in_b = glyph_faces(&s);
         s.execute("file.activate", &json!({"index": 0})).unwrap();
+        let f = font_entry(&mut s, FAMILY);
+        assert_eq!(f["fsType"], 0x0108, "A reports its own supplied face's embedding bits");
+        assert_eq!(f["noSubsetting"], true);
+        assert_eq!(f["editable"], true);
         let in_a = glyph_faces(&s);
         assert_eq!((in_a.len(), in_b.len()), (8, 8), "{in_a:?} {in_b:?}");
         assert!(in_a.iter().all(|(_, f)| f.family == FAMILY && f.source == FontSource::DocumentData("same.ttf".into())), "{in_a:?}");
@@ -515,6 +529,41 @@ mod document_fonts_tests {
         let r = s.execute("type.italic", &json!({"on": false})).unwrap();
         assert_eq!(r["fontStyle"], "Regular", "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod open_bytes_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A `.designcraft` file opened from bytes under its file name (a browser or host passes the
+    /// name it has) is titled without the extension, as an IDML file is, so saving it gives
+    /// `Brochure.designcraft` and not `Brochure.designcraft.designcraft`.
+    #[test]
+    fn open_bytes_titles_a_native_document_without_its_extension() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let native = s.execute("file.serialize", &json!({})).unwrap();
+        for (name, title) in [
+            ("Brochure.designcraft", "Brochure"),
+            ("Brochure.DesignCraft", "Brochure"),
+            ("Brochure", "Brochure"),
+            ("Brochure.v2", "Brochure.v2"),
+            ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+            (".designcraft", ".designcraft"),
+            // Names that aren't ASCII: cutting the extension's length off the end of the last one
+            // would land inside its `é`.
+            ("Präsentation.designcraft", "Präsentation"),
+            ("日本.DESIGNCRAFT", "日本"),
+            ("é", "é"),
+            ("édesigncraft", "édesigncraft"),
+        ] {
+            let r = s.execute("file.openBytes", &json!({"name": name, "base64": native["base64"]})).unwrap();
+            let st = &s.documents()[r["index"].as_u64().unwrap() as usize];
+            assert_eq!((st.doc.title.as_str(), st.title()), (title, title.to_string()), "{name}");
+        }
     }
 }
 

@@ -104,7 +104,7 @@ impl FontDb {
     /// Scope 0 (a document without fonts of its own) or a closed scope sees the shared fonts.
     pub fn scoped(&self, scope: u32) -> ScopedFonts<'_> {
         let own = if scope == 0 { None } else { self.scopes.read().unwrap_or_else(PoisonError::into_inner).get(&scope).cloned() };
-        ScopedFonts { db: self, own }
+        ScopedFonts { db: self, scope, own }
     }
 
     /// The shared fonts' family names (see [`ScopedFonts::families`]).
@@ -235,10 +235,19 @@ impl FontDb {
         out
     }
 
-    /// Close a document's font scope: its fonts are no longer found (in it or anywhere). Their
-    /// files stay read, for the document opening again.
+    /// Close a document's font scope: its fonts are no longer found in a new view. Supplied
+    /// data's variable instances are released too; folder files stay read for reopening.
     pub fn close_scope(&self, scope: u32) {
-        self.scopes.write().unwrap_or_else(PoisonError::into_inner).remove(&scope);
+        let faces = {
+            let mut scopes = self.scopes.write().unwrap_or_else(PoisonError::into_inner);
+            scopes.remove(&scope)
+        };
+        let Some(faces) = faces else { return };
+        let supplied: std::collections::HashSet<u32> =
+            faces.iter().filter(|f| matches!(f.source, FontSource::DocumentData(_))).map(|f| f.id).collect();
+        if !supplied.is_empty() {
+            self.instances.write().unwrap_or_else(PoisonError::into_inner).retain(|(base, _), _| !supplied.contains(base));
+        }
     }
 
     /// The shared fonts' face for `family` + `style` (see [`ScopedFonts::face`]).

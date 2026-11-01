@@ -161,8 +161,7 @@ impl DesignApp {
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
         } else {
-            let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
-            self.open_file("file.openBytes", json!({"name": title, "base64": b64}))
+            self.open_file("file.openBytes", json!({"name": file.name, "base64": b64}))
         }
     }
 
@@ -377,7 +376,7 @@ mod import_warning_tests {
         let request = app.import_request("open");
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: "partial.idml".into(), bytes: idml(true) });
         app.drain_inbox();
-        assert_partial_import_warning(&mut app, "partial");
+        assert_partial_import_warning(&mut app, "partial.idml");
     }
 
     #[test]
@@ -423,6 +422,34 @@ pub(crate) mod browser_import_tests {
     fn deliver(app: &mut DesignApp, request: ImportRequest, name: &str, bytes: Vec<u8>) {
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: name.into(), bytes });
         app.drain_inbox();
+    }
+
+    /// A document chosen or dropped in the browser is titled by its file name less one extension,
+    /// as on the desktop: the extension comes off once, in the engine.
+    #[test]
+    fn browser_opens_title_a_document_by_its_name_without_one_extension() {
+        let mut app = app();
+        let native = designcraft_engine::cmd::base64_decode(app.run("file.serialize", json!({})).unwrap()["base64"].as_str().unwrap());
+        for purpose in ["open", "drop"] {
+            for (name, title) in [
+                ("Brochure.designcraft", "Brochure"),
+                ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+                ("Brochure.v2.designcraft", "Brochure.v2"),
+                ("日本.DESIGNCRAFT", "日本"),
+                (".designcraft", ".designcraft"),
+                ("Brochure", "Brochure"),
+            ] {
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, native.clone());
+                assert_eq!(app.session.doc().unwrap().doc.title, title, "{purpose}: {name}");
+            }
+        }
+        let idml = designcraft_idml::export_idml(&app.session.doc().unwrap().doc);
+        for purpose in ["open", "drop"] {
+            let request = app.import_request(purpose);
+            deliver(&mut app, request, "Brochure.idml", idml.clone());
+            assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: IDML");
+        }
     }
     fn image() -> Vec<u8> {
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##.to_vec()

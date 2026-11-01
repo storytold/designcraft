@@ -10,6 +10,8 @@ use crate::{DesignApp, icons};
 
 const BTN: f32 = 24.0;
 
+/// Draws the adaptive Tools panel with localized tool flyouts, fill/stroke controls and
+/// screen-mode buttons; flyout rows accommodate translated labels and their shortcuts.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let frame = egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider));
@@ -173,43 +175,77 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                         ui.ctx(),
                                         |ui| {
                                             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                                for tl in g {
-                                                    ui.horizontal(|ui| {
-                                                        let (r, row) = ui.allocate_exact_size(vec2(210.0, 24.0), Sense::click());
-                                                        if row.hovered() {
-                                                            ui.painter().rect_filled(r, 2.0, t.hover);
-                                                        }
-                                                        icons::paint(
-                                                            ui.painter(),
-                                                            egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(18.0, 18.0)),
-                                                            tl.icon,
-                                                            t.icon,
-                                                        );
-                                                        if tl.id == current {
-                                                            ui.painter().circle_filled(r.min + vec2(-2.0, 12.0), 2.0, t.accent);
-                                                        }
-                                                        ui.painter().text(
-                                                            r.min + vec2(28.0, 12.0),
-                                                            egui::Align2::LEFT_CENTER,
-                                                            crate::i18n::tr(&app.ui.language, tl.label),
-                                                            egui::FontId::proportional(12.5),
-                                                            t.text,
-                                                        );
-                                                        if let Some(sc) = crate::menus::tool_shortcut_label(app, tl.id) {
-                                                            ui.painter().text(
-                                                                r.right_center() - vec2(6.0, 0.0),
-                                                                egui::Align2::RIGHT_CENTER,
-                                                                sc,
-                                                                egui::FontId::proportional(11.5),
-                                                                t.text_dim,
-                                                            );
-                                                        }
-                                                        row.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl.label));
-                                                        if row.clicked() {
-                                                            chosen = Some(tl.id);
-                                                        }
-                                                    });
+                                                let row_width = g.iter().fold(210.0_f32, |width, tl| {
+                                                    let label = crate::i18n::tr(&app.ui.language, tl.label);
+                                                    let label_width = ui
+                                                        .painter()
+                                                        .layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.5), t.text)
+                                                        .size()
+                                                        .x;
+                                                    let shortcut_width = ui
+                                                        .painter()
+                                                        .layout_no_wrap(
+                                                            crate::menus::tool_shortcut_label(app, tl.id).unwrap_or_default(),
+                                                            egui::FontId::proportional(11.5),
+                                                            t.text_dim,
+                                                        )
+                                                        .size()
+                                                        .x;
+                                                    width.max(label_width + shortcut_width + 46.0)
+                                                });
+                                                let max_width = (ui.ctx().content_rect().width()
+                                                    - egui::Frame::popup(ui.style()).total_margin().sum().x)
+                                                    .max(0.0);
+                                                let mut scroll =
+                                                    egui::ScrollArea::horizontal().id_salt(("tool-flyout-scroll", gi)).max_width(max_width);
+                                                if opened_now {
+                                                    scroll = scroll.horizontal_scroll_offset(0.0);
                                                 }
+                                                scroll.show(ui, |ui| {
+                                                    for tl in g {
+                                                        ui.horizontal(|ui| {
+                                                            let (r, row) = ui.allocate_exact_size(vec2(row_width, 24.0), Sense::click());
+                                                            if row.hovered() {
+                                                                ui.painter().rect_filled(r, 2.0, t.hover);
+                                                            }
+                                                            icons::paint(
+                                                                ui.painter(),
+                                                                egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(18.0, 18.0)),
+                                                                tl.icon,
+                                                                t.icon,
+                                                            );
+                                                            if tl.id == current {
+                                                                ui.painter().circle_filled(r.min + vec2(-2.0, 12.0), 2.0, t.accent);
+                                                            }
+                                                            ui.painter().text(
+                                                                r.min + vec2(28.0, 12.0),
+                                                                egui::Align2::LEFT_CENTER,
+                                                                crate::i18n::tr(&app.ui.language, tl.label),
+                                                                egui::FontId::proportional(12.5),
+                                                                t.text,
+                                                            );
+                                                            if let Some(sc) = crate::menus::tool_shortcut_label(app, tl.id) {
+                                                                ui.painter().text(
+                                                                    r.right_center() - vec2(6.0, 0.0),
+                                                                    egui::Align2::RIGHT_CENTER,
+                                                                    sc,
+                                                                    egui::FontId::proportional(11.5),
+                                                                    t.text_dim,
+                                                                );
+                                                            }
+                                                            row.widget_info(|| {
+                                                                egui::WidgetInfo::labeled(
+                                                                    egui::Role::Button,
+                                                                    true,
+                                                                    crate::i18n::tr(&app.ui.language, tl.label),
+                                                                )
+                                                            });
+                                                            if row.clicked() {
+                                                                chosen = Some(tl.id);
+                                                            }
+                                                        });
+                                                    }
+                                                });
                                             });
                                         },
                                     );

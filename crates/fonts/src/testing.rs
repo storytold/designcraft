@@ -142,6 +142,23 @@ fn with_tables(font: &[u8], tables: Vec<([u8; 4], Vec<u8>)>) -> Option<Vec<u8>> 
     assemble(font, all)
 }
 
+/// Declare one weight axis for tests of variable-instance ownership; outlines stay static.
+#[cfg(test)]
+pub(crate) fn with_weight_axis(font: &[u8]) -> Option<Vec<u8>> {
+    let mut fvar = Vec::new();
+    for value in [1u16, 0, 16, 2, 1, 20, 0, 8] {
+        fvar.extend_from_slice(&value.to_be_bytes());
+    }
+    fvar.extend_from_slice(b"wght");
+    for value in [100i32, 400, 900] {
+        fvar.extend_from_slice(&(value << 16).to_be_bytes());
+    }
+    for value in [0u16, 256] {
+        fvar.extend_from_slice(&value.to_be_bytes());
+    }
+    with_tables(font, vec![(*b"fvar", fvar)])
+}
+
 /// `font` with vertical metrics: a `vhea` table and a `vmtx` table that give every glyph `default`
 /// (advance down the line, top side bearing), except the glyphs `overrides` lists (glyph id,
 /// advance, top side bearing). Every glyph has a long metric. `None` if `font` can't be read.

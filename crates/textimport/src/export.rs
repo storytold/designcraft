@@ -15,7 +15,7 @@ fn plain_char(c: char) -> Option<&'static str> {
     match c {
         PAGE_NUMBER | NEXT_PAGE_NUMBER | PREV_PAGE_NUMBER => Some("#"),
         FORCED_LINE_BREAK => Some("\u{2028}"),
-        '\u{E000}'..='\u{E0FF}' => None,
+        '\u{E000}'..='\u{E1FF}' => None,
         _ => Some(""),
     }
 }
@@ -174,7 +174,7 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
                         }
                     }
                     PAGE_NUMBER | NEXT_PAGE_NUMBER | PREV_PAGE_NUMBER => out.push('#'),
-                    '\u{E000}'..='\u{E0FF}' => {}
+                    '\u{E000}'..='\u{E1FF}' => {}
                     c => rtf_escape(&mut out, c),
                 }
             }
@@ -199,6 +199,14 @@ mod tests {
         st.format_chars(b..b + 4, |f| f.over = CharAttrs { font_style: Some("Bold".into()), ..Default::default() });
         st.format_paras(0..1, |p| p.para = ParaAttrs { align: Some(Align::Center), ..Default::default() });
         st
+    }
+
+    #[test]
+    fn text_variable_markers_are_dropped() {
+        let st = Story::with_text(StoryId(1), "Page \u{E100} of", Default::default());
+        assert_eq!(plain_text(&st), "Page  of");
+        let r = rtf(&Document::new(&NewDocument::default()), &st);
+        assert!(!r.contains("\\u-7936") && r.contains("Page  of"), "{r}");
     }
 
     #[test]

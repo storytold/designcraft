@@ -301,16 +301,21 @@ impl FontFace {
     /// (bit 1) without a less restrictive bit (Preview & Print, Editable). Fonts without an OS/2
     /// table aren't restricted.
     pub fn restricted_licence(&self) -> bool {
-        use skrifa::raw::TableProvider;
-        let fs_type = self.skrifa().and_then(|f| f.os2().ok()).map_or(0, |t| t.fs_type());
+        let fs_type = self.fs_type().unwrap_or(0);
         fs_type & 0x0002 != 0 && fs_type & 0x000C == 0
     }
 
     /// Does the font's licence allow embedding bitmaps only? OS/2 `fsType` bit 9: the outlines
     /// may not be passed on, so the font file can't be packaged whole.
     pub fn bitmap_only(&self) -> bool {
+        self.fs_type().is_some_and(|t| t & 0x0200 != 0)
+    }
+
+    /// The font's OS/2 `fsType` (embedding licence bits), None when the font has no OS/2 table it
+    /// can read: the font doesn't say, which isn't the same as 0 (installable).
+    pub fn fs_type(&self) -> Option<u16> {
         use skrifa::raw::TableProvider;
-        self.skrifa().and_then(|f| f.os2().ok()).is_some_and(|t| t.fs_type() & 0x0200 != 0)
+        self.skrifa().and_then(|f| f.os2().ok()).map(|t| t.fs_type())
     }
 }
 

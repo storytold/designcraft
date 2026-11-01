@@ -292,3 +292,42 @@ fn document_font_data_over_the_caps_is_skipped_unread() {
     let past = format!("1 more font files not loaded (at most {MAX_DOCUMENT_FONT_FILES} are)");
     assert_eq!(r.skipped.last(), Some(&past), "{:?}", r.skipped.last());
 }
+
+fn variable_font_data() -> FontData {
+    let font = font_with_names(&[(1, "DocFont Data Variable"), (2, "Regular"), (256, "Weight")], &['a']).unwrap();
+    font_data("variable.ttf", crate::testing::with_weight_axis(&font).unwrap())
+}
+
+#[test]
+fn closing_supplied_font_scope_releases_cached_instances() {
+    let db = FontDb::with_font_dirs(vec![]);
+    let a = db.load_document_font_data(vec![variable_font_data()]);
+    let b = db.load_document_font_data(vec![variable_font_data()]);
+    let view = db.scoped(a.scope);
+    assert_eq!(view.axes("DocFont Data Variable", "Regular").len(), 1);
+    let a_instance = view.face("DocFont Data Variable", "Regular {wght:650}");
+    let b_instance = db.scoped(b.scope).face("DocFont Data Variable", "Regular {wght:650}");
+    assert!(a_instance.is_variable() && b_instance.is_variable());
+    let (a_weak, b_weak) = (Arc::downgrade(&a_instance), Arc::downgrade(&b_instance));
+    drop(a_instance);
+    drop(b_instance);
+    db.close_scope(a.scope);
+    assert!(a_weak.upgrade().is_none(), "closing A releases its cached instance and font bytes");
+    assert!(b_weak.upgrade().is_some(), "B keeps its own live instance");
+    db.close_scope(b.scope);
+    assert!(b_weak.upgrade().is_none(), "closing B releases its cached instance too");
+}
+
+#[test]
+fn closed_supplied_font_view_cannot_repopulate_instance_cache() {
+    let db = FontDb::with_font_dirs(vec![]);
+    let fonts = db.load_document_font_data(vec![variable_font_data()]);
+    let view = db.scoped(fonts.scope);
+    db.close_scope(fonts.scope);
+    // A render job may already hold the old view when the document closes.
+    let instance = view.face("DocFont Data Variable", "Regular {wght:650}");
+    assert!(instance.is_variable());
+    let weak = Arc::downgrade(&instance);
+    drop(instance);
+    assert!(weak.upgrade().is_none(), "an old view must not leave a new global cache entry");
+}
