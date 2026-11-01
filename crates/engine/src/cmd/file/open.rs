@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
-use super::bytes::{base64_decode, load_bytes};
+use super::bytes::{base64_decode, load_bytes, without_native_extension};
 use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
@@ -156,7 +156,8 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
-        d.title = n.to_string();
+        // Titled as an IDML file opened from bytes is: without its extension.
+        d.title = without_native_extension(n).to_string();
     }
     let i = s.add_document(DocState::new(d, None));
     Ok(json!({"index": i, "warnings": warnings}))
@@ -416,6 +417,41 @@ mod document_fonts_tests {
         let r = s.execute("type.italic", &json!({"on": false})).unwrap();
         assert_eq!(r["fontStyle"], "Regular", "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod open_bytes_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A `.designcraft` file opened from bytes under its file name (a browser or host passes the
+    /// name it has) is titled without the extension, as an IDML file is, so saving it gives
+    /// `Brochure.designcraft` and not `Brochure.designcraft.designcraft`.
+    #[test]
+    fn open_bytes_titles_a_native_document_without_its_extension() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let native = s.execute("file.serialize", &json!({})).unwrap();
+        for (name, title) in [
+            ("Brochure.designcraft", "Brochure"),
+            ("Brochure.DesignCraft", "Brochure"),
+            ("Brochure", "Brochure"),
+            ("Brochure.v2", "Brochure.v2"),
+            ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+            (".designcraft", ".designcraft"),
+            // Names that aren't ASCII: cutting the extension's length off the end of the last one
+            // would land inside its `é`.
+            ("Präsentation.designcraft", "Präsentation"),
+            ("日本.DESIGNCRAFT", "日本"),
+            ("é", "é"),
+            ("édesigncraft", "édesigncraft"),
+        ] {
+            let r = s.execute("file.openBytes", &json!({"name": name, "base64": native["base64"]})).unwrap();
+            let st = &s.documents()[r["index"].as_u64().unwrap() as usize];
+            assert_eq!((st.doc.title.as_str(), st.title()), (title, title.to_string()), "{name}");
+        }
     }
 }
 

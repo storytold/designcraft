@@ -1516,6 +1516,7 @@ dependencies = [
  "log",
  "quick-xml 0.41.0",
  "resvg",
+ "skrifa 0.47.0",
  "tiff",
  "zune-core",
  "zune-jpeg",
