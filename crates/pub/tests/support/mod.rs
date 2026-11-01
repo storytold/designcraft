@@ -1,7 +1,8 @@
 // Copyright (c) 2026 srt8hellcat2-ui. SPDX-License-Identifier: MIT OR Apache-2.0
 //! Synthetic publications written from scratch for the tests: the compound file, the `Contents`
 //! stream (docs/pub-format/contents-stream.md), the Quill text store (text-store.md) and the
-//! drawing records (MS-ODRAW). `tests/data/hello.pub` is exactly [`hello`]'s output.
+//! drawing records (MS-ODRAW). `tests/data/hello.pub` is exactly [`hello`]'s output and
+//! `tests/data/wmf-picture.pub` exactly [`wmf_picture`]'s.
 #![allow(dead_code)]
 
 use std::io::{Cursor, Write};
@@ -221,4 +222,62 @@ pub fn publication(props: &[u8], defaults: &[u8], text: &str) -> Vec<u8> {
 /// (72, 216) pt, 216 × 144 pt, without a border.
 pub fn hello() -> Vec<u8> {
     publication(&[], &[], HELLO_TEXT)
+}
+
+/// A small WMF (MS-WMF): a red triangle on a blue ellipse, a black pen and a text record.
+fn wmf() -> Vec<u8> {
+    fn wmf_rec(func: u16, params: &[i16]) -> Vec<u8> {
+        let mut r = (3 + params.len() as u32).to_le_bytes().to_vec();
+        r.extend(func.to_le_bytes());
+        params.iter().for_each(|p| r.extend(p.to_le_bytes()));
+        r
+    }
+    let mut body = Vec::new();
+    body.extend(wmf_rec(0x020B, &[0, 0]));
+    body.extend(wmf_rec(0x020C, &[200, 300]));
+    body.extend(wmf_rec(0x02FC, &[0, 0, 0x00ff, 0])); // blue brush
+    body.extend(wmf_rec(0x02FC, &[0, 0x00ff, 0, 0])); // red brush
+    body.extend(wmf_rec(0x02FA, &[0, 4, 0, 0, 0])); // black pen, 4 units
+    body.extend(wmf_rec(0x012D, &[0]));
+    body.extend(wmf_rec(0x012D, &[2]));
+    body.extend(wmf_rec(0x0418, &[200, 300, 0, 0]));
+    body.extend(wmf_rec(0x012D, &[1]));
+    body.extend(wmf_rec(0x0324, &[3, 150, 20, 270, 180, 30, 180]));
+    body.extend(wmf_rec(0x0521, &[2, 0x6948, 10, 10]));
+    body.extend(wmf_rec(0x0000, &[]));
+    let mut wmf = Vec::new();
+    [1u16, 9, 0x0300].iter().for_each(|v| wmf.extend(v.to_le_bytes()));
+    wmf.extend(((18 + body.len()) as u32 / 2).to_le_bytes());
+    wmf.extend(3u16.to_le_bytes());
+    wmf.extend(7u32.to_le_bytes());
+    wmf.extend(0u16.to_le_bytes());
+    wmf.extend(body);
+    wmf
+}
+
+/// [`hello`] with its rectangle replaced by a picture frame holding [`wmf`], stored compressed
+/// in the drawing's picture store (MS-ODRAW OfficeArtBlipWMF in an OfficeArtFBSE).
+pub fn wmf_picture() -> Vec<u8> {
+    let wmf = wmf();
+    let packed = miniz_oxide::deflate::compress_to_vec_zlib(&wmf, 9);
+    let mut blip = vec![0u8; 16]; // UID
+    blip.extend((wmf.len() as u32).to_le_bytes());
+    [0i32, 0, 300, 200, emu(216), emu(144)].iter().for_each(|v| blip.extend(v.to_le_bytes()));
+    blip.extend((packed.len() as u32).to_le_bytes());
+    blip.extend([0x00, 0xFE]);
+    blip.extend(packed);
+    let blip = rec(0, 0x216, 0xF01B, &blip);
+    let mut bse = vec![3u8, 4];
+    bse.extend([0u8; 16]);
+    bse.extend(0xFFu16.to_le_bytes());
+    bse.extend((blip.len() as u32).to_le_bytes());
+    bse.extend(1u32.to_le_bytes());
+    bse.extend(0u32.to_le_bytes());
+    bse.extend([0u8; 4]);
+    bse.extend(blip);
+    let mut dgg = rec(0, 0, 0xF006, &[0u8; 16]);
+    dgg.extend(rec(0xF, 1, 0xF001, &rec(2, 3, 0xF007, &bse)));
+    let picture = shape(75, 1026, &[(0x4104, 1)], [72, 216, 216, 144], 259);
+    let objects = [text_object(), Object { record_type: 0x01, properties: Vec::new() }];
+    compound(&contents(emu(PAGE_W) as u32, emu(PAGE_H) as u32, &objects), &quill(&[], &[], HELLO_TEXT), &escher(Some(&dgg), &[text_shape(), picture]))
 }

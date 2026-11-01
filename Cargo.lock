@@ -1588,6 +1588,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-images",
  "log",
+ "miniz_oxide 0.8.9",
  "serde_json",
  "thiserror 2.0.21",
 ]

@@ -11,6 +11,8 @@ use designcraft_doc::{Content, Document, Item};
 use designcraft_pub::{PubError, import_pub, is_pub};
 
 const HELLO: &[u8] = include_bytes!("data/hello.pub");
+/// `hello.pub` with its rectangle replaced by a WMF picture (`support::wmf_picture`).
+const WMF_PICTURE: &[u8] = include_bytes!("data/wmf-picture.pub");
 
 #[test]
 #[ignore = "requires PUB_CORPUS with the allowed pubsmith binary fixtures"]
@@ -149,4 +151,37 @@ fn truncated_or_corrupt_input_is_an_error_not_a_panic() {
         }
         let _ = import_pub(&b);
     }
+}
+
+#[test]
+fn wmf_pictures_import_as_vector_svg() {
+    let imp = import_pub(WMF_PICTURE).unwrap();
+    let d = &imp.document;
+    assert_eq!(imp.warnings, vec!["Text inside WMF/EMF pictures was left out.".to_string()]);
+    let its = items(d);
+    assert_eq!(its.len(), 2);
+    let pic = its.iter().find(|i| !i.is_text_frame()).unwrap();
+    let b = pic.inner_bounds();
+    assert!((b.x0 - 72.0).abs() < 0.5 && (b.y0 - 216.0).abs() < 0.5 && (b.width() - 216.0).abs() < 0.5 && (b.height() - 144.0).abs() < 0.5, "{b:?}");
+    let Content::Graphic(g) = &pic.content else { panic!("not a picture: {:?}", pic.content) };
+    let asset = d.assets.get(&g.asset).unwrap();
+    assert_eq!(asset.mime, "image/svg+xml");
+    assert!(designcraft_images::svg_tree(&asset.data).is_some());
+    let svg = String::from_utf8(asset.data.to_vec()).unwrap();
+    assert!(svg.contains("fill=\"#ff0000\"") && svg.contains("fill=\"#0000ff\""), "{svg}");
+}
+
+/// Regenerates `tests/data/wmf-picture.pub` from `support::wmf_picture`.
+#[test]
+#[ignore = "writes tests/data/wmf-picture.pub"]
+fn write_wmf_picture_sample() {
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/wmf-picture.pub"), support::wmf_picture()).unwrap();
+}
+
+#[test]
+fn the_committed_wmf_sample_is_exactly_the_generated_one() {
+    assert!(
+        WMF_PICTURE == support::wmf_picture().as_slice(),
+        "run `cargo test -p designcraft-pub --test import -- --ignored write_wmf_picture_sample`"
+    );
 }

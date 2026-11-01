@@ -26,11 +26,12 @@
 //! score imports, never to infer format encoding.
 //!
 //! ## Not supported yet
-//! Tables (their text comes over as a text frame); WMF, EMF and PICT pictures (an empty graphic
-//! frame keeps their place); non-default WordArt warps and exact stretching (default upward arch
-//! uses measured editable path text; other warps stay straight); pattern/texture fills
-//! (approximated by the fill colour); picture crops other than rectangular; custom tab stops,
-//! numbering and unrecognized paragraph formatting. Bullets and exact/multiple line spacing are
+//! Tables (their text comes over as a text frame); non-default WordArt warps and exact stretching
+//! (default upward arch uses measured editable path text; other warps stay straight);
+//! pattern/texture fills (approximated by the fill colour); picture crops other than rectangular;
+//! PICT pictures (an empty graphic frame keeps their place); custom tab stops,
+//! numbering and unrecognized paragraph formatting. WMF/EMF pictures come over as vector SVG
+//! without their text, bitmaps, arcs and pattern fills (`metafile.rs`). Bullets and exact/multiple line spacing are
 //! imported. Groups (nested too) stay groups. Shaded fills become gradient swatches (centre and
 //! outline shades as radial approximations); dashes and arrowheads come over.
 //! Each omission is reported in [`Imported::warnings`].
@@ -42,6 +43,7 @@
 
 mod contents;
 mod escher;
+mod metafile;
 mod overset;
 mod paths;
 mod presets;
@@ -951,9 +953,21 @@ impl<'a> Builder<'a> {
         };
         let data = match p.kind {
             0xF01F => dib_to_bmp(&p.data)?,
-            0xF01A | 0xF01B => {
-                self.warnings.push("WMF and EMF pictures are not converted yet; their frames were kept empty.".into());
-                return None;
+            metafile::BLIP_EMF | metafile::BLIP_WMF => {
+                let Some(svg) = metafile::to_svg(p.kind, &p.data) else {
+                    self.warnings.push("A WMF or EMF picture could not be read; its frame was kept empty.".into());
+                    return None;
+                };
+                self.warnings.extend(svg.warnings.iter().map(|w| (*w).to_string()));
+                let id = AssetId(self.doc.alloc());
+                return Some(self.doc.add_asset(Asset {
+                    id,
+                    name: format!("picture-{pib}.svg"),
+                    mime: "image/svg+xml".into(),
+                    data: Arc::new(svg.data),
+                    pixels: Some(svg.size),
+                    ..Default::default()
+                }));
             }
             0xF01C => {
                 self.warnings.push("PICT pictures are not supported yet; their frames were kept empty.".into());
