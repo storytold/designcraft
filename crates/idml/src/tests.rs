@@ -1140,6 +1140,70 @@ fn gradient_tools_duplicate_auto_named_colours_are_merged_and_cleaned() {
     assert!(!sw.named, "a cleaned auto-generated name isn't a real user name");
 }
 
+/// A dirty-looking name on a *spot* colour is left alone: Ink Manager settings (`read_inks`) and
+/// ink aliases are matched by the colour's own name, and a spot's identity is the ink it prints
+/// on, not an RGB preview two spots could coincidentally share.
+#[test]
+fn dirty_named_spot_colours_are_never_cleaned_or_merged() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/spot1" Model="Spot" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/spot2" Model="Spot" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    assert!(d.swatch("r204g51b51").is_some(), "{:?}", d.swatches.iter().map(|s| &s.name).collect::<Vec<_>>());
+    assert!(d.swatch("r204g51b51 2").is_some());
+}
+
+/// Two colours that clean to the same name but hold different values are not the gradient tool's
+/// duplicate: both survive, the second disambiguated like any other name collision, not discarded.
+#[test]
+fn colours_sharing_a_cleaned_name_but_not_a_value_are_kept_apart() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="10 20 30" Name="r204g51b51 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let a = d.swatch("R=204 G=51 B=51").expect("the first keeps the plain cleaned name");
+    assert!(matches!(a.value, SwatchValue::Color { color, .. } if color == Color::rgb(204.0 / 255.0, 51.0 / 255.0, 51.0 / 255.0)));
+    let b =
+        d.swatches.iter().find(|s| s.name != a.name && s.name.starts_with("R=204 G=51 B=51")).expect("the second got its own, disambiguated name");
+    assert!(matches!(b.value, SwatchValue::Color { color, .. } if color == Color::rgb(10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0)));
+}
+
+/// A merged duplicate's id, referenced directly by a gradient stop, resolves to the kept swatch's
+/// real colour and its final (possibly disambiguated) name — not to black and not to whichever
+/// other swatch happened to be first in line for that name.
+#[test]
+fn a_gradient_stop_on_a_merged_duplicates_id_keeps_its_colour_and_final_name() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="50 60 70" Name="R=50 G=60 B=70"/>
+  <Color Self="Color/kept" Model="Process" Space="RGB" ColorValue="50 60 70" Name="r50g60b70"/>
+  <Color Self="Color/dup" Model="Process" Space="RGB" ColorValue="50 60 70" Name="r50g60b70 2"/>
+  <Gradient Self="Gradient/FromDup" Type="Linear" Name="FromDup">
+    <GradientStop Self="gs0" StopColor="Color/dup" Location="0"/>
+    <GradientStop Self="gs1" StopColor="Color/taken" Location="100"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    // "Color/kept" collided on name with the literal "Color/taken" and was disambiguated.
+    let kept_name = d
+        .swatches
+        .iter()
+        .map(|s| s.name.as_str())
+        .find(|n| *n != "R=50 G=60 B=70" && n.starts_with("R=50 G=60 B=70"))
+        .expect("the cleaned duplicate got its own, disambiguated name");
+    let SwatchValue::Gradient { gradient } = &d.swatch("FromDup").unwrap().value else { panic!("gradient") };
+    let rgb = Color::rgb(50.0 / 255.0, 60.0 / 255.0, 70.0 / 255.0);
+    assert_eq!(gradient.stops[0].color, rgb, "the merged duplicate's stop must not fall back to black");
+    assert_eq!(gradient.stops[0].swatch.as_deref(), Some(kept_name), "and must carry the kept swatch's final name");
+}
+
 #[test]
 fn round_trips_overridden_parent_items() {
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });

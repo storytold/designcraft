@@ -2085,13 +2085,17 @@ fn inspect_bounds_of_a_doubly_nested_item_include_its_ancestors_transforms() {
         let items: Vec<Value> = d["spreads"][0]["items"].as_array().unwrap().clone();
         let b = find(&items, id).unwrap()["bounds"].as_array().unwrap().clone();
         let v: Vec<f64> = b.iter().map(|x| x.as_f64().unwrap()).collect();
-        (v[2] - v[0], v[3] - v[1])
+        (v[0], v[1], v[2] - v[0], v[3] - v[1])
     };
-    let (w0, h0) = bounds_of(&mut s, leaf);
-    assert!((w0 - 40.0).abs() < 1e-6 && (h0 - 20.0).abs() < 1e-6, "{w0} {h0}");
+    let (x0, y0, w0, h0) = bounds_of(&mut s, leaf);
+    assert!((x0 - 100.0).abs() < 1e-6 && (y0 - 100.0).abs() < 1e-6 && (w0 - 40.0).abs() < 1e-6 && (h0 - 20.0).abs() < 1e-6, "{x0} {y0} {w0} {h0}");
 
-    // Scaling the outer group by 2x must double the doubly-nested leaf's reported size too.
+    // Scaling the outer group 2x (about its bounds' centre, (220, 210): the union of the inner
+    // group's (100,100)-(180,120) and the sibling's (300,300)-(340,320)) must move and resize the
+    // doubly-nested leaf accordingly: p -> centre + 2*(p - centre), so (100,100)-(140,120) ->
+    // (-20,-10)-(60,30). A buggy `bounds` that ignored the ancestors' transforms would report the
+    // leaf's unchanged, pre-scale position instead.
     s.execute("transform.scale", &json!({"sx": 2.0, "sy": 2.0, "ids": [outer]})).unwrap();
-    let (w1, h1) = bounds_of(&mut s, leaf);
-    assert!((w1 - 80.0).abs() < 1e-6 && (h1 - 40.0).abs() < 1e-6, "{w1} {h1}");
+    let (x1, y1, w1, h1) = bounds_of(&mut s, leaf);
+    assert!((x1 - -20.0).abs() < 1e-6 && (y1 - -10.0).abs() < 1e-6 && (w1 - 80.0).abs() < 1e-6 && (h1 - 40.0).abs() < 1e-6, "{x1} {y1} {w1} {h1}");
 }

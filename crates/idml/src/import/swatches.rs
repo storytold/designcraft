@@ -73,9 +73,15 @@ impl<'r> Importer<'r> {
         let mut order: Vec<(String, Swatch)> = Vec::new();
         // Colours. The gradient tool writes a fresh, undocumented, machine-named swatch
         // ("r204g51b51", a trailing " 2" when InDesign had to dedupe it against itself) for every
-        // stop it ever touched, so real files accumulate dozens of these; `auto_colors` merges
-        // exact-value repeats back into the first swatch of that value instead of keeping each one.
-        let mut auto_colors: HashMap<String, String> = HashMap::new();
+        // process-colour stop it ever touched, so real files accumulate dozens of these; a later
+        // one with the same cleaned name AND the same value merges into the first swatch of that
+        // value instead of staying apart. A spot keeps its own name regardless (Ink Manager
+        // settings and ink aliases, read below, are matched by name, and a spot's identity is the
+        // ink it prints on, not its RGB preview). `auto_colors` maps the merge key to the kept
+        // swatch's id and value; `auto_color_dup` records every id a later duplicate skipped, so
+        // its name can be pointed at the kept swatch's own (possibly since-disambiguated) name.
+        let mut auto_colors: HashMap<String, (String, Color)> = HashMap::new();
+        let mut auto_color_dup: Vec<(String, String)> = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Color") {
             let Some(id) = e.get("Self") else { continue };
             let Some((c, ty)) = Self::color_of(e) else { continue };
@@ -94,15 +100,24 @@ impl<'r> Importer<'r> {
                 self.hidden_colors.insert(id.to_string(), c);
                 continue;
             }
-            let cleaned = clean_auto_rgb_name(name);
+            let cleaned = if ty == ColorType::Process { clean_auto_rgb_name(name) } else { None };
             let name = cleaned.as_deref().unwrap_or(name);
             if cleaned.is_some() {
                 let key = format!("{ty:?}:{name}");
-                if let Some(existing) = auto_colors.get(&key) {
-                    self.swatch_names.insert(id.to_string(), existing.clone());
-                    continue;
+                match auto_colors.get(&key) {
+                    Some((kept_id, kept_color)) if *kept_color == c => {
+                        // A same-value duplicate: this id resolves to the kept swatch, whatever
+                        // that swatch ends up named once disambiguation (below) settles it.
+                        self.swatch_names.insert(id.to_string(), name.to_string());
+                        auto_color_dup.push((id.to_string(), kept_id.clone()));
+                        continue;
+                    }
+                    // Same cleaned name, different value: not a duplicate. Falls through and
+                    // keeps its own entry, disambiguated by name like any other collision.
+                    _ => {
+                        auto_colors.insert(key, (id.to_string(), c));
+                    }
                 }
-                auto_colors.insert(key, name.to_string());
             }
             let named = !name.starts_with("C=") && !name.starts_with("R=");
             self.swatch_names.insert(id.to_string(), name.to_string());
@@ -177,6 +192,13 @@ impl<'r> Importer<'r> {
             names.insert(s.name.clone());
             self.swatches.push(s);
         }
+        // A merged duplicate's id still named itself after its own (pre-disambiguation) cleaned
+        // name above; point it at the kept swatch's final one, in case disambiguation renamed it.
+        for (dup_id, kept_id) in auto_color_dup {
+            if let Some(final_name) = self.swatch_names.get(&kept_id).cloned() {
+                self.swatch_names.insert(dup_id, final_name);
+            }
+        }
         let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
             for stop in stops {
                 stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
@@ -205,7 +227,10 @@ impl<'r> Importer<'r> {
             "Color/Registration" => return Color::cmyk(1.0, 1.0, 1.0, 1.0),
             _ => {}
         }
-        if let Some((_, s)) = pending.iter().find(|(id, _)| id == r) {
+        // A merged auto-named duplicate's own id never got its own `pending` entry (it shares the
+        // kept swatch's), so fall back to its resolved name once the id match misses.
+        let name = self.swatch_names.get(r).map(String::as_str);
+        if let Some((_, s)) = pending.iter().find(|(id, s)| id == r || name == Some(s.name.as_str())) {
             match &s.value {
                 SwatchValue::Color { color, .. } => return *color,
                 SwatchValue::Tint { base, tint } => {
