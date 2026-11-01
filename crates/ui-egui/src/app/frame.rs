@@ -83,15 +83,9 @@ impl DesignApp {
     /// uses the monotonic clock, so a wall-clock/NTP jump cannot postpone or advance it.
     pub(super) fn ui_frame_end(&mut self, ctx: &egui::Context) {
         let now = now_ms() / 1000.0;
-        // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
-            self.last_recovery = now;
-            if self.session.documents().iter().any(|d| d.is_dirty())
-                && let Err(e) = self.session.execute("file.recovery.save", &json!({}))
-            {
-                self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
-            }
+        if let Some(secs) = self.recovery_tick(now) {
+            ctx.request_repaint_after_secs(secs as f32);
         }
         let dt = now - self.last_time;
         if dt > 0.0 {
@@ -99,6 +93,29 @@ impl DesignApp {
         }
         self.last_time = now;
         self.issue_screenshots(ctx);
+    }
+
+    /// Crash recovery: every 30 s the unsaved documents changed since their last checkpoint are
+    /// written to the recovery folder; one still as its checkpoint left it is not written again.
+    /// Returns in how many seconds the frame that writes changes no checkpoint holds yet is due,
+    /// so they are written even while nothing else draws (the timer used to wait for some other
+    /// frame: the caret's blink, a pointer move), and nothing once every checkpoint is current.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn recovery_tick(&mut self, now: f64) -> Option<f64> {
+        let dir = self.session.recovery_dir.clone()?;
+        let interval = (self.session.prefs.recovery_minutes * 60.0).max(5.0);
+        let mut since = now - self.last_recovery;
+        if since > interval {
+            self.last_recovery = now;
+            since = 0.0;
+            if self.session.documents().iter().any(|d| d.is_dirty())
+                && let Err(e) = self.session.execute("file.recovery.save", &json!({"changedOnly": true}))
+            {
+                self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
+            }
+        }
+        // A write that failed leaves its changes due at the next tick.
+        designcraft_engine::recovery::has_changes_to_checkpoint(&self.session, &dir).then_some(interval - since + 0.1)
     }
 
     /// The document area: the start screen, or the document tabs over one or two canvas panes.

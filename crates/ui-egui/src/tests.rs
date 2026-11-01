@@ -2083,3 +2083,47 @@ fn design_generation_native_drop_batch_without_a_change_still_places_every_file(
     let _ = std::fs::remove_file(first);
     let _ = std::fs::remove_file(second);
 }
+
+/// The recovery timer wrote every unsaved document every 30 s, changed or not, and ran only when
+/// some other frame did. Changes ask for the frame that writes them; a document still as its
+/// checkpoint left it is not written again, and asks for no frame.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_recovery_timer_writes_only_changes_and_wakes_only_for_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [20, 20, 120, 120], "content": "text", "text": "edited"})).unwrap();
+    app.session.recovery_dir = Some(dir.path().to_path_buf());
+    app.session.prefs.recovery_minutes = 0.5;
+    app.last_recovery = 0.0;
+    let entry = dir.path().join(format!("{}.designcraft", app.session.active().unwrap().uid));
+    // Every write renames a new file into place: its modification time and, on Unix, its file
+    // number change, even where timestamps are coarse.
+    let written = || {
+        std::fs::metadata(&entry).ok().map(|m| {
+            #[cfg(unix)]
+            let id = std::os::unix::fs::MetadataExt::ino(&m);
+            #[cfg(not(unix))]
+            let id = 0;
+            (m.modified().ok(), id)
+        })
+    };
+    // Changes no checkpoint holds ask for a frame before the next tick.
+    assert!(app.recovery_tick(10.0).is_some_and(|secs| secs > 0.0 && secs <= 30.5));
+    assert_eq!(written(), None);
+    // Due: written. Nothing changed since: no frame is asked for.
+    assert_eq!(app.recovery_tick(30.5), None);
+    let first = written();
+    assert!(first.is_some());
+    let first_bytes = std::fs::read(&entry).unwrap();
+    assert_eq!(app.recovery_tick(31.0), None);
+    // Due again with nothing changed: not written again.
+    assert_eq!(app.recovery_tick(61.0), None);
+    assert_eq!(written(), first);
+    // Edited: a frame is asked for, and the tick it brings writes it.
+    app.run("frame.create", json!({"rect": [20, 140, 120, 240]})).unwrap();
+    assert!(app.recovery_tick(70.0).is_some());
+    assert_eq!(app.recovery_tick(91.5), None);
+    assert_ne!(std::fs::read(&entry).unwrap(), first_bytes);
+}

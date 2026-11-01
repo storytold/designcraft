@@ -23,7 +23,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use designcraft_doc::Document;
 use serde_json::{Value, json};
 
 use crate::{DocState, EngineError, Result, Session};
@@ -466,6 +468,7 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
     // A completed Save/Close/Revert consumes the provenance, even when removal fails. A stale
     // source uid must never become a future claim on another document's checkpoint.
     let mut entries = std::mem::take(&mut doc.recovery_entries);
+    doc.last_checkpoint = None;
     if let Some(dir) = default_dir
         && !entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, dir))
     {
@@ -536,7 +539,9 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
 
 /// Command-path checkpointing also records explicitly selected directories, without configuring
 /// automatic recovery. The immutable public helper remains available for fixtures and callers.
-pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
+/// With `changed_only` (the app's timer), a document that is still the snapshot its entry in
+/// `dir` holds is left as it is.
+pub(crate) fn save_tracked(s: &mut Session, dir: &Path, changed_only: bool) -> Result<usize> {
     // Reject the complete batch before writing rather than silently losing old ownership records.
     for document in &s.docs {
         if document.is_dirty() && !has_checkpoint(document, dir) && document.recovery_entries.len() >= MAX_RECOVERY_ENTRIES {
@@ -558,9 +563,15 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let Some(document) = s.docs.get_mut(index) else { continue };
+        // Data merge's preview is session state: the unfilled template is what is kept.
+        let snapshot = document.preview_stash.clone().unwrap_or_else(|| document.doc.clone());
+        // Skipped only while both files are the ones this run wrote: an entry removed, replaced
+        // or no longer this run's to replace is written (or refused) as before.
+        if changed_only && access.owns(document.uid) && is_current(document, &snapshot, dir) {
+            continue;
+        }
         let (doc, meta) = files(dir, document.uid);
-        let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
-            .map_err(|e| EngineError::Other(e.to_string()))?;
+        let bytes = designcraft_format::save(&snapshot).map_err(|e| EngineError::Other(e.to_string()))?;
         // An entry this run did not write is never replaced, even one made since it checked.
         let replace = access.owns(document.uid);
         publish_recovery_file(&doc, &bytes, replace)?;
@@ -571,9 +582,80 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
         let metadata = json!({"path": document.path, "title": document.title(), "saved": designcraft_doc::vars::now()});
         publish_recovery_file(&meta, metadata.to_string().as_bytes(), replace)?;
+        document.last_checkpoint = Checkpoint::written(dir, document.uid, snapshot, document.path.clone());
         n += 1;
     }
     Ok(n)
+}
+
+/// The recovery checkpoint a document wrote last (`DocState::last_checkpoint`).
+#[derive(Clone, Debug)]
+pub(crate) struct Checkpoint {
+    /// The folder it was written to.
+    dir: PathBuf,
+    /// The document as written. Held, so the allocation is never changed or reused meanwhile:
+    /// a document that is still this `Arc` is unchanged. Edits share the image bytes
+    /// (`Arc<Asset>`), so holding it costs only the structure an edit replaced.
+    doc: Arc<Document>,
+    /// The path its metadata names.
+    path: Option<String>,
+    /// The document file and the metadata file as written.
+    files: [Stamp; 2],
+}
+
+/// What tells a written file from one removed, replaced or rewritten since, without reading it.
+/// Every write renames a new file into place, so its number changes too where there is one.
+#[derive(Clone, Debug, PartialEq)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    id: u64,
+}
+
+impl Stamp {
+    /// A regular file's stamp; a missing file, a link or a folder has none.
+    fn of(path: &Path) -> Option<Self> {
+        let m = std::fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file())?;
+        #[cfg(unix)]
+        let id = std::os::unix::fs::MetadataExt::ino(&m);
+        #[cfg(not(unix))]
+        let id = 0;
+        Some(Self { len: m.len(), modified: m.modified().ok(), id })
+    }
+}
+
+impl Checkpoint {
+    /// The checkpoint of `doc` just written to `dir` under `uid`, if both its files are there.
+    fn written(dir: &Path, uid: u64, doc: Arc<Document>, path: Option<String>) -> Option<Self> {
+        let (document, metadata) = files(dir, uid);
+        Some(Self { dir: dir.to_path_buf(), doc, path, files: [Stamp::of(&document)?, Stamp::of(&metadata)?] })
+    }
+
+    /// Whether it holds `doc` (that very allocation) under the document's path, in `dir`.
+    fn holds(&self, document: &DocState, doc: &Arc<Document>, dir: &Path) -> bool {
+        Arc::ptr_eq(&self.doc, doc) && self.path == document.path && same_directory(&self.dir, dir)
+    }
+}
+
+/// Whether `document`'s entry in `dir` already holds `doc`, and both its files are still the
+/// ones written (two `stat` calls).
+fn is_current(document: &DocState, doc: &Arc<Document>, dir: &Path) -> bool {
+    let Some(checkpoint) = document.last_checkpoint.as_ref().filter(|c| c.holds(document, doc, dir)) else { return false };
+    let (entry, metadata) = files(dir, document.uid);
+    [Stamp::of(&entry), Stamp::of(&metadata)].iter().zip(&checkpoint.files).all(|(now, then)| now.as_ref() == Some(then))
+}
+
+/// Whether an unsaved document has changes that its checkpoint in `dir` lacks. In memory only
+/// (a folder spelled as written compares without touching the disk), cheap enough for every
+/// frame: the app's timer asks for a frame when they are due, so they are written even while
+/// nothing else draws (the window in the background).
+pub fn has_changes_to_checkpoint(s: &Session, dir: &Path) -> bool {
+    let preview = s.new_document_preview();
+    s.docs.iter().any(|d| {
+        d.is_dirty()
+            && preview != Some(d.uid)
+            && !d.last_checkpoint.as_ref().is_some_and(|c| c.holds(d, d.preview_stash.as_ref().unwrap_or(&d.doc), dir))
+    })
 }
 
 /// Publish a document's recovery entry before its optional metadata.
@@ -846,6 +928,8 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
                         Ok(()) => {
                             discard(dir, uid);
                             state.recovery_entries = vec![(destination.clone(), state.uid)];
+                            // Just written: the timer leaves it until it changes.
+                            state.last_checkpoint = Checkpoint::written(&destination, state.uid, state.doc.clone(), state.path.clone());
                         }
                         Err(e) => log::warn!("recovery entry {uid} kept: {e}"),
                     }
