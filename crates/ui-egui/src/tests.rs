@@ -853,6 +853,82 @@ fn dropping_an_ase_file_loads_its_swatches() {
     }
 }
 
+/// A document with one empty frame at (36, 36)-(136, 136): the app, the frame's id and a screen point inside it
+/// and one outside it.
+fn app_with_drop_frame() -> (DesignApp, u64, egui::Pos2, egui::Pos2) {
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let _ = app.view_mut();
+    let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+    let st = app.session.active().unwrap();
+    let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+    let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+    let xf = canvas::Xf::new(rect, view);
+    let inside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(80.0, 80.0)));
+    let outside = xf.to_screen(slot.to_canvas(designcraft_geom::Point::new(300.0, 300.0)));
+    (app, frame, inside, outside)
+}
+
+fn dropped_png(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("designcraft-ui-{}-{name}.png", std::process::id()));
+    std::fs::write(&path, designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png()).unwrap();
+    path
+}
+
+#[test]
+fn a_graphic_dropped_on_a_frame_fills_it() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let path = dropped_png("dropframe");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(inside));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r.unwrap()["id"].as_u64(), Some(frame), "the frame under the pointer is filled");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+    assert!(canvas::drop_frame(&app, Some(outside)).is_none(), "an empty spot on the page is no frame");
+    // Text dropped there gets a frame of its own and leaves the image in place.
+    let text = std::env::temp_dir().join(format!("designcraft-ui-{}-dropframe.txt", std::process::id()));
+    std::fs::write(&text, "Dropped words").unwrap();
+    let r = app.open_dropped_at(&text.to_string_lossy(), Some(inside));
+    let _ = std::fs::remove_file(&text);
+    r.unwrap();
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
+#[test]
+fn a_locked_frame_is_not_a_drop_target() {
+    let (mut app, frame, inside, _) = app_with_drop_frame();
+    app.run("object.lock", json!({"ids": [frame]})).unwrap();
+    assert!(canvas::drop_frame(&app, Some(inside)).is_none(), "a locked frame is skipped");
+    let path = dropped_png("droplocked");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(inside));
+    let _ = std::fs::remove_file(&path);
+    r.unwrap();
+    let d = &app.session.doc().unwrap().doc;
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned), "the locked frame stays empty");
+    assert_eq!(d.spreads[0].items.len(), 2, "the graphic became a new object");
+}
+
+#[test]
+fn only_the_first_graphic_of_a_drop_fills_the_frame() {
+    let (mut app, frame, inside, _) = app_with_drop_frame();
+    let (first, second) = (dropped_png("dropfirst"), dropped_png("dropsecond"));
+    let mut frame_free = true;
+    let a = app.place_dropped(&first.to_string_lossy(), Some(inside), &mut frame_free);
+    assert!(!frame_free, "the first graphic took the frame");
+    let b = app.place_dropped(&second.to_string_lossy(), Some(inside), &mut frame_free);
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    assert_eq!(a.unwrap()["id"].as_u64(), Some(frame));
+    assert_ne!(b.unwrap()["id"].as_u64(), Some(frame), "the second graphic doesn't replace the first");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 2, "the second graphic is a new object");
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
 #[test]
 fn a_file_dropped_while_a_parent_is_open_lands_on_the_parent() {
     let mut app = DesignApp::new(Session::new(), Services::default());
