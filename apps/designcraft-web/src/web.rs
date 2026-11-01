@@ -366,7 +366,13 @@ impl eframe::App for WebShell {
         let graphics = self.graphics.clone();
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
         // Changed preferences go to local storage, so they survive a reload.
-        if self.prefs_sync.due(ctx.input(|i| i.time))
+        let now = ctx.input(|i| i.time);
+        if let Some(wait) = self.prefs_sync.wait(now) {
+            // Not due yet: a frame then checks, even if nothing else happens until then.
+            if let Ok(d) = std::time::Duration::try_from_secs_f64(wait) {
+                ctx.request_repaint_after(d);
+            }
+        } else if self.prefs_sync.due(now)
             && let Some(json) = self.prefs_sync.changed(&self.app.session.prefs)
             && let Some(storage) = local_storage()
         {

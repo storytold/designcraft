@@ -39,6 +39,14 @@ impl PrefsSync {
         true
     }
 
+    /// Seconds from `now` until the next check, when one is still to come; `None` when a check is
+    /// already due (or `now` isn't a number). The shell asks for a frame then: egui draws no frame
+    /// just because time passes, so a change made between checks would otherwise wait for the
+    /// next input before it's stored.
+    pub(crate) fn wait(&self, now: f64) -> Option<f64> {
+        (now.is_finite() && now < self.next_check).then_some(self.next_check - now)
+    }
+
     /// The JSON to store when `prefs` differ from what was last stored; `None` otherwise. Nothing
     /// counts as stored until [`PrefsSync::stored`] says the write succeeded, so a write that
     /// fails (or storage that isn't available) is tried again at the next check.
@@ -95,5 +103,16 @@ mod tests {
         assert!(!sync.due(0.5));
         assert!(sync.due(1.0));
         assert!(!sync.due(f64::NAN), "a time that isn't a number is never due");
+    }
+
+    /// A check that isn't due yet asks for a frame at its time; a due one doesn't need to.
+    #[test]
+    fn a_check_not_yet_due_says_when_it_will_be() {
+        let mut sync = PrefsSync::new(None);
+        assert_eq!(sync.wait(0.0), None, "due at once");
+        assert!(sync.due(0.0));
+        assert_eq!(sync.wait(0.25), Some(0.75));
+        assert_eq!(sync.wait(1.0), None);
+        assert_eq!(sync.wait(f64::NAN), None);
     }
 }
