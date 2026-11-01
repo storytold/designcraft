@@ -113,6 +113,110 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(des
     None
 }
 
+/// Text that is in the document but not in a page-based export (PDF, PowerPoint): the overset
+/// part of a story, and a story with no frame at all. The export used to write the file and
+/// report nothing, so whole sentences left an imported document without a hint anywhere (#1465).
+///
+/// One line per story, naming the page and the frame as the preflight issue does. `pages` are the
+/// 0-based pages being exported; a story whose overset is on a page that is not being exported is
+/// not reported, and one with no page of its own always is. A reflowable export (EPUB, HTML) or a
+/// text export carries the whole story, so neither calls this.
+/// Pages a single warning names before "and N more".
+const MAX_WARNED_PAGES: usize = 10;
+
+/// How the pages one warning covers are named: "page 3", "pages 3, 4", "pages 3, 4 and 6 more".
+fn page_list(pages: &[usize]) -> String {
+    let shown: Vec<String> = pages.iter().take(MAX_WARNED_PAGES).map(|p| (p + 1).to_string()).collect();
+    let rest = pages.len() - shown.len();
+    let list = shown.join(", ");
+    match (pages.len(), rest) {
+        (1, _) => format!("page {list}"),
+        (_, 0) => format!("pages {list}"),
+        _ => format!("pages {list} and {rest} more"),
+    }
+}
+
+/// The parent spread and the page of it a frame sits on, or `None` for a frame on a document page.
+fn parent_page_of(d: &Document, target: designcraft_doc::ItemId) -> Option<(usize, usize)> {
+    let loc = d.find(target)?;
+    let SpreadRef::Parent(pi) = loc.spread else { return None };
+    let bounds = d.parent_xf(&loc).transform_rect_bbox(d.item(target)?.bounds());
+    Some((pi, d.spread(loc.spread)?.page_at_x(bounds.center().x).unwrap_or(0)))
+}
+
+/// Document pages that draw parent page `pp` of parent spread `pi`, in document order.
+fn pages_showing(d: &Document, (pi, pp): (usize, usize)) -> Vec<usize> {
+    (0..d.page_count())
+        .filter(|p| d.page_loc(*p).is_some_and(|(si, pgi)| d.shown_parent_pages(SpreadRef::Doc(si), pgi).contains(&(pi, pp))))
+        .collect()
+}
+
+/// Characters of `story` that `cs` had no room for.
+fn overset_chars(story: &designcraft_doc::Story, cs: &ComposedStory) -> usize {
+    story.text.get(cs.overset_at.unwrap_or(0)..).unwrap_or("").chars().count()
+}
+
+pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
+    let Some(st) = s.active() else { return vec![] };
+    let d = &st.doc;
+    let mut out = Vec::new();
+    for story in d.stories.values() {
+        let last = story.frames.last().copied();
+        // A story on a parent page is composed once per page that shows it: its page number
+        // markers and variables are that page's, so the same frame can fit on one page and
+        // overset on another, and a parent page no exported page uses puts nothing in the file
+        // to be missing. Composing it once with no page reported neither (noted in review).
+        if let Some(parent) = last.and_then(|f| parent_page_of(d, f)) {
+            let mut by_count: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+            for page in pages_showing(d, parent) {
+                if pages.is_some_and(|sel| !sel.contains(&page)) {
+                    continue;
+                }
+                let cs = s.cache.get(d, story.id, Some(page));
+                let n = overset_chars(story, &cs);
+                if cs.is_overset() && n > 0 {
+                    by_count.entry(n).or_default().push(page);
+                }
+            }
+            let item = last.map_or(0, |f| f.0);
+            out.extend(
+                by_count.into_iter().map(|(n, ps)| {
+                    format!("{}: {n} character(s) of the story in frame {item} do not fit it and are not in the export", page_list(&ps))
+                }),
+            );
+            continue;
+        }
+        let cs = s.cache.get(d, story.id, None);
+        if !cs.is_overset() {
+            continue;
+        }
+        let n = overset_chars(story, &cs);
+        if n == 0 {
+            continue;
+        }
+        if story.frames.is_empty() {
+            out.push(format!("a story with no text frame: {n} character(s) of it are not in the export"));
+            continue;
+        }
+        let location = last.and_then(|f| overset_location(s, f));
+        let page = location.and_then(|(_, page)| page);
+        if let (Some(page), Some(pages)) = (page, pages)
+            && !pages.contains(&page)
+        {
+            continue;
+        }
+        let item = location.map(|(item, _)| item).or(last);
+        out.push(match (page, item) {
+            (Some(page), Some(item)) => {
+                format!("page {}: {n} character(s) of the story in frame {} do not fit it and are not in the export", page + 1, item.0)
+            }
+            (None, Some(item)) => format!("the story in frame {}: {n} character(s) do not fit and are not in the export", item.0),
+            _ => format!("{n} character(s) of a story do not fit their frame and are not in the export"),
+        });
+    }
+    out
+}
+
 pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let Some(st) = s.active() else { return vec![] };
     let d = &st.doc;
