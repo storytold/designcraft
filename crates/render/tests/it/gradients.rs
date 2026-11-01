@@ -11,7 +11,7 @@ use designcraft_render::{Placed, RenderOptions, Rendered, Renderer};
 /// A 100×200 rectangle at (50, 20) filled with a black-to-white radial gradient.
 fn portrait(vector: Option<[f64; 4]>) -> Document {
     let mut d = Document::new(&NewDocument { width: 200.0, height: 240.0, facing_pages: false, ..Default::default() });
-    let stop = |offset: f32, color: Color| GradientStop { offset, color, opacity: 1.0, midpoint: 0.5 };
+    let stop = |offset: f32, color: Color| GradientStop::new(offset, color);
     d.swatches.push(Swatch {
         name: "Radial".into(),
         value: SwatchValue::Gradient {
@@ -32,7 +32,7 @@ fn render(d: &Document) -> Rendered {
     let mut r = Renderer::new();
     r.threads = 0;
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-    r.render(d, &Cache::new(), &[Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }], 200, 240, Affine::IDENTITY, &opts)
+    r.render(d, &Cache::new(), &[Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }], (200, 240), Affine::IDENTITY, &opts)
 }
 
 fn grey(img: &Rendered, x: u32, y: u32) -> u8 {

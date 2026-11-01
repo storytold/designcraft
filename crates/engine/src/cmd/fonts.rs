@@ -81,36 +81,41 @@ fn list(d: &Document) -> Vec<Value> {
     used_fonts(d).into_iter().map(|font| json!(font)).collect()
 }
 
-pub(super) fn used_fonts(d: &Document) -> Vec<UsedFont> {
-    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
-    let mut used: BTreeMap<(String, String), (usize, std::collections::BTreeSet<char>)> = BTreeMap::new();
-    for_each_story(d, &mut |st| {
-        let ranges = st.para_ranges();
-        for (pi, r) in ranges.iter().enumerate() {
-            let (_, base) = d.styles.resolve_para(&st.paras[pi]);
-            for (rr, fmt) in st.runs() {
-                let n = st.text[rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))].chars().count();
-                if n == 0 && !(r.is_empty() && rr.contains(&r.start)) {
-                    continue;
-                }
-                let p = d.styles.resolve_char(&base, fmt);
-                if let Some(f) = d.styles.composite_font(&p.font_family) {
-                    let text = st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("");
-                    for c in text.chars() {
-                        if let Some(e) = f.entry(c) {
-                            let entry = used.entry((e.family.clone(), e.style.clone())).or_default();
-                            entry.0 += 1;
-                            entry.1.insert(c);
-                        }
+type FontTally = BTreeMap<(String, String), (usize, std::collections::BTreeSet<char>)>;
+
+/// Count the characters of every run of one story against the font each resolves to.
+fn tally_story(d: &Document, st: &Story, used: &mut FontTally) {
+    let ranges = st.para_ranges();
+    for (pi, r) in ranges.iter().enumerate() {
+        let (_, base) = d.styles.resolve_para(&st.paras[pi]);
+        for (rr, fmt) in st.runs() {
+            let n = st.text[rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))].chars().count();
+            if n == 0 && !(r.is_empty() && rr.contains(&r.start)) {
+                continue;
+            }
+            let p = d.styles.resolve_char(&base, fmt);
+            if let Some(f) = d.styles.composite_font(&p.font_family) {
+                let text = st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("");
+                for c in text.chars() {
+                    if let Some(e) = f.entry(c) {
+                        let entry = used.entry((e.family.clone(), e.style.clone())).or_default();
+                        entry.0 += 1;
+                        entry.1.insert(c);
                     }
-                } else {
-                    let entry = used.entry((p.font_family, p.font_style)).or_default();
-                    entry.0 += n;
-                    entry.1.extend(st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("").chars());
                 }
+            } else {
+                let entry = used.entry((p.font_family, p.font_style)).or_default();
+                entry.0 += n;
+                entry.1.extend(st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("").chars());
             }
         }
-    });
+    }
+}
+
+pub(super) fn used_fonts(d: &Document) -> Vec<UsedFont> {
+    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
+    let mut used = FontTally::new();
+    for_each_story(d, &mut |st| tally_story(d, st, &mut used));
     let mut out: Vec<UsedFont> = used
         .into_iter()
         .map(|((family, style), (n, characters))| {

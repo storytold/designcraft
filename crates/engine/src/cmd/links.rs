@@ -144,7 +144,7 @@ pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool
     let Some(link) = &a.link else { return false };
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::io::document_path(link, document).map_or(true, |path| !crate::io::exists(path))
+        !crate::io::document_path(link, document).is_ok_and(crate::io::exists)
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -396,8 +396,23 @@ fn reimport(d: &mut Document, sid: StoryId, path: &str, bytes: &[u8], before: Fi
 
 #[cfg(not(target_arch = "wasm32"))]
 fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
+    reload_capped(path, super::interchange::MAX_LINKED_FILE_BYTES)
+}
+
+/// A linked graphic read again from disk, and its pixel size, reading at most `cap` bytes.
+///
+/// How large a linked file is belongs to whoever wrote the document, not to whoever opens it: the
+/// path comes out of the document, and Update, Relink and Relink Folder all follow it. An
+/// unbounded `read` of a link pointing at a multi-GB file exhausted memory (#1596). The cap is
+/// the one packaging already applies to a linked file, and a file over it is refused by name
+/// rather than read.
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_capped(path: impl AsRef<Path>, cap: u64) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
-    let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+    let b = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    if b.len() as u64 > cap {
+        return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));
+    }
     if designcraft_render::is_pdf(&b) {
         designcraft_render::check_pdf_input_size(b.len()).map_err(|e| bad("links", format!("{}: {e}", path.display())))?;
     }
@@ -480,7 +495,7 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let old = std::path::PathBuf::from(a.link.clone().unwrap_or_else(|| a.name.clone()));
-        let mut name = old.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| a.name.clone().into());
+        let mut name = old.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_else(|| a.name.clone().into());
         if let Some(e) = &ext {
             name = std::path::Path::new(&name).with_extension(e).into_os_string();
         }
@@ -490,8 +505,18 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
             Some(dir) => Some(dir.clone()),
             None => a.link.as_deref().and_then(|l| crate::io::document_path(l, document).ok()).and_then(|p| p.parent().map(Path::to_path_buf)),
         };
-        let plain_name = name.to_str().is_some_and(|n| !n.contains(['/', '\\']) && craft_docpath::is_local(n));
-        let cand = folder.filter(|_| plain_name).map(|f| f.join(&name));
+        let plain_name = name.to_str().filter(|n| !n.contains(['/', '\\']));
+        // A name that resolves to another file name (a `file:` URL such as `file:%2Ftmp%2Fx.png`,
+        // a drive-relative `C:x.png`) or a folder the stored-path rules read differently (`a\b`
+        // on Unix, `alias/..` through a symlink) could lead outside the folder, so only the name
+        // itself, directly in the folder as the file system resolves it, counts. The link keeps
+        // the folder as given.
+        let cand = folder.zip(plain_name).and_then(|(f, n)| {
+            let c = crate::io::folder_path(n, &f).ok()?;
+            let real = |p: &Path| crate::io::canonicalize(p).ok();
+            let same_folder = c.parent().and_then(real).is_some_and(|p| real(&f) == Some(p));
+            (c.file_name().is_some_and(|c| c == n) && same_folder).then_some(c)
+        });
         if let Some(cand) = cand.filter(|c| crate::io::exists(c)) {
             todo.push((a.id, cand));
         } else {
@@ -567,358 +592,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn png(w: u32, h: u32) -> Vec<u8> {
-        designcraft_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
-    }
-
-    fn pdf(sizes: &[(u32, u32)]) -> Vec<u8> {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"pages": sizes.len(), "facingPages": false})).unwrap();
-        for (i, (width, height)) in sizes.iter().enumerate() {
-            s.execute("layout.pageSize", &json!({"pages": [i + 1], "width": width, "height": height})).unwrap();
-        }
-        let result = s.execute("file.exportPdf", &json!({})).unwrap();
-        super::super::file::base64_decode(result["base64"].as_str().unwrap())
-    }
-
-    #[test]
-    fn anchored_image_lists_its_page_and_resolution() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
-        let r = s
-            .execute("frame.create", &json!({"spread": 1, "rect": [72, 72, 400, 400], "content": "text", "text": "Before after and more words."}))
-            .unwrap();
-        let sid = s.doc().unwrap().doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
-        let placed = s
-            .execute(
-                "file.place",
-                &json!({"base64": super::super::file::base64_encode(&png(10, 10)), "name": "dot.png", "x": 450, "y": 450, "width": 36}),
-            )
-            .unwrap();
-        let id = placed["id"].as_u64().unwrap();
-        let before = s.execute("links.list", &json!({})).unwrap();
-        assert_eq!(before[0]["uses"][0]["ppi"], 20.0);
-        s.execute("anchored.insert", &json!({"ids": [id], "story": sid.0, "pos": 7})).unwrap();
-        let list = s.execute("links.list", &json!({})).unwrap();
-        let uses = list[0]["uses"].as_array().unwrap();
-        assert_eq!(uses.len(), 1, "anchored image must have one use: {list}");
-        assert_eq!(uses[0]["page"], "2");
-        assert_eq!(uses[0]["ppi"], 20.0);
-    }
-
-    #[test]
-    fn eps_web_exports_convert_tiff_and_skip_bad_used_assets() {
-        use std::io::Read;
-        let bytes = super::super::file::eps_place_tests::tiff_eps();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let placed = s.execute("file.place", &json!({"base64":super::super::file::base64_encode(&bytes),"name":"logo.eps"})).unwrap();
-        let aid = AssetId(placed["asset"].as_u64().unwrap());
-        let before = s.doc().unwrap().doc.clone();
-        let html = s.execute("file.exportHtml", &json!({})).unwrap();
-        let encoded = html["text"].as_str().unwrap().split("data:image/png;base64,").nth(1).unwrap().split('"').next().unwrap();
-        let png = super::super::file::base64_decode(encoded);
-        assert!(png.starts_with(b"\x89PNG"));
-        assert_eq!(designcraft_render::image_size(&png), Some((2, 2)));
-        assert_eq!(designcraft_render::decode_pixmap(&png).unwrap().data()[0], designcraft_render::decode_pixmap(&bytes).unwrap().data()[0]);
-        let result = s.execute("file.exportEpub", &json!({})).unwrap();
-        let mut z = zip::ZipArchive::new(std::io::Cursor::new(super::super::file::base64_decode(result["base64"].as_str().unwrap()))).unwrap();
-        let mut image = Vec::new();
-        z.by_name(&format!("OEBPS/images/logo-{}.png", aid.0)).unwrap().read_to_end(&mut image).unwrap();
-        assert_eq!(image, png);
-        let mut opf = String::new();
-        z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
-        assert!(opf.contains("media-type=\"image/png\""));
-        assert!(!opf.contains("image/tiff"));
-        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
-        s.edit(|d, _| {
-            Arc::make_mut(d.assets.get_mut(&aid).unwrap()).data = Arc::new(b"%!PS-Adobe-3.0 EPSF-3.0\n%%EOF\n".to_vec());
-            Ok(())
-        })
-        .unwrap();
-        let before = s.doc().unwrap().doc.clone();
-        for command in ["file.exportHtml", "file.exportEpub"] {
-            let result = s.execute(command, &json!({})).unwrap();
-            assert_eq!(result["warnings"].as_array().unwrap().len(), 1, "{command}");
-            if command == "file.exportHtml" {
-                assert!(!result["text"].as_str().unwrap().contains("<img "));
-            }
-        }
-        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
-        s.execute("edit.clear", &json!({})).unwrap();
-        assert!(s.doc().unwrap().doc.assets.contains_key(&aid));
-        for command in ["file.exportHtml", "file.exportEpub"] {
-            let result = s.execute(command, &json!({})).unwrap();
-            assert!(result["warnings"].as_array().unwrap().is_empty(), "unused EPS: {command}");
-        }
-    }
-
-    #[test]
-    fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
-        let dir = std::env::temp_dir().join(format!("dc-eps-status-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("logo.eps");
-        let first = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n0 0 0 setrgbcolor\n%%EOF\n";
-        let changed = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n1 0 0 setrgbcolor\n%%EOF\n";
-        assert_eq!(first.len(), changed.len());
-        assert_eq!(designcraft_images::eps_proxy(first), designcraft_images::eps_proxy(changed), "same preview, different source");
-        std::fs::write(&path, first).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        let before = s.doc().unwrap().doc.clone();
-        assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 0);
-        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before), "unchanged EPS must not create an edit");
-        let saved = designcraft_format::save(&before).unwrap();
-        let reopened = designcraft_format::load(&saved).unwrap();
-        assert_eq!(reopened.assets[&aid].data.as_slice(), first);
-        let mut s = Session::new();
-        s.add_document(crate::DocState::new(reopened, None));
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        std::fs::write(&path, changed).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "modified");
-        assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].data.as_slice(), changed);
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "missing");
-        let replacement = dir.join("replacement.eps");
-        std::fs::write(&replacement, changed).unwrap();
-        s.execute("links.relink", &json!({"asset": aid.0, "path": replacement.to_string_lossy()})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "missing");
-        s.execute("edit.redo", &json!({})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        s.execute("links.embed", &json!({"asset": aid.0})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
-        std::fs::remove_file(&replacement).unwrap();
-        let embedded = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
-        // The asset is embedded, so no link is followed and the document is irrelevant.
-        assert_eq!(status(&embedded.assets[&aid], None), "embedded");
-        assert_eq!(embedded.assets[&aid].data.as_slice(), changed);
-        assert!(designcraft_render::decode_pixmap(&embedded.assets[&aid].data).is_some());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn eps_legacy_preview_document_is_upgraded_by_update() {
-        let dir = std::env::temp_dir().join(format!("dc-eps-legacy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("logo.eps");
-        let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
-        std::fs::write(&path, source).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let aid = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
-        let proxy = designcraft_images::eps_proxy(source).unwrap().0;
-        s.edit(|d, _| {
-            let a = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
-            a.data = Arc::new(proxy);
-            a.mime = "image/png".into();
-            Ok(())
-        })
-        .unwrap();
-        let old = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
-        let mut s = Session::new();
-        s.add_document(crate::DocState::new(old, None));
-        assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].data.as_slice(), source);
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert!(designcraft_render::decode_pixmap(&s.doc().unwrap().doc.assets[&aid].data).is_some(), "old preview remains renderable");
-        s.execute("edit.redo", &json!({})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn eps_source_exports_preview_to_pdf_html_and_epub_without_editing_document() {
-        use hayro_syntax::object::Name;
-        use std::io::Read;
-
-        let source = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
-        let proxy = designcraft_images::eps_proxy(source).unwrap().0;
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let aid = AssetId(
-            s.execute("file.place", &json!({"base64": super::super::file::base64_encode(source), "name": "logo.eps"})).unwrap()["asset"]
-                .as_u64()
-                .unwrap(),
-        );
-        // A document retaining the original EPS rather than the legacy preview-only asset.
-        s.edit(|d, _| {
-            let a = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
-            a.data = Arc::new(source.to_vec());
-            a.mime = "application/postscript".into();
-            Ok(())
-        })
-        .unwrap();
-        let before = s.doc().unwrap().doc.clone();
-        let result = s.execute("file.exportPdf", &json!({})).unwrap();
-        assert!(result["warnings"].as_array().unwrap().is_empty(), "{:?}", result["warnings"]);
-        let pdf = hayro_syntax::Pdf::new(super::super::file::base64_decode(result["base64"].as_str().unwrap())).unwrap();
-        assert_eq!(
-            pdf.objects()
-                .into_iter()
-                .filter_map(|o| o.into_stream())
-                .filter(|st| st.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
-                .count(),
-            1
-        );
-        let result = s.execute("file.exportHtml", &json!({})).unwrap();
-        let encoded = result["text"].as_str().unwrap().split("data:image/png;base64,").nth(1).unwrap().split('"').next().unwrap();
-        assert_eq!(super::super::file::base64_decode(encoded), proxy);
-        let result = s.execute("file.exportEpub", &json!({})).unwrap();
-        let bytes = super::super::file::base64_decode(result["base64"].as_str().unwrap());
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        let mut image = Vec::new();
-        archive.by_name(&format!("OEBPS/images/logo-{}.png", aid.0)).unwrap().read_to_end(&mut image).unwrap();
-        assert_eq!(image, proxy);
-        let mut opf = String::new();
-        archive.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
-        assert!(opf.contains("media-type=\"image/png\""));
-        assert!(!opf.contains("application/postscript"));
-        assert!(Arc::ptr_eq(&s.doc().unwrap().doc, &before), "exports must leave the source document intact");
-        assert_eq!(before.assets[&aid].data.as_slice(), source);
-    }
-
-    #[test]
-    fn eps_relink_update_and_folder_relink_retain_source() {
-        let dir = std::env::temp_dir().join(format!("dc-links-eps-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("new")).unwrap();
-        let eps = |w: u32| format!("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {w} 10\n%%EOF\n");
-        let original = dir.join("original.eps");
-        let replacement = dir.join("replacement.eps");
-        std::fs::write(&original, eps(10)).unwrap();
-        std::fs::write(&replacement, eps(30)).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("file.place", &json!({"path": original.to_string_lossy()})).unwrap();
-        let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
-        std::fs::write(&original, eps(20)).unwrap();
-        assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].pixels, Some((40, 20)));
-        s.execute("links.relink", &json!({"asset": aid.0, "path": replacement.to_string_lossy()})).unwrap();
-        let a = &s.doc().unwrap().doc.assets[&aid];
-        assert_eq!(a.pixels, Some((60, 20)));
-        assert_eq!(a.mime, "application/postscript");
-        assert_eq!(a.data.as_slice(), eps(30).as_bytes());
-        let moved = dir.join("new/replacement.eps");
-        std::fs::rename(&replacement, &moved).unwrap();
-        assert_eq!(s.execute("links.relinkFolder", &json!({"dir": dir.join("new").to_string_lossy()})).unwrap()["relinked"], 1);
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].link.as_deref(), moved.to_str());
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn pdf_relink_and_update_preserve_selected_page_size() {
-        let dir = std::env::temp_dir().join(format!("dc-links-pdf-size-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let original = dir.join("original.pdf");
-        let replacement = dir.join("replacement.pdf");
-        std::fs::write(&original, pdf(&[(10, 10), (20, 30)])).unwrap();
-        std::fs::write(&replacement, pdf(&[(40, 40), (50, 60)])).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("file.place", &json!({"path": original.to_string_lossy(), "pdfPage": 2})).unwrap();
-        let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
-        s.execute("links.relink", &json!({"asset": aid.0, "path": replacement.to_string_lossy()})).unwrap();
-        let a = &s.doc().unwrap().doc.assets[&aid];
-        assert_eq!(a.page, 1);
-        assert_eq!(a.pixels, Some((50, 60)));
-        assert!(designcraft_render::render_pdf_page(&a.data, a.page as usize, 64).is_some());
-        std::fs::write(&replacement, pdf(&[(70, 70), (80, 90)])).unwrap();
-        assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].pixels, Some((80, 90)));
-        let raster = dir.join("replacement.png");
-        std::fs::write(&raster, png(4, 5)).unwrap();
-        s.execute("links.relink", &json!({"asset": aid.0, "path": raster.to_string_lossy()})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.assets[&aid].page, 0);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn pdf_reload_rejects_missing_page_without_edit() {
-        let full = pdf(&[(10, 10), (20, 30)]);
-        let short = pdf(&[(10, 10)]);
-        let dir = std::env::temp_dir().join(format!("dc-links-pdf-page-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("new")).unwrap();
-        let original = dir.join("book.pdf");
-        let replacement = dir.join("new/book.pdf");
-        std::fs::write(&replacement, short.clone()).unwrap();
-        for command in ["links.relink", "links.relinkFolder", "links.update"] {
-            std::fs::write(&original, &full).unwrap();
-            let mut s = Session::new();
-            s.execute("file.new", &json!({})).unwrap();
-            s.execute("file.place", &json!({"path": original.to_string_lossy(), "pdfPage": 2})).unwrap();
-            let aid = s.doc().unwrap().doc.assets.keys().next().copied().unwrap();
-            if command == "links.update" {
-                std::fs::write(&original, &short).unwrap();
-            }
-            let st = s.doc().unwrap();
-            let before = st.doc.clone();
-            let revision = st.revision;
-            let undo = st.history.undo.len();
-            let journal = s.journal.len();
-            let params = match command {
-                "links.relinkFolder" => json!({"dir": dir.join("new").to_string_lossy(), "missingOnly": false}),
-                "links.update" => json!({"asset": aid.0}),
-                _ => json!({"asset": aid.0, "path": replacement.to_string_lossy()}),
-            };
-            let err = s.execute(command, &params).unwrap_err();
-            assert!(err.to_string().contains("PDF page 2"), "{command}: {err}");
-            let st = s.doc().unwrap();
-            assert!(Arc::ptr_eq(&st.doc, &before), "{command}");
-            assert_eq!(st.revision, revision);
-            assert_eq!(st.history.undo.len(), undo);
-            assert_eq!(s.journal.len(), journal);
-            assert!(designcraft_render::render_pdf_page(&st.doc.assets[&aid].data, 1, 64).is_some());
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn link_status_relink_update_embed() {
-        let dir = std::env::temp_dir().join(format!("dc-links-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = dir.join("a.png");
-        let b = dir.join("b.png");
-        std::fs::write(&a, png(10, 10)).unwrap();
-        std::fs::write(&b, png(20, 10)).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("file.place", &json!({"path": a.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
-        let l = s.execute("links.list", &json!({})).unwrap();
-        assert_eq!(l[0]["status"], "ok");
-        assert_eq!(l[0]["uses"][0]["ppi"], 10.0, "10 px over 1 inch");
-        let aid = l[0]["asset"].as_u64().unwrap();
-        // The file changes on disk.
-        std::fs::write(&a, png(30, 10)).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "modified");
-        s.execute("links.update", &json!({})).unwrap();
-        let l = s.execute("links.list", &json!({})).unwrap();
-        assert_eq!(l[0]["status"], "ok");
-        assert_eq!(l[0]["pixels"], json!([30, 10]));
-        // Missing, then relinked.
-        std::fs::remove_file(&a).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "missing");
-        s.execute("links.relink", &json!({"asset": aid, "path": b.to_string_lossy()})).unwrap();
-        let l = s.execute("links.list", &json!({})).unwrap();
-        assert_eq!((l[0]["status"].as_str(), l[0]["name"].as_str()), (Some("ok"), Some("b.png")));
-        // Go to selects the frame; embed forgets the file.
-        let r = s.execute("links.goTo", &json!({"asset": aid})).unwrap();
-        assert_eq!(r["ids"].as_array().unwrap().len(), 1);
-        s.execute("links.embed", &json!({"asset": aid})).unwrap();
-        assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod relink_folder_tests {
@@ -1118,6 +792,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: sid,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
@@ -1163,6 +838,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: missing,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
@@ -1199,6 +875,7 @@ mod shared_asset_tests {
             designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 9.0, 9.0)),
         );
         it.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset: missing,
             size: (4.0, 4.0),
             xf: designcraft_geom::Affine::IDENTITY,
@@ -1257,6 +934,47 @@ mod text_link_tests {
         st.paras.iter().map(|p| p.style.clone()).collect()
     }
 
+    fn assert_link_update_replaces_and_warns(s: &mut Session, path: &std::path::Path, sid: StoryId, a: u64, b: u64) {
+        // The file changes (with tracked changes): Modified; Update imports it as if accepted, with
+        // the saved style map, into the same frames, without new renamed styles.
+        std::fs::write(
+            path,
+            docx(r#"<w:r><w:t xml:space="preserve">Second </w:t></w:r><w:ins w:id="1" w:author="A"><w:r><w:t>revised </w:t></w:r></w:ins><w:del w:id="2" w:author="A"><w:r><w:delText>old </w:delText></w:r></w:del><w:r><w:t>draft.</w:t></w:r>"#),
+        )
+        .unwrap();
+        assert_eq!(text_rows(s)[0]["status"], "modified");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(r["updated"], 1);
+        assert_eq!(r["warnings"], json!([]), "no edits in the layout to replace");
+        let updated = story(s, sid);
+        assert_eq!(updated.text, "Head\nSecond revised draft.");
+        assert_eq!(styles(&updated), ["Headline", "Body_wrd_1"]);
+        assert_eq!(updated.frames, [ItemId(a), ItemId(b)], "frames and thread kept");
+        assert!(s.doc().unwrap().doc.styles.para("Body_wrd_2").is_none());
+        assert!(s.doc().unwrap().doc.styles.para("Title").is_none(), "mapped styles aren't imported");
+        assert_eq!(text_rows(s)[0]["status"], "ok");
+
+        // An edit in the layout, then the file changes again: Update replaces the edit and warns.
+        s.execute("story.setText", &json!({"story": sid.0, "text": "Fixed in layout"})).unwrap();
+        assert_eq!(text_rows(s)[0]["edited"], true);
+        std::fs::write(path, docx("<w:r><w:t>Third draft.</w:t></w:r>")).unwrap();
+        let r = s.execute("links.update", &json!({})).unwrap();
+        assert_eq!(r["updated"], 1);
+        let w = r["warnings"][0].as_str().unwrap();
+        assert!(w.contains("chapter.docx") && w.contains("replaced"), "{w}");
+        assert_eq!(story(s, sid).text, "Head\nThird draft.");
+        assert_eq!(text_rows(s)[0]["edited"], false);
+        // Undo brings the edit back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(story(s, sid).text, "Fixed in layout");
+        s.execute("edit.redo", &json!({})).unwrap();
+
+        // Saved and opened again: the link and its options are kept.
+        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(back.story(sid).unwrap().file_link, story(s, sid).file_link);
+        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
+    }
+
     #[test]
     fn linked_word_file_status_update_relink_and_unlink() {
         let dir = std::env::temp_dir().join(format!("dc-text-link-{}", std::process::id()));
@@ -1296,44 +1014,7 @@ mod text_link_tests {
         assert_eq!((rows[0]["status"].as_str(), rows[0]["edited"].as_bool()), (Some("ok"), Some(false)));
         assert_eq!(rows[0]["uses"].as_array().unwrap().len(), 2, "both threaded frames");
 
-        // The file changes (with tracked changes): Modified; Update imports it as if accepted, with
-        // the saved style map, into the same frames, without new renamed styles.
-        std::fs::write(
-            &path,
-            docx(r#"<w:r><w:t xml:space="preserve">Second </w:t></w:r><w:ins w:id="1" w:author="A"><w:r><w:t>revised </w:t></w:r></w:ins><w:del w:id="2" w:author="A"><w:r><w:delText>old </w:delText></w:r></w:del><w:r><w:t>draft.</w:t></w:r>"#),
-        )
-        .unwrap();
-        assert_eq!(text_rows(&mut s)[0]["status"], "modified");
-        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
-        assert_eq!(r["updated"], 1);
-        assert_eq!(r["warnings"], json!([]), "no edits in the layout to replace");
-        let updated = story(&s, sid);
-        assert_eq!(updated.text, "Head\nSecond revised draft.");
-        assert_eq!(styles(&updated), ["Headline", "Body_wrd_1"]);
-        assert_eq!(updated.frames, [ItemId(a), ItemId(b)], "frames and thread kept");
-        assert!(s.doc().unwrap().doc.styles.para("Body_wrd_2").is_none());
-        assert!(s.doc().unwrap().doc.styles.para("Title").is_none(), "mapped styles aren't imported");
-        assert_eq!(text_rows(&mut s)[0]["status"], "ok");
-
-        // An edit in the layout, then the file changes again: Update replaces the edit and warns.
-        s.execute("story.setText", &json!({"story": sid.0, "text": "Fixed in layout"})).unwrap();
-        assert_eq!(text_rows(&mut s)[0]["edited"], true);
-        std::fs::write(&path, docx("<w:r><w:t>Third draft.</w:t></w:r>")).unwrap();
-        let r = s.execute("links.update", &json!({})).unwrap();
-        assert_eq!(r["updated"], 1);
-        let w = r["warnings"][0].as_str().unwrap();
-        assert!(w.contains("chapter.docx") && w.contains("replaced"), "{w}");
-        assert_eq!(story(&s, sid).text, "Head\nThird draft.");
-        assert_eq!(text_rows(&mut s)[0]["edited"], false);
-        // Undo brings the edit back.
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(story(&s, sid).text, "Fixed in layout");
-        s.execute("edit.redo", &json!({})).unwrap();
-
-        // Saved and opened again: the link and its options are kept.
-        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
-        assert_eq!(back.story(sid).unwrap().file_link, story(&s, sid).file_link);
-        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
+        assert_link_update_replaces_and_warns(&mut s, &path, sid, a, b);
 
         // The file moves: Missing; Relink to it imports it into the story.
         let moved = dir.join("moved").join("chapter.docx");
@@ -1413,6 +1094,16 @@ mod text_link_tests {
         assert_eq!(status(&mut s), "ok", "a future time is remembered");
         readable(true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn placed_plain_text_drops_story_markers() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let b64 = crate::cmd::base64_encode("a\u{E009}b\u{E000}c\u{E002}d".as_bytes());
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "n.txt", "rect": [72, 72, 300, 200]})).unwrap();
+        let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(st.text, "abcd");
     }
 
     #[test]

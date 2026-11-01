@@ -347,6 +347,29 @@ fn make_document(path: &std::path::Path) {
     assert!(path.exists());
 }
 
+/// `path` without the `\\?\` or `\\?\UNC\` prefix that `canonicalize` adds on Windows, as the
+/// server shows a root (`file_access::plain`).
+fn without_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path,
+    }
+}
+
+#[test]
+fn without_verbatim_prefix_keeps_a_share_a_share() {
+    let p = |t: &str| without_verbatim_prefix(std::path::PathBuf::from(t));
+    assert_eq!(p(r"\\?\UNC\server\share\dir"), std::path::PathBuf::from(r"\\server\share\dir"));
+    assert_eq!(p(r"\\?\C:\Users\dir"), std::path::PathBuf::from(r"C:\Users\dir"));
+    assert_eq!(p("/private/var/dir"), std::path::PathBuf::from("/private/var/dir"));
+}
+
 #[test]
 fn mcp_automation_roots_confine_the_server() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-{}", std::process::id()));
@@ -401,6 +424,99 @@ fn mcp_automation_roots_confine_the_server() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// #1552: each root flag may be given more than once. A path inside any root of its kind passes;
+/// the roots' common parent, a sibling whose name starts like a root's, `..` out of a root, the
+/// other kind's roots and a link out of a root stay refused.
+#[test]
+fn mcp_automation_roots_take_several_folders() {
+    let base = std::env::temp_dir().join(format!("dc-cli-roots-several-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["in", "shared", "out", "scratch", "outside", "in2", "scratch2"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS), and without the
+    // `\\?\` prefix that `canonicalize` adds on Windows: the server shows the roots without it, and
+    // Windows does not resolve `..` in a path that has it.
+    let base = without_verbatim_prefix(std::fs::canonicalize(base).unwrap());
+    for f in ["in/a.designcraft", "shared/b.designcraft", "outside/secret.designcraft", "parent.designcraft", "in2/c.designcraft"] {
+        make_document(&base.join(f));
+    }
+    // Windows' canonical `\\?\` form is not a prefix under which `..` is a path component:
+    // traversal requests use the ordinary spelling, while the other requests keep the resolved one.
+    let plain = |path: &std::path::Path| -> String {
+        let text = path.to_string_lossy();
+        if !cfg!(windows) {
+            return text.into_owned();
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_owned(),
+            None => text.into_owned(),
+        }
+    };
+    let p = |f: &str| base.join(f).to_str().unwrap().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+    let up = |root: &str, rest: &str| format!("{}{sep}..{sep}{rest}", plain(&base.join(root)));
+    let calls = [
+        ("open_document", serde_json::json!({"path": p("in/a.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("shared/b.designcraft")})),
+        // The roots' common parent is not a root.
+        ("open_document", serde_json::json!({"path": p("parent.designcraft")})),
+        ("open_document", serde_json::json!({"path": up("shared", &format!("outside{sep}secret.designcraft"))})),
+        // `in2` only starts like `in`.
+        ("open_document", serde_json::json!({"path": p("in2/c.designcraft")})),
+        // `..` from one read root into another stays inside.
+        ("open_document", serde_json::json!({"path": up("shared", &format!("in{sep}a.designcraft"))})),
+        ("save_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch/y.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("z.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch2/z.designcraft")})),
+        // Read and write stay separate: a read root is not a write root, nor the other way round.
+        ("save_document", serde_json::json!({"path": p("shared/w.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("export_png", serde_json::json!({"path": up("scratch", &format!("outside{sep}p.png"))})),
+    ];
+    let read2 = format!("--automation-read-root={}", p("shared"));
+    let args = ["--automation-read-root", &p("in"), &read2, "--automation-write-root", &p("out"), "--automation-write-root", &p("scratch")];
+    let (success, stderr, replies) = mcp_session(&args, &calls);
+    assert!(success, "{stderr}");
+    let confined = format!(
+        "files confined: read {}, {}; write {}, {}",
+        plain(&base.join("in")),
+        plain(&base.join("shared")),
+        plain(&base.join("out")),
+        plain(&base.join("scratch"))
+    );
+    assert!(stderr.contains(&confined), "expected {confined:?} in {stderr:?}");
+    let errors: Vec<bool> = replies.iter().map(|r| r["result"]["isError"] == true).collect();
+    assert_eq!(errors, [false, false, true, true, true, false, false, false, true, true, true, true, true], "{replies:?}");
+    for (i, kind) in [(2, "read"), (3, "read"), (4, "read"), (8, "write"), (9, "write"), (10, "write"), (11, "read"), (12, "write")] {
+        assert!(text(&replies[i]).contains(&format!("outside the {kind} roots ")), "{i}: {}", text(&replies[i]));
+    }
+    assert!(base.join("out/x.designcraft").is_file() && base.join("scratch/y.designcraft").is_file());
+    for f in ["z.designcraft", "scratch2/z.designcraft", "shared/w.designcraft", "outside/p.png"] {
+        assert!(!base.join(f).exists(), "{f} was written outside the write roots");
+    }
+
+    // A link in one root that leads out of all of them is outside, for reading and for writing.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(base.join("outside/secret.designcraft"), base.join("shared/leak.designcraft")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("scratch/away")).unwrap();
+        let calls = [
+            ("open_document", serde_json::json!({"path": p("shared/leak.designcraft")})),
+            ("save_document", serde_json::json!({"path": p("scratch/away/x.designcraft")})),
+        ];
+        let (_, _, replies) = mcp_session(&args, &calls);
+        assert!(text(&replies[0]).contains("outside the read roots"), "{}", text(&replies[0]));
+        assert!(text(&replies[1]).contains("outside the write roots"), "{}", text(&replies[1]));
+        assert!(!base.join("outside/x.designcraft").exists());
+    }
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[test]
 fn mcp_automation_root_flags_are_checked_up_front() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-args-{}", std::process::id()));
@@ -419,9 +535,11 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     // The flags confine the in-process server, so they cannot be combined with --connect.
     fails(&["--connect", "7979", "--automation-read-root", dir], "--connect");
     fails(&["--automation-write-root", dir, "--connect", "7979"], "--connect");
-    fails(&["--automation-read-root", dir, "--automation-read-root", dir], "given twice");
-    fails(&["--automation-write-root", dir, "--automation-write-root", dir], "given twice");
-    fails(&["--automation-read-root", dir, "--automation-read-root=x"], "given twice");
+    // #1552: a flag may be given again, but every folder it names must exist and be given.
+    fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
+    fails(&["--automation-write-root", missing.to_str().unwrap(), "--automation-write-root", dir], "cannot open the automation write root");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
+    fails(&["--automation-read-root", dir, "--automation-read-root="], "needs a non-empty folder");
     fails(&["--automation-read-root"], "needs a folder");
     fails(&["--automation-write-root", "--sample"], "needs a folder");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");

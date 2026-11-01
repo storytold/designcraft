@@ -1,0 +1,596 @@
+//! Hyphenation. English uses the bundled dictionary and patterns below. Other languages use the
+//! Liang patterns compiled into `hypher`, one cargo feature per language: Spanish is Javier Bezos's
+//! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
+//! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
+//! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
+//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
+//! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
+//! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
+//! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
+//! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
+//! hyphenates after its apostrophe.
+//! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
+//! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
+//! names and German locale codes without a reform year or with 2006 use this set. Traditional,
+//! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
+//!
+//! English lookup order for each word:
+//! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
+//!    by Grady Ward (~160k words), stored compactly in `assets/hyphenation/en-us.dic`; simple
+//!    inflections (`'s`, `-s`, `-es`, `-ed`, `-d`) inherit the breaks of their stem;
+//! 2. **Liang patterns** ([`Patterns::en_us`]) for words not in the dictionary — our own pattern
+//!    set, trained from the same list by [`patgen`] (`examples/hyphgen.rs` regenerates both files);
+//! 3. a small syllable **heuristic** for words outside the pattern alphabet.
+//!
+//! Then the paragraph's limits ([`Limits`]) are applied.
+
+pub mod dict;
+pub mod patgen;
+pub mod patterns;
+
+use std::sync::OnceLock;
+
+pub use dict::Dictionary;
+pub use patterns::Patterns;
+
+static EN_US_DIC: &[u8] = include_bytes!("../../../assets/hyphenation/en-us.dic");
+static EN_US_PAT: &str = include_str!("../../../assets/hyphenation/en-us.pat");
+
+impl Dictionary {
+    /// The bundled US English dictionary (decoded on first use).
+    pub fn en_us() -> &'static Dictionary {
+        static D: OnceLock<Dictionary> = OnceLock::new();
+        D.get_or_init(|| {
+            if EN_US_DIC.is_empty() {
+                return Dictionary::default();
+            }
+            Dictionary::from_bytes(EN_US_DIC).unwrap_or_else(|e| {
+                log::error!("{e}");
+                Dictionary::default()
+            })
+        })
+    }
+}
+
+impl Patterns {
+    /// The bundled US English patterns (parsed on first use).
+    pub fn en_us() -> &'static Patterns {
+        static P: OnceLock<Patterns> = OnceLock::new();
+        P.get_or_init(|| Patterns::parse(EN_US_PAT))
+    }
+}
+
+/// Hyphenation limits from the paragraph's Hyphenation settings.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub min_word: usize,
+    pub after_first: usize,
+    pub before_last: usize,
+    pub capitalized: bool,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { min_word: 5, after_first: 2, before_last: 2, capitalized: true }
+    }
+}
+
+/// The hyphenator for a run of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Lang {
+    English,
+    Patterns(hypher::Lang),
+}
+
+impl Lang {
+    /// The hyphenator for a language name or locale code (see [`designcraft_doc::language_tag`]).
+    /// None when the language has no bundled hyphenation.
+    pub fn for_language(language: &str) -> Option<Lang> {
+        if language.starts_with("English") {
+            return Some(Lang::English);
+        }
+        let tag = designcraft_doc::language_tag(language)?;
+        let sub = designcraft_doc::language_subtag(tag);
+        // language_tag deliberately drops spelling variants for shaping and quotes. Hyphenation
+        // must retain that distinction: the 2006 patterns are wrong for traditional ck/st breaks.
+        if sub == "de" && !german_2006_language(language) {
+            return None;
+        }
+        if sub == "en" {
+            return Some(Lang::English);
+        }
+        let b = sub.as_bytes();
+        if b.len() != 2 {
+            return None;
+        }
+        hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
+    }
+}
+
+/// Accept explicit reform names and unqualified German locales (our modern default), but never
+/// silently substitute reform patterns for another spelling variant imported from IDML.
+fn german_2006_language(language: &str) -> bool {
+    let language = language.trim();
+    let normalized = language.strip_prefix("$ID/").unwrap_or(language).to_lowercase();
+    let words: Vec<&str> = normalized.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    matches!(words.as_slice(), ["german", "2006", "reform"] | ["german", "swiss", "2006", "reform"] | ["de"] | ["de", _] | ["de", _, "2006"])
+}
+
+/// Where a word's break points came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Dictionary,
+    Patterns,
+    Heuristic,
+    None,
+}
+
+fn is_apostrophe(c: char) -> bool {
+    matches!(c, '\'' | '’' | 'ʼ')
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphabetic() || is_apostrophe(c)
+}
+
+/// Unrestricted break points of one lowercase core (letters and `'` only, no leading/trailing `'`).
+fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
+    let n = core.len();
+    if n < 2 {
+        return (vec![], Source::None);
+    }
+    if let Lang::Patterns(l) = lang {
+        if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
+            // An elision (French "l'", Italian "dell'"): the word after the apostrophe hyphenates,
+            // with no break up to it. Elsewhere (German "Rock'n'Roll") an apostrophe word gets none.
+            if !matches!(l, hypher::Lang::French | hypher::Lang::Italian) {
+                return (vec![], Source::None);
+            }
+            let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+            return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
+        }
+        let s: String = core.iter().collect();
+        let mut out = Vec::new();
+        let mut at = 0;
+        let syl: Vec<&str> = hypher::hyphenate_bounded(&s, l, 1, 1).collect();
+        for part in &syl[..syl.len().saturating_sub(1)] {
+            at += part.chars().count();
+            out.push(at);
+        }
+        return (out, Source::Patterns);
+    }
+    let dict = Dictionary::en_us();
+    let s: String = core.iter().collect();
+    let from_mask = |m: u64, len: usize| (1..len.min(64)).filter(|&i| m & (1 << i) != 0).collect::<Vec<_>>();
+    if let Some(m) = dict.get(&s) {
+        return (from_mask(m, n), Source::Dictionary);
+    }
+    // Inflections inherit the stem's breaks (the suffix adds no break of its own).
+    for suf in ["'s", "s", "es", "ed", "d"] {
+        if let Some(stem) = s.strip_suffix(suf)
+            && stem.chars().count() >= 2
+            && let Some(m) = dict.get(stem)
+        {
+            return (from_mask(m, stem.chars().count()), Source::Dictionary);
+        }
+    }
+    let pats = Patterns::en_us();
+    if !pats.is_empty()
+        && let Some(p) = pats.points(core)
+    {
+        return (p, Source::Patterns);
+    }
+    (heuristic_points(core), Source::Heuristic)
+}
+
+/// Unrestricted break points of `word` (char indices; a hyphen goes before that char), handling
+/// case, apostrophes (`don't`, `’s`), surrounding punctuation and compounds (each letter run is
+/// hyphenated separately). No break is ever placed next to an apostrophe or non-letter.
+pub fn word_breaks(word: &str) -> (Vec<usize>, Source) {
+    word_breaks_in(word, Lang::English)
+}
+
+/// [`word_breaks`] for a language.
+pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
+    let chars: Vec<char> = word.chars().collect();
+    let mut out = Vec::new();
+    let mut src = Source::None;
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_word_char(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len() && is_word_char(chars[j]) {
+            j += 1;
+        }
+        let (mut a, mut b) = (i, j);
+        while a < b && is_apostrophe(chars[a]) {
+            a += 1;
+        }
+        while b > a && is_apostrophe(chars[b - 1]) {
+            b -= 1;
+        }
+        let core: Vec<char> = chars[a..b].iter().map(|&c| if is_apostrophe(c) { '\'' } else { c.to_lowercase().next().unwrap_or(c) }).collect();
+        let (pts, s) = core_breaks(&core, lang);
+        if src == Source::None {
+            src = s;
+        }
+        out.extend(pts.into_iter().filter(|&p| p > 0 && p < core.len() && core[p - 1] != '\'' && core[p] != '\'').map(|p| a + p));
+        i = j;
+    }
+    (out, src)
+}
+
+/// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
+/// the paragraph limits applied to each letter run.
+pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
+    hyphen_points_in(word, lim, Lang::English)
+}
+
+/// [`hyphen_points`] for a language.
+pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
+    let chars: Vec<char> = word.chars().collect();
+    let (pts, _) = word_breaks_in(word, lang);
+    if pts.is_empty() {
+        return pts;
+    }
+    let min_before = lim.after_first.max(1);
+    let min_after = lim.before_last.max(1);
+    let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
+    // Run bounds of each point's letter run (trimmed of apostrophes).
+    let run_of = |p: usize| {
+        let mut a = p;
+        while a > 0 && is_word_char(chars[a - 1]) {
+            a -= 1;
+        }
+        let mut b = p;
+        while b < chars.len() && is_word_char(chars[b]) {
+            b += 1;
+        }
+        while a < b && is_apostrophe(chars[a]) {
+            a += 1;
+        }
+        while b > a && is_apostrophe(chars[b - 1]) {
+            b -= 1;
+        }
+        // After an elision the word is the part after its last apostrophe: the limits count that.
+        if elides && let Some(ap) = chars[a..b].iter().rposition(|&c| is_apostrophe(c)) {
+            a += ap + 1;
+        }
+        (a, b)
+    };
+    pts.into_iter()
+        .filter(|&p| {
+            let (a, b) = run_of(p);
+            let run = &chars[a..b];
+            let letters = run.iter().filter(|c| c.is_alphabetic()).count();
+            if letters < lim.min_word.max(2) {
+                return false;
+            }
+            // Words in capitals (FERRUM COMMODI) hyphenate like capitalized words, as InDesign's: Hyphenate
+            // Capitalized Words off keeps both, acronyms included, whole.
+            if !lim.capitalized && run[0].is_uppercase() {
+                return false;
+            }
+            let before = chars[a..p].iter().filter(|c| c.is_alphabetic()).count();
+            let after = chars[p..b].iter().filter(|c| c.is_alphabetic()).count();
+            before >= min_before && after >= min_after
+        })
+        .collect()
+}
+
+/// `word` with `-` at every hyphenation point (tests and diagnostics).
+pub fn hyphenate_word(word: &str, lim: &Limits) -> String {
+    let pts = hyphen_points(word, lim);
+    let mut s = String::with_capacity(word.len() + pts.len());
+    for (i, ch) in word.chars().enumerate() {
+        if pts.contains(&i) {
+            s.push('-');
+        }
+        s.push(ch);
+    }
+    s
+}
+
+// ---------- heuristic fallback (words outside the pattern alphabet) ----------
+
+fn is_vowel(c: char) -> bool {
+    matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y') || (c.is_alphabetic() && !c.is_ascii())
+}
+
+fn onset_pair(a: char, b: char) -> bool {
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    matches!(
+        (a, b),
+        ('c' | 's' | 't' | 'p' | 'w' | 'g', 'h')
+            | ('b' | 'c' | 'd' | 'f' | 'g' | 'k' | 'p' | 't', 'r')
+            | ('b' | 'c' | 'f' | 'g' | 'k' | 'p' | 's', 'l')
+            | ('q', 'u')
+            | ('s', 't' | 'p' | 'c' | 'k')
+    )
+}
+
+/// Syllable heuristic: V-CV ("ty-po"), VC-CV ("hap-pen"), keeping onset clusters ("gra-phy").
+fn heuristic_points(c: &[char]) -> Vec<usize> {
+    let n = c.len();
+    if n < 4 || !c.iter().all(|c| c.is_alphabetic()) {
+        return vec![];
+    }
+    let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+    let mut out = vec![];
+    for i in 1..n {
+        let ok = if v[i - 1] && !v[i] {
+            (i + 1 < n && v[i + 1]) || (i + 2 < n && onset_pair(c[i], c[i + 1]) && v[i + 2])
+        } else if !v[i - 1] && !v[i] {
+            i >= 2 && v[i - 2] && i + 1 < n && v[i + 1] && !onset_pair(c[i - 1], c[i]) && c[i - 1] != c[i] || (c[i - 1] == c[i] && i >= 2 && v[i - 2])
+        } else {
+            false
+        };
+        // Both parts need a sounded vowel: a trailing silent `e`, `ed` or `es` doesn't count.
+        let right: String = c[i..].iter().collect();
+        let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
+        if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+            out.push(i);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h(w: &str) -> String {
+        hyphenate_word(w, &Limits::default())
+    }
+
+    #[test]
+    fn bundled_data_loads() {
+        assert!(Dictionary::en_us().len() > 150_000, "{}", Dictionary::en_us().len());
+        assert!(Patterns::en_us().len() > 1000, "{}", Patterns::en_us().len());
+    }
+
+    #[test]
+    fn dictionary_words() {
+        assert_eq!(h("happen"), "hap-pen");
+        assert_eq!(h("typography"), "ty-pog-ra-phy");
+        assert_eq!(h("composition"), "com-po-si-tion");
+        assert_eq!(h("hyphenation"), "hy-phen-a-tion");
+        assert_eq!(h("international"), "in-ter-na-tion-al");
+        assert_eq!(h("cat"), "cat");
+        assert!(!h("changed").contains('-'));
+        assert_eq!(h("NASA"), "NASA");
+        assert_eq!(word_breaks("publication").1, Source::Dictionary);
+    }
+
+    #[test]
+    fn case_apostrophes_and_punctuation() {
+        assert_eq!(h("Typography"), "Ty-pog-ra-phy");
+        assert_eq!(h("TYPOGRAPHY"), "TY-POG-RA-PHY");
+        assert_eq!(h("COMMODI"), "COM-MO-DI");
+        let whole = Limits { capitalized: false, ..Limits::default() };
+        assert_eq!(hyphenate_word("TYPOGRAPHY", &whole), "TYPOGRAPHY", "Hyphenate Capitalized Words off");
+        assert_eq!(h("typography,"), "ty-pog-ra-phy,");
+        assert_eq!(h("“typography”"), "“ty-pog-ra-phy”");
+        assert_eq!(h("typography's"), "ty-pog-ra-phy's");
+        assert_eq!(h("typography’s"), "ty-pog-ra-phy’s");
+        assert_eq!(h("'typography'"), "'ty-pog-ra-phy'");
+        // Compounds: each part separately, never next to the hyphen.
+        assert_eq!(h("typography-composition"), "ty-pog-ra-phy-com-po-si-tion");
+    }
+
+    #[test]
+    fn inflections_inherit_the_stem() {
+        assert_eq!(h("ripples"), "rip-ples");
+        assert_eq!(h("gradients"), "gra-di-ents");
+        assert_eq!(h("restrained"), "re-strained");
+    }
+
+    #[test]
+    fn patterns_cover_unknown_words() {
+        // Not in the word list: the trained patterns decide.
+        let (pts, src) = word_breaks("hyperlocalization");
+        assert_eq!(src, Source::Patterns);
+        assert!(pts.len() >= 4, "{}", h("hyperlocalization"));
+        let (_, src) = word_breaks("zzyzx");
+        assert_ne!(src, Source::Dictionary);
+    }
+
+    #[test]
+    fn limits_are_respected() {
+        let lim = Limits { min_word: 5, after_first: 3, before_last: 3, capitalized: false };
+        for w in ["typography", "hyphenation", "justification", "Paragraph", "beautiful"] {
+            for p in hyphen_points(w, &lim) {
+                assert!(p >= 3 && p <= w.chars().count() - 3, "{w} {p}");
+            }
+        }
+        assert!(hyphen_points("Paragraph", &lim).is_empty());
+        let lim = Limits { min_word: 12, ..Limits::default() };
+        assert!(hyphen_points("typography", &lim).is_empty());
+    }
+
+    /// Only French and Italian elide at an apostrophe; other languages leave such words unbroken.
+    #[test]
+    fn apostrophe_words_hyphenate_only_in_french_and_italian() {
+        let de = Lang::for_language("German: 2006 Reform").unwrap();
+        assert!(hyphen_points_in("Rock'n'Roll", &Limits::default(), de).is_empty());
+        let fr = Lang::for_language("French").unwrap();
+        assert!(!hyphen_points_in("l'information", &Limits::default(), fr).is_empty());
+    }
+
+    #[test]
+    fn german_2006_uses_reformed_patterns() {
+        let de = Lang::for_language("German: 2006 Reform").unwrap();
+        assert_eq!(de, Lang::Patterns(hypher::Lang::German));
+        for name in [
+            "$ID/German: 2006 Reform",
+            " german: 2006 reform ",
+            "de",
+            "de-DE",
+            "de_AT",
+            "de_CH",
+            "de_DE_2006",
+            "German: Swiss 2006 Reform",
+            "$ID/German: Swiss 2006 Reform",
+            "de_CH_2006",
+        ] {
+            assert_eq!(Lang::for_language(name), Some(de), "{name}");
+        }
+        for (word, expected) in [
+            ("Silbentrennung", "Sil-ben-tren-nung"),
+            ("Zucker", "Zu-cker"),
+            ("Bäcker", "Bä-cker"),
+            ("Fenster", "Fens-ter"),
+            ("Straße", "Stra-ße"),
+            ("Fußgänger", "Fuß-gän-ger"),
+            ("Donaudampfschifffahrt", "Do-nau-dampf-schiff-fahrt"),
+            ("SILBENTRENNUNG", "SIL-BEN-TREN-NUNG"),
+        ] {
+            let pts = hyphen_points_in(word, &Limits::default(), de);
+            let actual: String = word.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect();
+            assert_eq!(actual, expected, "{word}");
+        }
+    }
+
+    #[test]
+    fn non_2006_german_has_no_bundled_hyphenation() {
+        for name in [
+            "German",
+            "German: Traditional",
+            "$ID/German: Traditional",
+            "German: Swiss",
+            "German: 1901",
+            "German: 1996 Reform",
+            "German: Unknown",
+            "German: Traditional 2006 Reform",
+            "de_DE_1901",
+            "de-CH-1901",
+            "de_AT_1996",
+            "de_DE_2099",
+        ] {
+            assert_eq!(designcraft_doc::language_subtag(designcraft_doc::language_tag(name).unwrap()), "de", "{name}");
+            assert_eq!(Lang::for_language(name), None, "{name}: do not use 2006 ck/st breaks for unsupported spelling variants");
+        }
+    }
+
+    #[test]
+    fn german_2006_respects_paragraph_limits() {
+        let de = Lang::for_language("de_DE_2006").unwrap();
+        let lim = Limits { after_first: 4, before_last: 5, ..Limits::default() };
+        assert_eq!(hyphen_points_in("Silbentrennung", &lim, de), vec![6]);
+        let lim = Limits { min_word: 15, ..Limits::default() };
+        assert!(hyphen_points_in("Silbentrennung", &lim, de).is_empty());
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert!(hyphen_points_in("Silbentrennung", &lim, de).is_empty());
+        assert!(!hyphen_points_in("silbentrennung", &lim, de).is_empty());
+    }
+
+    #[test]
+    fn spanish_uses_the_bezos_patterns() {
+        let es = Lang::for_language("Spanish").unwrap();
+        assert_eq!(es, Lang::for_language("es_ES").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), es);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("transición"), "tran-si-ción");
+        assert_eq!(h("pingüino"), "pin-güino");
+        assert_eq!(h("Construcción"), "Cons-truc-ción");
+        assert_eq!(h("desesperación"), "de-ses-pe-ra-ción");
+        assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
+        assert_eq!(h("calle"), "ca-lle", "ll stays whole");
+        assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
+    }
+
+    #[test]
+    fn portuguese_uses_the_hyph_pt_patterns() {
+        let pt = Lang::for_language("Portuguese: Brazilian").unwrap();
+        assert_eq!(pt, Lang::for_language("Portuguese").unwrap());
+        assert_eq!(pt, Lang::for_language("pt_BR").unwrap());
+        assert_ne!(pt, Lang::for_language("Spanish").unwrap());
+        // hyph-pt's own minimum: three letters after the last break.
+        let lim = Limits { before_last: 3, ..Limits::default() };
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &lim, pt);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("matemática"), "ma-te-má-tica");
+        assert_eq!(h("orientação"), "ori-en-ta-ção");
+        assert_eq!(h("Universidade"), "Uni-ver-si-dade");
+        assert_eq!(h("experiência"), "ex-pe-ri-ên-cia");
+        assert_eq!(h("pós-graduação"), "pós-gra-du-a-ção", "each part of a compound");
+    }
+
+    #[test]
+    fn norwegian_uses_the_hyph_no_patterns() {
+        let nb = Lang::for_language("Norwegian: Bokmål").unwrap();
+        assert_eq!(nb, Lang::for_language("Norwegian").unwrap());
+        assert_eq!(nb, Lang::for_language("Norwegian: Nynorsk").unwrap());
+        assert_eq!(nb, Lang::for_language("nb").unwrap());
+        assert_eq!(nb, Lang::for_language("nn").unwrap());
+        assert_eq!(nb, Lang::for_language("no").unwrap());
+        assert_ne!(nb, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nb);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("kaller"), "kal-ler");
+        assert_eq!(h("bilde"), "bil-de");
+        assert_eq!(h("sjøfugl"), "sjø-fugl");
+        assert_eq!(h("sirkulasjonen"), "sir-ku-la-sjo-nen");
+        assert_eq!(h("beveger"), "be-ve-ger");
+    }
+
+    /// The paragraph limits count the letters of the word after an elision, not the elided prefix.
+    #[test]
+    fn elision_limits_apply_to_the_word_after_it() {
+        let fr = Lang::for_language("French").unwrap();
+        let lim = Limits { min_word: 5, after_first: 3, before_last: 2, capitalized: true };
+        assert_eq!(hyphen_points_in("l'imprimerie", &lim, fr), vec![7, 9]);
+        let lim = Limits { min_word: 11, ..Limits::default() };
+        assert!(hyphen_points_in("l'imprimerie", &lim, fr).is_empty());
+    }
+
+    /// A word with an elision ("l'", "dell'") hyphenates as the word after it.
+    fn marked(w: &str, l: Lang) -> String {
+        let pts = hyphen_points_in(w, &Limits::default(), l);
+        w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect()
+    }
+
+    #[test]
+    fn french_uses_the_hyph_fr_patterns() {
+        let fr = Lang::for_language("French").unwrap();
+        for name in ["fr", "fr_FR", "French: Canadian", "French: Swiss"] {
+            assert_eq!(Lang::for_language(name), Some(fr), "{name}");
+        }
+        assert_eq!(marked("hyphénation", fr), "hy-phé-na-tion");
+        assert_eq!(marked("typographie", fr), "ty-po-gra-phie");
+        assert_eq!(marked("Développement", fr), "Dé-ve-lop-pe-ment");
+        assert_eq!(marked("anticonstitutionnellement", fr), "an-ti-cons-ti-tu-tion-nel-le-ment");
+        assert_eq!(marked("paragraphe", fr), "pa-ra-graphe", "no break before a final mute syllable of two letters");
+        assert_eq!(marked("l'imprimerie", fr), "l'im-pri-me-rie", "after an elision");
+        assert_eq!(marked("l’imprimerie", fr), "l’im-pri-me-rie", "a typographer's apostrophe too");
+    }
+
+    #[test]
+    fn italian_uses_the_hyph_it_patterns() {
+        let it = Lang::for_language("Italian").unwrap();
+        for name in ["it", "it_IT"] {
+            assert_eq!(Lang::for_language(name), Some(it), "{name}");
+        }
+        assert_ne!(it, Lang::for_language("French").unwrap());
+        assert_eq!(marked("sillabazione", it), "sil-la-ba-zio-ne");
+        assert_eq!(marked("tipografia", it), "ti-po-gra-fia");
+        assert_eq!(marked("Repubblica", it), "Re-pub-bli-ca");
+        assert_eq!(marked("impaginazione", it), "im-pa-gi-na-zio-ne");
+        assert_eq!(marked("dell'impaginazione", it), "dell'im-pa-gi-na-zio-ne", "after an elision");
+    }
+
+    #[test]
+    fn heuristic_fallback() {
+        let c: Vec<char> = "happen".chars().collect();
+        assert_eq!(heuristic_points(&c), vec![3]);
+    }
+}

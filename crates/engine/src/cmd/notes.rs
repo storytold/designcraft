@@ -59,7 +59,7 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
-    s.edit(|d, sel| {
+    let r = s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
         let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -69,7 +69,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
-    })
+    })?;
+    s.typing_format = None;
+    Ok(r)
 }
 
 /// Overlay `p` onto `base` (objects merge key by key).
@@ -115,6 +117,16 @@ fn note_id(p: &Value, cmd: &str) -> Result<u64> {
     p.get("id").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "missing id"))
 }
 
+/// Moves a caret or selection in story `sid`'s own text (not a cell or note) back by the length of `range` when it lies
+/// after `range.start`, or to `range.start` when it lies inside `range`.
+pub(super) fn follow_delete(sel: &mut designcraft_doc::Selection, sid: StoryId, range: std::ops::Range<usize>) {
+    if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+        let back = |i: usize| if i > range.start { i - (i - range.start).min(range.len()) } else { i };
+        t.anchor = back(t.anchor);
+        t.focus = back(t.focus);
+    }
+}
+
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let d = &s.doc()?.doc;
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
@@ -131,11 +143,15 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.setText")?;
     let id = note_id(p, "footnote.setText")?;
     let text = super::text_param(p, "text");
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let n = st.note_mut(id).ok_or_else(|| bad("footnote.setText", format!("no footnote {id}")))?;
         let len = n.text.len();
         n.text.replace(0..len, &text);
+        // A caret in the replaced text goes to its end.
+        if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
+            (t.anchor, t.focus) = (n.text.len(), n.text.len());
+        }
         Ok(Value::Null)
     })
 }
@@ -143,15 +159,21 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.delete")?;
     let id = note_id(p, "footnote.delete")?;
-    s.edit(|d, sel| {
+    let moved = s.edit(|d, sel| {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
+        follow_delete(sel, sid, at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
         st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
-        if sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
+        let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
+        if moved {
             sel.text = Some(TextSel::caret(sid, at));
         }
-        Ok(Value::Null)
-    })
+        Ok(moved)
+    })?;
+    if moved {
+        s.typing_format = None;
+    }
+    Ok(Value::Null)
 }
 
 fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
@@ -162,6 +184,7 @@ fn go_to_reference(s: &mut Session, _: &Value) -> Result<Value> {
     let pos = at + designcraft_doc::FOOTNOTE_REF.len_utf8();
     st.selection.text = Some(TextSel { anchor: pos, focus: pos, cell: None, ..t });
     st.bump_revision();
+    s.typing_format = None;
     Ok(json!({"story": t.story.0, "pos": pos}))
 }
 
@@ -214,11 +237,83 @@ mod tests {
     }
 
     #[test]
+    fn footnote_caret_moves_drop_the_pending_typing_format() {
+        let (mut s, sid) = session_with_text();
+        let pending = |s: &mut Session| {
+            s.execute("type.char", &json!({"attrs": {"size": 30}})).unwrap();
+            assert!(s.typing_format.is_some());
+        };
+        // Formatting chosen in footnote text, then away to the reference and back to the same caret (a new
+        // footnote takes the deleted one's id): typing there is in the footnote text's own format.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
+        let id = s.execute("footnote.insert", &json!({"text": "A source."})).unwrap()["id"].as_u64().unwrap();
+        pending(&mut s);
+        s.execute("footnote.goToReference", &json!({})).unwrap();
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+        let again = s.execute("footnote.insert", &json!({"text": "A source."})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(again, id);
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.char_format_at(10).over.size, None);
+        // Each command that moves the caret drops it.
+        pending(&mut s);
+        s.execute("footnote.goToReference", &json!({})).unwrap();
+        assert!(s.typing_format.is_none(), "footnote.goToReference");
+        pending(&mut s);
+        let id = s.execute("footnote.insert", &json!({"text": "y"})).unwrap()["id"].as_u64().unwrap();
+        assert!(s.typing_format.is_none(), "footnote.insert");
+        pending(&mut s);
+        s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+        assert!(s.typing_format.is_none(), "footnote.delete");
+    }
+
+    #[test]
     fn not_in_cells() {
         let (mut s, sid) = session_with_text();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
         s.execute("footnote.insert", &json!({"text": "x"})).unwrap();
         // Caret is now in footnote text: no nested footnotes.
         assert!(s.execute("footnote.insert", &json!({})).is_err());
+    }
+
+    #[test]
+    fn huge_start_at_does_not_overflow() {
+        let (mut s, sid) = session_with_text();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "x"})).unwrap();
+        s.execute("footnote.options", &json!({"startAt": 4294967295u32})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let cs = s.cache.get(&d, sid, None);
+        assert_eq!(cs.frames[0].notes.len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_footnote_keeps_the_caret_on_its_character() {
+        let n = designcraft_doc::FOOTNOTE_REF.len_utf8();
+        // (anchor, focus) in the story text before the delete, then after it.
+        for (before, after) in [((17 + n, 21 + n), (17, 21)), ((5, 21 + n), (5, 21)), ((5, 5), (5, 5)), ((16 + n, 16 + n), (16, 16))] {
+            let (mut s, sid) = session_with_text();
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
+            let id = s.execute("footnote.insert", &json!({"text": "x"})).unwrap()["id"].as_u64().unwrap();
+            s.execute("text.select", &json!({"story": sid.0, "anchor": before.0, "focus": before.1})).unwrap();
+            s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
+            let t = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((t.anchor, t.focus), after, "selected {before:?}");
+        }
+    }
+
+    #[test]
+    fn replacing_footnote_text_puts_its_caret_at_the_end() {
+        let (mut s, sid) = session_with_text();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 16, "focus": 16})).unwrap();
+        let id = s.execute("footnote.insert", &json!({"text": "abcd"})).unwrap()["id"].as_u64().unwrap();
+        // The caret between "c" and "d" is inside the second "é" of the new text.
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(t.cell, Some(CellAddr::footnote(id)));
+        s.doc_mut().unwrap().selection.text = Some(TextSel { anchor: 3, focus: 3, ..t });
+        s.execute("footnote.setText", &json!({"story": sid.0, "id": id, "text": "éé"})).unwrap();
+        let t = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!((t.anchor, t.focus), (4, 4));
+        s.execute("text.delete", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "é");
     }
 }

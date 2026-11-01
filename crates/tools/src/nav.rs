@@ -133,7 +133,8 @@ impl Tool for PlaceGun {
                 let Some(a) = self.start.take() else { return vec![] };
                 let Some((sr, sa)) = cx.layout.spread_at(a) else { return vec![] };
                 let b = cx.layout.to_spread(sr, ev.pos);
-                if (ev.pos - a).hypot() < cx.tol(3.0)
+                let click = (ev.pos - a).hypot() < cx.tol(3.0);
+                if click
                     && let Some((_, id)) = cx.hit(a)
                     && cx
                         .doc
@@ -142,7 +143,12 @@ impl Tool for PlaceGun {
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
-                let r = designcraft_geom::Rect::from_points(sa, b);
+                // Under the drag threshold it's a click, as the overlay shows: actual size there.
+                if click {
+                    return vec![Action::Exec("place.drop".into(), json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y}))];
+                }
+                // The frame the drag drew: at the graphic's proportions from where it started.
+                let r = cx.loaded.map_or_else(|| designcraft_geom::Rect::from_points(sa, b), |size| proportional(sa, b, size).0);
                 vec![Action::Exec(
                     "place.drop".into(),
                     json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y, "rect": [r.x0, r.y0, r.x1, r.y1]}),
@@ -151,11 +157,29 @@ impl Tool for PlaceGun {
             _ => vec![],
         }
     }
-    fn overlays(&self, _cx: &ToolContext) -> Vec<crate::Overlay> {
-        match self.start {
-            Some(a) => vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))],
-            None => vec![],
+    fn overlays(&self, cx: &ToolContext) -> Vec<crate::Overlay> {
+        let Some(a) = self.start else { return vec![] };
+        let Some(size) = cx.loaded else {
+            return vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))];
+        };
+        // Under the drag threshold the release is a click (actual size where it was pressed):
+        // no frame is drawn yet, the loaded cursor shows what lands.
+        if (self.cur - a).hypot() < cx.tol(3.0) {
+            return vec![];
         }
+        // As InDesign: the frame the graphic will fill, and its scale beside the pointer.
+        let (r, k) = drawn_frame(a, self.cur, size);
+        let pct = format!("{:.2}%", k * 100.0);
+        vec![
+            crate::Overlay::Marquee(r),
+            crate::Overlay::Measure {
+                p: self.cur,
+                text: format!(
+                    "X: {pct}
+Y: {pct}"
+                ),
+            },
+        ]
     }
     fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
         match key {
@@ -164,9 +188,41 @@ impl Tool for PlaceGun {
             _ => vec![],
         }
     }
-    fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
-        Cursor::LoadedGraphic
+    fn cursor(&self, cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
+        // Drawing the frame: the crosshair (the loaded graphic's thumbnail would hide the frame).
+        // Under the drag threshold no frame is drawn yet (the release is a click), so the
+        // thumbnail stays, as the overlay does. With no graphic loaded there's no thumbnail to
+        // show: the crosshair throughout.
+        let drawing = cx.loaded.is_none() || self.start.is_some_and(|a| (self.cur - a).hypot() >= cx.tol(3.0));
+        if drawing { Cursor::Crosshair } else { Cursor::LoadedGraphic }
     }
+}
+
+/// A dragged frame `place.drop` takes only when it is wider and taller than this, in points;
+/// a thinner one places the graphic at its natural size instead.
+pub const PLACE_DRAG_MIN: f64 = 2.0;
+
+/// The frame `place.drop` makes for a place-cursor drag from `a` to `b`: the proportional frame
+/// (see [`proportional`]), or the graphic at natural size from `a` when that frame is at most
+/// [`PLACE_DRAG_MIN`] in either direction. With its scale.
+fn drawn_frame(a: Point, b: Point, size: (f64, f64)) -> (designcraft_geom::Rect, f64) {
+    let (r, k) = proportional(a, b, size);
+    if r.width() > PLACE_DRAG_MIN && r.height() > PLACE_DRAG_MIN {
+        (r, k)
+    } else {
+        (designcraft_geom::Rect::new(a.x, a.y, a.x + size.0, a.y + size.1), 1.0)
+    }
+}
+
+/// The frame a place-cursor drag from `a` to `b` draws for a graphic of natural `size`: the
+/// graphic's proportions, from `a` towards `b`, as large as fits the drag. With its scale.
+fn proportional(a: Point, b: Point, size: (f64, f64)) -> (designcraft_geom::Rect, f64) {
+    let (w, h) = (size.0.max(1e-6), size.1.max(1e-6));
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let k = (dx.abs() / w).min(dy.abs() / h);
+    let k = if k.is_finite() { k } else { 0.0 };
+    let c = Point::new(a.x + (w * k).copysign(dx), a.y + (h * k).copysign(dy));
+    (designcraft_geom::Rect::from_points(a, c), k)
 }
 
 /// Page tool (Shift+P): click a page to select it; drag one of its handles to preview its liquid

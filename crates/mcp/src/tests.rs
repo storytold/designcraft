@@ -77,6 +77,28 @@ fn framing_basics() {
 }
 
 #[test]
+fn serve_survives_invalid_utf8_line() {
+    let mut s = server();
+    let mut input = Vec::new();
+    input.extend_from_slice(json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string().as_bytes());
+    input.extend_from_slice(b"\n\xff\xfe not utf-8\n");
+    input.extend_from_slice(json!({"jsonrpc":"2.0","id":2,"method":"ping"}).to_string().as_bytes());
+    input.extend_from_slice(b"\n\r\n");
+    input.extend_from_slice(json!({"jsonrpc":"2.0","id":3,"method":"ping"}).to_string().as_bytes());
+    input.extend_from_slice(b"\r\n");
+    let mut out = Vec::new();
+    let res = s.serve(input.as_slice(), &mut out);
+    assert!(res.is_ok(), "serve stopped: {res:?}");
+    let lines: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(lines[0]["id"], 1);
+    assert_eq!(lines[1]["error"]["code"], -32700);
+    assert!(lines[1]["id"].is_null());
+    assert_eq!(lines[2]["id"], 2);
+    assert_eq!(lines[3]["id"], 3);
+}
+
+#[test]
 fn protocol_round_trip_over_serve() {
     let mut s = server();
     let input = [

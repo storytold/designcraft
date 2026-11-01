@@ -54,6 +54,17 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
 is a PNG of the page; another extension is an error, and nothing runs.
 
+## Table of contents bookmarks
+
+`toc.generate` accepts `createBookmarks: true` to generate page-level PDF bookmarks from the
+included paragraph styles and their levels. `toc.update` refreshes their titles, hierarchy and
+destinations. Refresh keeps the generated outline at its previous position, preserving manual
+bookmarks before and after it; disabling the option removes only the generated
+bookmarks. Without `createBookmarks`, `toc.generate` keeps the document's existing TOC setting,
+which is off when there is no TOC yet, so a script that makes a new TOC gets no bookmarks unless
+it passes `createBookmarks: true`. The Table of Contents dialog differs: its Create PDF Bookmarks
+option is on by default for a new TOC, and for an existing one it shows the saved setting.
+
 ## Color themes
 
 `color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).
@@ -62,6 +73,16 @@ Extraction samples the whole source image on a bounded grid, weights partial tra
 The image must contain at most 16 million pixels. PDF/SVG graphics are unsupported. This is local median-cut extraction,
 not Adobe's palette algorithm. In the UI, click an image with the Color Theme Tool (Shift+I), or choose Color Theme…
 in the Swatches panel menu with one image selected. Cancel keeps the document unchanged.
+
+## PDF/X-4 validation
+
+`designcraft-cli validate-pdf FILE.pdf` prints JSON with `valid` and `issues`, and exits non-zero
+when a built-in check fails. Checks cover PDF version, output intent and profile, Info and XMP
+identification, image interpolation, encryption, trim boxes, Type 3 fonts, device RGB under a CMYK
+output intent, and unembedded fonts drawing visible text (including placed PDF forms). Render
+mode 3 (invisible OCR text) is exempt from the font-embedding check. PDF/X-4 export reports these
+issues as warnings; it does not embed or outline placed fonts. These checks are not a complete
+external PDF/X certification.
 
 ## Data merge
 

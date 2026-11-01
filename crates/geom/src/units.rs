@@ -127,7 +127,10 @@ impl Unit {
         // Choose a major spacing (base × 1, 2, 5, 10…) at least ~60 px apart, or base / 2^n when zoomed in.
         let mut major = base;
         while major * zoom < 50.0 {
-            major *= if (major / base).log10().fract().abs() < 1e-9 { 2.0 } else { 2.5 };
+            let ratio = major / base;
+            let mantissa = ratio / 10f64.powf(ratio.log10().floor());
+            // 1 -> 2 -> 5 -> 10: double at mantissa 1 or 5, ×2.5 at mantissa 2.
+            major *= if (mantissa - 2.0).abs() < 1e-6 { 2.5 } else { 2.0 };
         }
         while major * zoom > 160.0 && major > base / 64.0 {
             major /= 2.0;
@@ -255,12 +258,13 @@ fn parse_single(tok: &str, default: Unit, percent_base: Option<f64>) -> Option<f
     Some(unit.to_pt(n))
 }
 
-/// Format a value (points) in `unit` the way InDesign fields show it: up to 3 decimals, trailing
-/// zeros trimmed; picas as `3p6`, ciceros as `2c4`.
+/// Format a value (points) in `unit` the way InDesign fields show it: up to 4 decimals for inches,
+/// decimal inches and centimetres, up to 3 for the other units, trailing zeros trimmed; picas as
+/// `3p6`, ciceros as `2c4`.
 pub fn format_measure(pt: f64, unit: Unit) -> String {
-    // As InDesign shows them: inches to four decimals (a 1p gutter is 0.1667 in, A4 is
-    // 8.2677 in wide), the other units to three.
-    let decimals = if matches!(unit, Unit::Inches | Unit::InchesDecimal) { 4 } else { 3 };
+    // As InDesign shows them: inches and centimetres to four decimals (a 1p gutter is 0.1667 in
+    // or 0.4233 cm, A4 is 8.2677 in wide), the other units to three.
+    let decimals = if matches!(unit, Unit::Inches | Unit::InchesDecimal | Unit::Centimeters) { 4 } else { 3 };
     format_measure_prec(pt, unit, decimals)
 }
 
@@ -286,6 +290,8 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
                 whole += 1.0;
                 rest = 0.0;
             }
+            // Decide the sign from the rounded value so float noise doesn't print "-0p0".
+            let neg = neg && (whole > 0.0 || rest > 0.0);
             let sep = if unit == Unit::Picas { 'p' } else { 'c' };
             format!("{}{}{}{}", if neg { "-" } else { "" }, whole as i64, sep, trim(rest))
         }
@@ -297,6 +303,12 @@ pub fn format_measure_prec(pt: f64, unit: Unit, decimals: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ruler_major_spacing_steps_1_2_5_10() {
+        assert!(close(Unit::Points.ruler_ticks(0.1).0, 720.0));
+        assert!(close(Unit::Points.ruler_ticks(0.01).0, 7200.0));
+    }
+
     fn p(s: &str) -> f64 {
         parse_measure(s, Unit::Points).unwrap()
     }
@@ -304,14 +316,26 @@ mod tests {
         (a - b).abs() < 1e-6
     }
 
-    /// Inches show four decimals, as InDesign's fields do; other units three.
+    /// Tiny negatives that round to zero must not print a sign.
     #[test]
-    fn inches_show_four_decimals() {
+    fn tiny_negative_picas_ciceros_have_no_sign() {
+        assert_eq!(format_measure(-0.0004, Unit::Picas), "0p0");
+        assert_eq!(format_measure(-0.0004, Unit::Ciceros), "0c0");
+        assert_eq!(format_measure(-12.0, Unit::Picas), "-1p0");
+    }
+
+    /// Inches and centimetres show four decimals, as InDesign's fields do; other units three.
+    #[test]
+    fn inches_and_centimeters_show_four_decimals() {
         assert_eq!(format_measure(12.0, Unit::Inches), "0.1667 in");
         assert_eq!(format_measure(210.0 * PT_PER_MM, Unit::Inches), "8.2677 in");
         assert_eq!(format_measure(612.0, Unit::Inches), "8.5 in");
         assert_eq!(format_measure(9.0, Unit::Inches), "0.125 in");
         assert_eq!(format_measure(10.0, Unit::Millimeters), "3.528 mm");
+        // A 1p gutter and a frame's height, as InDesign's New Document and Transform fields show them.
+        assert_eq!(format_measure(12.0, Unit::Centimeters), "0.4233 cm");
+        assert_eq!(format_measure(17.1125 / 2.54 * 72.0, Unit::Centimeters), "17.1125 cm");
+        assert_eq!(format_measure(21.0 / 2.54 * 72.0, Unit::Centimeters), "21 cm");
         assert_eq!(format_measure(10.0, Unit::Points), "10 pt");
     }
 

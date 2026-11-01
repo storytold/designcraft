@@ -35,7 +35,8 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | Run any engine or UI command (see `engine.commands`). `ui.menu.invoke` without `params` acts like choosing the menu item: a command labelled "…" that takes parameters opens its dialog. A key the command's params description doesn't name is an error (`unknown parameter …`), not ignored |
 | `engine.commands` | — | Every command: id, label, menu path, shortcut, params doc, enabled |
 | `document.inspect` | — | Pages, spreads, items, stories (overset), styles, swatches, selection |
-| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, perf |
+| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, panel layout (`docking`), perf, Separations Preview (`separations`: plate, ink limit, each separated spread's plates) |
+| `ui.docking` | — | The panel layout in use, the focused panel and the docking hit rects (see Shared panel docking) |
 | `ui.menu.list` / `ui.tool.list` | — | Menu tree / Tools panel groups |
 | `ui.tool.select` | `{tool}` | Select a tool (`selection`, `type`, `rectangleFrame`, …) |
 | `ui.pointer` | `{events:[{kind: down\|drag\|up\|move\|doubleclick, x, y, space?: "screen"\|"canvas", clicks?}], mods?}` | Drive the active tool through the same code path as the mouse; `clicks` on a `down` is the press count (3 = triple click); returns the selection, the tool and its cursor at the last event (e.g. `LoadedText`, `ThreadLink`, `Unthread`) |
@@ -74,36 +75,128 @@ to finish before retrying a request that would exceed the pending-event limit.
 ## Shared panel docking
 
 Panel arrangements support tab grouping and reordering, horizontal and vertical splits,
-and movable, resizable floating groups inside the application window. Drag a panel tab,
-or use its context menu. Floating groups remain within the application viewport.
+and movable, resizable floating windows. A floating window holds tab groups split side by side
+or one above another, like the dock area. Drag a panel tab, or use its context menu. On the
+desktop each floating window is a window of its own; on the web floating windows stay within
+the application viewport.
 
-The shared layout begins with the existing workspace on the first docking operation.
-Workspace saves retain its groups, active tabs, split sizes, floating geometry, and the
-positions of hidden panels. Resetting a built-in workspace restores its default dock.
+The window is one panel layout: the protected `canvas` panel (the document area) beside a
+dock at the logical end edge, the right in left-to-right languages and the left in
+right-to-left ones. Each built-in workspace has a default layout. Essentials and most others
+have an outer column with the Properties · Pages · Layers group and an iconic column with the
+other panels; Essentials Classic and Typography have their named iconic groups only. A panel a
+workspace opens (Printing and Proofing: Swatches) is a group below Properties · Pages · Layers.
+The `canvas` panel never moves, floats, closes or takes tabs; a panel or tab group dropped
+over it floats there. Workspace saves retain its groups, active tabs, split sizes, floating
+geometry, and the positions of hidden panels. Resetting a built-in workspace restores its
+default dock. Preferences saved before the canvas joined the layout load with nothing lost:
+the classic dock becomes the workspace's default layout, and a customized dock-only layout
+becomes the dock's expanded columns (iconic if the dock was collapsed), with the remaining
+panels (or the workspace's named groups) in the iconic column and its floating windows and
+hidden-panel positions kept. A `ui.json` the app cannot read in full is copied to
+`ui.unreadable.json` before it is saved again.
 
-- `window.panel.move {panel, anchor, zone?, before?}` moves a panel into the target group.
-  `zone` is `tab` (default), `center`, `left`, `right`, `top`, or `bottom`; `before` reorders
-  tabs by panel ID. The destination must already be visible.
-- `window.panel.float {panel, x?, y?, width?, height?}` detaches a panel.
-- `window.panel.dock {panel, anchor?, zone?, before?}` returns a panel to its previous
-  dock placement when possible, or to the supplied destination.
-- `window.panel.activate {panel}` reveals and selects a panel, restoring its saved
-  position when possible. `window.panel.close {panel}` hides it.
+The `window.panel.*`, `window.workspace.*` and `ui.dock` commands are craft-ui's shared
+docking commands (`DockCommand`), with the same ids and params in every craft app. `panel`,
+`anchor`, `target` and `before` take a panel ID or its English name in any case; `onto` is
+read as `anchor`.
+
+- `window.panel.move {panel, anchor, zone?, before?, group?, placement?}` moves a panel into
+  the target group. `zone` is `tab` (default), `center`, `left`, `right`, `top`, `bottom`,
+  `above` or `below`; `before` reorders tabs by panel ID (`null` appends). Beside a panel in a
+  dock column, `top` and `bottom` add a group above or below its group and `left` and `right`
+  add a column on that side; in a floating window, `top` and `bottom` add a group and `left`
+  and `right` are errors (craft-ui's `Placement::for_zone`). `group: true` moves the panel's
+  whole tab group; `placement` is a serialized craft-ui `Placement` and takes precedence over
+  `zone` and `before`.
+- `window.panel.float {panel, x?, y?, width?, height?, group?, column?}` (and
+  `window.floatPanel`) detaches a panel, its tab group (`group`) or its dock column
+  (`column`). Without a position it floats 24 points inside the dock area's top-left corner,
+  clear of the menu bar; a panel floats at its own size and a tab group or column at the size
+  a drag would float it at. Given values replace these. A panel already alone in a floating
+  window moves or resizes, and a tab group that is already a whole floating window keeps its
+  rect unless the params change it.
+- `window.panel.dock {panel, anchor?, zone?, before?, group?, column?, side?}` (and
+  `window.dockPanel`) docks beside `anchor`, or in a new column of the dock at `side`
+  (`Start` or `End`; a new dock when there is none). A panel that already leads that dock's
+  last column stays where it is. `zone` places the panel beside `anchor`, so a `zone` without
+  `anchor` or `side` is an error. Without `anchor` and `side`, a panel that floated from
+  the dock goes back to that place, and another floating panel joins the first dock group. For
+  the float-only Tabs panel (`tabs`), which has its own window outside the layout, float opens
+  that window and dock closes it.
+- `window.panel.activate {panel}` (and `window.panel {panel}`) reveals and selects a panel,
+  restoring its saved position when possible; a panel in an iconic column opens as a flyout
+  beside its icon. `window.panel.close {panel}` hides it.
+- `window.panel.closeGroup {panel}` hides the panel and the panels tabbed with it, and
+  `window.panel.closeOthers {panel}` hides the panels tabbed with it; the result lists them in
+  `closed`.
+- `window.panel.minimize {panel, minimized?}` minimizes the panel's group to its tab strip and
+  `window.panel.iconic {panel, iconic?}` collapses its dock column to icons; without the flag
+  they toggle.
+- `window.workspace.new {name}`, `window.workspace.delete {name}` and `window.workspace.reset`
+  (also `ui.dock.reset`) are `window.newWorkspace`, `window.deleteWorkspace` and
+  `window.resetWorkspace`. `window.workspace {name}` switches workspaces as before.
+- `ui.dock {action}` or `ui.dock {operation, …}` is the shape LightCraft, PDFCraft, CADCraft
+  and SoundCraft use: `open`, `close`, `activate`, `float {rect}`, `moveFloating {rect}`,
+  `move {target, zone?, before?}`, `setStackOpen {open}`, `resizeStack {height}` and
+  `resizeSplit {path, size}`, with `rect` as `[x, y, width, height]`.
+- `window.panel.window` (a panel into or out of its own window) and `window.workspace.lock` are
+  not available in DesignCraft and return an error.
+- `window.collapseToIcons` collapses every dock column to icons.
 
 Panel IDs are stable across themes. Invalid IDs, non-finite or invalid geometry, and
 invalid destinations return an error without changing the arrangement.
 
 `window.panel.layout {action}` also accepts the shared, externally tagged action schema.
 For example, `{"action":{"MoveFloating":{"panel":"properties","rect":[44,66,360,450]}}}`
-updates a floating group's position and size; `{"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.35}}}}`
-resizes the root divider (`false`/`true` path entries select first/second children).
+updates a floating window's position and size; `{"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.35}}}}`
+resizes the root divider (`false`/`true` path entries select first/second children), and
+`{"action":{"ResizeWindowSplit":{"panel":"swatches","path":[],"size":{"Ratio":0.6}}}}` resizes
+a divider in the floating window that holds `panel`, by its path from the window's root.
+Floating windows saved as a stack of groups (`{"groups": […], "rect": […]}`) load as groups
+one above another, sized by their saved heights.
 `Move` with `placement: {"Tab":{"before":"swatches"}}` reorders tabs, and
 `SetStackOpen {panel,open}` / `ResizeStack {panel,height}` control accordion entries.
 The UI dispatches these same commands. Unknown panel IDs, invalid geometry, and stale
 split paths return an error without changing the workspace.
 
-After panel customization, `app.tablePanel` (including Shift+F9) still toggles the
-Table panel. `ui.set` with `closePanel` closes the last explicitly opened panel;
-`dockExpanded:false` hides the root dock while floating groups remain visible.
-The icon rail can reopen a collapsed dock through any root panel. Activating a
-floating panel also raises its group. These operations change only UI layout.
+`app.tablePanel` (including Shift+F9) toggles the Table panel. `ui.set` with `closePanel`
+closes the last explicitly opened panel; `dockExpanded:false` collapses every dock column
+to icons and `dockExpanded:true` expands the outer column. Activating a floating panel also
+raises its group. These operations change only UI layout.
+
+Clicking an icon in an iconic column opens its group as a flyout beside the column, on the
+canvas side; clicking the icon again, or another icon, closes it. With Auto-Collapse Iconic
+Panels on (off by default; a column bar's menu toggles it), Escape or a click outside the flyout
+closes it too.
+
+`ui.docking` returns the panel layout in use; `ui.inspect` includes the same object as
+`docking`:
+
+```json
+{"layout": {"root": {"Split": {"axis": "Horizontal", "size": {"FixedSecond": 297.0},
+   "first": {"Tabs": {"panels": ["canvas"], "active": 0}},
+   "second": {"Dock": {"side": "End", "columns": [
+     {"groups": [{"panels": ["properties", "pages", "layers"], "active": 0}], "width": 260.0,
+      "iconic": false, "iconic_width": 37.0},
+     {"groups": [{"panels": ["stroke"], "active": 0}, …], "width": 260.0, "iconic": true,
+      "iconic_width": 37.0}]}}}},
+  "floating": []},
+ "customized": false, "focused": "canvas", "flyout": null, "autoCollapse": false,
+ "rightToLeft": false, "hidden": [],
+ "hitRects": [{"hit": {"Tab": "properties"}, "rect": [983.0, 0.0, 74.0, 27.0]},
+              {"hit": {"DragBar": "properties"}, "rect": [1190.0, 0.0, 56.0, 27.0]},
+              {"hit": {"Icon": "stroke"}, "rect": [1243.0, 14.0, 37.0, 30.0]}, …]}
+```
+
+`layout` is craft-ui's serialized `Layout`; `customized` is false while the workspace's
+default layout is in use; `focused` is the panel (or `canvas`) last clicked or selected, or
+null; `flyout` is the panel whose iconic-column flyout is open (as drawn in the last frame,
+or as a command that opens one sets it); `autoCollapse` is the
+Auto-Collapse Iconic Panels setting; `hidden` lists closed panels that remember their place.
+`hitRects` lists where each docking gesture starts in the last frame, from craft-ui's
+`DockArea::hit_rects`: `hit` is a serialized craft-ui `Hit` (`Tab`, `DragBar`, `Border`,
+`Overflow`, `ColumnBar`, `Collapse`, `StackToggle`, `Title`, `Close`, `Icon`, `IconGrip`,
+`Resize` with its edge, or `Divider`), naming groups, columns and windows by their first panel;
+`rect` is `[x, y, width, height]` in points. Drag from a rect's centre with `ui.drag`, or click
+it with `ui.click`, to script a gesture.

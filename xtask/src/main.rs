@@ -23,8 +23,9 @@ commands:
   pdf-deps        verify the pinned PDF backend, including Krilla dependencies
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates (one call)
   test            workspace tests (cargo nextest when installed, else cargo test), then doctests
-  ci              fmt --check, pdf-deps, clippy -D warnings, test, doctest, assets, layers, wasm
-                  (stops at first failure)
+  i18n-report     list the interface strings each language shows in English (always passes)
+  ci              fmt --check, pdf-deps, clippy -D warnings, test, i18n-report, doctest, assets,
+                  layers, wasm (stops at first failure)
   corpus [--download]
                   show where test corpora live; --download fetches PngSuite into corpus/pngsuite
   stats [--exact] count tests and lines per crate (--exact: ask the test harness via `-- --list`)
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
         Some("pdf-deps") => pdf_deps::run(&root()),
         Some("wasm") => cmd_wasm(),
         Some("test") => cmd_test().and_then(|()| cmd_doctest()),
+        Some("i18n-report") => cmd_i18n_report(),
         Some("ci") => cmd_ci(),
         Some("corpus") => cmd_corpus(rest.contains(&"--download")),
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
@@ -177,6 +179,21 @@ fn cmd_test() -> Result<(), String> {
     run(c, &format!("cargo {tool} {}", TEST_TARGETS.join(" ")))
 }
 
+/// Runs the ignored `missing_translations_report` test with its output shown. It takes the test
+/// step's targets, so it reuses that build.
+fn cmd_i18n_report() -> Result<(), String> {
+    const REPORT: &str = "i18n::tests::missing_translations_report";
+    let mut c = cargo();
+    if nextest_available() {
+        c.args(["nextest", "run", "--cargo-quiet"]).args(TEST_TARGETS);
+        c.args(["--run-ignored", "only", "--no-capture", "--status-level", "fail", "--final-status-level", "fail", "-E"]);
+        c.arg(format!("package(designcraft-ui-egui) & test(={REPORT})"));
+    } else {
+        c.args(["test", "-q"]).args(TEST_TARGETS).args(["--", "--ignored", "--exact", REPORT, "--nocapture"]);
+    }
+    run(c, &format!("missing translations ({REPORT})"))
+}
+
 /// nextest does not run doctests.
 fn cmd_doctest() -> Result<(), String> {
     let mut c = cargo();
@@ -205,6 +222,7 @@ fn cmd_ci() -> Result<(), String> {
             }),
         ),
         ("test", Box::new(cmd_test)),
+        ("i18n-report", Box::new(cmd_i18n_report)),
         ("doctest", Box::new(cmd_doctest)),
         ("assets", Box::new(|| assets::run(&root()))),
         ("layers", Box::new(cmd_layers)),

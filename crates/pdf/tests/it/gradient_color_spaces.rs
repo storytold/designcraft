@@ -14,7 +14,7 @@ fn document(colors: &[Color], kind: GradientKind, midpoint: f32, opacity: f32) -
     let stops = colors
         .iter()
         .enumerate()
-        .map(|(i, &color)| GradientStop { offset: i as f32 / (colors.len() - 1) as f32, color, opacity, midpoint })
+        .map(|(i, &color)| GradientStop { offset: i as f32 / (colors.len() - 1) as f32, color, opacity, midpoint, swatch: None })
         .collect();
     doc.swatches.push(Swatch {
         name: "Mixed inks".into(),

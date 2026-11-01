@@ -4,7 +4,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const REV: &str = "89dcbb3060377a26c99a6d80caa16084366704c4";
+const REPO: &str = "https://github.com/storytold/craft-libs";
+const REV: &str = "92d392cff132eaf53e13afff77f38b5c11b73aa0";
 const PACKAGES: &[(&str, &str)] = &[
     ("craft-pdf", "0.1.0"),
     ("krilla", "0.8.2"),
@@ -12,6 +13,8 @@ const PACKAGES: &[(&str, &str)] = &[
     ("hayro-interpret", "0.7.0"),
     ("hayro-syntax", "0.7.2"),
     ("hayro-jbig2", "0.3.0"),
+    ("hayro-cmap", "0.1.0"),
+    ("hayro-postscript", "0.1.0"),
 ];
 
 pub fn run(root: &Path) -> Result<(), String> {
@@ -31,7 +34,7 @@ pub fn run(root: &Path) -> Result<(), String> {
 
 fn validate(metadata: &Value) -> Result<(), String> {
     let packages = metadata.get("packages").and_then(Value::as_array).ok_or("cargo metadata has no packages")?;
-    let source = format!("git+https://github.com/storytold/craft-libs?rev={REV}#{REV}");
+    let source = format!("git+{REPO}?rev={REV}#{REV}");
     for (name, version) in PACKAGES {
         let matching: Vec<_> = packages.iter().filter(|p| p.get("name").and_then(Value::as_str) == Some(name)).collect();
         let [package] = matching.as_slice() else {
@@ -60,7 +63,7 @@ mod tests {
 
     fn metadata() -> Value {
         json!({"packages": PACKAGES.iter().map(|(name, version)| json!({"id":name,"name":name,"version":version,
-            "source":format!("git+https://github.com/storytold/craft-libs?rev={REV}#{REV}")})).collect::<Vec<_>>(), "resolve": {"nodes": [{"id": "craft-pdf", "features": ["read", "interpret", "raster", "write", "write-pdf"]}]}})
+            "source":format!("git+{REPO}?rev={REV}#{REV}")})).collect::<Vec<_>>(), "resolve": {"nodes": [{"id": "craft-pdf", "features": ["read", "interpret", "raster", "write", "write-pdf"]}]}})
     }
 
     #[test]

@@ -46,12 +46,12 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
         if para && n == designcraft_doc::NO_PARA_STYLE {
             continue;
         }
-        style_row(app, ui, para, n, current.as_deref(), overrides > 0, &groups, &t);
+        style_row(app, ui, para, n, (current.as_deref(), overrides > 0), &groups, &t);
     }
     for g in &groups {
         egui::CollapsingHeader::new(g.as_str()).id_salt(("style_group", para, g)).default_open(true).show(ui, |ui| {
             for n in names.iter().filter(|n| n.rsplit_once('/').is_some_and(|(x, _)| x == g)) {
-                style_row(app, ui, para, n, current.as_deref(), overrides > 0, &groups, &t);
+                style_row(app, ui, para, n, (current.as_deref(), overrides > 0), &groups, &t);
             }
         });
     }
@@ -107,7 +107,15 @@ pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// One style in the list: click applies (⌥ clears overrides), double-click edits,
 /// right-click: edit, apply, break link, move to group.
-fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, current: Option<&str>, overridden: bool, groups: &[String], t: &Tokens) {
+fn style_row(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    para: bool,
+    n: &str,
+    (current, overridden): (Option<&str>, bool),
+    groups: &[String],
+    t: &Tokens,
+) {
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
     if current == Some(n) {
         ui.painter().rect_filled(row, 0.0, t.row_selected);
@@ -117,7 +125,7 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
     let shown = n.rsplit('/').next().unwrap_or(n);
     let label = if n.contains('/') { shown } else { crate::i18n::style_name(&app.ui.language, shown) };
     let row_label = format!("{label}{}", if current == Some(n) && overridden { "+" } else { "" });
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, current == Some(n), &row_label));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, current == Some(n), &row_label));
     crate::rtl::paint(ui.painter(), row.min + vec2(8.0, 11.0), egui::Align2::LEFT_CENTER, &row_label, egui::FontId::proportional(12.5), t.text);
     let editable = n != if para { designcraft_doc::NO_PARA_STYLE } else { designcraft_doc::NO_CHAR_STYLE };
     if resp.double_clicked() && editable {
@@ -169,7 +177,7 @@ fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, curren
                     }
                 }
                 ui.separator();
-                let id = egui::Id::new(("new_style_group", para));
+                let id = egui::Id::unique(("new_style_group", para));
                 let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut name)
@@ -219,7 +227,7 @@ mod tests {
         let mut h = Harness::builder().with_size(vec2(360.0, 240.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let tokens = Tokens::get(ui.ctx());
-                style_row(app, ui, true, "Header", Some("Header"), true, &[], &tokens);
+                style_row(app, ui, true, "Header", (Some("Header"), true), &[], &tokens);
             },
             app,
         );
@@ -298,7 +306,7 @@ mod tests {
         let undo_len = app.session.doc().unwrap().history.undo.len();
         let mut h = Harness::builder().with_size(vec2(360.0, 240.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
-                let id = egui::Id::new("test_fonts");
+                let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(id, true));

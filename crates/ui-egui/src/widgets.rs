@@ -71,6 +71,7 @@ impl NumKind<'_> {
 /// A numeric field. Build with [`NumField::measure`] / [`NumField::number`], then [`NumField::show`].
 pub struct NumField<'a> {
     id: &'a str,
+    name: Option<&'a str>,
     value: Option<f64>,
     kind: NumKind<'a>,
     width: f32,
@@ -80,6 +81,10 @@ pub struct NumField<'a> {
     range: (f64, f64),
     enabled: bool,
     parens: bool,
+    /// The widget naming the field (an icon or caption beside it), for accessibility.
+    label: Option<egui::Id>,
+    /// What an unset value shows (InDesign's "Ignore"), and the first of the presets.
+    empty: Option<&'a str>,
 }
 
 impl<'a> NumField<'a> {
@@ -89,8 +94,40 @@ impl<'a> NumField<'a> {
     pub fn number(id: &'a str, value: Option<f64>, suffix: &'a str, decimals: usize) -> Self {
         Self::new(id, value, NumKind::Number { suffix, decimals })
     }
+    /// Initialize a numeric field with no name, label or empty text, a 72-point width, no spinner or presets, the full range and the enabled state.
     fn new(id: &'a str, value: Option<f64>, kind: NumKind<'a>) -> Self {
-        NumField { id, value, kind, width: 72.0, spinner: false, presets: &[], step: None, range: (f64::MIN, f64::MAX), enabled: true, parens: false }
+        NumField {
+            id,
+            name: None,
+            value,
+            kind,
+            width: 72.0,
+            spinner: false,
+            presets: &[],
+            step: None,
+            range: (f64::MIN, f64::MAX),
+            enabled: true,
+            parens: false,
+            label: None,
+            empty: None,
+        }
+    }
+    /// The field's user-facing name, independent of its stable internal ID.
+    pub fn name(mut self, name: &'a str) -> Self {
+        self.name = Some(name);
+        self
+    }
+    /// The editor is labelled by widget `id` (an icon or caption that names the field), so
+    /// assistive technology reads the field's name with its value.
+    pub fn labelled_by(mut self, id: egui::Id) -> Self {
+        self.label = Some(id);
+        self
+    }
+    /// An unset value shows `text` (dimmed), and the preset menu offers it first: picking it, or
+    /// emptying the field, commits `Some(None)` from [`NumField::show_or_clear`].
+    pub fn empty_text(mut self, text: &'a str) -> Self {
+        self.empty = Some(text);
+        self
     }
     /// Total width (spinner and preset segments included).
     pub fn width(mut self, w: f32) -> Self {
@@ -137,11 +174,47 @@ impl<'a> NumField<'a> {
         self.show_or_clear(ui).flatten()
     }
 
+    /// The spinner segment's up and down buttons; the value a click on one gives.
+    fn spinner_segment(&self, ui: &mut Ui, rect: Rect, key: egui::Id, enabled: bool, t: &Tokens) -> Option<f64> {
+        let name = self.name.unwrap_or(self.id);
+        let step = self.step.unwrap_or_else(|| self.kind.step());
+        let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
+        let mut out = None;
+        let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
+        ui.painter().rect_filled(seg, 0.0, t.input);
+        let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
+        let down = Rect::from_min_max(pos2(seg.min.x, seg.center().y), seg.max);
+        for (r, dir) in [(up, 1.0), (down, -1.0)] {
+            let resp = ui.interact(r, key.with(("spin", dir as i32)), if enabled { Sense::click() } else { Sense::hover() });
+            if resp.hovered() && enabled {
+                ui.painter().rect_filled(r.shrink(1.0), 0.0, t.hover);
+            }
+            let c = r.center();
+            let (a, b) = if dir > 0.0 { (2.5, -1.5) } else { (-2.5, 1.5) };
+            ui.painter()
+                .line_segment([pos2(c.x - 4.0, c.y + a * 0.6), pos2(c.x, c.y + b)], Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }));
+            ui.painter()
+                .line_segment([pos2(c.x, c.y + b), pos2(c.x + 4.0, c.y + a * 0.6)], Stroke::new(1.0, if enabled { t.icon } else { t.text_disabled }));
+            // The two spinner halves are real inputs: name them for screen readers and strict
+            // accessibility checks, which would otherwise see unnamed clickable nodes.
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{} {}", if dir > 0.0 { "Increase" } else { "Decrease" }, name))
+            });
+            if resp.clicked() {
+                let mul = if ui.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
+                out = Some(clamp(self.value.unwrap_or(0.0) + dir * step * mul));
+            }
+        }
+        out
+    }
+
     /// Like [`NumField::show`]; a field emptied while it had a value commits `Some(None)` (for
     /// values that may be unset, like a character style's attributes).
     pub fn show_or_clear(self, ui: &mut Ui) -> Option<Option<f64>> {
         let t = Tokens::get(ui.ctx());
-        let key = ui.id().with(self.id);
+        let name = self.name.unwrap_or(self.id);
+        let enabled = self.enabled && ui.is_enabled();
+        let key = ui.scope_id().with(self.id);
         let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
@@ -152,64 +225,49 @@ impl<'a> NumField<'a> {
         let focused = ui.memory(|m| m.has_focus(focused_id));
         let (bg, fg, border) =
             if focused { (Color32::WHITE, Color32::from_gray(20), Color32::from_rgb(0x45, 0xa0, 0xf5)) } else { (t.input, t.text, t.field_border) };
-        let fg = if self.enabled { fg } else { t.text_disabled };
+        let fg = if enabled { fg } else { t.text_disabled };
         // Spinner segment.
         if self.spinner {
-            let seg = Rect::from_min_size(rect.min, vec2(SEG_W, FIELD_H));
-            text_rect.min.x = seg.max.x;
-            ui.painter().rect_filled(seg, 0.0, t.input);
-            let up = Rect::from_min_max(seg.min, pos2(seg.max.x, seg.center().y));
-            let down = Rect::from_min_max(pos2(seg.min.x, seg.center().y), seg.max);
-            for (r, dir) in [(up, 1.0), (down, -1.0)] {
-                let resp = ui.interact(r, key.with(("spin", dir as i32)), if self.enabled { Sense::click() } else { Sense::hover() });
-                if resp.hovered() && self.enabled {
-                    ui.painter().rect_filled(r.shrink(1.0), 0.0, t.hover);
-                }
-                let c = r.center();
-                let (a, b) = if dir > 0.0 { (2.5, -1.5) } else { (-2.5, 1.5) };
-                ui.painter().line_segment(
-                    [pos2(c.x - 4.0, c.y + a * 0.6), pos2(c.x, c.y + b)],
-                    Stroke::new(1.0, if self.enabled { t.icon } else { t.text_disabled }),
-                );
-                ui.painter().line_segment(
-                    [pos2(c.x, c.y + b), pos2(c.x + 4.0, c.y + a * 0.6)],
-                    Stroke::new(1.0, if self.enabled { t.icon } else { t.text_disabled }),
-                );
-                if resp.clicked() {
-                    let mul = if ui.input(|i| i.modifiers.shift) { 10.0 } else { 1.0 };
-                    out = Some(clamp(self.value.unwrap_or(0.0) + dir * step * mul));
-                }
-            }
+            text_rect.min.x = rect.min.x + SEG_W;
+            out = self.spinner_segment(ui, rect, key, enabled, &t).or(out);
         }
         // Preset segment.
         let mut preset_resp = None;
         if !self.presets.is_empty() {
             let seg = Rect::from_min_max(pos2(rect.max.x - SEG_W, rect.min.y), rect.max);
             text_rect.max.x = seg.min.x;
-            let resp = ui.interact(seg, key.with("presets"), Sense::click());
-            ui.painter().rect_filled(seg, 0.0, if resp.hovered() { t.hover } else { t.input });
-            chevron_down(ui.painter(), seg.center(), t.icon);
+            let resp = ui.interact(seg, key.with("presets"), if enabled { Sense::click() } else { Sense::hover() });
+            ui.painter().rect_filled(seg, 0.0, if resp.hovered() && enabled { t.hover } else { t.input });
+            chevron_down(ui.painter(), seg.center(), if enabled { t.icon } else { t.text_disabled });
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{name} presets")));
             preset_resp = Some(resp);
         }
         // Value.
         ui.painter().rect_filled(text_rect, 0.0, bg);
         let mut buf: String = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| self.value.map(|v| self.fmt(v)).unwrap_or_default());
-        let te = egui::TextEdit::singleline(&mut buf)
+        let mut te = egui::TextEdit::singleline(&mut buf)
             .id(focused_id)
             .frame(egui::Frame::NONE)
             .font(label_font())
             .text_color(fg)
             .margin(egui::Margin::ZERO)
-            .vertical_align(egui::Align::Center);
+            .align(egui::Align2::LEFT_CENTER);
+        if let Some(empty) = self.empty {
+            te = te.hint_text(egui::RichText::new(empty).font(label_font()).color(t.text_dim));
+        }
         // The field already allocated its slot. A scoped allocation here would consume another
         // grid cell and enlarge toolbar rows; the value editor must stay inside that same slot.
         let value_rect = Rect::from_min_max(text_rect.min + vec2(5.0, 1.0), text_rect.max - vec2(1.0, 1.0));
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(value_rect));
         editor_ui.set_clip_rect(editor_ui.clip_rect().intersect(text_rect));
-        if !self.enabled {
+        if !enabled {
             editor_ui.disable();
         }
-        let r = editor_ui.put(value_rect, te);
+        let r = editor_ui.put(value_rect, te).accessible_name(name);
+        let r = match self.label {
+            Some(id) => r.labelled_by(id),
+            None => r,
+        };
         if r.has_focus() {
             // ↑/↓ step the value while typing.
             let (up, down, shift) = ui.input_mut(|i| {
@@ -227,8 +285,14 @@ impl<'a> NumField<'a> {
             ui.data_mut(|d| d.insert_temp(key, buf.clone()));
         }
         if r.lost_focus() {
-            if let Some(v) = self.parse(&buf).map(clamp)
-                && self.value.is_none_or(|old| (old - v).abs() > 1e-9)
+            // An automatic value (in parentheses) typed over commits even when it's the same
+            // number: typing "14.4 pt" over "(14.4 pt)" makes it a fixed value. Escape reverts
+            // whatever was typed, as in InDesign.
+            let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let typed_over_auto = self.parens && !buf.trim_start().starts_with('(');
+            if escaped {
+            } else if let Some(v) = self.parse(&buf).map(clamp)
+                && (typed_over_auto || self.value.is_none_or(|old| (old - v).abs() > 1e-9))
             {
                 out = Some(v);
             } else if buf.trim().is_empty() && self.value.is_some() {
@@ -250,9 +314,17 @@ impl<'a> NumField<'a> {
         if !self.presets.is_empty() {
             p.line_segment([pos2(rect.max.x - SEG_W, rect.min.y), pos2(rect.max.x - SEG_W, rect.max.y)], Stroke::new(1.0, t.field_border));
         }
-        if let Some(resp) = preset_resp {
+        if let Some(resp) = preset_resp
+            && enabled
+        {
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(self.width);
+                if let Some(empty) = self.empty
+                    && ui.selectable_label(self.value.is_none(), empty).clicked()
+                {
+                    cleared = self.value.is_some();
+                    ui.close();
+                }
                 for v in self.presets {
                     if ui.selectable_label(self.value.is_some_and(|c| (c - v).abs() < 1e-9), self.kind.format(*v)).clicked() {
                         out = Some(*v);
@@ -290,12 +362,23 @@ pub fn chevron_down(p: &egui::Painter, c: egui::Pos2, col: Color32) {
     p.line_segment([pos2(c.x, c.y + 2.0), pos2(c.x + 4.0, c.y - 2.0)], Stroke::new(1.0, col));
 }
 
+/// Name a combo box for screen readers and tests.
+///
+/// `egui::ComboBox` announces its current value, not the field it belongs to, so every combo box
+/// is otherwise an unnamed input. Pass the visible caption (or a semantic name when a painted
+/// caption has no text node of its own).
+pub fn name_combo<R>(combo: egui::InnerResponse<Option<R>>, name: impl Into<String>) -> egui::InnerResponse<Option<R>> {
+    let egui::InnerResponse { inner, response } = combo;
+    egui::InnerResponse { inner, response: response.accessible_name(name) }
+}
+
 /// A dropdown box (field style, ⌄ segment on the right). Returns the response; open a popup on it
 /// with [`egui::Popup::menu`].
 pub fn dropdown(ui: &mut Ui, text: &str, width: f32) -> Response {
     dropdown_h(ui, text, width, FIELD_H)
 }
 
+/// Paint a labelled combo with hover, border and chevron, clip its text, and expose a `ComboBox` role named by the visible text.
 pub fn dropdown_h(ui: &mut Ui, text: &str, width: f32, h: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(width, h), Sense::click());
@@ -307,6 +390,8 @@ pub fn dropdown_h(ui: &mut Ui, text: &str, width: f32, h: f32) -> Response {
     chevron_down(p, seg.center(), t.icon);
     let clip = Rect::from_min_max(r.min, pos2(seg.min.x - 2.0, r.max.y));
     p.with_clip_rect(clip).text(pos2(r.min.x + 7.0, r.center().y), egui::Align2::LEFT_CENTER, text, label_font(), t.text);
+    // A painted, clickable box is otherwise an unidentified input; it opens a choice list.
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), text));
     resp
 }
 
@@ -341,7 +426,7 @@ pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
     // Screen readers (and tests) find it by its label.
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     resp
 }
 
@@ -372,7 +457,7 @@ pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     ui.painter().galley(pos, g, t.text);
     let y = r.center().y + 6.5;
     ui.painter().line_segment([pos2(r.min.x, y), pos2(r.min.x + w, y)], Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.text_dim }));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, text));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -381,7 +466,9 @@ pub fn more_options(ui: &mut Ui, language: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
     let r = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
-    let resp = ui.interact(r, ui.id().with(("more", row.min.y as i32)), Sense::click());
+    let resp = ui.interact(r, ui.scope_id().with(("more", row.min.y as i32)), Sense::click());
+    let label = crate::i18n::tr(language, "More Options");
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     for i in 0..3 {
         ui.painter().circle_filled(pos2(r.min.x + 4.0 + i as f32 * 7.0, r.center().y), 1.9, if resp.hovered() { t.text_strong } else { t.icon });
     }
@@ -401,7 +488,7 @@ pub fn caption_w(ui: &mut Ui, s: &str, w: f32) {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
     // Painted, so tell screen readers (and UI tests) what it says.
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, s));
     crate::rtl::paint(ui.painter(), pos2(r.max.x - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, s, egui::FontId::proportional(11.5), t.text);
 }
 
@@ -422,7 +509,7 @@ pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
     crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
     // Screen readers hear the section's title.
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
     ui.add_space(3.0);
     true
 }
@@ -528,6 +615,7 @@ pub fn icon_toggle(ui: &mut Ui, icon: &str, on: bool, tip: &str) -> Response {
     icon_toggle_sized(ui, icon, on, tip, vec2(23.0, 21.0))
 }
 
+/// Paint an icon toggle at the requested size and expose it as a selected button named by its tooltip.
 pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egui::Vec2) -> Response {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -539,7 +627,7 @@ pub fn icon_toggle_sized(ui: &mut Ui, icon: &str, on: bool, tip: &str, size: egu
     let s = (size.y - 4.0).min(17.0);
     crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(s, s)), icon, if on { t.text_strong } else { t.icon });
     // Named by its tooltip, for screen readers.
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, tip));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, tip));
     if tip.is_empty() {
         resp
     } else {
@@ -567,6 +655,8 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         *on = !*on;
         resp.mark_changed();
     }
+    // A painted check box must still report its role, label and toggled state.
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), *on, label));
     resp
 }
 
@@ -578,7 +668,7 @@ pub fn segmented(ui: &mut Ui, labels: &[&str], active: usize, width: f32) -> Opt
     let mut out = None;
     for (i, l) in labels.iter().enumerate() {
         let sr = Rect::from_min_size(pos2(r.min.x + w * i as f32, r.min.y), vec2(w, BUTTON_H));
-        let resp = ui.interact(sr, ui.id().with(("seg", l)), Sense::click());
+        let resp = ui.interact(sr, ui.scope_id().with(("seg", l)), Sense::click());
         if i == active {
             ui.painter().rect_filled(sr, 0.0, t.well);
         } else if resp.hovered() {
@@ -753,6 +843,70 @@ mod tests {
         let m = NumKind::Measure(Unit::Picas);
         assert_eq!(m.parse("1p0+0p6"), Some(18.0));
         assert_eq!(m.step(), 1.0);
+    }
+
+    /// A disabled field's preset button is disabled in AccessKit and cannot open a popup.
+    #[test]
+    fn disabled_numeric_presets_are_disabled_and_do_not_open() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const PRESETS: &[f64] = &[0.0, 50.0, 100.0];
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(420.0, 240.0)).build_ui(|ui| {
+            assert!(NumField::number("Opacity", Some(50.0), "%", 0).presets(PRESETS).enabled(false).show(ui).is_none());
+        });
+        h.run_steps(2);
+        assert!(h.get_by_label("Opacity presets").accesskit_node().is_disabled());
+        h.get_by_label("Opacity presets").click();
+        h.run_steps(3);
+        assert!(!egui::Popup::is_any_open(&h.ctx), "a disabled preset button must not open its menu");
+        h.check_accessibility();
+    }
+
+    /// Spinner buttons and presets inherit a disabled parent in both AccessKit and widget metadata.
+    #[test]
+    fn numeric_controls_inherit_a_disabled_parents_state() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+
+        const PRESETS: &[f64] = &[0.0, 50.0, 100.0];
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(420.0, 240.0)).build_ui(|ui| {
+            ui.disable();
+            let _ = NumField::number("Opacity", Some(50.0), "%", 0).spinner().presets(PRESETS).show(ui);
+        });
+        h.ctx.all_styles_mut(|style| style.debug.show_interactive_widgets = true);
+        h.run_steps(2);
+        let metadata_enabled = |label: &str| {
+            h.ctx.viewport(|viewport| {
+                let rects = &viewport.prev_pass.widgets;
+                rects
+                    .layers()
+                    .flat_map(|(_, widgets)| widgets)
+                    .filter_map(|widget| rects.info(widget.id))
+                    .find(|info| info.label.as_deref() == Some(label))
+                    .map(|info| info.enabled)
+            })
+        };
+        for label in ["Increase Opacity", "Decrease Opacity", "Opacity presets"] {
+            assert!(h.get_by_label(label).accesskit_node().is_disabled(), "{label} reports the disabled parent");
+            assert_eq!(metadata_enabled(label), Some(false), "{label} metadata reports the disabled parent");
+        }
+        h.get_by_label("Opacity presets").click();
+        h.run_steps(3);
+        assert!(!egui::Popup::is_any_open(&h.ctx), "a preset in a disabled parent must not open its menu");
+        h.check_accessibility();
+    }
+
+    /// Strict accessibility: every input in these fields is named and reports the right role.
+    #[test]
+    fn numeric_dropdown_and_checkbox_inputs_have_accessible_names_and_roles() {
+        const PRESETS: &[f64] = &[0.0, 50.0, 100.0];
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(420.0, 240.0)).build_ui(|ui| {
+            let _ = NumField::number("Opacity", Some(50.0), "%", 0).spinner().presets(PRESETS).show(ui);
+            let _ = dropdown(ui, "Paragraph Styles", 160.0);
+            let mut on = true;
+            let _ = checkbox(ui, &mut on, "Preview");
+        });
+        h.run_steps(2);
+        h.check_accessibility();
     }
 }
 

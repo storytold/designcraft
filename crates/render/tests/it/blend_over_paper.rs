@@ -28,7 +28,7 @@ fn pixel(d: &Document, x: u32, y: u32) -> [u8; 4] {
     let mut r = Renderer::new();
     r.threads = 0;
     let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
-    let img = r.render(d, &Cache::new(), &placed, 200, 100, Affine::IDENTITY, &RenderOptions::default());
+    let img = r.render(d, &Cache::new(), &placed, (200, 100), Affine::IDENTITY, &RenderOptions::default());
     let i = ((y * 200 + x) * 4) as usize;
     [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2], img.pixels[i + 3]]
 }

@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Hyperlink Destination…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{name} — a text anchor at the insertion point",
+            "{name} — a text anchor at the insertion point; the name is the document's, so it must not be one another anchor already has",
             in_story_text,
             create_anchor
         ),
@@ -94,7 +94,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let r = t2.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
-        st.insert_xref(r.start, CrossRef { target, format });
+        st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))
@@ -103,6 +103,14 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("anchor.create", "missing name"))?.to_string();
+    if name.trim().is_empty() {
+        return Err(bad("anchor.create", "a text anchor needs a name (a cross-reference and a hyperlink find it by that name)"));
+    }
+    // Two anchors of the same name made every reference to it ambiguous: `xref.insert` and
+    // `hyperlink.create` take the first they find, and a file writes both under one name.
+    if s.doc()?.doc.stories.values().any(|st| st.anchors.iter().any(|a| a.name == name)) {
+        return Err(bad("anchor.create", format!("a text anchor named `{name}` is already in this document (anchor.list names them)")));
+    }
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("anchor.create", "no insertion point"))?;
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -161,7 +169,10 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let x = st.xrefs.get_mut(k).ok_or_else(|| bad("xref.setFormat", "no such cross-reference"))?;
-        std::sync::Arc::make_mut(x).format = format;
+        let x = std::sync::Arc::make_mut(x);
+        x.format = format;
+        // A new format generates the text again, replacing any edits (InDesign does the same).
+        x.text = None;
         st.rev = st.rev.wrapping_add(1);
         Ok(Value::Null)
     })
@@ -213,6 +224,44 @@ mod tests {
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "??");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "(p. 3)");
+    }
+
+    /// Two text anchors of the same name made every reference to it ambiguous: `xref.insert
+    /// {"anchor": "A"}` and `hyperlink.create {"anchor": "A"}` take the first they find, and an
+    /// exported file writes both destinations under one name.
+    #[test]
+    fn a_text_anchor_name_is_the_documents_so_it_is_not_reused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Photo one here"})).unwrap();
+        let select = |s: &mut Session, story: serde_json::Value, from: usize| {
+            s.execute("text.select", &json!({"story": story, "anchor": from, "focus": from})).unwrap();
+        };
+        select(&mut s, a["story"].clone(), 0);
+        s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap();
+
+        // The same name again, in the same story and in another one.
+        select(&mut s, a["story"].clone(), 10);
+        let e = s.execute("anchor.create", &json!({"name": "Photo 1"})).expect_err("refused").to_string();
+        assert!(e.contains("already in this document"), "{e}");
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 200], "content": "text", "text": "Photo two"})).unwrap();
+        select(&mut s, b["story"].clone(), 0);
+        assert!(s.execute("anchor.create", &json!({"name": "Photo 1"})).is_err(), "not in another story either");
+        // A name of spaces is not a name.
+        assert!(s.execute("anchor.create", &json!({"name": "   "})).is_err());
+        assert!(s.execute("anchor.create", &json!({"name": ""})).is_err());
+
+        // One anchor, so a reference by name can only mean that one.
+        let anchors = s.execute("anchor.list", &json!({})).unwrap();
+        assert_eq!(anchors.as_array().unwrap().len(), 1, "{anchors}");
+        // Another name is fine.
+        s.execute("anchor.create", &json!({"name": "Photo 2"})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+        // The check is on the name, not on where it is: a name that differs only in case is a
+        // different name, as it is everywhere else in the document.
+        select(&mut s, b["story"].clone(), 0);
+        s.execute("anchor.create", &json!({"name": "photo 1"})).expect("a different name");
     }
 
     #[test]

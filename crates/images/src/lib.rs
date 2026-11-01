@@ -60,6 +60,7 @@ pub fn mime(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// Initialize the process-wide usvg database from the bundled and Japanese fonts, with case-aware family/PostScript resolution, fallback selection and preflighted SVG data URLs; file-backed image URLs are never read.
 fn svg_options() -> &'static usvg::Options<'static> {
     static OPTS: OnceLock<usvg::Options<'static>> = OnceLock::new();
     OPTS.get_or_init(|| {
@@ -77,8 +78,23 @@ fn svg_options() -> &'static usvg::Options<'static> {
         let font_resolver = usvg::FontResolver { select_font: select_font(), select_fallback: select_fallback() };
         // Images inside an SVG come only from `data:` URLs: an `href` naming a file is not read
         // (it is left out, as usvg leaves out an image it can't load).
-        let image_href_resolver =
-            usvg::ImageHrefResolver { resolve_data: usvg::ImageHrefResolver::default_data_resolver(), resolve_string: Box::new(|_, _| None) };
+        let default_data = usvg::ImageHrefResolver::default_data_resolver();
+        let image_href_resolver = usvg::ImageHrefResolver {
+            resolve_data: Box::new(move |mime, data, options| {
+                let raster = matches!(
+                    image::guess_format(&data),
+                    Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
+                );
+                if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
+                    let xml = svg_data(&data)?;
+                    svg_preflight(&xml)?;
+                    default_data(mime, Arc::new(xml.into_owned()), options)
+                } else {
+                    default_data(mime, data, options)
+                }
+            }),
+            resolve_string: Box::new(|_, _| None),
+        };
         usvg::Options { fontdb: Arc::new(db), font_family: "Source Sans 3".into(), font_resolver, image_href_resolver, ..Default::default() }
     })
 }
@@ -207,9 +223,71 @@ fn add_face(db: &mut Arc<usvg::fontdb::Database>, face: Arc<designcraft_fonts::F
     ids.into_iter().find(|id| db.face(*id).is_some_and(|f| f.index == index))
 }
 
-/// The parsed SVG.
+/// Limits apply before usvg's recursive XML/SVG parsing, including SVGZ output.
+/// Ordinary SVG doctypes are accepted; internal DTD subsets are not, since entity
+/// expansion could introduce markup that the streaming depth check never sees.
+const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SVG_EVENTS: usize = 100_000;
+const MAX_SVG_DEPTH: usize = 64;
+
+/// Enforce the encoded-size cap, gunzip SVGZ data with that bound, and return the decoded content within the cap as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::io::Read;
+
+    if bytes.len() > MAX_SVG_BYTES {
+        return None;
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut xml = Vec::new();
+        flate2::read::GzDecoder::new(bytes).take(MAX_SVG_BYTES as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= MAX_SVG_BYTES).then_some(std::borrow::Cow::Owned(xml))
+    } else {
+        Some(std::borrow::Cow::Borrowed(bytes))
+    }
+}
+
+/// Require UTF-8, bounded XML events, balanced tags and depth at most 64; reject internal DTD subsets while accepting ordinary external doctypes.
+fn svg_preflight(bytes: &[u8]) -> Option<()> {
+    use quick_xml::events::Event;
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut depth = 0usize;
+    for _ in 0..MAX_SVG_EVENTS {
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > MAX_SVG_DEPTH {
+                    return None;
+                }
+            }
+            Event::Empty(_) if depth >= MAX_SVG_DEPTH => return None,
+            Event::End(_) => depth = depth.checked_sub(1)?,
+            Event::DocType(doctype) => {
+                // A '[' inside a quoted external identifier is not an internal subset.
+                let mut quote = None;
+                for &byte in doctype.as_ref() {
+                    match (quote, byte) {
+                        (Some(q), b) if b == q => quote = None,
+                        (None, b'\'' | b'"') => quote = Some(byte),
+                        (None, b'[') => return None,
+                        _ => {}
+                    }
+                }
+            }
+            Event::Eof => return (depth == 0).then_some(()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
+/// 64 nested elements. Reject internal DTD subsets before recursive conversion.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    usvg::Tree::from_data(bytes, svg_options()).ok()
+    let xml = svg_data(bytes)?;
+    svg_preflight(&xml)?;
+    usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
 /// Natural size of a placed graphic in points: rasters at 72 ppi (one pixel per point), PSDs
@@ -246,10 +324,22 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
+/// The largest decoded raster, in RGBA bytes: 256 Mpx, a 300 ppi scan of an A0 sheet fits.
+const MAX_RGBA_BYTES: u64 = 1 << 30;
+
+/// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
+pub fn too_large_to_decode(bytes: &[u8]) -> bool {
+    // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
+    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES)
+}
+
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
 /// applied, and CMYK goes through its own profile or the working CMYK space ([`colour`]).
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
@@ -442,6 +532,9 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     use tiff::tags::Tag;
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     let mut d = tiff_decoder(bytes)?;
     let has_alpha = match d.colortype().ok()? {
         tiff::ColorType::CMYK(8 | 16) => false,
@@ -494,313 +587,4 @@ pub fn render_svg(bytes: &[u8], max_side: u32) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SVG: &str = r##"<?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">
-  <rect x="0" y="0" width="100" height="100" fill="#ff0000"/>
-  <text x="110" y="60" font-size="20">Hi</text>
-</svg>"##;
-
-    #[test]
-    fn svg_sniff_size_and_render() {
-        let b = SVG.as_bytes();
-        assert!(is_svg(b));
-        assert_eq!(mime(b), "image/svg+xml");
-        assert_eq!(natural_size(b), Some((150.0, 75.0)));
-        let (px, w, h) = render_svg(b, 400).unwrap();
-        assert_eq!((w, h), (400, 200));
-        // Red on the left; the text drew some ink on the right.
-        assert_eq!(&px[(100 * 400 + 100) * 4..][..4], &[255, 0, 0, 255]);
-        assert!(px.chunks(4).skip(220).step_by(7).any(|p| p[3] > 128 && p[0] < 100), "text pixels");
-        assert!(!is_svg(b"\x89PNG"));
-    }
-
-    #[test]
-    fn svg_images_come_only_from_data_urls() {
-        let dir = std::env::temp_dir().join(format!("dc-svg-href-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("red.png");
-        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255])).save(&file).unwrap();
-        let blue = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='blue'/%3E%3C/svg%3E";
-        let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="30" height="10">
-<image x="0" y="0" width="10" height="10" href="{}"/>
-<image x="10" y="0" width="10" height="10" href="{blue}"/>
-<image x="20" y="0" width="10" height="10" href="/etc/hostname"/>
-</svg>"#,
-            file.display()
-        );
-        // The image nodes usvg kept: only the data URL's (PDF export embeds every one).
-        fn images(g: &usvg::Group) -> usize {
-            g.children()
-                .iter()
-                .map(|n| match n {
-                    usvg::Node::Group(g) => images(g),
-                    usvg::Node::Image(_) => 1,
-                    _ => 0,
-                })
-                .sum()
-        }
-        assert_eq!(images(svg_tree(svg.as_bytes()).unwrap().root()), 1, "files the SVG names are not read");
-        let (px, w, _) = render_svg(svg.as_bytes(), 30).unwrap();
-        let at = |x: usize, y: usize| px[(y * w as usize + x) * 4..][..4].to_vec();
-        assert_eq!(at(15, 5), [0, 0, 255, 255], "a data URL is drawn");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
-    fn glyph_families(svg: &str) -> Vec<(String, u16)> {
-        fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
-            for n in g.children() {
-                match n {
-                    usvg::Node::Group(g) => walk(g, tree, out),
-                    usvg::Node::Text(t) => {
-                        for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
-                            out.extend(tree.fontdb().face(g.font).map(|f| (f.families[0].0.clone(), g.id.0)));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let tree = svg_tree(svg.as_bytes()).unwrap();
-        let mut out = Vec::new();
-        walk(tree.root(), &tree, &mut out);
-        out
-    }
-
-    #[test]
-    fn svg_text_uses_the_shared_fonts() {
-        let font = designcraft_fonts::testing::font_with("DC Test SVG Hangul", &['한', '글']).unwrap();
-        designcraft_fonts::FontDb::global().add_font(font);
-        let text = |attrs: &str, body: &str| {
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{attrs}>{body}</text></svg>"#)
-        };
-        let named = r#" font-family="DC Test SVG Hangul""#;
-        // A family named in the SVG.
-        let set = glyph_families(&text(named, "한글"));
-        assert!(set.len() == 2 && set.iter().all(|(f, gid)| f == "DC Test SVG Hangul" && *gid != 0), "{set:?}");
-        // Characters the bundled default lacks: a shared face that has them, not the default.
-        let set = glyph_families(&text("", "한글"));
-        assert!(set.len() == 2 && set.iter().all(|(f, gid)| f != "Source Sans 3" && *gid != 0), "{set:?}");
-    }
-
-    #[test]
-    fn svg_family_names_match_in_any_case() {
-        let font = designcraft_fonts::testing::font_with("DC Test SVG Casing", &['A', 'b']).unwrap();
-        designcraft_fonts::FontDb::global().add_font(font);
-        let text = |family: &str, attrs: &str| {
-            format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20" font-family="{family}"{attrs}>Ab</text></svg>"#
-            )
-        };
-        for family in ["DC Test SVG Casing", "dc test svg casing", "DC TEST svg Casing", "Nope, dc test SVG casing, serif"] {
-            let set = glyph_families(&text(family, ""));
-            assert!(set.len() == 2 && set.iter().all(|(f, gid)| f == "DC Test SVG Casing" && *gid != 0), "{family}: {set:?}");
-        }
-        // Weight and style still reach the query: there's only a regular face, so it sets the text.
-        let set = glyph_families(&text("dc test svg casing", r#" font-weight="700" font-style="italic""#));
-        assert!(set.len() == 2 && set.iter().all(|(f, _)| f == "DC Test SVG Casing"), "{set:?}");
-        // A family nobody has still falls to the bundled serif.
-        let set = glyph_families(&text("DC Test SVG Nobody", ""));
-        assert!(set.len() == 2 && set.iter().all(|(f, _)| f == "Source Serif 4"), "{set:?}");
-    }
-
-    /// The PostScript name of the face that sets the text of `svg` (one face for all of it).
-    fn text_face(svg_attrs: &str) -> String {
-        let svg =
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text y="30" font-size="20"{svg_attrs}>ab</text></svg>"#);
-        let tree = svg_tree(svg.as_bytes()).unwrap();
-        let mut faces = Vec::new();
-        for n in tree.root().children() {
-            if let usvg::Node::Text(t) = n {
-                for g in t.layouted().iter().flat_map(|s| &s.positioned_glyphs) {
-                    faces.extend(tree.fontdb().face(g.font).map(|f| f.post_script_name.clone()));
-                }
-            }
-        }
-        faces.dedup();
-        assert_eq!(faces.len(), 1, "{faces:?}");
-        faces.remove(0)
-    }
-
-    #[test]
-    fn svg_text_finds_fonts_by_postscript_name() {
-        // Bundled, as Illustrator's SVG export names it; any case.
-        assert_eq!(text_face(r#" font-family="'SourceSerif4-Semibold'""#), "SourceSerif4-Semibold");
-        assert_eq!(text_face(r#" font-family="sourceserif4-semibold""#), "SourceSerif4-Semibold");
-        // A shared font (as an installed one would be).
-        let font = designcraft_fonts::testing::font_with("DC Test SVG PostScript", &['a', 'b']).unwrap();
-        designcraft_fonts::FontDb::global().add_font(font);
-        assert_eq!(text_face(r#" font-family="DCTestSVGPostScript-Regular""#), "DCTestSVGPostScript-Regular");
-        // The name picks that face: font-weight and font-style don't change it.
-        assert_eq!(text_face(r#" font-family="SourceSerif4-Semibold" font-weight="bold" font-style="italic""#), "SourceSerif4-Semibold");
-        // A family listed before it still comes first; one after it is a fallback.
-        assert_eq!(text_face(r#" font-family="'Source Sans 3', SourceSerif4-Bold""#), "SourceSans3-Regular");
-        assert_eq!(text_face(r#" font-family="NoSuch-Font, SourceSerif4-Bold, 'Source Sans 3'""#), "SourceSerif4-Bold");
-        // Family names work as before.
-        assert_eq!(text_face(r#" font-family="'Source Serif 4'" font-weight="bold""#), "SourceSerif4-Bold");
-        // An unknown name falls back as before (the serif default).
-        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), text_face(r#" font-family="No Such Font""#));
-        assert_eq!(text_face(r#" font-family="NoSuch-Font""#), "SourceSerif4-Regular");
-    }
-
-    /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.
-    fn tiny_psd() -> Vec<u8> {
-        let mut b = Vec::new();
-        b.extend(b"8BPS");
-        b.extend(1u16.to_be_bytes());
-        b.extend([0u8; 6]);
-        b.extend(3u16.to_be_bytes()); // channels
-        b.extend(1u32.to_be_bytes()); // height
-        b.extend(2u32.to_be_bytes()); // width
-        b.extend(8u16.to_be_bytes()); // depth
-        b.extend(3u16.to_be_bytes()); // RGB
-        b.extend(0u32.to_be_bytes()); // colour mode data
-        b.extend(0u32.to_be_bytes()); // image resources
-        b.extend(0u32.to_be_bytes()); // layer and mask info
-        b.extend(0u16.to_be_bytes()); // raw
-        b.extend([255, 0, 0, 255, 0, 0]); // R, G, B planes: a red pixel, then a green one
-        b
-    }
-
-    #[test]
-    fn psd_composite_decodes() {
-        let b = tiny_psd();
-        assert_eq!(mime(&b), "image/vnd.adobe.photoshop");
-        assert_eq!(pixel_size(&b), Some((2, 1)));
-        let img = decode_rgba(&b).unwrap();
-        assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert_eq!(img.get_pixel(1, 0).0, [0, 255, 0, 255]);
-    }
-
-    fn tiff_of<C: tiff::encoder::colortype::ColorType>(w: u32, h: u32, px: &[C::Inner], alpha: bool) -> Vec<u8>
-    where
-        [C::Inner]: tiff::encoder::TiffValue,
-    {
-        let mut b = Vec::new();
-        let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
-        let mut img = enc.new_image::<C>(w, h).unwrap();
-        if alpha {
-            // CMYKA8 already has five samples: only the tag that says the fifth is alpha.
-            img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[2u16][..]).unwrap();
-        }
-        img.write_data(px).unwrap();
-        b
-    }
-
-    /// A placed EPS is measured by its bounding box in points and drawn through its proxy; the
-    /// bytes stay the EPS.
-    #[test]
-    fn eps_draws_through_its_proxy_at_its_bounding_box_size() {
-        let eps =
-            b"%!PS-Adobe-3.1 EPSF-3.0\n%%BoundingBox: 0 0 4 2\n%%EndComments\n/rf { rectfill } bind def\n0 0 0 1 setcmykcolor\n0 0 2 2 rf\n%%EOF\n";
-        assert_eq!(natural_size(eps), Some((4.0, 2.0)));
-        let img = decode_rgba(eps).expect("drawn");
-        assert_eq!(img.dimensions(), (32, 16));
-        assert_eq!(img.get_pixel(1, 1).0, [0, 0, 0, 255], "the rectangle");
-        assert_eq!(img.get_pixel(30, 1).0[3], 0, "outside it, transparent");
-    }
-
-    /// CMYK TIFFs read back as their ink values; RGB ones aren't CMYK.
-    #[test]
-    fn cmyk_tiff_keeps_inks() {
-        use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB8};
-        // 2×1: 100% K, then C0 M100 Y100 K0.
-        let px = [0, 0, 0, 255, 0, 255, 255, 0];
-        let b = tiff_of::<CMYK8>(2, 1, &px, false);
-        assert_eq!(mime(&b), "image/tiff");
-        assert!(is_cmyk_tiff(&b));
-        assert_eq!(decode_cmyk_tiff(&b), Some(CmykRaster { width: 2, height: 1, cmyk: px.to_vec(), alpha: None }));
-        // The screen gets RGB through the working CMYK space.
-        let raster = CmykRaster { width: 2, height: 1, cmyk: px.to_vec(), alpha: None };
-        let want = colour::to_display_rgba(colour::Pixels::Cmyk(raster), None, &colour::DisplayColour::active()).unwrap();
-        assert_eq!(decode_rgba(&b).unwrap(), want);
-
-        let b = tiff_of::<CMYK16>(2, 1, &[0, 0, 0, 65_535, 0, 32_896, 65_535, 0], false);
-        assert_eq!(decode_cmyk_tiff(&b).unwrap().cmyk, [0, 0, 0, 255, 0, 128, 255, 0]);
-
-        let b = tiff_of::<CMYKA8>(2, 1, &[0, 0, 0, 255, 255, 0, 255, 255, 0, 0], true);
-        let r = decode_cmyk_tiff(&b).unwrap();
-        assert_eq!((r.cmyk, r.alpha), (px.to_vec(), Some(vec![255, 0])));
-
-        let rgb = tiff_of::<RGB8>(1, 1, &[255, 0, 0], false);
-        assert!(!is_cmyk_tiff(&rgb));
-        assert_eq!(decode_cmyk_tiff(&rgb), None);
-        assert!(!is_cmyk_tiff(b"II*\0"), "truncated");
-        assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
-    }
-
-    /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
-    struct Palette<const BITS: u16>;
-    impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {
-        type Inner = u8;
-        const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::RGBPalette;
-        const BITS_PER_SAMPLE: &'static [u16] = &[BITS];
-        const SAMPLE_FORMAT: &'static [tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint];
-        fn horizontal_predict(row: &[u8], result: &mut Vec<u8>) {
-            result.extend_from_slice(row);
-        }
-    }
-
-    /// A palette TIFF as Photoshop and Pillow write it: 16-bit ColorMap entries (reds, then
-    /// greens, then blues), each 8-bit value times 256.
-    fn palette_tiff<const BITS: u16>(w: u32, h: u32, px: &[u8], colours: &[[u8; 3]], lzw: bool) -> Vec<u8> {
-        let n = 1usize << BITS;
-        let mut map = vec![0u16; 3 * n];
-        for (i, c) in colours.iter().enumerate() {
-            for (ch, &v) in c.iter().enumerate() {
-                map[ch * n + i] = u16::from(v) << 8;
-            }
-        }
-        let mut b = Vec::new();
-        let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
-        if lzw {
-            enc = enc.with_compression(tiff::encoder::Compression::Lzw);
-        }
-        let mut img = enc.new_image::<Palette<BITS>>(w, h).unwrap();
-        img.encoder().write_tag(tiff::tags::Tag::ColorMap, &map[..]).unwrap();
-        img.write_data(px).unwrap();
-        b
-    }
-
-    /// Indexed-colour TIFFs (an old GIF logo saved from Photoshop) are sized and drawn through
-    /// their palette, uncompressed or LZW, 8- or 4-bit.
-    #[test]
-    fn palette_tiff_decodes_through_its_colormap() {
-        let colours = [[0, 128, 255], [255, 0, 0], [10, 20, 30]];
-        for lzw in [false, true] {
-            let b = palette_tiff::<8>(3, 1, &[2, 0, 1], &colours, lzw);
-            assert_eq!(pixel_size(&b), Some((3, 1)), "lzw {lzw}");
-            let img = decode_rgba(&b).expect("decodes");
-            let px: Vec<_> = img.pixels().map(|p| p.0).collect();
-            assert_eq!(px, [[10, 20, 30, 255], [0, 128, 255, 255], [255, 0, 0, 255]], "lzw {lzw}");
-        }
-        // Two indices per byte, high nibble first: 2, 1 | 0, 2 (the encoder counts samples, not
-        // bytes, so the strip carries two spare bytes the decoder doesn't read).
-        let b = palette_tiff::<4>(2, 2, &[0x21, 0x02, 0, 0], &colours, false);
-        assert_eq!(pixel_size(&b), Some((2, 2)));
-        let px: Vec<_> = decode_rgba(&b).expect("decodes").pixels().map(|p| p.0).collect();
-        assert_eq!(px, [[10, 20, 30, 255], [255, 0, 0, 255], [0, 128, 255, 255], [10, 20, 30, 255]]);
-    }
-
-    #[test]
-    fn cmyk_tiff_with_alpha_reports_its_pixel_size() {
-        use tiff::encoder::colortype::CMYKA8;
-        let b = tiff_of::<CMYKA8>(2, 1, &[0, 0, 0, 255, 255, 0, 0, 0, 0, 0], true);
-        assert_eq!(pixel_size(&b), Some((2, 1)));
-    }
-
-    #[test]
-    fn bmp_decodes() {
-        let mut bmp = Vec::new();
-        image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 255, 255]))
-            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
-            .unwrap();
-        assert_eq!(mime(&bmp), "image/bmp");
-        assert_eq!(pixel_size(&bmp), Some((3, 2)));
-        assert_eq!(decode_rgba(&bmp).unwrap().get_pixel(1, 1).0, [0, 0, 255, 255]);
-    }
-}
+mod tests;

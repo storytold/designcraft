@@ -13,7 +13,7 @@ pub(crate) const HEIGHT: f32 = ROW_PITCH + FIELD_H;
 
 fn group(ui: &mut Ui, id: &str, width: f32, draw: impl FnOnce(&mut Ui, Rect)) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::hover());
-    ui.interact(rect, egui::Id::new(("object_control", id)), Sense::hover());
+    ui.interact(rect, egui::Id::unique(("object_control", id)), Sense::hover());
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
     draw(&mut child, rect);
 }
@@ -32,8 +32,8 @@ fn cell<R>(ui: &mut Ui, group: Rect, x: f32, row: usize, width: f32, enabled: bo
 fn icon(ui: &mut Ui, group: Rect, x: f32, row: usize, name: &str, tip: &str) {
     let rect = Rect::from_min_size(group.min + vec2(x, row as f32 * ROW_PITCH + 2.5), vec2(16.0, 16.0));
     icons::paint(ui.painter(), rect, name, Tokens::get(ui.ctx()).icon);
-    let resp = ui.interact(rect, ui.id().with(("caption", name, row)), Sense::hover());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tip));
+    let resp = ui.interact(rect, ui.scope_id().with(("caption", name, row)), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, tip));
     resp.on_hover_ui(|ui| {
         crate::rtl::label(ui, tip);
     });
@@ -45,7 +45,7 @@ fn separator(ui: &mut Ui) {
 }
 
 fn toggle(ui: &mut Ui, group: Rect, x: f32, key: &str, tip: &str) -> bool {
-    let id = egui::Id::new(key);
+    let id = egui::Id::unique(key);
     let on = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
     let rect = Rect::from_min_size(group.min + vec2(x, 12.5), vec2(20.0, FIELD_H));
     if properties::place(ui, rect, |ui| widgets::icon_toggle(ui, if on { "link" } else { "link-broken" }, on, tip)).clicked() {
@@ -56,6 +56,7 @@ fn toggle(ui: &mut Ui, group: Rect, x: f32, key: &str, tip: &str) -> bool {
     }
 }
 
+/// Lay out the fixed two-row control groups for reference, geometry, transform, rotate/flip, appearance, wrap, corners, fitting, alignment and conditional columns.
 pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     let language = app.ui.language.clone();
     let tr = |text: &str| crate::i18n::tr(&language, text).to_owned();
@@ -184,7 +185,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
                 }
                 if let Some(resp) = chip_resp {
                     let label = tr(if stroke { "Stroke" } else { "Fill" });
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
                     resp.on_hover_text(label);
                 }
             });
@@ -362,7 +363,7 @@ mod tests {
     fn bottom_row_spinner_edits_height_inside_the_control_panel() {
         let (ctx, mut app) = fixture(true);
         let before = panels::sel_info(&app).unwrap().page_rect.height();
-        let group = ctx.read_response(egui::Id::new(("object_control", "dimensions"))).unwrap().rect;
+        let group = ctx.read_response(egui::Id::unique(("object_control", "dimensions"))).unwrap().rect;
         assert!(group.bottom() <= 59.0, "second row is inside the panel: {group:?}");
         let height_up = group.min + vec2(123.0 + widgets::SEG_W / 2.0, ROW_PITCH + FIELD_H / 4.0);
         click(&ctx, &mut app, height_up);
@@ -374,7 +375,7 @@ mod tests {
     fn empty_selection_keeps_numeric_controls_inactive() {
         let (ctx, mut app) = fixture(false);
         let status = app.ui.status.clone();
-        let group = ctx.read_response(egui::Id::new(("object_control", "dimensions"))).unwrap().rect;
+        let group = ctx.read_response(egui::Id::unique(("object_control", "dimensions"))).unwrap().rect;
         click(&ctx, &mut app, group.min + vec2(24.0, FIELD_H / 4.0));
         assert_eq!(app.ui.status, status, "disabled spinners do not attempt transforms");
         assert!(panels::sel_info(&app).is_none());
@@ -385,7 +386,7 @@ mod tests {
         let (ctx, mut app) = fixture(true);
         frame_with_width(&ctx, &mut app, vec![], 900.0);
         frame_with_width(&ctx, &mut app, vec![], 900.0);
-        let id = egui::Id::new(("object_control", "align"));
+        let id = egui::Id::unique(("object_control", "align"));
         let before = ctx.read_response(id).unwrap().rect;
         assert!(before.right() > 900.0, "the toolbar overflows at the minimum width");
         frame_with_width(
@@ -398,6 +399,7 @@ mod tests {
                     delta: vec2(-500.0, 0.0),
                     phase: egui::TouchPhase::Move,
                     modifiers: Default::default(),
+                    source: egui::MouseWheelSource::Unknown,
                 },
             ],
             900.0,

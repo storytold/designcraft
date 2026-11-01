@@ -1,15 +1,17 @@
 //! The folders automation may read and write.
 //!
 //! `designcraft-cli mcp --automation-read-root <dir> --automation-write-root <dir>` confines the
-//! files an agent's commands reach. [`AutomationRoots`] holds the two folders. While they are in force, every path a command
-//! reads goes through [`check_read`] and every path it writes through [`check_write`]:
+//! files an agent's commands reach; each flag may be given more than once (#1552). [`AutomationRoots`]
+//! holds the folders of each kind. While they are in force, every path a command reads goes through
+//! [`check_read`] and every path it writes through [`check_write`]:
 //!
 //! - The path is made absolute against the working directory, as the file system reads it. Its
 //!   links are followed: for a file that doesn't exist yet, the links of its nearest existing
 //!   folder, the rest of the path being plain names (`..` below a missing folder is refused, and so
 //!   is a link that leads nowhere).
-//! - The result must lie inside the root, compared by whole components (`/work2` isn't inside
-//!   `/work`), without regard to case on Windows.
+//! - The result must lie inside one of the roots of its kind, compared by whole components
+//!   (`/work2` isn't inside `/work`), without regard to case on Windows. Two roots don't make their
+//!   common parent one.
 //! - Read and write access are separate: a root given alone grants only its own kind of access.
 //!
 //! Roots are in force on a thread inside [`confine`], and in the whole process after
@@ -32,11 +34,11 @@ pub enum Access {
     Write,
 }
 
-/// The folders automation may read and write; a root left out grants no access of its kind.
+/// The folders automation may read and write; a kind with no root grants no access of its kind.
 #[derive(Debug)]
 pub struct AutomationRoots {
-    read: Option<Root>,
-    write: Option<Root>,
+    read: Vec<Root>,
+    write: Vec<Root>,
 }
 
 #[derive(Debug)]
@@ -62,47 +64,61 @@ impl Root {
 }
 
 impl AutomationRoots {
-    /// The roots `read` and `write`, which must be existing folders; `None` when neither is given
-    /// (nothing is confined then).
-    pub fn new(read: Option<&Path>, write: Option<&Path>) -> Result<Option<Arc<Self>>, String> {
-        if read.is_none() && write.is_none() {
+    /// The roots `read` and `write`, which must be existing folders (one given twice counts once);
+    /// `None` when neither kind has any (nothing is confined then).
+    pub fn new(read: &[&Path], write: &[&Path]) -> Result<Option<Arc<Self>>, String> {
+        if read.is_empty() && write.is_empty() {
             return Ok(None);
         }
-        let read = read.map(|p| Root::open(p, Access::Read)).transpose()?;
-        let write = write.map(|p| Root::open(p, Access::Write)).transpose()?;
-        Ok(Some(Arc::new(Self { read, write })))
+        let open = |paths: &[&Path], access: Access| -> Result<Vec<Root>, String> {
+            let mut roots: Vec<Root> = Vec::with_capacity(paths.len());
+            for path in paths {
+                let root = Root::open(path, access)?;
+                if !roots.iter().any(|r| r.resolved == root.resolved) {
+                    roots.push(root);
+                }
+            }
+            Ok(roots)
+        };
+        Ok(Some(Arc::new(Self { read: open(read, Access::Read)?, write: open(write, Access::Write)? })))
     }
 
-    /// The read root, absolute with its links followed.
-    pub fn read_root(&self) -> Option<&Path> {
-        self.read.as_ref().map(|r| r.shown.as_path())
+    /// The roots for people: `read A, B; write C` (`none` for a kind without any), absolute with
+    /// their links followed.
+    pub fn describe(&self) -> String {
+        let list = |roots: &[Root]| {
+            if roots.is_empty() {
+                return "none".to_string();
+            }
+            roots.iter().map(|r| r.shown.display().to_string()).collect::<Vec<_>>().join(", ")
+        };
+        format!("read {}; write {}", list(&self.read), list(&self.write))
     }
 
-    /// The write root, absolute with its links followed.
-    pub fn write_root(&self) -> Option<&Path> {
-        self.write.as_ref().map(|r| r.shown.as_path())
-    }
-
-    /// May the file or folder at `path` be read (or written)? `Err` says why not.
+    /// May the file or folder at `path` be read (or written)? It must lie inside one of the roots
+    /// of that kind. `Err` says why not.
     pub fn check(&self, path: impl AsRef<Path>, access: Access) -> Result<(), String> {
         let path = path.as_ref();
-        let root = match access {
-            Access::Read => self.read.as_ref(),
-            Access::Write => self.write.as_ref(),
+        let roots = match access {
+            Access::Read => &self.read,
+            Access::Write => &self.write,
         };
-        let Some(Root { resolved: folder, shown }) = root else {
+        if roots.is_empty() {
             return match access {
                 Access::Read => Err(format!("automation filesystem access is not granted: read authority is absent: {}", path.display())),
                 Access::Write => Err(format!("automation filesystem access is not granted: write authority is absent: {}", path.display())),
             };
-        };
-        if inside(&resolve(path)?, folder) {
+        }
+        let resolved = resolve(path)?;
+        if roots.iter().any(|r| inside(&resolved, &r.resolved)) {
             return Ok(());
         }
-        let root = shown.display();
-        match access {
-            Access::Read => Err(format!("automation path rejected: outside the read root {root}: {}", path.display())),
-            Access::Write => Err(format!("automation path rejected: outside the write root {root}: {}", path.display())),
+        let shown: Vec<String> = roots.iter().map(|r| r.shown.display().to_string()).collect();
+        match (shown.as_slice(), access) {
+            ([root], Access::Read) => Err(format!("automation path rejected: outside the read root {root}: {}", path.display())),
+            ([root], Access::Write) => Err(format!("automation path rejected: outside the write root {root}: {}", path.display())),
+            (_, Access::Read) => Err(format!("automation path rejected: outside the read roots {}: {}", shown.join(", "), path.display())),
+            (_, Access::Write) => Err(format!("automation path rejected: outside the write roots {}: {}", shown.join(", "), path.display())),
         }
     }
 }
@@ -279,12 +295,24 @@ mod tests {
         }
         std::fs::write(base.join("in/a.designcraft"), "x").unwrap();
         std::fs::write(base.join("outside/secret.designcraft"), "x").unwrap();
-        let roots = AutomationRoots::new(Some(&base.join("in")), Some(&base.join("out"))).unwrap().unwrap();
+        let roots = AutomationRoots::new(&[&base.join("in")], &[&base.join("out")]).unwrap().unwrap();
         (base, roots)
     }
 
     fn s(p: PathBuf) -> String {
-        p.to_string_lossy().into_owned()
+        let text = p.to_string_lossy();
+        if !cfg!(windows) {
+            return text.into_owned();
+        }
+        // A canonical path on Windows has a `\\?\` prefix, under which `..` is not a name:
+        // send ordinary paths, as the roots show them.
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_owned(),
+            None => text.into_owned(),
+        }
     }
 
     #[test]
@@ -339,18 +367,18 @@ mod tests {
     #[test]
     fn a_missing_root_is_an_error_and_none_is_no_confinement() {
         let (base, _) = folders("missing");
-        let e = AutomationRoots::new(Some(&base.join("nope")), None).unwrap_err();
+        let e = AutomationRoots::new(&[&base.join("nope")], &[]).unwrap_err();
         assert!(e.starts_with("cannot open the automation read root"), "{e}");
-        let e = AutomationRoots::new(None, Some(&base.join("in/a.designcraft"))).unwrap_err();
+        let e = AutomationRoots::new(&[], &[&base.join("in/a.designcraft")]).unwrap_err();
         assert!(
             e.starts_with("cannot open the automation write root")
                 && e.ends_with(&std::io::Error::from(std::io::ErrorKind::NotADirectory).to_string()),
             "{e}"
         );
-        assert!(AutomationRoots::new(Some(Path::new("")), None).unwrap_err().starts_with("cannot open the automation read root ``"));
-        assert!(AutomationRoots::new(None, None).unwrap().is_none());
+        assert!(AutomationRoots::new(&[Path::new("")], &[]).unwrap_err().starts_with("cannot open the automation read root ``"));
+        assert!(AutomationRoots::new(&[], &[]).unwrap().is_none());
         // One root alone grants only its own access.
-        let read_only = AutomationRoots::new(Some(&base.join("in")), None).unwrap().unwrap();
+        let read_only = AutomationRoots::new(&[&base.join("in")], &[]).unwrap().unwrap();
         let e = read_only.check(s(base.join("in/x.designcraft")), Access::Write).unwrap_err();
         assert!(e.contains("write authority is absent"), "{e}");
         let _ = std::fs::remove_dir_all(base);
@@ -387,8 +415,124 @@ mod tests {
         assert_eq!(roots.check(s(base.join("in/alias/x.designcraft")), Access::Read), Ok(()));
         // A root given through a link is the folder it leads to.
         assert!(made(&base.join("in"), &base.join("in-link")));
-        let linked = AutomationRoots::new(Some(&base.join("in-link")), None).unwrap().unwrap();
+        let linked = AutomationRoots::new(&[&base.join("in-link")], &[]).unwrap().unwrap();
         assert_eq!(linked.check(s(base.join("in/a.designcraft")), Access::Read), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// `in` and `shared` (read roots), `out` and `scratch` (write roots) beside `outside`, the
+    /// siblings `in2` and `scratch2` whose names start like a root's, and a file in their parent.
+    /// The folder is returned resolved (`/var` is `/private/var` on macOS), as the roots show it, so
+    /// a path that passes only because it was resolved is the case being tested and nothing else.
+    /// It has no `\\?\` prefix on Windows, where the roots are shown without it and `..` is not
+    /// resolved in a path that has it.
+    fn several(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
+        let (base, _) = folders(name);
+        let base = plain(std::fs::canonicalize(base).unwrap());
+        for d in ["shared", "scratch", "scratch2"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        for f in ["shared/b.designcraft", "in2/c.designcraft", "parent.designcraft"] {
+            std::fs::write(base.join(f), "x").unwrap();
+        }
+        let roots = AutomationRoots::new(&[&base.join("in"), &base.join("shared")], &[&base.join("out"), &base.join("scratch")]).unwrap().unwrap();
+        (base, roots)
+    }
+
+    /// #1552: several roots of a kind: a path inside any of them passes, one inside none is refused
+    /// naming them all, and read and write stay separate.
+    #[test]
+    fn several_roots_of_a_kind_each_grant_their_access() {
+        let (base, roots) = several("several");
+        assert_eq!(roots.check(s(base.join("in/a.designcraft")), Access::Read), Ok(()));
+        assert_eq!(roots.check(s(base.join("shared/b.designcraft")), Access::Read), Ok(()));
+        assert_eq!(roots.check(s(base.join("out/x.png")), Access::Write), Ok(()));
+        assert_eq!(roots.check(s(base.join("scratch/new/x.png")), Access::Write), Ok(()));
+        let e = roots.check(s(base.join("outside/secret.designcraft")), Access::Read).unwrap_err();
+        let listed = format!("outside the read roots {}, {}: ", s(base.join("in")), s(base.join("shared")));
+        assert!(e.starts_with("automation path rejected: ") && e.contains(&listed), "{e}");
+        assert!(roots.check(s(base.join("outside/x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
+        // Two sibling roots don't make their parent a root.
+        assert!(roots.check(s(base.join("parent.designcraft")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(s(base.clone()), Access::Read).is_err());
+        assert!(roots.check(s(base.join("x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
+        // Read and write stay separate: a read root is not a write root, nor the other way round.
+        assert!(roots.check(s(base.join("shared/b.designcraft")), Access::Write).unwrap_err().contains("outside the write roots"));
+        assert!(roots.check(s(base.join("in/x.png")), Access::Write).is_err());
+        assert!(roots.check(s(base.join("scratch/x.png")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(s(base.join("out")), Access::Read).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn several_roots_compare_whole_folder_names() {
+        let (base, roots) = several("several-prefix");
+        assert!(roots.check(s(base.join("in2/c.designcraft")), Access::Read).unwrap_err().contains("outside the read roots"), "in2 is not inside in");
+        assert!(roots.check(format!("{}2/x.designcraft", s(base.join("shared"))), Access::Read).is_err());
+        assert!(
+            roots.check(s(base.join("scratch2/x.png")), Access::Write).unwrap_err().contains("outside the write roots"),
+            "scratch2 is not inside scratch"
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn parent_traversal_between_several_roots() {
+        let (base, roots) = several("several-dotdot");
+        let sep = std::path::MAIN_SEPARATOR;
+        let up = |root: &str, rest: &str| format!("{}{sep}..{sep}{rest}", s(base.join(root)));
+        // `..` out of one root is outside, also when it lands next to another root.
+        assert!(roots.check(up("shared", &format!("outside{sep}secret.designcraft")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(up("shared", "parent.designcraft"), Access::Read).is_err());
+        assert!(roots.check(up("scratch", &format!("outside{sep}x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
+        // `..` from one root into another of the same kind stays inside.
+        assert_eq!(roots.check(up("shared", &format!("in{sep}a.designcraft")), Access::Read), Ok(()));
+        assert_eq!(roots.check(up("scratch", &format!("out{sep}x.png")), Access::Write), Ok(()));
+        // ...but not into a root of the other kind.
+        assert!(roots.check(up("scratch", &format!("in{sep}x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
+        assert!(roots.check(up("shared", &format!("out{sep}x.png")), Access::Read).unwrap_err().contains("outside the read roots"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn several_roots_are_each_checked_and_counted_once() {
+        let (base, _) = folders("several-open");
+        // A missing folder among several is an error, wherever it stands.
+        for read in [[base.join("in"), base.join("nope")], [base.join("nope"), base.join("in")]] {
+            let e = AutomationRoots::new(&[&read[0], &read[1]], &[]).unwrap_err();
+            assert!(e.starts_with("cannot open the automation read root") && e.contains("nope"), "{e}");
+        }
+        let e = AutomationRoots::new(&[&base.join("in")], &[&base.join("out"), &base.join("in/a.designcraft")]).unwrap_err();
+        assert!(e.starts_with("cannot open the automation write root"), "{e}");
+        // A folder given twice (here once through `..`) counts once.
+        let twice = AutomationRoots::new(&[&base.join("in"), &base.join("in/sub/.."), &base.join("in")], &[]).unwrap().unwrap();
+        let real = plain(std::fs::canonicalize(&base).unwrap());
+        assert_eq!(twice.describe(), format!("read {}; write none", s(real.join("in"))));
+        let e = twice.check(s(base.join("outside/x")), Access::Read).unwrap_err();
+        assert!(e.contains("outside the read root ") && !e.contains("roots"), "{e}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A link inside one root that leads into another root of the same kind stays inside; one that
+    /// leads out of all of them, or into a root of the other kind, is outside.
+    #[cfg(unix)]
+    #[test]
+    fn links_between_several_roots() {
+        let (base, roots) = several("several-links");
+        let link = |target: &str, at: &str| std::os::unix::fs::symlink(base.join(target), base.join(at)).unwrap();
+        link("shared/b.designcraft", "in/to-shared.designcraft");
+        link("outside/secret.designcraft", "shared/leak.designcraft");
+        link("", "shared/up");
+        link("out", "in/to-out");
+        link("outside", "scratch/away");
+        link("in", "scratch/to-in");
+        assert_eq!(roots.check(s(base.join("in/to-shared.designcraft")), Access::Read), Ok(()));
+        assert!(roots.check(s(base.join("shared/leak.designcraft")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(s(base.join("shared/up/outside/secret.designcraft")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(s(base.join("shared/up/parent.designcraft")), Access::Read).is_err());
+        assert!(roots.check(s(base.join("in/to-out/x.png")), Access::Read).unwrap_err().contains("outside the read roots"));
+        assert!(roots.check(s(base.join("scratch/away/x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
+        assert!(roots.check(s(base.join("scratch/to-in/x.png")), Access::Write).unwrap_err().contains("outside the write roots"));
         let _ = std::fs::remove_dir_all(base);
     }
 
