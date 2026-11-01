@@ -423,6 +423,40 @@ mod document_fonts_tests {
         assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": [{"name": "x.ttf"}]})).is_err());
     }
 
+    /// Fonts supplied with a document keep the existing EPUB embedding restrictions.
+    #[test]
+    fn supplied_document_fonts_keep_epub_embedding_restrictions() {
+        use designcraft_fonts::testing::with_fs_type;
+        use std::io::Read;
+
+        const FAMILY: &str = "DocFont Bytes Embedding";
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        maker.execute("style.paragraph.create", &json!({"name": "Supplied", "chars": {"fontFamily": FAMILY, "fontStyle": "Regular"}})).unwrap();
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let b64 = super::super::bytes::base64_encode;
+        for (fs_type, may_embed) in [(0x0000, true), (0x0002, false), (0x0208, false)] {
+            let font = with_fs_type(font_with(FAMILY, &['a']).unwrap(), fs_type).unwrap();
+            let mut s = Session::new();
+            s.execute(
+                "file.openBytes",
+                &json!({"name": "Licence.designcraft", "base64": b64(&native), "fonts": [{"name": "licensed.ttf", "base64": b64(&font)}]}),
+            )
+            .unwrap();
+            let result = s.execute("file.exportEpub", &json!({"embedFonts": true})).unwrap();
+            let bytes = super::super::bytes::base64_decode(result["base64"].as_str().unwrap());
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+            let mut css = String::new();
+            archive.by_name("OEBPS/style.css").unwrap().read_to_string(&mut css).unwrap();
+            assert_eq!(css.contains(&format!("@font-face {{ font-family: \"{FAMILY}\"")), may_embed, "fsType {fs_type:04x}: {css}");
+            assert_eq!(
+                result["warnings"].to_string().contains(&format!("{FAMILY} Regular`: its licence doesn't allow embedding")),
+                !may_embed,
+                "{result}"
+            );
+        }
+    }
+
     #[test]
     fn closing_a_document_forgets_its_fonts_and_reopening_reuses_them() {
         const FAMILY: &str = "DocFont Closed";
