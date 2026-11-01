@@ -561,6 +561,43 @@ fn wrap_on_both_sides_sets_text_left_then_right_of_the_object() {
     assert!(!cs.is_overset());
 }
 
+#[test]
+fn below_ruby_on_one_segment_keeps_the_rows_room() {
+    // Text on both sides of a rectangular object shares a baseline. Ruby below the line on the
+    // first segment still pushes the next row down, though the segment after it has none.
+    let (mut d, sid, _) = doc_with(&[LOREM; 4].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(120.0, 100.0, 180.0, 600.0)),
+    );
+    it.wrap.mode = WrapMode::BoundingBox;
+    it.wrap.side = WrapSide::BothSides;
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let base = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &base.frames[0].lines;
+    let (baseline, range) = lines
+        .windows(2)
+        .find(|w| w[0].baseline == w[1].baseline)
+        .map(|w| (w[0].baseline, w[0].range.clone()))
+        .expect("text on both sides of the object");
+    let next_gap = |lines: &[Line]| lines.iter().find(|l| l.baseline > baseline + 1e-9).map(|l| l.baseline - baseline).unwrap();
+    let base_gap = next_gap(lines);
+    d.story_mut(sid).unwrap().format_chars(range, |f| {
+        f.over.ruby = Some("かんじ".into());
+        f.over.ruby_adjust_leading = Some(true);
+        f.over.ruby_position = Some(designcraft_doc::ruby::RubyPosition::BelowLeft);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let shared = lines.iter().filter(|l| (l.baseline - baseline).abs() < 1e-9).count();
+    assert!(shared >= 2, "the row keeps both segments: {shared}");
+    let gap = next_gap(lines);
+    assert!(gap > base_gap + 5.0, "row gap {gap} did not grow from {base_gap}");
+}
+
 /// Same As Clipping follows a placed graphic's clipping path: beside a triangle that widens
 /// downwards, text reaches further in at the narrow top than at the wide bottom.
 #[test]
@@ -2592,6 +2629,121 @@ fn ruby_and_kenten_sit_over_their_text() {
     let dot = l.glyphs.last().unwrap();
     let de = &l.glyphs[2];
     assert!((dot.x + dot.adv / 2.0 - (de.x + de.adv / 2.0)).abs() < 1.0 && dot.y < 0.0);
+}
+
+#[test]
+fn ruby_adjusts_leading_only_when_asked() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(100.0, 100.0, 120.0, 600.0),
+            lid,
+            "漢字です。漢字です。漢字です。漢字です。",
+            ParaFormat::default(),
+        )
+        .unwrap();
+    let base = compose_story(&d, sid, &ComposeOptions::default());
+    let base_lines = &base.frames[0].lines;
+    assert!(base_lines.len() >= 2, "the text needs to wrap: {}", base_lines.len());
+    let (base_gap, base_asc0, base_asc1, base_desc0) =
+        (base_lines[1].baseline - base_lines[0].baseline, base_lines[0].ascent, base_lines[1].ascent, base_lines[0].descent);
+    let (first, second) = (base_lines[0].range.clone(), base_lines[1].range.clone());
+    // A reading far enough from the line to need room of its own, above or below it.
+    let ruby = |d: &mut Document, range: std::ops::Range<usize>, below: bool, on: bool| {
+        d.story_mut(sid).unwrap().format_chars(range, |f| {
+            f.over.ruby = Some("かんじ".into());
+            f.over.ruby_y_offset = Some(20.0);
+            f.over.ruby_adjust_leading = Some(on);
+            f.over.ruby_position =
+                Some(if below { designcraft_doc::ruby::RubyPosition::BelowLeft } else { designcraft_doc::ruby::RubyPosition::AboveRight });
+        });
+    };
+    // Ruby above the second line: that line's ascent and the gap from the first line grow.
+    ruby(&mut d, second.clone(), false, true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.len() >= 2);
+    assert!(lines[1].ascent > base_asc1 + 10.0, "ascent {} did not grow from {base_asc1}", lines[1].ascent);
+    let gap = lines[1].baseline - lines[0].baseline;
+    assert!(gap > base_gap + 10.0, "leading {gap} did not grow from {base_gap}");
+    assert!((lines[0].ascent - base_asc0).abs() < 1e-9, "the first line grew too: {}", lines[0].ascent);
+    // The same ruby with the setting off leaves every line metric as it was.
+    ruby(&mut d, second.clone(), false, false);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!((lines[1].ascent - base_asc1).abs() < 1e-9, "{} {base_asc1}", lines[1].ascent);
+    assert!((lines[1].baseline - lines[0].baseline - base_gap).abs() < 1e-9);
+    // Ruby below the first line: that line's descent and the gap to the second line grow.
+    ruby(&mut d, first, true, true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.len() >= 2);
+    assert!(lines[0].descent > base_desc0 + 10.0, "descent {} did not grow from {base_desc0}", lines[0].descent);
+    let gap = lines[1].baseline - lines[0].baseline;
+    assert!(gap > base_gap + 10.0, "leading {gap} did not grow from {base_gap}");
+}
+
+#[test]
+fn ruby_adjusts_leading_under_aki_below() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(100.0, 100.0, 120.0, 600.0),
+            lid,
+            "漢字です。漢字です。漢字です。漢字です。",
+            ParaFormat { para: ParaAttrs { composer: Some(Composer::Japanese), ..Default::default() }, ..Default::default() },
+        )
+        .unwrap();
+    let len = d.story(sid).unwrap().len();
+    d.story_mut(sid).unwrap().format_chars(0..len, |f| f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow));
+    let base = compose_story(&d, sid, &ComposeOptions::default());
+    let base_lines = &base.frames[0].lines;
+    assert!(base_lines.len() >= 2, "the text needs to wrap: {}", base_lines.len());
+    let (base_gap, base_desc0) = (base_lines[1].baseline - base_lines[0].baseline, base_lines[0].descent);
+    let first = base_lines[0].range.clone();
+    d.story_mut(sid).unwrap().format_chars(first, |f| {
+        f.over.ruby = Some("かんじ".into());
+        f.over.ruby_y_offset = Some(20.0);
+        f.over.ruby_adjust_leading = Some(true);
+        f.over.ruby_position = Some(designcraft_doc::ruby::RubyPosition::BelowLeft);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert!(lines.len() >= 2);
+    assert!(lines[0].descent > base_desc0 + 10.0, "descent {} did not grow from {base_desc0}", lines[0].descent);
+    // Aki Below sets the gap from the upper line's leading: the room below it still goes on top.
+    let gap = lines[1].baseline - lines[0].baseline;
+    assert!(gap > base_gap + 10.0, "leading {gap} did not grow from {base_gap}");
+}
+
+#[test]
+fn ascent_first_baseline_makes_room_for_above_ruby() {
+    use designcraft_doc::FirstBaseline;
+    let (mut d, sid, fid) = doc_with("漢字です", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.inset = [10.0, 10.0, 10.0, 10.0];
+    tf.options.first_baseline = FirstBaseline::Ascent;
+    let base = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline;
+    // Ruby far enough above the parent to outgrow the typographic ascender the first baseline
+    // otherwise sits at.
+    d.story_mut(sid).unwrap().format_chars(0.."漢字".len(), |f| {
+        f.over.ruby = Some("かんじ".into());
+        f.over.ruby_y_offset = Some(20.0);
+        f.over.ruby_adjust_leading = Some(true);
+        f.over.ruby_position = Some(designcraft_doc::ruby::RubyPosition::AboveRight);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    assert!(line.baseline > base + 10.0, "the first baseline did not move down for its ruby: {} {base}", line.baseline);
+    assert!(line.baseline - line.ascent >= 10.0 - 0.01, "the ruby top {} is above the column top 10", line.baseline - line.ascent);
+    // With the setting off the first baseline stays where it was.
+    d.story_mut(sid).unwrap().format_chars(0.."漢字".len(), |f| f.over.ruby_adjust_leading = Some(false));
+    let line = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0];
+    assert!((line.baseline - base).abs() < 1e-9, "the first baseline moved with the setting off: {} {base}", line.baseline);
 }
 
 /// `text` on one line, composed plain and then with the ruby attributes `set` on `range`: the
@@ -7272,6 +7424,45 @@ fn paragraph_gyoudori_centres_the_whole_paragraph() {
     let middle = (firsts[0] + firsts[1]) / 2.0;
     assert!(on_grid(middle - 1.5 * grid.1, grid), "{firsts:?}");
     assert!((firsts[2] - (middle - 1.5 * grid.1) - 4.0 * grid.1).abs() < 1e-6, "{firsts:?}");
+}
+
+#[test]
+fn paragraph_gyoudori_reserves_below_ruby_room() {
+    // A two-line paragraph-gyoudori block in eight grid lines: ruby below its first line pushes
+    // its last line down, so the block spans more and starts higher, the last line on the grid.
+    let text = "漢字です。\u{2028}漢字です。\n次";
+    let para = ParaAttrs {
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_gyoudori: Some(8),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
+    if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
+        tf.options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, 12.0));
+    }
+    let second = text.len() - "次".len();
+    d.story_mut(sid).unwrap().format_paras(second..text.len(), |p| {
+        p.para.grid_gyoudori = Some(0);
+        p.para.paragraph_gyoudori = Some(false);
+    });
+    let base = compose_story(&d, sid, &ComposeOptions::default());
+    let base_lines = &base.frames[0].lines;
+    assert_eq!(base_lines.len(), 3, "two lines and a following paragraph");
+    let (first, base_first) = (base_lines[0].range.clone(), base_lines[0].baseline);
+    d.story_mut(sid).unwrap().format_chars(first, |f| {
+        f.over.ruby = Some("かんじ".into());
+        f.over.ruby_y_offset = Some(20.0);
+        f.over.ruby_adjust_leading = Some(true);
+        f.over.ruby_position = Some(designcraft_doc::ruby::RubyPosition::BelowLeft);
+    });
+    let grid = frame_specs(&d, sid)[0].grid.unwrap_or((0.0, 12.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert_eq!(lines.len(), 3);
+    // The lookahead counted the below-ruby room: the block is taller and still ends on the grid.
+    assert!(on_grid(lines[1].baseline, grid), "last line {} off the grid {grid:?}", lines[1].baseline);
+    assert!(lines[0].baseline < base_first - 10.0, "the block did not make room above its last line: {} {base_first}", lines[0].baseline);
 }
 
 #[test]
