@@ -128,7 +128,22 @@ impl<'a> Rules<'a> {
         }
         let punctuation = trailing(left).max(leading(right));
         if punctuation > 0.0 {
-            return Aki { min: 0.0, desired: punctuation, max: punctuation, priority: 1, discrete: false };
+            // The Japanese sets take a line in at the quarter ems of middle dots (・：；) first, then
+            // at the half ems of brackets and commas, and don't reduce the space after a full stop
+            // (JLREQ 3.8.3). ！？ share the first tier: JLREQ sets them solid (Table 1) and
+            // gives the quarter em only as an alternative (3.1.6), so reducing it first returns
+            // to that default. The tier follows the character classes, not the blank's size. The
+            // Chinese sets reduce all punctuation blanks together.
+            let japanese = self.base != Base::Chinese;
+            let bracket_or_comma = matches!(left, 2 | 6 | 21 | 28..=31) || matches!(right, 1 | 26 | 27);
+            let full_stop = matches!(left, 6 | 31);
+            return Aki {
+                min: if japanese && full_stop { punctuation } else { 0.0 },
+                desired: punctuation,
+                max: punctuation,
+                priority: if japanese && bracket_or_comma { 2 } else { 1 },
+                discrete: false,
+            };
         }
         let roman = |c| matches!(c, 18 | 25);
         let ideograph = |c| matches!(c, 3 | 7..=9 | 11 | 12 | 24 | 33);
@@ -271,6 +286,40 @@ mod tests {
         for (l, r) in [(12, 18), (22, class('（')), (class('。'), 22), (12, 12)] {
             let (a, b) = (missing.pair(l, r), nothing.pair(l, r));
             assert_eq!((a.min, a.desired, a.max, a.priority), (b.min, b.desired, b.max, b.priority), "{l}/{r}");
+        }
+    }
+
+    #[test]
+    fn middle_dots_reduce_first_and_a_full_stops_space_never() {
+        let styles = Styles::default();
+        for set in ["LineEndAllOneHalfEmEnum", "LineEndAllOneEmEnum"] {
+            let rules = Rules::resolve(&styles, set).unwrap().unwrap();
+            let aki = |a: char, b: char| rules.pair(class(a), class(b));
+            // Middle dots' quarter ems, then brackets' and commas' half ems, then wa-ō aki.
+            let (dot, after_dot, comma, close, open, wa_ou) =
+                (aki('漢', '・'), aki('・', '漢'), aki('、', '漢'), aki('」', '漢'), aki('漢', '「'), aki('漢', 'A'));
+            assert!(dot.priority == after_dot.priority && dot.priority < comma.priority, "{set}");
+            assert!(comma.priority == close.priority && close.priority == open.priority && open.priority < wa_ou.priority, "{set}");
+            assert_eq!((dot.min, comma.min, close.min, open.min), (0.0, 0.0, 0.0, 0.0), "{set}");
+            // The tier follows the class: ：；！？ share the middle dots' tier, and a bracket's half
+            // em beside one of them stays with the brackets.
+            for (a, b) in [('漢', '：'), ('；', '漢'), ('漢', '！'), ('？', '漢')] {
+                assert_eq!(aki(a, b).priority, dot.priority, "{set}: {a}{b}");
+            }
+            assert_eq!(aki('！', '「').priority, open.priority, "{set}: ！「");
+            // After a full stop the half em stays, before an opening bracket too.
+            for b in ['漢', '「'] {
+                let a = aki('。', b);
+                assert_eq!((a.min, a.desired), (0.5, 0.5), "{set}: 。{b}");
+            }
+        }
+        // The Chinese sets are unchanged: every punctuation blank reduces together, to nothing.
+        for set in ["SimpChineseDefault", "TradChineseDefault"] {
+            let rules = Rules::resolve(&styles, set).unwrap().unwrap();
+            for (a, b) in [('漢', '・'), ('、', '漢'), ('」', '漢'), ('漢', '「'), ('。', '漢')] {
+                let aki = rules.pair(class(a), class(b));
+                assert_eq!((aki.min, aki.priority), (0.0, 1), "{set}: {a}{b}");
+            }
         }
     }
 }
