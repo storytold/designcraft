@@ -1624,6 +1624,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-idml",
  "designcraft-render",
+ "designcraft-textimport",
  "designcraft-tools",
  "egui",
  "egui_kittest",
