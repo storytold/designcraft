@@ -267,7 +267,7 @@ mod document_fonts_tests {
         s.execute("type.char", &json!({"fontFamily": FAMILY, "fontStyle": "Regular"})).unwrap();
         assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
         assert!(glyph_faces(&s).iter().any(|(_, face)| face.family == FAMILY));
-        s.execute("file.openBytes", &json!({"name": path.to_string_lossy(), "base64": super::base64_encode(&bytes)})).unwrap();
+        s.execute("file.openBytes", &json!({"name": path.to_string_lossy(), "base64": crate::cmd::base64_encode(&bytes)})).unwrap();
         assert_eq!(s.doc().unwrap().doc.font_scope, 0);
         assert!(s.doc().unwrap().fonts.is_none());
         assert!(glyph_faces(&s).iter().all(|(_, face)| face.family != FAMILY));
