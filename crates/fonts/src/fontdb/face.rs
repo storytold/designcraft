@@ -125,11 +125,17 @@ pub struct FontFace {
     postscript: std::sync::OnceLock<Option<String>>,
 }
 
-/// A cheap `Copy` handle to a face. Faces are never unloaded, so the handle lives for the rest of
-/// the process; unlike cloning an `Arc`, copying it touches no shared reference count (which made
-/// parallel composition scale negatively).
-#[derive(Clone, Copy)]
-pub struct FaceRef(pub(crate) &'static FontFace);
+/// A glyph's face handle. Supplied document data stays alive until its last handle is dropped.
+/// Persistent sources retain a process-lifetime handle whose clones touch no shared reference
+/// count, preserving the composition path for bundled, installed and folder-loaded fonts.
+#[derive(Clone)]
+pub struct FaceRef(pub(crate) FaceHandle);
+
+#[derive(Clone)]
+pub(crate) enum FaceHandle {
+    Permanent(&'static FontFace),
+    Scoped(Arc<FontFace>),
+}
 
 impl FontFace {
     pub fn data(&self) -> &[u8] {

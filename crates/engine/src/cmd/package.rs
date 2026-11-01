@@ -13,7 +13,7 @@ use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 use designcraft_compose::ComposedStory;
 use designcraft_doc::{AssetId, Document};
-use designcraft_fonts::{FaceRef, FontFace, FontSource};
+use designcraft_fonts::{FaceRef, FontSource};
 use serde_json::{Value, json};
 
 const MAX_OUTPUT_COMPONENT_BYTES: usize = 200;
@@ -321,25 +321,39 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
 }
 
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
-/// restricts it or it is already there (`copied`: the source files copied) → what the package
+/// restricts it or it is already there (`copied`: handles retaining the source files) → what the package
 /// report adds after the font's name (nothing when copied).
-fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
+fn copy_font(root: &OutputRoot, face: &FaceRef, dir: &Path, copied: &mut Vec<FaceRef>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
-        FontSource::Memory | FontSource::DocumentData(_) => return " — not copied: no font file".into(),
-        FontSource::Installed(p) | FontSource::Document(p) => p,
+        FontSource::Memory => return " — not copied: no font file".into(),
+        FontSource::DocumentData(_) => None,
+        FontSource::Installed(p) | FontSource::Document(p) => Some(p),
     };
-    if face.restricted_licence() {
+    if face.restricted_licence() || face.bitmap_only() {
         return " — not copied: its licence doesn't allow it".into();
     }
-    if copied.contains(from) {
+    // Collection faces and variable instances share their source bytes. Keep the handles alive
+    // for this operation, so byte identity stays valid; supplied names need not be unique.
+    if copied.iter().any(|previous| match (from, previous.source.path()) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => std::ptr::eq(previous.data(), face.data()),
+        _ => false,
+    }) {
         return String::new();
     }
-    let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
+    let name = match &face.source {
+        FontSource::DocumentData(name) => name.clone(),
+        _ => from.and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    let name = safe_component(&name, "font");
     let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
-    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+    match root.validate_directory(dir).and_then(|_| match from {
+        Some(from) => root.copy(from, &to),
+        None => root.write(&to, face.data()),
+    }) {
         Ok(()) => {
-            copied.push(from.clone());
+            copied.push(face.clone());
             files.push(to);
             String::new()
         }
@@ -375,7 +389,7 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
     for f in &cs.frames {
         for g in f.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible) {
             if !out.iter().any(|o| o.id() == g.face.id()) {
-                out.push(g.face);
+                out.push(g.face.clone());
             }
         }
         for c in f.tables.iter().flat_map(|t| &t.cells) {
@@ -424,7 +438,8 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         // A missing font's text is drawn in its substitute, which isn't a fallback font.
         let face = db.face(family, style);
         named.push(face.id());
-        let note = if missing { " — MISSING".to_string() } else { copy_font(&root, &face, &fonts_dir, &mut copied, &mut taken, &mut files) };
+        let note =
+            if missing { " — MISSING".to_string() } else { copy_font(&root, &FaceRef::of(&face), &fonts_dir, &mut copied, &mut taken, &mut files) };
         font_lines.push(format!("  {family} {style}{note}\n"));
     }
     // Fallback fonts: the faces that draw characters the named fonts lack.

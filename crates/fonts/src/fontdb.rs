@@ -25,12 +25,15 @@ impl FontSource {
 }
 
 impl FaceRef {
-    /// The handle for a loaded face (memoised per face).
+    /// A handle for a loaded face: owned for supplied data, otherwise memoised per face.
     pub fn of(face: &Arc<FontFace>) -> FaceRef {
+        if matches!(face.source, FontSource::DocumentData(_)) {
+            return FaceRef(face::FaceHandle::Scoped(face.clone()));
+        }
         static LEAKED: RwLock<Vec<Option<&FontFace>>> = RwLock::new(Vec::new());
         let id = face.id as usize;
         if let Some(Some(f)) = LEAKED.read().unwrap_or_else(PoisonError::into_inner).get(id) {
-            return FaceRef(f);
+            return FaceRef(face::FaceHandle::Permanent(f));
         }
         let mut w = LEAKED.write().unwrap_or_else(PoisonError::into_inner);
         if w.len() <= id {
@@ -41,29 +44,32 @@ impl FaceRef {
             keep
         });
         w[id] = Some(f);
-        FaceRef(f)
+        FaceRef(face::FaceHandle::Permanent(f))
     }
-    pub fn get(self) -> &'static FontFace {
-        self.0
+    pub fn get(&self) -> &FontFace {
+        match &self.0 {
+            face::FaceHandle::Permanent(face) => face,
+            face::FaceHandle::Scoped(face) => face,
+        }
     }
 }
 
 impl std::ops::Deref for FaceRef {
     type Target = FontFace;
     fn deref(&self) -> &FontFace {
-        self.0
+        self.get()
     }
 }
 
 impl std::fmt::Debug for FaceRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.get().fmt(f)
     }
 }
 
 impl PartialEq for FaceRef {
     fn eq(&self, o: &FaceRef) -> bool {
-        self.0.id == o.0.id
+        self.get().id == o.get().id
     }
 }
 

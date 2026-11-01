@@ -293,7 +293,7 @@ fn out_line(ex: &mut Exporter, cs: &ComposedStory, l: &Line, story: &str) -> Out
         };
         let natural: f64 = if is_tab { 0.0 } else { text.chars().map(|c| ex.fonts.advance(face, c).unwrap_or(face.upem * 0.5) * g.sy).sum() };
         let rs = cs.styles.get(g.style as usize).cloned();
-        units.push(Unit { text, style: g.style, face: g.face, size, y: g.y, x: g.x, end: next_x, natural, tab: is_tab, rs });
+        units.push(Unit { text, style: g.style, face: g.face.clone(), size, y: g.y, x: g.x, end: next_x, natural, tab: is_tab, rs });
     }
     // A space the composer left out of the line (it ends there): in the story at the line's end.
     let end_byte = l.glyphs.iter().filter(|g| g.len > 0).map(|g| g.byte.saturating_add(g.len)).max().unwrap_or(l.range.end);
@@ -308,7 +308,7 @@ fn out_line(ex: &mut Exporter, cs: &ComposedStory, l: &Line, story: &str) -> Out
     for u in &units {
         if u.tab {
             tabs.push(u.end);
-            runs.push(Run { text: "\t".into(), style: u.style, face: u.face, size: u.size, y: u.y, spc: 0.0, rs: u.rs.clone() });
+            runs.push(Run { text: "\t".into(), style: u.style, face: u.face.clone(), size: u.size, y: u.y, spc: 0.0, rs: u.rs.clone() });
             pen = u.end;
             continue;
         }
@@ -327,7 +327,7 @@ fn out_line(ex: &mut Exporter, cs: &ComposedStory, l: &Line, story: &str) -> Out
         // A new run whose spacing lands this unit where the composer put it (0.01 pt steps).
         let spc = ((u.end - pen - u.natural) / n * 100.0).round() / 100.0;
         let spc = if spc.is_finite() { spc.clamp(-100.0, 100.0) } else { 0.0 };
-        runs.push(Run { text: u.text.clone(), style: u.style, face: u.face, size: u.size, y: u.y, spc, rs: u.rs.clone() });
+        runs.push(Run { text: u.text.clone(), style: u.style, face: u.face.clone(), size: u.size, y: u.y, spc, rs: u.rs.clone() });
         pen += u.natural + spc * n;
     }
     let size = units.iter().map(|u| u.size).fold(0.0, f64::max);
@@ -462,7 +462,7 @@ fn rpr(ex: &mut Exporter, run: Option<&Run>, size: f64, k: f64, opacity: f32, ta
     let sz = ((size * k * 100.0).round() as i64).clamp(100, 400_000);
     let Some(run) = run else { return format!("<{tag} lang=\"en-US\" sz=\"{sz}\" dirty=\"0\"/>") };
     let cs = run.rs.as_ref();
-    let font = ex.fonts.use_face(run.face);
+    let font = ex.fonts.use_face(run.face.clone());
     let mut a = format!("<{tag} lang=\"en-US\" sz=\"{sz}\"");
     let italic = font.italic || cs.is_some_and(|c| c.skew.abs() > 0.01);
     if font.bold {

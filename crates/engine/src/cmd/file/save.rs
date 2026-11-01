@@ -105,7 +105,9 @@ pub(super) fn file_revert(s: &mut Session, _: &Value) -> Result<Value> {
         fresh.uid = uid;
         // A new state has a revision no state had before, so caches don't show the old document.
         crate::recovery::discard_document(s, index, recovery_dir.as_deref());
+        let old_scope = s.doc()?.doc.font_scope;
         *s.doc_mut()? = fresh;
+        s.cache.retire_font_scope(old_scope);
         Ok(json!({"path": path}))
     }
     #[cfg(target_arch = "wasm32")]

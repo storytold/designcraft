@@ -507,7 +507,7 @@ impl Exporter<'_> {
     fn run(&mut self, s: &mut Surface, cs: &ComposedStory, glyphs: &[PlacedGlyph], baseline: f64, story: &str) {
         let g0 = &glyphs[0];
         let st = &cs.styles[g0.style as usize];
-        let face = g0.face;
+        let face = &g0.face;
         let size = g0.sy * face.upem;
         let hs = g0.sx / g0.sy;
         let tan = if st.skew != 0.0 { st.skew.to_radians().tan() } else { 0.0 };
@@ -549,7 +549,7 @@ impl Exporter<'_> {
         // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
         if g0.gid == 0 {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
-        } else if let Some(font) = self.font(&face) {
+        } else if let Some(font) = self.font(face) {
             self.text_run(s, glyphs, story, font, origin, size, hs, tan, fill, stroke, weight);
         } else {
             self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));

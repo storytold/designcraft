@@ -232,7 +232,7 @@ mod document_fonts_tests {
         for (sid, story) in &st.doc.stories {
             let cs = s.cache.get(&st.doc, *sid, None);
             for g in cs.frames.iter().flat_map(|ft| &ft.lines).flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0) {
-                out.push((story.text[g.byte..].chars().next().unwrap(), g.face));
+                out.push((story.text[g.byte..].chars().next().unwrap(), g.face.clone()));
             }
         }
         out
@@ -437,6 +437,87 @@ mod document_fonts_tests {
         assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": [{"name": "x.ttf"}]})).is_err());
     }
 
+    /// Closing one document must release its cached glyphs while another stays open.
+    #[test]
+    fn closing_one_byte_document_releases_cached_font_handles_after_readers_finish() {
+        const FAMILY: &str = "DocFont Bytes Close Readers";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let font = font_with(FAMILY, &['a']).unwrap();
+        let params = json!({"name": "Readers.designcraft", "base64": b64(&native), "fonts": [{"name": "readers.ttf", "base64": b64(&font)}]});
+        let mut s = Session::new();
+        s.execute("file.openBytes", &params).unwrap();
+        let db = designcraft_fonts::FontDb::global();
+        let scope = s.doc().unwrap().doc.font_scope;
+        let weak = std::sync::Arc::downgrade(&db.scoped(scope).face(FAMILY, "Regular"));
+        let readers = glyph_faces(&s);
+        assert_eq!(readers.len(), 1);
+        let old_doc = s.doc().unwrap().doc.clone();
+        let old_story = *old_doc.stories.keys().next().unwrap();
+        let cache = s.cache.clone();
+        s.execute("file.openBytes", &params).unwrap();
+        let other_scope = s.doc().unwrap().doc.font_scope;
+        let other_story = *s.doc().unwrap().doc.stories.keys().next().unwrap();
+        let other_layout = s.cache.get(&s.doc().unwrap().doc, other_story, None);
+        s.execute("file.close", &json!({"index": 0})).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&cache, &s.cache), "closing A preserves B's cache");
+        assert!(std::sync::Arc::ptr_eq(&other_layout, &s.cache.get(&s.doc().unwrap().doc, other_story, None)), "B keeps its composed layout");
+        assert!(!db.scoped(scope).has_family(FAMILY), "closed scope is gone");
+        assert!(readers[0].1.covers('a'), "existing render readers can finish");
+        assert!(weak.upgrade().is_some());
+        drop(readers);
+        assert!(weak.upgrade().is_none(), "the idle session must not retain closed document glyphs");
+        assert!(db.scoped(other_scope).has_family(FAMILY), "the other document keeps its own font");
+        assert_eq!(glyph_faces(&s)[0].1.family, FAMILY, "the remaining document can still compose");
+        for _ in 0..2 {
+            let cached_other = cache.get(&s.doc().unwrap().doc, other_story, None);
+            let late = cache.get(&old_doc, old_story, None);
+            assert!(late.text_len > 0, "a late caller can still obtain a composition");
+            assert!(cache.composed_for(&old_doc, old_story).is_none(), "late work cannot repopulate the retired scope");
+            assert!(
+                std::sync::Arc::ptr_eq(&cached_other, &cache.get(&s.doc().unwrap().doc, other_story, None)),
+                "late A work must not replace B's cached layout"
+            );
+            let late_weak = std::sync::Arc::downgrade(&late);
+            drop(late);
+            assert!(late_weak.upgrade().is_none(), "the cache must not retain the late result behind its retired-scope filter");
+            cache.clear();
+        }
+    }
+
+    #[test]
+    fn reverting_a_byte_document_releases_its_supplied_font_after_readers_finish() {
+        const FAMILY: &str = "DocFont Bytes Revert Readers";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let font = font_with(FAMILY, &['a']).unwrap();
+        let mut s = Session::new();
+        s.execute(
+            "file.openBytes",
+            &json!({"name": "Revert.designcraft", "base64": b64(&native), "fonts": [{"name": "revert.ttf", "base64": b64(&font)}]}),
+        )
+        .unwrap();
+        let dir = temp_dir("revert-bytes-readers");
+        let path = dir.join("Revert.designcraft");
+        s.execute("file.save", &json!({"path": path})).unwrap();
+        let db = designcraft_fonts::FontDb::global();
+        let scope = s.doc().unwrap().doc.font_scope;
+        let weak = std::sync::Arc::downgrade(&db.scoped(scope).face(FAMILY, "Regular"));
+        let readers = glyph_faces(&s);
+        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
+        s.execute("file.revert", &json!({})).unwrap();
+        assert!(!db.scoped(scope).has_family(FAMILY));
+        assert!(readers[0].1.covers('a'), "existing readers remain usable across revert");
+        drop(readers);
+        assert!(weak.upgrade().is_none(), "revert must retire cached glyphs of the replaced scope");
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true, "the saved file has no Document Fonts folder");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Fonts supplied with a document keep the existing EPUB embedding restrictions.
     #[test]
     fn supplied_document_fonts_keep_epub_embedding_restrictions() {
@@ -481,7 +562,7 @@ mod document_fonts_tests {
 
         let mut s = Session::new();
         open(&mut s, &path);
-        let first = glyph_faces(&s)[0].1;
+        let first = glyph_faces(&s)[0].1.clone();
         assert_eq!(first.family, FAMILY);
         s.execute("file.close", &json!({})).unwrap();
         // A new document can't use the closed document's font.

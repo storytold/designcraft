@@ -331,3 +331,41 @@ fn closed_supplied_font_view_cannot_repopulate_instance_cache() {
     drop(instance);
     assert!(weak.upgrade().is_none(), "an old view must not leave a new global cache entry");
 }
+
+fn assert_scoped_handle_lifetime(data: FontData, family: &str, style: &str) {
+    use crate::FaceRef;
+    use crate::fontdb::face::FontBytes;
+
+    let db = FontDb::with_font_dirs(vec![]);
+    let fonts = db.load_document_font_data(vec![data]);
+    let face = db.scoped(fonts.scope).face(family, style);
+    assert_eq!(face.family, family);
+    let weak_face = Arc::downgrade(&face);
+    let weak_bytes = match &face.bytes {
+        FontBytes::Owned(bytes) => Arc::downgrade(bytes),
+        FontBytes::Static(_) => panic!("supplied font must own its bytes"),
+    };
+    let handle = FaceRef::of(&face);
+    let other = handle.clone();
+    drop(face);
+    db.close_scope(fonts.scope);
+    assert!(weak_face.upgrade().is_some(), "a live glyph handle keeps its face");
+    assert!(weak_bytes.upgrade().is_some(), "a live glyph handle keeps its font bytes");
+    assert!(handle.get().covers('a'));
+    drop(handle);
+    assert!(other.get().covers('a'), "the remaining glyph handle is still usable");
+    drop(other);
+    assert!(weak_face.upgrade().is_none(), "the last glyph handle releases its face");
+    assert!(weak_bytes.upgrade().is_none(), "the last glyph handle releases its font bytes");
+}
+
+#[test]
+fn supplied_face_handles_release_their_font_after_the_last_glyph() {
+    const FAMILY: &str = "DocFont Data Handle";
+    assert_scoped_handle_lifetime(font_data("handle.ttf", font_with(FAMILY, &['a']).unwrap()), FAMILY, "Regular");
+}
+
+#[test]
+fn supplied_instance_handles_release_their_font_after_the_last_glyph() {
+    assert_scoped_handle_lifetime(variable_font_data(), "DocFont Data Variable", "Regular {wght:650}");
+}
