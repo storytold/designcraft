@@ -172,6 +172,9 @@ fn closing_a_preceding_tab_cannot_retarget_the_ack_or_focus() {
     let c = active_uid(&app);
     app.run("file.close", json!({"index":0})).unwrap();
     assert!(!has_document(&app, b));
+    // Closing B selects its neighbor. Establish C as the active UID before the asynchronous ACK.
+    activate(&mut app, c);
+    assert_eq!(active_uid(&app), c);
     save_result(&mut app, &request, "provider", "saved");
     tick(&mut app);
     assert_eq!(active_uid(&app), c);
