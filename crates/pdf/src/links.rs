@@ -38,9 +38,29 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                     if l.range.end <= *start || l.range.start >= *end {
                         continue;
                     }
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= *start && g.byte < *end).collect();
-                    let (Some(a), Some(b)) = (gs.first(), gs.last()) else { continue };
-                    let r = Rect::new(a.x, l.baseline - l.ascent, b.x + b.adv, l.baseline + l.descent);
+                    // Every glyph the source's characters produced, not only the ones that own
+                    // their bytes: the glyphs of generated text — a cross-reference's — all point
+                    // at the one marker character, and only the first of them owns it, so asking
+                    // for owned bytes measured the first letter and nothing else (#1446).
+                    //
+                    // The bullet or number a paragraph's list adds is not the paragraph's text,
+                    // but the composer gives it the first character's offset and no length, so a
+                    // link starting at that character took the label in and the rectangle
+                    // covered text outside the link. `list_label` is the one generated glyph to
+                    // leave out (noted in review).
+                    let gs: Vec<_> = l.glyphs.iter().filter(|g| !g.list_label && g.byte >= *start && g.byte < *end).collect();
+                    if gs.is_empty() {
+                        continue;
+                    }
+                    // Across the glyphs, not from the first and last of them: kenten marks and
+                    // ruby are appended after the base glyphs of the line, so the last glyph in
+                    // the range could be a mark sitting over its first character -- and the
+                    // rectangle then ended there, leaving the rest of the link unclickable. It
+                    // also makes a right-to-left run right, where the last glyph is the leftmost
+                    // (noted in review).
+                    let x0 = gs.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
+                    let x1 = gs.iter().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+                    let r = Rect::new(x0, l.baseline - l.ascent, x1, l.baseline + l.descent);
                     out.push(m.transform_rect_bbox(r));
                 }
             }
