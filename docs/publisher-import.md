@@ -70,11 +70,10 @@ names the format, never a crash.
   public specifications.
 - `truth/*.json` exports that come with the controlled samples were used only to score imports,
   never to work out how anything is encoded.
-- No Publisher-authored file is committed. The two committed test files
-  (`crates/pub/tests/data/hello.pub`, `wmf-picture.pub`, 7,168 bytes each) are synthetic and listed
-  in `ASSETS.md`. Their compound-file container comes from a first synthetic sample written by a
-  program other than Publisher; their text store and picture are written by the importer's own
-  tests (`write_hello_sample`, `write_wmf_picture_sample`), which regenerate them.
+- No Publisher-authored file is committed. The committed test files under
+  `crates/pub/tests/data/` are synthetic: the importer's tests write every byte of them from
+  scratch (`crates/pub/tests/support/mod.rs`), and a test checks that each committed file is
+  exactly that output. They are listed in `ASSETS.md`.
 
 ## How it is checked
 

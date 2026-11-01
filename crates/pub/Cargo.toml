@@ -1,0 +1,16 @@
+# Copyright (c) 2026 srt8hellcat2-ui. SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "designcraft-pub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft Microsoft Publisher (.pub) import"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-doc = { workspace = true }
+thiserror = { workspace = true }
+cfb = { workspace = true }
+

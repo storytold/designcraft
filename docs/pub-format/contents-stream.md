@@ -16,7 +16,7 @@ Everything in this stream is a set of **records**. A record is a length-prefixed
 | 0x1A | 4 bytes, unsigned | **Offset of the trailer record** (in bytes from the start of the stream). |
 | 0x1E | … | Records. |
 
-*Source: signature values from the existing code (the 97/98/2000 value was not seen in any sample; all 142 pubsmith samples and `hello.pub` start with `E8 AC 2C 00 E8 03 0A 00`). Trailer offset: existing code, confirmed in every sample.*
+*Source: signature values from the existing code (the 97/98/2000 value was not seen in any sample; all 142 pubsmith samples and the first synthetic sample start with `E8 AC 2C 00 E8 03 0A 00`). Trailer offset: existing code, confirmed in every sample.*
 
 ## 2. Trailer record
 
@@ -24,8 +24,8 @@ The trailer is a length-prefixed list at the offset given at 0x1A. It holds:
 
 | Key | Kind | Meaning |
 |---|---|---|
-| 0x01 | 0x20 | A count; in `hello.pub` it is 0x104 = 260, the number of entries in the record directory. Not read. |
-| 0x02 | 0x20 | Another number (0x103 in `hello.pub`). Not read. |
+| 0x01 | 0x20 | A count; in the first synthetic sample it is 0x104 = 260, the number of entries in the record directory. Not read. |
+| 0x02 | 0x20 | Another number (0x103 in the first synthetic sample). Not read. |
 | 0x03 | 0x90 | **The record directory** (nested list). The reader finds it as "the first property of kind 0x90 in the trailer". |
 
 *Source: existing code (looks for the first kind-0x90 property); keys 0x01/0x02 seen in samples only.*
@@ -73,7 +73,7 @@ Exactly one is expected; without it the file is malformed. Fields read:
 
 If the width or height is missing or zero, the file is malformed. Other keys (0x01, 0x03, 0x04, 0x08, 0x18–0x23, 0x2A, 0x2C, 0x2D, 0x31, 0x39, 0x3C, 0x41, 0x44, 0x4D, …) appear in samples and are not read.
 
-*Source: existing code; values confirmed: `hello.pub` 0x7698F0 × 0x997AA0 EMU = 612 × 792 pt (US Letter); `text__bold.pub` the same.*
+*Source: existing code; values confirmed: the first synthetic sample 0x7698F0 × 0x997AA0 EMU = 612 × 792 pt (US Letter); `text__bold.pub` the same.*
 
 ## 5. Page records (type 0x43)
 
@@ -87,7 +87,7 @@ Fields read:
 
 Seen but not read: 0x01, 0x03, 0x05 (a nested list of two EMU sizes), 0x06 (8-byte kind 0x28), 0x09, 0x0B, 0x0F (a longer master name such as `Master Page A`), 0x10, 0x11.
 
-*Source: existing code; confirmed in `text__bold.pub` (master record with label `A` and name `Master Page A`; page record pointing at it with key 0x0D) and `hello.pub` (empty labels).*
+*Source: existing code; confirmed in `text__bold.pub` (master record with label `A` and name `Master Page A`; page record pointing at it with key 0x0D) and the first synthetic sample (empty labels).*
 
 ### Sorting the page list into ordinary pages, masters and placeholders
 
@@ -98,7 +98,7 @@ Seen but not read: 0x01, 0x03, 0x05 (a nested list of two EMU sizes), 0x06 (8-by
 5. If a placeholder lists objects, warn that scratch-area objects were not imported.
 6. If no ordinary page is left, use the first placeholder page that lists no objects, so that a publication with one blank page still has a page.
 
-*Source: rules 2–6 come from the existing code and its comments ("observed in every sample"). Confirmed in `text__bold.pub`: page list = 0x107 (master A), 0x10A (the page), 0x10D, 0x110, 0x113, 0x117 (four placeholders). `hello.pub` has a one-entry page list (no placeholders), which is why rule 3 exists.*
+*Source: rules 2–6 come from the existing code and its comments ("observed in every sample"). Confirmed in `text__bold.pub`: page list = 0x107 (master A), 0x10A (the page), 0x10D, 0x110, 0x113, 0x117 (four placeholders). the first synthetic sample has a one-entry page list (no placeholders), which is why rule 3 exists.*
 
 ## 6. Object records (types 0x01, 0x10, 0x20, 0x30)
 
@@ -110,7 +110,7 @@ Every object record is read the same way; type 0x10 additionally marks the objec
 | 0x28 | number | **Position in a chain of linked text boxes** that show the same story: 0 for the first box, 1 for the next, and so on. Absent = 0. |
 | 0x35 | number (0x20 in samples) | **Vertical text alignment** in the box: 1 = middle, 2 = bottom; absent or anything else = top. |
 
-Seen but not read: 0xAA and 0xAB (kind 0x20; EMU sizes, for example 0x37CF80 = 288 pt and 0xDF3E0 = 72 pt in `hello.pub`), 0xB7, and many others.
+Seen but not read: 0xAA and 0xAB (kind 0x20; EMU sizes, for example 0x37CF80 = 288 pt and 0xDF3E0 = 72 pt in the first synthetic sample), 0xB7, and many others.
 
 How these records connect to drawing: each Escher shape's client-data record (MS-ODRAW OfficeArtClientData, record type 0xF011) carries property-like pairs, and the pair with id 0x6801 holds the shape's `Contents` sequence number. That is how geometry from the drawing stream meets the facts in this section. (The drawing reader already does this; listed here so the link is clear.)
 

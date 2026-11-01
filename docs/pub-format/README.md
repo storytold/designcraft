@@ -56,9 +56,11 @@ How the pieces link:
 - All 142 controlled samples (below) were made with Publisher 2021 and start
   `E8 AC 2C 00 E8 03 0A 00`. No sample from 2002–2019 was available, so differences between those
   versions are **not known**; the importer treats them all alike.
-- `crates/pub/tests/data/hello.pub` was written by the importer's own tests, not by Publisher. It
-  is minimal: no placeholder pages, two style sheets with no entries, and a one-font list. A reader
-  must accept such files.
+- The notes also cite **the first synthetic sample**: an early test file written by a program other
+  than Publisher, not in this repository. It is minimal (no placeholder pages, two style sheets
+  with no entries, a one-font list), so a reader must accept such files.
+  `crates/pub/tests/data/hello.pub` is a different file, written from scratch by the importer's
+  tests.
 
 ## Glossary
 

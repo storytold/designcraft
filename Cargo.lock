@@ -749,6 +749,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f13298d9178622b7916ec5d01d470425c04273c8ed07e87b1c38b34c4f4612b"
+dependencies = [
+ "fnv",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1564,6 +1575,15 @@ dependencies = [
  "skrifa 0.47.0",
  "thiserror 2.0.21",
  "zip 3.0.0",
+]
+
+[[package]]
+name = "designcraft-pub"
+version = "0.15.2"
+dependencies = [
+ "cfb",
+ "designcraft-doc",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
