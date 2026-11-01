@@ -333,11 +333,8 @@ impl Canvas {
     }
 
     fn room(&mut self, extra: usize) -> bool {
-        let retained = self
-            .body
-            .len()
-            .saturating_add(self.recording.as_ref().map_or(0, String::len))
-            .saturating_add(self.path.as_ref().map_or(0, String::len));
+        let retained =
+            self.body.len().saturating_add(self.recording.as_ref().map_or(0, String::len)).saturating_add(self.path.as_ref().map_or(0, String::len));
         if self.full || retained.saturating_add(extra).saturating_add(512) > self.limit {
             self.full = true;
             self.warn(LIMIT_LEFT_OUT);
@@ -347,7 +344,9 @@ impl Canvas {
     }
 
     fn record_path(&mut self, data: &str) {
-        if self.room(data.len()) && let Some(recording) = &mut self.recording {
+        if self.room(data.len())
+            && let Some(recording) = &mut self.recording
+        {
             recording.push_str(data);
         }
     }
