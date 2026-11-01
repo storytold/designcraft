@@ -1583,6 +1583,7 @@ version = "0.15.2"
 dependencies = [
  "cfb",
  "designcraft-color",
+ "designcraft-compose",
  "designcraft-doc",
  "designcraft-geom",
  "designcraft-images",

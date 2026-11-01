@@ -16,7 +16,9 @@ const HELLO: &[u8] = include_bytes!("data/hello.pub");
 #[ignore = "requires PUB_CORPUS with the allowed pubsmith binary fixtures"]
 fn real_shape_shadows() {
     let dirs = std::env::var("PUB_CORPUS").unwrap();
-    for (name, offset, color) in [("shadow__on.pub", 2.0, [0, 0, 0, 255]), ("shadow__offset.pub", 6.0, [0, 0, 0, 255])] {
+    for (name, offset, color) in
+        [("shadow__on.pub", 2.0, [0, 0, 0, 255]), ("shadow__offset.pub", 6.0, [0, 0, 0, 255]), ("wordart__shadow.pub", 2.0, [134, 134, 134, 255])]
+    {
         let fixture = dirs.split(':').map(|p| std::path::Path::new(p).join(name)).find(|p| p.is_file()).unwrap();
         let imported = import_pub(&std::fs::read(fixture).unwrap()).unwrap();
         assert!(!imported.warnings.iter().any(|w| w.contains("shadow")), "{name}: {:?}", imported.warnings);
