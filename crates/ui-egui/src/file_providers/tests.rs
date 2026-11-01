@@ -257,3 +257,73 @@ fn capture_target_must_belong_to_its_snapshot_aliases() {
     assert!(h.begin(snapshots, u64::MAX, 1, format!("Other{EXTENSION}"), vec![1], false).is_err());
     assert!(!h.pending_for(u64::MAX));
 }
+
+#[test]
+fn bound_reads_guard_every_alias_until_the_terminal_can_be_queued() {
+    let h = host();
+    let filename = terminal_resource(&h);
+    h.state().bindings.insert(41, "file-1".into());
+    h.state().bindings.insert(42, "file-1".into());
+    let request = h.request_open("file-1").unwrap();
+    assert!(h.pending_for(41) && h.pending_for(42));
+    assert!(!h.pending_for(99));
+    h.open(request.clone(), filename.clone(), vec![1]).unwrap();
+    assert!(h.pending_for(41) && h.pending_for(42));
+    h.take_actions();
+    assert!(h.pending_for(41) && h.pending_for(42));
+    fill_transport_event_queue(&h);
+    h.finish_open(&request, "file-1", &filename, Ok(43));
+    assert!(h.pending_for(41) && h.pending_for(42) && h.pending_for(43));
+    assert_eq!(h.take_events().len(), MAX_EVENTS);
+    assert!(!h.pending_for(41) && !h.pending_for(42) && !h.pending_for(43));
+    assert_eq!(h.take_events()[0].metadata["type"], "opened");
+    assert!(!h.busy());
+}
+
+#[test]
+fn unbound_reads_do_not_borrow_the_active_document_and_cancellation_releases_aliases() {
+    let h = host();
+    terminal_resource(&h);
+    let unbound = h.request_open("file-1").unwrap();
+    assert!(!h.pending_for(42));
+    h.state().bindings.insert(42, "file-1".into());
+    assert!(h.pending_for(42));
+    h.cancel_open(unbound, String::new()).unwrap();
+    assert!(!h.pending_for(42));
+    let bound = h.request_open("file-1").unwrap();
+    h.state().bindings.remove(&42);
+    assert!(h.pending_for(42));
+    h.cancel_open(bound, "fetch failed".into()).unwrap();
+    assert!(!h.pending_for(42));
+}
+
+#[test]
+fn every_captured_alias_remains_guarded_through_the_save_terminal() {
+    let h = host();
+    let mut session = Session::new();
+    session.execute("file.new", &json!({})).unwrap();
+    let a = session.active().unwrap().clone();
+    session.execute("file.new", &json!({})).unwrap();
+    let b = session.active().unwrap().clone();
+    let request = h.begin(vec![a.clone(), b.clone()], a.uid, a.revision, "Aliases.designcraft".into(), vec![1], false).unwrap();
+    assert!(h.pending_for(a.uid) && h.pending_for(b.uid));
+    h.resolve_dialog(&request, "provider", "Aliases.designcraft").unwrap();
+    assert!(h.pending_for(a.uid) && h.pending_for(b.uid));
+    h.result(request.clone(), "saved".into(), "aliases".into()).unwrap();
+    assert!(h.pending_for(a.uid) && h.pending_for(b.uid));
+    let Action::Save { capture, .. } = h.take_actions().remove(0) else { panic!("expected save") };
+    assert!(h.pending_for(a.uid) && h.pending_for(b.uid));
+    fill_transport_event_queue(&h);
+    h.finish_save(&request, &capture, "saved", "aliases", true);
+    assert!(h.pending_for(a.uid) && h.pending_for(b.uid));
+    h.take_events();
+    assert!(!h.pending_for(a.uid) && !h.pending_for(b.uid));
+    assert_eq!(h.take_events()[0].metadata["type"], "saved");
+}
+
+#[test]
+fn provider_recent_heading_uses_the_official_catalog_and_preserves_provider_data() {
+    assert_eq!(recent_heading("es", "Mi {label} — 作品"), "Archivos recientes — Mi {label} — 作品");
+    assert_eq!(recent_heading("", "Test storage"), "Recent files — Test storage");
+    assert_eq!(recent_heading("unsupported", "Test storage"), "Recent files — Test storage");
+}

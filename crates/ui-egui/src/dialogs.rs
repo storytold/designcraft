@@ -4869,7 +4869,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 return close(app);
             }
             app.run("file.activate", json!({"index": i}))?;
-            crate::menus::save_then(app, close)
+            crate::menus::save_then(app, crate::file_provider_app::After::Close(uid.ok_or("Missing document in close confirmation")?))
         }
         "loadStyles" => {
             let checked = |key: &str| -> Vec<&str> {

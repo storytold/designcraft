@@ -150,7 +150,7 @@ pub struct DesignApp {
     pub services: Services,
     /// Optional storage capability, disabled until the web host registers one.
     pub file_providers: crate::file_providers::Host,
-    pub(crate) provider_after: std::collections::HashMap<String, crate::file_provider_app::After>,
+    pub(crate) provider_after: std::collections::HashMap<String, crate::file_provider_app::PendingAfter>,
     pub views: HashMap<u64, View>,
     /// Layout ▸ Go Back / Go Forward, by view (like `views`).
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,

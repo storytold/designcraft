@@ -68,7 +68,27 @@ Use the existing local Copy/Export commands for interchange formats. The host mu
 extension; changing a suffix cannot turn native bytes into PDF, SVG or another interchange format.
 The native project serializer includes the project data. Data Merge Preview must be exited before a provider save: a preview record must not be marked saved as the underlying unfilled template.
 
-Normal close/revert actions wait or refuse while provider work is unresolved. The browser can still
+Close and Revert guard the target document's UID, not every document merely because another upload
+is pending. Bound reads protect all of the resource's open aliases; an unbound read does not claim
+the current tab. Captures remain guarded through queued results and backpressured terminal events.
+App-wide Close/Revert and Quit remain conservative while any provider work or continuation is pending.
+
+Save-before-close/quit is a typed, UID-bound continuation. It runs after finish_save and a settled UI
+pass, never from a hidden logic tick before that frame's input. Identity epoch, connection, saved
+revision and dirty state are rechecked. New edits, replacement identities, cancellation, failure or
+a device download cannot close the document. An older capture can update its saved checkpoint without
+clearing later edits. Neither applying that checkpoint nor closing an inactive captured UID activates
+it or commits another tab's IME/data-merge preview; surviving focus is kept by UID.
+
+Numeric text drafts do not yet advance an engine revision. A bounded internal registry keeps these
+drafts with their document UID/epoch and viewport, including parked drafts. Close/Revert/Save must wait
+for that document's draft to commit or cancel; another document's field does not block its closure.
+Before the first opt-in the original numeric widget IDs and behavior stay in use. A focused legacy
+field is adopted without changing its ID when a provider connects. After opting in, document scopes
+stay stable through enable/disable and unregister, preserving open drafts; they are retired when the
+document identity closes. This bookkeeping adds no storage, account or authentication functionality.
+
+The browser can still
 force-close/reload a tab; the host should provide an unsaved-work warning and must not acknowledge a
 write it cannot recover. This bridge does not add automatic saving, cross-client conflict resolution,
 offline persistence, autosave recovery or an inactivity/login implementation.
@@ -76,7 +96,9 @@ offline persistence, autosave recovery or an inactivity/login implementation.
 ## Open and Recents
 
 The existing Home screen and File > Open Recent display a separate provider section while enabled.
-Local Recents retain their own storage and behavior. Publish only the current account's native files
+Local Recents retain their own storage and behavior. Provider headings use the application's official
+i18n lookup and RTL text shaping; untranslated keys keep the normal English fallback. Provider labels
+and resource names remain user data and are not translated. Publish only the current account's native files
 with setResources; the editor never scans a VM or guesses a path from a name.
 
 A click emits openRequested with requestId and resourceId. After authorization, the provider fetches
@@ -94,7 +116,11 @@ or conditional writes if it allows concurrent clients.
 
 Regression fixtures cover the default-off gate, single-use/late replies, account reconnection, resource
 scope and alias rejection, cancellation, immutable captures, switching tabs, edits after capture and
-conservative device results. The source includes the WASM adapter and native encoder/decoder integration.
+conservative device results. Additional fixtures cover two-document Close/Revert isolation, read and
+capture aliases, deferred terminal backpressure, exact-identity continuations, quit cancellation,
+uncommitted numeric input arriving with an ACK, provider opt-in/unregister during a focused local
+draft, parked draft ownership and preservation of another tab's IME/preview. The source includes the
+WASM adapter and native encoder/decoder integration.
 Run the ordinary repository checks and browser integration checks after publishing the complete suite's
 source, as required by this contribution's development order. This document does not claim those checks
 have been executed merely because fixtures are present.

@@ -214,7 +214,7 @@ impl<'a> NumField<'a> {
         let t = Tokens::get(ui.ctx());
         let name = self.name.unwrap_or(self.id);
         let enabled = self.enabled && ui.is_enabled();
-        let key = ui.scope_id().with(self.id);
+        let key = crate::file_provider_app::drafts::field_key(ui, ui.scope_id().with(self.id));
         let (rect, _) = ui.allocate_exact_size(vec2(self.width, FIELD_H), Sense::hover());
         let step = self.step.unwrap_or_else(|| self.kind.step());
         let clamp = |v: f64| v.clamp(self.range.0, self.range.1);
@@ -284,6 +284,7 @@ impl<'a> NumField<'a> {
             }
             ui.data_mut(|d| d.insert_temp(key, buf.clone()));
         }
+        let parked = !r.has_focus() && !r.lost_focus() && crate::file_provider_app::drafts::parked(ui, key);
         if r.lost_focus() {
             // An automatic value (in parentheses) typed over commits even when it's the same
             // number: typing "14.4 pt" over "(14.4 pt)" makes it a fixed value. Escape reverts
@@ -299,6 +300,10 @@ impl<'a> NumField<'a> {
                 cleared = true;
             }
             ui.data_mut(|d| d.remove::<String>(key));
+        } else if parked {
+            // A draft parked by a document/viewport switch still belongs to its original UID.
+            r.request_focus();
+            ui.data_mut(|data| data.insert_temp(key, buf.clone()));
         } else if !r.has_focus() {
             ui.data_mut(|d| d.remove::<String>(key));
         }
@@ -333,6 +338,7 @@ impl<'a> NumField<'a> {
                 }
             });
         }
+        crate::file_provider_app::drafts::field_result(ui, key, r.has_focus(), r.changed(), out.is_some() || cleared, parked);
         if cleared { Some(None) } else { out.map(Some) }
     }
 }

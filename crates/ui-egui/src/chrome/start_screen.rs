@@ -64,7 +64,7 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 });
                 ui.add_space(20.0);
                 community_card(app, ui);
-                app.file_providers.recent_ui(ui);
+                app.file_providers.recent_ui_in(ui, &app.ui.language);
                 recent_files(app, ui);
                 ui.add_space(24.0);
                 ui.label(crate::rtl::widget(

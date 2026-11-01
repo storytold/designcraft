@@ -38,19 +38,19 @@ fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Res
 /// Save the active document (a download in a browser; Save As for one never saved), then run
 /// `after` once it is written. A save dialog answers on a later frame; Cancel runs nothing.
 #[track_caller]
-pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+pub(crate) fn save_then(app: &mut DesignApp, after: crate::file_provider_app::After) -> Result<Value, String> {
     if app.file_providers.enabled() && !app.in_control {
-        return crate::file_provider_app::save(app, false, Some(Box::new(after)));
+        return crate::file_provider_app::save(app, false, Some(after));
     }
     if app.services.download.is_some() {
         download_document(app)?;
-        return after(app);
+        return after.local(app);
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
         app.run("file.save", json!({}))?;
-        return after(app);
+        return after.local(app);
     }
-    save_as_dialog(app, after)
+    save_as_dialog(app, move |app| after.local(app))
 }
 
 /// Run a UI command; `None` if `id` isn't one.

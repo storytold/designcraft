@@ -72,6 +72,8 @@ struct State {
     // Keep every captured document alias owned until its terminal event can be queued.
     finishing_saves: HashMap<String, Vec<u64>>,
     opens: HashMap<String, String>,
+    // Reads of an already-bound resource protect its document aliases, not the active tab.
+    open_targets: HashMap<String, Vec<u64>>,
     queued_opens: HashSet<String>,
     actions: Vec<Action>,
     events: Vec<Event>,
@@ -115,6 +117,8 @@ impl State {
     fn pending_for(&self, doc: u64) -> bool {
         self.dialogs.values().chain(self.pending.values()).any(|c| c.snapshots.iter().any(|d| d.uid == doc))
             || self.finishing_saves.values().any(|aliases| aliases.contains(&doc))
+            || self.open_targets.values().any(|aliases| aliases.contains(&doc))
+            || self.bindings.get(&doc).is_some_and(|resource| self.opens.values().any(|open| open == resource))
             || self.actions.iter().any(|a| matches!(a, Action::Save { capture, .. } if capture.snapshots.iter().any(|d| d.uid == doc)))
     }
     fn flush_finished(&mut self) {
@@ -124,6 +128,7 @@ impl State {
             match terminal.owner {
                 TerminalOwner::Open => {
                     self.opens.remove(&terminal.request);
+                    self.open_targets.remove(&terminal.request);
                     self.queued_opens.remove(&terminal.request);
                 }
                 TerminalOwner::Save => {
@@ -169,6 +174,7 @@ impl Host {
         s.provider = None;
         s.enabled = false;
         s.connection.clear();
+        s.open_targets.clear();
         s.resources.clear();
         s.bindings.clear();
         s.names.clear();
@@ -178,6 +184,10 @@ impl Host {
     }
     pub fn connected(&self) -> bool {
         self.state().provider.is_some()
+    }
+    pub(crate) fn connection(&self) -> Option<String> {
+        let s = self.state();
+        s.provider.as_ref().map(|_| s.connection.clone())
     }
     pub fn enabled(&self) -> bool {
         let s = self.state();
@@ -306,6 +316,8 @@ impl Host {
             return Err("resource is unavailable in the current provider account".into());
         }
         let request = s.next("open")?;
+        let aliases = s.bindings.iter().filter(|(_, id)| id.as_str() == resource).map(|(uid, _)| *uid).collect();
+        s.open_targets.insert(request.clone(), aliases);
         s.opens.insert(request.clone(), resource.into());
         s.event(json!({"type":"openRequested","requestId":request,"resourceId":resource}), None);
         Ok(request)
@@ -338,6 +350,7 @@ impl Host {
             return Err("provider event queue is full".into());
         }
         let resource = s.opens.remove(&request).ok_or("unknown or completed open request")?;
+        s.open_targets.remove(&request);
         s.event(json!({"type":if error.is_empty(){"openCancelled"}else{"openFailed"},"requestId":request,"resourceId":resource,"error":error}), None);
         Ok(())
     }
@@ -391,6 +404,10 @@ impl Host {
         }
         let metadata = match result {
             Ok(doc) => {
+                let aliases = s.open_targets.entry(request.into()).or_default();
+                if !aliases.contains(&doc) {
+                    aliases.push(doc);
+                }
                 s.bindings.insert(doc, resource.into());
                 s.names.insert(doc, name.into());
                 json!({"type":"opened","requestId":request,"resourceId":resource,"documentId":doc.to_string()})
@@ -401,18 +418,22 @@ impl Host {
         s.flush_finished();
     }
     pub fn recent_ui(&self, ui: &mut egui::Ui) {
+        self.recent_ui_in(ui, "");
+    }
+    /// Uses the application's selected language, with the ordinary untranslated-key fallback.
+    pub fn recent_ui_in(&self, ui: &mut egui::Ui, language: &str) {
         let (label, resources, enabled) = {
             let s = self.state();
             (s.provider.as_ref().map(|p| p.label.clone()), s.resources.clone(), s.enabled)
         };
         let Some(label) = label.filter(|_| enabled) else { return };
         ui.add_space(12.0);
-        ui.strong(format!("Recent files — {label}"));
+        ui.label(crate::rtl::widget(ui, egui::RichText::new(recent_heading(language, &label)).strong()));
         if resources.is_empty() {
-            ui.weak("No recent files from this provider");
+            ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(language, "No recent files from this provider")).weak()));
         }
         for resource in resources {
-            if ui.button(&resource.name).on_hover_text(&resource.updated_at).clicked() {
+            if ui.button(crate::rtl::widget(ui, &resource.name)).on_hover_text(&resource.updated_at).clicked() {
                 if let Err(error) = self.request_open(&resource.id) {
                     ui.label(error);
                 }
@@ -420,8 +441,12 @@ impl Host {
             }
         }
         ui.separator();
-        ui.weak("Recent files on this device");
+        ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(language, "Recent files on this device")).weak()));
     }
+}
+fn recent_heading(language: &str, label: &str) -> String {
+    let template = crate::i18n::tr(language, "{recent} — {label}");
+    template.replace("{recent}", crate::i18n::tr(language, "Recent files")).replace("{label}", label)
 }
 fn bounded_error(message: &str) -> String {
     let mut error = String::new();
