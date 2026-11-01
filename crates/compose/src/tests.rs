@@ -5027,7 +5027,7 @@ fn cjk_fallback_follows_the_language() {
         d.settings.glyph_fallback = true;
         d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.language = Some(language.into()));
         let cs = compose_story(&d, sid, &ComposeOptions::default());
-        let face_at = |byte: usize| all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).find(|g| g.byte == byte).map(|g| g.face).unwrap();
+        let face_at = |byte: usize| all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).find(|g| g.byte == byte).map(|g| g.face.clone()).unwrap();
         (face_at(0), face_at(1))
     };
     assert_eq!(faces_of("Chinese: Simplified").1.family, "Songti SC");
@@ -5066,7 +5066,7 @@ fn missing_glyphs_are_the_fonts_box_unless_fallback_is_on() {
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Japanese".into()));
     let glyph_at = |d: &Document, byte: usize| {
         let cs = compose_story(d, sid, &ComposeOptions::default());
-        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).find(|g| g.byte == byte).map(|g| (g.face, g.gid, g.adv)).unwrap()
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).find(|g| g.byte == byte).map(|g| (g.face.clone(), g.gid, g.adv)).unwrap()
     };
     assert!(!d.settings.glyph_fallback, "new documents draw missing glyphs as InDesign does");
     let (face, gid, adv) = glyph_at(&d, 1);
@@ -5123,12 +5123,12 @@ fn a_mark_starting_a_run_is_shaped_with_its_base() {
             }
         });
         let cs = compose_story(&d, sid, &ComposeOptions::default());
-        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).map(|g| (g.face, g.gid, g.byte)).collect::<Vec<_>>()
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).map(|g| (g.face.clone(), g.gid, g.byte)).collect::<Vec<_>>()
     };
     // A missing font: its substitute lacks both, so the letter comes from a fallback font, and the
     // mark from the same font, in its letter's cluster.
     let g = glyphs("DC Test No Such Family", None);
-    let (base, dot) = (g[0], g[1]);
+    let (base, dot) = (&g[0], &g[1]);
     assert_ne!(base.1, 0, "{g:?}");
     assert_eq!((dot.0.family.as_str(), dot.2), (base.0.family.as_str(), 0), "the sin dot goes with its shin: {g:?}");
     assert_ne!(dot.1, 0, "{g:?}");
@@ -5182,7 +5182,7 @@ fn each_document_shapes_words_in_its_own_fonts() {
         let glyphs: Vec<&PlacedGlyph> =
             all_lines(&cs).into_iter().flat_map(|l| l.glyphs.iter()).filter(|g| text[g.byte..].starts_with('a')).collect();
         assert_eq!(glyphs.len(), 4);
-        let face = glyphs[0].face;
+        let face = glyphs[0].face.clone();
         let drawn = designcraft_fonts::FontDb::global().face(designcraft_fonts::FALLBACK_FAMILY, "Regular").glyph_for(glyph);
         assert!(glyphs.iter().all(|g| g.face == face && g.gid == drawn), "scope {scope}: {glyph}");
         faces.push(face);
@@ -5437,7 +5437,7 @@ fn latin_in_vertical_text_turns_as_a_run() {
     for family in vertical_families() {
         let (l, _) = vertical_line(family, "日本Ab", |_| {});
         let latin: Vec<_> = l.glyphs.iter().filter(|g| g.byte >= "日本".len()).collect();
-        let face = latin[0].face;
+        let face = &latin[0].face;
         assert_eq!(latin.iter().map(|g| g.gid).collect::<Vec<_>>(), [face.glyph_for('A'), face.glyph_for('b')], "{family}");
         assert!(latin.iter().all(|g| !g.upright && g.vertical_xf(l.baseline).is_none()), "{family}");
         assert!((latin[0].adv - face.advance(latin[0].gid) * latin[0].sx).abs() < 1e-9, "{family}: horizontal advance");

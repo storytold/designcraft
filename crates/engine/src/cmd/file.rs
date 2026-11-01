@@ -19,8 +19,8 @@ mod save;
 mod snippets;
 
 pub use bytes::{DOCUMENT_SNIFF_BYTES, base64_decode, base64_encode, from_bytes, is_document, to_bytes, with_document_extension};
-pub(crate) use open::load_document_fonts;
 pub use open::{RecentPreview, recent_preview};
+pub(crate) use open::{load_document_fonts, load_supplied_fonts};
 pub(crate) use place::{crop_pdf, read_source, validate_placement};
 pub use registry::specs;
 pub(crate) use snippets::{snippet_bytes, snippet_place};

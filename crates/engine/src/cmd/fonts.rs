@@ -142,7 +142,7 @@ pub(super) fn used_fonts(d: &Document) -> Vec<UsedFont> {
             let source = (!missing).then(|| match db.face(&family, &style).source {
                 FontSource::Bundled => "bundled",
                 FontSource::Installed(_) => "installed",
-                FontSource::Document(_) => "document",
+                FontSource::Document(_) | FontSource::DocumentData(_) => "document",
                 FontSource::Memory => "added",
             });
             UsedFont {

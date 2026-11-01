@@ -89,20 +89,35 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// The value of one base64 character (standard or URL-safe alphabet); None for padding, white
+/// space and anything else, which decoding skips.
+fn base64_value(b: u8) -> Option<u8> {
+    Some(match b {
+        b'A'..=b'Z' => b - b'A',
+        b'a'..=b'z' => b - b'a' + 26,
+        b'0'..=b'9' => b - b'0' + 52,
+        b'+' | b'-' => 62,
+        b'/' | b'_' => 63,
+        _ => return None,
+    })
+}
+
+/// The length of [`base64_decode`]`(s)`, without decoding it: 3 bytes for every 4 characters,
+/// worked out so that it can't overflow on 32-bit targets.
+pub fn base64_decoded_len(s: &str) -> usize {
+    let n = s.bytes().filter(|&b| base64_value(b).is_some()).count();
+    n / 4 * 3 + n % 4 * 3 / 4
+}
+
+/// `s` decoded, with room reserved for exactly that: white space or junk in `s` reserves nothing
+/// more.
 pub fn base64_decode(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut out = Vec::with_capacity(base64_decoded_len(s));
     let mut buf = 0u32;
     let mut bits = 0;
     for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => continue,
-        } as u32;
-        buf = buf << 6 | v;
+        let Some(v) = base64_value(b) else { continue };
+        buf = buf << 6 | u32::from(v);
         bits += 6;
         if bits >= 8 {
             bits -= 8;
@@ -171,5 +186,30 @@ mod extension_tests {
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
         assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::{base64_decode, base64_decoded_len, base64_encode};
+
+    #[test]
+    fn the_decoded_length_is_known_without_decoding() {
+        for data in [&b""[..], b"a", b"ab", b"abc", b"abcd", &[0xff; 100]] {
+            let s = base64_encode(data);
+            // Padding, line breaks and URL-safe characters, as a host may send them.
+            for s in [s.clone(), s.trim_end_matches('=').to_string(), s.replace('+', "-").replace('/', "_"), format!("{s}\r\n")] {
+                assert_eq!(base64_decoded_len(&s), base64_decode(&s).len(), "{s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn decoding_reserves_only_the_decoded_length() {
+        // One byte among 3 MiB of line breaks: the room reserved is for the one byte.
+        let s = format!("{}{}", "\n".repeat(3 << 20), base64_encode(b"a"));
+        let out = base64_decode(&s);
+        assert_eq!(out, b"a");
+        assert!(out.capacity() < 16, "reserved {} bytes for 1", out.capacity());
     }
 }

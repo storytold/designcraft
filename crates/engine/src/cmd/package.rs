@@ -7,16 +7,17 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
+use std::io::{Read, Write};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 use designcraft_compose::ComposedStory;
 use designcraft_doc::{AssetId, Document};
-use designcraft_fonts::{FaceRef, FontFace, FontSource};
+use designcraft_fonts::{FaceRef, FontSource, font_file_allows_packaging};
 use serde_json::{Value, json};
 
 const MAX_OUTPUT_COMPONENT_BYTES: usize = 200;
+const FONT_FILE_RESTRICTION: &str = "font file has restricted, bitmap-only or uninspectable faces";
 
 /// The folder of a package that holds the files its document places.
 const LINKS_FOLDER: &str = "Links";
@@ -172,12 +173,8 @@ impl OutputRoot {
         }
     }
 
-    fn copy(&self, from: &Path, to: &Path) -> Result<()> {
-        if self.validate_file_entry(to)?
-            && std::fs::canonicalize(to).is_ok_and(|target| std::fs::canonicalize(from).is_ok_and(|source| source == target))
-        {
-            return Ok(());
-        }
+    fn copy_font_file(&self, from: &Path, to: &Path) -> Result<()> {
+        self.validate_file_entry(to)?;
         #[cfg(target_arch = "wasm32")]
         {
             let _ = from;
@@ -185,10 +182,25 @@ impl OutputRoot {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut source = File::open(from).map_err(|e| path_error(from, e))?;
-            let permissions = Some(source.metadata().map_err(|e| path_error(from, e))?.permissions());
-            let mut target = self.temporary_file(to, permissions)?;
-            std::io::copy(&mut source, &mut target).map_err(|e| path_error(to, e))?;
+            let source = File::open(from).map_err(|e| path_error(from, e))?;
+            let metadata = source.metadata().map_err(|e| path_error(from, e))?;
+            let limit = designcraft_fonts::MAX_DOCUMENT_FONT_BYTES;
+            if !metadata.is_file() || metadata.len() > limit {
+                return Err(path_error(from, "font file is not regular or exceeds the document font limit"));
+            }
+            let mut bytes = Vec::new();
+            let capacity = usize::try_from(metadata.len().saturating_add(1)).map_err(|e| path_error(from, e))?;
+            bytes.try_reserve_exact(capacity).map_err(|e| path_error(from, e))?;
+            source.take(limit + 1).read_to_end(&mut bytes).map_err(|e| path_error(from, e))?;
+            if bytes.len() as u64 > limit {
+                return Err(path_error(from, "font file exceeds the document font limit"));
+            }
+            // Validate the same buffer we write: a cached face may predate an on-disk edit.
+            if !font_file_allows_packaging(&bytes) {
+                return Err(EngineError::Other(FONT_FILE_RESTRICTION.into()));
+            }
+            let mut target = self.temporary_file(to, Some(metadata.permissions()))?;
+            target.write_all(&bytes).map_err(|e| path_error(to, e))?;
             self.validate_file_entry(to)?;
             target.persist(to).map_err(|e| path_error(to, e.error))?;
             Ok(())
@@ -321,25 +333,40 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
 }
 
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
-/// restricts it or it is already there (`copied`: the source files copied) → what the package
+/// restricts it or it is already there (`copied`: handles retaining the source files) → what the package
 /// report adds after the font's name (nothing when copied).
-fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
+fn copy_font(root: &OutputRoot, face: &FaceRef, dir: &Path, copied: &mut Vec<FaceRef>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
-        FontSource::Installed(p) | FontSource::Document(p) => p,
+        FontSource::DocumentData(_) => None,
+        FontSource::Installed(p) | FontSource::Document(p) => Some(p),
     };
-    if face.restricted_licence() {
+    if face.restricted_licence() || face.bitmap_only() {
         return " — not copied: its licence doesn't allow it".into();
     }
-    if copied.contains(from) {
+    // Collection faces and variable instances share their source bytes. Keep the handles alive
+    // for this operation, so byte identity stays valid; supplied names need not be unique.
+    if copied.iter().any(|previous| match (from, previous.source.path()) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => std::ptr::eq(previous.data(), face.data()),
+        _ => false,
+    }) {
         return String::new();
     }
-    let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
+    let name = match &face.source {
+        FontSource::DocumentData(name) => name.clone(),
+        _ => from.and_then(|path| path.file_name()).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    let name = safe_component(&name, "font");
     let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
-    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+    match root.validate_directory(dir).and_then(|_| match from {
+        Some(from) => root.copy_font_file(from, &to),
+        None if font_file_allows_packaging(face.data()) => root.write(&to, face.data()),
+        None => Err(EngineError::Other(FONT_FILE_RESTRICTION.into())),
+    }) {
         Ok(()) => {
-            copied.push(from.clone());
+            copied.push(face.clone());
             files.push(to);
             String::new()
         }
@@ -353,6 +380,11 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
 fn font_file_name(name: String, data: &[u8]) -> String {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
     if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
+        if let Some((stem, ext)) = name.rsplit_once('.')
+            && stem.trim_matches('.').is_empty()
+        {
+            return format!("font.{ext}");
+        }
         return name;
     }
     let add = match data.get(..4) {
@@ -375,7 +407,7 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
     for f in &cs.frames {
         for g in f.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible) {
             if !out.iter().any(|o| o.id() == g.face.id()) {
-                out.push(g.face);
+                out.push(g.face.clone());
             }
         }
         for c in f.tables.iter().flat_map(|t| &t.cells) {
@@ -424,7 +456,8 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         // A missing font's text is drawn in its substitute, which isn't a fallback font.
         let face = db.face(family, style);
         named.push(face.id());
-        let note = if missing { " — MISSING".to_string() } else { copy_font(&root, &face, &fonts_dir, &mut copied, &mut taken, &mut files) };
+        let note =
+            if missing { " — MISSING".to_string() } else { copy_font(&root, &FaceRef::of(&face), &fonts_dir, &mut copied, &mut taken, &mut files) };
         font_lines.push(format!("  {family} {style}{note}\n"));
     }
     // Fallback fonts: the faces that draw characters the named fonts lack.

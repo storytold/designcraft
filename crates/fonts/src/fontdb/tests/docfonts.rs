@@ -230,3 +230,142 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     assert_eq!(fonts.face("DocFont Kepler", "Light").style, "Light");
     let _ = std::fs::remove_dir_all(&folder);
 }
+
+/// A font file for [`FontDb::load_document_font_data`]: its name, length and bytes.
+type FontData = (String, u64, Box<dyn FnOnce() -> Vec<u8>>);
+
+fn font_data(name: &str, bytes: Vec<u8>) -> FontData {
+    (name.into(), bytes.len() as u64, Box::new(move || bytes))
+}
+
+/// A file whose length alone must skip it: reading it fails the test.
+fn unread(name: &str, len: u64) -> FontData {
+    let name = name.to_string();
+    (name.clone(), len, Box::new(move || panic!("{name} was read")))
+}
+
+#[test]
+fn document_font_data_loads_in_its_own_scope() {
+    const FAMILY: &str = "DocFont Data";
+    let db = FontDb::with_font_dirs(vec![]);
+    // Two documents bring different versions of one family: A's has `a` and `b`, B's only `b`.
+    let a = db.load_document_font_data(vec![
+        font_data("same.ttf", font_with(FAMILY, &['a', 'b']).unwrap()),
+        font_data("broken.otf", b"not a font".to_vec()),
+    ]);
+    let b = db.load_document_font_data(vec![font_data("same.ttf", font_with(FAMILY, &['b']).unwrap())]);
+    assert_eq!((a.faces, b.faces), (1, 1));
+    assert_eq!(a.skipped.len(), 1, "{:?}", a.skipped);
+    assert!(a.skipped[0].contains("broken.otf"), "{:?}", a.skipped);
+    assert!(a.scope != 0 && b.scope != 0 && a.scope != b.scope);
+
+    let (fa, fb) = (db.scoped(a.scope).face(FAMILY, "Regular"), db.scoped(b.scope).face(FAMILY, "Regular"));
+    assert_eq!(fa.source, FontSource::DocumentData("same.ttf".into()));
+    assert!(fa.covers('a') && fa.covers('b'), "A sees its own version");
+    assert!(!fb.covers('a') && fb.covers('b'), "B sees its own version, not A's");
+    assert!(!Arc::ptr_eq(&fa, &fb));
+    assert_eq!(fa.source.path(), None, "no file behind it");
+    assert!(!db.has_family(FAMILY), "neither reaches the shared fonts");
+
+    db.close_scope(a.scope);
+    assert!(!db.scoped(a.scope).has_family(FAMILY), "a closed scope finds its fonts no more");
+    assert!(db.scoped(b.scope).face(FAMILY, "Regular").covers('b'), "closing A leaves B's");
+    assert_eq!(db.load_document_font_data(vec![font_data("readme.txt", b"hello".to_vec())]).scope, 0, "no fonts: scope 0");
+}
+
+/// The caps hold before a file's bytes are read: a file over them by its length, or past the
+/// file count, is skipped unread, as a folder's oversized files are.
+#[test]
+fn document_font_data_over_the_caps_is_skipped_unread() {
+    const FAMILY: &str = "DocFont Data Capped";
+    let db = FontDb::with_font_dirs(vec![]);
+    let r =
+        db.load_document_font_data(vec![unread("big.ttf", MAX_DOCUMENT_FONT_BYTES + 1), font_data("small.ttf", font_with(FAMILY, &['a']).unwrap())]);
+    assert_eq!(r.faces, 1, "{:?}", r.skipped);
+    assert_eq!(r.skipped.len(), 1, "{:?}", r.skipped);
+    assert!(r.skipped[0].starts_with("big.ttf: larger than"), "{:?}", r.skipped);
+
+    // In name order, the file past the count is never read.
+    let mut files: Vec<FontData> = (0..MAX_DOCUMENT_FONT_FILES).map(|i| font_data(&format!("f{i:03}.ttf"), b"x".to_vec())).collect();
+    files.push(unread("z-past-the-count.ttf", 10));
+    let r = db.load_document_font_data(files);
+    let past = format!("1 more font files not loaded (at most {MAX_DOCUMENT_FONT_FILES} are)");
+    assert_eq!(r.skipped.last(), Some(&past), "{:?}", r.skipped.last());
+}
+
+fn variable_font_data() -> FontData {
+    let font = font_with_names(&[(1, "DocFont Data Variable"), (2, "Regular"), (256, "Weight")], &['a']).unwrap();
+    font_data("variable.ttf", crate::testing::with_weight_axis(&font).unwrap())
+}
+
+#[test]
+fn closing_supplied_font_scope_releases_cached_instances() {
+    let db = FontDb::with_font_dirs(vec![]);
+    let a = db.load_document_font_data(vec![variable_font_data()]);
+    let b = db.load_document_font_data(vec![variable_font_data()]);
+    let view = db.scoped(a.scope);
+    assert_eq!(view.axes("DocFont Data Variable", "Regular").len(), 1);
+    let a_instance = view.face("DocFont Data Variable", "Regular {wght:650}");
+    let b_instance = db.scoped(b.scope).face("DocFont Data Variable", "Regular {wght:650}");
+    assert!(a_instance.is_variable() && b_instance.is_variable());
+    let (a_weak, b_weak) = (Arc::downgrade(&a_instance), Arc::downgrade(&b_instance));
+    drop(a_instance);
+    drop(b_instance);
+    db.close_scope(a.scope);
+    assert!(a_weak.upgrade().is_none(), "closing A releases its cached instance and font bytes");
+    assert!(b_weak.upgrade().is_some(), "B keeps its own live instance");
+    db.close_scope(b.scope);
+    assert!(b_weak.upgrade().is_none(), "closing B releases its cached instance too");
+}
+
+#[test]
+fn closed_supplied_font_view_cannot_repopulate_instance_cache() {
+    let db = FontDb::with_font_dirs(vec![]);
+    let fonts = db.load_document_font_data(vec![variable_font_data()]);
+    let view = db.scoped(fonts.scope);
+    db.close_scope(fonts.scope);
+    // A render job may already hold the old view when the document closes.
+    let instance = view.face("DocFont Data Variable", "Regular {wght:650}");
+    assert!(instance.is_variable());
+    let weak = Arc::downgrade(&instance);
+    drop(instance);
+    assert!(weak.upgrade().is_none(), "an old view must not leave a new global cache entry");
+}
+
+fn assert_scoped_handle_lifetime(data: FontData, family: &str, style: &str) {
+    use crate::FaceRef;
+    use crate::fontdb::face::FontBytes;
+
+    let db = FontDb::with_font_dirs(vec![]);
+    let fonts = db.load_document_font_data(vec![data]);
+    let face = db.scoped(fonts.scope).face(family, style);
+    assert_eq!(face.family, family);
+    let weak_face = Arc::downgrade(&face);
+    let weak_bytes = match &face.bytes {
+        FontBytes::Owned(bytes) => Arc::downgrade(bytes),
+        FontBytes::Static(_) => panic!("supplied font must own its bytes"),
+    };
+    let handle = FaceRef::of(&face);
+    let other = handle.clone();
+    drop(face);
+    db.close_scope(fonts.scope);
+    assert!(weak_face.upgrade().is_some(), "a live glyph handle keeps its face");
+    assert!(weak_bytes.upgrade().is_some(), "a live glyph handle keeps its font bytes");
+    assert!(handle.get().covers('a'));
+    drop(handle);
+    assert!(other.get().covers('a'), "the remaining glyph handle is still usable");
+    drop(other);
+    assert!(weak_face.upgrade().is_none(), "the last glyph handle releases its face");
+    assert!(weak_bytes.upgrade().is_none(), "the last glyph handle releases its font bytes");
+}
+
+#[test]
+fn supplied_face_handles_release_their_font_after_the_last_glyph() {
+    const FAMILY: &str = "DocFont Data Handle";
+    assert_scoped_handle_lifetime(font_data("handle.ttf", font_with(FAMILY, &['a']).unwrap()), FAMILY, "Regular");
+}
+
+#[test]
+fn supplied_instance_handles_release_their_font_after_the_last_glyph() {
+    assert_scoped_handle_lifetime(variable_font_data(), "DocFont Data Variable", "Regular {wght:650}");
+}

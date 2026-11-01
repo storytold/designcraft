@@ -7,7 +7,7 @@
 //! story's composition places it. Entries hold clones of those `Arc`s, so the pointers
 //! can't be reused by other allocations while the entry lives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
@@ -40,6 +40,7 @@ impl From<Option<usize>> for ShownOn {
 type Key = (StoryId, ShownOn, bool);
 
 struct Entry {
+    font_scope: u32,
     sig: Vec<usize>,
     _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>, Vec<Arc<Story>>),
     out: Arc<ComposedStory>,
@@ -47,15 +48,22 @@ struct Entry {
 }
 
 #[derive(Default)]
+struct Entries {
+    current: HashMap<Key, Entry>,
+    stamp: u64,
+    retired_scopes: HashSet<u32>,
+    /// The composition each story had before its latest recomposition (repaint only the
+    /// frames an edit changed), with its font scope and input signature.
+    previous: HashMap<StoryId, (u32, Vec<usize>, Arc<ComposedStory>)>,
+}
+
+#[derive(Default)]
 pub struct Cache {
-    map: Mutex<(HashMap<Key, Entry>, u64)>,
+    map: Mutex<Entries>,
     /// Running-header index with the document signature it was built for.
     running: Mutex<Option<(u64, Arc<RunningIndex>)>>,
     /// Cross-reference anchor pages with the document signature they were built for.
     xrefs: Mutex<Option<(u64, Arc<crate::xref::XrefIndex>)>>,
-    /// The composition each story (page-independent key) had before its latest recomposition,
-    /// with the story revision it was composed from (repaint only the frames an edit changed).
-    previous: Mutex<HashMap<StoryId, (Vec<usize>, Arc<ComposedStory>)>>,
 }
 
 /// Identity of everything a running header can depend on (stories, spreads, styles, variables).
@@ -217,9 +225,10 @@ impl Cache {
         }
         {
             let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
-            g.1 += 1;
-            let stamp = g.1;
-            if let Some(e) = g.0.get_mut(&key)
+            g.stamp += 1;
+            let stamp = g.stamp;
+            if !g.retired_scopes.contains(&doc.font_scope)
+                && let Some(e) = g.current.get_mut(&key)
                 && e.sig == sig
             {
                 e.stamp = stamp;
@@ -237,18 +246,25 @@ impl Cache {
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
         ));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
-        let stamp = g.1;
-        if g.0.len() > 4096 {
-            g.0.retain(|_, e| stamp - e.stamp < 64);
+        // A render may have started before its document closed. It can return its result,
+        // but must not make the cache retain faces from the retired scope again.
+        if g.retired_scopes.contains(&doc.font_scope) {
+            return out;
         }
-        let replaced = g.0.insert(key, Entry { sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_stories), out: out.clone(), stamp });
-        drop(g);
+        let stamp = g.stamp;
+        if g.current.len() > 4096 {
+            g.current.retain(|_, e| stamp - e.stamp < 64);
+        }
+        let replaced = g.current.insert(
+            key,
+            Entry { font_scope: doc.font_scope, sig, _keep: (story.clone(), doc.styles.clone(), keep_items, keep_stories), out: out.clone(), stamp },
+        );
         // Only the composition that is shown (not one made for another story's wrap).
         if key.1 == ShownOn::Own
             && cross
             && let Some(old) = replaced
         {
-            self.previous.lock().unwrap_or_else(PoisonError::into_inner).insert(sid, (old.sig, old.out));
+            g.previous.insert(sid, (old.font_scope, old.sig, old.out));
         }
         out
     }
@@ -260,18 +276,18 @@ impl Cache {
         let (sig, _) = signature(doc, story);
         // Only the geometry/story part of the signature (variables etc. add to it).
         let matches = |s: &[usize]| s.len() >= sig.len() && s[..sig.len()] == sig[..];
-        {
-            let g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
-            for cross in [true, false] {
-                if let Some(e) = g.0.get(&(sid, ShownOn::Own, cross))
-                    && matches(&e.sig)
-                {
-                    return Some(e.out.clone());
-                }
+        let g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        if g.retired_scopes.contains(&doc.font_scope) {
+            return None;
+        }
+        for cross in [true, false] {
+            if let Some(e) = g.current.get(&(sid, ShownOn::Own, cross))
+                && matches(&e.sig)
+            {
+                return Some(e.out.clone());
             }
         }
-        let g = self.previous.lock().unwrap_or_else(PoisonError::into_inner);
-        g.get(&sid).filter(|(s, _)| matches(s)).map(|(_, c)| c.clone())
+        g.previous.get(&sid).filter(|(_, s, _)| matches(s)).map(|(_, _, c)| c.clone())
     }
 
     /// Frames whose composed content differs between two compositions of a story.
@@ -326,9 +342,21 @@ impl Cache {
     }
 
     pub fn clear(&self) {
-        self.map.lock().unwrap_or_else(PoisonError::into_inner).0.clear();
+        self.map.lock().unwrap_or_else(PoisonError::into_inner).current.clear();
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// Release a closed document's current and previous glyphs without invalidating other
+    /// documents. Old readers can finish but cannot cache this scope again, even after clear.
+    pub fn retire_font_scope(&self, scope: u32) {
+        if scope == 0 {
+            return;
+        }
+        let mut entries = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.retired_scopes.insert(scope);
+        entries.current.retain(|_, entry| entry.font_scope != scope);
+        entries.previous.retain(|_, (font_scope, _, _)| *font_scope != scope);
     }
 
     /// Anchor pages for cross-references (rebuilt when the document changes).

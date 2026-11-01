@@ -114,17 +114,17 @@ pub(crate) fn annotate(db: &ScopedFonts<'_>, styles: &[RunStyle], line: &mut Vec
 }
 
 /// `text` shaped in `face` at the mark's size and scales, from x = 0 on the baseline.
-fn shape_mark(face: FaceRef, text: &str, m: &KentenMark, b: &PlacedGlyph) -> Vec<PlacedGlyph> {
+fn shape_mark(face: &FaceRef, text: &str, m: &KentenMark, b: &PlacedGlyph) -> Vec<PlacedGlyph> {
     let k = m.size / face.units_per_em().max(1.0);
     let (sx, sy) = (k * m.x_scale, k * m.y_scale);
     let mut x = 0.0;
     let mut out = Vec::new();
-    for sg in designcraft_fonts::shape(&face, text, &[], |c| c) {
+    for sg in designcraft_fonts::shape(face, text, &[], |c| c) {
         let ch = text.get(sg.cluster..).and_then(|t| t.chars().next()).unwrap_or(' ');
         let adv = f64::from(sg.x_advance) * sx;
         out.push(PlacedGlyph {
             rendered_char: ch,
-            face,
+            face: face.clone(),
             gid: sg.gid,
             x: x + f64::from(sg.x_offset) * sx,
             y: -f64::from(sg.y_offset) * sy,
@@ -151,7 +151,7 @@ fn shape_mark(face: FaceRef, text: &str, m: &KentenMark, b: &PlacedGlyph) -> Vec
 fn marks(db: &ScopedFonts<'_>, b: &PlacedGlyph, m: &KentenMark, fallback: bool) -> Vec<PlacedGlyph> {
     let mut face = match &m.font {
         Some((family, style)) => FaceRef::of(&db.face(family, style)),
-        None => b.face,
+        None => b.face.clone(),
     };
     if fallback
         && let Some(c) = m.text.chars().next()
@@ -160,9 +160,9 @@ fn marks(db: &ScopedFonts<'_>, b: &PlacedGlyph, m: &KentenMark, fallback: bool) 
     {
         face = FaceRef::of(&f);
     }
-    let mut glyphs = shape_mark(face, &m.text, m, b);
+    let mut glyphs = shape_mark(&face, &m.text, m, b);
     if fallback && glyphs.first().is_some_and(|d| d.gid == 0) {
-        glyphs = shape_mark(b.face, "\u{2022}", m, b);
+        glyphs = shape_mark(&b.face, "\u{2022}", m, b);
     }
     // The character's em box across the line (y down from the line's baseline).
     let (em_top, em_bottom) = b.face.em_box();

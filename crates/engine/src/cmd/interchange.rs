@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
-            "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
+            "{path | base64, name?, fonts?: [{name, base64}] (with base64: font files for this document alone, as its Document Fonts folder)} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
             always, open_idml),
     ]
 }
@@ -429,7 +429,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
         Some(path) => super::file::load_document_fonts(&mut d, path),
-        None => (None, 0, Vec::new()),
+        None => super::file::load_supplied_fonts(&mut d, p, "file.openIdml")?,
     };
     warnings.extend(font_warnings);
     warnings.extend(super::style::grep_style_warnings(&d));

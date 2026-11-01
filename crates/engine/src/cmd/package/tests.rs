@@ -236,17 +236,189 @@ fn package_writes_document_links_and_report() {
 }
 
 #[test]
+fn supplied_dot_only_font_names_reopen_from_packages() {
+    use designcraft_fonts::{DOCUMENT_FONTS_FOLDER, testing::font_with};
+    const FAMILY: &str = "DocFont Package Dot Name";
+    let mut maker = Session::new();
+    maker.execute("file.new", &json!({"title": "Dot"})).unwrap();
+    let story = maker.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "a"})).unwrap()["story"].clone();
+    maker.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+    maker.execute("type.char", &json!({"fontFamily": FAMILY, "fontStyle": "Regular"})).unwrap();
+    let b64 = super::super::base64_encode;
+    let doc = super::super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+    let font = font_with(FAMILY, &['a']).unwrap();
+    let root = std::env::temp_dir().join(format!("dc-package-dot-font-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (index, name) in [".ttf", "..TTF", "...otf", ".named.ttf"].into_iter().enumerate() {
+        let mut s = Session::new();
+        assert_eq!(
+            s.execute("file.openBytes", &json!({"name": "Dot.designcraft", "base64": b64(&doc), "fonts": [{"name": name, "base64": b64(&font)}]}))
+                .unwrap()["documentFonts"],
+            1
+        );
+        let dir = root.join(index.to_string());
+        let result = s.execute("file.package", &json!({"dir": dir, "idml": false})).unwrap();
+        let paths: Vec<_> = std::fs::read_dir(dir.join(DOCUMENT_FONTS_FOLDER)).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].extension().is_some(), "{name}: folder loader requires an extension");
+        if name == ".named.ttf" {
+            assert_eq!(paths[0].file_name().unwrap(), name);
+        }
+        let mut reopened = Session::new();
+        assert_eq!(reopened.execute("file.open", &json!({"path": result["files"][0]})).unwrap()["documentFonts"], 1, "{name}");
+        let listed = reopened.execute("font.list", &json!({})).unwrap();
+        assert!(listed.as_array().unwrap().iter().any(|face| face["family"] == FAMILY && face["source"] == "document" && face["missing"] == false));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn supplied_collections_require_every_faces_packaging_permission() {
+    use designcraft_fonts::{
+        DOCUMENT_FONTS_FOLDER,
+        testing::{font_collection, font_with, with_fs_type},
+    };
+    const FAMILY: &str = "DocFont Package Collection Used";
+    const UNUSED: &str = "DocFont Package Collection Unused";
+    let mut maker = Session::new();
+    maker.execute("file.new", &json!({"title": "Collection"})).unwrap();
+    let story = maker.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "a"})).unwrap()["story"].clone();
+    maker.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+    maker.execute("type.char", &json!({"fontFamily": FAMILY, "fontStyle": "Regular"})).unwrap();
+    let doc = super::super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+    let b64 = super::super::base64_encode;
+    let first = font_with(FAMILY, &['a']).unwrap();
+    let root = std::env::temp_dir().join(format!("dc-package-collection-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (index, (fs_type, family)) in [(0, UNUSED), (0x0002, UNUSED), (0x0208, UNUSED), (0x0002, FAMILY)].into_iter().enumerate() {
+        let second = with_fs_type(font_with(family, &['b']).unwrap(), fs_type).unwrap();
+        let collection = font_collection(&[&first, &second]).unwrap();
+        let mut s = Session::new();
+        let opened = s
+            .execute(
+                "file.openBytes",
+                &json!({"name": "Collection.designcraft", "base64": b64(&doc), "fonts": [{"name": "faces.ttc", "base64": b64(&collection)}]}),
+            )
+            .unwrap();
+        assert_eq!(opened["documentFonts"], if family == FAMILY { 1 } else { 2 }, "{opened}");
+        let dir = root.join(index.to_string());
+        let result = s.execute("file.package", &json!({"dir": dir, "idml": false})).unwrap();
+        let copied = dir.join(DOCUMENT_FONTS_FOLDER).join("faces.ttc");
+        assert_eq!(copied.exists(), fs_type == 0, "an unused or deduplicated prohibited face still travels in the whole TTC: {result}");
+        if fs_type == 0 {
+            assert_eq!(std::fs::read(copied).unwrap(), collection);
+            assert_eq!(Session::new().execute("file.open", &json!({"path": result["files"][0]})).unwrap()["documentFonts"], 2);
+        } else {
+            assert!(result["report"].as_str().unwrap().contains(&format!("{FAMILY} Regular — not copied:")), "{result}");
+            assert!(!result["files"].as_array().unwrap().iter().any(|path| path.as_str().unwrap().ends_with(".ttc")));
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn changed_font_files_are_checked_before_their_bytes_are_copied() {
+    use designcraft_fonts::testing::{font_collection, font_with, installed_face, with_fs_type};
+    let first = font_with("DocFont Package Changed Used", &['a']).unwrap();
+    let second = font_with("DocFont Package Changed Unused", &['b']).unwrap();
+    let allowed = font_collection(&[&first, &second]).unwrap();
+    let blocked = font_collection(&[&first, &with_fs_type(second, 0x0002).unwrap()]).unwrap();
+    let dir = std::env::temp_dir().join(format!("dc-package-font-change-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("faces.ttc");
+    std::fs::write(&from, &allowed).unwrap();
+    let face = FaceRef::of(&Arc::new(installed_face(allowed, from.clone()).unwrap()));
+    std::fs::write(&from, blocked).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let out = dir.join("Output");
+    let (mut copied, mut taken, mut files) = (Vec::new(), Vec::new(), Vec::new());
+    let note = copy_font(&root, &face, &out, &mut copied, &mut taken, &mut files);
+    assert!(note.contains("not copied"), "{note}");
+    assert!(files.is_empty() && !out.join("faces.ttc").exists(), "copy must validate the bytes read from disk, not only the earlier loaded face");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn package_copies_supplied_fonts_with_safe_distinct_names() {
+    use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    use designcraft_fonts::testing::{font_with, with_fs_type};
+    const A: &str = "DocFont Supplied Package A";
+    const B: &str = "DocFont Supplied Package B";
+    const RESTRICTED: &str = "DocFont Supplied Package Restricted";
+    const BITMAP: &str = "DocFont Supplied Package Bitmap";
+    const FALLBACK: &str = "DocFont Supplied Package Fallback";
+    let fallback_char = '\u{f0801}';
+    let supplied = [
+        font_with(A, &['a']).unwrap(),
+        font_with(B, &['b']).unwrap(),
+        with_fs_type(font_with(RESTRICTED, &['r']).unwrap(), 0x0002).unwrap(),
+        font_with(FALLBACK, &[fallback_char]).unwrap(),
+        with_fs_type(font_with(BITMAP, &['s']).unwrap(), 0x0208).unwrap(),
+    ];
+    let mut maker = Session::new();
+    maker.execute("file.new", &json!({"title": "Supplied"})).unwrap();
+    let story = maker.execute("frame.create", &json!({"rect": [0, 0, 300, 100], "content": "text", "text": format!("abrs{fallback_char}")})).unwrap()
+        ["story"]
+        .clone();
+    for (start, end, family) in [(0, 8, A), (1, 2, B), (2, 3, RESTRICTED), (3, 4, BITMAP)] {
+        maker.execute("text.select", &json!({"story": story, "anchor": start, "focus": end})).unwrap();
+        maker.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
+    }
+    let native = super::super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+    let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
+    let b64 = super::super::base64_encode;
+    // Different files may arrive under the same untrusted name. Neither the name nor its
+    // path is a file identity, and a fallback face needs to travel with the package too.
+    let fonts: Vec<_> = supplied.iter().map(|data| json!({"name": "../../same.ttf", "base64": b64(data)})).collect();
+    let root = std::env::temp_dir().join(format!("dc-package-supplied-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (command, data, label) in [("file.openBytes", native, "native"), ("file.openIdml", idml, "idml")] {
+        let mut s = Session::new();
+        let opened = s.execute(command, &json!({"name": "Supplied.designcraft", "base64": b64(&data), "fonts": fonts})).unwrap();
+        assert_eq!(opened["documentFonts"], 5, "{opened}");
+        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
+        let out = root.join(label);
+        let result = s.execute("file.package", &json!({"dir": out, "idml": false})).unwrap();
+        let folder = out.join(DOCUMENT_FONTS_FOLDER);
+        let mut paths: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()).collect();
+        paths.sort();
+        assert_eq!(paths.len(), 3, "unrestricted named and fallback files only: {paths:?}");
+        for expected in [&supplied[0], &supplied[1], &supplied[3]] {
+            assert_eq!(paths.iter().filter(|path| std::fs::read(path).unwrap() == **expected).count(), 1, "each file copied exactly once");
+        }
+        assert!(paths.iter().all(|path| path.parent() == Some(folder.as_path()) && path.extension().is_some_and(|ext| ext == "ttf")));
+        let report = result["report"].as_str().unwrap();
+        assert!(report.contains(&format!("{RESTRICTED} Regular — not copied: its licence doesn't allow it")), "{report}");
+        assert!(report.contains(&format!("{BITMAP} Regular — not copied: its licence doesn't allow it")), "{report}");
+        assert!(report.contains(&format!("{FALLBACK} Regular\n")), "{report}");
+        let packaged = result["files"][0].as_str().unwrap();
+        let mut reopened = Session::new();
+        assert_eq!(reopened.execute("file.open", &json!({"path": packaged})).unwrap()["documentFonts"], 3);
+        let listed = reopened.execute("font.list", &json!({})).unwrap();
+        for family in [A, B] {
+            let face = listed.as_array().unwrap().iter().find(|face| face["family"] == family).unwrap();
+            assert_eq!(face["source"], "document", "{face}");
+            assert_eq!(face["missing"], false, "{face}");
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn package_copies_the_fonts_their_licences_allow() {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
     use designcraft_fonts::testing::{font_with, with_fs_type};
     const FREE: &str = "DocFont Package Free";
     const RESTRICTED: &str = "DocFont Package Restricted";
+    const BITMAP: &str = "DocFont Package Bitmap";
     let dir = std::env::temp_dir().join(format!("dc-package-fonts-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let fonts = dir.join("src").join(DOCUMENT_FONTS_FOLDER);
     std::fs::create_dir_all(&fonts).unwrap();
     std::fs::write(fonts.join("free.ttf"), font_with(FREE, &['F']).unwrap()).unwrap();
     std::fs::write(fonts.join("restricted.otf"), with_fs_type(font_with(RESTRICTED, &['R']).unwrap(), 0x0002).unwrap()).unwrap();
+    std::fs::write(fonts.join("bitmap.ttf"), with_fs_type(font_with(BITMAP, &['B']).unwrap(), 0x0208).unwrap()).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -256,15 +428,15 @@ fn package_copies_the_fonts_their_licences_allow() {
     // Text in both fonts, and in the bundled default font.
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
-    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Free Restricted Default"})).unwrap();
-    for (a, b, family) in [(0, 4, FREE), (5, 15, RESTRICTED)] {
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Free Restricted Default Bitmap"})).unwrap();
+    for (a, b, family) in [(0, 4, FREE), (5, 15, RESTRICTED), (24, 30, BITMAP)] {
         s.execute("text.select", &json!({"story": r["story"], "anchor": a, "focus": b})).unwrap();
         s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
     }
     let src = dir.join("src").join("Fonts.designcraft");
     s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
     let mut s = Session::new();
-    assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 2);
+    assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 3);
 
     let out = dir.join("Pkg");
     let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).unwrap();
@@ -280,18 +452,20 @@ fn package_copies_the_fonts_their_licences_allow() {
         );
     }
     assert!(!packed_fonts.join("restricted.otf").exists(), "a restricted licence keeps the font out");
+    assert!(!packed_fonts.join("bitmap.ttf").exists(), "bitmap-only permission cannot pass on the outline file");
     assert!(r["files"].to_string().contains("free.ttf"), "{}", r["files"]);
     let report = r["report"].as_str().unwrap();
     assert!(report.contains(&format!("{RESTRICTED} Regular — not copied: its licence doesn't allow it")), "{report}");
+    assert!(report.contains(&format!("{BITMAP} Regular — not copied: its licence doesn't allow it")), "{report}");
     assert!(report.contains(&format!("{FREE} Regular\n")), "{report}");
     assert!(report.contains(&format!("{} Regular — included with DesignCraft", designcraft_fonts::DEFAULT_FAMILY)), "{report}");
     // The packaged document opens with its fonts.
     let doc = r["files"][0].as_str().unwrap().to_string();
     assert_eq!(Session::new().execute("file.open", &json!({"path": doc})).unwrap()["documentFonts"], 1);
     // Packaging into the folder the fonts come from leaves them whole.
-    let len = std::fs::metadata(fonts.join("free.ttf")).unwrap().len();
+    let original = std::fs::read(fonts.join("free.ttf")).unwrap();
     s.execute("file.package", &json!({"dir": dir.join("src").to_string_lossy(), "idml": false})).unwrap();
-    assert_eq!(std::fs::metadata(fonts.join("free.ttf")).unwrap().len(), len);
+    assert_eq!(std::fs::read(fonts.join("free.ttf")).unwrap(), original);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -356,12 +530,12 @@ fn packaged_fonts_keep_a_font_extension() {
     let from = dir.join(".12345");
     let bytes = font_with("DocFont Package Extensionless", &['E']).unwrap();
     std::fs::write(&from, &bytes).unwrap();
-    let face = installed_face(bytes, from).unwrap();
+    let face = Arc::new(installed_face(bytes, from).unwrap());
     let root = OutputRoot::new(dir.clone()).unwrap();
     let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
     std::fs::create_dir_all(&fonts).unwrap();
     let (mut copied, mut taken, mut files) = (Vec::new(), Vec::new(), Vec::new());
-    assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
+    assert_eq!(copy_font(&root, &FaceRef::of(&face), &fonts, &mut copied, &mut taken, &mut files), "");
     assert_eq!(files, [fonts.join("12345.ttf")]);
     let db = designcraft_fonts::FontDb::global();
     let loaded = db.load_document_fonts(&fonts, &|_| Ok(()));

@@ -4837,7 +4837,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
                 rendered_char: '\t',
-                face: tab.face,
+                face: tab.face.clone(),
                 gid,
                 x: at,
                 y: -tab.shift + tab.dy,
@@ -4960,7 +4960,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
         rendered_char: g.rendered_char,
-        face: g.face,
+        face: g.face.clone(),
         gid: g.gid,
         x: x + g.dx,
         y: -g.shift + g.dy,

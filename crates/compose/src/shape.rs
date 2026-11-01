@@ -1240,7 +1240,7 @@ fn shape_segment(
         let mark_x = if mark { p.diacritic_x_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * hs } else { 0.0 };
         let mark_y = if mark { p.diacritic_y_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * p.v_scale } else { 0.0 };
         out.push(Glyph {
-            face: fref,
+            face: fref.clone(),
             gid: sg.gid,
             byte,
             len: if first_in_cluster || replacement.is_some() { len } else { 0 },

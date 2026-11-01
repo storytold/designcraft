@@ -19,18 +19,21 @@ impl FontSource {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             FontSource::Installed(p) | FontSource::Document(p) => Some(p),
-            FontSource::Bundled | FontSource::Memory => None,
+            FontSource::Bundled | FontSource::Memory | FontSource::DocumentData(_) => None,
         }
     }
 }
 
 impl FaceRef {
-    /// The handle for a loaded face (memoised per face).
+    /// A handle for a loaded face: owned for supplied data, otherwise memoised per face.
     pub fn of(face: &Arc<FontFace>) -> FaceRef {
+        if matches!(face.source, FontSource::DocumentData(_)) {
+            return FaceRef(face::FaceHandle::Scoped(face.clone()));
+        }
         static LEAKED: RwLock<Vec<Option<&FontFace>>> = RwLock::new(Vec::new());
         let id = face.id as usize;
         if let Some(Some(f)) = LEAKED.read().unwrap_or_else(PoisonError::into_inner).get(id) {
-            return FaceRef(f);
+            return FaceRef(face::FaceHandle::Permanent(f));
         }
         let mut w = LEAKED.write().unwrap_or_else(PoisonError::into_inner);
         if w.len() <= id {
@@ -41,29 +44,32 @@ impl FaceRef {
             keep
         });
         w[id] = Some(f);
-        FaceRef(f)
+        FaceRef(face::FaceHandle::Permanent(f))
     }
-    pub fn get(self) -> &'static FontFace {
-        self.0
+    pub fn get(&self) -> &FontFace {
+        match &self.0 {
+            face::FaceHandle::Permanent(face) => face,
+            face::FaceHandle::Scoped(face) => face,
+        }
     }
 }
 
 impl std::ops::Deref for FaceRef {
     type Target = FontFace;
     fn deref(&self) -> &FontFace {
-        self.0
+        self.get()
     }
 }
 
 impl std::fmt::Debug for FaceRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        self.get().fmt(f)
     }
 }
 
 impl PartialEq for FaceRef {
     fn eq(&self, o: &FaceRef) -> bool {
-        self.0.id == o.0.id
+        self.get().id == o.get().id
     }
 }
 
@@ -77,7 +83,8 @@ impl std::fmt::Debug for FontFace {
 /// each open document's own fonts under its scope (see [`FontDb::scoped`]).
 pub struct FontDb {
     faces: RwLock<Vec<Arc<FontFace>>>,
-    /// Each open document's fonts (its `Document Fonts` folder), by scope.
+    /// Each open document's fonts (its `Document Fonts` folder, or the font files it was opened
+    /// with), by scope.
     scopes: RwLock<HashMap<u32, Arc<[Arc<FontFace>]>>>,
     /// The document font files read, by path: (length, modification time, faces). A document
     /// opened again finds its unchanged files here instead of reading them again.
@@ -129,7 +136,7 @@ mod system;
 pub(crate) use face::last_resort_face;
 pub use face::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, bundled,
+    MAX_DOCUMENT_FONTS_TOTAL, bundled, font_file_allows_packaging,
 };
 #[cfg(test)]
 use face::{FontBytes, make_face};

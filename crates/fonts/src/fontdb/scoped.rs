@@ -1,6 +1,6 @@
 #[cfg(test)]
-use super::face::{BUNDLED, FontSource, enumerate_faces};
-use super::face::{FALLBACK_FAMILY, FontFace, last_resort_face, make_face};
+use super::face::{BUNDLED, enumerate_faces};
+use super::face::{FALLBACK_FAMILY, FontFace, FontSource, last_resort_face, make_face};
 use super::fallback::{cjk_chain, script_chain};
 use super::names::{alternate_names, base_style, has_wws_family, known_as, norm, style_italic, style_weight};
 use super::{Arc, BezPath, FamilyInfo, FontDb, MetadataProvider, PoisonError};
@@ -10,6 +10,7 @@ use super::{Arc, BezPath, FamilyInfo, FontDb, MetadataProvider, PoisonError};
 #[derive(Clone)]
 pub struct ScopedFonts<'a> {
     pub(super) db: &'a FontDb,
+    pub(super) scope: u32,
     /// The document's own faces, in the folder's file order (none without a scope).
     pub(super) own: Option<Arc<[Arc<FontFace>]>>,
 }
@@ -339,7 +340,15 @@ impl ScopedFonts<'_> {
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;
-        Some(self.db.instances.write().unwrap_or_else(PoisonError::into_inner).entry(key).or_insert_with(|| Arc::new(f)).clone())
+        // Keep the scope live through insertion: close_scope then either waits and evicts the
+        // entry, or has already closed it and this old render view must use an uncached face.
+        let live_scopes = matches!(base.source, FontSource::DocumentData(_)).then(|| self.db.scopes.read().unwrap_or_else(PoisonError::into_inner));
+        if live_scopes.as_ref().is_some_and(|scopes| !scopes.contains_key(&self.scope)) {
+            return Some(Arc::new(f));
+        }
+        let cached = self.db.instances.write().unwrap_or_else(PoisonError::into_inner).entry(key).or_insert_with(|| Arc::new(f)).clone();
+        drop(live_scopes);
+        Some(cached)
     }
 
     pub(super) fn find(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {

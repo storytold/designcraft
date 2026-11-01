@@ -623,7 +623,7 @@ mod language_tests {
         let (_, base) = back.styles.resolve_para(&st.paras[0]);
         assert_eq!(back.styles.resolve_char(&base, st.char_format_at(0)).language, "Simplified Chinese");
         let cs = designcraft_compose::compose_story(&back, st.id, &Default::default());
-        let face = cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap().face;
+        let face = &cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap().face;
         assert_eq!(face.family, "Songti SC");
     }
 }

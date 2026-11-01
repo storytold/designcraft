@@ -51,9 +51,9 @@ struct Shaped {
 
 /// The ruby's face: its own font, else the parent glyph's. With `fallback`, a face that lacks a
 /// character of `text` gives way to a fallback font for it.
-fn ruby_face(db: &ScopedFonts<'_>, parent: FaceRef, spec: &RubySpec, text: &str, fallback: bool) -> FaceRef {
+fn ruby_face(db: &ScopedFonts<'_>, parent: &FaceRef, spec: &RubySpec, text: &str, fallback: bool) -> FaceRef {
     let face = if spec.font_family.is_empty() {
-        parent
+        parent.clone()
     } else {
         let style = if spec.font_style.is_empty() { "Regular" } else { spec.font_style.as_str() };
         FaceRef::of(&db.face(&spec.font_family, style))
@@ -102,7 +102,7 @@ fn apply_tcy(glyphs: &mut [RubyGlyph], spec: &RubySpec, size: f64) {
 }
 
 /// Shape `text` as the ruby of parent text `parent_size` points big.
-fn shape_ruby(db: &ScopedFonts<'_>, parent: FaceRef, text: &str, spec: &RubySpec, parent_size: f64, fallback: bool, vertical: bool) -> Shaped {
+fn shape_ruby(db: &ScopedFonts<'_>, parent: &FaceRef, text: &str, spec: &RubySpec, parent_size: f64, fallback: bool, vertical: bool) -> Shaped {
     let size = spec.size_for(parent_size);
     let face = ruby_face(db, parent, spec, text, fallback);
     let upem = face.units_per_em();
@@ -345,7 +345,7 @@ fn ruby_key(st: &RunStyle) -> Option<(&str, Option<u32>)> {
 }
 
 /// The room a per-character ruby unit's reading leaves on each side of its parent `adv` wide.
-fn unit_free(db: &ScopedFonts<'_>, face: FaceRef, adv: f64, st: &RunStyle, mono: bool, fallback: bool, vertical: bool) -> f64 {
+fn unit_free(db: &ScopedFonts<'_>, face: &FaceRef, adv: f64, st: &RunStyle, mono: bool, fallback: bool, vertical: bool) -> f64 {
     match (mono, st.ruby_unit, st.ruby.as_deref(), st.ruby_spec.as_ref()) {
         (true, Some(_), Some(t), Some(sp)) => {
             let w = shape_ruby(db, face, t, sp, st.size, fallback || st.missing_font, vertical).width;
@@ -421,7 +421,7 @@ pub(crate) fn reserve(db: &ScopedFonts<'_>, styles: &mut Vec<RunStyle>, glyphs: 
             i = j;
             continue;
         };
-        let Some((face, parent_size)) = glyphs.get(first).map(|g| (g.face, g.size)) else {
+        let Some((face, parent_size)) = glyphs.get(first).map(|g| (&g.face, g.size)) else {
             i = j;
             continue;
         };
@@ -434,7 +434,7 @@ pub(crate) fn reserve(db: &ScopedFonts<'_>, styles: &mut Vec<RunStyle>, glyphs: 
                 return Side::Edge;
             }
             match styles.get(g.style as usize) {
-                Some(s) if s.ruby.is_some() => Side::Ruby { free: unit_free(db, g.face, g.adv, s, mono, fallback, vertical) },
+                Some(s) if s.ruby.is_some() => Side::Ruby { free: unit_free(db, &g.face, g.adv, s, mono, fallback, vertical) },
                 _ => Side::Char { ch: g.ch, adv: g.adv },
             }
         };
@@ -595,12 +595,12 @@ pub(crate) fn annotate(
         let x0 = base.iter().map(|b| b.x - b.dx).fold(f64::MAX, f64::min);
         let x1 = base.iter().map(|b| b.x - b.dx + b.adv).fold(f64::MIN, f64::max);
         let width = (x1 - x0).max(0.0);
-        let shaped = shape_ruby(db, first.face, &reading, &spec, st.size, fallback, vertical);
+        let shaped = shape_ruby(db, &first.face, &reading, &spec, st.size, fallback, vertical);
         let mono = st.ruby_unit.is_some();
         let side = |b: Option<&PlacedGlyph>| -> Side {
             let Some(b) = b.filter(|b| b.visible) else { return Side::Edge };
             match styles.get(b.style as usize) {
-                Some(s) if s.ruby.is_some() => Side::Ruby { free: unit_free(db, b.face, b.adv, s, mono, glyph_fallback, vertical) },
+                Some(s) if s.ruby.is_some() => Side::Ruby { free: unit_free(db, &b.face, b.adv, s, mono, glyph_fallback, vertical) },
                 _ => Side::Char { ch: text.get(b.byte..).and_then(|s| s.chars().next()).unwrap_or(' '), adv: b.adv },
             }
         };
@@ -649,7 +649,7 @@ pub(crate) fn annotate(
         for (r, off) in shaped.glyphs.iter().zip(offsets) {
             extra.push(PlacedGlyph {
                 rendered_char: r.ch,
-                face: shaped.face,
+                face: shaped.face.clone(),
                 gid: r.gid,
                 x: x0 + off + spec.x_offset,
                 y: y + r.y,

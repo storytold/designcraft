@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
-use super::bytes::{base64_decode, load_bytes, without_native_extension};
+use super::bytes::{base64_decode, base64_decoded_len, load_bytes, without_native_extension};
 use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
@@ -123,6 +123,25 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
     }
 }
 
+/// Load the font files a document opened from bytes brings (`fonts: [{name, base64}]` in `p`) for
+/// `d` alone, as [`load_document_fonts`] loads a folder's → (the scope, faces, a warning for each
+/// font skipped). No `fonts` loads nothing.
+pub(crate) fn load_supplied_fonts(d: &mut Document, p: &Value, command: &str) -> Result<(Option<Arc<crate::FontScope>>, usize, Vec<String>)> {
+    let Some(list) = p.get("fonts").filter(|v| !v.is_null()) else { return Ok((None, 0, Vec::new())) };
+    let list = list.as_array().ok_or_else(|| bad(command, "`fonts` must be a list of {name, base64}"))?;
+    let mut files = Vec::with_capacity(list.len());
+    for (i, f) in list.iter().enumerate() {
+        let name = str_param(f, "name").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `name`")))?;
+        let data = str_param(f, "base64").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `base64`")))?;
+        // Decoded only once its length is within the caps.
+        files.push((name.to_string(), base64_decoded_len(data) as u64, move || base64_decode(data)));
+    }
+    let r = designcraft_fonts::FontDb::global().load_document_font_data(files);
+    d.font_scope = r.scope;
+    let scope = (r.scope != 0).then(|| Arc::new(crate::FontScope(r.scope)));
+    Ok((scope, r.faces, r.skipped.into_iter().map(|s| format!("Document fonts: {s}")).collect()))
+}
+
 /// The `Document Fonts` folder in `dir`, matched without regard to case: packages name it
 /// `Document fonts`, and file systems on Linux are case-sensitive. The exact name wins.
 #[cfg(not(target_arch = "wasm32"))]
@@ -147,14 +166,18 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    let (mut d, mut warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }
-    let i = s.add_document(DocState::new(d, None));
-    Ok(json!({"index": i, "warnings": warnings}))
+    let (fonts, faces, font_warnings) = load_supplied_fonts(&mut d, p, "file.openBytes")?;
+    warnings.extend(font_warnings);
+    let mut st = DocState::new(d, None);
+    st.fonts = fonts;
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
 }
 
 #[cfg(test)]
@@ -209,7 +232,7 @@ mod document_fonts_tests {
         for (sid, story) in &st.doc.stories {
             let cs = s.cache.get(&st.doc, *sid, None);
             for g in cs.frames.iter().flat_map(|ft| &ft.lines).flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0) {
-                out.push((story.text[g.byte..].chars().next().unwrap(), g.face));
+                out.push((story.text[g.byte..].chars().next().unwrap(), g.face.clone()));
             }
         }
         out
@@ -354,6 +377,182 @@ mod document_fonts_tests {
     }
 
     #[test]
+    fn documents_opened_from_bytes_bring_their_own_fonts() {
+        use designcraft_fonts::testing::with_fs_type;
+
+        const FAMILY: &str = "DocFont Bytes";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "ab ab ab");
+        let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        // A's version of the family has both letters, B's only `b` (the same name and style).
+        let (a_font, b_font) = (
+            with_fs_type(font_with(FAMILY, &['a', 'b']).unwrap(), 0x0108).unwrap(),
+            with_fs_type(font_with(FAMILY, &['b']).unwrap(), 0x0204).unwrap(),
+        );
+
+        let mut s = Session::new();
+        let r = s
+            .execute(
+                "file.openBytes",
+                &json!({"name": "A.idml", "base64": b64(&idml), "fonts": [{"name": "same.ttf", "base64": b64(&a_font)}, {"name": "bad.otf", "base64": b64(b"nope")}]}),
+            )
+            .unwrap();
+        assert_eq!(r["documentFonts"], 1, "{r}");
+        assert!(r["warnings"].to_string().contains("bad.otf"), "a damaged font is reported, not fatal: {r}");
+        let r = s
+            .execute(
+                "file.openBytes",
+                &json!({"name": "B.designcraft", "base64": b64(&native), "fonts": [{"name": "same.ttf", "base64": b64(&b_font)}]}),
+            )
+            .unwrap();
+        assert_eq!(r["documentFonts"], 1, "{r}");
+        let f = font_entry(&mut s, FAMILY);
+        assert_eq!((f["matchStatus"].clone(), f["source"].clone()), (json!("exact"), json!("document")), "{f}");
+        assert_eq!(f["fsType"], 0x0204, "B reports its own supplied face's embedding bits");
+        assert_eq!(f["bitmapOnly"], true);
+        assert_eq!(f["previewPrint"], true);
+        assert_eq!(f["restrictedLicence"], false);
+        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
+        let in_b = glyph_faces(&s);
+        s.execute("file.activate", &json!({"index": 0})).unwrap();
+        let f = font_entry(&mut s, FAMILY);
+        assert_eq!(f["fsType"], 0x0108, "A reports its own supplied face's embedding bits");
+        assert_eq!(f["noSubsetting"], true);
+        assert_eq!(f["editable"], true);
+        let in_a = glyph_faces(&s);
+        assert_eq!((in_a.len(), in_b.len()), (8, 8), "{in_a:?} {in_b:?}");
+        assert!(in_a.iter().all(|(_, f)| f.family == FAMILY && f.source == FontSource::DocumentData("same.ttf".into())), "{in_a:?}");
+        for (c, f) in &in_b {
+            match c {
+                'a' => assert!(f.family != FAMILY, "B's font lacks `a`, and A's isn't B's: {f:?}"),
+                _ => assert!(f.family == FAMILY && !f.covers('a'), "`{c}` in B is B's version: {f:?}"),
+            }
+        }
+        // Neither document's fonts reach a third, and a malformed list is an error.
+        new_document(&mut s, FAMILY, "b");
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true);
+        assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": {"name": "x"}})).is_err());
+        assert!(s.execute("file.openBytes", &json!({"name": "C.idml", "base64": b64(&idml), "fonts": [{"name": "x.ttf"}]})).is_err());
+    }
+
+    /// Closing one document must release its cached glyphs while another stays open.
+    #[test]
+    fn closing_one_byte_document_releases_cached_font_handles_after_readers_finish() {
+        const FAMILY: &str = "DocFont Bytes Close Readers";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let font = font_with(FAMILY, &['a']).unwrap();
+        let params = json!({"name": "Readers.designcraft", "base64": b64(&native), "fonts": [{"name": "readers.ttf", "base64": b64(&font)}]});
+        let mut s = Session::new();
+        s.execute("file.openBytes", &params).unwrap();
+        let db = designcraft_fonts::FontDb::global();
+        let scope = s.doc().unwrap().doc.font_scope;
+        let weak = std::sync::Arc::downgrade(&db.scoped(scope).face(FAMILY, "Regular"));
+        let readers = glyph_faces(&s);
+        assert_eq!(readers.len(), 1);
+        let old_doc = s.doc().unwrap().doc.clone();
+        let old_story = *old_doc.stories.keys().next().unwrap();
+        let cache = s.cache.clone();
+        s.execute("file.openBytes", &params).unwrap();
+        let other_scope = s.doc().unwrap().doc.font_scope;
+        let other_story = *s.doc().unwrap().doc.stories.keys().next().unwrap();
+        let other_layout = s.cache.get(&s.doc().unwrap().doc, other_story, None);
+        s.execute("file.close", &json!({"index": 0})).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&cache, &s.cache), "closing A preserves B's cache");
+        assert!(std::sync::Arc::ptr_eq(&other_layout, &s.cache.get(&s.doc().unwrap().doc, other_story, None)), "B keeps its composed layout");
+        assert!(!db.scoped(scope).has_family(FAMILY), "closed scope is gone");
+        assert!(readers[0].1.covers('a'), "existing render readers can finish");
+        assert!(weak.upgrade().is_some());
+        drop(readers);
+        assert!(weak.upgrade().is_none(), "the idle session must not retain closed document glyphs");
+        assert!(db.scoped(other_scope).has_family(FAMILY), "the other document keeps its own font");
+        assert_eq!(glyph_faces(&s)[0].1.family, FAMILY, "the remaining document can still compose");
+        for _ in 0..2 {
+            let cached_other = cache.get(&s.doc().unwrap().doc, other_story, None);
+            let late = cache.get(&old_doc, old_story, None);
+            assert!(late.text_len > 0, "a late caller can still obtain a composition");
+            assert!(cache.composed_for(&old_doc, old_story).is_none(), "late work cannot repopulate the retired scope");
+            assert!(
+                std::sync::Arc::ptr_eq(&cached_other, &cache.get(&s.doc().unwrap().doc, other_story, None)),
+                "late A work must not replace B's cached layout"
+            );
+            let late_weak = std::sync::Arc::downgrade(&late);
+            drop(late);
+            assert!(late_weak.upgrade().is_none(), "the cache must not retain the late result behind its retired-scope filter");
+            cache.clear();
+        }
+    }
+
+    #[test]
+    fn reverting_a_byte_document_releases_its_supplied_font_after_readers_finish() {
+        const FAMILY: &str = "DocFont Bytes Revert Readers";
+        let b64 = super::super::bytes::base64_encode;
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let font = font_with(FAMILY, &['a']).unwrap();
+        let mut s = Session::new();
+        s.execute(
+            "file.openBytes",
+            &json!({"name": "Revert.designcraft", "base64": b64(&native), "fonts": [{"name": "revert.ttf", "base64": b64(&font)}]}),
+        )
+        .unwrap();
+        let dir = temp_dir("revert-bytes-readers");
+        let path = dir.join("Revert.designcraft");
+        s.execute("file.save", &json!({"path": path})).unwrap();
+        let db = designcraft_fonts::FontDb::global();
+        let scope = s.doc().unwrap().doc.font_scope;
+        let weak = std::sync::Arc::downgrade(&db.scoped(scope).face(FAMILY, "Regular"));
+        let readers = glyph_faces(&s);
+        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
+        s.execute("file.revert", &json!({})).unwrap();
+        assert!(!db.scoped(scope).has_family(FAMILY));
+        assert!(readers[0].1.covers('a'), "existing readers remain usable across revert");
+        drop(readers);
+        assert!(weak.upgrade().is_none(), "revert must retire cached glyphs of the replaced scope");
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true, "the saved file has no Document Fonts folder");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Fonts supplied with a document keep the existing EPUB embedding restrictions.
+    #[test]
+    fn supplied_document_fonts_keep_epub_embedding_restrictions() {
+        use designcraft_fonts::testing::with_fs_type;
+        use std::io::Read;
+
+        const FAMILY: &str = "DocFont Bytes Embedding";
+        let mut maker = Session::new();
+        new_document(&mut maker, FAMILY, "a");
+        maker.execute("style.paragraph.create", &json!({"name": "Supplied", "chars": {"fontFamily": FAMILY, "fontStyle": "Regular"}})).unwrap();
+        let native = super::to_bytes(&maker.doc().unwrap().doc).unwrap();
+        let b64 = super::super::bytes::base64_encode;
+        for (fs_type, may_embed) in [(0x0000, true), (0x0002, false), (0x0208, false)] {
+            let font = with_fs_type(font_with(FAMILY, &['a']).unwrap(), fs_type).unwrap();
+            let mut s = Session::new();
+            s.execute(
+                "file.openBytes",
+                &json!({"name": "Licence.designcraft", "base64": b64(&native), "fonts": [{"name": "licensed.ttf", "base64": b64(&font)}]}),
+            )
+            .unwrap();
+            let result = s.execute("file.exportEpub", &json!({"embedFonts": true})).unwrap();
+            let bytes = super::super::bytes::base64_decode(result["base64"].as_str().unwrap());
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+            let mut css = String::new();
+            archive.by_name("OEBPS/style.css").unwrap().read_to_string(&mut css).unwrap();
+            assert_eq!(css.contains(&format!("@font-face {{ font-family: \"{FAMILY}\"")), may_embed, "fsType {fs_type:04x}: {css}");
+            assert_eq!(
+                result["warnings"].to_string().contains(&format!("{FAMILY} Regular`: its licence doesn't allow embedding")),
+                !may_embed,
+                "{result}"
+            );
+        }
+    }
+
+    #[test]
     fn closing_a_document_forgets_its_fonts_and_reopening_reuses_them() {
         const FAMILY: &str = "DocFont Closed";
         let dir = temp_dir("closed");
@@ -363,7 +562,7 @@ mod document_fonts_tests {
 
         let mut s = Session::new();
         open(&mut s, &path);
-        let first = glyph_faces(&s)[0].1;
+        let first = glyph_faces(&s)[0].1.clone();
         assert_eq!(first.family, FAMILY);
         s.execute("file.close", &json!({})).unwrap();
         // A new document can't use the closed document's font.

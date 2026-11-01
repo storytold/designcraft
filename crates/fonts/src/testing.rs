@@ -10,6 +10,51 @@ pub fn font_with(family: &str, chars: &[char]) -> Option<Vec<u8>> {
     font_with_glyph(family, chars, 'X')
 }
 
+/// A synthetic TTC containing the standalone sfnt `fonts`, with table offsets relocated to
+/// the collection's start. Returns None for malformed inputs or inputs over the document caps.
+pub fn font_collection(fonts: &[&[u8]]) -> Option<Vec<u8>> {
+    if fonts.is_empty() || fonts.len() > 1024 {
+        return None;
+    }
+    let mut offset = 12usize.checked_add(fonts.len().checked_mul(4)?)?;
+    let mut offsets = Vec::with_capacity(fonts.len());
+    for font in fonts {
+        skrifa::FontRef::new(font).ok()?;
+        if u64::try_from(font.len()).ok()? > crate::MAX_DOCUMENT_FONT_BYTES {
+            return None;
+        }
+        offsets.push(offset);
+        offset = offset.checked_add(font.len().checked_add(3)? & !3)?;
+    }
+    if u64::try_from(offset).ok()? > crate::MAX_DOCUMENT_FONTS_TOTAL {
+        return None;
+    }
+    let mut out = Vec::new();
+    out.try_reserve_exact(offset).ok()?;
+    out.extend_from_slice(b"ttcf");
+    out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    out.extend_from_slice(&u32::try_from(fonts.len()).ok()?.to_be_bytes());
+    for &at in &offsets {
+        out.extend_from_slice(&u32::try_from(at).ok()?.to_be_bytes());
+    }
+    for (font, &at) in fonts.iter().zip(&offsets) {
+        out.extend_from_slice(font);
+        let tables = u16::from_be_bytes(font.get(4..6)?.try_into().ok()?);
+        for i in 0..usize::from(tables) {
+            let record = 12usize.checked_add(i.checked_mul(16)?)?;
+            let field = record.checked_add(8)?;
+            let old = u32::from_be_bytes(font.get(field..field.checked_add(4)?)?.try_into().ok()?);
+            let len = u32::from_be_bytes(font.get(field.checked_add(4)?..field.checked_add(8)?)?.try_into().ok()?);
+            font.get(usize::try_from(old).ok()?..usize::try_from(old.checked_add(len)?).ok()?)?;
+            let relocated = u32::try_from(at).ok()?.checked_add(old)?;
+            let start = at.checked_add(field)?;
+            out.get_mut(start..start.checked_add(4)?)?.copy_from_slice(&relocated.to_be_bytes());
+        }
+        out.resize(out.len().checked_add(3)? & !3, 0);
+    }
+    Some(out)
+}
+
 /// [`font_with`], drawing every character as Source Sans 3's `glyph` (two fonts of one name that
 /// set the same text differently).
 pub fn font_with_glyph(family: &str, chars: &[char], glyph: char) -> Option<Vec<u8>> {
@@ -140,6 +185,23 @@ fn with_tables(font: &[u8], tables: Vec<([u8; 4], Vec<u8>)>) -> Option<Vec<u8>> 
     all.retain(|(tag, _)| !tables.iter().any(|(t, _)| t == tag));
     all.extend(tables);
     assemble(font, all)
+}
+
+/// Declare one weight axis for tests of variable-instance ownership; outlines stay static.
+#[cfg(test)]
+pub(crate) fn with_weight_axis(font: &[u8]) -> Option<Vec<u8>> {
+    let mut fvar = Vec::new();
+    for value in [1u16, 0, 16, 2, 1, 20, 0, 8] {
+        fvar.extend_from_slice(&value.to_be_bytes());
+    }
+    fvar.extend_from_slice(b"wght");
+    for value in [100i32, 400, 900] {
+        fvar.extend_from_slice(&(value << 16).to_be_bytes());
+    }
+    for value in [0u16, 256] {
+        fvar.extend_from_slice(&value.to_be_bytes());
+    }
+    with_tables(font, vec![(*b"fvar", fvar)])
 }
 
 /// `font` with vertical metrics: a `vhea` table and a `vmtx` table that give every glyph `default`
