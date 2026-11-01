@@ -112,9 +112,12 @@ impl<'r> Importer<'r> {
                         auto_color_dup.push((id.to_string(), kept_id.clone()));
                         continue;
                     }
-                    // Same cleaned name, different value: not a duplicate. Falls through and
-                    // keeps its own entry, disambiguated by name like any other collision.
-                    _ => {
+                    // Same cleaned name, different value: not this one's duplicate either. Keeps
+                    // its own entry, disambiguated by name like any other collision, and leaves
+                    // the earlier candidate as the one later same-value duplicates still merge
+                    // into (replacing it here would lose that candidate for good).
+                    Some(_) => {}
+                    None => {
                         auto_colors.insert(key, (id.to_string(), c));
                     }
                 }
@@ -126,10 +129,17 @@ impl<'r> Importer<'r> {
                 Swatch { name: name.to_string(), value: SwatchValue::Color { color: c, color_type: ty }, locked: false, named, hidden: false },
             ));
         }
-        // Tints (after colours: they reference them).
+        // Tints (after colours: they reference them). A tint's base id, so its stored `base` name
+        // can be refreshed below if disambiguation (or an auto-named duplicate's merge) renames
+        // the colour it was resolved to here.
+        let mut tint_bases: Vec<(String, String)> = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Tint") {
             let Some(id) = e.get("Self") else { continue };
-            let base = e.get("BaseColor").map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
+            let base_id = e.get("BaseColor");
+            let base = base_id.map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
+            if let Some(base_id) = base_id {
+                tint_bases.push((id.to_string(), base_id.to_string()));
+            }
             let t = e.num("TintValue").unwrap_or(100.0);
             let name = match e.get("Name") {
                 Some(n) if !n.is_empty() && n != "$ID/" => n.to_string(),
@@ -199,6 +209,18 @@ impl<'r> Importer<'r> {
                 self.swatch_names.insert(dup_id, final_name);
             }
         }
+        // A tint's `base` above is the name its base colour had *then*; refresh it to that
+        // colour's final one, in case disambiguation (or an auto-named duplicate's merge, both
+        // above) renamed it since.
+        for (tint_id, base_id) in tint_bases {
+            let (Some(tint_name), Some(base_name)) = (self.swatch_names.get(&tint_id).cloned(), self.swatch_names.get(&base_id).cloned()) else {
+                continue;
+            };
+            if let Some(SwatchValue::Tint { base, .. }) = self.swatches.iter_mut().skip(first_new).find(|s| s.name == tint_name).map(|s| &mut s.value)
+            {
+                *base = base_name;
+            }
+        }
         let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
             for stop in stops {
                 stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
@@ -227,10 +249,13 @@ impl<'r> Importer<'r> {
             "Color/Registration" => return Color::cmyk(1.0, 1.0, 1.0, 1.0),
             _ => {}
         }
-        // A merged auto-named duplicate's own id never got its own `pending` entry (it shares the
-        // kept swatch's), so fall back to its resolved name once the id match misses.
+        // An exact id match first: a colour's own entry, however many others share its (possibly
+        // still pre-disambiguation, so non-unique) name. Only once that fails — a merged
+        // auto-named duplicate's own id never got its own `pending` entry, since it shares the
+        // kept swatch's — fall back to resolving by name.
         let name = self.swatch_names.get(r).map(String::as_str);
-        if let Some((_, s)) = pending.iter().find(|(id, s)| id == r || name == Some(s.name.as_str())) {
+        let found = pending.iter().find(|(id, _)| id == r).or_else(|| pending.iter().find(|(_, s)| name == Some(s.name.as_str())));
+        if let Some((_, s)) = found {
             match &s.value {
                 SwatchValue::Color { color, .. } => return *color,
                 SwatchValue::Tint { base, tint } => {

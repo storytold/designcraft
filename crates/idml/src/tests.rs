@@ -1204,6 +1204,71 @@ fn a_gradient_stop_on_a_merged_duplicates_id_keeps_its_colour_and_final_name() {
     assert_eq!(gradient.stops[0].swatch.as_deref(), Some(kept_name), "and must carry the kept swatch's final name");
 }
 
+/// A, B, A: the value-mismatched colour in the middle must not knock the first candidate out of
+/// contention — the second `A` still merges with the first, not with `B` or on its own.
+#[test]
+fn a_later_same_value_colour_still_merges_past_an_intervening_mismatch() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a1" Model="Process" Space="RGB" ColorValue="40 50 60" Name="r40g50b60"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="1 2 3" Name="r40g50b60 2"/>
+  <Color Self="Color/a2" Model="Process" Space="RGB" ColorValue="40 50 60" Name="r40g50b60 3"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let names: Vec<&str> = d.swatches.iter().map(|s| s.name.as_str()).collect();
+    // `a1` and `a2` merge under the plain cleaned name; `b` (same cleaned name, different value)
+    // gets its own, disambiguated one — three colours in the file, two swatches out.
+    assert_eq!(names.iter().filter(|n| **n == "R=40 G=50 B=60").count(), 1, "a1 and a2 merged into one: {names:?}");
+    assert_eq!(names.iter().filter(|n| n.starts_with("R=40 G=50 B=60")).count(), 2, "plus b's own, disambiguated one: {names:?}");
+    let a = d.swatch("R=40 G=50 B=60").unwrap();
+    assert!(matches!(a.value, SwatchValue::Color { color, .. } if color == Color::rgb(40.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0)));
+}
+
+/// A tint's `base` is resolved to its base colour's name while that name can still change: once a
+/// cleaned, auto-named duplicate collides with an existing swatch and gets disambiguated, the
+/// tint must follow it to its final name, not keep resolving against whatever now has the old one.
+#[test]
+fn a_tints_base_follows_its_colour_through_disambiguation() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="80 90 100" Name="R=80 G=90 B=100"/>
+  <Color Self="Color/base" Model="Process" Space="RGB" ColorValue="80 90 100" Name="r80g90b100"/>
+  <Tint Self="Tint/OnBase" BaseColor="Color/base" TintValue="50" Name="OnBase 50%"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let base_final = d
+        .swatches
+        .iter()
+        .map(|s| s.name.as_str())
+        .find(|n| *n != "R=80 G=90 B=100" && n.starts_with("R=80 G=90 B=100"))
+        .expect("the cleaned colour collided with the literal one and was disambiguated");
+    let SwatchValue::Tint { base, .. } = &d.swatch("OnBase 50%").unwrap().value else { panic!("tint") };
+    assert_eq!(base, base_final, "the tint must resolve against its own colour's final name, not the other swatch's");
+}
+
+/// Two process colours that clean to the same (pre-disambiguation) name but hold different
+/// values: a gradient stop naming the second one directly must get its real colour, not the
+/// first's, even though both still share that name at the point the gradient is read.
+#[test]
+fn a_gradient_stop_on_the_second_of_two_same_named_mismatched_colours_keeps_its_own_colour() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a" Model="Process" Space="RGB" ColorValue="200 10 10" Name="r200g10b10"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="10 10 200" Name="r200g10b10 2"/>
+  <Gradient Self="Gradient/OnB" Type="Linear" Name="OnB">
+    <GradientStop Self="gs0" StopColor="Color/b" Location="0"/>
+    <GradientStop Self="gs1" StopColor="Color/a" Location="100"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnB").unwrap().value else { panic!("gradient") };
+    assert_eq!(gradient.stops[0].color, Color::rgb(10.0 / 255.0, 10.0 / 255.0, 200.0 / 255.0), "stop 0 names Color/b directly");
+    assert_eq!(gradient.stops[1].color, Color::rgb(200.0 / 255.0, 10.0 / 255.0, 10.0 / 255.0), "stop 1 names Color/a directly");
+}
+
 #[test]
 fn round_trips_overridden_parent_items() {
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
