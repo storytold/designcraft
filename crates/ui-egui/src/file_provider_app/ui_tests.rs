@@ -136,7 +136,7 @@ fn b_numeric_draft_does_not_block_a_typed_close_or_get_retargeted_to_a() {
 
 #[test]
 fn a_numeric_draft_stays_owned_by_a_when_b_is_drawn_with_the_same_field_id() {
-    let mut app = app();
+    let app = app();
     connect(&app);
     let a = app.session.active().unwrap().uid;
     let mut h = window(app);
