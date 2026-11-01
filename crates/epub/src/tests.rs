@@ -826,6 +826,45 @@ fn tables_footnotes_and_endnotes_are_exported() {
     assert!(!page.contains("epub:type"), "plain HTML has no EPUB namespace");
 }
 
+/// A footnote in a footnote is an aside inside its parent's aside, numbered in reading order:
+/// main 1, nested 2, nested-in-nested 3, then the next main note 4.
+#[test]
+fn nested_footnotes_are_asides_in_their_parent_in_reading_order() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), lid, "One two", ParaFormat::default()).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let outer = st.insert_note(3, "Outer", ParaFormat::default()).unwrap();
+    let end = st.len();
+    st.insert_note(end, "Last", ParaFormat::default());
+    let n = st.note_mut(outer).unwrap();
+    let at = n.text.len();
+    n.text.insert_note(at, "Inner", ParaFormat::default());
+    d.fix_note_ids();
+    let st = d.story_mut(sid).unwrap();
+    let inner = st.nested_notes()[0].id;
+    let n = st.note_mut(inner).unwrap();
+    let at = n.text.len();
+    n.text.insert_note(at, "Deepest", ParaFormat::default());
+    d.fix_note_ids();
+    let bytes = export_epub(&d, &EpubOptions::default()).unwrap();
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut html = String::new();
+    z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut html).unwrap();
+    let find = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s}:\n{html}"));
+    let (a1, a2, a3, a4) = (find("Outer"), find("Inner"), find("Deepest"), find("Last"));
+    assert!(a1 < a2 && a2 < a3 && a3 < a4, "notes in reading order:\n{html}");
+    for (n, text) in [(1, "Outer"), (2, "Inner"), (3, "Deepest"), (4, "Last")] {
+        let aside = find(&format!("id=\"fn-{n}\""));
+        assert!(aside < find(text), "fn-{n} holds {text}:\n{html}");
+    }
+    // The inner asides close before the outer one does: nested, not siblings.
+    let outer_aside = find("id=\"fn-1\"");
+    let closes: Vec<usize> = html.match_indices("</aside>").map(|(i, _)| i).collect();
+    let last_aside = find("id=\"fn-4\"");
+    assert!(closes.iter().filter(|&&c| c > outer_aside && c < last_aside).count() == 3, "three asides close before the last note:\n{html}");
+}
+
 /// A footnote or a table after a list paragraph or a preformatted line closes the list or
 /// block first: `aside` and `table` can't sit inside `ul` or `pre`.
 #[test]

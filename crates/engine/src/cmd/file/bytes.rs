@@ -72,6 +72,8 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
 pub(super) fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
     let mut d = designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))?;
     let warnings = d.fix_parent_bases();
+    // Nested footnotes are found by id alone: a hand-edited file may repeat one.
+    d.fix_note_ids();
     Ok((d, warnings))
 }
 

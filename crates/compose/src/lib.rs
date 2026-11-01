@@ -631,6 +631,9 @@ pub struct ComposeOptions {
     pub running: Option<std::sync::Arc<vars::RunningIndex>>,
     /// Generated text before the first paragraph (a footnote's number and separator).
     pub label: Option<String>,
+    /// Set when composing a footnote's own text: the numbers of the footnotes nested in it, by
+    /// id. Its references take these, and its nested notes aren't placed (they print under it).
+    pub note_numbers: Option<Arc<HashMap<u64, u32>>>,
     /// Anchor pages for cross-references (needed when the story contains cross-references).
     pub xrefs: Option<Arc<xref::XrefIndex>>,
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
@@ -2684,7 +2687,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
+    let mut notes = Notes::new(doc, story, opts);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search

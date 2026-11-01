@@ -233,7 +233,16 @@ impl Cache {
         let out = Arc::new(crate::wrap::compose_among(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), placed },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running,
+                label: None,
+                note_numbers: None,
+                xrefs: with_xrefs.then(|| self.xref_index(doc)),
+                placed,
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
         ));
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);

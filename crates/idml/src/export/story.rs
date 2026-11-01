@@ -490,7 +490,17 @@ impl<'a> Ex<'a> {
                         if pos != designcraft_doc::Position::Normal {
                             c.set("Position", names::position_out(pos));
                         }
-                        c.push(self.footnote_el(&n.text));
+                        // InDesign has no footnotes in footnotes: nested notes are written out
+                        // as marks and forced line breaks (kept whole in a document label).
+                        if n.text.notes.is_empty() {
+                            c.push(self.footnote_el(&n.text));
+                        } else {
+                            let numbers = self.d.nested_note_numbers(s.id);
+                            let o = &self.d.footnote_options;
+                            let mark = |id: u64| numbers.get(&id).map_or_else(String::new, |&k| o.label(k, false));
+                            let flat = n.flattened(&mark, &o.separator);
+                            c.push(self.footnote_el(&flat));
+                        }
                         csrs.push(c);
                     }
                 } else if let Some(bt) = brk {
