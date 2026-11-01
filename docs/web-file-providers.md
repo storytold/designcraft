@@ -100,3 +100,22 @@ source, as required by this contribution's development order. This document does
 have been executed merely because fixtures are present.
 
 Contributor credit: @alejocapo04.
+
+## Native UI evidence
+
+The existing `ui_shot` example accepts an explicit `providerRecents` fixture in its JSONL script.
+It seeds synthetic device/provider recent metadata through the public host and checks the painted
+Home labels. It does not implement storage or authentication, and is not a product setting.
+Start with an empty session:
+
+```jsonl
+{"empty":true}
+{"providerRecents":false}
+{"shot":"/absolute/output/designcraft-provider-recents-off.png"}
+{"providerRecents":true}
+{"shot":"/absolute/output/designcraft-provider-recents-on.png"}
+```
+
+Run `cargo run --locked -p designcraft-ui-egui --example ui_shot -- /absolute/fixture.jsonl`.
+Both images show the actual native Home UI through the existing offscreen renderer. Generated
+images stay outside the repository; the synthetic filenames do not claim content round-trip coverage.
