@@ -636,6 +636,8 @@ pub struct ComposeOptions {
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
     /// composed where it is stored, on no page.
     pub placed: Vec<(ItemId, Placement)>,
+    /// Where document-wide numbering starts in each story (built from the document when absent).
+    pub starts: Option<Arc<designcraft_doc::numbering::NumberStarts>>,
 }
 
 /// Nesting depth past which wrap obstacles inside groups are not collected.
@@ -867,10 +869,12 @@ struct SubstitutionInput<'a> {
     var_story: bool,
     var_cache: &'a mut HashMap<(Option<usize>, bool), Arc<Vec<String>>>,
     notes: &'a mut Notes,
+    /// Where the story's endnote numbering starts (read only when it has endnotes).
+    endnote_start: &'a dyn Fn() -> u32,
 }
 
 fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
-    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes } = input;
+    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, endnote_start } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
         // A parent page itself (not composed for one of the pages it applies to).
@@ -892,7 +896,7 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     };
     if !story.endnotes.is_empty() {
         // Endnote reference numbers continue through the document.
-        let first = doc.endnote_start(story.id).saturating_add(story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32);
+        let first = endnote_start().saturating_add(story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32);
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
             sub.notes.insert(prange.start + i, doc.endnote_options.label(first.saturating_add(k as u32)));
         }
@@ -956,7 +960,16 @@ pub fn visible_break(doc: &Document, story: &Story, p: usize, at: usize) -> Opti
     (!gone).then_some(start)
 }
 
-fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool]) -> Vec<Option<String>> {
+fn named_list_labels<'s>(
+    doc: &Document,
+    story: &Story,
+    ranges: &[Range<usize>],
+    deleted: &[bool],
+    starts: &impl Fn() -> &'s designcraft_doc::numbering::NumberStarts,
+) -> Vec<Option<String>> {
+    // Only lists that continue across stories need the document-wide starts.
+    let continuing: std::collections::HashSet<&str> =
+        doc.settings.lists.iter().filter(|l| l.continue_across_stories).map(|l| l.name.as_str()).collect();
     let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
     story
         .paras
@@ -968,7 +981,9 @@ fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], del
             if props.list_type != designcraft_doc::ListType::Numbers || props.list_name.is_empty() || range.is_empty() || *is_deleted {
                 return None;
             }
-            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &props.list_name));
+            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| {
+                if continuing.contains(props.list_name.as_str()) { starts().list(story.id, &props.list_name) } else { ListCounter::default() }
+            });
             counter.advance(&props);
             Some(props.number_label_in(counter))
         })
@@ -2665,8 +2680,13 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let deleted = deleted_paras(story, &para_ranges);
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter = ListCounter::default();
+    // Document-wide numbering starts: from the options, or built once when this story needs them.
+    let starts_cell = std::cell::OnceCell::new();
+    let starts = || -> &designcraft_doc::numbering::NumberStarts {
+        starts_cell.get_or_init(|| opts.starts.clone().unwrap_or_else(|| Arc::new(doc.number_starts())))
+    };
     // Named lists number independently of layout: one pass up front, for the labels.
-    let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    let named_labels = named_list_labels(doc, story, &para_ranges, &deleted, &starts);
     // Border and shading of each paragraph set, drawn once the lines are in place.
     let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
@@ -2684,7 +2704,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
+    let mut notes = Notes::new(doc, story, || starts().footnote(story.id));
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -2810,6 +2830,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             var_story,
             var_cache: &mut var_cache,
             notes: &mut notes,
+            endnote_start: &|| starts().endnote(story.id),
         });
         let shaped = shape_paragraph(ParagraphShapeInput {
             db,

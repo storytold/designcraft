@@ -8440,3 +8440,131 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A story numbering list `list` (continuing across stories; Upper Roman, no tab after the
+/// number) in a frame at `r` on `page`.
+fn listed_story(d: &mut Document, page: usize, r: Rect, text: &str, list: &str) -> StoryId {
+    if !d.settings.lists.iter().any(|l| l.name == list) {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: list.into(), continue_across_stories: true });
+    }
+    let lid = d.default_layer();
+    let para = ParaAttrs { list_name: Some(list.into()), ..numbered(designcraft_doc::NumberStyle::UpperRoman, "^#. ") };
+    d.add_text_frame(SpreadRef::Doc(page), r, lid, text, ParaFormat { para, ..Default::default() }).unwrap().1
+}
+
+#[test]
+fn a_list_a_story_does_not_number_leaves_its_composition_cached() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let r = Rect::new(36.0, 36.0, 300.0, 300.0);
+    let other = listed_story(&mut d, 0, r, "a", "Other");
+    let steps = listed_story(&mut d, 0, Rect::new(36.0, 320.0, 300.0, 500.0), "b", "Steps");
+    let later = listed_story(&mut d, 1, r, "x\ny", "Steps");
+    let cache = Cache::new();
+    let before = cache.get(&d, later, None);
+    assert_eq!(list_labels(&before, LABEL_CHARS), ["II. ", "III. "]);
+    // An earlier story numbers more of a list `later` doesn't use: nothing to compose again.
+    let st = d.story_mut(other).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    assert!(Arc::ptr_eq(&before, &cache.get(&d, later, None)), "another list's numbering recomposed the story");
+    // More of its own list: composed again, with the new numbers.
+    let st = d.story_mut(steps).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    let after = cache.get(&d, later, None);
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(list_labels(&after, LABEL_CHARS), ["III. ", "IV. "]);
+}
+
+#[test]
+fn a_neighbours_numbering_moves_the_text_its_objects_wrap() {
+    // Regression: a story wrapped by a neighbour's anchored object kept its cached lines when
+    // only the neighbour's numbering changed (a list continuing from an earlier page), though
+    // the longer number pushed the object's anchor onto the next line.
+    let long = [LOREM; 3].join(" ");
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let first = listed_story(&mut d, 0, Rect::new(36.0, 36.0, 300.0, 300.0), "a", "Steps");
+    // A frame just wide enough for "II. Anchor", not for "XXXVIII. Anchor".
+    let a = listed_story(&mut d, 1, Rect::new(0.0, 0.0, 80.0, 400.0), "Anchor", "Steps");
+    let fa = d.story(a).unwrap().frames[0];
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    let end = d.story(a).unwrap().len();
+    anchor_box(&mut d, a, end, left - area.x0, 20.0, true, WrapMode::BoundingBox);
+    let cache = Cache::new();
+    let before = line_layout(&cache.get(&d, b, None));
+    assert_eq!(before, line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    // 36 more numbers on the first page: the neighbour's paragraph becomes XXXVIII.
+    let st = d.story_mut(first).unwrap();
+    let end = st.len();
+    st.insert(end, &"\nmore".repeat(36));
+    let fresh = line_layout(&compose_story(&d, b, &ComposeOptions::default()));
+    assert_ne!(fresh, before, "the longer number moves the object");
+    assert_eq!(line_layout(&cache.get(&d, b, None)), fresh);
+}
+
+#[test]
+fn many_stories_in_continuing_lists_compose_quickly() {
+    // Regression: each story's cache lookup searched the whole item tree per story and per list
+    // to order the stories by page, so a 677-story book took 69 s to compose and a second per
+    // repaint.
+    let pages = 20;
+    let mut d = Document::new(&NewDocument { pages, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let names: Vec<String> = (0..8).map(|i| format!("List {i}")).collect();
+    for name in &names {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: name.clone(), continue_across_stories: true });
+    }
+    let mut sids = Vec::new();
+    for i in 0..400 {
+        let para = ParaAttrs { list_name: Some(names[i % names.len()].clone()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (x, y) = ((i / pages % 4) as f64 * 120.0, (i / pages / 4) as f64 * 120.0);
+        let r = Rect::new(36.0 + x, 36.0 + y, 140.0 + x, 140.0 + y);
+        sids.push(d.add_text_frame(SpreadRef::Doc(i % pages), r, lid, "a\nb", ParaFormat { para, ..Default::default() }).unwrap().1);
+    }
+    let cache = Cache::new();
+    let t = std::time::Instant::now();
+    // Compose everything, then look everything up again (what every repaint does).
+    for _ in 0..2 {
+        for &sid in &sids {
+            cache.get(&d, sid, None);
+        }
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+    // Story 392 (list 0) sits on page 12. List 0 is every 8th story, on pages 0, 8, 16, 4, 12 in
+    // turn: 30 of them on earlier pages and 9 earlier on page 12 come first, two numbers each.
+    let later = cache.get(&d, sids[392], None);
+    assert_eq!(list_labels(&later, LABEL_CHARS), ["79.", "80."]);
+    assert_eq!(list_labels(&cache.get(&d, sids[0], None), LABEL_CHARS), ["1.", "2."]);
+}
+
+#[test]
+fn moving_a_frame_within_its_spread_renumbers_continuing_lists() {
+    // Regression: the numbering starts were cached by spread address, which an in-place edit of an
+    // unshared spread keeps, so moving a frame to the other page of its spread kept stale numbers.
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
+    let fmt = ParaFormat { para, ..Default::default() };
+    let (left, right) = {
+        let sp = &d.spreads[1];
+        (sp.pages[0].x, sp.pages[1].x)
+    };
+    // `b` is made first (lower id) on the right page, `a` on the left page: a numbers first.
+    let r = |x: f64| Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), r(right), lid, "b1\nb2", fmt.clone()).unwrap();
+    let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), r(left), lid, "a1\na2", fmt).unwrap();
+    let cache = Cache::new();
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["3.", "4."]);
+    // Move `a` onto the right page in place: same page as `b`, so `b` (lower id) now numbers first.
+    let loc = d.find(fa).unwrap();
+    let it = d.item_mut_at(&loc).unwrap();
+    it.xf = designcraft_geom::Affine::translate((right - left, 0.0)) * it.xf;
+    assert_eq!(d.stories_in_page_order().iter().map(|s| s.id).collect::<Vec<_>>()[..2], [b, a]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["3.", "4."]);
+}
