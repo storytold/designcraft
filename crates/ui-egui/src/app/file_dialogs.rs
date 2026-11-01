@@ -342,6 +342,10 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["dclib"] }],
         "relink" => &[OpenFilter { name: "Graphics", extensions: GRAPHICS }],
+        "idml" => &[
+            OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
+            OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
+        ],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {

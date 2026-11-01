@@ -407,6 +407,49 @@ fn display_performance_fast_draws_grey_boxes() {
     assert_eq!(px(DisplayQuality::Fast, &mut r)[..3], [178, 178, 178]);
 }
 
+/// A linked image whose file is missing (or broken, or malformed) and that has no document
+/// preview to fall back on: empty asset bytes that can't be decoded. The frame must show a
+/// visible placeholder — not vanish, leaving only the page behind it.
+#[test]
+fn undecodable_graphic_draws_a_placeholder_instead_of_nothing() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let aid = designcraft_doc::AssetId(d.alloc());
+    d.assets.insert(
+        aid,
+        Arc::new(designcraft_doc::Asset {
+            id: aid,
+            name: "missing.jpg".into(),
+            mime: "image/jpeg".into(),
+            link: Some("/definitely/missing/photo.jpg".into()),
+            data: Arc::new(Vec::new()),
+            pixels: None,
+            ..Default::default()
+        }),
+    );
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+        layer_options: None,
+        asset: aid,
+        size: (100.0, 100.0),
+        xf: Affine::translate((100.0, 100.0)),
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let page = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    // The page background is white; the placeholder's light grey fill must stand out from it.
+    assert_ne!(page.pixel(150, 150)[..3], [255, 255, 255], "a missing link must draw a visible placeholder, not nothing");
+}
+
 #[test]
 fn clipping_path_hides_the_image_outside_it() {
     let mut d = Document::new(&NewDocument::default());

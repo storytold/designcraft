@@ -286,6 +286,13 @@ impl Item {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
 
+    /// `bounds()` composed under an ancestor's own absolute transform: a nested item's real
+    /// position, for a caller (such as `document.inspect`) walking a group's children itself
+    /// instead of through [`Self::bounds`]'s own recursion.
+    pub fn bounds_in(&self, outer: Affine) -> Rect {
+        self.bounds_under(outer).unwrap_or(Rect::ZERO)
+    }
+
     /// Bounds of the outline under `outer` (then this item's own transform). A group's are its
     /// children's outlines transformed by the full transform, which a rotated group's box of its
     /// children's boxes would overstate.

@@ -71,7 +71,11 @@ impl<'r> Importer<'r> {
 
     pub(super) fn graphics(&mut self, top: &[El]) {
         let mut order: Vec<(String, Swatch)> = Vec::new();
-        // Colours.
+        // Colours. The gradient tool writes a fresh, undocumented, machine-named swatch
+        // ("r204g51b51", a trailing " 2" when InDesign had to dedupe it against itself) for every
+        // stop it ever touched, so real files accumulate dozens of these; `auto_colors` merges
+        // exact-value repeats back into the first swatch of that value instead of keeping each one.
+        let mut auto_colors: HashMap<String, String> = HashMap::new();
         for e in top.iter().filter(|e| e.local() == "Color") {
             let Some(id) = e.get("Self") else { continue };
             let Some((c, ty)) = Self::color_of(e) else { continue };
@@ -89,6 +93,16 @@ impl<'r> Importer<'r> {
             if e.get("Visible") == Some("false") || name.is_empty() || name == "$ID/" || e.get("Model") == Some("Registration") {
                 self.hidden_colors.insert(id.to_string(), c);
                 continue;
+            }
+            let cleaned = clean_auto_rgb_name(name);
+            let name = cleaned.as_deref().unwrap_or(name);
+            if cleaned.is_some() {
+                let key = format!("{ty:?}:{name}");
+                if let Some(existing) = auto_colors.get(&key) {
+                    self.swatch_names.insert(id.to_string(), existing.clone());
+                    continue;
+                }
+                auto_colors.insert(key, name.to_string());
             }
             let named = !name.starts_with("C=") && !name.starts_with("R=");
             self.swatch_names.insert(id.to_string(), name.to_string());
@@ -249,4 +263,24 @@ impl<'r> Importer<'r> {
         }
         swatch::NONE.into()
     }
+}
+
+/// `r204g51b51` or `r204g51b51 2` (InDesign's own undocumented naming for a colour the Gradient
+/// tool created, the trailing number from InDesign deduping its own name against itself): the
+/// same `"R=.. G=.. B=.."` format this importer already gives value-named colours elsewhere.
+/// `None` for anything else, including a real user name that happens to start with `r`.
+fn clean_auto_rgb_name(name: &str) -> Option<String> {
+    let rest = name.strip_prefix('r')?;
+    let (r, rest) = take_digits(rest)?;
+    let rest = rest.strip_prefix('g')?;
+    let (g, rest) = take_digits(rest)?;
+    let rest = rest.strip_prefix('b')?;
+    let (b, rest) = take_digits(rest)?;
+    let rest = rest.trim();
+    (rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit())).then(|| format!("R={r} G={g} B={b}"))
+}
+
+fn take_digits(s: &str) -> Option<(u16, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (end > 0 && end <= 3).then(|| s[..end].parse().ok()).flatten().map(|n| (n, &s[end..]))
 }

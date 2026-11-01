@@ -233,6 +233,18 @@ fn fixture_with_styles(styles: &str) -> Vec<u8> {
     ])
 }
 
+fn fixture_with_graphic(graphic: &str) -> Vec<u8> {
+    zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", graphic),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ])
+}
+
 /// Paragraph styles `Body` (based on the root) and `Loose` (no BasedOn), both with `attrs`.
 fn keep_styles(attrs: &str) -> String {
     format!(
@@ -1105,6 +1117,27 @@ fn gradient_stops_keep_their_swatches_through_a_round_trip() {
     let names: Vec<Option<&str>> = gradient.stops.iter().map(|s| s.swatch.as_deref()).collect();
     assert_eq!(names, [Some("Gold"), Some("Gold 40%"), None, Some("[Paper]")]);
     assert_eq!(gradient.stops[2].color, Color::cmyk(0.5, 0.0, 0.0, 0.0));
+}
+
+/// InDesign's gradient tool writes a fresh, machine-named `Color` ("r204g51b51", or a
+/// disambiguating "r204g51b51 2" once it collides with its own earlier one) for every stop it
+/// ever touched, so a real file like CSAS's accumulates dozens of near-duplicates. Two with the
+/// exact same value merge into one cleaned `"R=.. G=.. B=.."` swatch instead of staying apart.
+#[test]
+fn gradient_tools_duplicate_auto_named_colours_are_merged_and_cleaned() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/dup1" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/dup2" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+  <Color Self="Color/dup3" Model="Process" Space="RGB" ColorValue="1 2 3" Name="r1g2b3 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let names: Vec<&str> = d.swatches.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "R=204 G=51 B=51").count(), 1, "{names:?}");
+    assert!(names.contains(&"R=1 G=2 B=3"), "{names:?}");
+    let sw = d.swatch("R=204 G=51 B=51").unwrap();
+    assert!(!sw.named, "a cleaned auto-generated name isn't a real user name");
 }
 
 #[test]

@@ -181,7 +181,10 @@ impl Renderer {
         let [l, t, r, b] = shown_box(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
         let page = Rect::new(-l * page_w, -t * page_h, (1.0 - l) * page_w, (1.0 - t) * page_h);
-        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else { return };
+        let Some(pm) = images::mip(&data, asset.page, page_w, on_screen) else {
+            self.draw_missing_graphic(ctx, f, g, xf);
+            return;
+        };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
         let pm = match (colorize::colorized(f.doc, &g.fill, &asset.data, &pm), PLATE.with(std::cell::Cell::get)) {
             (Some(coloured), _) => coloured,
@@ -201,5 +204,34 @@ impl Renderer {
         ctx.set_paint_transform(Affine::translate((page.x0, page.y0)) * Affine::scale_non_uniform(sx, sy));
         ctx.fill_rect(&rect);
         ctx.reset_paint_transform();
+    }
+
+    /// A linked or embedded graphic whose bytes can't be decoded (link missing or unreadable, no
+    /// preview to fall back on, or malformed data): a crossed box, so a dropped asset stays
+    /// visible on the frame rather than disappearing silently. Links › Relink fixes it.
+    fn draw_missing_graphic(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
+        let (w, h) = g.size;
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        ctx.set_transform(f.view * xf * g.xf);
+        let rect = Rect::new(0.0, 0.0, w, h);
+        ctx.set_paint(screen_color([236, 236, 238], 255));
+        ctx.fill_rect(&rect);
+        ctx.set_paint(screen_color([170, 60, 60], 255));
+        ctx.set_stroke(kurbo::Stroke::new((w.min(h) * 0.02).clamp(0.5, 2.0)));
+        let mut cross = BezPath::new();
+        cross.move_to((0.0, 0.0));
+        cross.line_to((w, h));
+        cross.move_to((w, 0.0));
+        cross.line_to((0.0, h));
+        ctx.stroke_path(&cross);
+        let mut border = BezPath::new();
+        border.move_to((0.0, 0.0));
+        border.line_to((w, 0.0));
+        border.line_to((w, h));
+        border.line_to((0.0, h));
+        border.close_path();
+        ctx.stroke_path(&border);
     }
 }
