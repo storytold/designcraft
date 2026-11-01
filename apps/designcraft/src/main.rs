@@ -316,7 +316,7 @@ fn main() -> std::process::ExitCode {
     }
     // The adapter's largest texture side instead of eframe's 8192, so a window across several
     // monitors keeps its surface (see `gpu_limits`).
-    gpu_limits::request_adapter_texture_size(&mut options);
+    gpu_limits::request_adapter_sizes(&mut options);
     // The graphics backend, decided before the window exists: a driver that faults takes the
     // process down before any Rust code can catch it (see `gpu::backend`).
     let fallback = gpu::backend::Fallback::begin(
@@ -394,6 +394,12 @@ fn main() -> std::process::ExitCode {
                         info.device_type,
                         info.driver,
                         info.driver_info
+                    );
+                    let limits = rs.device.limits();
+                    log::info!(
+                        "graphics: largest texture side {}, largest buffer {} MiB",
+                        limits.max_texture_dimension_2d,
+                        limits.max_buffer_size >> 20
                     );
                     created.started_with(info.backend);
                     created.created(&cc.egui_ctx);
