@@ -1,7 +1,41 @@
 use designcraft_geom::Unit;
 use egui_kittest::{Harness, kittest::Queryable};
 
+use super::rulers::{RULER_UNITS, ruler_units};
 use super::*;
+
+/// Q and H join the ruler menus with Show CJK Features only; #1074's English lists stay.
+#[test]
+fn ruler_menus_offer_q_and_h_with_show_cjk_features() {
+    assert_eq!(ruler_units(false, None), RULER_UNITS.to_vec());
+    let units = ruler_units(true, None);
+    assert_eq!(units.len(), RULER_UNITS.len() + 2);
+    assert_eq!(&units[..RULER_UNITS.len()], &RULER_UNITS[..]);
+    assert_eq!(&units[RULER_UNITS.len()..], &[Unit::Q, Unit::Ha][..]);
+    // A document already in Q or H keeps its unit, and the menu never repeats one.
+    for cjk in [false, true] {
+        let units = ruler_units(cjk, Some(Unit::Q));
+        assert_eq!(units.iter().filter(|u| **u == Unit::Q).count(), 1);
+        if cjk {
+            assert_eq!(*units.last().unwrap(), Unit::Ha, "the CJK list keeps its InDesign order");
+        } else {
+            assert_eq!(*units.last().unwrap(), Unit::Q, "English menus keep a document's Q at the end");
+        }
+        let units = ruler_units(cjk, Some(Unit::Points));
+        assert_eq!(units.len(), if cjk { RULER_UNITS.len() + 2 } else { RULER_UNITS.len() });
+    }
+    // The gate follows the Japanese interface, as every other CJK-only feature does.
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    assert!(!crate::cjk_features(&app));
+    assert_eq!(ruler_units(crate::cjk_features(&app), None), RULER_UNITS.to_vec());
+    app.ui.language = "ja".into();
+    assert!(crate::cjk_features(&app));
+    let units = ruler_units(crate::cjk_features(&app), None);
+    assert!(units.contains(&Unit::Q) && units.contains(&Unit::Ha), "{units:?}");
+    app.session.prefs.cjk_features = Some(false);
+    assert!(!crate::cjk_features(&app), "the explicit preference wins over the interface language");
+    assert_eq!(ruler_units(crate::cjk_features(&app), None), RULER_UNITS.to_vec());
+}
 
 /// A place-cursor drag past its 3-point threshold but short of egui's drag distance previews
 /// a frame, and the release places that frame: what's shown is what lands.
