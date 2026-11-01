@@ -91,6 +91,90 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// A combining mark in a colour of its own still sits on its base letter (the runs shape as one)
+/// and keeps its colour: colour-coded texts put single vowel marks in their own colour.
+#[test]
+fn a_mark_in_its_own_colour_stays_on_its_base() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let place = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        if colour {
+            d.story_mut(sid).unwrap().format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = all_lines(&cs)[0].clone();
+        // The glyph after the x (one cluster with it when the runs are one).
+        let at = line.glyphs.iter().position(|g| g.byte == text.find('x').unwrap()).unwrap();
+        let g = line.glyphs[at + 1].clone();
+        (g.x, g.y, cs.styles[g.style as usize].fill.clone(), line.glyphs.len())
+    };
+    let (x, y, fill, n) = place(false);
+    let (cx, cy, cfill, cn) = place(true);
+    assert_eq!(n, cn);
+    assert!((x - cx).abs() < 1e-6 && (y - cy).abs() < 1e-6, "the mark moved: {x},{y} → {cx},{cy}");
+    assert_ne!(fill, cfill);
+    assert_eq!(cfill, "C=100 M=0 Y=0 K=0");
+}
+
+/// Tracking goes after a letter with its marks: a mark in its own colour (its own cluster) doesn't
+/// add tracking between itself and its base.
+#[test]
+fn tracking_skips_a_mark_in_its_own_colour() {
+    let text = "Ax\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let y_at = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let s = d.story_mut(sid).unwrap();
+        s.format_chars(0..text.len(), |f| f.over.tracking = Some(300.0));
+        if colour {
+            s.format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].glyphs.iter().find(|g| g.byte == text.find('y').unwrap()).unwrap().x
+    };
+    assert!((y_at(false) - y_at(true)).abs() < 1e-6, "{} vs {}", y_at(false), y_at(true));
+}
+
+/// Pieces that differ only in a feature switch (here Ligatures off) are shaped as one, the switch
+/// over its own piece: the kerning across them stays.
+#[test]
+fn a_feature_switch_keeps_kerning() {
+    let (mut d, sid, _) = doc_with("ayay", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.font_style = Some("Bold".into()));
+    let xs = |d: &Document| all_lines(&compose_story(d, sid, &ComposeOptions::default()))[0].glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
+    let kerned = xs(&d);
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.ligatures = Some(false));
+    assert_eq!(xs(&d), kerned);
+}
+
+/// Lam-alif stays one ligature when its letters differ only in colour, as in InDesign: it takes
+/// the lam's colour. (Outside Arabic a change of style still ends a ligature, see
+/// `colour_change_keeps_kerning_and_ligatures_keep_colour`.)
+#[test]
+fn lam_alif_survives_a_colour_change() {
+    let text = "\u{0644}\u{0627}";
+    let set = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if colour {
+            d.story_mut(sid).unwrap().format_chars(2..4, |f| f.over.fill = Some("Cyan".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let glyphs = &cs.frames[0].lines[0].glyphs;
+        let fills: Vec<String> = glyphs.iter().map(|g| cs.styles[g.style as usize].fill.clone()).collect();
+        (glyphs.iter().map(|g| (g.gid, g.byte, g.len)).collect::<Vec<_>>(), fills)
+    };
+    let (plain, _) = set(false);
+    // Without an Arabic font that forms the ligature this proves nothing.
+    if plain.len() != 1 || plain[0].0 == 0 {
+        return;
+    }
+    let (coloured, fills) = set(true);
+    assert_eq!(coloured, plain, "one lam-alif");
+    assert_ne!(fills[0], "Cyan", "in the lam's colour");
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
