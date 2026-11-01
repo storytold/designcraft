@@ -39,6 +39,25 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "A5", intent: Intent::Print, width: 148.0 * MM, height: 210.0 * MM, units: Unit::Millimeters },
     Preset { name: "A6", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "B5", intent: Intent::Print, width: 176.0 * MM, height: 250.0 * MM, units: Unit::Millimeters },
+    // Japanese print sizes, as the Japanese edition of InDesign lists them: 文庫 105×148 mm,
+    // 新書 103×182, 四六判 127×188, 菊判 152×227, AB判 210×257, ハガキ 100×148, 往復ハガキ
+    // 148×200, B6 (JIS) 128×182 and 名刺 91×55 mm. B6 here is the JIS size (128×182 mm), not
+    // ISO B6 (125×176 mm); 文庫 is 105×148 mm, the same size as A6.
+    Preset { name: "Bunko (105 × 148 mm)", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Shinsho (103 × 182 mm)", intent: Intent::Print, width: 103.0 * MM, height: 182.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Yotsuro (127 × 188 mm)", intent: Intent::Print, width: 127.0 * MM, height: 188.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Kiku (152 × 227 mm)", intent: Intent::Print, width: 152.0 * MM, height: 227.0 * MM, units: Unit::Millimeters },
+    Preset { name: "AB (210 × 257 mm)", intent: Intent::Print, width: 210.0 * MM, height: 257.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Japanese Postcard (100 × 148 mm)", intent: Intent::Print, width: 100.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
+    Preset {
+        name: "Japanese Double Postcard (148 × 200 mm)",
+        intent: Intent::Print,
+        width: 148.0 * MM,
+        height: 200.0 * MM,
+        units: Unit::Millimeters,
+    },
+    Preset { name: "B6 (JIS 128 × 182 mm)", intent: Intent::Print, width: 128.0 * MM, height: 182.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Japanese Business Card (91 × 55 mm)", intent: Intent::Print, width: 91.0 * MM, height: 55.0 * MM, units: Unit::Millimeters },
     Preset { name: "Business Card", intent: Intent::Print, width: 252.0, height: 144.0, units: Unit::Picas },
     Preset { name: "Postcard", intent: Intent::Print, width: 432.0, height: 288.0, units: Unit::Picas },
     Preset { name: "Web 1920 × 1080", intent: Intent::Web, width: 1920.0, height: 1080.0, units: Unit::Pixels },
@@ -995,6 +1014,66 @@ mod tests {
         assert_eq!(d.parent_page_for(0), Some((1, 1)));
         d.apply_parent(&[0], None).unwrap();
         assert_eq!(d.parent_page_for(0), None);
+    }
+
+    /// The Japanese print page sizes: the millimetre dimensions the names give, and the presets
+    /// that were here before keep theirs.
+    #[test]
+    fn japanese_page_presets() {
+        for (name, w_mm, h_mm) in [
+            ("Bunko (105 × 148 mm)", 105.0, 148.0),
+            ("Shinsho (103 × 182 mm)", 103.0, 182.0),
+            ("Yotsuro (127 × 188 mm)", 127.0, 188.0),
+            ("Kiku (152 × 227 mm)", 152.0, 227.0),
+            ("AB (210 × 257 mm)", 210.0, 257.0),
+            ("Japanese Postcard (100 × 148 mm)", 100.0, 148.0),
+            ("Japanese Double Postcard (148 × 200 mm)", 148.0, 200.0),
+            ("B6 (JIS 128 × 182 mm)", 128.0, 182.0),
+            ("Japanese Business Card (91 × 55 mm)", 91.0, 55.0),
+        ] {
+            let p = PRESETS.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{name} is a preset"));
+            assert_eq!((p.intent, p.units), (Intent::Print, Unit::Millimeters), "{name}");
+            // The name promises millimetres; 0.01 mm is the tolerance the presets are held to.
+            assert!((p.width - w_mm * MM).abs() < 0.01 * MM, "{name}: width {} pt", p.width);
+            assert!((p.height - h_mm * MM).abs() < 0.01 * MM, "{name}: height {} pt", p.height);
+            let nd = NewDocument::from_preset(name).unwrap();
+            assert_eq!((nd.width, nd.height), (p.width, p.height), "{name}");
+            assert_eq!((nd.intent, nd.units), (Intent::Print, Unit::Millimeters), "{name}");
+            assert!(nd.facing_pages, "{name} is a print size, so it starts with facing pages");
+        }
+        // Every preset that was here before is still there, at the size it was.
+        for name in [
+            "Letter",
+            "Legal",
+            "Tabloid",
+            "Letter - Half",
+            "A0",
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "B5",
+            "Business Card",
+            "Postcard",
+            "Web 1920 × 1080",
+            "Web 1366 × 768",
+            "Web 1024 × 768",
+            "Mobile 1080 × 1920",
+            "Mobile 390 × 844",
+            "Tablet 1024 × 1366",
+        ] {
+            assert!(NewDocument::from_preset(name).is_some(), "{name} stays a preset");
+        }
+        let letter = NewDocument::from_preset("Letter").unwrap();
+        assert_eq!((letter.width, letter.height), (612.0, 792.0));
+        let a4 = NewDocument::from_preset("A4").unwrap();
+        assert!((a4.width - 210.0 * MM).abs() < 1e-9 && (a4.height - 297.0 * MM).abs() < 1e-9);
+        let b5 = NewDocument::from_preset("B5").unwrap();
+        assert!((b5.width - 176.0 * MM).abs() < 1e-9 && (b5.height - 250.0 * MM).abs() < 1e-9);
+        let postcard = NewDocument::from_preset("Postcard").unwrap();
+        assert_eq!((postcard.width, postcard.height), (432.0, 288.0));
     }
 
     fn base(d: &mut Document, pi: usize, on: Option<SpreadId>) {
