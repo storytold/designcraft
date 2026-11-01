@@ -455,9 +455,11 @@ fn warning_item(
 }
 
 /// An InDesign document or template (.indd, .indt): known by its signature, or by its name when
-/// the bytes are something else (the converter then says why it can't read them).
+/// the bytes are neither a recognized DesignCraft document nor IDML. The converter explains
+/// unrecognized data with an InDesign extension.
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
-    bytes.starts_with(&indd::header::SIGNATURE) || has_indd_extension(name)
+    bytes.starts_with(&indd::header::SIGNATURE)
+        || (has_indd_extension(name) && !super::file::is_document(bytes) && !bytes.trim_ascii_start().starts_with(b"{"))
 }
 
 pub(crate) fn has_indd_extension(name: &str) -> bool {
