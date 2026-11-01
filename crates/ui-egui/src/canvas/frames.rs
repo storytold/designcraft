@@ -10,7 +10,10 @@ use super::{
 /// Spread-space → canvas transform for an item at `loc`.
 pub(super) fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
-    Some((layout.xf(loc.spread) * doc.parent_xf(&loc), ""))
+    // Items on spreads that aren't laid out (document pages while parents are being edited, or
+    // the reverse) have no place on the canvas.
+    let slot = layout.slot(loc.spread)?;
+    Some((slot.xf * doc.parent_xf(&loc), ""))
 }
 
 pub(super) fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
@@ -164,14 +167,16 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
     }
     let mut union: Option<Rect> = None;
     let mut color = Color32::from_rgb(79, 153, 255);
+    let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
     for id in &sel.items {
         let (Some(it), Some((a, _))) = (doc.item(*id), item_canvas_xf(doc, layout, *id)) else { continue };
         color = layer_color(doc, it);
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(1.0, color)));
         }
-        if sel.items.len() == 1 && sel.text.is_none() {
-            // InDesign draws a 1 pt bounding box around the selection.
+        // InDesign draws a 1 pt bounding box around the selection; with the Direct Selection and
+        // pen tools, only the path and its points.
+        if sel.items.len() == 1 && sel.text.is_none() && !direct {
             painter.rect_stroke(xf.rect(a.transform_rect_bbox(it.bounds())), 0.0, Stroke::new(1.0, color), StrokeKind::Middle);
         } else if sel.key == Some(*id) {
             // The key object for Align: a thicker bounding box, as in InDesign.
@@ -202,16 +207,26 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
             }
         }
     }
-    let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
+    // Direct Selection shows only the handles around the selected anchors, as InDesign; the pen
+    // and the anchor tools show every handle they work on.
+    let some_handles = app.session.tool_id() == "directSelection";
     if direct {
+        // Looked up once per anchor drawn: a large marquee selection stays linear.
+        let chosen_set: std::collections::HashSet<(designcraft_doc::ItemId, usize, usize)> = sel.anchors.iter().copied().collect();
         for id in &sel.items {
             let (Some(it), Some((a, _))) = (doc.item(*id), item_canvas_xf(doc, layout, *id)) else { continue };
             let m = a * it.xf;
             let col = layer_color(doc, it);
-            for sp in &it.path.subpaths {
-                for an in &sp.anchors {
+            for (si, sp) in it.path.subpaths.iter().enumerate() {
+                for (ai, an) in sp.anchors.iter().enumerate() {
                     let p = xf.to_screen(m * an.p);
-                    for (h, has) in [(an.h_in, an.has_in()), (an.h_out, an.has_out())] {
+                    // A selected anchor point is solid, the others hollow (InDesign).
+                    let chosen = chosen_set.contains(&(*id, si, ai));
+                    let shown = |out: bool| {
+                        !some_handles
+                            || designcraft_tools::select::handle_shown(sp.anchors.len(), sp.closed, ai, out, |a| chosen_set.contains(&(*id, si, a)))
+                    };
+                    for (h, has) in [(an.h_in, an.has_in() && shown(false)), (an.h_out, an.has_out() && shown(true))] {
                         if has {
                             let hp = xf.to_screen(m * h);
                             painter.line_segment([p, hp], Stroke::new(1.0, col));
@@ -219,7 +234,7 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
                         }
                     }
                     let r = Rect::from_center_size(p, vec2(5.0, 5.0));
-                    painter.rect_filled(r, 0.0, Color32::WHITE);
+                    painter.rect_filled(r, 0.0, if chosen { col } else { Color32::WHITE });
                     painter.rect_stroke(r, 0.0, Stroke::new(1.0, col), StrokeKind::Inside);
                 }
             }

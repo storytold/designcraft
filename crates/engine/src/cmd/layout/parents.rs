@@ -117,6 +117,52 @@ mod parent_margin_tests {
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": "Z", "margins": 10})).is_err());
     }
 
+    /// Insert Pages before a page, or at the start of the document (`before: 0`), as InDesign's
+    /// dialog offers; `after` and `before` together are refused without an undo step.
+    #[test]
+    fn pages_go_in_before_a_page_or_at_the_start() {
+        let mut s = Session::new();
+        // Facing: [1] [2 3].
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |s: &Session| -> Vec<u64> {
+            let d = &s.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let parent = |s: &Session, i: usize| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        let old = ids(&s);
+        s.execute("layout.pages.insert", &json!({"before": 0, "parent": "B"})).unwrap();
+        let now = ids(&s);
+        assert_eq!(now.len(), 4);
+        assert_eq!(now[1..], old[..], "the old pages follow the new first page");
+        assert_eq!(parent(&s, 0), Some(b));
+        // Before page 4 (index 3, the old page 3): two pages without a parent.
+        s.execute("layout.pages.insert", &json!({"before": 3, "count": 2, "parent": null})).unwrap();
+        let then = ids(&s);
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3]);
+        assert_eq!(then[5], old[2]);
+        assert_eq!((parent(&s, 3), parent(&s, 4)), (None, None));
+        // Refused without a change or an undo step: both placements, even one of them null, and a
+        // placement that isn't a page index.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [
+            json!({"after": 0, "before": 1}),
+            json!({"after": 0, "before": null}),
+            json!({"after": null, "before": 1}),
+            json!({"before": -1}),
+            json!({"before": "0"}),
+            json!({"before": null}),
+            json!({"after": 1.5}),
+            json!({"before": 6}),
+            json!({"before": 99}),
+        ] {
+            assert!(s.execute("layout.pages.insert", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo, "{bad}");
+            assert_eq!(ids(&s), then, "{bad}");
+        }
+    }
+
     #[test]
     fn applying_a_parent_gives_its_margins_and_local_margins_stay_local() {
         let mut s = Session::new();

@@ -337,9 +337,12 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m, clicks: n });
         down = true;
     }
+    // The place cursor draws a frame from 3 points (its own threshold), before egui starts a
+    // drag (at `max_click_dist`): follow the pointer from there, so a release between the two
+    // places the frame that was previewed.
+    let place_drag = app.session.tool_id() == "placeGun" && origin.zip(latest).is_some_and(|(o, p)| (o - p).length() >= 3.0);
     if down
-        && resp.dragged()
-        && resp.drag_delta() != egui::Vec2::ZERO
+        && ((resp.dragged() && resp.drag_delta() != egui::Vec2::ZERO) || place_drag)
         && let Some(p) = latest
     {
         events.push(PointerEvent { kind: PointerKind::Drag, pos: pos(p), mods: m, clicks: 1 });

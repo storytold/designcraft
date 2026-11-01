@@ -161,9 +161,22 @@ pub(super) fn cmyk_tiff(data: &[u8], mode: RasterMode) -> Option<Image> {
     Image::from_custom(CmykImage(Arc::new(r)), mode.interpolate).ok()
 }
 
-/// Opaque raster → JPEG (quality 90). `None` when the image has transparency or can't be decoded.
-/// With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
+#[cfg(test)]
+thread_local! {
+    /// Rasters `recompress` has decoded on this thread.
+    static RECOMPRESS_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Opaque raster → JPEG (quality 90). `None` when the image has transparency, is too large or
+/// can't be decoded. With `tag_rgb`, the JPEG keeps the source's RGB profile, or gets sRGB.
 pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
+    if designcraft_images::too_large_to_decode(data) {
+        return None;
+    }
+    #[cfg(test)]
+    {
+        RECOMPRESS_DECODES.with(|n| n.set(n.get() + 1));
+    }
     let img = image::load_from_memory(data).ok()?;
     if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
         return None;
@@ -534,5 +547,22 @@ mod eps_tests {
         assert_eq!(civil(-10_000_000_000_000), (-314918, 8, 13, 6, 13, 20));
         assert_eq!(civil(i64::MAX), (292277026596, 12, 4, 15, 30, 7));
         assert_eq!(civil(i64::MIN), (-292277022657, 1, 27, 8, 29, 52));
+    }
+}
+
+#[cfg(test)]
+mod recompress_tests {
+    use super::*;
+
+    /// A raster past the RGBA budget is refused before `recompress` decodes it (#1586).
+    #[test]
+    fn a_raster_past_the_budget_is_not_decoded() {
+        let mode = RasterMode { interpolate: false, tag_rgb: false };
+        let decodes = || RECOMPRESS_DECODES.with(std::cell::Cell::get);
+        let start = decodes();
+        assert!(recompress(&crate::tests::blank_png(16_385), mode).is_none());
+        assert_eq!(decodes(), start);
+        assert!(recompress(&crate::tests::blank_png(9), mode).is_some());
+        assert_eq!(decodes(), start + 1);
     }
 }

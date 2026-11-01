@@ -106,6 +106,18 @@
       <key>CFBundleTypeExtensions</key>
       <array><string>idml</string></array>
     </dict>
+    <!-- InDesign documents and templates, converted to IDML on open (file.open); by extension
+         for the same reason as above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>indd</string><string>indt</string></array>
+    </dict>
   </array>
 
   <!-- DesignCraft's own format: a zip package, declared as a document rather than an archive so

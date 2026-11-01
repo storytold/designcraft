@@ -401,3 +401,97 @@ fn bmp_decodes() {
     assert_eq!(pixel_size(&bmp), Some((3, 2)));
     assert_eq!(decode_rgba(&bmp).unwrap().get_pixel(1, 1).0, [0, 0, 255, 255]);
 }
+
+/// A 1-bit gray PNG of `side` x `side` blank pixels, written row by row so the test stays small.
+fn blank_png(side: u32) -> Vec<u8> {
+    use std::io::Write;
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend(kind);
+        out.extend(data);
+        out.extend(crc.sum().to_be_bytes());
+    };
+    let row = vec![0u8; 1 + side.div_ceil(8) as usize];
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..side {
+        z.write_all(&row).unwrap();
+    }
+    let mut ihdr = [side.to_be_bytes(), side.to_be_bytes()].concat();
+    ihdr.extend([1, 0, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &z.finish().unwrap());
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// A small file that expands past 1 GiB of RGBA is refused from its header (#1586).
+#[test]
+fn rasters_past_the_rgba_budget_are_refused_before_decoding() {
+    let png = blank_png(16_385);
+    assert!(png.len() < 1 << 20, "{} bytes", png.len());
+    assert_eq!(pixel_size(&png), Some((16_385, 16_385)));
+    assert_eq!(natural_size(&png), Some((16_385.0, 16_385.0)));
+    assert!(too_large_to_decode(&png));
+    assert!(decode_rgba(&png).is_none());
+    assert!(!too_large_to_decode(&blank_png(16_384)));
+    let small = decode_rgba(&blank_png(9)).expect("decodes");
+    assert_eq!(small.get_pixel(8, 8).0, [0, 0, 0, 255]);
+}
+
+/// A GIF whose logical screen is `side` x `side`, holding one black 1x1 frame.
+fn gif_screen(side: u16) -> Vec<u8> {
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend(side.to_le_bytes());
+    gif.extend(side.to_le_bytes());
+    // Two-colour global table: black, white.
+    gif.extend([0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+    // Frame at the origin; LZW minimum code size 2, codes clear, 0, end; trailer.
+    gif.extend([0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 0x01, 0, 0x3B]);
+    gif
+}
+
+/// The header of an uncompressed 8-bit CMYK TIFF of `side` x `side` pixels, without the pixels.
+fn cmyk_tiff_header(side: u32) -> Vec<u8> {
+    let entries: [(u16, u16, u32, u32); 9] = [
+        (256, 4, 1, side),            // width
+        (257, 4, 1, side),            // height
+        (258, 3, 4, 122),             // bits per sample, stored after the IFD
+        (259, 3, 1, 1),               // no compression
+        (262, 3, 1, 5),               // separated (CMYK)
+        (273, 4, 1, 130),             // strip offset
+        (277, 3, 1, 4),               // samples per pixel
+        (278, 4, 1, side),            // rows per strip
+        (279, 4, 1, side * side * 4), // strip byte count
+    ];
+    let mut t = b"II*\0".to_vec();
+    t.extend(8u32.to_le_bytes());
+    t.extend(9u16.to_le_bytes());
+    for (tag, kind, count, value) in entries {
+        t.extend(tag.to_le_bytes());
+        t.extend(kind.to_le_bytes());
+        t.extend(count.to_le_bytes());
+        t.extend(value.to_le_bytes());
+    }
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len(), 122);
+    t.extend([8u16; 4].iter().flat_map(|b| b.to_le_bytes()));
+    t
+}
+
+/// GIF tones and CMYK inks check the RGBA budget too (#1586).
+#[test]
+fn gif_tone_and_cmyk_inks_check_the_rgba_budget() {
+    let gif = gif_screen(16_385);
+    assert!(too_large_to_decode(&gif));
+    assert_eq!(tone(&gif), None);
+    assert_eq!(tone(&gif_screen(2)), Some(Tone::Bitmap));
+    let tiff = cmyk_tiff_header(16_385);
+    assert!(is_cmyk_tiff(&tiff));
+    assert_eq!(pixel_size(&tiff), Some((16_385, 16_385)));
+    assert!(too_large_to_decode(&tiff));
+    assert_eq!(decode_cmyk_tiff(&tiff), None);
+}

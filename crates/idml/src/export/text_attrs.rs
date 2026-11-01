@@ -22,6 +22,13 @@ macro_rules! b {
     };
 }
 
+/// The Overprint switches of a paragraph's shading, border and border gap.
+fn para_box_overprints(el: &mut El, a: &ParaAttrs) {
+    b!(a, el, shading_overprint, "ParagraphShadingOverprint");
+    b!(a, el, border_overprint, "ParagraphBorderOverprint");
+    b!(a, el, border_gap_overprint, "ParagraphBorderGapOverprint");
+}
+
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(v) = a.leading_aki {
@@ -494,6 +501,7 @@ impl<'a> Ex<'a> {
             props.push(p("ParagraphShadingColor", "object", self.sw(c)));
         }
         n!(a, el, shading_tint, "ParagraphShadingTint", pct);
+        para_box_overprints(el, a);
         const SIDES: [&str; 4] = ["Top", "Left", "Bottom", "Right"];
         if let Some(o) = a.shading_offsets {
             for (i, side) in SIDES.iter().enumerate() {

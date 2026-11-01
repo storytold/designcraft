@@ -67,6 +67,15 @@ pub fn specs() -> Vec<CommandSpec> {
             join_paths
         ),
         cmd!(
+            "path.deletePoints",
+            "Delete Points",
+            [],
+            None,
+            "{points?: [[id, subpath, index]]} — the Direct Selection tool's selected points by default, in one undo step (Properties › Quick Actions › Delete Point(s)); a subpath left with one point goes, and an object with none is removed → {deleted, removed: [id]}",
+            has_doc,
+            delete_points
+        ),
+        cmd!(
             "path.convertPoints",
             "Convert Point",
             [],
@@ -162,6 +171,66 @@ fn join_paths(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Delete Point(s): removes the given points, or the ones selected with Direct Selection.
+fn delete_points(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "path.deletePoints";
+    let points: Vec<(ItemId, usize, usize)> = match p.get("points") {
+        Some(v) => serde_json::from_value::<Vec<(u64, usize, usize)>>(v.clone())
+            .map_err(|e| bad(ID, format!("points: [[id, subpath, index], …] ({e})")))?
+            .into_iter()
+            .map(|(id, si, ai)| (ItemId(id), si, ai))
+            .collect(),
+        None => s.doc()?.selection.anchors.clone(),
+    };
+    if points.is_empty() {
+        return Err(bad(ID, "no points selected"));
+    }
+    // Each subpath's points, worked from the last subpath and the last point back, so the indices
+    // still to delete keep their place.
+    let mut groups: Vec<((ItemId, usize), Vec<usize>)> = Vec::new();
+    for (id, si, ai) in points {
+        match groups.iter_mut().find(|(k, _)| *k == (id, si)) {
+            Some((_, v)) => v.push(ai),
+            None => groups.push(((id, si), vec![ai])),
+        }
+    }
+    groups.sort_by_key(|((id, si), _)| std::cmp::Reverse((id.0, *si)));
+    s.edit(|d, sel| {
+        let (mut deleted, mut removed) = (0usize, Vec::new());
+        for ((id, si), mut ais) in groups {
+            if d.item(id).is_none() {
+                continue;
+            }
+            path_editable(d, id, ID)?;
+            let Some(it) = d.item_mut(id) else { continue };
+            let Some(sp) = it.path.subpaths.get_mut(si) else { continue };
+            ais.sort_unstable();
+            ais.dedup();
+            for ai in ais.into_iter().rev() {
+                if ai < sp.anchors.len() {
+                    sp.anchors.remove(ai);
+                    deleted += 1;
+                }
+            }
+            // A subpath needs two points (three to stay closed).
+            let (left, closed) = (sp.anchors.len(), sp.closed);
+            if left < 2 {
+                it.path.subpaths.remove(si);
+            } else if closed && left < 3 {
+                sp.closed = false;
+            }
+            as_path(&mut it.shape);
+            if it.path.subpaths.is_empty() {
+                d.remove_item(id)?;
+                sel.items.retain(|i| *i != id);
+                removed.push(id.0);
+            }
+        }
+        sel.anchors.clear();
+        Ok(json!({"deleted": deleted, "removed": removed}))
+    })
+}
+
 /// Convert Point: the selected points (or every point of the selected paths) to a point type.
 fn convert_points(s: &mut Session, p: &Value) -> Result<Value> {
     let kind = super::str_param(p, "kind").unwrap_or("plain").to_string();
@@ -232,7 +301,7 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| Some(Point::new(v.get(0)?.as_f64()?, v.get(1)?.as_f64()?))).collect())
         .unwrap_or_default();
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, cmd)?;
         let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let scale = inv.determinant().abs().sqrt().max(1e-9);
@@ -257,6 +326,8 @@ fn erase_or_smooth(s: &mut Session, p: &Value, smooth: bool) -> Result<Value> {
             return Err(bad(cmd, "the drag didn't touch the path"));
         };
         let sp = it.path.subpaths[si].clone();
+        // The subpath list changes under the stored point indices: they would name other points.
+        sel.anchors.retain(|a| a.0 != id);
         if smooth {
             it.path.subpaths[si] = designcraft_geom::edit_path::smooth(&sp, a, b, tol * scale);
         } else {
@@ -299,7 +370,7 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.addAnchor", "missing id"))?;
     let at = point_param(p, "at").ok_or_else(|| bad("path.addAnchor", "missing at"))?;
     let tol = p.get("tolerance").and_then(Value::as_f64).unwrap_or(4.0);
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, "path.addAnchor")?;
         let inv = to_inner(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
@@ -313,6 +384,10 @@ fn add_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         let t = t.clamp(1e-4, 1.0 - 1e-4);
         let ai = it.path.subpaths[si].insert_anchor(seg, t);
         as_path(&mut it.shape);
+        // Selected points after the new one move up an index, so they stay the same points.
+        for a in sel.anchors.iter_mut().filter(|a| a.0 == id && a.1 == si && a.2 >= ai) {
+            a.2 += 1;
+        }
         Ok(json!({"subpath": si, "anchor": ai}))
     })
 }
@@ -328,15 +403,27 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         }
         sp.anchors.remove(ai);
         // A subpath needs two points (three to stay closed).
-        if sp.anchors.len() < 2 {
+        let removed_subpath = sp.anchors.len() < 2;
+        if removed_subpath {
             it.path.subpaths.remove(si);
         } else if sp.closed && sp.anchors.len() < 3 {
             sp.closed = false;
         }
         as_path(&mut it.shape);
+        // The deleted point leaves the selection; the selected points after it (or the subpaths
+        // after a removed one) move down an index.
+        sel.anchors.retain(|a| !(a.0 == id && a.1 == si && (a.2 == ai || removed_subpath)));
+        for a in sel.anchors.iter_mut().filter(|a| a.0 == id) {
+            if removed_subpath && a.1 > si {
+                a.1 -= 1;
+            } else if !removed_subpath && a.1 == si && a.2 > ai {
+                a.2 -= 1;
+            }
+        }
         if it.path.subpaths.is_empty() {
             d.remove_item(id)?;
             sel.items.retain(|i| *i != id);
+            sel.anchors.retain(|a| a.0 != id);
             return Ok(json!({"deleted": true}));
         }
         Ok(json!({"deleted": false}))
@@ -426,6 +513,27 @@ mod tests {
     }
 
     /// Join Path closes one open path, and joins two open paths at their nearest ends.
+    /// `path.moveAnchors` points may each carry their own movement (Direct Selection sends each
+    /// point's in its own spread); without one a point takes the shared `dx`, `dy`.
+    #[test]
+    fn move_anchors_takes_a_movement_per_point() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &serde_json::json!({})).unwrap();
+        let id = s.execute("frame.create", &serde_json::json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let at = |s: &crate::Session, i: usize| {
+            let d = &s.doc().unwrap().doc;
+            let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+            it.xf * it.path.subpaths[0].anchors[i].p
+        };
+        let (a0, a1) = (at(&s, 0), at(&s, 1));
+        s.execute("path.moveAnchors", &serde_json::json!({"points": [[id, 0, 0, 5, 0], [id, 0, 1]], "dx": 0, "dy": 7})).unwrap();
+        assert_eq!(at(&s, 0) - a0, designcraft_geom::Vec2::new(5.0, 0.0), "its own");
+        assert_eq!(at(&s, 1) - a1, designcraft_geom::Vec2::new(0.0, 7.0), "the shared one");
+        for bad in [serde_json::json!([[id, 0, 0, "x", 1]]), serde_json::json!([[id, 0, 0, 5]])] {
+            assert!(s.execute("path.moveAnchors", &serde_json::json!({"points": bad})).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn join_path_closes_one_path_and_joins_two() {
         let mut s = Session::new();
@@ -454,6 +562,63 @@ mod tests {
     }
 
     /// Convert Point turns the selected points (or a whole path's) plain, corner, smooth or symmetrical.
+    /// Delete Point(s) removes the selected points of several paths in one step; a triangle left
+    /// with two points opens, and Undo brings every point back.
+    #[test]
+    fn delete_points_removes_the_selected_points_of_several_paths() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [200, 72, 300, 172], "shape": "polygon", "sides": 3})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"anchors": [[a, 0, 0], [a, 0, 2], [b, 0, 1]]})).unwrap();
+        let r = s.execute("path.deletePoints", &json!({})).unwrap();
+        assert_eq!(r["deleted"], 3);
+        let d = &s.doc().unwrap().doc;
+        let pa = &d.item(ItemId(a)).unwrap().path.subpaths[0];
+        assert_eq!(pa.anchors.len(), 2, "two of the square's four points are left");
+        assert!(!pa.closed, "two points can't stay closed");
+        assert_eq!(d.item(ItemId(b)).unwrap().path.subpaths[0].anchors.len(), 2);
+        assert!(s.doc().unwrap().selection.anchors.is_empty());
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.item(ItemId(a)).unwrap().path.subpaths[0].anchors.len(), 4, "one undo step");
+        assert_eq!(d.item(ItemId(b)).unwrap().path.subpaths[0].anchors.len(), 3);
+        // A line's two points: the line goes.
+        let l = s.execute("path.create", &json!({"anchors": [{"p": [72, 300]}, {"p": [172, 300]}]})).unwrap()["id"].as_u64().unwrap();
+        let r = s.execute("path.deletePoints", &json!({"points": [[l, 0, 0]]})).unwrap();
+        assert_eq!(r["removed"], json!([l]));
+        assert!(s.doc().unwrap().doc.item(ItemId(l)).is_none());
+        assert!(s.execute("path.deletePoints", &json!({"points": []})).is_err());
+        // Named points need no selected object.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        assert!(s.doc().unwrap().selection.items.is_empty());
+        let r = s.execute("path.deletePoints", &json!({"points": [[b, 0, 0]]})).unwrap();
+        assert_eq!(r["deleted"], 1);
+        // Edit › Clear with points selected deletes the points, not their paths.
+        s.execute("selection.set", &json!({"anchors": [[a, 0, 0]]})).unwrap();
+        s.execute("edit.clear", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(a)).unwrap().path.subpaths[0].anchors.len(), 3, "one point gone, the frame stays");
+        // Cut copies whole objects, so it removes whole objects.
+        s.execute("selection.set", &json!({"anchors": [[a, 0, 0]]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(ItemId(a)).is_none(), "the cut object is gone");
+    }
+
+    /// Shift-adding an object to a point selection drops the points, so Clear deletes the objects.
+    #[test]
+    fn clear_after_adding_an_object_to_a_point_selection_deletes_objects() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [200, 72, 300, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"anchors": [[a, 0, 0]]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [b], "add": true})).unwrap();
+        assert!(s.doc().unwrap().selection.anchors.is_empty());
+        s.execute("edit.clear", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(ItemId(a)).is_none());
+        assert!(s.doc().unwrap().doc.item(ItemId(b)).is_none());
+    }
+
     #[test]
     fn convert_point_kinds() {
         let mut s = Session::new();
@@ -486,14 +651,43 @@ mod tests {
         let pts: Vec<Value> = (0..=20).map(|i| json!({"p": [100.0 + i as f64 * 20.0, if i % 2 == 0 { 300.0 } else { 306.0 }]})).collect();
         let id = s.execute("path.create", &json!({"anchors": pts})).unwrap()["id"].as_u64().unwrap();
         let n = s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.anchor_count();
+        s.execute("selection.set", &json!({"anchors": [[id, 0, 20]]})).unwrap();
         let drag: Vec<Value> = (0..=12).map(|i| json!([150.0 + i as f64 * 20.0, 303.0])).collect();
         s.execute("path.smooth", &json!({"id": id, "points": drag})).unwrap();
         let after = s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.anchor_count();
         assert!(after < n, "{after} < {n}");
+        assert!(s.doc().unwrap().selection.anchors.is_empty(), "stored point indices are stale after the path is rebuilt");
         let drag: Vec<Value> = (0..=5).map(|i| json!([200.0 + i as f64 * 20.0, 303.0])).collect();
         let r = s.execute("path.erase", &json!({"id": id, "points": drag})).unwrap();
         assert_eq!(r["subpaths"], 2, "a gap in the middle");
         assert!(s.execute("path.erase", &json!({"id": id, "points": [[100, 600]]})).is_err());
+    }
+
+    /// The Direct Selection's selected points stay the same points when the path changes under
+    /// them: a point added before them, one of them deleted, the path reversed.
+    #[test]
+    fn selected_anchors_follow_added_deleted_and_reversed_points() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let point = |s: &Session, a: (usize, usize)| s.doc().unwrap().doc.item(ItemId(id)).unwrap().path.subpaths[a.0].anchors[a.1].p;
+        s.execute("selection.set", &json!({"anchors": [[id, 0, 2], [id, 0, 3]]})).unwrap();
+        let picked = |s: &Session| s.doc().unwrap().selection.anchors.iter().map(|a| (a.1, a.2)).collect::<Vec<_>>();
+        let before: Vec<_> = picked(&s).into_iter().map(|a| point(&s, a)).collect();
+        // A point added on the first side, before both.
+        let first = point(&s, (0, 0));
+        let second = point(&s, (0, 1));
+        let mid = [(first.x + second.x) / 2.0, (first.y + second.y) / 2.0];
+        s.execute("path.addAnchor", &json!({"id": id, "at": mid})).unwrap();
+        assert_eq!(picked(&s).into_iter().map(|a| point(&s, a)).collect::<Vec<_>>(), before, "after an added point");
+        // One of them deleted: the other stays selected, the same point.
+        let (si, ai) = picked(&s)[0];
+        s.execute("path.deleteAnchor", &json!({"id": id, "subpath": si, "anchor": ai})).unwrap();
+        assert_eq!(picked(&s).len(), 1);
+        assert_eq!(point(&s, picked(&s)[0]), before[1], "after a deleted point");
+        // Reversed: still the same point.
+        s.execute("path.reverse", &json!({"ids": [id]})).unwrap();
+        assert_eq!(point(&s, picked(&s)[0]), before[1], "after reversing");
     }
 
     #[test]

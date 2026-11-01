@@ -389,7 +389,8 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             if id == "findChange" || app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 app.session.reset_find_scope();
             }
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)

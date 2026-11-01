@@ -31,10 +31,10 @@ pub(super) fn draw_tool_overlays(app: &mut DesignApp, painter: &egui::Painter, x
             }
             Overlay::Measure { p, text } => {
                 let s = xf.to_screen(p) + vec2(14.0, 14.0);
-                let g = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), tok.measure_text);
+                let g = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), tok.readout_text);
                 let r = Rect::from_min_size(s, g.size() + vec2(10.0, 6.0));
-                painter.rect_filled(r, 3.0, tok.measure_bg);
-                painter.galley(r.min + vec2(5.0, 3.0), g, tok.measure_text);
+                painter.rect_filled(r, 3.0, tok.readout_bg);
+                painter.galley(r.min + vec2(5.0, 3.0), g, tok.readout_text);
             }
             Overlay::Line { a, b, color, dashed: d } => {
                 let st = Stroke::new(1.0, c32(color));

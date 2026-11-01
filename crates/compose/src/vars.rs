@@ -160,10 +160,18 @@ impl RunningIndex {
 
 /// Values of every variable on `page`.
 pub fn values(doc: &Document, page: Option<usize>, running: Option<&RunningIndex>) -> Vec<String> {
+    values_shown(doc, page, false, running)
+}
+
+/// [`values`] as text shows them: on a parent page itself (`parent`, with no `page`), a running
+/// header has no entries of its own and shows which variable sits there, `<Name>`, as InDesign
+/// does. Elsewhere without a page (the pasteboard), it is its text before and after.
+pub fn values_shown(doc: &Document, page: Option<usize>, parent: bool, running: Option<&RunningIndex>) -> Vec<String> {
     doc.text_variables
         .iter()
         .enumerate()
         .map(|(i, v)| match &v.kind {
+            VarKind::RunningHeader { .. } if parent && page.is_none() => format!("<{}>", v.name),
             VarKind::RunningHeader { style, use_, character } => {
                 let body = match (running, page) {
                     (Some(r), Some(p)) => r.value(style, *character, *use_, p),

@@ -13,10 +13,11 @@ fn find_preset(s: &Session, name: &str) -> Option<NewDocument> {
 }
 
 /// The settings `file.new` makes a document with for `p`: its preset, then the settings over it.
+/// Without a preset or `units`, it is in the default units (Preferences with no document).
 fn new_document_settings(s: &Session, p: &Value) -> Result<NewDocument> {
     let mut nd = match str_param(p, "preset") {
         Some(name) => find_preset(s, name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
-        None => NewDocument::default(),
+        None => s.default_new_document(),
     };
     apply_settings(&mut nd, p);
     check_size("file.new", &nd)?;
@@ -40,12 +41,19 @@ pub(super) fn file_new(s: &mut Session, p: &Value) -> Result<Value> {
     let mut nd = new_document_settings(s, p)?;
     s.untitled += 1;
     nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| format!("Untitled-{}", s.untitled));
-    let d = new_document(&nd);
+    let mut d = new_document(&nd);
+    s.prefs.default_units.apply(&mut d.settings, p.get("preset").is_some_and(|v| !v.is_null()));
     let i = s.add_document(DocState::new(d, None));
     Ok(json!({"index": i}))
 }
 
 impl Session {
+    /// What New Document starts with: the factory settings, in the default units (Preferences
+    /// with no document open).
+    pub fn default_new_document(&self) -> NewDocument {
+        NewDocument { units: self.prefs.default_units.horizontal_units, ..NewDocument::default() }
+    }
+
     /// New Document's Preview: a document made as `file.new` would make it with `p`, shown while
     /// the New Document window is open. It replaces the previous preview document in its tab and
     /// takes no Untitled number, no undo step and no recovery entry. Settings `file.new` refuses
@@ -64,7 +72,9 @@ impl Session {
             self.untitled += 1;
         }
         nd.title = str_param(p, "title").map(str::to_string).unwrap_or_else(|| self.next_untitled_title());
-        let st = DocState::new(new_document(&nd), None);
+        let mut d = new_document(&nd);
+        self.prefs.default_units.apply(&mut d.settings, p.get("preset").is_some_and(|v| !v.is_null()));
+        let st = DocState::new(d, None);
         let uid = st.uid;
         match replace.and_then(|i| self.docs.get_mut(i).map(|d| (i, d))) {
             Some((i, d)) => {

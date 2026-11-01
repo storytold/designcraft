@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -68,7 +68,19 @@ focused text field, and does not interrupt an existing tool drag. Synthetic canv
 cover the cursors, click anchors, scrub/release ownership, restoration, typing guards and undo
 history (DC-1).
 
+The Table of Contents title field reserves its edit width inside the title/style row. The
+default Contents title is fully visible instead of being clipped to its first few characters.
+
+The Table of Contents dialog can collapse to its entry-style controls or expand to show page
+number, separator, sorting and level controls. Toggling visibility preserves their settings.
+
 ## Remaining effort
+
+The Table of Contents separator field accepts `^y` (Right Indent Tab), with a special-character
+picker alongside it. Literal carets use `^^`; ordinary tabs, em/en spaces and surrounding spaces
+survive reopening. IDML preserves right-indent separators, including `$ID/^y`, so updating an
+imported TOC keeps page numbers at the right edge and inherits paragraph tab leaders. This covers
+10:54–16:08 of [Michael Bullo's TOC tutorial](https://www.youtube.com/watch?v=m4y2tm6LH_c).
 
 Applying a paragraph or character style now removes local values equal to the applied style,
 so text used to capture a style follows later edits to that style. Different local formatting
@@ -122,9 +134,13 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Dialogs: Table of Contents title field keeps its edit width; More Options toggles without losing hidden settings |
 | 2026-10-24 | minor | Panels row: Story panel (Optical Margin Alignment and its size) |
 | 2026-10-21 | minor | Chrome row: the text Control panel's A/¶ modes; Properties row: ••• expands Character and Paragraph in place |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
 | 2026-10-11 | minor | Added held Cmd+Space / Cmd+Alt+Space Zoom navigation and canvas input regression tests |
 | 2026-10-10 | minor | Threading row corrected to ✗ after checking the code (no out-port interaction, no thread command) |
 | 2026-10-10 | major | Created: measured menu coverage, 27-row interaction checklist from the code and issues |
+
+Double-clicking a section triangle in the Pages panel opens Numbering & Section Options for
+that section’s first page. It leaves parent-page editing and does not edit section data until confirmed.

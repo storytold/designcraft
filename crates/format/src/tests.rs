@@ -555,6 +555,14 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(Some(1.0)),
         strikethrough_weight: Some(Some(2.0)),
         strikethrough_offset: Some(Some(1.0)),
+        kenten_size: Some(Some(14.0)),
+        kenten_fill_tint: Some(Some(0.3)),
+        kenten_stroke_tint: Some(Some(0.4)),
+        kenten_stroke_weight: Some(Some(2.0)),
+        ruby_font_size: Some(Some(14.0)),
+        ruby_fill_tint: Some(Some(0.3)),
+        ruby_stroke_tint: Some(Some(0.4)),
+        ruby_stroke_weight: Some(Some(2.0)),
         ..Default::default()
     };
     // Legacy JSON loads as format 1, whose upgrade pins Keep Lines Together and Align Left
@@ -564,6 +572,7 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         start_at: Some(Some(7)),
         paragraph_kashida_width: Some(Some(0.5)),
         kinsoku: Some(Some(Default::default())),
+        list_tab: Some(Some(36.0)),
         keep_all_lines: Some(true),
         drop_cap_align_left: Some(true),
         ..Default::default()
@@ -578,9 +587,18 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(None),
         strikethrough_weight: Some(None),
         strikethrough_offset: Some(None),
+        kenten_size: Some(None),
+        kenten_fill_tint: Some(None),
+        kenten_stroke_tint: Some(None),
+        kenten_stroke_weight: Some(None),
+        ruby_font_size: Some(None),
+        ruby_fill_tint: Some(None),
+        ruby_stroke_tint: Some(None),
+        ruby_stroke_weight: Some(None),
         ..Default::default()
     };
-    let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+    let clear_para =
+        ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), list_tab: Some(None), ..Default::default() };
     let selected = if style_clear {
         std::sync::Arc::make_mut(&mut d.styles).paragraph.push(designcraft_doc::styles::ParagraphStyle {
             name: "Defaults".into(),
@@ -621,6 +639,15 @@ fn r7a_assert_nullable_defaults_survive(d: &Document) {
     assert_eq!(expected.0.paragraph_kashida_width, None);
     assert_eq!(expected.0.kinsoku, None);
     assert_eq!(expected.1.leading_aki, None);
+    assert_eq!(expected.0.list_tab, None);
+    assert_eq!(expected.1.kenten_size, None);
+    assert_eq!(expected.1.kenten_fill_tint, None);
+    assert_eq!(expected.1.kenten_stroke_tint, None);
+    assert_eq!(expected.1.kenten_stroke_weight, None);
+    assert_eq!(expected.1.ruby_font_size, None);
+    assert_eq!(expected.1.ruby_fill_tint, None);
+    assert_eq!(expected.1.ruby_stroke_tint, None);
+    assert_eq!(expected.1.ruby_stroke_weight, None);
     // Legacy JSON is format 1: its upgrade pins older defaults on the other styles, so only
     // the native ZIP compares as the whole document.
     for (bytes, native) in [(save(d).unwrap(), true), (serde_json::to_vec(d).unwrap(), false)] {

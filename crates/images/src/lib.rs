@@ -324,10 +324,22 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
+/// The largest decoded raster, in RGBA bytes: 256 Mpx, a 300 ppi scan of an A0 sheet fits.
+const MAX_RGBA_BYTES: u64 = 1 << 30;
+
+/// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
+pub fn too_large_to_decode(bytes: &[u8]) -> bool {
+    // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
+    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES)
+}
+
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
 /// applied, and CMYK goes through its own profile or the working CMYK space ([`colour`]).
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
@@ -520,6 +532,9 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     use tiff::tags::Tag;
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     let mut d = tiff_decoder(bytes)?;
     let has_alpha = match d.colortype().ok()? {
         tiff::ColorType::CMYK(8 | 16) => false,

@@ -258,21 +258,27 @@ impl DesignApp {
             }
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         } else if let Ok(result) = &r {
-            let warnings: Vec<&str> = result
+            // Each warning with the frame it is about (`warningItems`), if any.
+            let items = result.get("warningItems").and_then(Value::as_array);
+            let (warnings, lines): (Vec<&str>, Vec<Value>) = result
                 .get("warnings")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_str)
-                .filter(|warning| !warning.is_empty())
-                .collect();
+                .enumerate()
+                .filter_map(|(i, w)| Some((i, w.as_str()?)))
+                .filter(|(_, warning)| !warning.is_empty())
+                .map(|(i, w)| (w, json!({"text": w, "item": items.and_then(|a| a.get(i)).cloned().unwrap_or(Value::Null)})))
+                .unzip();
             if !warnings.is_empty() {
                 self.status(format!("{file}: {}", warnings.join("; ")));
                 // Find Font, offered for the document's missing fonts, stays up: the status line
                 // keeps the warnings.
                 if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
-                    self.ui.dialog =
-                        Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
+                    self.ui.dialog = Some(dialogs::Dialog::new(
+                        "alert",
+                        json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n"), "lines": lines}),
+                    ));
                 }
             }
         }
@@ -326,6 +332,7 @@ mod import_warning_tests {
         assert_eq!(dialog.id, "alert");
         assert_eq!(dialog.fields["title"], "Import Warnings");
         assert_eq!(dialog.fields["file"], file);
+        assert!(dialog.fields["lines"].as_array().unwrap().iter().all(|l| l["item"].is_null()), "missing parts name no frame");
         for part in ["Spreads/missing.xml", "Stories/missing.xml"] {
             assert!(dialog.fields["message"].as_str().unwrap().contains(part), "every missing part is named");
             assert!(app.ui.status.contains(part), "the status line retains the warning");

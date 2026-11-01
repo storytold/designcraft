@@ -4,8 +4,12 @@ use serde_json::Value;
 
 use crate::DesignApp;
 
+#[cfg(all(not(target_arch = "wasm32"), test))]
+use craft_update::updater::Status;
 #[cfg(not(target_arch = "wasm32"))]
-use craft_update::updater::{Action, Status, Updater};
+use craft_update::updater::{Action, Updater};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_update::{CheckResultDialog, CheckResultResponse};
 
 pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
@@ -18,8 +22,9 @@ pub(crate) struct Runtime {
     /// The context of the last frame, to wake the UI when a check is queued from a menu callback.
     #[cfg(not(target_arch = "wasm32"))]
     repaint: Option<egui::Context>,
+    /// The web build has no updater; its Help ▸ Check for Updates opens a window with a fixed message.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) manual_window_open: bool,
-    pub(crate) status_message: Option<String>,
 }
 
 impl Default for Runtime {
@@ -33,8 +38,8 @@ impl Default for Runtime {
             check_requested: false,
             #[cfg(not(target_arch = "wasm32"))]
             repaint: None,
+            #[cfg(target_arch = "wasm32")]
             manual_window_open: false,
-            status_message: None,
         }
     }
 }
@@ -59,7 +64,6 @@ pub(crate) fn check(app: &mut DesignApp) -> Result<Value, String> {
     #[cfg(target_arch = "wasm32")]
     {
         app.updates_rt.manual_window_open = true;
-        app.updates_rt.status_message = Some("Update check is not supported in the web browser.".into());
         Ok(Value::Null)
     }
 }
@@ -90,22 +94,16 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::None => {}
         }
-        // The window answers Help ▸ Check for Updates, so it follows the updater's status.
-        let rt = &mut app.updates_rt;
-        (rt.manual_window_open, rt.status_message) = match rt.updater.status() {
-            Status::Idle => (false, None),
-            Status::Checking => (true, Some(crate::i18n::tr(&app.ui.language, "Checking for updates…").to_string())),
-            Status::UpToDate => (
-                true,
-                Some(
-                    crate::i18n::tr(&app.ui.language, "DesignCraft {version} is currently the newest version available.")
-                        .replace("{version}", env!("CARGO_PKG_VERSION")),
-                ),
-            ),
-            Status::Failed(e) => (true, Some(crate::i18n::tr(&app.ui.language, "Could not check for updates:\n{error}").replace("{error}", e))),
-        };
+        // Help ▸ Check for Updates answers in the shared dialog, which follows the updater's status.
+        let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
+        match dialog.show(ctx, app.updates_rt.updater.status()) {
+            CheckResultResponse::None => {}
+            CheckResultResponse::Close => app.updates_rt.updater.dismiss_status(),
+            CheckResultResponse::CheckAgain => app.updates_rt.check_requested = true,
+        }
     }
 
+    #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
         let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
@@ -117,9 +115,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .show(ctx, |ui| {
-                if let Some(msg) = &app.updates_rt.status_message {
-                    ui.label(msg);
-                }
+                ui.label(crate::i18n::tr(&app.ui.language, "Update check is not supported in the web browser."));
                 ui.add_space(8.0);
                 if ui.button(ok_label).clicked() {
                     app.updates_rt.manual_window_open = false;
@@ -128,12 +124,6 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
         if !open {
             app.updates_rt.manual_window_open = false;
         }
-    }
-
-    // Closing the window dismisses the outcome it showed.
-    #[cfg(not(target_arch = "wasm32"))]
-    if !app.updates_rt.manual_window_open {
-        app.updates_rt.updater.dismiss_status();
     }
 }
 
@@ -145,6 +135,7 @@ mod tests {
     #[test]
     fn default_runtime_is_idle() {
         let rt = Runtime::default();
+        #[cfg(target_arch = "wasm32")]
         assert!(!rt.manual_window_open);
         #[cfg(not(target_arch = "wasm32"))]
         {

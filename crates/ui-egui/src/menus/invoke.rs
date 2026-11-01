@@ -66,6 +66,11 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::section_options::open(app);
         return;
     }
+    if params.is_null() && id == "layout.pages.insert" {
+        let cur = crate::canvas::current_page(app).unwrap_or(0);
+        crate::dialogs::open_insert_pages(app, cur);
+        return;
+    }
     if params.is_null() && id == "layout.createGuides" {
         crate::dialogs::open_create_guides(app);
         return;

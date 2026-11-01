@@ -168,7 +168,7 @@ fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
                     _ => String::new(),
                 };
                 match (depth, child.as_mut(), out.last_mut()) {
-                    (3, Some(c), _) => c.1.push_str(&s),
+                    (3.., Some(c), _) => c.1.push_str(&s),
                     (2, _, Some(el)) => el.text.push_str(&s),
                     _ => {}
                 }
@@ -516,6 +516,34 @@ mod tests {
         assert!(d.xml.tags.iter().all(|t| t.name != "a b><x"));
         s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
         assert_eq!(s.doc().unwrap().doc.xml.style_map.len(), 1);
+    }
+
+    #[test]
+    fn import_xml_keeps_text_of_inline_tags_in_mapped_paragraphs() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "See the glossary entry", "caret": false}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 8, "focus": 16})).unwrap();
+        s.execute("xml.tagText", &json!({"tag": "term"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<title>See the <term>glossary</term> entry</title>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
+    }
+
+    #[test]
+    fn parse_keeps_text_nested_below_a_child_element() {
+        let els = super::parse("<root><story><note>See the <term>x</term> y</note></story></root>").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].children, vec![("note".to_string(), "See the x y".to_string())]);
     }
 
     #[test]

@@ -176,6 +176,7 @@ impl Notes {
             page_name: f.page_name.clone(),
             section_marker: f.section_marker.clone(),
             page: f.page,
+            parent: f.parent,
             grid: None,
             frame_grid: None,
             left_page: f.left_page,

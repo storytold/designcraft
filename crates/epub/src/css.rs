@@ -40,23 +40,7 @@ pub(crate) fn char_css(doc: &Document, c: &CharProps, base_size: f64, generics: 
     let (weight, style) = css_weight_style(&c.font_style);
     let _ = write!(out, "font-weight: {weight}; font-style: {style}; ");
     let _ = write!(out, "font-size: {:.3}em; ", c.size / base_size);
-    if c.tracking != 0.0 {
-        let _ = write!(out, "letter-spacing: {:.3}em; ", c.tracking / 1000.0);
-    }
-    match c.capitalization {
-        designcraft_doc::Capitalization::AllCaps => out.push_str("text-transform: uppercase; "),
-        designcraft_doc::Capitalization::SmallCaps | designcraft_doc::Capitalization::OpenTypeAllSmallCaps => {
-            out.push_str("font-variant: small-caps; ")
-        }
-        _ => {}
-    }
-    // One declaration: a later `text-decoration` would replace the earlier one.
-    match (c.underline, c.strikethrough) {
-        (true, true) => out.push_str("text-decoration: underline line-through; "),
-        (true, false) => out.push_str("text-decoration: underline; "),
-        (false, true) => out.push_str("text-decoration: line-through; "),
-        (false, false) => {}
-    }
+    decor_css(c.tracking, c.capitalization, c.underline, c.strikethrough, out);
     if let Some(h) = hex(doc, &c.fill, c.fill_tint) {
         let _ = write!(out, "color: {h}; ");
     }
@@ -150,6 +134,7 @@ pub(crate) fn stylesheet_with(doc: &Document, generics: &BTreeMap<String, String
         if let Some(sz) = c.size {
             let _ = write!(rule, "font-size: {:.3}em; ", sz / base);
         }
+        attrs_decor_css(&st.char_style_attrs(&cs.name), &mut rule);
         let (tag, class) = export_mapping(st, &cs.name, true, &cc);
         if let Some(selector) = class_selector(tag, &class) {
             let _ = writeln!(css, "{selector} {{ {rule}}}");
@@ -158,7 +143,37 @@ pub(crate) fn stylesheet_with(doc: &Document, generics: &BTreeMap<String, String
     css
 }
 
-pub(crate) fn override_css(doc: &Document, o: &CharAttrs) -> String {
+/// Tracking, capitalization and line decorations of a style or override, as CSS declarations.
+fn attrs_decor_css(c: &CharAttrs, out: &mut String) {
+    decor_css(c.tracking.unwrap_or(0.0), c.capitalization.unwrap_or_default(), c.underline == Some(true), c.strikethrough == Some(true), out);
+}
+
+/// Tracking, capitalization and line decorations as CSS declarations; defaults write nothing.
+fn decor_css(tracking: f64, caps: designcraft_doc::Capitalization, underline: bool, strikethrough: bool, out: &mut String) {
+    if tracking != 0.0 {
+        let _ = write!(out, "letter-spacing: {:.3}em; ", tracking / 1000.0);
+    }
+    match caps {
+        designcraft_doc::Capitalization::AllCaps => out.push_str("text-transform: uppercase; "),
+        designcraft_doc::Capitalization::SmallCaps | designcraft_doc::Capitalization::OpenTypeAllSmallCaps => {
+            out.push_str("font-variant: small-caps; ")
+        }
+        _ => {}
+    }
+    // One declaration: a later `text-decoration` would replace the earlier one.
+    match (underline, strikethrough) {
+        (true, true) => out.push_str("text-decoration: underline line-through; "),
+        (true, false) => out.push_str("text-decoration: underline; "),
+        (false, true) => out.push_str("text-decoration: line-through; "),
+        (false, false) => {}
+    }
+}
+
+/// Inline CSS for the local override `o` of a run in character style `style`. Tracking, caps and
+/// line decorations are resolved against the style (and its Based On chain), so an override that
+/// sets only one of underline/strikethrough keeps the other, and one that clears a value the
+/// style sets writes the reset.
+pub(crate) fn override_css(doc: &Document, style: &str, o: &CharAttrs) -> String {
     let mut s = String::new();
     if let Some(f) = &o.font_style {
         let f = f.to_lowercase();
@@ -174,11 +189,23 @@ pub(crate) fn override_css(doc: &Document, o: &CharAttrs) -> String {
     {
         let _ = write!(s, "color: {h}; ");
     }
-    if o.underline == Some(true) {
-        s.push_str("text-decoration: underline; ");
+    let base = doc.styles.char_style_attrs(style);
+    let mut merged = base.clone();
+    merged.merge(o);
+    let tracking = if o.tracking.is_some() { merged.tracking.unwrap_or(0.0) } else { 0.0 };
+    let caps = if o.capitalization.is_some() { merged.capitalization.unwrap_or_default() } else { Default::default() };
+    let lines = o.underline.is_some() || o.strikethrough.is_some();
+    let (underline, strikethrough) = (lines && merged.underline == Some(true), lines && merged.strikethrough == Some(true));
+    if o.tracking.is_some() && tracking == 0.0 && base.tracking.is_some_and(|t| t != 0.0) {
+        s.push_str("letter-spacing: 0em; ");
     }
-    if o.capitalization == Some(designcraft_doc::Capitalization::AllCaps) {
-        s.push_str("text-transform: uppercase; ");
+    // The class rule's other caps property would still apply, so clear both before the new mode.
+    if o.capitalization.is_some() && caps != base.capitalization.unwrap_or_default() && base.capitalization.is_some_and(|c| c != Default::default()) {
+        s.push_str("text-transform: none; font-variant: normal; ");
+    }
+    decor_css(tracking, caps, underline, strikethrough, &mut s);
+    if lines && !underline && !strikethrough && (base.underline == Some(true) || base.strikethrough == Some(true)) {
+        s.push_str("text-decoration: none; ");
     }
     s.trim_end().to_string()
 }

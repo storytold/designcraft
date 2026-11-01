@@ -141,6 +141,9 @@ attr_set! {
         shading_on: bool = false,
         shading_color: String = "[Black]".into(),
         shading_tint: f32 = 0.2,
+        /// Overprint (InDesign's Paragraph Shading › Overprint): stored and kept through IDML;
+        /// PDF export doesn't overprint yet.
+        shading_overprint: bool = false,
         shading_offsets: [f64; 4] = [0.0; 4],
         /// Paragraph border: stroke weights (top, left, bottom, right), colour, and offsets past the
         /// text (top, left, bottom, right).
@@ -148,6 +151,8 @@ attr_set! {
         border_weights: [f64; 4] = [1.0; 4],
         border_color: String = "[Black]".into(),
         border_tint: f32 = 1.0,
+        /// Overprint the border's stroke (stored and kept through IDML, as `ParagraphBorderOverprint`).
+        border_overprint: bool = false,
         border_offsets: [f64; 4] = [0.0; 4],
         /// The border's stroke type (a document stroke style by name, or a built-in type), cap and
         /// join.
@@ -167,6 +172,8 @@ attr_set! {
         /// The colour between the dashes, dots or stripes of a border that isn't solid.
         border_gap_color: String = "[None]".into(),
         border_gap_tint: f32 = 1.0,
+        /// Overprint the border's gap colour (stored and kept through IDML).
+        border_gap_overprint: bool = false,
         /// Shading corners: top left, top right, bottom right, bottom left.
         shading_corners: [designcraft_geom::corners::Corner; 4] = [designcraft_geom::corners::Corner::default(); 4],
         shading_width: BoxWidth = BoxWidth::Column,
@@ -188,7 +195,7 @@ attr_set! {
         bullet_align: ListAlign = ListAlign::Left,
         number_align: ListAlign = ListAlign::Left,
         /// A tab stop for the text after the bullet or number, from the column's left edge.
-        list_tab: Option<f64> = None,
+        list_tab: Option<f64> = None => "deserialize_explicit_value",
         /// Restart Numbers at This Level After: a paragraph at a higher level (0 = any; otherwise
         /// that level) starts this level's numbering again.
         restart_numbers: bool = true,
@@ -222,8 +229,11 @@ impl ParaAttrs {
         let serde_json::Value::Object(patch) = value else { return self.set_json(key, value) };
         let mut merged = serde_json::to_value(rule).map_err(|e| format!("{key}: {e}"))?;
         let serde_json::Value::Object(fields) = &mut merged else { return Err(format!("{key}: not an object")) };
+        // Every field, those at their defaults (left out of the JSON) included.
+        const RULE_FIELDS: [&str; 12] =
+            ["on", "weight", "color", "tint", "columnWidth", "offset", "leftIndent", "rightIndent", "type", "gapColor", "gapTint", "keepInFrame"];
         for (k, v) in patch {
-            if !fields.contains_key(k) {
+            if !RULE_FIELDS.contains(&k.as_str()) {
                 return Err(format!("{key}: unknown rule field `{k}`"));
             }
             fields.insert(k.clone(), v.clone());

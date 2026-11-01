@@ -141,6 +141,8 @@ fn outer_glow_surrounds_the_object() {
     g.size = 12.0;
     g.color = "C=0 M=100 Y=0 K=0".into();
     g.opacity = 1.0;
+    // Normal, so the glow shows on the white page (screened, magenta on white is white).
+    g.mode = designcraft_color::BlendMode::Normal;
     let img = render(&d);
     golden("outer-glow", &img);
     for (x, y) in [(46, 80), (114, 80), (80, 46), (80, 114)] {
@@ -148,6 +150,49 @@ fn outer_glow_surrounds_the_object() {
         assert!(p[1] < 200 && p[0] > p[1] + 40, "magenta glow at {x},{y}: {p:?}");
     }
     assert_eq!(lum(img.pixel(10, 10)), WHITE);
+}
+
+/// An effect's blend mode works on what's behind it: a glow screened onto a dark backdrop
+/// lightens it in the glow's colour, where Normal paints the glow's colour over it.
+#[test]
+fn outer_glow_blends_with_its_mode() {
+    let glow = |mode| {
+        let mut d = doc();
+        rect_item(&mut d, Rect::new(0.0, 0.0, 160.0, 160.0), "C=100 M=90 Y=10 K=0");
+        let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+        let g = &mut d.item_mut(id).unwrap().effects.outer_glow;
+        g.on = true;
+        g.size = 12.0;
+        g.color = "C=0 M=0 Y=100 K=0".into();
+        g.opacity = 1.0;
+        g.mode = mode;
+        render(&d)
+    };
+    let screen = glow(designcraft_color::BlendMode::Screen);
+    let normal = glow(designcraft_color::BlendMode::Normal);
+    let backdrop = screen.pixel(10, 10);
+    let (s, n) = (screen.pixel(46, 80), normal.pixel(46, 80));
+    // Screen only lightens: every channel at least the backdrop's, and the navy shows through
+    // (blue stays high), where Normal paints yellow (blue drops).
+    assert!(s.iter().zip(backdrop).take(3).all(|(a, b)| *a + 2 >= b), "screen lightens: {s:?} over {backdrop:?}");
+    assert!(s[2] > n[2] + 25, "screen keeps the backdrop's blue: {s:?} vs normal {n:?}");
+}
+
+/// A screened glow over blank paper shows in its colour: it blends with the objects below, and
+/// the paper is not one of them.
+#[test]
+fn screened_outer_glow_shows_on_blank_paper() {
+    let mut d = doc();
+    let id = rect_item(&mut d, Rect::new(50.0, 50.0, 110.0, 110.0), "[Black]");
+    let g = &mut d.item_mut(id).unwrap().effects.outer_glow;
+    g.on = true;
+    g.size = 12.0;
+    g.color = "C=0 M=0 Y=100 K=0".into();
+    g.opacity = 1.0;
+    g.mode = designcraft_color::BlendMode::Screen;
+    let img = render(&d);
+    let p = img.pixel(46, 80);
+    assert!(p[2] < 200 && p[0] > p[2] + 40, "yellow glow beside the item: {p:?}");
 }
 
 #[test]

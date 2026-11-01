@@ -102,19 +102,25 @@ impl Renderer {
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity));
+            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity));
+            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity, d.mode));
         }
-        for (off, size, pct, color, opacity) in below {
+        for (off, size, pct, color, opacity, mode) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
+            // The effect's blend sees what's behind the object: a layer around the filtered one.
+            let mix = crate::blend_mode(mode).mix;
+            if mix != Mix::Normal {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+            }
             self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
@@ -128,6 +134,9 @@ impl Renderer {
                 }
                 c.pop_layer();
             });
+            if mix != Mix::Normal {
+                ctx.pop_layer();
+            }
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
@@ -221,7 +230,19 @@ impl Renderer {
             let s = &e.inner_shadow;
             let (sigma, choke) = split(s.size, s.choke);
             let off = offset(doc.light_angle(s.angle, s.global_light), s.distance);
-            self.inner_edge(ctx, f, reach, bp, xf, off, sigma, choke, color_of(&c, s.opacity.clamp(0.0, 1.0)), Mix::Normal, painted);
+            self.inner_edge(
+                ctx,
+                f,
+                reach,
+                bp,
+                xf,
+                off,
+                sigma,
+                choke,
+                color_of(&c, s.opacity.clamp(0.0, 1.0)),
+                crate::blend_mode(s.mode).mix,
+                painted,
+            );
         }
         // Inner glow: from the edges inwards (or out from the centre), screened over the object.
         if e.inner_glow.on

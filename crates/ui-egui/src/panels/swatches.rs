@@ -11,7 +11,18 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
-    let target = super::color_target(app);
+    // Another document (switched to, or moved to this one's place by a close) drops a rename in
+    // place: a swatch of the same name there isn't the one being renamed.
+    let uid = st.uid;
+    if ui.data(|d| d.get_temp::<u64>(egui::Id::unique(RENAME_DOC))) != Some(uid) {
+        ui.data_mut(|d| {
+            d.remove_temp::<(String, String)>(egui::Id::unique(RENAMING));
+            d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK));
+            d.insert_temp(egui::Id::unique(RENAME_DOC), uid);
+        });
+    }
+    // With nothing selected, the proxy, Tint field and highlighted row are those of new shapes.
+    let target = super::color_target_or_defaults(app);
     header(app, ui, &doc, target.as_ref());
     // The row of the colour in front of the proxy is highlighted.
     let fill_cur = target.map(|(fill, _, stroke, _)| if app.ui.stroke_front { stroke } else { fill });
@@ -154,6 +165,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Temp-data key of the swatch last clicked (Delete Swatch removes it).
 const PICKED: &str = "swatches_picked";
+/// Temp-data key of the swatch renamed in place and its name being typed.
+const RENAMING: &str = "swatches_renaming";
+/// Temp-data key of a click on the picked swatch's name: (swatch, time). Unless it turns into a
+/// double-click (Swatch Options), it starts renaming.
+const RENAME_CLICK: &str = "swatches_rename_click";
+/// Temp-data key of the document (its uid) the panel last showed: a rename belongs to it.
+const RENAME_DOC: &str = "swatches_rename_doc";
 
 /// The Swatches panel's top row, as InDesign's: a Fill/Stroke proxy (click: the other in front),
 /// Formatting Affects Container / Text, and the tint of the colour in front. `target` is
@@ -206,7 +224,8 @@ fn header(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Documen
         }
         ui.add_space(6.0);
         crate::widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Tint:"));
-        let tint = target.map(|(_, ft, _, st)| f64::from(if stroke_front { *st } else { *ft }) * 100.0);
+        // With nothing selected InDesign's field reads 100.
+        let tint = target.map_or(Some(100.0), |(_, ft, _, st)| Some(f64::from(if stroke_front { *st } else { *ft }) * 100.0));
         if let Some(v) = crate::widgets::number(ui, "swatches_tint", tint, "", 44.0, 0) {
             let _ = set_tint(app, v);
         }
@@ -242,6 +261,47 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
     })
 }
 
+/// The name field of a swatch being renamed in place, over `rect`; false when `sw` isn't. Enter or
+/// a click elsewhere renames it (`swatch.options`), Escape leaves it as it was.
+fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::swatch::Swatch, rect: egui::Rect) -> bool {
+    let key = egui::Id::unique(RENAMING);
+    let Some((name, mut text)) = ui.data(|d| d.get_temp::<(String, String)>(key)).filter(|(n, _)| *n == sw.name) else { return false };
+    let id = egui::Id::unique(("swatch_rename", &sw.name));
+    let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
+    let resp = ui.put(rect, edit);
+    if !resp.has_focus() && !resp.lost_focus() {
+        // The field opens with the name selected.
+        resp.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+            state.store(ui.ctx(), id);
+        }
+    }
+    if resp.lost_focus() {
+        ui.data_mut(|d| d.remove_temp::<(String, String)>(key));
+        let to = text.trim();
+        if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && !to.is_empty() && to != name {
+            match app.run("swatch.options", json!({"name": name, "to": to})) {
+                // Still picked under its new name, unless the click that ended the rename picked
+                // another swatch.
+                Ok(_) => ui.data_mut(|d| {
+                    if d.get_temp::<String>(egui::Id::unique(PICKED)).is_none_or(|p| p == name) {
+                        d.insert_temp(egui::Id::unique(PICKED), to.to_string());
+                    }
+                }),
+                Err(e) => {
+                    app.status_error("Swatch Options", e);
+                }
+            }
+        }
+    } else {
+        ui.data_mut(|d| d.insert_temp(key, (name, text)));
+    }
+    true
+}
+
 /// The swatch's chip following the pointer while the row is dragged.
 fn paint_drag_chip(ui: &egui::Ui, doc: &designcraft_doc::Document, name: &str, p: egui::Pos2) {
     let t = Tokens::get(ui.ctx());
@@ -252,20 +312,153 @@ fn paint_drag_chip(ui: &egui::Ui, doc: &designcraft_doc::Document, name: &str, p
     painter.rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
 }
 
-/// The type indicator shown at the right of a swatch row: colour mode (spot dot), gradient or tint.
-fn swatch_kind_label(lang: &str, value: &SwatchValue) -> String {
-    match value {
+/// What a Swatches panel row marks on its right, as InDesign's columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RowMarks {
+    /// [None], [Registration] and [Black] can't be edited ([Paper] can).
+    not_editable: bool,
+    kind: Option<ColorType>,
+    mode: Option<RowMode>,
+}
+
+/// The colour-mode column: the ink model, or the special swatches' own glyphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowMode {
+    Cmyk,
+    Rgb,
+    Gray,
+    None,
+    Registration,
+}
+
+fn row_marks(sw: &designcraft_color::swatch::Swatch) -> RowMarks {
+    use designcraft_color::Color;
+    // Paper's colour can be edited, whatever the swatch is called (as the options dialog allows).
+    let not_editable = sw.locked && !matches!(sw.value, SwatchValue::Paper { .. });
+    match &sw.value {
         SwatchValue::Color { color, color_type } => {
-            let m = match color {
-                designcraft_color::Color::Cmyk { .. } => "CMYK",
-                designcraft_color::Color::Rgb { .. } => "RGB",
-                designcraft_color::Color::Gray { .. } => crate::i18n::tr(lang, "Gray"),
+            let mode = match color {
+                Color::Cmyk { .. } => RowMode::Cmyk,
+                Color::Rgb { .. } => RowMode::Rgb,
+                Color::Gray { .. } => RowMode::Gray,
             };
-            format!("{}{}", if *color_type == ColorType::Spot { "● " } else { "" }, m)
+            RowMarks { not_editable, kind: Some(*color_type), mode: Some(mode) }
         }
-        SwatchValue::Gradient { .. } => "Gradient".into(),
-        SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
-        _ => String::new(),
+        SwatchValue::None => RowMarks { not_editable, kind: None, mode: Some(RowMode::None) },
+        SwatchValue::Registration => RowMarks { not_editable, kind: None, mode: Some(RowMode::Registration) },
+        _ => RowMarks { not_editable, kind: None, mode: None },
+    }
+}
+
+/// A row's accessible name: the swatch's name, then what its marks show (colour type, colour
+/// mode, that it can't be edited). [None] and [Registration] say their mode by name.
+fn row_label(lang: &str, name: &str, marks: RowMarks) -> String {
+    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    let mut parts = vec![name.to_string()];
+    match marks.kind {
+        Some(ColorType::Process) => parts.push(tr("Process")),
+        Some(ColorType::Spot) => parts.push(tr("Spot")),
+        None => {}
+    }
+    match marks.mode {
+        Some(RowMode::Cmyk) => parts.push(tr("CMYK")),
+        Some(RowMode::Rgb) => parts.push(tr("RGB")),
+        Some(RowMode::Gray) => parts.push(tr("Gray")),
+        Some(RowMode::None | RowMode::Registration) | None => {}
+    }
+    if marks.not_editable {
+        parts.push(tr("Cannot be edited"));
+    }
+    parts.join(", ")
+}
+
+/// Whether accessible name `label` is swatch `name`'s row (its name, then its marks).
+#[cfg(test)]
+pub(crate) fn names_swatch(label: &str, name: &str) -> bool {
+    label.strip_prefix(name).is_some_and(|rest| rest.is_empty() || rest.starts_with(", "))
+}
+
+/// A pencil with a stroke through it: the swatch can't be edited. Drawn in code.
+fn paint_not_editable(p: &egui::Painter, r: egui::Rect, ink: egui::Color32) {
+    // The pencil: its tip at the lower left, its body up to the right.
+    let tip = r.left_bottom() + vec2(1.5, -1.5);
+    let d = vec2(1.0, -1.0).normalized();
+    let n = vec2(d.y, -d.x) * 1.9;
+    let (b0, b1) = (tip + d * 3.4, tip + d * 12.5);
+    p.add(egui::Shape::convex_polygon(vec![tip, b0 + n, b0 - n], ink, egui::Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(vec![b0 + n, b1 + n, b1 - n, b0 - n], ink, egui::Stroke::NONE));
+    // The stroke through it, with a gap of the panel's colour around it so it reads on the body.
+    let (s0, s1) = (r.left_top() + vec2(1.5, 1.5), r.right_bottom() - vec2(1.5, 1.5));
+    p.line_segment([s0, s1], egui::Stroke::new(3.2, egui::Color32::from_black_alpha(140)));
+    p.line_segment([s0, s1], egui::Stroke::new(1.2, ink));
+}
+
+/// The colour type: a process colour is a halftone square, a spot colour a disc in a square.
+fn paint_color_type(p: &egui::Painter, r: egui::Rect, kind: ColorType, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(10.0, 10.0));
+    p.rect_filled(sq, 0.0, ink);
+    if kind == ColorType::Spot {
+        p.circle_filled(sq.center(), 3.2, egui::Color32::from_black_alpha(110));
+    } else {
+        // A fine halftone: a grey square with a light dot screen.
+        let dot = egui::Color32::from_black_alpha(70);
+        for i in 0..4u8 {
+            for j in 0..4u8 {
+                let o = if j % 2 == 0 { 1.5 } else { 2.6 };
+                p.circle_filled(sq.min + vec2(o + 2.2 * f32::from(i), 1.6 + 2.3 * f32::from(j)), 0.6, dot);
+            }
+        }
+    }
+}
+
+/// The colour mode: CMYK's four inks meeting in the middle, RGB's three primaries, a grey ramp,
+/// [None]'s red slash and [Registration]'s target.
+fn paint_mode(p: &egui::Painter, r: egui::Rect, mode: RowMode, ink: egui::Color32) {
+    let sq = egui::Rect::from_center_size(r.center(), vec2(11.0, 11.0));
+    let c = sq.center();
+    let rgb = egui::Color32::from_rgb;
+    match mode {
+        RowMode::Cmyk => {
+            let corners = [sq.left_top(), sq.right_top(), sq.right_bottom(), sq.left_bottom()];
+            // Top, right, bottom, left: magenta, yellow, black, cyan.
+            let inks = [rgb(236, 0, 140), rgb(255, 230, 0), rgb(30, 30, 30), rgb(0, 174, 239)];
+            for (k, colour) in inks.into_iter().enumerate() {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                p.add(egui::Shape::convex_polygon(vec![a, b, c], colour, egui::Stroke::NONE));
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Rgb => {
+            let w = sq.width() / 3.0;
+            for (k, colour) in [rgb(230, 40, 40), rgb(40, 190, 60), rgb(40, 90, 230)].into_iter().enumerate() {
+                let x = sq.min.x + w * k as f32;
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)), 0.0, colour);
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Gray => {
+            let w = sq.width() / 4.0;
+            for k in 0..4u8 {
+                let x = sq.min.x + w * f32::from(k);
+                p.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x, sq.min.y), egui::pos2(x + w, sq.max.y)),
+                    0.0,
+                    egui::Color32::from_gray(255 - 70 * k),
+                );
+            }
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::None => {
+            p.rect_filled(sq, 0.0, egui::Color32::WHITE);
+            p.line_segment([sq.left_bottom(), sq.right_top()], egui::Stroke::new(1.5, rgb(220, 30, 30)));
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Outside);
+        }
+        RowMode::Registration => {
+            p.rect_stroke(sq, 0.0, egui::Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+            p.circle_stroke(c, 3.0, egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(4.5, 0.0), c + vec2(4.5, 0.0)], egui::Stroke::new(1.0, ink));
+            p.line_segment([c - vec2(0.0, 4.5), c + vec2(0.0, 4.5)], egui::Stroke::new(1.0, ink));
+        }
     }
 }
 
@@ -283,7 +476,10 @@ fn swatch_row(
     let t = Tokens::get(ui.ctx());
     // Rows can be dragged onto the Gradient panel's ramp.
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &sw.name));
+    // What the row's marks show, for screen readers too: "Cyan, Process, CMYK".
+    let marks = row_marks(sw);
+    let spoken = row_label(&app.ui.language, &sw.name, marks);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &spoken));
     resp.dnd_set_drag_payload(SwatchDrag(sw.name.clone()));
     if resp.dragged()
         && let Some(p) = ui.ctx().pointer_interact_pos()
@@ -298,20 +494,60 @@ fn swatch_row(
     let (c, g) = crate::widgets::swatch_colors(doc, &sw.name, 1.0);
     let chip = egui::Rect::from_min_size(row.min + vec2(4.0 + indent, 3.0), vec2(16.0, 16.0));
     crate::widgets::paint_chip(ui.painter(), chip, c, g);
-    ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
-    // Type indicators: spot dot / process square, colour mode.
-    let kind = swatch_kind_label(&app.ui.language, &sw.value);
-    if sw.locked {
-        icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(row.max.x - 64.0, row.min.y + 4.0), vec2(13.0, 13.0)), "lock", t.text_dim);
+    let name_rect = egui::Rect::from_min_max(row.min + vec2(26.0 + indent, 1.0), egui::pos2(row.max.x - 72.0, row.max.y - 1.0));
+    if !rename_field(app, ui, sw, name_rect) {
+        ui.painter().text(row.min + vec2(28.0 + indent, 11.0), egui::Align2::LEFT_CENTER, &sw.name, egui::FontId::proportional(12.5), t.text);
     }
-    ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(10.5), t.text_dim);
+    // InDesign's columns on the right: not editable, colour type, colour mode.
+    let col = |k: f32| egui::Rect::from_min_size(egui::pos2(row.max.x - 19.0 - 18.0 * k, row.min.y + 4.5), vec2(13.0, 13.0));
+    if marks.not_editable {
+        paint_not_editable(ui.painter(), col(2.0), t.text_dim);
+    }
+    if let Some(kind) = marks.kind {
+        paint_color_type(ui.painter(), col(1.0), kind, t.text_dim);
+    }
+    if let Some(mode) = marks.mode {
+        paint_mode(ui.painter(), col(0.0), mode, t.text_dim);
+    }
+    let label = match &sw.value {
+        SwatchValue::Gradient { .. } => crate::i18n::tr(&app.ui.language, "Gradient").to_string(),
+        SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
+        _ => String::new(),
+    };
+    if !label.is_empty() {
+        ui.painter().text(row.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(10.5), t.text_dim);
+    }
     if resp.clicked() && !resp.double_clicked() {
+        // A click on the name of the swatch picked already renames it in place, as InDesign's
+        // (a slow double-click), unless it turns into a double-click.
+        let picked = ui.data(|d| d.get_temp::<String>(egui::Id::unique(PICKED))).is_some_and(|p| p == sw.name);
+        // A click on another swatch cancels a rename still waiting.
+        ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK)));
+        if picked && !sw.locked && resp.interact_pointer_pos().is_some_and(|p| name_rect.contains(p)) {
+            let now = ui.input(|i| i.time);
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique(RENAME_CLICK), (sw.name.clone(), now)));
+        }
         ui.data_mut(|d| d.insert_temp(egui::Id::unique(PICKED), sw.name.clone()));
         let _ = super::apply_swatch(app, app.ui.stroke_front, &sw.name, None);
     }
     // Double-click: Swatch Options (the first click has applied the swatch).
     if resp.double_clicked() {
+        ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK)));
         let _ = app.run("app.swatchOptionsDialog", json!({"name": sw.name}));
+    }
+    if let Some((name, at)) = ui.data(|d| d.get_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK))).filter(|(n, _)| *n == sw.name) {
+        let wait = ui.ctx().options(|o| o.input_options.max_double_click_delay);
+        if ui.data(|d| d.get_temp::<String>(egui::Id::unique(PICKED))).is_none_or(|p| p != name) {
+            // Another swatch picked since: no rename.
+            ui.data_mut(|d| d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK)));
+        } else if ui.input(|i| i.time) - at > wait {
+            ui.data_mut(|d| {
+                d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK));
+                d.insert_temp(egui::Id::unique(RENAMING), (name.clone(), name));
+            });
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
     }
     resp.context_menu(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Swatch Options…"))).clicked() {
@@ -360,7 +596,8 @@ pub enum ColorMode {
 /// swatch), the spectrum ramp, Add to Swatches. Edits apply unnamed colours (`object.color`).
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = super::color_target(app) else {
+    let target = super::color_target_or_defaults(app);
+    let Some((fill, fill_tint, stroke_sw, stroke_tint)) = target else {
         ui.label(crate::rtl::widget(
             ui,
             egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object or text to color its fill or stroke.")).color(t.text_dim),
@@ -418,6 +655,11 @@ pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     app.ui.stroke_front = stroke;
     ui.data_mut(|d| d.insert_temp(mode_id, mode));
+    // A gradient: the stop selected in the Gradient panel, as InDesign's Color panel shows it.
+    if !text && let Some(g) = designcraft_color::swatch::resolve_gradient(&doc.swatches, &name).cloned() {
+        gradient_stop(app, ui, &g, target, mode);
+        return;
+    }
     let sw = doc.swatch(&name).cloned();
     let Some(c) = doc.resolve_color(&name, 1.0) else {
         ui.label(crate::rtl::widget(
@@ -570,9 +812,82 @@ fn cmyk_ramp(k: usize, x: f32) -> egui::Color32 {
     egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
+/// The Color panel on a gradient fill (or stroke): the stop selected in the Gradient panel (the
+/// stop before a selected midpoint), in the panel's colour mode, as InDesign's. Its fields and the
+/// spectrum colour that stop.
+fn gradient_stop(app: &mut DesignApp, ui: &mut egui::Ui, g: &designcraft_color::Gradient, target: &str, mode: ColorMode) {
+    use designcraft_color::Color;
+    let t = Tokens::get(ui.ctx());
+    let sel: RampSel = ui.data(|d| d.get_temp(egui::Id::unique(GRAD_SEL))).unwrap_or(RampSel::Stop(0));
+    let i = match sel {
+        RampSel::Stop(i) | RampSel::Mid(i) => i,
+    }
+    .min(g.stops.len().saturating_sub(1));
+    let Some(stop) = g.stops.get(i) else { return };
+    let c = stop.color;
+    let pct = |v: f32| (v * 100.0).round();
+    let values = match c {
+        Color::Cmyk { c, m, y, k } => format!("C={} M={} Y={} K={}", pct(c), pct(m), pct(y), pct(k)),
+        Color::Gray { k } => format!("K={}", pct(k)),
+        Color::Rgb { .. } => {
+            let [r, g, b, _] = c.to_rgba8(1.0);
+            format!("R={r} G={g} B={b}")
+        }
+    };
+    ui.label(egui::RichText::new(values).size(11.0).color(t.text_dim));
+    let mut new = None;
+    match mode {
+        ColorMode::Cmyk => {
+            let mut v = c.to_cmyk();
+            let mut done = false;
+            for (k, label) in ["C", "M", "Y", "K"].iter().enumerate() {
+                done |= channel(ui, label, &mut v[k], 100.0, "%", |x| cmyk_ramp(k, x));
+            }
+            if done {
+                new = Some(Color::cmyk(v[0], v[1], v[2], v[3]));
+            }
+        }
+        ColorMode::Rgb => {
+            let mut v = c.to_rgb();
+            let mut done = false;
+            for (k, label) in ["R", "G", "B"].iter().enumerate() {
+                done |= channel(ui, label, &mut v[k], 255.0, "", |x| {
+                    let mut p = [0.0; 3];
+                    p[k] = x;
+                    egui::Color32::from_rgb((p[0] * 255.0) as u8, (p[1] * 255.0) as u8, (p[2] * 255.0) as u8)
+                });
+            }
+            if done {
+                new = Some(Color::rgb(v[0], v[1], v[2]));
+            }
+        }
+        ColorMode::Lab => {
+            let lab = c.to_lab();
+            ui.label(egui::RichText::new(format!("L {:.0}   a {:.0}   b {:.0}", lab.l, lab.a, lab.b)).color(t.text_dim));
+        }
+    }
+    if let Some([r, gr, b]) = spectrum_pick(ui, &app.ui.language) {
+        new = Some(Color::rgb(r, gr, b));
+    }
+    if let Some(c) = new {
+        let mut stops = stops_json(g);
+        set_stop_color(&mut stops, i, color_json(&c));
+        let _ = app.run("object.gradient", json!({"stops": stops, "target": target}));
+    }
+}
+
 /// The spectrum ramp: hue across, light to dark down; click to apply.
 fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
+    if let Some([r, g, b]) = spectrum_pick(ui, &app.ui.language) {
+        let text = super::colors_affect_text(app);
+        let _ = app.run("object.color", json!({"color": {"model": "rgb", "r": r, "g": g, "b": b}, "target": target, "text": text}));
+    }
+}
+
+/// The spectrum ramp; a click on it gives that colour (RGB, 0–1, in 1/255 steps).
+fn spectrum_pick(ui: &mut egui::Ui, language: &str) -> Option<[f32; 3]> {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr(language, "Color spectrum")));
     let at = |u: f32, v: f32| -> [f32; 3] {
         let c = egui::ecolor::Hsva::new(u, (v * 2.0).min(1.0), (2.0 - v * 2.0).min(1.0), 1.0).to_rgb();
         [c[0], c[1], c[2]]
@@ -588,14 +903,9 @@ fn spectrum(app: &mut DesignApp, ui: &mut egui::Ui, target: &str) {
             ui.painter().rect_filled(cell, 0.0, egui::Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8));
         }
     }
-    if resp.clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        let c = at(((p.x - r.min.x) / r.width()).clamp(0.0, 1.0), ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0));
-        let text = super::colors_affect_text(app);
-        let q = |v: f32| (v * 255.0).round() / 255.0;
-        let _ = app.run("object.color", json!({"color": {"model": "rgb", "r": q(c[0]), "g": q(c[1]), "b": q(c[2])}, "target": target, "text": text}));
-    }
+    let p = resp.interact_pointer_pos().filter(|_| resp.clicked())?;
+    let c = at(((p.x - r.min.x) / r.width()).clamp(0.0, 1.0), ((p.y - r.min.y) / r.height()).clamp(0.0, 1.0));
+    Some(c.map(|v| (v * 255.0).round() / 255.0))
 }
 
 /// A swatch dragged out of the Swatches panel (the Gradient panel's ramp takes it as a stop).
@@ -615,6 +925,105 @@ fn color_json(c: &designcraft_color::Color) -> serde_json::Value {
         Color::Cmyk { c, m, y, k } => json!({"model": "cmyk", "c": c, "m": m, "y": y, "k": k}),
         Color::Gray { k } => json!({"model": "gray", "k": k}),
         Color::Rgb { .. } => json!(c.to_hex()),
+    }
+}
+
+#[cfg(test)]
+mod stop_color_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_stop_colour_drops_the_stops_swatch() {
+        let mut stops = vec![json!({"location": 0, "color": "#000000", "swatch": "Gold"})];
+        set_stop_color(&mut stops, 0, json!("#ff0000"));
+        assert_eq!(stops[0]["color"], "#ff0000");
+        assert!(stops[0].get("swatch").is_none());
+    }
+}
+
+#[cfg(test)]
+mod color_panel_defaults_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn color_panel_with_no_selection_edits_future_shapes_without_recoloring_existing_ones() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let old =
+            designcraft_doc::ItemId(app.run("frame.create", json!({"rect":[72,72,200,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let original = app.session.active().unwrap().doc.item(old).unwrap().stroke.clone();
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        app.ui.stroke_front = true;
+        app.run("window.panel", json!({"panel":"color"})).unwrap();
+        let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+        assert!(h.query_by_label("Select an object or text to color its fill or stroke.").is_none());
+        let ramp = h.get_by_label("Color spectrum").rect();
+        crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() / 3.0, ramp.center().y));
+        let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
+        assert_ne!(defaults.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
+        h.state_mut().app.run("selection.set", json!({"ids":[old.0]})).unwrap();
+        assert_eq!(crate::panels::color_target(&mut h.state_mut().app).unwrap().2, original.swatch);
+        h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
+        let new = designcraft_doc::ItemId(
+            h.state_mut().app.run("frame.create", json!({"rect":[240,72,368,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(new).unwrap().stroke.swatch, defaults.stroke);
+        // Two undo steps: the new frame, then the spectrum click's default stroke.
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().app.session.active().unwrap().doc.settings.new_object.stroke, original.swatch);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().stroke, original);
+        // With the Fill box in front, the ramp sets the default fill instead.
+        let original_fill = h.state().app.session.active().unwrap().doc.item(old).unwrap().fill.clone();
+        h.state_mut().app.ui.stroke_front = false;
+        h.run_steps(2);
+        let ramp = h.get_by_label("Color spectrum").rect();
+        crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() * 2.0 / 3.0, ramp.center().y));
+        let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
+        assert_ne!(defaults.fill, original_fill.swatch);
+        assert_eq!(defaults.stroke, original.swatch, "the stroke default is left alone");
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(old).unwrap().fill, original_fill);
+    }
+
+    /// The Swatches panel shows the same defaults: its Tint field reads the default fill's tint,
+    /// and a click on a swatch row sets the default fill, not an existing frame's.
+    #[test]
+    fn swatches_panel_with_no_selection_shows_and_edits_future_shape_colors() {
+        use egui::accesskit::Role;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let old =
+            designcraft_doc::ItemId(app.run("frame.create", json!({"rect":[72,72,200,200],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let original = app.session.active().unwrap().doc.item(old).unwrap().fill.clone();
+        app.run("selection.set", json!({"ids":[]})).unwrap();
+        app.run("object.fill", json!({"swatch": "[Black]", "tint": 0.4})).unwrap();
+        app.ui.stroke_front = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(320.0, 480.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                // The panel's fonts are installed on the first frame and used from the next.
+                let id = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let fields = h.query_all_by(|n| matches!(n.role(), Role::SpinButton | Role::TextInput)).filter_map(|n| n.value()).collect::<Vec<_>>();
+        assert!(fields.iter().any(|v| v.starts_with("40")), "the Tint field shows the default fill's 40 %: {fields:?}");
+        let row = h.get_by_label("[Paper]").rect().center();
+        h.hover_at(row);
+        h.drag_at(row);
+        h.drop_at(row);
+        h.run_steps(3);
+        let defaults = h.state().session.active().unwrap().doc.settings.new_object.clone();
+        assert_eq!((defaults.fill.as_str(), defaults.fill_tint), ("[Paper]", 1.0));
+        assert_eq!(h.state().session.active().unwrap().doc.item(old).unwrap().fill, original);
     }
 }
 
@@ -658,6 +1067,10 @@ fn thumbnail(p: &egui::Painter, r: egui::Rect, g: &designcraft_color::Gradient, 
     }
     p.rect_stroke(r, 0.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Outside);
 }
+
+/// Temp-data key of what's selected on the Gradient panel's ramp ([`RampSel`]): the Color panel
+/// edits that stop.
+pub(super) const GRAD_SEL: &str = "grad_sel";
 
 /// The gradient across `ramp`, sampled in bands.
 fn paint_ramp(painter: &egui::Painter, ramp: egui::Rect, g: &designcraft_color::Gradient) {
@@ -717,7 +1130,7 @@ fn gradient_type_combo(ui: &mut egui::Ui, lang: &str, g: &designcraft_color::Gra
 
 /// What's selected on the ramp: a stop, or the midpoint after a stop.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum RampSel {
+pub(super) enum RampSel {
     Stop(usize),
     Mid(usize),
 }
@@ -735,6 +1148,14 @@ fn live_drag(d: Option<RampDrag>, n: usize) -> Option<RampDrag> {
 }
 
 /// Sets `key` of stop `i` in `object.gradient` stops; nothing if there's no such stop.
+/// A new colour replaces the stop's swatch (`object.gradient` gives `swatch` precedence).
+fn set_stop_color(stops: &mut [serde_json::Value], i: usize, color: serde_json::Value) {
+    if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
+        o.remove("swatch");
+    }
+    set_stop(stops, i, "color", color);
+}
+
 fn set_stop(stops: &mut [serde_json::Value], i: usize, key: &str, v: serde_json::Value) {
     if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
         o.insert(key.to_string(), v);
@@ -760,7 +1181,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let is_gradient = cur.is_some();
     let g = cur.unwrap_or_default();
     let radial = g.kind == designcraft_color::GradientKind::Radial;
-    let sel_id = egui::Id::unique("grad_sel");
+    let sel_id = egui::Id::unique(GRAD_SEL);
     let drag_id = egui::Id::unique("grad_drag");
     let mut sel: RampSel = ui.data(|d| d.get_temp(sel_id)).unwrap_or(RampSel::Stop(0));
     let last = g.stops.len().saturating_sub(1);
@@ -924,11 +1345,7 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let mut rgb = [(r * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8];
                     if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
                         let mut stops = stops_json(&g);
-                        // A picked color replaces the stop's swatch.
-                        if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
-                            o.remove("swatch");
-                        }
-                        set_stop(&mut stops, i, "color", json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
+                        set_stop_color(&mut stops, i, json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
                         send = Some(json!({"stops": stops}));
                     }
                 });
@@ -1138,7 +1555,7 @@ mod gradient_panel_tests {
         // The thumbnail sits left of the Type row.
         let ty = h.get_by_label("Type:").rect();
         let from = egui::pos2(ty.min.x - 21.0, ty.min.y + 12.0);
-        let to = h.get_by_label(label).rect().center();
+        let to = h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, label))).rect().center();
         h.event(Event::PointerMoved(from));
         h.step();
         h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -1250,14 +1667,14 @@ mod swatches_header_tests {
         let mut h = harness(app);
         h.run_steps(3);
         // Fill in front: a swatch is the fill.
-        h.get_by_label("C=0 M=100 Y=0 K=0").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "C=0 M=100 Y=0 K=0"))).click();
         h.run_steps(2);
         assert_eq!(items(h.state())[0].fill.swatch, "C=0 M=100 Y=0 K=0");
         // The proxy brings the stroke to the front; the next swatch is the stroke.
         h.get_by_label("Fill").click();
         h.run_steps(2);
         assert!(h.state().ui.stroke_front);
-        h.get_by_label("C=100 M=0 Y=0 K=0").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "C=100 M=0 Y=0 K=0"))).click();
         h.run_steps(2);
         let it = &items(h.state())[0];
         assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str()), ("C=0 M=100 Y=0 K=0", "C=100 M=0 Y=0 K=0"));
@@ -1269,11 +1686,155 @@ mod swatches_header_tests {
         h.run_steps(2);
         assert!(!h.state().ui.formatting_affects_text);
         // Delete Swatch removes the swatch last clicked.
-        h.get_by_label("Brand").click();
+        h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, "Brand"))).click();
         h.run_steps(2);
         h.get_by_label("Delete Swatch").click();
         h.run_steps(2);
         assert!(h.state().session.doc().unwrap().doc.swatch("Brand").is_none());
+    }
+
+    /// A rename in place belongs to its document: with another one active, a swatch of the same
+    /// name there gets no field, and nothing is renamed.
+    #[test]
+    fn a_rename_in_place_ends_with_its_document() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let color = json!({"color": {"c": 14, "m": 8, "y": 95, "k": 0}});
+        let name = app.run("swatch.create", color.clone()).unwrap()["name"].as_str().unwrap().to_string();
+        let mut h = Harness::builder().with_size(vec2(300.0, 520.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("rename_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                super::show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let fields = h.query_all_by_role(egui::accesskit::Role::TextInput).count();
+        let renaming = egui::Id::unique(super::RENAMING);
+        h.ctx.data_mut(|d| d.insert_temp(renaming, (name.clone(), "Typed".to_string())));
+        h.run_steps(2);
+        assert!(h.query_all_by_role(egui::accesskit::Role::TextInput).count() > fields, "the name is a field");
+        // Another document with a swatch of the same name.
+        h.state_mut().run("file.new", json!({})).unwrap();
+        h.state_mut().run("swatch.create", color).unwrap();
+        h.run_steps(3);
+        assert!(h.ctx.data(|d| d.get_temp::<(String, String)>(renaming)).is_none(), "the rename is dropped");
+        let doc = &h.state().session.active().unwrap().doc;
+        assert!(doc.swatch(&name).is_some() && doc.swatch("Typed").is_none());
+    }
+
+    /// The course's chapter 23: a swatch added as "C=14 M=8 Y=95 K=0" is renamed in the panel by
+    /// clicking it, then clicking its name again: the name becomes a field, and Enter renames the
+    /// swatch (and what uses it). A double-click still opens Swatch Options, Escape keeps the name,
+    /// and [Black] can't be renamed.
+    #[test]
+    fn a_second_click_on_the_picked_swatch_renames_it_in_place() {
+        use egui::accesskit::Role;
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "unassigned"})).unwrap();
+        let added = app.run("swatch.create", json!({"color": {"c": 14, "m": 8, "y": 95, "k": 0}})).unwrap()["name"].as_str().unwrap().to_string();
+        assert_eq!(added, "C=14 M=8 Y=95 K=0");
+        // Frames 50 ms apart: the double-click time is six of them.
+        let mut h = Harness::builder().with_size(vec2(300.0, 520.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // The panel's own fields (Tint); renaming adds one.
+        let fields = h.query_all_by_role(Role::TextInput).count();
+        let field = |h: &Harness<'_, DesignApp>| h.query_all_by_role(Role::TextInput).count() > fields;
+        let has = |h: &Harness<'_, DesignApp>, n: &str| h.state().session.doc().unwrap().doc.swatch(n).is_some();
+        let name_at = |h: &Harness<'_, DesignApp>, name: &str| {
+            let row = h.query_all_by(|n| n.label().is_some_and(|l| names_swatch(&l, name))).next().expect("the swatch's row");
+            row.rect().left_center() + vec2(40.0, 0.0)
+        };
+        let click = |h: &mut Harness<'_, DesignApp>, at: egui::Pos2| {
+            h.hover_at(at);
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+        };
+        // A click on the name: applied, and picked.
+        let at = name_at(&h, &added);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert_eq!(items(h.state())[0].fill.swatch, added);
+        assert!(!field(&h));
+        // Again, after the double-click time: the name is a field, with the name selected.
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(field(&h), "the name is a field");
+        h.event(egui::Event::Text("Lemon Yellow Sun".into()));
+        h.step();
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(has(&h, "Lemon Yellow Sun") && !has(&h, &added));
+        assert_eq!(items(h.state())[0].fill.swatch, "Lemon Yellow Sun", "what uses it follows");
+        // Escape keeps the name.
+        let at = name_at(&h, "Lemon Yellow Sun");
+        h.run_steps(10);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(field(&h));
+        h.event(egui::Event::Text("Sour".into()));
+        h.step();
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(has(&h, "Lemon Yellow Sun") && !field(&h));
+        // A double-click on it opens Swatch Options, and doesn't rename.
+        h.run_steps(20);
+        click(&mut h, at);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("swatchOptions"));
+        assert!(!field(&h), "no rename");
+        // [Black] keeps its name.
+        h.state_mut().ui.dialog = None;
+        h.run_steps(20);
+        let at = name_at(&h, "[Black]");
+        click(&mut h, at);
+        h.run_steps(10);
+        click(&mut h, at);
+        h.run_steps(10);
+        assert!(!field(&h));
+        // A click on another swatch while the rename waits: that one is picked, and nothing
+        // renames.
+        let picked = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<String>(egui::Id::unique(super::PICKED)));
+        let (lemon, paper) = (name_at(&h, "Lemon Yellow Sun"), name_at(&h, "[Paper]"));
+        h.run_steps(20);
+        click(&mut h, lemon);
+        h.run_steps(10);
+        click(&mut h, lemon);
+        click(&mut h, paper);
+        h.run_steps(10);
+        assert!(!field(&h), "the waiting rename is cancelled");
+        assert_eq!(picked(&h).as_deref(), Some("[Paper]"));
+        // Renaming, a click on another swatch renames, and picks that one (for Delete Swatch).
+        click(&mut h, lemon);
+        h.run_steps(10);
+        click(&mut h, lemon);
+        h.run_steps(10);
+        assert!(field(&h));
+        h.event(egui::Event::Text("Lemon".into()));
+        h.step();
+        click(&mut h, paper);
+        h.run_steps(5);
+        assert!(has(&h, "Lemon") && !field(&h));
+        assert_eq!(picked(&h).as_deref(), Some("[Paper]"), "the swatch clicked stays picked");
     }
 
     #[test]
@@ -1300,5 +1861,56 @@ mod swatches_header_tests {
         let it = items(h.state());
         assert_eq!((it[0].fill.swatch.as_str(), it[0].fill.tint), ("C=100 M=0 Y=0 K=0", 0.4));
         assert_eq!((it[1].fill.swatch.as_str(), it[1].fill.tint), ("C=0 M=100 Y=0 K=0", 0.4));
+    }
+}
+
+#[cfg(test)]
+mod row_mark_tests {
+    use designcraft_color::swatch::{Swatch, default_swatches};
+    use designcraft_color::{Color, ColorType, SwatchValue};
+
+    use super::{RowMarks, RowMode, row_label, row_marks};
+
+    /// A row's accessible name says what its marks show.
+    #[test]
+    fn swatch_rows_say_their_marks() {
+        let all = default_swatches();
+        let label = |name: &str| row_label("", name, row_marks(all.iter().find(|s| s.name == name).unwrap()));
+        assert_eq!(label("[Black]"), "[Black], Process, CMYK, Cannot be edited");
+        assert_eq!(label("[None]"), "[None], Cannot be edited");
+        assert_eq!(label("[Paper]"), "[Paper]");
+        let cyan = all.iter().find(|s| matches!(&s.value, SwatchValue::Color { .. }) && !s.locked).unwrap();
+        let spot = Swatch {
+            name: "Pantone".into(),
+            value: SwatchValue::Color { color: Color::Rgb { r: 1.0, g: 0.0, b: 0.0 }, color_type: ColorType::Spot },
+            locked: false,
+            ..cyan.clone()
+        };
+        assert_eq!(row_label("it", &spot.name, row_marks(&spot)), "Pantone, Tinta piatta, RGB");
+    }
+
+    /// The Swatches panel's right-hand columns, as InDesign's: [None], [Registration] and [Black]
+    /// can't be edited, [Paper] can; colours show their type and mode.
+    #[test]
+    fn swatch_rows_mark_type_mode_and_whether_they_can_be_edited() {
+        let all = default_swatches();
+        let marks = |name: &str| row_marks(all.iter().find(|s| s.name == name).unwrap());
+        assert_eq!(marks("[None]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::None) });
+        assert_eq!(marks("[Registration]"), RowMarks { not_editable: true, kind: None, mode: Some(RowMode::Registration) });
+        assert_eq!(marks("[Paper]"), RowMarks { not_editable: false, kind: None, mode: None });
+        assert_eq!(marks("[Black]"), RowMarks { not_editable: true, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let cyan = all.iter().find(|s| matches!(&s.value, SwatchValue::Color { .. }) && !s.locked).unwrap();
+        assert_eq!(row_marks(cyan), RowMarks { not_editable: false, kind: Some(ColorType::Process), mode: Some(RowMode::Cmyk) });
+        let spot = Swatch {
+            name: "PANTONE".into(),
+            value: SwatchValue::Color { color: Color::Rgb { r: 1.0, g: 0.0, b: 0.0 }, color_type: ColorType::Spot },
+            locked: false,
+            ..cyan.clone()
+        };
+        assert_eq!(row_marks(&spot), RowMarks { not_editable: false, kind: Some(ColorType::Spot), mode: Some(RowMode::Rgb) });
+        // A locked Paper swatch under another name (a document from elsewhere) is still editable.
+        let paper = all.iter().find(|s| s.name == designcraft_color::swatch::PAPER).unwrap();
+        let renamed = designcraft_color::swatch::Swatch { name: "Papier".into(), ..paper.clone() };
+        assert!(!row_marks(&renamed).not_editable);
     }
 }

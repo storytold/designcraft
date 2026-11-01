@@ -16,7 +16,7 @@ mod frame;
 mod gradient;
 pub mod layout;
 mod nav;
-pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX};
+pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX, PLACE_DRAG_MIN};
 mod pen;
 mod pencil;
 pub mod select;
@@ -232,6 +232,8 @@ pub struct ToolContext<'a> {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
     pub stroke_in_front: bool,
+    /// Natural size, in points, of the graphic loaded in the place cursor.
+    pub loaded: Option<(f64, f64)>,
 }
 
 impl ToolContext<'_> {

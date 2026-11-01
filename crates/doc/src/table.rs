@@ -156,6 +156,19 @@ mod tests {
         assert_eq!(right.selected_owners(CellRange::new(1, 0, 1, 1)), vec![(0, 1), (1, 0)], "owner order, not encounter order");
     }
 
+    /// A short last row's padding cells take the converted text's paragraph and character format,
+    /// like the cells with text.
+    #[test]
+    fn from_strings_formats_the_padding_cells_too() {
+        let data = vec![vec!["a".to_string(), "b".to_string()], vec!["c".to_string()]];
+        let para = ParaFormat { style: "Body".into(), ..Default::default() };
+        let fmt = CharFormat { style: "Strong".into(), ..Default::default() };
+        let t = Table::from_strings(1, &data, 200.0, &para, &fmt);
+        let pad = &t.cell(1, 1).unwrap().text;
+        assert_eq!((pad.paras[0].style.as_str(), pad.chars[0].format.style.as_str()), ("Body", "Strong"));
+        assert_eq!(pad.text, "");
+    }
+
     #[test]
     fn insert_table_gets_own_paragraph() {
         let mut s = story("before after");

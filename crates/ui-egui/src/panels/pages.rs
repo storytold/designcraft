@@ -204,6 +204,25 @@ const THUMB_H: f32 = 37.0;
 /// Parent rows.
 const ROW_H: f32 = 29.0;
 
+/// A spread's label under its thumbnails, as InDesign's: one name for a single page, "2–3" for
+/// pages numbered on in one section (an en dash), and the names apart ("2, 1", "8, A") when a section starts
+/// inside the spread.
+pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, first: usize, n: usize) -> String {
+    let names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    let starts = |abs: usize| abs == 0 || doc.sections.iter().any(|s| s.start == abs);
+    match (names.first(), names.last()) {
+        (Some(a), Some(b)) if names.len() > 1 => {
+            if !app.session.prefs.absolute_page_numbers && (first + 1..first + n).any(starts) {
+                names.join(", ")
+            } else {
+                format!("{a}\u{2013}{b}")
+            }
+        }
+        (Some(a), _) => a.clone(),
+        _ => String::new(),
+    }
+}
+
 /// A row of the Pages panel's parents list: [None] (`parent` = `None`) or a parent.
 struct ParentRow {
     label: String,
@@ -263,6 +282,7 @@ fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &Pare
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
+    let uid = st.uid;
     let doc = st.doc.clone();
     let editing_parents = st.editing_parents;
     let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
@@ -407,6 +427,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // ---- Document spreads.
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let cur_spread = doc.page_loc(cur).map(|l| l.0);
+    let followed_id = egui::Id::unique("pages_panel_followed");
     let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
     let tallest = doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.height)).fold(doc.settings.page_height, f64::max).max(1.0);
     let th = opts.page_size.page_h();
@@ -428,22 +449,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                     let spine = sp.spine_x() as f32;
                     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0 + row_h + 22.0), Sense::hover());
                     let top = row.min.y + 8.0;
-                    // Marker above the current spread.
                     if cur_spread == Some(si) && !editing_parents {
-                        let c = egui::pos2(row.min.x + center, row.min.y + 3.5);
-                        ui.painter().add(egui::Shape::convex_polygon(
-                            vec![c + vec2(-5.0, -3.0), c + vec2(5.0, -3.0), c + vec2(0.0, 3.0)],
-                            t.icon,
-                            Stroke::NONE,
-                        ));
+                        let key = (uid, cur);
+                        if ui.data(|d| d.get_temp::<(u64, usize)>(followed_id)) != Some(key) {
+                            ui.scroll_to_rect(row, None);
+                            ui.data_mut(|d| d.insert_temp(followed_id, key));
+                        }
                     }
-                    // Pages narrower than their numbers ("10" under an Extra Small page) are labelled
-                    // once for the spread.
-                    let narrow = sp.pages.len() > 1
-                        && (first..first + sp.pages.len()).zip(&sp.pages).any(|(abs, p)| {
-                            let w = ui.painter().layout_no_wrap(app.session.page_label(abs), crate::theme::semibold(11.0), Color32::WHITE).size().x;
-                            (p.width as f32 * scale) < w + 6.0
-                        });
                     for (pi, p) in sp.pages.iter().enumerate() {
                         let abs = first + pi;
                         let x0 = row.min.x + center + (p.x as f32 - spine) * scale;
@@ -464,6 +476,35 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             }
                         }
                         ui.painter().rect_stroke(pr, 0.0, Stroke::new(0.5, Color32::from_gray(0x4a)), StrokeKind::Outside);
+                        if abs == 0 || doc.sections.iter().any(|s| s.start == abs) {
+                            let c = egui::pos2(pr.center().x, row.min.y + 4.0);
+                            ui.painter().add(egui::Shape::convex_polygon(
+                                vec![c + vec2(-4.5, -3.0), c + vec2(4.5, -3.0), c + vec2(0.0, 3.0)],
+                                t.icon,
+                                Stroke::NONE,
+                            ));
+                            let marker =
+                                ui.interact(egui::Rect::from_center_size(c, vec2(12.0, 8.0)), ui.scope_id().with(("section", abs)), Sense::click());
+                            let label = format!(
+                                "{}: {}",
+                                crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
+                                app.session.page_label(abs)
+                            );
+                            marker.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+                            // A double click, or the keyboard or a screen reader activating it (a
+                            // single pointer click only selects, as on a page).
+                            let activated = marker.double_clicked() || marker.clicked() && !marker.clicked_by(egui::PointerButton::Primary);
+                            if activated {
+                                if editing_parents {
+                                    let _ = app.run("layout.parents.edit", json!({"on": false}));
+                                    if let Some(view) = app.view_mut() {
+                                        view.fitted = false;
+                                    }
+                                }
+                                crate::canvas::go_to_page(app, abs);
+                                crate::menus::activate(app, "layout.section", &serde_json::Value::Null);
+                            }
+                        }
                         // Parent prefix in the outer top corner (black on white).
                         if let Some(pid) = p.parent
                             && let Some(pp) = doc.parents.iter().find(|x| x.id == pid)
@@ -501,33 +542,29 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                             crate::canvas::go_to_page(app, abs);
                         }
                         resp.context_menu(|ui| page_menu(app, ui, &doc, abs, si));
-                        // Page number under the page: white on a blue badge when selected. Pages too
-                        // narrow for their numbers share one label under the spread (below).
-                        if narrow {
-                            continue;
-                        }
-                        let name = app.session.page_label(abs);
-                        let g = ui.painter().layout_no_wrap(name, crate::theme::semibold(11.0), Color32::WHITE);
-                        let c = egui::pos2(pr.center().x, pr.max.y + 11.0);
-                        if selected {
-                            let br = egui::Rect::from_center_size(c, vec2(g.size().x.max(7.0) + 7.0, 12.5));
-                            ui.painter().rect_filled(br, 0.0, BADGE);
-                        }
-                        ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
                     }
-                    if narrow {
-                        let names: Vec<String> = (first..first + sp.pages.len()).map(|abs| app.session.page_label(abs)).collect();
-                        let label = match (names.first(), names.last()) {
-                            (Some(a), Some(b)) if names.len() > 1 => format!("{a}\u{2013}{b}"),
-                            (Some(a), _) => a.clone(),
-                            _ => String::new(),
-                        };
-                        let g = ui.painter().layout_no_wrap(label, crate::theme::semibold(11.0), Color32::WHITE);
-                        let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
-                        if cur_spread == Some(si) && !editing_parents {
-                            ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5)), 0.0, BADGE);
+                    let label = spread_label(app, &doc, first, sp.pages.len());
+                    // White on the badge; the theme's text colour elsewhere, so it reads on a light panel.
+                    let badge = cur_spread == Some(si) && !editing_parents;
+                    let ink = if badge { Color32::WHITE } else { t.text_strong };
+                    let g = ui.painter().layout_no_wrap(label.clone(), crate::theme::semibold(11.0), ink);
+                    let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
+                    let br = egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5));
+                    if badge {
+                        ui.painter().rect_filled(br, 0.0, BADGE);
+                    }
+                    ui.painter().galley(c - g.size() / 2.0, g, ink);
+                    let lr = ui.interact(br, ui.scope_id().with(("spread_label", si)), Sense::click());
+                    // A click goes to the spread, so assistive technology hears a button.
+                    lr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+                    if lr.clicked() {
+                        if editing_parents {
+                            let _ = app.run("layout.parents.edit", json!({"on": false}));
+                            if let Some(view) = app.view_mut() {
+                                view.fitted = false;
+                            }
                         }
-                        ui.painter().galley(c - g.size() / 2.0, g, Color32::WHITE);
+                        crate::canvas::go_to_page(app, first);
                     }
                 }
                 // Right-click on the empty part of the panel: the short menu.
@@ -646,7 +683,7 @@ fn empty_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let item = |ui: &mut egui::Ui, label: &str| ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).clicked();
     if item(ui, "Insert Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.insert", json!({"after": cur, "count": 1})));
+        crate::dialogs::open_insert_pages(app, cur);
         ui.close();
     }
     if item(ui, "Move Pages…") {
@@ -680,7 +717,7 @@ fn page_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Docu
     let item = |ui: &mut egui::Ui, label: &str| ui.button(crate::rtl::widget(ui, tr(label))).clicked();
     // InDesign's order: pages, parents, layouts and numbering, shuffling.
     if item(ui, "Insert Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.insert", json!({"after": abs, "count": 1})));
+        crate::dialogs::open_insert_pages(app, abs);
         ui.close();
     }
     if item(ui, "Move Pages…") {
@@ -780,3 +817,140 @@ pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod spread_label_tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use serde_json::json;
+
+    use super::*;
+
+    /// Section-marker activation targets its page and leaves parent editing without editing the document.
+    #[test]
+    fn double_clicking_a_section_marker_opens_that_pages_numbering_options() {
+        let mut app = app();
+        app.run("layout.section", json!({"page": 1, "startNumber": 1, "style": "lowerRoman"})).unwrap();
+        app.run("layout.section", json!({"page": 3, "startNumber": 1, "style": "arabic"})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
+        app.run("layout.parents.edit", json!({"on": true})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("section_marker_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let pos = h.get_by_label("Numbering & Section Options: 1").rect().center();
+        let before = h.state().session.doc().unwrap().doc.clone();
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerMoved(pos));
+                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                h.run_steps(1);
+            }
+        }
+        let dialog = h.state().ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.id, "numberingSection");
+        assert_eq!(dialog.fields.get("page"), Some(&json!(3)));
+        assert!(!h.state().session.doc().unwrap().editing_parents);
+        assert!(std::sync::Arc::ptr_eq(&h.state().session.doc().unwrap().doc, &before), "opening options does not edit the section");
+    }
+
+    #[test]
+    fn a_section_marker_opens_its_options_from_the_keyboard_but_not_on_one_click() {
+        let mut app = app();
+        app.run("layout.section", json!({"page": 3, "startNumber": 5})).unwrap();
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
+        let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("section_marker_key_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h.get_by_label("Numbering & Section Options: 5").click();
+        h.run_steps(2);
+        assert!(h.state().ui.dialog.is_none(), "one pointer click doesn't open the options");
+        h.run_steps(30);
+        h.get_by_label("Numbering & Section Options: 5").click_accesskit();
+        h.run_steps(2);
+        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("numberingSection"));
+    }
+
+    /// Create a facing-page document for section navigation tests.
+    fn app() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"facingPages": true, "pages": 9})).unwrap();
+        app
+    }
+
+    /// Read the label displayed for each document spread.
+    fn labels(app: &DesignApp) -> Vec<String> {
+        let doc = app.session.doc().unwrap().doc.clone();
+        (0..doc.spreads.len()).map(|si| spread_label(app, &doc, doc.first_page_of_spread(si), doc.spreads[si].pages.len())).collect()
+    }
+
+    /// Section boundaries split a spread label instead of implying continuous numbering.
+    #[test]
+    fn spreads_are_labelled_as_indesign_labels_them() {
+        // Chris Nielsen's "Numbering Page Sections": sections starting at 1 on pages 3 and 7,
+        // the second in letters, label their spreads "2, 1" and "4, A".
+        let mut app = app();
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        app.run("layout.section", json!({"page": 7, "startNumber": 1, "style": "upperLetters"})).unwrap();
+        assert_eq!(labels(&app), ["1", "2, 1", "2–3", "4, A", "B–C"]);
+        // Absolute numbering: positions, always a range.
+        app.session.prefs.absolute_page_numbers = true;
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+    }
+
+    /// Labels navigate to document spreads, including when parent editing was active.
+    #[test]
+    fn the_panel_shows_spread_labels_and_a_click_on_one_goes_to_its_spread() {
+        let mut app = app();
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        // The canvas the panel's clicks move (not drawn here).
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 800.0)));
+        let mut h = Harness::builder().with_size(vec2(260.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| show(app, ui));
+            },
+            app,
+        );
+        h.run_steps(3);
+        // A spread label is a button: a click goes to the spread.
+        let _ = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("2, 1"));
+        assert!(h.query_by_label("2 1").is_none());
+        // Each page is named for screen readers: two pages are numbered 1.
+        assert_eq!(h.query_all_by_label("Page 1").count(), 2);
+        h.state_mut().run("layout.parents.edit", json!({"on": true})).unwrap();
+        if let Some(view) = h.state_mut().view_mut() {
+            view.fitted = true;
+        }
+        h.run_steps(3);
+        h.get_by_label("2–3").click();
+        h.run_steps(3);
+        assert!(!h.state().session.doc().unwrap().editing_parents);
+        assert!(!h.state().view().unwrap().fitted);
+        assert_eq!(h.state().session.doc().unwrap().doc.page_loc(crate::canvas::current_page(h.state()).unwrap()).unwrap().0, 2);
+    }
+}

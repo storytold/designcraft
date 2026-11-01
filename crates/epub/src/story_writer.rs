@@ -223,7 +223,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             } else {
                 ("span", String::new())
             };
-            let style = override_css(doc, &f.over);
+            let style = override_css(doc, &f.style, &f.over);
             let style_attr = if style.is_empty() { String::new() } else { format!(" style=\"{}\"", xml_attr(&style)) };
             if cls.is_empty() && style_attr.is_empty() {
                 out.push_str(&t);

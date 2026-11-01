@@ -35,7 +35,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{page?: transparency|dropShadow|innerShadow|outerGlow|innerGlow|bevel|satin|feather|directionalFeather|gradientFeather} — the Effects dialog for the selected objects",
     ),
-    ("app.packageDialog", "Package…", Some("Cmd+Alt+Shift+P"), "{dir?} — choose the package folder to create (file.package)"),
+    (
+        "app.packageDialog",
+        "Package…",
+        Some("Cmd+Alt+Shift+P"),
+        "{dir?} — the Package dialog (what the package carries, printing instructions), then the folder to create; with dir, packages into it at once (file.package)",
+    ),
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
@@ -109,7 +114,14 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{path | text} — a set saved by InDesign's Show Set (.txt), imported as a new shortcut set, which becomes active: matched commands, panels (Window menu items) and tools (Tools items) take its Default shortcuts (an item without Default keys takes its Text keys), or none when every item matched to them has none; other commands lose keys it takes unless they share them as defaults → {set, imported, changed [{id, label, item, line, from, to}], conflictsCleared [{id, label, shortcut}], skipped [{id, item, line, shortcut, takenBy, reason}] (an earlier item whose keys a later one took, or a reserved key), failed [{id, label, change, shortcuts}], unmatched [{item, line, keys, reason: noMatch | ambiguous | tool | context}], unmatchedWithoutShortcut, unreadable [{item, line, keys, reason}], approximated [{item, line, keys, note}] (numeric keypad keys bound as the main keys), suggestions [{item, line, candidates}] (never applied), matchedWithoutChange [{id, label, item, line, reason}] (a keyless panel-menu item that clears nothing), truncated, shortcutSet (the new set's name)}; ids are command keys (`window.panel {\"panel\":\"layers\"}`)",
     ),
     ("app.findChange", "Find/Change…", Some("Cmd+F"), "{}"),
-    ("app.insertTableDialog", "Create Table…", None, "{} — Insert Table dialog (body/header/footer rows, columns)"),
+    ("app.insertTableDialog", "Insert Table…", Some("Cmd+Alt+Shift+T"), "{} — Insert Table dialog (body/header/footer rows, columns, table style)"),
+    (
+        "app.convertTextToTableDialog",
+        "Convert Text to Table…",
+        None,
+        "{} — Convert Text to Table dialog (column and row separators, number of columns, table style)",
+    ),
+    ("app.convertTableToTextDialog", "Convert Table to Text…", None, "{} — Convert Table to Text dialog (column and row separators)"),
     (
         "app.cellOptionsDialog",
         "Strokes and Fills…",
@@ -372,7 +384,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "{open?: true, tab?: \"about\"|\"contributors\"|\"models\"} — the About window: splash with community links, contributor and model credits (open: false closes it)",
     ),
     ("help.checkForUpdates", "Check for Updates…", None, "{} — checks for newer releases and offers to update"),
-    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{}"),
+    ("window.toolsDoubleColumn", "Tools: Double Column", None, "{on?: bool (default: toggle)} → whether the Tools panel has two columns"),
     (
         "window.workspace",
         "Workspace",

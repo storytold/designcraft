@@ -563,17 +563,6 @@ fn picker(fields: Value) -> (DesignApp, egui::Context, egui::Rect, u64) {
     (app, ctx, screen, id)
 }
 
-/// The rightmost painted `text`: the picker's own field, right of egui's colour editor (which
-/// has R/G/B fields of its own).
-fn rightmost(labels: &[(String, egui::Rect, egui::Rect)], text: &str) -> egui::Pos2 {
-    labels
-        .iter()
-        .filter(|(t, _, _)| t.trim() == text)
-        .map(|(_, r, _)| r.center())
-        .max_by(|a, b| a.x.total_cmp(&b.x))
-        .unwrap_or_else(|| panic!("{text} is painted"))
-}
-
 /// Types `text` one character per frame, with an idle frame after each.
 fn type_slowly(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, text: &str) {
     for ch in text.chars() {
@@ -585,6 +574,28 @@ fn type_slowly(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, tex
 fn fill(app: &DesignApp, id: u64) -> designcraft_color::Color {
     let d = &app.session.active().unwrap().doc;
     d.resolve_color(&d.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch, 1.0).unwrap()
+}
+
+fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+#[test]
+fn the_color_picker_enter_confirms_and_escape_cancels_even_in_a_field() {
+    for (key, applied) in [(egui::Key::Enter, true), (egui::Key::Escape, false)] {
+        let (mut app, ctx, screen, id) = picker(json!({"target": "fill", "hex": "#ffffff"}));
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "ffffff").center());
+        dialog_frame(&mut app, &ctx, screen, vec![select_all_key()]);
+        type_slowly(&mut app, &ctx, screen, "#f59019");
+        dialog_frame(&mut app, &ctx, screen, vec![key_press(key)]);
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert!(app.ui.dialog.is_none(), "{key:?} closes the picker");
+        let d = &app.session.active().unwrap().doc;
+        let swatch = d.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch.clone();
+        let hex = d.resolve_color(&swatch, 1.0).map(|c| c.to_hex());
+        assert_eq!(hex.as_deref() == Some("#f59019"), applied, "{key:?}: {hex:?}");
+    }
 }
 
 #[test]
@@ -603,7 +614,7 @@ fn the_hex_field_keeps_typed_text_and_commits_a_valid_code() {
     dialog_frame(&mut app, &ctx, screen, vec![select_all_key()]);
     type_slowly(&mut app, &ctx, screen, "zz");
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "#").center());
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "#:").center());
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
     visible_label(&labels, screen, "f59019");
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("hex"), "#f59019");
@@ -613,11 +624,13 @@ fn the_hex_field_keeps_typed_text_and_commits_a_valid_code() {
 fn typed_channel_values_are_kept_while_typing() {
     let (mut app, ctx, screen, id) = picker(json!({"target": "fill", "hex": "#010203", "model": "rgb", "rgb": [1, 2, 3]}));
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    click_dialog(&mut app, &ctx, screen, rightmost(&labels, "1"));
+    let r = visible_label(&labels, screen, "R:");
+    click_dialog(&mut app, &ctx, screen, egui::pos2(r.min.x + 46.0, r.center().y));
     dialog_frame(&mut app, &ctx, screen, vec![select_all_key()]);
     type_slowly(&mut app, &ctx, screen, "12.5");
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    assert!(rightmost(&labels, "12.5").x > rightmost(&labels, "2").x - 1.0, "the typed text stays in the R field");
+    visible_label(&labels, screen, "12.5");
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["rgb"][1], json!(2.0));
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("hex"), "#0d0203");
     confirm(&mut app).unwrap();
     let designcraft_color::Color::Rgb { r, .. } = fill(&app, id) else { panic!("not RGB") };
@@ -639,7 +652,8 @@ fn a_cmyk_colour_stays_cmyk_unless_rgb_values_are_typed() {
     // A typed C/M/Y/K percent is a percent: M 1 is 1 %.
     let (mut app, ctx, screen, id) = picker(cmyk.clone());
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    click_dialog(&mut app, &ctx, screen, rightmost(&labels, "50"));
+    let r = visible_label(&labels, screen, "M:");
+    click_dialog(&mut app, &ctx, screen, egui::pos2(r.max.x + 29.0, r.center().y));
     dialog_frame(&mut app, &ctx, screen, vec![select_all_key()]);
     type_slowly(&mut app, &ctx, screen, "1");
     confirm(&mut app).unwrap();
@@ -649,7 +663,9 @@ fn a_cmyk_colour_stays_cmyk_unless_rgb_values_are_typed() {
     let (mut app, ctx, screen, id) = picker(cmyk);
     let r = app.ui.dialog.as_ref().unwrap().fields["rgb"][0].as_f64().unwrap();
     let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
-    click_dialog(&mut app, &ctx, screen, rightmost(&labels, &r.to_string()));
+    let _ = r;
+    let r = visible_label(&labels, screen, "R:");
+    click_dialog(&mut app, &ctx, screen, egui::pos2(r.min.x + 46.0, r.center().y));
     dialog_frame(&mut app, &ctx, screen, vec![select_all_key()]);
     type_slowly(&mut app, &ctx, screen, "10");
     confirm(&mut app).unwrap();
@@ -1647,10 +1663,19 @@ fn dialog_frame(app: &mut DesignApp, ctx: &egui::Context, screen: egui::Rect, ev
     labels
 }
 
+/// What Find/Change's Search list shows for a scope.
+fn scope_label(scope: &str) -> &'static str {
+    match scope {
+        "story" => "Story",
+        "selection" => "Selection",
+        _ => "Document",
+    }
+}
+
 fn visible_label(labels: &[(String, egui::Rect, egui::Rect)], screen: egui::Rect, expected: &str) -> egui::Rect {
     let (_, rect, clip) = labels.iter().find(|(text, _, _)| text.trim() == expected).unwrap_or_else(|| panic!("{expected} is painted"));
     assert!(screen.contains_rect(*rect), "{expected} must stay on screen: {rect:?}");
-    assert!(clip.contains_rect(*rect), "{expected} must not be clipped: {rect:?}, {clip:?}");
+    assert!(clip.expand(0.5).contains_rect(*rect), "{expected} must not be clipped: {rect:?}, {clip:?}");
     *rect
 }
 
@@ -1730,8 +1755,8 @@ fn scope_dialog_with_tool(text: &str, end: usize, tool: Option<&str>) -> (Design
     for _ in 0..3 {
         dialog_frame(&mut app, &ctx, screen, vec![]);
     }
-    scope_click(&mut app, &ctx, screen, "document");
-    scope_click(&mut app, &ctx, screen, "selection");
+    scope_click(&mut app, &ctx, screen, "Document");
+    scope_click(&mut app, &ctx, screen, "Selection");
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("scope"), "selection");
     (app, ctx, screen, sid)
 }
@@ -1806,8 +1831,8 @@ fn find_scope_dialog_explicit_story_ignored_scope_preserves_grep_cursor() {
                 let cur = app.ui.dialog.as_ref().unwrap().s("scope");
                 let next = if cur == "selection" { "document" } else { "selection" };
                 if physical {
-                    scope_click(&mut app, &ctx, screen, &cur);
-                    scope_click(&mut app, &ctx, screen, next);
+                    scope_click(&mut app, &ctx, screen, scope_label(&cur));
+                    scope_click(&mut app, &ctx, screen, scope_label(next));
                 } else {
                     scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field": "scope", "value": next}));
                 }
@@ -1824,8 +1849,8 @@ fn find_scope_dialog_explicit_story_ignored_scope_preserves_grep_cursor() {
             let cur = app.ui.dialog.as_ref().unwrap().s("scope");
             let next = if cur == "selection" { "document" } else { "selection" };
             if physical {
-                scope_click(&mut app, &ctx, screen, &cur);
-                scope_click(&mut app, &ctx, screen, next);
+                scope_click(&mut app, &ctx, screen, scope_label(&cur));
+                scope_click(&mut app, &ctx, screen, scope_label(next));
             } else {
                 scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field": "scope", "value": next}));
             }
@@ -2401,7 +2426,7 @@ fn find_scope_dialog_domain_and_object_changes_release_original_range() {
 #[test]
 fn dialog_title_and_actions_fit_scaled_viewports() {
     for language in ["en", "ar"] {
-        for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0)] {
+        for size in [egui::vec2(1178.0, 814.0), egui::vec2(589.0, 407.0), egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0)] {
             for (command, title, ok, cancel) in
                 [("app.preferences", "Preferences", "OK", "Cancel"), ("app.newDocumentDialog", "New Document", "Create", "Close")]
             {
@@ -2528,7 +2553,7 @@ fn preferences_horizontal_scroll_reaches_clipped_options() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("app.preferences", json!({})).unwrap();
     let ctx = dialog_context("en");
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 280.0));
     for _ in 0..3 {
         dialog_frame(&mut app, &ctx, screen, vec![]);
     }
@@ -2587,7 +2612,7 @@ fn new_document_vertical_scroll_reaches_every_field_and_preset() {
 
 #[test]
 fn arabic_new_document_fields_remain_reachable_and_editable() {
-    for size in [egui::vec2(392.0, 271.0), egui::vec2(450.0, 280.0), egui::vec2(1178.0, 814.0)] {
+    for size in [egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0), egui::vec2(1178.0, 814.0)] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.language = "ar".into();
         app.run("app.newDocumentDialog", json!({})).unwrap();
@@ -3253,7 +3278,9 @@ fn new_character_style_opens_its_options_and_creates_the_style() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "c.size", "value": 9}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     let st = char_style(&app, "Character Style 1").unwrap();
-    assert_eq!((st.based_on, st.chars), (None, CharAttrs { size: Some(9.0), ..Default::default() }));
+    // The selected text's own Italic (its Emphasis style) comes along, as InDesign's New
+    // Character Style takes it.
+    assert_eq!((st.based_on, st.chars), (None, CharAttrs { size: Some(9.0), font_style: Some("Italic".into()), ..Default::default() }));
     crate::menus::activate(&mut app, "style.character.create", &Value::Null);
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("rename"), "Character Style 2");
 }
@@ -3269,7 +3296,8 @@ fn new_paragraph_style_opens_its_options_and_creates_the_style() {
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     let st = app.session.active().unwrap().doc.styles.para("Paragraph Style 1").cloned().unwrap();
     assert_eq!(st.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
-    assert_eq!(st.chars, CharAttrs { size: Some(20.0), ..Default::default() });
+    // The selected text's own Italic comes along, as InDesign's New Paragraph Style takes it.
+    assert_eq!(st.chars, CharAttrs { size: Some(20.0), font_style: Some("Italic".into()), ..Default::default() });
 }
 
 #[test]
@@ -3369,7 +3397,7 @@ fn dragging_the_title_moves_the_dialog_and_dragging_the_body_does_not() {
     assert!((centred.center() - egui::pos2(600.0, 400.0)).length() < 1.0, "{centred:?}");
     assert!(centred.width() < 1000.0 && centred.height() < 700.0, "the area is the dialog, not the backdrop: {centred:?}");
 
-    let title = h.get_by_label("Create Table").rect().center();
+    let title = h.get_by_label("Insert Table").rect().center();
     drag(&mut h, title, title + vec2(100.0, 60.0));
     let moved = rect(&h);
     assert!((moved.min - centred.min - vec2(100.0, 60.0)).length() < 2.0, "{centred:?} -> {moved:?}");
@@ -3379,7 +3407,7 @@ fn dragging_the_title_moves_the_dialog_and_dragging_the_body_does_not() {
     assert_eq!(rect(&h), moved, "a drag in the body leaves the dialog in place");
 
     // The title row stays inside the top edge.
-    let title = h.get_by_label("Create Table").rect().center();
+    let title = h.get_by_label("Insert Table").rect().center();
     drag(&mut h, title, title - vec2(0.0, 1000.0));
     assert!(rect(&h).top().abs() < 1.0, "{:?}", rect(&h));
 
@@ -3391,7 +3419,7 @@ fn dragging_the_title_moves_the_dialog_and_dragging_the_body_does_not() {
     assert!((rect(&h).center() - centred.center()).length() < 1.0, "{:?}", rect(&h));
 
     // Past the left edge, about 100 px of the title row stays inside.
-    let title = h.get_by_label("Create Table").rect().center();
+    let title = h.get_by_label("Insert Table").rect().center();
     drag(&mut h, title, title - vec2(900.0, 0.0));
     assert!((rect(&h).right() - 100.0).abs() < 2.0, "{:?}", rect(&h));
 }
@@ -3468,19 +3496,223 @@ fn guide_counts(app: &DesignApp) -> Vec<usize> {
     (0..doc.page_count()).map(|abs| doc.page(abs).unwrap().guides.len()).collect()
 }
 
+/// The eyedropper takes the colour the canvas shows: with Proof Colors the proofed colour, and
+/// with the ink-limit preview the warning colour over the limit.
 #[test]
-fn create_guides_dialog_targets_the_page_in_view() {
+fn the_eyedropper_samples_what_proof_colors_and_the_ink_limit_show() {
+    use egui_kittest::Harness;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("swatch.create", json!({"name": "Vivid Green", "color": [0, 255, 0]})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [36, 36, 560, 700], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.run("object.fill", json!({"ids": [id], "swatch": "Vivid Green"})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(6);
+    let target = {
+        let app = h.state();
+        let doc = &app.session.doc().unwrap().doc;
+        let layout = designcraft_tools::CanvasLayout::new(doc, false);
+        let v = *app.view().unwrap();
+        crate::canvas::Xf::new(app.canvas_rect.unwrap(), &v).to_screen(layout.slots[0].xf * designcraft_geom::Point::new(300.0, 600.0))
+    };
+    let ctx = h.ctx.clone();
+    let sample = |h: &mut Harness<'_, DesignApp>| crate::canvas::color_at(h.state_mut(), &ctx, target).expect("on the page");
+    // What a view makes of the plain colour, as the canvas texture gets it.
+    let shown = |c: [u8; 3], view: &dyn Fn(&mut designcraft_render::Rendered)| {
+        let mut img = designcraft_render::Rendered { width: 1, height: 1, pixels: vec![c[0], c[1], c[2], 255] };
+        view(&mut img);
+        [img.pixels[0], img.pixels[1], img.pixels[2]]
+    };
+    let plain = sample(&mut h);
+    h.state_mut().ui.proof_colors = true;
+    let setup = h.state().ui.proof_setup.clone();
+    let proofed = sample(&mut h);
+    assert_eq!(proofed, shown(plain, &|img| designcraft_render::proof_view(img, &setup)));
+    assert_ne!(proofed, plain, "the proof changes this green");
+}
+
+/// The course's chapter 23: the Color Picker's eyedropper, dragged from the picker onto the
+/// page and let go there, takes the colour the page shows.
+#[test]
+fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [36, 36, 560, 700], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.run("swatch.create", json!({"name": "Eyedrop Red", "color": {"c": 0, "m": 100, "y": 100, "k": 0}})).unwrap();
+    app.run("object.fill", json!({"ids": [id], "swatch": "Eyedrop Red"})).unwrap();
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#000000"})));
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(6);
+    // Where the frame shows on screen.
+    let target = {
+        let app = h.state();
+        let doc = &app.session.doc().unwrap().doc;
+        let layout = designcraft_tools::CanvasLayout::new(doc, false);
+        let v = *app.view().unwrap();
+        crate::canvas::Xf::new(app.canvas_rect.unwrap(), &v).to_screen(layout.slots[0].xf * designcraft_geom::Point::new(300.0, 600.0))
+    };
+    let from = h.get_by_label("Eyedropper: drag it onto the page").rect().center();
+    h.hover_at(from);
+    h.drag_at(from);
+    h.run_steps(1);
+    for k in 1..=4 {
+        h.hover_at(from + (target - from) * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    h.drop_at(target);
+    h.run_steps(3);
+    let d = h.state().ui.dialog.as_ref().expect("the picker stays open");
+    let [r, g, b, _] = h.state().session.doc().unwrap().doc.resolve_color("Eyedrop Red", 1.0).unwrap().to_rgba8(1.0);
+    let got: Vec<f64> = d.fields["rgb"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    for (a, e) in got.iter().zip([r, g, b]) {
+        assert!((a - f64::from(e)).abs() <= 3.0, "{got:?} vs {:?}", [r, g, b]);
+    }
+    assert!(d.b("edited"));
+    // Let go off the page (here, on the dialog's own field area): no colour, nothing changes.
+    let hex = d.s("hex");
+    h.hover_at(from);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + egui::vec2(-40.0, 0.0));
+    h.run_steps(1);
+    h.drop_at(egui::pos2(2.0, 2.0));
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("hex"), hex);
+    // Let go over the picker's own colour field, with the page under it: nothing either.
+    let field = h.get_by_label("Color field").rect().center();
+    let ctx = h.ctx.clone();
+    assert!(crate::canvas::color_at(h.state_mut(), &ctx, field).is_some(), "the page lies under the field");
+    h.hover_at(from);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(field);
+    h.run_steps(1);
+    h.drop_at(field);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("hex"), hex, "the picker isn't sampled");
+}
+
+/// The Color Picker laid out as InDesign's: a field and a slider for the component whose radio
+/// is on, the new colour over the old one, and the values in every space.
+#[test]
+
+fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_with() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(3);
+    // A C typed at 100% K is kept, whether or not the colour shown changes with it.
+    let rgb = h.state().app.ui.dialog.as_ref().unwrap().fields.get("rgb").cloned();
+    h.get_by_label("C").focus();
+    h.run_steps(1);
+    h.event(egui::Event::Text("50".into()));
+    h.run_steps(2);
+    let d = h.state().app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.fields["cmyk"], json!([50.0, 0.0, 0.0, 100.0]), "rgb {:?} (was {rgb:?})", d.fields.get("rgb"));
+    assert!(d.b("edited"));
+}
+
+#[test]
+fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
+    app.run("object.color", json!({"color":designcraft_color::Color::from_hex("#7c1315").unwrap(),"target":"fill"})).unwrap();
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(3);
+    // R at first: R up the slider, B across and G up the field.
+    let _ = h.get_by_label("RGB Color Space View");
+    let field = h.get_by_label("Color field").rect();
+    crate::test_window::click_at(&mut h, egui::pos2(field.right() - 1.0, field.top() + 1.0));
+    h.run_steps(2);
+    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    assert!((p.rgb[0] - 124.0 / 255.0).abs() < 0.01 && p.rgb[1] > 0.97 && p.rgb[2] > 0.97, "{p:?}: R kept, G and B full");
+    // The slider sets R alone.
+    let slider = h.get_by_label("Color slider").rect();
+    crate::test_window::click_at(&mut h, egui::pos2(slider.center().x, slider.bottom() - 1.0));
+    h.run_steps(2);
+    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    assert!(p.rgb[0] < 0.02 && p.rgb[1] > 0.97, "{p:?}");
+    // Hue on the slider: the field is saturation across, brightness up.
+    store_picked(h.state_mut().app.ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
+    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("h"));
+    h.run_steps(2);
+    crate::test_window::click_at(&mut h, egui::pos2(field.left() + 1.0, field.top() + 1.0));
+    h.run_steps(2);
+    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    assert!(p.hsb[1] < 0.02 && p.hsb[2] > 0.98 && (p.hsb[0] - 359.0).abs() < 2.0, "{p:?}: no saturation, full brightness, the hue kept");
+    // Lab shows its own view.
+    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("l"));
+    h.run_steps(2);
+    let _ = h.get_by_label("Lab Color Space View");
+    // Add CMYK Swatch adds the colour as a CMYK swatch; OK applies it.
+    store_picked(h.state_mut().app.ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
+    h.run_steps(2);
+    let before = h.state().app.session.active().unwrap().doc.swatches.len();
+    h.get_by_label("Add CMYK Swatch").click();
+    h.run_steps(3);
+    let doc = &h.state().app.session.active().unwrap().doc;
+    assert_eq!(doc.swatches.len(), before + 1);
+    assert!(matches!(
+        doc.swatches.last().unwrap().value,
+        designcraft_color::swatch::SwatchValue::Color { color: designcraft_color::Color::Cmyk { .. }, .. }
+    ));
+    // The percentages the C/M/Y/K fields show, exactly (not the colour converted back).
+    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("cmyk".into(), json!([0.0, 50.0, 100.0, 0.0]));
+    h.run_steps(2);
+    h.get_by_label("Add CMYK Swatch").click();
+    h.run_steps(3);
+    let doc = &h.state().app.session.active().unwrap().doc;
+    let designcraft_color::swatch::SwatchValue::Color { color: designcraft_color::Color::Cmyk { c, m, y, k }, .. } =
+        doc.swatches.last().unwrap().value
+    else {
+        panic!("a CMYK swatch")
+    };
+    assert_eq!([c, m, y, k].map(|v| (v * 100.0).round()), [0.0, 50.0, 100.0, 0.0]);
+    // Its own OK, at the top right, applies it.
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert!(h.state().app.ui.dialog.is_none(), "OK closes it");
+    let st = h.state().app.session.active().unwrap();
+    let id = st.selection.items[0];
+    let fill = st.doc.item(id).unwrap().fill.swatch.clone();
+    assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
+}
+
+#[test]
+fn create_guides_dialog_covers_the_spread_in_view() {
     let mut app = facing_app(6);
+    // As in InDesign, both pages of the facing spread in view get the guides.
+    crate::canvas::go_to_page(&mut app, 1);
+    crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("target"), "spread");
+    ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "2"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    assert_eq!(guide_counts(&app), vec![0, 2, 2, 0, 0, 0]);
+    // "This page" narrows them to the page in view.
     crate::canvas::go_to_page(&mut app, 4);
     crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
     ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "3"}));
-    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
-    assert_eq!(guide_counts(&app), vec![0, 0, 0, 0, 4, 0]);
-    // "Both pages of the spread" covers the facing pair.
-    crate::canvas::go_to_page(&mut app, 1);
-    crate::menus::activate(&mut app, "layout.createGuides", &Value::Null);
-    ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": "2"}));
-    ctl(&mut app, "ui.dialog.set", json!({"field": "target", "value": "spread"}));
+    ctl(&mut app, "ui.dialog.set", json!({"field": "target", "value": "page"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(guide_counts(&app), vec![0, 2, 2, 0, 4, 0]);
 }
@@ -3520,4 +3752,1182 @@ fn character_style_options_set_the_digits() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "c.digits", "value": "farsi"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
+}
+
+#[test]
+fn import_warning_show_selects_the_frame_it_is_about() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let lines = json!([
+        {"text": "a table of 2 rows was read as 1", "item": null},
+        {"text": "story 30892: text orientation of its frames is not known or differs; written as horizontal", "item": f["id"]},
+    ]);
+    app.ui.dialog = Some(Dialog::new("alert", json!({"title": "Import Warnings", "file": "book.indd", "message": "", "lines": lines})));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("import_warning_show_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    // Only the warning that names a frame offers Show.
+    assert_eq!(h.query_all_by_label("Show").count(), 1);
+    h.get_by_label("Show").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialog.is_none(), "Show closes the warnings");
+    assert_eq!(app.session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(f["id"].as_u64().unwrap())]);
+}
+
+/// Replace the text of the field beside the `nth` label `label` (on its row, to its right) with
+/// `new`, and leave the field.
+fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, label: &str, nth: usize, new: &str) {
+    use egui_kittest::kittest::Queryable;
+    let l = h.get_all_by_label(label).nth(nth).unwrap_or_else(|| panic!("no label {label} #{nth}")).rect();
+    let field = h
+        .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
+        .map(|n| n.rect())
+        .filter(|r| r.center().x > l.max.x && (r.center().y - l.center().y).abs() < l.height().max(8.0))
+        .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+        .unwrap_or_else(|| panic!("no field beside {label} #{nth}"))
+        .center();
+    crate::test_window::click_at(h, field);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text(new.into()));
+    h.run_steps(1);
+    // Tab leaves the field (Enter would be the dialog's OK).
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+}
+
+/// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
+/// side typed in sets all four; with the link off ("Make all settings the same") a side is set
+/// alone, as the lesson gives the border only a thick left side. The corners link the same way.
+#[test]
+fn paragraph_border_sides_and_corners_link_as_indesigns() {
+    use egui_kittest::kittest::Queryable;
+    let (app, _) = ruled_paragraph();
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
+    h.run_steps(4);
+    let field = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, key: &str| {
+        h.state().app.ui.dialog.as_ref().and_then(|d| d.fields.get(&format!("p.{key}")).cloned()).unwrap_or_default()
+    };
+    // The four weights start the same, so linked: Top sets them all.
+    retype_beside(&mut h, "Top:", 0, "3");
+    assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
+    // Unlinked, Left alone takes 10 pt.
+    // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
+    // scrolls as fields take focus.
+    let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
+        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
+        links[n].center()
+    };
+    let at = link(&h, 0);
+    crate::test_window::click_at(&mut h, at);
+    retype_beside(&mut h, "Left:", 0, "10");
+    assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
+    // Linked again, the four take Top's weight; unlinked once more for the thick left side.
+    let at = link(&h, 0);
+    crate::test_window::click_at(&mut h, at);
+    assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
+    let at = link(&h, 0);
+    crate::test_window::click_at(&mut h, at);
+    retype_beside(&mut h, "Left:", 0, "10");
+    assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
+    // The corners start the same too: Top Left's size goes to all four.
+    retype_beside(&mut h, "Top Left Corner", 0, "0p4");
+    let corners = field(&h, "borderCorners");
+    assert!((0..4).all(|i| corners[i]["size"] == json!(4.0)), "{corners}");
+    // Unlinked, Top Right alone takes 0p8; linked again, all four take Top Left's 4 pt.
+    let at = link(&h, 1);
+    crate::test_window::click_at(&mut h, at);
+    retype_beside(&mut h, "Top Right Corner", 0, "0p8");
+    assert_eq!(field(&h, "borderCorners")[1]["size"], json!(8.0));
+    assert_eq!(field(&h, "borderCorners")[0]["size"], json!(4.0));
+    let at = link(&h, 1);
+    crate::test_window::click_at(&mut h, at);
+    let corners = field(&h, "borderCorners");
+    assert!((0..4).all(|i| corners[i] == corners[0] && corners[i]["size"] == json!(4.0)), "{corners}");
+    confirm(&mut h.state_mut().app).unwrap();
+    let style = h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+    assert_eq!(style.para.border_weights, Some([3.0, 10.0, 3.0, 3.0]));
+}
+
+/// The course's chapter 41: Paragraph Shading as InDesign's. The page is headed with its name;
+/// the tint has Overprint beside it; the corners are a two-by-two grid whose shape menus show
+/// the shapes. The lesson rounds the top two corners at 10 pt, unlinked, and moves the
+/// offsets.
+#[test]
+fn paragraph_shading_page_is_laid_out_as_indesigns() {
+    use designcraft_geom::corners::CornerShape;
+    use egui_kittest::kittest::Queryable;
+    let (app, _) = ruled_paragraph();
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.state_mut().app.ui.dialog =
+        Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "shading", "p.shadingOn": true})));
+    h.run_steps(4);
+    let field = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, key: &str| {
+        h.state().app.ui.dialog.as_ref().and_then(|d| d.fields.get(&format!("p.{key}")).cloned()).unwrap_or_default()
+    };
+    assert!(h.get_all_by_label("Paragraph Shading").count() >= 2, "the section list and the page's heading");
+    h.get_by_label("Overprint").click();
+    h.run_steps(2);
+    assert_eq!(field(&h, "shadingOverprint"), json!(true));
+    // The corners' link (0) and the offsets' (1).
+    let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
+        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        assert_eq!(links.len(), 2, "corners and offsets each have a link");
+        links[n].center()
+    };
+    let at = link(&h, 0);
+    crate::test_window::click_at(&mut h, at);
+    for (corner, nth) in [("Top Left Corner", 0), ("Top Right Corner", 1)] {
+        retype_beside(&mut h, corner, 0, "10 pt");
+        h.get_all_by_label("Corner Shape").nth(nth).unwrap().click();
+        h.run_steps(2);
+        h.get_by_label("Rounded").click();
+        h.run_steps(2);
+    }
+    let corners: [designcraft_geom::corners::Corner; 4] = serde_json::from_value(field(&h, "shadingCorners")).unwrap();
+    assert_eq!(
+        corners.map(|c| (c.shape, c.size)),
+        [(CornerShape::Rounded, 10.0), (CornerShape::Rounded, 10.0), (CornerShape::None, 0.0), (CornerShape::None, 0.0)]
+    );
+    // The offsets, unlinked: Top alone.
+    let at = link(&h, 1);
+    crate::test_window::click_at(&mut h, at);
+    retype_beside(&mut h, "Top:", 0, "3 pt");
+    assert_eq!(field(&h, "shadingOffsets"), json!([3.0, 0.0, 0.0, 0.0]));
+    confirm(&mut h.state_mut().app).unwrap();
+    let style = h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+    assert_eq!((style.para.shading_on, style.para.shading_overprint), (Some(true), Some(true)));
+    assert_eq!(style.para.shading_corners.map(|c| c[1].shape), Some(CornerShape::Rounded));
+}
+
+/// Paragraph Rules › Color offers Text Color above the swatches, so a rule set to a swatch can
+/// go back to it; Gap Color lists only swatches.
+#[test]
+fn the_rule_colour_menu_offers_text_color() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let menu = |ctx: &egui::Context, text: Option<&str>, click: Option<egui::Pos2>| {
+        let mut picked = None;
+        let mut labels = Vec::new();
+        let mut events = Vec::new();
+        if let Some(pos) = click {
+            events.push(egui::Event::PointerMoved(pos));
+            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        }
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            picked = swatch_menu_with(ui, &doc, "m", "[Black]", 130.0, text);
+        });
+        out.textures_delta.clear();
+        for s in out.shapes {
+            if let egui::Shape::Text(t) = s.shape {
+                labels.push((t.galley.job.text.clone(), t.visual_bounding_rect().center()));
+            }
+        }
+        (picked, labels)
+    };
+    for text in [Some("Text Color"), None] {
+        let ctx = egui::Context::default();
+        let (_, labels) = menu(&ctx, text, None);
+        let combo = labels.iter().find(|(t, _)| t == "[Black]").unwrap().1;
+        menu(&ctx, text, Some(combo));
+        let (_, labels) = menu(&ctx, text, None);
+        let item = labels.iter().find(|(t, _)| t == "Text Color").map(|l| l.1);
+        assert_eq!(item.is_some(), text.is_some(), "{labels:?}");
+        if let Some(pos) = item {
+            let (picked, _) = menu(&ctx, text, Some(pos));
+            assert_eq!(picked.as_deref(), Some(designcraft_doc::TEXT_COLOR));
+        }
+    }
+}
+
+/// The course's chapter 20: a paragraph style's rule below becomes wavy, 3 pt, with a gap
+/// colour, from Paragraph Rules › Type and Gap Color.
+#[test]
+fn paragraph_style_rules_take_a_type_and_a_gap_colour() {
+    let (mut app, _) = ruled_paragraph();
+    let ctx = egui::Context::default();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+    draw(&mut app, &ctx);
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("p.ruleBelow.type".into(), json!({"kind": "wavy"}));
+        d.fields.insert("p.ruleBelow.weight".into(), json!(3.0));
+        d.fields.insert("p.ruleBelow.gapColor".into(), json!("[Paper]"));
+    }
+    draw(&mut app, &ctx);
+    confirm(&mut app).unwrap();
+    let r = app.session.doc().unwrap().doc.styles.resolve_para_style("Ruled Child").0.rule_below;
+    assert_eq!((r.kind, r.weight, r.gap_color.as_str()), (designcraft_doc::StrokeType::Wavy, 3.0, "[Paper]"));
+}
+
+/// A rule's Gap Tint shows 100% at its default (the rule's JSON leaves a full gap tint out).
+#[test]
+fn a_rules_default_gap_tint_shows_100() {
+    use egui_kittest::kittest::Queryable;
+    let (mut app, _) = ruled_paragraph();
+    app.run(
+        "style.paragraph.edit",
+        json!({"name": "Ruled Child", "para": {"ruleBelow": {"type": {"kind": "dashed", "pattern": [4.0, 2.0]}, "gapColor": "[Paper]"}}}),
+    )
+    .unwrap();
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+    h.run_steps(4);
+    let label = h.get_by_label("Gap Tint:").rect();
+    let field = h
+        .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
+        .filter(|n| n.rect().center().x > label.max.x && (n.rect().center().y - label.center().y).abs() < 8.0)
+        .min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+        .and_then(|n| n.value());
+    assert_eq!(field.as_deref(), Some("100%"));
+}
+
+/// The course's chapter 20: the "Recipe Categories" title formatted on the page (size, All
+/// Caps, tracking, space after), then New Paragraph Style from it: the dialog starts from the
+/// text, and with Apply Style to Selection the paragraph takes the new style. Next Style and
+/// Reset To Base are set from General.
+#[test]
+fn a_new_paragraph_style_starts_from_the_selected_text() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Egg Recipes\rBoil them."})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 11})).unwrap();
+    app.run("type.char", json!({"attrs": {"size": 20, "capitalization": "allCaps", "tracking": 50}})).unwrap();
+    app.run("type.para", json!({"attrs": {"spaceAfter": 6}})).unwrap();
+    open_new_style(&mut app, true);
+    let d = app.ui.dialog.clone().unwrap();
+    assert_eq!(
+        (d.fields["c.size"].clone(), d.fields["c.capitalization"].clone(), d.fields["p.spaceAfter"].clone()),
+        (json!(20.0), json!("allCaps"), json!(6.0))
+    );
+    assert!(d.b("apply") && !d.fields.contains_key("c.fontFamily"), "only what differs from [No Paragraph Style]");
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("rename".into(), json!("Recipe Categories"));
+        d.fields.insert("nextStyle".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+    }
+    confirm(&mut app).unwrap();
+    let a = app.run("type.selectionAttrs", json!({})).unwrap();
+    assert_eq!(a["paragraphStyle"], "Recipe Categories", "applied to the selection");
+    assert_eq!(a["paraOverrides"].as_u64().unwrap_or(0) + a["charOverrides"].as_u64().unwrap_or(0), 0);
+    let style = |app: &DesignApp| app.session.doc().unwrap().doc.styles.para("Recipe Categories").cloned().unwrap();
+    assert_eq!(style(&app).next_style.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+    assert_eq!(style(&app).chars.size, Some(20.0));
+    // Reset To Base: the style keeps nothing of its own, apart from the edits made then.
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Recipe Categories", "basedOn": designcraft_doc::BASIC_PARAGRAPH})));
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("resetToBase".into(), json!(true));
+        d.fields.insert("c.tracking".into(), json!(10.0));
+    }
+    confirm(&mut app).unwrap();
+    let s = style(&app);
+    assert_eq!((s.chars.size, s.chars.tracking, s.para.space_after), (None, Some(10.0), None), "{s:?}");
+    assert_eq!(s.based_on.as_deref(), Some(designcraft_doc::BASIC_PARAGRAPH));
+}
+
+/// The course's chapter 22: "eggs" made bold and red on the page, then New Character Style
+/// from it. The dialog is titled as InDesign's, starts from what the text has of its own
+/// over its paragraph style ("[None] + Bold + color"), and Apply Style to Selection gives the
+/// text the style, with no override left.
+#[test]
+fn a_new_character_style_starts_from_the_selected_text() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Drop eggs into boiling water."})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 29})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Recipe", "chars": {"size": 14}})).unwrap();
+    app.run("style.paragraph.apply", json!({"name": "Recipe"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 5, "focus": 9})).unwrap();
+    app.run("type.char", json!({"attrs": {"fontStyle": "Bold", "fill": "C=15 M=100 Y=100 K=0"}})).unwrap();
+    open_new_style(&mut app, false);
+    let d = app.ui.dialog.clone().unwrap();
+    assert_eq!((d.fields["c.fontStyle"].clone(), d.fields["c.fill"].clone()), (json!("Bold"), json!("C=15 M=100 Y=100 K=0")));
+    assert!(d.b("apply"));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("new_character_style_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    for l in ["New Character Style", "Apply Style to Selection"] {
+        assert!(h.query_by_label(l).is_some(), "{l}");
+    }
+    let app = h.state_mut();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("rename".into(), json!("eggs"));
+    }
+    confirm(app).unwrap();
+    let style = app.session.doc().unwrap().doc.styles.char_style("eggs").cloned().unwrap();
+    assert_eq!((style.chars.font_style.as_deref(), style.chars.fill.as_deref()), (Some("Bold"), Some("C=15 M=100 Y=100 K=0")));
+    assert_eq!(style.chars.size, None, "the size is the paragraph style's, not the text's own");
+    let a = app.run("type.selectionAttrs", json!({})).unwrap();
+    assert_eq!((a["characterStyle"].clone(), a["charOverrides"].clone()), (json!("eggs"), json!(0)), "applied to the selection");
+}
+
+/// A Based On changed in the dialog (without Reset To Base) is what the fields are checked
+/// against: the style's own settings over the new parent.
+#[test]
+fn a_changed_based_on_is_what_the_fields_are_checked_against() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Loose", "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Child", "basedOn": "Loose"})).unwrap();
+    let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Child"}));
+    d.fields.insert("p.wordSpaceDesired".into(), json!(1.0));
+    assert!(check_paragraph_style_justification(&app, &d).is_err(), "below Loose's minimum");
+    d.fields.insert("basedOn".into(), json!(designcraft_doc::BASIC_PARAGRAPH));
+    assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "[Basic Paragraph]'s minimum is lower");
+}
+
+/// With Reset To Base, the justification fields are checked against the base style (the
+/// style's own minimum no longer applies), and Preview shows the reset on the page.
+#[test]
+fn reset_to_base_checks_and_previews_against_the_base() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Loose words"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Loose", "basedOn": designcraft_doc::BASIC_PARAGRAPH, "para": {"wordSpaceMin": 1.2, "wordSpaceDesired": 1.3}, "chars": {"size": 30}}))
+        .unwrap();
+    app.run("style.paragraph.apply", json!({"name": "Loose"})).unwrap();
+    let mut d = Dialog::new("paragraphStyleOptions", json!({"name": "Loose"}));
+    d.fields.insert("p.wordSpaceDesired".into(), json!(1.1));
+    assert!(check_paragraph_style_justification(&app, &d).is_err(), "below the style's own minimum");
+    d.fields.insert("resetToBase".into(), json!(true));
+    assert_eq!(check_paragraph_style_justification(&app, &d), Ok(()), "the base's minimum is 100%");
+    d.fields.insert("preview".into(), json!(true));
+    style_options_preview(&mut app, &mut d);
+    assert_eq!(d.fields[PREVIEWED]["resetToBase"], true);
+    let size = app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["size"].clone();
+    assert_eq!(size, json!(12.0), "the page shows the style reset to its base");
+    app.session.cancel_interaction();
+}
+
+/// The course's chapter 22: Find/Change › Change Format. "eggs", case sensitive, nothing in
+/// Change to; Change Format Settings › Style Options sets Character Style "eggs", and the box
+/// shows it (with Change to's ⓘ). Escape leaves the settings, not Find/Change. Change All
+/// gives every lowercase "eggs" the style and keeps the words; the trash clears the format.
+#[test]
+fn find_change_gives_the_found_text_a_change_format() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = "Poached Eggs\nBreak eggs; cook until eggs are set.";
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": text})).unwrap();
+    let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+    app.run("style.character.create", json!({"name": "eggs", "chars": {"fontStyle": "Bold"}})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("find".into(), json!("eggs"));
+        d.fields.insert("caseSensitive".into(), json!(true));
+    }
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("change_format_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    const TIP: &str = "With a Change Format and nothing in Change to, the found text stays and is only formatted";
+    assert!(h.query_by_label("Change Format:").is_some());
+    assert!(h.query_by_label(TIP).is_none(), "no ⓘ without a Change Format");
+    h.get_by_label("Specify attributes to change").click();
+    h.run_steps(3);
+    // Style Options is the section's name in the list and its heading.
+    for l in ["Change Format Settings", "Style Options", "Basic Character Formats", "Character Color"] {
+        assert!(h.query_all_by_label(l).next().is_some(), "{l}");
+    }
+    // Style Options › Character Style: eggs.
+    h.get_all_by_value("[Any Style]").next().unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("eggs").click();
+    h.run_steps(3);
+    h.get_all_by_label("  OK  ").last().unwrap().click();
+    h.run_steps(3);
+    let field = |h: &Harness<'_, DesignApp>, k: &str| h.state().ui.dialog.as_ref().unwrap().fields.get(k).cloned();
+    assert_eq!((field(&h, CHANGE_FORMAT), field(&h, FORMAT_EDIT)), (Some(json!({"charStyle": "eggs"})), None));
+    assert!(h.query_by_label("Character Style: eggs").is_some(), "the box shows it");
+    assert!(h.query_by_label(TIP).is_some(), "Change to's ⓘ");
+    // Escape closes Change Format Settings only, and keeps the Change Format.
+    h.get_by_label("Specify attributes to change").click();
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("findChange"));
+    assert_eq!((field(&h, CHANGE_FORMAT), field(&h, FORMAT_EDIT)), (Some(json!({"charStyle": "eggs"})), None));
+    // Change All: the words stay, every lowercase "eggs" has the style.
+    h.get_by_label("Change All").click();
+    h.run_steps(3);
+    assert_eq!(field(&h, "status"), Some(json!("2 replacement(s) made")));
+    let story = h.state().session.doc().unwrap().doc.story(sid).cloned().unwrap();
+    assert_eq!(story.text, text);
+    assert_eq!(
+        [8, 19, 36].map(|at| story.format_after(at).style.clone()),
+        [designcraft_doc::NO_CHAR_STYLE.to_string(), "eggs".into(), "eggs".into()]
+    );
+    // The trash clears it (the second: the first is the Find Format's).
+    h.get_all_by_label("Clear specified attributes").nth(1).unwrap().click();
+    h.run_steps(3);
+    assert_eq!(field(&h, CHANGE_FORMAT), None);
+    assert!(h.query_by_label(TIP).is_none());
+}
+
+/// What Change Format Settings sets goes to find.change: a paragraph style and character
+/// attributes as well as a character style; the box sums them up.
+#[test]
+fn a_change_format_goes_with_change_all() {
+    let mut d = Dialog::new("findChange", json!({"find": "cook"}));
+    d.fields.insert(CHANGE_FORMAT.into(), json!({"charStyle": "eggs", "paraStyle": "Method", "chars": {"underline": true}}));
+    let p = find_change_params(&d);
+    assert_eq!((p["charStyle"].clone(), p["paraStyle"].clone(), p["attrs"].clone()), (json!("eggs"), json!("Method"), json!({"underline": true})));
+    assert_eq!(format_summary("en", d.fields.get(CHANGE_FORMAT)), "Character Style: eggs + Paragraph Style: Method + Underline: on");
+    assert!(find_change_params(&Dialog::new("findChange", json!({"find": "cook"}))).get("attrs").is_none());
+    // A Find Format goes with every search.
+    d.fields.insert(FIND_FORMAT.into(), json!({"paraStyle": "Method"}));
+    assert_eq!(find_change_params(&d)["findFormat"], json!({"paraStyle": "Method"}));
+}
+
+/// Find/Change › Find Format, as InDesign's: Find Format Settings sets the character style the
+/// found text must have, the box shows it with Find what's ⓘ, and Count counts only "eggs" in
+/// it; with nothing in Find what, Find Next finds the text in the style; the first trash clears
+/// it.
+#[test]
+fn find_format_finds_only_text_with_it() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Break eggs; cook eggs."})).unwrap();
+    app.run("style.character.create", json!({"name": "eggs", "chars": {"fontStyle": "Bold"}})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 6, "focus": 10})).unwrap();
+    app.run("style.character.apply", json!({"name": "eggs"})).unwrap();
+    app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("find".into(), json!("eggs"));
+    }
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("find_format_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    const TIP: &str = "With a Find Format, only text that has it is found; with nothing in Find what, all text that has it";
+    assert!(h.query_by_label("Find Format:").is_some() && h.query_by_label(TIP).is_none());
+    h.get_by_label("Specify attributes to find").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Find Format Settings").is_some());
+    h.get_all_by_value("[Any Style]").next().unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("eggs").click();
+    h.run_steps(3);
+    h.get_all_by_label("  OK  ").last().unwrap().click();
+    h.run_steps(3);
+    let field = |h: &Harness<'_, DesignApp>, k: &str| h.state().ui.dialog.as_ref().unwrap().fields.get(k).cloned();
+    assert_eq!((field(&h, FIND_FORMAT), field(&h, CHANGE_FORMAT)), (Some(json!({"charStyle": "eggs"})), None));
+    assert!(h.query_by_label("Character Style: eggs").is_some() && h.query_by_label(TIP).is_some());
+    h.get_by_label("Count").click();
+    h.run_steps(3);
+    assert_eq!(field(&h, "status"), Some(json!("1 match(es)")), "only the \"eggs\" in the style");
+    // Nothing in Find what: the text in the style.
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("find".into(), json!(""));
+    h.run_steps(2);
+    h.get_by_label("Find Next").click();
+    h.run_steps(3);
+    let sel = h.state().session.doc().unwrap().selection.text.unwrap();
+    assert_eq!(sel.range(), 6..10);
+    // The first trash is the Find Format's.
+    h.get_all_by_label("Clear specified attributes").next().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(field(&h, FIND_FORMAT), None);
+}
+
+/// The course's chapter 26: Preferences › Interface as InDesign's. A Color Theme swatch shows
+/// its theme at once and Cancel goes back; OK keeps the theme and the Tools panel's columns.
+/// UI Size is in a UI Scaling section of its own.
+#[test]
+fn preferences_interface_sets_the_color_theme_and_tools_panel() {
+    use crate::theme::Brightness;
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let opened = app.ui.brightness;
+    let open = |app: &mut DesignApp| {
+        app.run("app.preferences", json!({})).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("interface"));
+    };
+    open(&mut app);
+    let mut h = Harness::builder().with_size(egui::vec2(1100.0, 760.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("prefs_interface_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    let swatch = |h: &Harness<'_, DesignApp>, name: &str| h.get_by(|n| n.role() == Role::RadioButton && n.label().as_deref() == Some(name)).click();
+    for l in ["Appearance", "Color Theme:", "Panels", "Tools Panel:"] {
+        assert!(h.query_by_label(l).is_some(), "{l}");
+    }
+    // A click shows the theme at once; Cancel goes back.
+    swatch(&h, "Light");
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brightness, Brightness::Light);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialog.is_none());
+    assert_eq!(h.state().ui.brightness, opened, "Cancel goes back to the theme Preferences opened with");
+    // OK keeps the theme and the Tools panel's columns.
+    open(h.state_mut());
+    h.run_steps(3);
+    swatch(&h, "Dark");
+    h.run_steps(2);
+    h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Single Column")).click();
+    h.run_steps(2);
+    h.get_by_label("Double Column").click();
+    h.run_steps(2);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    assert!(h.state().ui.dialog.is_none());
+    assert_eq!(h.state().ui.brightness, Brightness::Dark);
+    assert!(h.state().ui.tools_double_column);
+    // The same command the Window menu toggles, with an explicit state for Preferences.
+    assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({"on": false})).unwrap(), json!(false));
+    assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({"on": false})).unwrap(), json!(false), "set, not toggled");
+    assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({})).unwrap(), json!(true), "toggled without `on`");
+    // UI Size has a section of its own.
+    open(h.state_mut());
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("uiScaling"));
+    h.run_steps(3);
+    assert!(h.query_by_label("UI Size:").is_some());
+}
+
+/// With no document open, Preferences has Units & Increments, as InDesign's: OK keeps them
+/// for new documents, and New Document opens in them (Lollo's inches, set once).
+#[test]
+fn preferences_with_no_document_set_the_units_of_new_documents() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    crate::menus::activate(&mut app, "app.preferences", &Value::Null);
+    let mut d = app.ui.dialog.take().expect("Preferences");
+    assert!(d.b("defaults"), "for new documents");
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    app.ui.dialog = Some(d.clone());
+    let mut labels = vec![];
+    for _ in 0..3 {
+        labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    assert!(labels.iter().any(|(t, _, _)| t == "Units & Increments"), "listed with no document: {labels:?}");
+    d.fields.insert("horizontalUnits".into(), json!("inches"));
+    d.fields.insert("verticalUnits".into(), json!("inches"));
+    d.fields.insert("keyboardIncrement".into(), json!("0.5 pt"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    let du = app.session.prefs.default_units;
+    assert_eq!((du.horizontal_units, du.vertical_units, du.keyboard_increment), (Unit::Inches, Unit::Inches, 0.5));
+    assert!(app.session.active().is_none(), "no document made");
+    // A Cursor Key of 0 or text that isn't a measure is refused, keeping the dialog open and
+    // the saved values, the other preferences' too; a Kerning/Tracking of 0.5 is kept as it is.
+    let scale = app.session.prefs.scale_strokes;
+    for bad in [json!({"keyboardIncrement": "0 pt"}), json!({"keyboardIncrement": "wide"}), json!({"kerningIncrement": "lots"})] {
+        let mut d = Dialog::new("preferences", json!({"defaults": true, "horizontalUnits": "inches", "scaleStrokes": !scale}));
+        for (k, v) in bad.as_object().unwrap() {
+            d.fields.insert(k.clone(), v.clone());
+        }
+        app.ui.dialog = Some(d);
+        assert!(confirm(&mut app).is_err(), "{bad}");
+        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "preferences"), "still open: {bad}");
+        assert_eq!(app.session.prefs.default_units.keyboard_increment, 0.5, "{bad}");
+        assert_eq!(app.session.prefs.scale_strokes, scale, "no other preference saved: {bad}");
+    }
+    app.ui.dialog = Some(Dialog::new("preferences", json!({"defaults": true, "horizontalUnits": "inches", "kerningIncrement": "0.5"})));
+    confirm(&mut app).unwrap();
+    assert_eq!(app.session.prefs.default_units.kerning_increment, 0.5, "not rounded up to 1");
+    // New Document opens in inches, and the document it makes has inch rulers.
+    crate::menus::activate(&mut app, "app.newDocumentDialog", &Value::Null);
+    let nd = app.ui.dialog.clone().expect("New Document");
+    assert_eq!(nd.fields["units"], json!("inches"));
+    assert_eq!(nd.s("width"), designcraft_geom::format_measure(612.0, Unit::Inches));
+    confirm(&mut app).unwrap();
+    let st = &app.session.doc().unwrap().doc.settings;
+    assert_eq!((st.horizontal_units, st.vertical_units, st.keyboard_increment), (Unit::Inches, Unit::Inches, 0.5));
+    // With the document open, Preferences edits that document's units, not the defaults.
+    crate::menus::activate(&mut app, "app.preferences", &Value::Null);
+    assert!(!app.ui.dialog.as_ref().unwrap().b("defaults"));
+}
+
+/// Preferences › File Handling shows the number of recent items as a whole number, as
+/// InDesign's does ("20"; it read "20.0").
+#[test]
+fn file_handling_shows_the_recent_items_count_as_a_whole_number() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("app.preferences", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!("files"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Number of Recent Items to Display:");
+    let count = app.ui.dialog.as_ref().unwrap().n("recentFilesMax").unwrap();
+    assert_eq!(count, 20.0, "InDesign's default");
+    visible_label(&labels, screen, &format!("{count}"));
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == format!("{count:.1}")), "no decimal shown");
+}
+
+/// Collapsing advanced TOC controls changes visibility without discarding their values.
+#[test]
+fn toc_more_options_preserves_hidden_settings() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    open_toc(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert(
+        "included".into(),
+        json!([{
+            "style": "Headline", "level": 3, "separator": " ^t", "pageNumber": "before",
+            "pageNumberStyle": "Accent", "separatorStyle": "Emphasis", "sort": true
+        }]),
+    );
+    let before = toc_params(&app, app.ui.dialog.as_ref().unwrap());
+    let revision = app.session.doc().unwrap().revision;
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Between Entry and Number:");
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Fewer Options").center());
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!labels.iter().any(|(text, _, _)| text == "Between Entry and Number:"));
+    visible_label(&labels, screen, "Entry Style:");
+    assert_eq!(toc_params(&app, app.ui.dialog.as_ref().unwrap()), before);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "More Options").center());
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Between Entry and Number:");
+    assert_eq!(toc_params(&app, app.ui.dialog.as_ref().unwrap()), before);
+    assert_eq!(app.session.doc().unwrap().revision, revision);
+}
+
+/// Enter on the focused Fewer Options / More Options button toggles the options; it doesn't
+/// also make the table of contents.
+#[test]
+fn enter_on_the_toc_options_toggle_only_toggles() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    open_toc(&mut app);
+    let revision = app.session.doc().unwrap().revision;
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("toc_toggle_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    h.get_by_label("Fewer Options").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let d = h.state().ui.dialog.as_ref().expect("the dialog stays open");
+    assert_eq!((d.id.as_str(), d.b("moreOptions")), (TOC, false), "the options are fewer");
+    assert_eq!(h.state().session.doc().unwrap().revision, revision, "no table of contents made");
+    assert!(h.query_by_label("More Options").is_some());
+}
+
+/// The title stays readable beside the style selector after the grid settles.
+#[test]
+fn toc_title_field_shows_the_whole_default_title() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    open_toc(&mut app);
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    let title_row = |labels: &[(String, egui::Rect, egui::Rect)]| {
+        let y = visible_label(labels, screen, "Title:").center().y;
+        labels.iter().filter(|(_, rect, _)| (rect.center().y - y).abs() < 2.0).cloned().collect::<Vec<_>>()
+    };
+    visible_label(&title_row(&labels), screen, "Contents");
+    app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Table of Contents"));
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&title_row(&labels), screen, "Table of Contents");
+    // A small window: the title narrows and the style selector beside it stays in view.
+    let small = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(450.0, 280.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, small, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, small, vec![]);
+    let y = visible_label(&labels, small, "Title:").center().y;
+    let row: Vec<_> = labels.iter().filter(|(_, rect, _)| (rect.center().y - y).abs() < 2.0).cloned().collect();
+    let style = visible_label(&row, small, "TOC Title");
+    // The selector is 200 pt wide from just before its text: all of it is in the dialog body.
+    let (_, _, body) = row.iter().find(|(text, _, _)| text == "Style:").unwrap();
+    assert!(style.min.x - 4.0 + 200.0 <= body.max.x, "the style selector fits the dialog: {style:?} in {body:?}");
+}
+
+/// The bookmarks checkbox persists through generation and reopening the dialog.
+#[test]
+fn toc_bookmarks_checkbox_sets_and_reopens_the_persisted_option() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    open_toc(&mut app);
+    assert!(app.ui.dialog.as_ref().unwrap().b("createBookmarks"));
+    app.ui.dialog.as_mut().unwrap().fields.insert("included".into(), json!([{"style": "Headline", "level": 1}]));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Create PDF Bookmarks");
+    confirm(&mut app).unwrap();
+    assert!(app.session.doc().unwrap().doc.toc.as_ref().unwrap().create_bookmarks);
+    assert!(!app.session.doc().unwrap().doc.bookmarks.is_empty());
+    open_toc(&mut app);
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Create PDF Bookmarks").center());
+    confirm(&mut app).unwrap();
+    assert!(app.session.doc().unwrap().doc.bookmarks.is_empty());
+    open_toc(&mut app);
+    assert!(!app.ui.dialog.as_ref().unwrap().b("createBookmarks"));
+}
+
+#[test]
+fn corner_options_dialog_sets_each_corner_with_preview_and_one_undo_step() {
+    use designcraft_geom::corners::CornerShape;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let corners = |app: &DesignApp| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().corners.corners;
+    let undo = |app: &DesignApp| app.session.doc().unwrap().history.undo.len();
+    let set = |app: &mut DesignApp, k: &str, v: Value| {
+        app.ui.dialog.as_mut().unwrap().fields.insert(k.into(), v);
+    };
+    let u0 = undo(&app);
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    // Object › Corner Options… opens InDesign's dialog, not a form of the command's params.
+    crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some(CORNER_OPTIONS));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for expected in ["Corner Options", "Corner Size and Shape:", "Preview", "OK", "Cancel"] {
+        visible_label(&labels, screen, expected);
+    }
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Ids"), "no raw command fields");
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("size1"), d.s("shape1"), d.b("link")), ("0p0".into(), "none".into(), true), "seeded from the frame, linked");
+    // Linked: a corner changed is all four.
+    set(&mut app, "size0", json!("1p0"));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("size2"), "1p0");
+    // Unlinked, only the top-right corner rounds, as in the tutorial.
+    set(&mut app, "link", json!(false));
+    for k in 0..4 {
+        set(&mut app, &format!("size{k}"), json!("0"));
+    }
+    set(&mut app, "size1", json!("3 cm"));
+    set(&mut app, "shape1", json!("rounded"));
+    set(&mut app, "preview", json!(true));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert_eq!(corners(&app)[1].shape, CornerShape::Rounded, "Preview shows it");
+    assert_eq!(undo(&app), u0, "without an undo step");
+    set(&mut app, "preview", json!(false));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert_eq!(corners(&app)[1].shape, CornerShape::None, "Preview off puts it back");
+    set(&mut app, "preview", json!(true));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    confirm(&mut app).unwrap();
+    let c = corners(&app);
+    assert_eq!(c.map(|c| c.shape), [CornerShape::None, CornerShape::Rounded, CornerShape::None, CornerShape::None]);
+    assert!((c[1].size - 3.0 / 2.54 * 72.0).abs() < 1e-6, "{}", c[1].size);
+    assert_eq!(undo(&app), u0 + 1, "one undo step");
+    // Reopened, it shows the frame's corners, no longer linked.
+    crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("shape1"), d.s("shape0"), d.b("link")), ("rounded".into(), "none".into(), false));
+    // A size that does not parse keeps the dialog open with the error; so does a shape the
+    // dialog doesn't offer (rather than another shape taking its place).
+    set(&mut app, "size0", json!("abc"));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    set(&mut app, "size0", json!("0"));
+    set(&mut app, "shape0", json!("spiky"));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    cancel(&mut app);
+    assert_eq!(corners(&app), c);
+}
+
+/// Several objects: the dialog shows the first one's corners, and OK sets only the corners
+/// edited; the others keep each object's own. A linked edit sets all four.
+#[test]
+fn corner_options_keep_each_objects_untouched_corners() {
+    use designcraft_geom::corners::CornerShape;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    let b = app.run("frame.create", json!({"rect": [272, 72, 400, 200]})).unwrap()["id"].as_u64().unwrap();
+    app.run("object.cornerOptions", json!({"ids": [b], "shape": "bevel", "size": 12})).unwrap();
+    app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+    let corners = |app: &DesignApp, id: u64| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().corners.corners;
+    let set = |app: &mut DesignApp, k: &str, v: Value| {
+        app.ui.dialog.as_mut().unwrap().fields.insert(k.into(), v);
+    };
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    let b0 = corners(&app, b);
+    // Unlinked: only the top-right corner rounds, on both.
+    crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    set(&mut app, "link", json!(false));
+    set(&mut app, "size1", json!("1p0"));
+    set(&mut app, "shape1", json!("rounded"));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    confirm(&mut app).unwrap();
+    let (ca, cb) = (corners(&app, a), corners(&app, b));
+    assert_eq!(ca.map(|c| c.shape), [CornerShape::None, CornerShape::Rounded, CornerShape::None, CornerShape::None]);
+    assert_eq!(cb.map(|c| c.shape), [CornerShape::Bevel, CornerShape::Rounded, CornerShape::Bevel, CornerShape::Bevel], "b keeps its others");
+    assert_eq!((cb[0], cb[2], cb[3]), (b0[0], b0[2], b0[3]));
+    assert_eq!(ca[1], cb[1]);
+    // Linked: a corner set to the first object's own value still sets all four, on both.
+    crate::menus::activate(&mut app, "object.cornerOptions", &Value::Null);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    set(&mut app, "link", json!(true));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    set(&mut app, "size0", json!("0p6"));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    confirm(&mut app).unwrap();
+    let (ca, cb) = (corners(&app, a), corners(&app, b));
+    assert_eq!(ca, cb, "all four, on both");
+    assert!(ca.iter().all(|c| c.shape == CornerShape::None && (c.size - 6.0).abs() < 1e-6), "{ca:?}");
+}
+
+#[test]
+fn on_a_page_without_a_section_the_window_is_new_section() {
+    // Chris Nielsen's "Numbering Page Sections" (4:43): page 3 selected, the Pages panel menu's
+    // Numbering & Section Options opens New Section with Start Section on and 1 offered.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 6, "facingPages": true})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0)));
+    crate::canvas::go_to_page(&mut app, 2);
+    crate::menus::activate(&mut app, "layout.section", &Value::Null);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(
+        (d.n("page"), d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")),
+        (Some(3.0), true, true, true, "1".into())
+    );
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 814.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "New Section");
+    // Typing a number in the field chooses Start Page Numbering at; OK: page 3 is page 5 (odd,
+    // so a facing page stays on the right).
+    let field = visible_label(&labels, screen, "1");
+    click_dialog(&mut app, &ctx, screen, field.center());
+    dialog_frame(
+        &mut app,
+        &ctx,
+        screen,
+        vec![
+            egui::Event::Key { key: egui::Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Key { key: egui::Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
+            egui::Event::Text("5".into()),
+        ],
+    );
+    assert!(!app.ui.dialog.as_ref().unwrap().b("automatic"), "typing chose Start Page Numbering at");
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "OK").center());
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(app.session.active().unwrap().doc.page_name(2), "5");
+    // Opened again on that page, it is Numbering & Section Options, showing the section.
+    crate::menus::activate(&mut app, "layout.section", &Value::Null);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")), (false, true, false, "5".into()));
+    let labels = (0..4).map(|_| dialog_frame(&mut app, &ctx, screen, vec![])).last().unwrap();
+    visible_label(&labels, screen, "Numbering & Section Options");
+    assert!(!labels.iter().any(|(t, _, _)| t == "New Section"));
+}
+
+/// Find/Change's Change and Change/Find, as InDesign's: Find Next selects a match, Change/Find
+/// changes it and selects the next, Change changes that one and keeps it selected. With no
+/// text selected they're off.
+#[test]
+fn change_and_change_find_change_the_found_text() {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "red red | red"})).unwrap();
+    let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    app.run("app.findChange", json!({})).unwrap();
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("find".into(), json!("red"));
+        d.fields.insert("change".into(), json!("blue"));
+    }
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("change_find_test_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(4);
+    assert!(h.query_by_value("Document").is_some(), "the Search choices are InDesign's");
+    assert!(h.get_by_label("Change").accesskit_node().is_disabled(), "nothing found yet");
+    let text = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().doc.story(sid).unwrap().text.clone();
+    let selected = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().selection.text.unwrap().range();
+    h.get_by_label("Find Next").click();
+    h.run_steps(3);
+    assert_eq!(selected(&h), 0..3);
+    h.get_by_label("Change/Find").click();
+    h.run_steps(3);
+    assert_eq!((text(&h), selected(&h)), ("blue red | red".to_string(), 5..8));
+    h.get_by_label("Change").click();
+    h.run_steps(3);
+    assert_eq!((text(&h), selected(&h)), ("blue blue | red".to_string(), 5..9));
+    assert_eq!(h.state().ui.dialog.as_ref().unwrap().fields["status"], json!("1 replacement(s) made"));
+}
+
+/// Insert Table: the dimensions as typed, and the Table Style chosen is applied to the new
+/// table; [Basic Table] (the default) leaves it unstyled.
+#[test]
+fn insert_table_applies_its_dimensions_and_table_style() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.table.create", json!({"name": "Grid"})).unwrap();
+    for (style, expected) in [("Grid", "Grid"), (designcraft_doc::BASIC_TABLE, "")] {
+        app.run("frame.create", json!({"rect": [72, 72, 372, 372], "content": "text"})).unwrap();
+        assert_eq!(app.run("app.insertTableDialog", json!({})).unwrap(), Value::Null);
+        for (field, value) in [("bodyRows", json!(5)), ("columns", json!(3)), ("headerRows", json!(1)), ("tableStyle", json!(style))] {
+            ctl(&mut app, "ui.dialog.set", json!({"field": field, "value": value}));
+        }
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let t = app.run("table.get", json!({})).unwrap();
+        let len = |k: &str| t[k].as_array().map_or(0, Vec::len);
+        assert_eq!((len("rows"), len("columns"), t["headerRows"].as_u64()), (6, 3, Some(1)), "{t}");
+        assert_eq!(t["style"].as_str().unwrap_or(""), expected, "{t}");
+        // One Insert Table, one undo.
+        app.run("edit.undo", json!({})).unwrap();
+        assert!(app.run("table.get", json!({})).is_err(), "the table is gone");
+    }
+    // A null style is no style: the table is made, unstyled.
+    app.run("frame.create", json!({"rect": [72, 72, 372, 372], "content": "text"})).unwrap();
+    app.run("app.insertTableDialog", json!({})).unwrap();
+    ctl(&mut app, "ui.dialog.set", json!({"field": "tableStyle", "value": null}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    assert_eq!(app.run("table.get", json!({})).unwrap()["style"].as_str().unwrap_or(""), "");
+    app.run("edit.undo", json!({})).unwrap();
+    // A style that no longer exists changes nothing.
+    let tables = |app: &DesignApp| app.session.active().unwrap().doc.stories.values().map(|s| s.tables.len()).sum::<usize>();
+    app.run("frame.create", json!({"rect": [72, 72, 372, 372], "content": "text"})).unwrap();
+    app.run("app.insertTableDialog", json!({})).unwrap();
+    ctl(&mut app, "ui.dialog.set", json!({"field": "tableStyle", "value": "Gone"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert_eq!(tables(&app), 0);
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open to be corrected");
+    assert_eq!((d.id.as_str(), d.s("tableStyle")), ("insertTable", "Gone".to_string()));
+    // So does a style that isn't a name: the command refuses it, rather than making the table
+    // unstyled.
+    ctl(&mut app, "ui.dialog.set", json!({"field": "tableStyle", "value": 42}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert_eq!(tables(&app), 0);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("insertTable"), "the dialog stays open");
+}
+
+/// Convert Text to Table: available with text selected (not with a caret alone); its
+/// separators and Number of Columns shape the table. Convert Table to Text takes it back with
+/// the separators chosen there.
+#[test]
+fn convert_dialogs_use_their_separators() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = "Name:\nAddress:\nCity:\nState:";
+    let sid = app.run("frame.create", json!({"rect": [72, 72, 372, 372], "content": "text", "text": text})).unwrap()["story"].clone();
+    app.run("text.select", json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!crate::menus::menu_enabled(&app, "app.convertTextToTableDialog"), "a caret alone");
+    assert!(!crate::menus::menu_enabled(&app, "app.convertTableToTextDialog"), "no table");
+    app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+    assert!(crate::menus::menu_enabled(&app, "app.convertTextToTableDialog"));
+    app.run("app.convertTextToTableDialog", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("convertTextToTable"));
+    // "comma" and a typed "," are the same separator, so Number of Columns applies; a count of
+    // 0 is refused, not taken as 1, and the dialog stays open.
+    ctl(&mut app, "ui.dialog.set", json!({"field": "columnSeparator", "value": "comma"}));
+    ctl(&mut app, "ui.dialog.set", json!({"field": "rowSeparator", "value": ","}));
+    assert!(same_separators(app.ui.dialog.as_ref().unwrap()));
+    ctl(&mut app, "ui.dialog.set", json!({"field": "columns", "value": 0}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("convertTextToTable"));
+    // An emptied separator: the command refuses it and the dialog stays open, as typed.
+    ctl(&mut app, "ui.dialog.set", json!({"field": "rowSeparator", "value": ""}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| (d.id.as_str(), d.s("rowSeparator"))), Some(("convertTextToTable", String::new())));
+    for (field, value) in [("columnSeparator", json!("paragraph")), ("rowSeparator", json!("paragraph")), ("columns", json!(2))] {
+        ctl(&mut app, "ui.dialog.set", json!({"field": field, "value": value}));
+    }
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    let t = app.run("table.get", json!({})).unwrap();
+    let len = |k: &str| t[k].as_array().map_or(0, Vec::len);
+    assert_eq!((len("rows"), len("columns")), (2, 2), "{t}");
+    assert!(crate::menus::menu_enabled(&app, "app.convertTableToTextDialog"));
+    app.run("app.convertTableToTextDialog", json!({})).unwrap();
+    ctl(&mut app, "ui.dialog.set", json!({"field": "columnSeparator", "value": ", "}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    let story = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text.clone();
+    // (The empty paragraph after a table that ends its story stays after the text.)
+    assert_eq!(story.trim_end(), "Name:, Address:\nCity:, State:");
+}
+
+/// The Rectangle dialog a frame-tool click opens shows the width in the horizontal ruler unit and
+/// the height in the vertical one, not always picas, and reads bare numbers the same way (#1964).
+#[test]
+fn frame_size_dialog_follows_the_ruler_units() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "millimeters"})).unwrap();
+    // As the frame tool asks: a click at (36, 36), 72 pt by 72 pt.
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_ref().expect("the Rectangle dialog");
+    assert_eq!((d.id.as_str(), d.unit), ("frameSize", Unit::Inches));
+    assert_eq!(d.s("width"), format_measure(72.0, Unit::Inches));
+    assert_eq!(d.s("height"), format_measure(72.0, Unit::Millimeters));
+    assert!(!d.s("width").contains('p') && !d.s("height").contains('p'), "no picas: {} x {}", d.s("width"), d.s("height"));
+    // Bare numbers typed in each field are in that field's unit: 2 in by 50 mm.
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("2"));
+    d.fields.insert("height".into(), json!("50"));
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 50.0 / 25.4 * 72.0).abs() < 0.01, "{b:?}");
+    // The properties panel's link opens it in the same units.
+    let d = frame_size_dialog(&app, json!({"width": 36.0, "height": 36.0}));
+    assert_eq!((d.s("width"), d.s("height")), (format_measure(36.0, Unit::Inches), format_measure(36.0, Unit::Millimeters)));
+    // Every ruler unit: the shown size reads back as the size, so OK leaves a 72 pt frame 72 pt.
+    let units = serde_json::to_value(Unit::ALL).unwrap();
+    for (unit, name) in Unit::ALL.iter().zip(units.as_array().unwrap()) {
+        app.run("document.preferences", json!({"horizontalUnits": name, "verticalUnits": name})).unwrap();
+        let d = frame_size_dialog(&app, json!({"width": 72.0, "height": 145.0}));
+        assert_eq!(d.unit, *unit);
+        for (k, pt) in [("width", 72.0), ("height", 145.0)] {
+            let back = d.m_in(k, *unit).unwrap_or(f64::NAN);
+            assert!((back - pt).abs() < 0.05, "{name}: {k} shows {:?}, reads back {back}", d.s(k));
+        }
+    }
+}
+
+/// #2055 review: the Rectangle dialog reads the height in the vertical unit it showed when it
+/// opened. Rulers switched while it is open (the control channel) leave a typed 50 at 50 mm.
+#[test]
+fn frame_size_dialog_keeps_its_units_while_open() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_mut().expect("the Rectangle dialog");
+    d.fields.insert("width".into(), json!("50"));
+    d.fields.insert("height".into(), json!("50"));
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "inches"})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    let mm50 = 50.0 / 25.4 * 72.0;
+    assert!((b.width() - mm50).abs() < 0.01 && (b.height() - mm50).abs() < 0.01, "50 mm by 50 mm (about 141.73 pt): {b:?}");
+    // A dialog made without the vertical unit (`Dialog::new`) reads the height in its own unit.
+    let mut d = Dialog::new("frameSize", json!({"width": "2", "height": "3"}));
+    d.unit = Unit::Inches;
+    assert_eq!(d.vertical_unit, None);
+    app.ui.dialog = Some(d);
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }

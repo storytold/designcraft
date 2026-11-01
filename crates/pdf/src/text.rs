@@ -276,6 +276,9 @@ impl Exporter<'_> {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in ft.decos.iter().filter(|d| !d.nonprinting) {
+                if d.overprint {
+                    me.warn("overprint is not exported yet");
+                }
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     match &d.path {
                         Some(p) => me.fill_path(s, p, c),

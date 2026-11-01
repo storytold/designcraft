@@ -223,6 +223,11 @@ impl<'r> Importer<'r> {
         self.para_names.get(r).cloned().unwrap_or_else(|| names::style_name_in(PARA_BUILTINS, &unescape_id(r.trim_start_matches("ParagraphStyle/"))))
     }
 
+    /// A paragraph style reference written as an element's text: as written when it names a
+    /// style, otherwise without surrounding whitespace (see [`Self::listed_char_style_ref`]).
+    pub(super) fn listed_para_style_ref(&self, r: &str) -> String {
+        if self.para_names.contains_key(r) { self.para_style_ref(r) } else { self.para_style_ref(r.trim()) }
+    }
     /// A character style reference written as an element's text (nested, line and GREP styles).
     /// A style name may end in a space, so the reference is used as written when it names a
     /// style; only otherwise is surrounding whitespace dropped.
@@ -238,7 +243,12 @@ impl<'r> Importer<'r> {
         // A style or range can set some of a rule's settings (such as only its colour); the others
         // come from its paragraph style chain, so the rule is whole.
         let fields = ["", "LineWeight", "Color", "Tint", "Width", "Offset", "LeftIndent", "RightIndent"];
-        if !fields.iter().any(|f| e.prop(&format!("{k}{f}")).is_some()) {
+        // Any of them, or of the type, gap and Keep In Frame settings, makes it an override (the
+        // rest then come from the style chain, or the defaults: off, 1 pt).
+        let more = ["Type", "GapColor", "GapTint"];
+        let own = fields.iter().chain(&more).any(|f| e.prop(&format!("{k}{f}")).is_some())
+            || (k == "RuleAbove" && e.prop("KeepRuleAboveInFrame").is_some());
+        if !own {
             return None;
         }
         let v: Vec<Option<String>> = fields.iter().map(|f| self.para_setting(e, &format!("{k}{f}"))).collect();
@@ -246,7 +256,6 @@ impl<'r> Importer<'r> {
         let num = |i: usize| get(i).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
         let on = get(0).map(|v| v.trim() == "true");
         let weight = num(1);
-        on.or(weight.map(|_| false))?;
         let mut r = Rule { on: on.unwrap_or(false), ..Rule::default() };
         if let Some(w) = weight {
             r.weight = w;
@@ -258,15 +267,36 @@ impl<'r> Importer<'r> {
         r.offset = num(5).unwrap_or(0.0);
         r.left_indent = num(6).unwrap_or(0.0);
         r.right_indent = num(7).unwrap_or(0.0);
-        if let Some(c) = get(2) {
-            let c = c.trim();
-            if c == designcraft_doc::TEXT_COLOR {
-                r.color = c.to_string();
-            } else if c.contains('/') {
-                r.color = self.swatch_ref(c);
-            }
+        // Type, gap colour and tint, Keep In Frame (rule above).
+        if let Some(t) = self.para_setting(e, &format!("{k}Type")) {
+            r.kind = names::stroke_type_in(t.trim());
+        }
+        if let Some(c) = self.para_setting(e, &format!("{k}GapColor"))
+            && let Some(c) = self.rule_color_ref(&c)
+        {
+            r.gap_color = c;
+        }
+        if let Some(t) = tint(self.para_setting(e, &format!("{k}GapTint")).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite())) {
+            r.gap_tint = t;
+        }
+        if k == "RuleAbove" {
+            r.keep_in_frame = self.para_setting(e, "KeepRuleAboveInFrame").is_some_and(|v| v.trim() == "true");
+        }
+        if let Some(c) = get(2).and_then(|c| self.rule_color_ref(&c)) {
+            r.color = c;
         }
         Some(r)
+    }
+
+    /// A rule's colour or gap colour: Text Color (written `Text Color` or `$ID/Text Color`), or
+    /// a swatch reference; anything else leaves the default.
+    fn rule_color_ref(&mut self, c: &str) -> Option<String> {
+        let c = c.trim();
+        if c == designcraft_doc::TEXT_COLOR || c.strip_prefix("$ID/") == Some(designcraft_doc::TEXT_COLOR) {
+            Some(designcraft_doc::TEXT_COLOR.to_string())
+        } else {
+            c.contains('/').then(|| self.swatch_ref(c))
+        }
     }
 
     /// Paragraph setting `k` of `e` (a paragraph style or a range): its own, else from its

@@ -12,7 +12,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Pages…",
             ["Layout", "Pages"],
             Some("Cmd+Shift+P"),
-            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page), parent?: id|\"A-Parent\"|\"A\"|null}",
+            "{count?: 1 (1 to 9999), after?: 0-based page index (default: the last page; past it: at the end), before?: 0-based page index (instead of `after`; 0: at the start), parent?: id|\"A-Parent\"|\"A\"|null}",
             has_doc,
             |s, p| {
                 const ID: &str = "layout.pages.insert";
@@ -27,12 +27,30 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let st = s.doc()?;
                 let n = st.doc.page_count();
-                // An `after` past the last page appends, which `insert_after_u64_max_appends_at_the_end`
-                // pins deliberately.
-                let after = p.get("after").and_then(Value::as_u64).map(|v| usize::try_from(v).unwrap_or(usize::MAX)).unwrap_or(n.saturating_sub(1));
+                // A placement given (null included) must be a page index; only when neither is
+                // given do the pages go after the last.
+                if p.get("after").is_some() && p.get("before").is_some() {
+                    return Err(bad("layout.pages.insert", "give `after` or `before`, not both"));
+                }
+                // `before` names a page of the document; an `after` past the last page appends
+                // (`insert_pages_bounds.rs` pins that).
+                let index = |k: &str| match p.get(k) {
+                    None => Ok(None),
+                    Some(v) => v
+                        .as_u64()
+                        .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+                        .filter(|&i| k == "after" || i < n)
+                        .map(|i| Some(i.min(n.saturating_sub(1))))
+                        .ok_or_else(|| bad(ID, format!("`{k}` must be the index of one of the {n} pages, not {v}"))),
+                };
+                // The page the new ones follow; none: they go first.
+                let after = match (index("after")?, index("before")?) {
+                    (_, Some(b)) => b.checked_sub(1),
+                    (a, None) => Some(a.unwrap_or(n.saturating_sub(1))),
+                };
                 let parent = parent_ref(ID, &st.doc, p.get("parent"))?.unwrap_or_else(|| st.doc.parents.first().map(|x| x.id));
                 s.edit(|d, _| {
-                    let ids = d.insert_pages(Some(after), count, parent)?;
+                    let ids = d.insert_pages(after, count, parent)?;
                     Ok(json!({"pages": ids.len(), "total": d.page_count()}))
                 })
             }

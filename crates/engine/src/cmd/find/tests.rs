@@ -621,6 +621,27 @@ fn document_scope_searches_and_changes_table_cells() {
     assert_eq!(s.execute("find.find", &json!({"find": "13.00", "scope": "document"})).unwrap().as_array().unwrap().len(), 2);
 }
 
+/// Change (`found`) on text Find Next found in a table cell changes it there, leaves the
+/// same text in the story alone, and Find Next goes on after it.
+#[test]
+fn change_changes_the_text_find_next_found_in_a_cell() {
+    let (mut s, sid) = scope_session("red here");
+    scope_select(&mut s, sid, 0, 0);
+    let table = s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    s.execute("table.setCell", &json!({"row": 0, "col": 1, "text": "red"})).unwrap();
+    let p = json!({"find": "red", "change": "blue", "scope": "document"});
+    let hit = s.execute("find.next", &p).unwrap();
+    assert_eq!(hit["cell"], json!({"table": table, "row": 0, "col": 1}), "{hit}");
+    let mut change = p.clone();
+    change["found"] = json!(true);
+    assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+    let t = s.execute("table.get", &json!({"table": table})).unwrap();
+    assert_eq!(t["cells"][1]["text"], "blue");
+    assert!(s.doc().unwrap().doc.story(sid).unwrap().text.contains("red here"), "the story's red stays");
+    let next = s.execute("find.next", &p).unwrap();
+    assert!(next.get("cell").is_none() && next.get("start").is_some(), "on to the story: {next}");
+}
+
 fn child_scope_session(note: bool, child: &str) -> (Session, designcraft_doc::StoryId, designcraft_doc::TextSel) {
     let (mut s, sid) = scope_session("red");
     scope_select(&mut s, sid, 3, 3);
@@ -746,4 +767,195 @@ fn find_scope_revert_releases_context_with_same_document_uid() {
     assert!(s.find_context.is_none());
     assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "red red | red");
     assert!(s.execute("find.find", &p).is_err(), "revert's empty selection cannot inherit a previous range");
+}
+
+#[test]
+fn change_format_styles_the_found_text_and_keeps_it() {
+    // The course's chapter 22: every lowercase "eggs" gets the character style "eggs", with
+    // Change to empty, so the words stay.
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let text = "Poached Eggs\nBreak eggs; cook until eggs are set.";
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": text})).unwrap();
+    let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    s.execute("style.character.create", &json!({"name": "eggs", "chars": {"fontStyle": "Bold", "fill": "C=15 M=100 Y=100 K=0"}})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Method"})).unwrap();
+    let undo = s.doc().unwrap().history.undo.len();
+    let r = s.execute("find.change", &json!({"find": "eggs", "change": "", "caseSensitive": true, "charStyle": "eggs"})).unwrap();
+    assert_eq!(r["count"], 2);
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+    let style_at = |s: &Session, at: usize| s.doc().unwrap().doc.story(sid).unwrap().format_after(at).style.clone();
+    let story = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert_eq!(story.text, text, "the words stay");
+    for at in [19, 36] {
+        assert_eq!(&story.text[at..at + 4], "eggs");
+        assert_eq!(style_at(&s, at), "eggs");
+    }
+    assert_eq!(style_at(&s, 8), designcraft_doc::NO_CHAR_STYLE, "case sensitive: not \"Eggs\"");
+    assert_eq!(style_at(&s, 25), designcraft_doc::NO_CHAR_STYLE, "only the found text");
+    // A paragraph style goes to the found text's paragraphs, with attributes over the text.
+    s.execute("find.change", &json!({"find": "cook", "change": "", "paraStyle": "Method", "attrs": {"underline": true}})).unwrap();
+    let story = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert_eq!((story.paras[0].style.as_str(), story.paras[1].style.as_str()), (designcraft_doc::BASIC_PARAGRAPH, "Method"));
+    assert_eq!(story.format_after(25).over.underline, Some(true));
+    assert_eq!(story.format_after(19).style, "eggs", "the other text keeps its character style");
+    // Change to and a Change Format: the new text is formatted.
+    s.execute("find.change", &json!({"find": "set", "change": "firm", "charStyle": "eggs"})).unwrap();
+    assert_eq!(style_at(&s, s.doc().unwrap().doc.story(sid).unwrap().text.find("firm").unwrap()), "eggs");
+    // No such style: refused, nothing changed.
+    let before = s.doc().unwrap().doc.clone();
+    assert!(s.execute("find.change", &json!({"find": "eggs", "change": "", "charStyle": "Nope"})).is_err());
+    assert!(s.execute("find.change", &json!({"find": "eggs", "change": "", "paraStyle": "Nope"})).is_err());
+    assert_eq!(s.doc().unwrap().doc, before);
+    // A null attribute is a Change Format too: the found text stays and loses that override.
+    let before = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    s.execute("find.change", &json!({"find": "cook", "change": "", "attrs": {"underline": null}})).unwrap();
+    let story = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert_eq!(story.text, before.text, "the words stay");
+    assert_eq!(story.format_after(25).over.underline, None);
+    // With no Change Format, an empty Change to still deletes the found text.
+    s.execute("find.change", &json!({"find": "Break ", "change": ""})).unwrap();
+    assert!(!s.doc().unwrap().doc.story(sid).unwrap().text.contains("Break"));
+}
+
+#[test]
+fn a_find_format_finds_only_text_with_it() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let r =
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Break eggs; cook eggs.\nEggs and eggs"})).unwrap();
+    let sid = r["story"].as_u64().unwrap();
+    s.execute("style.character.create", &json!({"name": "eggs", "chars": {"fontStyle": "Bold"}})).unwrap();
+    s.execute("style.paragraph.create", &json!({"name": "Method"})).unwrap();
+    for (a, b) in [(6, 10), (12, 16)] {
+        s.execute("text.select", &json!({"story": sid, "anchor": a, "focus": b})).unwrap();
+        s.execute("style.character.apply", &json!({"name": "eggs"})).unwrap();
+    }
+    s.execute("text.select", &json!({"story": sid, "anchor": 25, "focus": 25})).unwrap();
+    s.execute("style.paragraph.apply", &json!({"name": "Method"})).unwrap();
+    let found = |s: &mut Session, p: serde_json::Value| -> Vec<(u64, u64)> {
+        let m = s.execute("find.find", &p).unwrap();
+        m.as_array().unwrap().iter().map(|m| (m["start"].as_u64().unwrap(), m["end"].as_u64().unwrap())).collect()
+    };
+    // "eggs" where it has the character style: the first only.
+    assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"charStyle": "eggs"}})), [(6, 10)]);
+    // Nothing in Find what: each stretch of text in the style.
+    assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"charStyle": "eggs"}})), [(6, 10), (12, 16)]);
+    // A paragraph style, and resolved attributes.
+    assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"paraStyle": "Method"}})), [(23, 27), (32, 36)]);
+    assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"fontStyle": "Bold"}}})), [(6, 10), (12, 16)]);
+    assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"size": 12}}})), [(0, 22), (23, 36)], "each paragraph apart");
+    // Find Next walks the stretches.
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+    let next = json!({"find": "", "findFormat": {"charStyle": "eggs"}});
+    assert_eq!(s.execute("find.next", &next).unwrap()["start"], 6);
+    assert_eq!(s.execute("find.next", &next).unwrap()["start"], 12);
+    // Equivalent spellings the attributes accept find the same text: a snake_case key, and a
+    // nested number written as an integer (14 pt leading on the second paragraph).
+    s.execute("text.select", &json!({"story": sid, "anchor": 23, "focus": 36})).unwrap();
+    s.execute("type.char", &json!({"leading": {"kind": "points", "value": 14.0}})).unwrap();
+    for (a, b) in [
+        (json!({"fontStyle": "Bold"}), json!({"font_style": "Bold"})),
+        (json!({"leading": {"kind": "points", "value": 14.0}}), json!({"leading": {"kind": "points", "value": 14}})),
+    ] {
+        let (a, b) = (json!({"find": "", "findFormat": {"chars": a}}), json!({"find": "", "findFormat": {"chars": b}}));
+        let all = found(&mut s, a.clone());
+        assert!(!all.is_empty(), "{a}");
+        assert_eq!(found(&mut s, b.clone()), all, "{b}");
+        for p in [&a, &b] {
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 0})).unwrap();
+            assert_eq!(s.execute("find.next", p).unwrap()["start"].as_u64(), Some(all[0].0), "{p}");
+        }
+    }
+    // A null attribute asks for nothing.
+    assert_eq!(found(&mut s, json!({"find": "eggs", "findFormat": {"charStyle": "eggs", "chars": {"size": null}}})), [(6, 10)]);
+    // With a Change Format: the text in the style goes back to [None], underlined.
+    let r = s
+        .execute(
+            "find.change",
+            &json!({"find": "", "change": "", "findFormat": {"charStyle": "eggs", "chars": {"font_style": "Bold"}}, "charStyle": "[None]", "attrs": {"underline": true}}),
+        )
+        .unwrap();
+    assert_eq!(r["count"], 2, "a snake_case attribute changes the same text");
+    assert!(found(&mut s, json!({"find": "", "findFormat": {"charStyle": "eggs"}})).is_empty());
+    assert_eq!(found(&mut s, json!({"find": "", "findFormat": {"chars": {"underline": true}}})), [(6, 10), (12, 16)]);
+    // Unknown styles and attributes are refused; an empty search needs a Find Format.
+    assert!(s.execute("find.find", &json!({"find": "", "findFormat": {"charStyle": "Nope"}})).is_err());
+    assert!(s.execute("find.next", &json!({"find": "eggs", "findFormat": {"paraStyle": "Nope"}})).is_err());
+    assert!(s.execute("find.find", &json!({"find": "eggs", "findFormat": {"chars": {"bogus": 1}}})).is_err());
+    // Malformed fields are refused, not searched without.
+    for f in [json!({"chars": [1]}), json!({"chars": 12}), json!({"charStyle": 3}), json!({"paraStyle": ["Body"]})] {
+        assert!(s.execute("find.find", &json!({"find": "eggs", "findFormat": f})).is_err(), "{f}");
+    }
+    assert!(s.execute("find.find", &json!({"find": ""})).is_err());
+}
+
+/// Change and Change/Find: only the text Find Next found changes; it stays selected and the
+/// search goes on after it in its domain (here the original selection). A selection that
+/// isn't a match changes nothing and makes no undo step.
+#[test]
+fn change_changes_the_found_text_and_the_search_goes_on() {
+    let (mut s, sid) = scope_session("red red | red");
+    scope_select(&mut s, sid, 0, 7);
+    let p = json!({"find": "red", "change": "blue", "scope": "selection"});
+    let mut change = p.clone();
+    change["found"] = json!(true);
+    scope_hit(&mut s, &p, sid, 0, 3);
+    assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+    let text = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().text.clone();
+    assert_eq!(text(&s), "blue red | red");
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().range(), 0..4, "the changed text stays selected");
+    scope_hit(&mut s, &p, sid, 5, 8);
+    s.execute("find.change", &change).unwrap();
+    assert_eq!(text(&s), "blue blue | red");
+    assert_eq!(s.execute("find.next", &p).unwrap(), serde_json::Value::Null, "the last red is outside the selection searched");
+    // Not a match: nothing changes, no undo step.
+    scope_select(&mut s, sid, 0, 4);
+    let history = s.doc().unwrap().history.undo.len();
+    assert_eq!(s.execute("find.change", &json!({"find": "red", "change": "blue", "found": true})).unwrap()["count"], 0);
+    assert_eq!(s.doc().unwrap().history.undo.len(), history);
+    // A Change Format with nothing in Change to formats the found text only.
+    scope_select(&mut s, sid, 0, 0);
+    let fmt = json!({"find": "red", "change": "", "attrs": {"underline": true}});
+    let hit = s.execute("find.next", &fmt).unwrap();
+    assert_eq!(hit["start"], 12);
+    let mut found = fmt.clone();
+    found["found"] = json!(true);
+    s.execute("find.change", &found).unwrap();
+    assert_eq!(text(&s), "blue blue | red");
+    assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().format_after(12).over.underline, Some(true));
+    assert_eq!(s.doc().unwrap().selection.text.unwrap().range(), 12..15);
+}
+
+/// Change accepts what Find Next selected even when Change All wouldn't match there: the
+/// rest of a Find Format stretch from a caret inside it, and an overlapping match.
+#[test]
+fn change_takes_any_selection_find_next_made() {
+    // A caret inside a bold stretch: Find Next with only a Find Format selects the rest of it.
+    let (mut s, sid) = scope_session("plain bold text");
+    s.execute("style.character.create", &json!({"name": "Strong", "chars": {"fontStyle": "Bold"}})).unwrap();
+    scope_select(&mut s, sid, 6, 10);
+    s.execute("style.character.apply", &json!({"name": "Strong"})).unwrap();
+    scope_select(&mut s, sid, 8, 8);
+    let p = json!({"find": "", "change": "", "findFormat": {"charStyle": "Strong"}, "attrs": {"underline": true}, "scope": "story"});
+    let hit = s.execute("find.next", &p).unwrap();
+    assert_eq!((hit["start"].as_u64(), hit["end"].as_u64()), (Some(8), Some(10)));
+    let mut change = p.clone();
+    change["found"] = json!(true);
+    assert_eq!(s.execute("find.change", &change).unwrap()["count"], 1);
+    let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+    assert_eq!((st.format_after(7).over.underline, st.format_after(8).over.underline), (None, Some(true)), "only the selected rest");
+    // "aa" in "aaa" from the second a: Find Next selects 1..3, which Change All never finds.
+    for grep in [false, true] {
+        let (mut s, sid) = scope_session("aaa");
+        scope_select(&mut s, sid, 1, 1);
+        let (find, change) = if grep { ("(a)a", "<$1>") } else { ("aa", "b") };
+        let p = json!({"find": find, "change": change, "grep": grep, "scope": "story"});
+        let hit = s.execute("find.next", &p).unwrap();
+        assert_eq!((hit["start"].as_u64(), hit["end"].as_u64()), (Some(1), Some(3)));
+        let mut found = p.clone();
+        found["found"] = json!(true);
+        assert_eq!(s.execute("find.change", &found).unwrap()["count"], 1, "grep: {grep}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, if grep { "a<a>" } else { "ab" });
+    }
 }
