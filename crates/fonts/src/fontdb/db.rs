@@ -168,29 +168,42 @@ impl FontDb {
     /// [`FontDb::load_document_fonts`] for a document opened from bytes, which has no folder (in
     /// the browser, or a host keeping fonts in its own store): the font files in `files` (name,
     /// TTF/OTF/TTC/OTC bytes) load under a new scope, for that document alone, ahead of the shared
-    /// faces of the same family and style, until [`FontDb::close_scope`]. The files are untrusted
-    /// and capped as a folder's are (in name order): past [`MAX_DOCUMENT_FONT_FILES`], over
-    /// [`MAX_DOCUMENT_FONT_BYTES`] or past [`MAX_DOCUMENT_FONTS_TOTAL`] in all, and data that isn't
-    /// a font are skipped with a note. A family and style an earlier file gave stays with it.
-    /// Nothing is shared between calls: each document's faces are its own. No fonts → scope 0.
-    pub fn load_document_font_data(&self, mut files: Vec<(String, Vec<u8>)>) -> DocumentFonts {
+    /// faces of the same family and style, until [`FontDb::close_scope`]. Each file comes as its
+    /// name, its length and `read` for its bytes, so that, like a folder's listed length, the
+    /// length skips an oversized file unread. The files are untrusted and capped as a folder's are
+    /// (in name order): past [`MAX_DOCUMENT_FONT_FILES`], over [`MAX_DOCUMENT_FONT_BYTES`] or past
+    /// [`MAX_DOCUMENT_FONTS_TOTAL`] in all (by the length given, then by the bytes read), and data
+    /// that isn't a font are skipped with a note. A family and style an earlier file gave stays
+    /// with it. Nothing is shared between calls: each document's faces are its own. No fonts →
+    /// scope 0.
+    pub fn load_document_font_data<F: FnOnce() -> Vec<u8>>(&self, mut files: Vec<(String, u64, F)>) -> DocumentFonts {
         let mut out = DocumentFonts::default();
         files.sort_by(|a, b| a.0.cmp(&b.0));
         let count = files.len();
         let mut total = 0u64;
         let mut own: Vec<Arc<FontFace>> = Vec::new();
-        for (n, (name, data)) in files.into_iter().enumerate() {
+        let over = |len: u64, total: u64| {
+            if len > MAX_DOCUMENT_FONT_BYTES {
+                Some(format!("larger than {} MB", MAX_DOCUMENT_FONT_BYTES >> 20))
+            } else if total.saturating_add(len) > MAX_DOCUMENT_FONTS_TOTAL {
+                Some(format!("over the {} MB the document's fonts may take in all", MAX_DOCUMENT_FONTS_TOTAL >> 20))
+            } else {
+                None
+            }
+        };
+        for (n, (name, listed, read)) in files.into_iter().enumerate() {
             if n == MAX_DOCUMENT_FONT_FILES {
                 out.skipped.push(format!("{} more font files not loaded (at most {MAX_DOCUMENT_FONT_FILES} are)", count - n));
                 break;
             }
-            let len = data.len() as u64;
-            if len > MAX_DOCUMENT_FONT_BYTES {
-                out.skipped.push(format!("{name}: larger than {} MB", MAX_DOCUMENT_FONT_BYTES >> 20));
+            if let Some(why) = over(listed, total) {
+                out.skipped.push(format!("{name}: {why}"));
                 continue;
             }
-            if total.saturating_add(len) > MAX_DOCUMENT_FONTS_TOTAL {
-                out.skipped.push(format!("{name}: over the {} MB the document's fonts may take in all", MAX_DOCUMENT_FONTS_TOTAL >> 20));
+            let data = read();
+            let len = data.len() as u64;
+            if let Some(why) = over(len, total) {
+                out.skipped.push(format!("{name}: {why}"));
                 continue;
             }
             let data = Arc::new(data);

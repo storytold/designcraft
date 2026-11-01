@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
-use super::bytes::{base64_decode, load_bytes};
+use super::bytes::{base64_decode, base64_decoded_len, load_bytes};
 use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
@@ -133,7 +133,8 @@ pub(crate) fn load_supplied_fonts(d: &mut Document, p: &Value, command: &str) ->
     for (i, f) in list.iter().enumerate() {
         let name = str_param(f, "name").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `name`")))?;
         let data = str_param(f, "base64").ok_or_else(|| bad(command, format!("fonts[{i}]: missing `base64`")))?;
-        files.push((name.to_string(), base64_decode(data)));
+        // Decoded only once its length is within the caps.
+        files.push((name.to_string(), base64_decoded_len(data) as u64, move || base64_decode(data)));
     }
     let r = designcraft_fonts::FontDb::global().load_document_font_data(files);
     d.font_scope = r.scope;

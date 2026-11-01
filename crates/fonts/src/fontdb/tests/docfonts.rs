@@ -231,14 +231,29 @@ fn a_wws_family_that_is_also_the_legacy_family_finds_the_optical_size_face() {
     let _ = std::fs::remove_dir_all(&folder);
 }
 
+/// A font file for [`FontDb::load_document_font_data`]: its name, length and bytes.
+type FontData = (String, u64, Box<dyn FnOnce() -> Vec<u8>>);
+
+fn font_data(name: &str, bytes: Vec<u8>) -> FontData {
+    (name.into(), bytes.len() as u64, Box::new(move || bytes))
+}
+
+/// A file whose length alone must skip it: reading it fails the test.
+fn unread(name: &str, len: u64) -> FontData {
+    let name = name.to_string();
+    (name.clone(), len, Box::new(move || panic!("{name} was read")))
+}
+
 #[test]
 fn document_font_data_loads_in_its_own_scope() {
     const FAMILY: &str = "DocFont Data";
     let db = FontDb::with_font_dirs(vec![]);
     // Two documents bring different versions of one family: A's has `a` and `b`, B's only `b`.
-    let a =
-        db.load_document_font_data(vec![("same.ttf".into(), font_with(FAMILY, &['a', 'b']).unwrap()), ("broken.otf".into(), b"not a font".to_vec())]);
-    let b = db.load_document_font_data(vec![("same.ttf".into(), font_with(FAMILY, &['b']).unwrap())]);
+    let a = db.load_document_font_data(vec![
+        font_data("same.ttf", font_with(FAMILY, &['a', 'b']).unwrap()),
+        font_data("broken.otf", b"not a font".to_vec()),
+    ]);
+    let b = db.load_document_font_data(vec![font_data("same.ttf", font_with(FAMILY, &['b']).unwrap())]);
     assert_eq!((a.faces, b.faces), (1, 1));
     assert_eq!(a.skipped.len(), 1, "{:?}", a.skipped);
     assert!(a.skipped[0].contains("broken.otf"), "{:?}", a.skipped);
@@ -255,5 +270,25 @@ fn document_font_data_loads_in_its_own_scope() {
     db.close_scope(a.scope);
     assert!(!db.scoped(a.scope).has_family(FAMILY), "a closed scope finds its fonts no more");
     assert!(db.scoped(b.scope).face(FAMILY, "Regular").covers('b'), "closing A leaves B's");
-    assert_eq!(db.load_document_font_data(vec![("readme.txt".into(), b"hello".to_vec())]).scope, 0, "no fonts: scope 0");
+    assert_eq!(db.load_document_font_data(vec![font_data("readme.txt", b"hello".to_vec())]).scope, 0, "no fonts: scope 0");
+}
+
+/// The caps hold before a file's bytes are read: a file over them by its length, or past the
+/// file count, is skipped unread, as a folder's oversized files are.
+#[test]
+fn document_font_data_over_the_caps_is_skipped_unread() {
+    const FAMILY: &str = "DocFont Data Capped";
+    let db = FontDb::with_font_dirs(vec![]);
+    let r =
+        db.load_document_font_data(vec![unread("big.ttf", MAX_DOCUMENT_FONT_BYTES + 1), font_data("small.ttf", font_with(FAMILY, &['a']).unwrap())]);
+    assert_eq!(r.faces, 1, "{:?}", r.skipped);
+    assert_eq!(r.skipped.len(), 1, "{:?}", r.skipped);
+    assert!(r.skipped[0].starts_with("big.ttf: larger than"), "{:?}", r.skipped);
+
+    // In name order, the file past the count is never read.
+    let mut files: Vec<FontData> = (0..MAX_DOCUMENT_FONT_FILES).map(|i| font_data(&format!("f{i:03}.ttf"), b"x".to_vec())).collect();
+    files.push(unread("z-past-the-count.ttf", 10));
+    let r = db.load_document_font_data(files);
+    let past = format!("1 more font files not loaded (at most {MAX_DOCUMENT_FONT_FILES} are)");
+    assert_eq!(r.skipped.last(), Some(&past), "{:?}", r.skipped.last());
 }
