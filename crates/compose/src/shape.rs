@@ -57,6 +57,11 @@ pub struct Glyph {
     pub space: f64,
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
+    /// The width a line starting here gives to the hyphen before this glyph, repeated at the
+    /// line's start (0: none repeated).
+    pub line_start_hyphen: f64,
+    /// The size of that hyphen.
+    pub line_start_hyphen_size: f64,
     pub cjk_hang: f64,
     pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
@@ -1104,6 +1109,8 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
+        line_start_hyphen: 0.0,
+        line_start_hyphen_size: 0.0,
         cjk_hang: 0.0,
         moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
@@ -1266,6 +1273,8 @@ fn shape_segment(
             tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
             space,
             break_after: None,
+            line_start_hyphen: 0.0,
+            line_start_hyphen_size: 0.0,
             cjk_hang: 0.0,
             moji: crate::mojikumi::Metrics {
                 body,
@@ -1410,6 +1419,18 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.rendered_char = '-';
     h.moji = Default::default();
     h.generated_text = None;
+    h
+}
+
+/// `hyphen` again at the start of the next line (zero source length).
+pub(crate) fn repeated_hyphen(hyphen: &Glyph) -> Glyph {
+    let mut h = hyphen.clone();
+    h.dx = 0.0;
+    h.dy = 0.0;
+    h.len = 0;
+    h.moji = Default::default();
+    h.generated_text = None;
+    h.line_start_hyphen = 0.0;
     h
 }
 

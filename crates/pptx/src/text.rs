@@ -605,6 +605,12 @@ fn reflow(ex: &mut Exporter, it: &Item, tfr: &TextFrame, ft: &FrameText, cs: &Co
             {
                 r.text.pop();
             }
+            if l.repeated_hyphen
+                && let Some(r) = runs.first_mut()
+                && r.text.starts_with(['-', '\u{2010}'])
+            {
+                r.text.remove(0);
+            }
             if ol.trailing_space
                 && let Some(r) = runs.last_mut()
                 && !r.text.ends_with(char::is_whitespace)

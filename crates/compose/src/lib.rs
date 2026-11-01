@@ -231,6 +231,8 @@ pub struct Line {
     pub para: usize,
     pub glyphs: Vec<PlacedGlyph>,
     pub hyphenated: bool,
+    /// Starts with a repeated hyphen, which isn't in the story.
+    pub repeated_hyphen: bool,
     pub first_in_para: bool,
     pub last_in_para: bool,
     /// x after the last glyph (caret at line end).
@@ -1210,8 +1212,10 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
+            apply_hyphen_rules(&story.text, &mut gl, &foreign, pp.hyph_repeat);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
                     let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
@@ -1437,17 +1441,17 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         let (mut down, mut prev, mut prev_aki, mut last_r) = (0.0, reference, aki_below(model, lead), r);
                         for (j, next_break) in breaks.iter().enumerate().skip(k + 1) {
                             let (ns, ne) = (g0 + next_break.start, g0 + next_break.end);
-                            let next_glyphs = glyphs.get(ns..ne.max(ns)).unwrap_or_default();
-                            let (_, _, _, next_lead) = line_metrics(next_glyphs, glyphs, ns, mark_leading, mark_chars.size, db, mark_chars);
+                            let next_glyphs = with_repeated_hyphen(glyphs, ns, ne);
+                            let (_, _, _, next_lead) = line_metrics(&next_glyphs, glyphs, ns, mark_leading, mark_chars.size, db, mark_chars);
                             let next_lead = match last_line_mark {
                                 Some(mark) if j + 1 == breaks.len() => next_lead.max(mark),
                                 _ => next_lead,
                             };
-                            let (next_reference, next_model) = cjk_line_reference(next_glyphs);
+                            let (next_reference, next_model) = cjk_line_reference(&next_glyphs);
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
-                            last_r = grid::reference_offset(next_glyphs, pp.grid_reference);
+                            last_r = grid::reference_offset(&next_glyphs, pp.grid_reference);
                         }
                         (down + last_r - r).max(0.0)
                     } else {
@@ -1948,12 +1952,13 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         for (k, b) in breaks.iter().enumerate() {
             let (s, e) = (g0 + b.start, g0 + b.end);
             let line_glyphs = &glyphs[s..e.max(s)];
-            let (asc, tops, desc, lead) = line_metrics(line_glyphs, glyphs, s, mark_leading, mark_chars.size, db, mark_chars);
+            let measured = with_repeated_hyphen(glyphs, s, e);
+            let (asc, tops, desc, lead) = line_metrics(&measured, glyphs, s, mark_leading, mark_chars.size, db, mark_chars);
             let lead = match last_line_mark {
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
             };
-            let (reference, model) = cjk_line_reference(line_glyphs);
+            let (reference, model) = cjk_line_reference(&measured);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
                 frame: f,
@@ -1972,7 +1977,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 glyph_offset: g0,
                 breaks: &breaks,
                 break_index: k,
-                line_glyphs,
+                line_glyphs: &measured,
                 spacing,
                 ascent: asc,
                 tops,
@@ -2136,6 +2141,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 para: pi,
                 glyphs: placed,
                 hyphenated: b.hyphen,
+                repeated_hyphen: glyphs.get(s).is_some_and(|g| g.line_start_hyphen > 0.0),
                 first_in_para: line_no == 0,
                 last_in_para: last,
                 end_x,
@@ -2422,8 +2428,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
+    apply_hyphen_rules(&story.text, &mut glyphs, &foreign, pp.hyph_repeat);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story);
     // An empty paragraph takes its height from its paragraph mark's character format.
@@ -4128,6 +4136,18 @@ fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingMode
     (reference, g.leading_model)
 }
 
+/// The glyphs of the line `s..e` as its height sees them: a repeated hyphen can be taller than
+/// the text after it.
+fn with_repeated_hyphen(glyphs: &[Glyph], s: usize, e: usize) -> std::borrow::Cow<'_, [Glyph]> {
+    let line = &glyphs[s..e.max(s)];
+    match s.checked_sub(1).and_then(|i| glyphs.get(i)) {
+        Some(hyphen) if e > s && glyphs[s].line_start_hyphen > 0.0 => {
+            std::iter::once(shape::repeated_hyphen(hyphen)).chain(line.iter().cloned()).collect::<Vec<_>>().into()
+        }
+        _ => line.into(),
+    }
+}
+
 fn line_metrics(
     line: &[Glyph],
     all: &[Glyph],
@@ -4581,6 +4601,12 @@ fn layout_line(
 ) -> (Vec<PlacedGlyph>, f64, f64) {
     let mut line: Vec<Glyph> = glyphs[s..e.max(s)].to_vec();
     mojikumi::edges(&mut line);
+    if e > s
+        && glyphs[s].line_start_hyphen > 0.0
+        && let Some(i) = s.checked_sub(1)
+    {
+        line.insert(0, shape::repeated_hyphen(&glyphs[i]));
+    }
     let reference = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)).cloned();
     if let Some(reference) = reference {
         for g in &mut line {
@@ -5255,6 +5281,31 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     for (h, g) in hy.iter_mut().zip(glyphs) {
         if *h && at.contains(&(g.byte + g.len)) {
             *h = false;
+        }
+    }
+}
+
+/// What a language asks of a line break at a hyphen that joins two words or numbers (a minus sign
+/// or a suspended `auto-` has no such break). In Serbian an ending stays on its word (`ПКБ-а`).
+/// With `repeat`, the glyph after any other hyphen is marked to repeat it, unless figures stand on
+/// both sides: that hyphen was typed for a dash (`1941-1945`, Pravopis т. 160г).
+fn apply_hyphen_rules(text: &str, glyphs: &mut [Glyph], foreign: &[(Range<usize>, Option<hyphen::Lang>)], repeat: bool) {
+    for i in 1..glyphs.len().saturating_sub(1) {
+        let (before, hy, after) = (&glyphs[i - 1], &glyphs[i], &glyphs[i + 1]);
+        let joins = before.ch.is_alphanumeric() && after.ch.is_alphanumeric();
+        if !matches!(hy.ch, '-' | '\u{2010}') || !joins || hy.no_break || hy.break_after == Some(false) {
+            continue;
+        }
+        if !foreign.iter().find(|(r, _)| r.contains(&hy.byte)).and_then(|(_, l)| *l).is_some_and(hyphen::repeats_hyphen) {
+            continue;
+        }
+        let (left, right) = (text.get(..hy.byte).unwrap_or_default(), text.get(hy.byte + hy.len..).unwrap_or_default());
+        if hyphen::serbian_ending(left, right) {
+            glyphs[i].break_after = Some(false);
+        } else if repeat && !(before.ch.is_numeric() && after.ch.is_numeric()) {
+            let (adv, size) = (hy.adv, hy.size);
+            glyphs[i + 1].line_start_hyphen = adv;
+            glyphs[i + 1].line_start_hyphen_size = size;
         }
     }
 }

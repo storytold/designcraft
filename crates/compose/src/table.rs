@@ -479,6 +479,7 @@ fn emit(
         para: pi,
         glyphs: vec![],
         hyphenated: false,
+        repeated_hyphen: false,
         first_in_para: first,
         last_in_para: last,
         end_x: right,

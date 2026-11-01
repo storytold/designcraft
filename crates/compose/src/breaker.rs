@@ -325,8 +325,12 @@ pub fn hang(c: char) -> (f64, f64) {
 /// How much more than [`hang`]'s proportions `g` hangs: the hang is set for
 /// [`Spacing::optical_size`] and grows with it, relative to the glyph's own size.
 pub(crate) fn optical_scale(g: &Glyph, sp: &Spacing) -> f64 {
+    optical_scale_at(g.size, sp)
+}
+
+fn optical_scale_at(size: f64, sp: &Spacing) -> f64 {
     match sp.optical_size {
-        Some(s) if s.is_finite() && g.size.is_finite() && g.size > 0.0 => s / g.size,
+        Some(s) if s.is_finite() && size.is_finite() && size > 0.0 => s / size,
         _ => 1.0,
     }
 }
@@ -334,6 +338,16 @@ pub(crate) fn optical_scale(g: &Glyph, sp: &Spacing) -> f64 {
 /// Optical hang of `g` at the start of a line (0 without optical margin alignment).
 pub(crate) fn hang_left(g: &Glyph, sp: &Spacing) -> f64 {
     if sp.optical { hang(g.ch).0 * g.adv * optical_scale(g, sp) } else { 0.0 }
+}
+
+/// What the start of a line beginning at `g` hangs: a hyphen repeated there takes room, less its
+/// own hang.
+fn start_hang(g: &Glyph, sp: &Spacing) -> f64 {
+    if g.line_start_hyphen > 0.0 {
+        let hang = if sp.optical { hang('-').0 * g.line_start_hyphen * optical_scale_at(g.line_start_hyphen_size, sp) } else { 0.0 };
+        return hang - g.line_start_hyphen;
+    }
+    hang_left(g, sp)
 }
 
 /// Optical hang of `g` at the end of a line (0 without optical margin alignment).
@@ -454,7 +468,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         }
         let (st, sh) = sp.box_elastic(g);
         let mut bx = Item::boxed(g.adv, st, sh);
-        bx.hang = hang_left(g, sp) - g.moji.start;
+        bx.hang = start_hang(g, sp) - g.moji.start;
         bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
         it.push(bx);
         ig.push(i);
@@ -541,7 +555,7 @@ pub fn first_word_width(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing) -> 
     // A word this long is wider than any line; the rest of the paragraph doesn't matter.
     let n = glyphs.len().min(256);
     let (items, _) = items(glyphs.get(..n).unwrap_or(glyphs), hyph_after.get(..n).unwrap_or(hyph_after), &[], sp);
-    let mut w = 0.0;
+    let mut w = glyphs.first().map_or(0.0, |g| g.line_start_hyphen);
     let mut started = false;
     for it in &items {
         match it.kind {
@@ -570,6 +584,8 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
         match it.kind {
             Kind::Box => {
                 let g = ig.get(k).copied().unwrap_or(0);
+                // A line starting at this word starts with the hyphen repeated before it.
+                w += if seg.is_none() { glyphs.get(g).map_or(0.0, |g| g.line_start_hyphen) } else { 0.0 };
                 seg = Some(seg.map_or((g, g), |(a, _)| (a, g)));
                 w += it.w - it.sh.iter().sum::<f64>();
             }
@@ -917,7 +933,7 @@ pub fn greedy(
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
     while start < n {
         let w = width(line).max(1.0);
-        let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
+        let mut x = -start_hang(&glyphs[start], sp) + glyphs[start].moji.start;
         let mut shrink = crate::mojikumi::start_elastic(&glyphs[start], sp.justify, sp.kinsoku_priority != 3)[1];
         let mut last_natural: Option<(usize, bool)> = None;
         let mut last_ok: Option<(usize, bool)> = None; // (break position = end glyph, hyphen)
@@ -1025,10 +1041,11 @@ pub fn greedy(
     out
 }
 
-/// Natural width of a broken line (with its inserted hyphen).
+/// Natural width of a broken line (with its inserted and repeated hyphens).
 pub fn line_width(glyphs: &[Glyph], b: &Break) -> f64 {
     let w: f64 = glyphs[b.start..b.end.max(b.start)].iter().map(|g| g.adv).sum();
-    w + if b.hyphen && b.end > 0 { glyphs[b.end - 1].size * 0.33 } else { 0.0 }
+    let repeated = glyphs.get(b.start).map_or(0.0, |g| g.line_start_hyphen);
+    w + repeated + if b.hyphen && b.end > 0 { glyphs[b.end - 1].size * 0.33 } else { 0.0 }
 }
 
 /// Balance Ragged Lines: keep the composer's line count but make the lines as even as possible,

@@ -9,6 +9,9 @@
 
 use super::patterns::{Alphabet, FxMap, MAX_PATTERN_LEN, Patterns, apply, pack};
 
+/// Bit position of a candidate's dot (5 bits) in a counting key, above the packed letters.
+const DOT_SHIFT: u32 = 6 * MAX_PATTERN_LEN as u32;
+
 /// Parameters of one level.
 #[derive(Clone, Copy, Debug)]
 pub struct Level {
@@ -73,14 +76,14 @@ pub fn train(words: &[(Vec<char>, Vec<usize>)], levels: &[Level], log: &mut dyn 
         let vals = vec![0; codes.len() + 1];
         data.push(Word { codes, hyph, vals });
     }
-    let mut pats: FxMap<u64, Box<[u8]>> = FxMap::default();
+    let mut pats: FxMap<u128, Box<[u8]>> = FxMap::default();
     let mut max_len = 0usize;
     for (li, lv) in levels.iter().enumerate() {
         let level = (li + 1) as u8;
         let hyphenating = level % 2 == 1;
         for len in lv.min_len..=lv.max_len.min(MAX_PATTERN_LEN) {
             // (packed letters | dot) → (good, bad)
-            let mut counts: FxMap<u64, (u32, u32)> = FxMap::default();
+            let mut counts: FxMap<u128, (u32, u32)> = FxMap::default();
             for w in &data {
                 let n = w.codes.len();
                 // Positions strictly between the word's letters.
@@ -102,7 +105,7 @@ pub fn train(words: &[(Vec<char>, Vec<usize>)], levels: &[Level], log: &mut dyn 
                             continue;
                         }
                         let s = p - dot;
-                        let key = pack(&w.codes[s..s + len]) | ((dot as u64) << 54);
+                        let key = pack(&w.codes[s..s + len]) | ((dot as u128) << DOT_SHIFT);
                         let e = counts.entry(key).or_default();
                         if good {
                             e.0 += 1;
@@ -113,12 +116,12 @@ pub fn train(words: &[(Vec<char>, Vec<usize>)], levels: &[Level], log: &mut dyn 
                 }
             }
             // Select.
-            let mut new: FxMap<u64, Box<[u8]>> = FxMap::default();
+            let mut new: FxMap<u128, Box<[u8]>> = FxMap::default();
             let mut selected = 0usize;
             for (key, (g, b)) in counts {
                 if g > 0 && (g * lv.good_weight) as i64 - (b * lv.bad_weight) as i64 >= lv.threshold as i64 {
-                    let dot = ((key >> 54) & 15) as usize;
-                    let letters = key & !(15u64 << 54);
+                    let dot = ((key >> DOT_SHIFT) & 31) as usize;
+                    let letters = key & !(31u128 << DOT_SHIFT);
                     let e = new.entry(letters).or_insert_with(|| vec![0u8; len + 1].into_boxed_slice());
                     e[dot] = level;
                     selected += 1;

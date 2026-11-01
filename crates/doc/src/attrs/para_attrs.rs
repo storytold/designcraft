@@ -48,6 +48,9 @@ attr_set! {
         hyph_capitalized: bool = true,
         hyph_last_word: bool = true,
         hyph_across_column: bool = true,
+        /// A line broken at a hyphen starts with the hyphen again, in the languages whose rules
+        /// ask for it (Serbian; other text ignores this). DesignCraft's own: IDML has no such setting.
+        hyph_repeat: bool = true,
         /// Better spacing (0) ↔ fewer hyphens (1).
         hyph_weight: f64 = 0.5,
         // Justification (percent as fractions)
