@@ -5233,6 +5233,29 @@ fn a_repeated_hyphen_hangs_by_its_own_size() {
 }
 
 #[test]
+fn a_line_is_as_tall_as_its_repeated_hyphen() {
+    let text = SERBIAN_COMPOUNDS;
+    let mut repeated = 0;
+    for w in (60..300).step_by(3) {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, f64::from(w), 700.0), ParaAttrs { hyphenate: Some(false), ..Default::default() });
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| {
+            f.over.language = Some("Serbian: Latin".into());
+            f.over.size = Some(8.0);
+        });
+        for (i, _) in text.match_indices('-') {
+            story.format_chars(i..i + 1, |f| f.over.size = Some(30.0));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for l in all_lines(&cs).iter().filter(|l| l.repeated_hyphen) {
+            assert!(l.leading >= 30.0, "{w}: {}", l.leading);
+            repeated += 1;
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
 fn a_repeated_hyphen_hangs_with_optical_margin_alignment() {
     let para = ParaAttrs { align: Some(Align::Left), optical_margin: Some(true), ..Default::default() };
     let mut repeated = 0;

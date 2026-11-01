@@ -1952,7 +1952,8 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         for (k, b) in breaks.iter().enumerate() {
             let (s, e) = (g0 + b.start, g0 + b.end);
             let line_glyphs = &glyphs[s..e.max(s)];
-            let (asc, tops, desc, lead) = line_metrics(line_glyphs, glyphs, s, mark_leading, mark_chars.size, db, mark_chars);
+            let measured = with_repeated_hyphen(glyphs, s, e);
+            let (asc, tops, desc, lead) = line_metrics(&measured, glyphs, s, mark_leading, mark_chars.size, db, mark_chars);
             let lead = match last_line_mark {
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
@@ -4133,6 +4134,18 @@ fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingMode
         L::Center | L::CenterDown => (top + bottom) / 2.0,
     };
     (reference, g.leading_model)
+}
+
+/// The glyphs of the line `s..e` as its height sees them: a repeated hyphen can be taller than
+/// the text after it.
+fn with_repeated_hyphen(glyphs: &[Glyph], s: usize, e: usize) -> std::borrow::Cow<'_, [Glyph]> {
+    let line = &glyphs[s..e.max(s)];
+    match s.checked_sub(1).and_then(|i| glyphs.get(i)) {
+        Some(hyphen) if e > s && glyphs[s].line_start_hyphen > 0.0 => {
+            std::iter::once(shape::repeated_hyphen(hyphen)).chain(line.iter().cloned()).collect::<Vec<_>>().into()
+        }
+        _ => line.into(),
+    }
 }
 
 fn line_metrics(
