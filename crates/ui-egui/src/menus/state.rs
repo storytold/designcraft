@@ -26,6 +26,9 @@ pub(super) fn window_control_available(app: &DesignApp, id: &str) -> bool {
 
 /// Is a command enabled (for menu greying)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
+    if id == "file.openProviderResource" {
+        return app.file_providers.enabled();
+    }
     if waits_for_ime(app, id) {
         return false;
     }

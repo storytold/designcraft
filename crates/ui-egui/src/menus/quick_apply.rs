@@ -132,6 +132,7 @@ const NOT_SEARCHED: &[&str] = &[
     "window.resize",
     "help.app",
     "app.openRecent",
+    "file.openProviderResource",
     "app.swatchOptionsDialog",
     "app.colorGroupOptionsDialog",
     // Without a value these clear the flattener preset, go to Normal screen mode or 100% zoom.
@@ -187,4 +188,27 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
         out.push(QuickItem { label: shown.to_string(), id: id.to_string(), params: Value::Null, shortcut: shortcut_of(app, id), kind: "" });
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod provider_command_tests {
+    use super::*;
+
+    #[test]
+    fn provider_open_stays_discoverable_but_argumentless_search_never_offers_it() {
+        let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.file_providers.set_session("0123456789abcdef0123456789abcdef".into()).unwrap();
+        app.file_providers.connect("test".into(), "Test storage".into(), "account".into()).unwrap();
+        assert!(shown(&app, "file.openProviderResource"));
+        let catalog = crate::control::all_commands(&app);
+        let command = catalog.as_array().unwrap().iter().find(|row| row["id"] == "file.openProviderResource").unwrap();
+        assert_eq!(command["ui"], true);
+        assert_eq!(command["enabled"], true);
+        let params = command["params"].as_str().unwrap();
+        assert!(params.contains("connectionId") && params.contains("resourceId"));
+        assert!(!quick_commands().any(|(id, ..)| id == "file.openProviderResource"));
+        assert!(!quick_apply_items(&app.session, "file.openProviderResource", false).iter().any(|item| item.id == "file.openProviderResource"));
+        assert!(!command_search(&app, "file.openProviderResource").iter().any(|item| item.id == "file.openProviderResource"));
+    }
 }

@@ -50,6 +50,8 @@ impl DesignApp {
             session,
             ui: UiState::default(),
             services,
+            file_providers: crate::file_providers::Host::default(),
+            provider_after: std::collections::HashMap::new(),
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),
@@ -186,6 +188,7 @@ impl DesignApp {
             self.input_ticks += 1;
         }
         let ctx = ui.ctx().clone();
+        crate::file_provider_app::observe_ui(self, &ctx);
         self.canvas_ime = false;
         self.ime_canvas = None;
         self.ime_interrupt = false;
@@ -265,6 +268,7 @@ impl DesignApp {
                 second_window_viewport(),
                 egui::ViewportBuilder::default().with_title(title).with_inner_size([960.0, 720.0]),
                 |ui, _class| {
+                    crate::file_provider_app::observe_ui(self, ui.ctx());
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {
                         self.switch_pane(1);
                         if self.view().is_none() {

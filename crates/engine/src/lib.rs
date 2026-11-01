@@ -484,6 +484,26 @@ impl Session {
     pub fn documents(&self) -> &[DocState] {
         &self.docs
     }
+
+    /// Close an exact document identity without activating it or committing another tab's input.
+    /// Returns false for a stale identity or its active IME composition. A surviving active UID keeps focus.
+    pub fn close_document_by_uid(&mut self, uid: u64, identity_epoch: u64) -> bool {
+        let Some(index) = self.docs.iter().position(|doc| doc.uid == uid && doc.identity_epoch == identity_epoch) else { return false };
+        if self.active == Some(index) && self.tool.composing() {
+            return false;
+        }
+        let previous = self.active().map(|doc| doc.uid);
+        self.close_document(index);
+        if let Some(index) = previous.and_then(|uid| self.docs.iter().position(|doc| doc.uid == uid)) {
+            self.active = Some(index);
+        }
+        true
+    }
+
+    /// Update a known document without activating it or committing another document's input.
+    pub fn document_mut_by_uid(&mut self, uid: u64) -> Option<&mut DocState> {
+        self.docs.iter_mut().find(|doc| doc.uid == uid)
+    }
     pub fn active_index(&self) -> Option<usize> {
         self.active
     }

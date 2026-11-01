@@ -10,7 +10,7 @@ impl DesignApp {
     /// keep documents whose earlier answer was Don't Save, including their history and recovery.
     pub(crate) fn handle_quit(&mut self, ctx: &egui::Context) {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if self.host_order_pending() {
+        if self.host_order_pending() || crate::file_provider_app::busy(self) {
             if close_requested {
                 self.close_requested_pending = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -83,6 +83,9 @@ impl DesignApp {
     /// terminate before egui receives its queued Close; an unfinished/stale plan leaves every
     /// document live so the host can preserve its recovery data instead.
     pub fn finish_confirmed_quit(&mut self) -> Result<(), String> {
+        if crate::file_provider_app::busy(self) {
+            return Err("finish or cancel pending provider operations before quitting".into());
+        }
         let approved =
             self.quitting.as_ref().is_some_and(|q| q.pending.is_none()) && self.ui.dialog.is_none() && self.next_unapproved_document().is_none();
         if !approved {
@@ -105,7 +108,7 @@ impl DesignApp {
             .map(|(i, d)| (i, d.uid))
     }
 
-    fn cancel_quit(&mut self) {
+    pub(crate) fn cancel_quit(&mut self) {
         let Some(q) = self.quitting.take() else { return };
         if let Some(i) = q.original_active.and_then(|uid| self.session.documents().iter().position(|d| d.uid == uid)) {
             let _ = self.run("file.activate", json!({"index": i}));
@@ -128,7 +131,8 @@ impl DesignApp {
                 q.pending = None;
                 q.saving = Some(uid);
             }
-            let saved = self.run("file.activate", json!({"index": i})).and_then(|_| menus::save_then(self, move |app| app.quit_document_saved(uid)));
+            let saved =
+                self.run("file.activate", json!({"index": i})).and_then(|_| menus::save_then(self, crate::file_provider_app::After::Quit(uid)));
             if let Err(e) = saved {
                 self.cancel_quit();
                 return Err(e);
@@ -146,7 +150,7 @@ impl DesignApp {
 
     /// The Save chosen during Quit has written `uid` (at once, or once its save dialog answered):
     /// approve its current revision. Still unsaved, Quit stops.
-    fn quit_document_saved(&mut self, uid: u64) -> Result<Value, String> {
+    pub(crate) fn quit_document_saved(&mut self, uid: u64) -> Result<Value, String> {
         if self.quitting.as_ref().and_then(|q| q.saving) != Some(uid) {
             return Ok(Value::Null);
         }

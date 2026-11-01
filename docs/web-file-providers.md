@@ -1,0 +1,160 @@
+# Optional external file providers (web)
+
+The web editor can delegate native project persistence to one **trusted same-origin host**.
+The capability is **disabled by default**. Merely loading the editor exposes a protocol object;
+it does not enable storage, render provider Recents, change ordinary local saves, or contact a server.
+A host must explicitly call registerProvider. No server, account system, login, VM, domain,
+filesystem mount or cloud vendor is built into this feature.
+
+## Contract
+
+window.designcraftFileProviders has protocolVersion 1 and app designcraft. Events are dispatched on window
+as designcraft-file-provider CustomEvents; detail contains bounded metadata and, on save,
+a Uint8Array named bytes. The host subscribes before registering, and can discover an already-ready
+editor through the protocol object. The capability is independent of the optional control API.
+
+| Method | Arguments / result |
+| --- | --- |
+| registerProvider | (providerId, label, namespace) -> connectionId. Repeating the exact identity is idempotent. |
+| unregisterProvider | No arguments. Refused while an operation is unresolved; clears account resources and bindings. |
+| setEnabled | (boolean). Suspends new provider choices/Recents without discarding pending work. |
+| setResources | (connectionId, resources). Replace this account's native project list. |
+| requestOpen | (resourceId) -> requestId. IDs must occur in the current connection's resource list. |
+| openResource | (requestId, filename, Uint8Array). Replies only to a live, single-use open request. |
+| cancelOpen | (requestId, error). Empty error means cancellation. |
+| resolveSaveDialog | (requestId, destination, filename). destination is provider, device or cancel. |
+| saveResult | (requestId, status, resourceId). status is saved, download, failed or cancel. |
+| snapshot | Returns provider/namespace/connectionId, enabled, resources, documents and pending state. |
+
+The namespace must identify the authenticated account, not its display name. A new connection ID
+and per-page cryptographic request nonce prevent old account/page callbacks from matching new work.
+This is correlation and separation of identities, **not authentication**. The host and its backend
+must authenticate users, authorize every list/read/write, and scope durable storage by account.
+Do not trust a filename, user-supplied account ID, browser page or request ID as an authorization check.
+Only the hosting page's own script environment can use this capability; no postMessage listener,
+foreign-origin message channel or filesystem authority is added.
+
+A resource is an object with id, name and optional updatedAt strings. IDs are opaque and never used as
+paths. The list is limited to 100 unique resources. Names must be native .designcraft filenames, at most
+255 UTF-8 bytes, with no path separators or control characters. IDs/namespaces are at most 160 ASCII
+characters (letters, numbers, dash, underscore, dot, colon). Labels are at most 100 UTF-8 bytes.
+Native captures/read responses are limited to 80 MiB; retained transfer bytes and pending work are bounded.
+The WASM adapter checks string/array lengths before copying host input and accepts only Uint8Array bytes.
+
+## Save and Save As
+
+Every interactive Save or Save As while enabled captures a native project and emits saveDialog.
+The event carries requestId, documentId, revision, intent and suggested filename. The host presents
+its own choice of **provider / device / cancel**, then calls resolveSaveDialog. The editor owns the
+captured state while the choice is open, so changing tabs or editing cannot silently change the target.
+No save happens merely because a dialog was opened or a byte capture was produced.
+
+Choosing provider emits save with the immutable native bytes, filename, intent, documentId, revision,
+providerId, namespace, connectionId and requestId. Save includes a previously bound resourceId;
+Save As requests a distinct resource. The provider must finish its durable write before returning
+saveResult(requestId, saved, resourceId). An ACK cannot nominate a document or revision, cannot be
+replayed, and cannot bind a resource already owned by another open document. Failed/cancelled writes
+keep edits unsaved. Later edits remain dirty when an older capture succeeds. There is no pretend local
+path for an external resource.
+
+Choosing device emits save with destination device and the capture. The host hands the bytes to the device using the
+browser's ordinary download mechanism, then returns download as the result. This is a terminal transfer
+result, **not durable provider confirmation**, and does not clear the document's saved checkpoint.
+Save Copy, Export and programmatic commands keep their existing local behavior. With the capability
+disabled or unregistered, the original browser/native save flow remains in use.
+
+Provider Save/Save As always captures .designcraft, the editable native project with its embedded resources.
+Use the existing local Copy/Export commands for interchange formats. The host must preserve the native
+extension; changing a suffix cannot turn native bytes into PDF, SVG or another interchange format.
+The native project serializer includes the project data. Data Merge Preview must be exited before a provider save: a preview record must not be marked saved as the underlying unfilled template.
+
+Close and Revert guard the target document's UID, not every document merely because another upload
+is pending. Bound reads protect all of the resource's open aliases; an unbound read does not claim
+the current tab. Captures remain guarded through queued results and backpressured terminal events.
+App-wide Close/Revert and Quit remain conservative while any provider work or continuation is pending.
+
+Save-before-close/quit is a typed, UID-bound continuation. It runs after finish_save and a settled UI
+pass, never from a hidden logic tick before that frame's input. Identity epoch, connection, saved
+revision and dirty state are rechecked. New edits, replacement identities, cancellation, failure or
+a device download cannot close the document. An older capture can update its saved checkpoint without
+clearing later edits. Neither applying that checkpoint nor closing an inactive captured UID activates
+it or commits another tab's IME/data-merge preview; surviving focus is kept by UID.
+
+Numeric text drafts do not yet advance an engine revision. A bounded internal registry keeps these
+drafts with their document UID/epoch and viewport, including parked drafts. Close/Revert/Save must wait
+for that document's draft to commit or cancel; another document's field does not block its closure.
+Before the first opt-in the original numeric widget IDs and behavior stay in use. A focused legacy
+field is adopted without changing its ID when a provider connects. After opting in, document scopes
+stay stable through enable/disable and unregister, preserving open drafts; they are retired when the
+document identity closes. Once opted in, a new editor stays read-only at the 1,024-field admission
+limit before it can allocate an unowned String. Already-resident drafts are always adopted with their
+owner and remain protected; any temporary excess is bounded by those existing buffers. Confirming or
+cancelling drafts releases capacity without restarting, and a clean unrelated UID is not blocked.
+The limit does not change local fields before the first opt-in. This bookkeeping adds no storage,
+account or authentication functionality.
+
+The browser can still
+force-close/reload a tab; the host should provide an unsaved-work warning and must not acknowledge a
+write it cannot recover. This bridge does not add automatic saving, cross-client conflict resolution,
+offline persistence, autosave recovery or an inactivity/login implementation.
+
+## Open and Recents
+
+The existing Home screen and File > Open Recent display a separate provider section while enabled.
+Local Recents retain their own storage and behavior. Provider headings use the application's official
+i18n lookup and RTL text shaping; untranslated keys keep the normal English fallback. Provider labels
+and resource names remain user data and are not translated. Publish only the current account's native files
+with setResources; the editor never scans a VM or guesses a path from a name.
+
+Home and File > Open Recent dispatch the discoverable UI command `file.openProviderResource`
+with `{connectionId, resourceId}`. The same command is listed by `engine.commands` and can be invoked
+through control/MCP `engine.execute`. It is disabled until the provider is enabled, validates the
+rendered connection and resource under the same host lock, and returns `{pending, requestId}`.
+Rejections remain in the application's status, rather than appearing for only the clicked frame.
+The Rust Recents renderers return a public `RecentChoice` and perform no IO; callers must dispatch
+that choice through `app.run`. No local `file.open`/programmatic behavior or JS protocol v1 changes.
+
+An admitted command emits openRequested with requestId and resourceId. After authorization, the provider fetches
+bytes and responds with openResource using that request ID. The editor parses the native project before
+emitting opened or openFailed. Selecting an already-bound open resource focuses its existing document
+without replacing unsaved edits. Unknown, duplicate or cancelled request replies are rejected.
+The host handles failed fetches using cancelOpen rather than leaving the operation pending forever.
+
+Completion events are saved, downloaded, saveFailed, saveCancelled, opened, openFailed and openCancelled.
+Events associated with an account include providerId, namespace and connectionId. Storage keys should
+use the provider/account/resource identities, never display names, and the backend should use versioning
+or conditional writes if it allows concurrent clients.
+
+## Validation
+
+Regression fixtures cover the default-off gate, single-use/late replies, account reconnection, resource
+scope and alias rejection, cancellation, immutable captures, switching tabs, edits after capture and
+conservative device results. Additional fixtures cover two-document Close/Revert isolation, read and
+capture aliases, deferred terminal backpressure, exact-identity continuations, quit cancellation,
+uncommitted numeric input arriving with an ACK, provider opt-in/unregister during a focused local
+draft, parked draft ownership and preservation of another tab's IME/preview. The source includes the
+WASM adapter and native encoder/decoder integration.
+Run the ordinary repository checks and browser integration checks after publishing the complete suite's
+source, as required by this contribution's development order. This document does not claim those checks
+have been executed merely because fixtures are present.
+
+Contributor credit: @alejocapo04.
+
+## Native UI evidence
+
+The existing `ui_shot` example accepts an explicit `providerRecents` fixture in its JSONL script.
+It seeds synthetic device/provider recent metadata through the public host and checks the painted
+Home labels. It does not implement storage or authentication, and is not a product setting.
+Start with an empty session:
+
+```jsonl
+{"empty":true}
+{"providerRecents":false}
+{"shot":"/absolute/output/designcraft-provider-recents-off.png"}
+{"providerRecents":true}
+{"shot":"/absolute/output/designcraft-provider-recents-on.png"}
+```
+
+Run `cargo run --locked -p designcraft-ui-egui --example ui_shot -- /absolute/fixture.jsonl`.
+Both images show the actual native Home UI through the existing offscreen renderer. Generated
+images stay outside the repository; the synthetic filenames do not claim content round-trip coverage.
