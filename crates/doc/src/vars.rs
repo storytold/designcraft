@@ -165,7 +165,17 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
         t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten()
     };
     let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
-    if s.get(4..5) != Some("-") || s.get(7..8) != Some("-") || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+    if s.get(4..5) != Some("-") || s.get(7..8) != Some("-") || !(1..=12).contains(&mo) || d < 1 {
+        return None;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let len = match mo {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if d > len {
         return None;
     }
     let mut secs = days_from_civil(y, mo as u32, d as u32) * 86_400;
@@ -331,7 +341,19 @@ mod tests {
         assert_eq!(parse_iso_date("2026-10-01T09:05-05:00"), Some(1_790_863_500));
         assert_eq!(parse_iso_date("2000-02-29"), Some(951_782_400));
         assert_eq!(parse_iso_date("2019-12-16T09:48:02.5+01:00").map(|t| format_date(t, "MM/dd/yy HH:mm")), Some("12/16/19 08:48".into()));
-        for bad in ["", "2019", "2019-13-01", "2019-12-16T25:00", "2019-12-16T09:48+0x", "２０１９-12-16"] {
+        for bad in [
+            "",
+            "2019",
+            "2019-13-01",
+            "2019-12-16T25:00",
+            "2019-12-16T09:48+0x",
+            "２０１９-12-16",
+            "2019-02-31",
+            "2019-04-31",
+            "2019-02-29",
+            "2021-02-30",
+            "2019-04-31T00:00:00Z",
+        ] {
             assert_eq!(parse_iso_date(bad), None, "{bad}");
         }
     }
