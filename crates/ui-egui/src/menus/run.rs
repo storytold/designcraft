@@ -804,6 +804,8 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" => app.run("text.insert", json!({"text": "\u{2003}", "raw": true})),
+        "app.insertEnSpace" => app.run("text.insert", json!({"text": "\u{2002}", "raw": true})),
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");

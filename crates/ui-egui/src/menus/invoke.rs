@@ -146,6 +146,11 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
     if params.is_null() && ctx.text_edit_focused() && forward_to_text_edit(app, ctx, id) {
         return;
     }
+    // The menu bar takes ⇧⌘M before the window: with a field focused (Story Editor, Find/Change)
+    // the character would land at the canvas caret, not where the person is typing.
+    if params.is_null() && ctx.text_edit_focused() && TEXT_INSERTS.contains(&id) {
+        return;
+    }
     // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through
     // egui for the desktop integration to read/write the macOS clipboard.
     if params.is_null() && app.session.wants_text() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") && forward_to_text_edit(app, ctx, id) {
@@ -153,6 +158,9 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
     }
     activate(app, id, params);
 }
+
+/// Menu items that type a character at the canvas insertion point.
+const TEXT_INSERTS: [&str; 3] = ["app.insertCurrentPageNumber", "app.insertEmSpace", "app.insertEnSpace"];
 
 /// The editing commands a focused text field takes from the native menu bar.
 pub(super) const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"];

@@ -241,6 +241,10 @@ pub fn specs() -> Vec<CommandSpec> {
             s,
             &json!({"align": "leftJustified"})
         )),
+        cmd!("type.justifyAll", "Justify all lines", [], Some("Cmd+Shift+F"), "{}", has_text_or_frames, |s, _| format_paras(
+            s,
+            &json!({"align": "fullyJustified"})
+        )),
         cmd!(
             "type.bold",
             "Bold",
@@ -431,4 +435,26 @@ pub fn specs() -> Vec<CommandSpec> {
             set_features
         ),
     ]
+}
+
+#[cfg(test)]
+mod alignment_shortcut_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// InDesign's Justify All Lines is ⇧⌘F (Shift+Ctrl+F), next to Justify Left ⇧⌘J.
+    #[test]
+    fn justify_all_lines_has_indesigns_shortcut_and_justifies_the_last_line_too() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Spring issue"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 3, "focus": 3})).unwrap();
+        // From Justify Left, so the result is not a default or a neighbouring justification.
+        s.execute("type.justify", &json!({})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "leftJustified");
+        s.execute("type.justifyAll", &json!({})).unwrap();
+        assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "fullyJustified");
+        assert_eq!(crate::find_command("type.justifyAll").and_then(|c| c.shortcut), Some("Cmd+Shift+F"));
+    }
 }
