@@ -70,8 +70,8 @@ pub(crate) fn apply(d: &mut Document, sr: SpreadRef, pi: usize, old: Rect) {
     let liquid_guides = |o: Orientation| pg.guides.iter().filter(|g| g.liquid && g.orientation == o).map(|g| g.position).collect::<Vec<_>>();
     let (vg, hg) = (liquid_guides(Orientation::Vertical), liquid_guides(Orientation::Horizontal));
     // The page's objects: centres within its old horizontal extent (outer pages take the pasteboard).
-    let last = sp.pages.len() - 1;
-    let (lo, hi) = (if pi == 0 { f64::NEG_INFINITY } else { old.x0 }, if pi == last { f64::INFINITY } else { old.x1 });
+    let Some((leftmost, rightmost)) = sp.outer_page_indices() else { return };
+    let (lo, hi) = (if pi == leftmost { f64::NEG_INFINITY } else { old.x0 }, if pi == rightmost { f64::INFINITY } else { old.x1 });
     let strokes = false;
     let Some(sp) = d.spread_mut(sr) else { return };
     for it in &mut sp.items {

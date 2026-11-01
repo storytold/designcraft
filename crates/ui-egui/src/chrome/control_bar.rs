@@ -34,25 +34,34 @@ pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 /// Page-size preset menu and the portrait / landscape toggles of the Control panel.
-fn page_preset_and_orientation(app: &mut DesignApp, ui: &mut egui::Ui, lang: &str, size: (f64, f64), n: usize, anchor: u8) {
+fn page_preset_and_orientation(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    lang: &str,
+    size: (f64, f64),
+    anchor: u8,
+    resize: impl Fn(&mut DesignApp, serde_json::Value),
+) {
     let landscape = size.0 > size.1;
     ui.vertical(|ui| {
         let cur = panels::properties::preset_name(size.0, size.1);
-        craft_ui::ComboBox::from_id_salt("ctl_page_preset").selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur))).width(130.0).show_ui(
-            ui,
-            |ui| {
+        craft_ui::ComboBox::from_id_salt("ctl_page_preset")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur)))
+            .width(130.0)
+            .show_ui(ui, |ui| {
                 for (name, w, h) in panels::properties::PAGE_PRESETS {
                     if ui.selectable_label(cur == *name, crate::rtl::widget(ui, crate::i18n::tr(lang, name))).clicked() {
                         let (w, h) = if landscape { (h, w) } else { (w, h) };
-                        let _ = app.run("layout.pageSize", json!({"pages": [n], "width": w, "height": h, "anchor": anchor}));
+                        resize(app, json!({"width": w, "height": h, "anchor": anchor}));
                     }
                 }
-            },
-        );
+            })
+            .response
+            .accessible_name(crate::i18n::tr(lang, "Page Size"));
         ui.horizontal(|ui| {
             for (icon, tip, want) in [("orient-portrait", "Portrait", false), ("orient-landscape", "Landscape", true)] {
                 if crate::widgets::icon_toggle(ui, icon, landscape == want, crate::i18n::tr(lang, tip)).clicked() && landscape != want {
-                    let _ = app.run("layout.pageSize", json!({"pages": [n], "width": size.1, "height": size.0, "anchor": anchor}));
+                    resize(app, json!({"width": size.1, "height": size.0, "anchor": anchor}));
                 }
             }
         });
@@ -62,16 +71,24 @@ fn page_preset_and_orientation(app: &mut DesignApp, ui: &mut egui::Ui, lang: &st
 /// The Control panel with the Page tool, as InDesign's: reference point, X/Y, W/H, page-size
 /// preset, orientation, Liquid Page Rule and Show Parent Page Overlay, for
 /// the page the Page tool selected (else the page in view). W/H keep the reference point in place.
-fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
+pub(super) fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = app.ui.language.clone();
     let Some(st) = app.session.active() else { return };
     let units = st.doc.settings.horizontal_units;
-    let Some(page) = st.selection.page.or_else(|| crate::canvas::current_page(app)) else { return };
+    let Some((spread, page)) = crate::canvas::page_target(app) else { return };
     let Some(st) = app.session.active() else { return };
     let d = st.doc.clone();
-    let Some((si, pi)) = d.page_loc(page) else { return };
-    let pg = d.spreads[si].pages[pi].clone();
-    let n = page + 1;
+    let Some(sp) = d.spread(spread) else { return };
+    let Some(pg) = sp.pages.get(page).cloned() else { return };
+    let n = match spread {
+        designcraft_doc::SpreadRef::Doc(si) => Some(d.first_page_of_spread(si) + page + 1),
+        _ => None,
+    };
+    let resize = |app: &mut DesignApp, params| {
+        if let Some((cmd, params)) = designcraft_tools::layout::page_size_command(&d, spread, page, params) {
+            let _ = app.run(cmd, params);
+        }
+    };
     // Reference point: W/H edits keep it in place.
     let (r, _) = ui.allocate_exact_size(vec2(30.0, 44.0), Sense::hover());
     if let Some(p) = panels::properties::ref_point_proxy(ui, egui::Rect::from_center_size(r.center(), vec2(27.0, 27.0)), app.ui.ref_point) {
@@ -80,46 +97,53 @@ fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     let anchor = app.ui.ref_point.min(8);
     let (fx, fy) = ((anchor % 3) as f64 / 2.0, (anchor / 3) as f64 / 2.0);
     // The reference point's position: from the spine across, from the top down.
-    let (x, y) = (pg.x - d.spreads[si].spine_x() + fx * pg.width, fy * pg.height);
+    let (x, y) = (pg.x - sp.spine_x() + fx * pg.width, fy * pg.height);
     egui::Grid::new("ctl_page_xywh").num_columns(4).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&lang, "X:"));
         // Pages don't move within their spread yet.
         ui.add_enabled_ui(false, |ui| measure(ui, "cpx", Some(x), units, 64.0));
         caption(ui, crate::i18n::tr(&lang, "W:"));
         if let Some(v) = measure(ui, "cpw", Some(pg.width), units, 64.0) {
-            let _ = app.run("layout.pageSize", json!({"pages": [n], "width": v, "anchor": anchor}));
+            resize(app, json!({"width": v, "anchor": anchor}));
         }
         ui.end_row();
         caption(ui, crate::i18n::tr(&lang, "Y:"));
         ui.add_enabled_ui(false, |ui| measure(ui, "cpy", Some(y), units, 64.0));
         caption(ui, crate::i18n::tr(&lang, "H:"));
         if let Some(v) = measure(ui, "cph", Some(pg.height), units, 64.0) {
-            let _ = app.run("layout.pageSize", json!({"pages": [n], "height": v, "anchor": anchor}));
+            resize(app, json!({"height": v, "anchor": anchor}));
         }
         ui.end_row();
     });
     vsep(ui);
     // Page-size preset and orientation.
-    page_preset_and_orientation(app, ui, &lang, (pg.width, pg.height), n, anchor);
+    page_preset_and_orientation(app, ui, &lang, (pg.width, pg.height), anchor, resize);
     vsep(ui);
-    ui.vertical(|ui| {
+    ui.add_enabled_ui(n.is_some(), |ui| {
         caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
         let label = panels::interactive::liquid_rule_label(pg.liquid);
-        craft_ui::ComboBox::from_id_salt("ctl_page_rule").selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).width(150.0).show_ui(
-            ui,
-            |ui| {
+        craft_ui::ComboBox::from_id_salt("ctl_page_rule")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label)))
+            .width(150.0)
+            .show_ui(ui, |ui| {
                 for (r, l) in panels::interactive::LIQUID_RULES {
-                    if ui.selectable_label(pg.liquid == r, crate::rtl::widget(ui, crate::i18n::tr(&lang, l))).clicked() && pg.liquid != r {
+                    if ui.selectable_label(pg.liquid == r, crate::rtl::widget(ui, crate::i18n::tr(&lang, l))).clicked()
+                        && pg.liquid != r
+                        && let Some(n) = n
+                    {
                         let _ = app.run("liquid.pageRule", json!({"rule": r, "pages": [n]}));
                     }
                 }
-            },
-        );
+            })
+            .response
+            .accessible_name(crate::i18n::tr(&lang, "Liquid Page Rule:"));
     });
     vsep(ui);
-    ui.vertical(|ui| {
+    ui.add_enabled_ui(n.is_some(), |ui| {
         let mut overlay = pg.show_parent_overlay;
-        if ui.checkbox(&mut overlay, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show Parent Page Overlay"))).changed() {
+        if ui.checkbox(&mut overlay, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show Parent Page Overlay"))).changed()
+            && let Some(n) = n
+        {
             let _ = app.run("layout.pageOptions", json!({"pages": [n], "showParentOverlay": overlay}));
         }
     });

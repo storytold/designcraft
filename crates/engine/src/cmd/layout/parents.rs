@@ -65,6 +65,43 @@ pub(super) fn parent_options(s: &mut crate::Session, p: &Value) -> Result<Value>
     })
 }
 
+pub(super) fn parent_page_target(d: &designcraft_doc::Document, p: &Value, cmd: &str) -> Result<(usize, usize)> {
+    let parent = p.get("parent").and_then(Value::as_u64).map(SpreadId).ok_or_else(|| bad(cmd, "give a parent spread id"))?;
+    let si = d.parent_index(parent).ok_or_else(|| bad(cmd, "no such parent"))?;
+    let pi = p
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|i| *i < d.parents[si].pages.len())
+        .ok_or_else(|| bad(cmd, "no such parent page"))?;
+    Ok((si, pi))
+}
+
+pub(super) fn parent_page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.parentPageSize";
+    let (si, pi) = parent_page_target(&s.doc()?.doc, p, ID)?;
+    let size = |key| {
+        p.get(key)
+            .map(|v| {
+                v.as_f64().filter(|v| v.is_finite() && *v > 0.0 && *v <= 15552.0).ok_or_else(|| bad(ID, "page size out of range (0 < size ≤ 216 in)"))
+            })
+            .transpose()
+    };
+    let (w, h) = (size("width")?, size("height")?);
+    if w.is_none() && h.is_none() {
+        return Err(bad(ID, "give width or height"));
+    }
+    let anchor = match p.get("anchor") {
+        None => 0,
+        Some(v) => v.as_u64().filter(|n| *n <= 8).ok_or_else(|| bad(ID, "anchor: 0–8"))? as usize,
+    };
+    s.edit(|d, _| {
+        super::pages::resize_spread_page(d, designcraft_doc::SpreadRef::Parent(si), pi, w, h, anchor);
+        d.sync_parent_margins();
+        Ok(json!({"parent": d.parents[si].id.0, "page": pi}))
+    })
+}
+
 #[cfg(test)]
 mod parent_margin_tests {
     use designcraft_doc::{Document, Margins};

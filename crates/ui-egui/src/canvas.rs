@@ -62,7 +62,7 @@ pub(crate) use view::page_in_view;
 use view::present_fit;
 pub use view::{
     PageBox, apply_view_request, can_go_through_history, current_page, current_parent_page, current_slot, current_spread, current_spread_page,
-    drop_point, fit, go_through_history, go_to_page, page_box, page_box_go, set_zoom, show_spread, step_spread, view_centre, zoom_at,
+    drop_point, fit, go_through_history, go_to_page, page_box, page_box_go, page_target, set_zoom, show_spread, step_spread, view_centre, zoom_at,
 };
 
 pub const RULER: f32 = 15.0;

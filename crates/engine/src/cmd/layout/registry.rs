@@ -1,7 +1,7 @@
 use super::layers::set_layer;
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
-use super::parents::{parent_options, parent_ref, parent_spread_index};
+use super::parents::{parent_options, parent_page_size, parent_page_target, parent_ref, parent_spread_index};
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
@@ -503,6 +503,30 @@ pub fn specs() -> Vec<CommandSpec> {
             page_size
         ),
         cmd!(
+            "layout.parentPageSize",
+            "Parent Page Size",
+            [],
+            None,
+            "{parent: spread id, page: 0-based parent page index, width?, height?, anchor?: 0–8} — resize only this parent page, keeping document page sizes independent",
+            has_doc,
+            parent_page_size
+        ),
+        cmd!(
+            noundo "layout.selectParentPage", "Select Parent Page", [], None,
+            "{parent: spread id|null, page?: 0-based parent page index} — select a parent page with the Page tool; null clears the selection",
+            has_doc, |s, p| {
+                let target = match p.get("parent") {
+                    Some(Value::Null) => None,
+                    _ => Some(parent_page_target(&s.doc()?.doc, p, "layout.selectParentPage")?),
+                };
+                let st = s.doc_mut()?;
+                st.selection = Default::default();
+                st.selection.parent_page = target.map(|(si, pi)| (st.doc.parents[si].id, pi));
+                st.bump_revision();
+                ok()
+            }
+        ),
+        cmd!(
             "layout.pageOptions",
             "Page Options",
             [],
@@ -536,6 +560,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 st.selection = designcraft_doc::Selection::items(ids);
             }
             st.selection.page = page;
+            st.selection.parent_page = None;
             st.bump_revision();
             Ok(json!({"page": page.map(|p| p + 1)}))
         }

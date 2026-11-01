@@ -419,7 +419,12 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         }
         "ui.render" => {
             let Some(st) = app.session.active() else { return err("no document") };
-            let page = match page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count()) {
+            let current = match crate::canvas::current_page(app) {
+                Some(page) => page,
+                None if !st.editing_parents || p.get("page").is_some() => 0,
+                None => return err("select a document page or give an explicit page"),
+            };
+            let page = match page_index(p, current, st.doc.page_count()) {
                 Ok(page) => page,
                 Err(e) => return err(e),
             };
@@ -689,6 +694,83 @@ mod automation_contract_tests {
         assert_eq!(app.ui.palette.as_deref(), Some("field"));
         assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     }
+    #[test]
+    fn parent_resize_no_canvas_render_keeps_document_page_zero_default() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run("layout.pageSize", json!({"pages": [2], "width": 700})).unwrap();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        let omitted = call(&mut app, &ctx, "ui.render", json!({"scale": 0.1}));
+        assert_eq!(omitted["ok"], true, "{omitted}");
+        let first = call(&mut app, &ctx, "ui.render", json!({"page": 0, "scale": 0.1}));
+        let second = call(&mut app, &ctx, "ui.render", json!({"page": 1, "scale": 0.1}));
+        assert_eq!(omitted, first);
+        assert_ne!(omitted, second);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_delete_uses_first_document_page() {
+        let mut app = app();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        app.run("app.deletePage", json!({})).unwrap();
+        let after = &app.session.doc().unwrap().doc;
+        assert_eq!(after.page_count(), 1);
+        assert_eq!(after.page(0).unwrap().id, before.page(1).unwrap().id);
+        assert_eq!(after.parents, before.parents);
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_delete_keeps_the_object_warning() {
+        let mut app = app();
+        app.run("frame.create", json!({"rect": [36, 36, 100, 100]})).unwrap();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        app.run("app.deletePage", json!({})).unwrap();
+        let dialog = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.id, "deletePages");
+        assert_eq!(dialog.fields["pages"], json!([0]));
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_duplicate_uses_first_document_spread() {
+        let mut app = app();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        let ids: Vec<_> = before.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect();
+        let result = app.run("app.duplicateSpread", json!({})).unwrap();
+        let after = &app.session.doc().unwrap().doc;
+        let first = result["page"].as_u64().unwrap() as usize;
+        assert_eq!(first, before.spreads[0].pages.len());
+        assert_eq!(after.page_count(), before.page_count() + first);
+        for i in first..first * 2 {
+            assert!(!ids.contains(&after.page(i).unwrap().id));
+        }
+        let retained: Vec<_> = after.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).filter(|id| ids.contains(id)).collect();
+        assert_eq!(retained, ids);
+        assert_eq!(after.parents, before.parents);
+    }
+
+    #[test]
+    fn parent_resize_mode_does_not_default_document_actions_to_page_zero() {
+        for canvas in [None, Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)))] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.canvas_rect = canvas;
+            app.run("layout.parents.edit", json!({"on":true,"parent":"A"})).unwrap();
+            let before = app.session.doc().unwrap().doc.clone();
+            assert!(app.run("app.deletePage", json!({})).is_err());
+            assert!(app.run("app.duplicateSpread", json!({})).is_err());
+            assert_eq!(call(&mut app, &ctx, "ui.render", json!({"scale":0.1}))["ok"], false);
+            assert_eq!(call(&mut app, &ctx, "ui.render", json!({"page":0,"scale":0.1}))["ok"], true);
+            assert_eq!(app.session.doc().unwrap().doc, before);
+        }
+    }
+
     #[test]
     fn control_pages_validate_before_writer_and_preserve_omission() {
         let mut app = app();
