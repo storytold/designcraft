@@ -1,6 +1,6 @@
 use super::column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_drag};
 use super::guides::guide_drag;
-use super::ime::{finish_pending_ime_delete, ime_event};
+use super::ime::{finish_pending_ime_delete, ime_event, ime_follow_caret, typed_text};
 use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
@@ -59,19 +59,15 @@ fn field_focused_id(ctx: &egui::Context) -> egui::Id {
 pub fn begin_frame(ctx: &egui::Context) {
     let (id, focused) = (field_focused_id(ctx), ctx.text_edit_focused());
     ctx.data_mut(|d| d.insert_temp(id, focused));
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let now = ctx.input(|i| i.modifiers);
-        // The modifiers last frame ended with are the ones this frame's events began with.
-        ctx.data_mut(|d| {
-            let (_, end) = d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id()).unwrap_or((now, now));
-            d.insert_temp(modifiers_id(), (end, now));
-        });
-    }
+    let now = ctx.input(|i| i.modifiers);
+    // The modifiers last frame ended with are the ones this frame's events began with.
+    ctx.data_mut(|d| {
+        let (_, end) = d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id()).unwrap_or((now, now));
+        d.insert_temp(modifiers_id(), (end, now));
+    });
 }
 
 /// (held when this frame's events began, held after them).
-#[cfg(not(target_arch = "wasm32"))]
 fn modifiers_id() -> egui::Id {
     egui::Id::unique("canvas-frame-modifiers")
 }
@@ -284,6 +280,18 @@ fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f
     }
 }
 
+/// Text typed with no composition: into the story the caret is in now.
+fn insert_typed(app: &mut DesignApp, t: &str, shift: bool) {
+    // The caret may have moved to another story earlier this frame (a click).
+    ime_follow_caret(app);
+    let typed = typed_text(t, app.ime_japanese_typing, shift, cfg!(target_os = "macos"));
+    // Letters straight from the keys: the input method is in its Roman mode.
+    if !t.trim().is_empty() {
+        app.ime_japanese_typing = false;
+    }
+    let _ = app.run("text.insert", json!({"text": typed}));
+}
+
 /// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
 pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
     // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
@@ -398,28 +406,23 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     // text must not delete the character before it).
     let composing_at_start = app.session.tool_composing();
     let evs = ui.input(|i| i.events.clone());
-    // Native only: egui-winit sends a ⌘+V chord as a paste without its key press, so the modifiers
-    // held at the paste tell Paste in Place from Paste. The web also gets the key press, and the
-    // shortcut table has already run the command. A chord's modifiers may be released in the same
-    // frame, hence the modifiers held at each event.
-    #[cfg(not(target_arch = "wasm32"))]
+    // The modifiers held at each event: they may be released later in the same frame. Shift+Space
+    // needs them, and so does Paste in Place natively, where egui-winit sends a ⌘+V chord as a
+    // paste without its key press (the web also gets the key press, and the shortcut table has
+    // already run the command).
     let mut held =
         ui.data(|d| d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id())).map_or_else(|| ui.input(|i| i.modifiers), |(start, _)| start);
     for e in evs {
+        if let egui::Event::ModifiersChanged(m) = &e {
+            held = *m;
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let chord = {
-            if let egui::Event::ModifiersChanged(m) = &e {
-                held = *m;
-            }
-            if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, held) } else { None }
-        };
+        let chord = if matches!(e, egui::Event::Paste(_)) { crate::menus::paste_chord_command(app, held) } else { None };
         let composing = composing_at_start || app.session.tool_composing();
         match e {
             egui::Event::Ime(ime) if wants_text => ime_event(app, ui.ctx(), ime, vi),
             // Keys the IME passes through come as text only while nothing is marked.
-            egui::Event::Text(t) if wants_text && !composing => {
-                let _ = app.run("text.insert", json!({"text": t}));
-            }
+            egui::Event::Text(t) if wants_text && !composing => insert_typed(app, &t, held.shift),
             // The IME owns the keyboard until it commits: no typing, clipboard or editing keys.
             egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Key { .. } if composing => {}
             egui::Event::Paste(t) if wants_text => {
