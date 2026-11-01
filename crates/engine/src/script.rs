@@ -51,7 +51,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             let (id, rest) = l.split_at(split);
             let rest = rest.trim_start_matches(['=', ' ', '\t']).trim();
             let params = if rest.is_empty() { Ok(json!({})) } else { serde_json::from_str(rest).map_err(|e| e.to_string()) };
-            params.map(|params| Step { command: id.to_string(), params })
+            params.and_then(|params: Value| {
+                if params.is_object() { Ok(Step { command: id.to_string(), params }) } else { Err("`params` must be an object".to_string()) }
+            })
         };
         out.push(step.map_err(|e| format!("line {}: {e}", n + 1))?);
     }
@@ -193,6 +195,14 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert!(parse("frame.create {bad").unwrap_err().contains("line 1"));
+    }
+
+    #[test]
+    fn compact_lines_require_object_params() {
+        for bad in ["a.b 5", "a.b [1]", "a.b \"x\"", "a.b=true", "a.b null"] {
+            assert_eq!(parse(bad), Err("line 1: `params` must be an object".to_string()), "{bad}");
+        }
+        assert_eq!(parse("\na.b={\"x\":1}").unwrap()[0].params, json!({"x": 1}));
     }
 
     /// Windows editors and PowerShell 5.1 save "UTF-8 with BOM" with CRLF line endings; the BOM
