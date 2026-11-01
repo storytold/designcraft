@@ -1,6 +1,7 @@
 //! CJK fallback follows the character's language (and the script where it is unambiguous).
 
 use crate::fontdb::FontDb;
+use crate::fontdb::fallback::{KOREAN_FALLBACKS, KOREAN_SANS_FALLBACKS, cjk_chain, sans_by_name};
 use crate::testing::font_with;
 
 const HAN: char = '直';
@@ -156,4 +157,66 @@ fn malayalam_fonts_load_from_the_font_folders_when_first_needed() {
     db.add_font(font_with("Arial Unicode MS", &[KA]).unwrap());
     assert!(!db.is_loaded("Noto Sans Malayalam"));
     assert_eq!(family(&db, KA, None).as_deref(), Some("Noto Sans Malayalam"));
+}
+
+/// A missing Korean face is replaced by one of its own style. The name is all there is to go
+/// on, since the font itself is not installed to classify (#1692).
+#[test]
+fn a_korean_family_name_says_sans_or_serif() {
+    for sans in ["KoPub Dotum Bold", "KHNP Han Dotum", "BM Dohyeon", "Malgun Gothic", "\u{B3CB}\u{C6C0}\u{CCB4}", "\u{ACE0}\u{B515}", "Noto Sans KR"]
+    {
+        assert_eq!(sans_by_name(sans), Some(true), "{sans} is sans");
+    }
+    for serif in ["Batang", "HCR Batang", "KoPub Myungjo", "\u{BA85}\u{C870}", "Gungsuh", "Noto Serif KR"] {
+        assert_eq!(sans_by_name(serif), Some(false), "{serif} is serif");
+    }
+    // A name that says neither leaves the choice to the caller.
+    for unknown in ["Times New Roman", "Helvetica", "Arial Unicode MS", ""] {
+        assert_eq!(sans_by_name(unknown), None, "{unknown} says neither");
+    }
+}
+
+/// "sans serif" ends with the word it is not. The bare "serif" needle matched first, so
+/// "Microsoft Sans Serif" -- and the CSS generic -- classified as serif and a missing Hangul
+/// glyph took the serif-first chain (noted in review of #1692).
+#[test]
+fn a_sans_serif_name_is_not_read_as_serif() {
+    for sans in ["sans-serif", "Microsoft Sans Serif", "MS Sans Serif", "Lucida Sans Serif"] {
+        assert_eq!(sans_by_name(sans), Some(true), "{sans} is sans");
+    }
+    // The bare word still decides a name that holds nothing else.
+    for serif in ["serif", "Source Serif 4", "DejaVu Serif", "Noto Serif KR"] {
+        assert_eq!(sans_by_name(serif), Some(false), "{serif} is serif");
+    }
+    // And a Korean serif name still outranks "Sans", which is why it is tested first of all.
+    assert_eq!(sans_by_name("Noto Sans Myungjo"), Some(false));
+    assert_eq!(sans_by_name("Myungjo Gothic"), Some(false));
+    // And the word outranks every sans indicator: Sweet Gothic Serif is a serif family
+    // whatever "Gothic" suggests (noted in review).
+    for serif in ["Sweet Gothic Serif", "Gothic Serif", "Sans Forgetica Serif"] {
+        assert_eq!(sans_by_name(serif), Some(false), "{serif} names itself serif");
+    }
+    // Neither word present, so the caller still decides.
+    assert_eq!(sans_by_name("monospace"), None);
+    assert_eq!(sans_by_name("system-ui"), None);
+}
+
+/// The reported bug is the order of the chain: on Windows the first installed entry of the
+/// serif-first chain is Batang, so every missing Dotum face came out serif (#1692).
+#[test]
+fn the_sans_chain_puts_a_sans_face_before_batang() {
+    let hangul = '\u{D55C}';
+    let sans = cjk_chain(hangul, None, Some(true)).expect("Hangul has a chain");
+    let serif = cjk_chain(hangul, None, None).expect("Hangul has a chain");
+    assert_eq!(serif, KOREAN_FALLBACKS, "without a style the chain is unchanged");
+    assert_eq!(sans, KOREAN_SANS_FALLBACKS);
+
+    let batang = |chain: &[&str]| chain.iter().position(|f| *f == "Batang");
+    let first_sans = |chain: &[&str]| chain.iter().position(|f| sans_by_name(f) == Some(true));
+    assert!(first_sans(sans) < batang(sans), "the sans chain reaches a sans face first: {sans:?}");
+    // And the Windows and macOS system faces are the first two entries, so an installed
+    // system font is preferred to a downloaded one.
+    assert_eq!(&sans[..2], &["Malgun Gothic", "Apple SD Gothic Neo"]);
+    // The serif chain still leads with serif faces, so a missing Myungjo is not made sans.
+    assert_eq!(sans_by_name(serif[0]), Some(false), "the serif chain still leads serif: {:?}", serif[0]);
 }

@@ -92,7 +92,62 @@ const TRADITIONAL_CHINESE_FALLBACKS: &[&str] = &[
     "Source Han Sans TC",
 ];
 
-const KOREAN_FALLBACKS: &[&str] = &[
+/// Korean fallbacks for a missing **sans** (Dotum/Gothic) face, system faces first.
+///
+/// [`KOREAN_FALLBACKS`] is serif-first, so on Windows the first installed entry is Batang and a
+/// document whose Korean text asked for KoPub Dotum or BM Dohyeon came out in a serif face --
+/// 5,298 characters of one school document, turning it from sans to serif (#1692).
+pub(super) const KOREAN_SANS_FALLBACKS: &[&str] = &[
+    "Malgun Gothic",
+    "Apple SD Gothic Neo",
+    "Dotum",
+    "Gulim",
+    "Noto Sans CJK KR",
+    "Source Han Sans K",
+    "Noto Sans KR",
+    "Noto Serif CJK KR",
+    "Batang",
+];
+
+/// Whether a Korean family name says the face is sans (`Some(true)`) or serif (`Some(false)`).
+/// `None` when the name does not say, so the caller decides.
+///
+/// Korean family names carry the style: Dotum (돋움), Gulim (굴림) and Gothic (고딕) are sans;
+/// Batang (바탕), Myungjo/Myeongjo (명조) and Gungsuh (궁서) are serif. A missing font's name is
+/// the only thing left to go on, since the font itself is not there to classify (#1692).
+pub fn sans_by_name(family: &str) -> Option<bool> {
+    let lower = family.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    // A Korean serif name comes first: "Myungjo Gothic" does not exist, but a name holding both
+    // reads as the serif it names, and "Sans" inside "Noto Sans Myungjo" would otherwise win.
+    if has(&["batang", "myungjo", "myeongjo", "gungsuh", "\u{BC14}\u{D5D5}", "\u{BA85}\u{C870}", "\u{AD81}\u{C11C}"]) {
+        return Some(false);
+    }
+    // Then the word itself, which outranks every sans indicator: "Sweet Gothic Serif" is a serif
+    // family whatever "Gothic" suggests. "Sans serif" and "sans-serif" end with the word and do
+    // not mean it, so the phrase goes before the word is looked for (both noted in review).
+    if lower.replace("sans-serif", "sans").replace("sans serif", "sans").contains("serif") {
+        return Some(false);
+    }
+    if has(&[
+        "dotum",
+        "gothic",
+        "gulim",
+        "sans",
+        "headline",
+        "graphic",
+        "dohyeon",
+        "\u{B3CB}\u{C6C0}",
+        "\u{ACE0}\u{B515}",
+        "\u{AD74}\u{B9BC}",
+        "\u{ADF8}\u{B798}\u{D53D}",
+    ]) {
+        return Some(true);
+    }
+    None
+}
+
+pub(super) const KOREAN_FALLBACKS: &[&str] = &[
     "AppleMyungjo",
     "Apple SD Gothic Neo",
     "Batang",
@@ -146,9 +201,10 @@ fn japanese_chain() -> &'static [&'static str] {
 /// The CJK fallback chain for `c` in `language` (a BCP 47 tag). The script decides where it is
 /// unambiguous (Hangul is Korean, kana Japanese, Bopomofo Traditional Chinese); ideographs and CJK
 /// punctuation follow the language, and have no chain without a CJK one.
-pub(super) fn cjk_chain(c: char, language: Option<&str>) -> Option<&'static [&'static str]> {
+pub(super) fn cjk_chain(c: char, language: Option<&str>, prefer_sans: Option<bool>) -> Option<&'static [&'static str]> {
+    let korean = if prefer_sans == Some(true) { KOREAN_SANS_FALLBACKS } else { KOREAN_FALLBACKS };
     match c as u32 {
-        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xFFA0..=0xFFDC => return Some(KOREAN_FALLBACKS),
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF | 0xFFA0..=0xFFDC => return Some(korean),
         0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F | 0x1B000..=0x1B16F => return Some(japanese_chain()),
         0x3100..=0x312F | 0x31A0..=0x31BF => return Some(TRADITIONAL_CHINESE_FALLBACKS),
         // Radicals, CJK symbols and punctuation, kanbun, strokes, enclosed and compatibility
@@ -171,7 +227,7 @@ pub(super) fn cjk_chain(c: char, language: Option<&str>) -> Option<&'static [&'s
     let language = language?;
     match language.split('-').next()? {
         "ja" => Some(japanese_chain()),
-        "ko" => Some(KOREAN_FALLBACKS),
+        "ko" => Some(korean),
         "zh" if language.starts_with("zh-Hant") => Some(TRADITIONAL_CHINESE_FALLBACKS),
         "zh" => Some(SIMPLIFIED_CHINESE_FALLBACKS),
         _ => None,

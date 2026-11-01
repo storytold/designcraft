@@ -138,6 +138,7 @@ pub(crate) use face::{measured_top, plausible};
 use fallback::FallbackSnapshotHook;
 #[cfg(not(target_arch = "wasm32"))]
 use fallback::SysFallback;
+pub use fallback::sans_by_name;
 pub use names::{base_style, same_style};
 use outline::FlipPen;
 pub use scoped::ScopedFonts;

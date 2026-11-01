@@ -390,7 +390,14 @@ impl ScopedFonts<'_> {
     /// then load order, the document's fonts last) that covers `c`. On native, system fonts are
     /// cataloged and loaded lazily the first time no loaded face covers a character.
     pub fn fallback_for(&self, c: char, exclude: u32, language: Option<&str>) -> Option<Arc<FontFace>> {
-        if let Some(chain) = cjk_chain(c, language).or_else(|| script_chain(c))
+        self.fallback_for_styled(c, exclude, language, None)
+    }
+
+    /// [`Self::fallback_for`] following the style of the font that was asked for: `Some(true)`
+    /// takes the sans chain, so a missing Dotum or Gothic face is replaced by a sans one instead
+    /// of by the first installed serif (#1692). `None` keeps the chain as it was.
+    pub fn fallback_for_styled(&self, c: char, exclude: u32, language: Option<&str>, prefer_sans: Option<bool>) -> Option<Arc<FontFace>> {
+        if let Some(chain) = cjk_chain(c, language, prefer_sans).or_else(|| script_chain(c))
             && let Some(f) = chain.iter().find_map(|family| self.chain_face(family, c, exclude))
         {
             return Some(f);

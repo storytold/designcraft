@@ -317,6 +317,20 @@ impl StyleTable<'_> {
     }
 }
 
+/// What a substitute face's own name says about its style, for choosing a CJK fallback chain.
+///
+/// `None` for the bundled default and last-resort families: they stand in for a font that could
+/// not be resolved at all, so their names say nothing about what the document asked for. Without
+/// this, "Source Sans 3" made every unresolved family look like a sans one (#1692, noted in
+/// review).
+fn style_of_substitute(family: &str) -> Option<bool> {
+    let standin = [designcraft_fonts::DEFAULT_FAMILY, designcraft_fonts::FALLBACK_FAMILY];
+    if standin.iter().any(|s| s.eq_ignore_ascii_case(family)) {
+        return None;
+    }
+    designcraft_fonts::sans_by_name(family)
+}
+
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
 pub(crate) struct ShapeInput<'a, 'font> {
@@ -810,8 +824,19 @@ fn shape_run_raw(
     // The language picks the fallback for CJK characters the primary font lacks. Without
     // fallback, the primary font sets them: the shaper gives its .notdef (glyph 0).
     let lang = designcraft_doc::language_tag(&p.language);
+    // A missing Korean face is replaced by one of its own style: the requested name says whether
+    // it was Dotum/Gothic or Batang/Myungjo, and if it does not, the substitute's own name does,
+    // which keeps today's chain (#1692).
+    // The substitute's own name is consulted only when it is a real substitute: a requested
+    // family that resolves to nothing comes back as the bundled default, whose name holds "Sans",
+    // and every unclassified missing font would then have taken the sans chain (noted in review).
+    let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&primary.family));
     let fallback = |c: char| {
-        if auto_leading.glyph_fallback { db.fallback_for(c, primary.id(), lang).unwrap_or_else(|| primary.clone()) } else { primary.clone() }
+        if auto_leading.glyph_fallback {
+            db.fallback_for_styled(c, primary.id(), lang, prefer_sans).unwrap_or_else(|| primary.clone())
+        } else {
+            primary.clone()
+        }
     };
     let strong = |c| match unicode_bidi::bidi_class(c) {
         unicode_bidi::BidiClass::AL => Some(true),
@@ -1142,7 +1167,9 @@ fn shape_segment(
         let lang = designcraft_doc::language_tag(&p.language);
         let mut segments: Vec<(usize, usize, Arc<FontFace>)> = Vec::new();
         for (at, c) in label.char_indices() {
-            let selected = if face.covers(c) { face.clone() } else { db.fallback_for(c, face.id(), lang).unwrap_or_else(|| face.clone()) };
+            let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&face.family));
+            let selected =
+                if face.covers(c) { face.clone() } else { db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone()) };
             if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
                 *end = at + c.len_utf8();
                 let _ = previous;
@@ -1424,5 +1451,25 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
         Some(false) => Digits::Arabic,
         Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
         _ => Digits::Native,
+    }
+}
+
+#[cfg(test)]
+mod style_of_substitute_tests {
+    use super::style_of_substitute;
+
+    /// A face that stands in for a font that could not be resolved says nothing about the style
+    /// the document asked for. `FALLBACK_FAMILY` is "Source Sans 3" and `DEFAULT_FAMILY` is
+    /// "Source Serif 4", so reading their names would have forced the sans chain on every
+    /// unresolved family -- and the serif one on the other (#1692, noted in review).
+    #[test]
+    fn a_stand_in_face_says_nothing_about_the_requested_style() {
+        assert_eq!(style_of_substitute(designcraft_fonts::FALLBACK_FAMILY), None);
+        assert_eq!(style_of_substitute(designcraft_fonts::DEFAULT_FAMILY), None);
+        assert_eq!(style_of_substitute("source sans 3"), None, "however it is spelled");
+        // A real substitute still speaks for itself.
+        assert_eq!(style_of_substitute("Malgun Gothic"), Some(true));
+        assert_eq!(style_of_substitute("Batang"), Some(false));
+        assert_eq!(style_of_substitute("Helvetica"), None, "a name that says neither");
     }
 }
