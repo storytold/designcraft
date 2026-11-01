@@ -10,7 +10,12 @@ description = "DesignCraft Microsoft Publisher (.pub) import"
 workspace = true
 
 [dependencies]
+designcraft-geom = { workspace = true }
+designcraft-color = { workspace = true }
 designcraft-doc = { workspace = true }
+designcraft-images = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
 cfb = { workspace = true }
+serde_json = { workspace = true }
 

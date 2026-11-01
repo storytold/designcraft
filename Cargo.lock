@@ -1582,7 +1582,12 @@ name = "designcraft-pub"
 version = "0.15.2"
 dependencies = [
  "cfb",
+ "designcraft-color",
  "designcraft-doc",
+ "designcraft-geom",
+ "designcraft-images",
+ "log",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
