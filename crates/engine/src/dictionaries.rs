@@ -14,6 +14,11 @@ const MAX_FILE_BYTES: u64 = 64 << 20;
 const MAX_DICTIONARIES: usize = 32;
 /// Letters looked at to tell a dictionary's script.
 const SCRIPT_SAMPLE: usize = 4096;
+/// Longer words aren't checked. A dictionary that lets its words compound freely takes twice as
+/// long with every two letters more, and this runs as the text is set.
+const MAX_CHECK_CHARS: usize = 36;
+/// Longer words get no suggestions, for the same reason: they try many spellings of the word.
+const MAX_SUGGEST_CHARS: usize = 24;
 
 /// One installed dictionary.
 pub struct Installed {
@@ -140,12 +145,15 @@ fn for_word<'a>(dicts: &'a [Arc<Installed>], word: &str) -> Vec<&'a Loaded> {
 /// one of `dicts`? None when none of them can be read.
 pub fn check(dicts: &[Arc<Installed>], word: &str) -> Option<bool> {
     let loaded = for_word(dicts, word);
-    (!loaded.is_empty()).then(|| loaded.iter().any(|l| l.dict.check(word)))
+    (!loaded.is_empty()).then(|| word.chars().count() > MAX_CHECK_CHARS || loaded.iter().any(|l| l.dict.check(word)))
 }
 
 /// Up to 6 suggestions for `word` from the dictionaries in its script.
 pub fn suggest(dicts: &[Arc<Installed>], word: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    if word.chars().count() > MAX_SUGGEST_CHARS {
+        return out;
+    }
     for l in for_word(dicts, word) {
         let mut s = Vec::new();
         l.dict.suggest(word, &mut s);
@@ -202,6 +210,19 @@ mod tests {
         std::fs::write(dir.path().join("gv.dic"), [0xff, 0xfe, 0x00]).unwrap();
         assert_eq!(install_dir(dir.path()).len(), 1);
         assert_eq!(check(&for_language("gv"), "word"), None, "not UTF-8: read once, then skipped");
+    }
+
+    #[test]
+    fn a_long_word_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("br.aff"), "SET UTF-8\nCOMPOUNDFLAG A\nCOMPOUNDMIN 1\n").unwrap();
+        std::fs::write(dir.path().join("br.dic"), "3\na/A\nab/A\nb/A\n").unwrap();
+        assert_eq!(install_dir(dir.path()).len(), 1);
+        let br = for_language("br");
+        let word = |letters: usize| format!("{}q", "ab".repeat(letters / 2));
+        assert_eq!(check(&br, &word(20)), Some(false), "still checked");
+        assert_eq!(check(&br, &word(MAX_CHECK_CHARS + 2)), Some(true), "too long to check: not marked");
+        assert!(suggest(&br, &word(MAX_SUGGEST_CHARS + 2)).is_empty());
     }
 
     #[test]
