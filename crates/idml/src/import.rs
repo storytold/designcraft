@@ -242,7 +242,9 @@ impl<'r> Importer<'r> {
             table_cells: 0,
             table_warnings: 0,
             table_budget_spent: false,
-            settings: DocSettings::default(),
+            // InDesign lets justified lines squeeze word spaces below the Minimum: lay its
+            // documents out the way it does.
+            settings: DocSettings { flexible_word_spacing: true, ..DocSettings::default() },
             default_margins: None,
             swatches: specials,
             swatch_names,
