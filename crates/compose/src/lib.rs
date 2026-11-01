@@ -564,6 +564,18 @@ fn contour_path(it: &Item, kind: designcraft_doc::ContourType) -> (designcraft_g
     (frame, None)
 }
 
+/// The rows of a frame grid story's frame ([`designcraft_doc::framegrid`]), in inner space.
+/// Grid-aligned lines sit on them in place of the baseline grid's lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameRows {
+    /// Top of the first row.
+    pub top: f64,
+    /// Row height: the grid's cell across lines.
+    pub cell: f64,
+    /// From one row's top to the next: the cell plus the grid's line aki.
+    pub pitch: f64,
+}
+
 /// One frame of the thread, ready for composition.
 #[derive(Clone, Debug)]
 pub struct FrameSpec {
@@ -587,6 +599,8 @@ pub struct FrameSpec {
     pub parent: bool,
     /// Baseline grid in inner space: (first grid line y, increment).
     pub grid: Option<(f64, f64)>,
+    /// A frame grid's rows in inner space, in place of the baseline grid (see [`FrameRows`]).
+    pub frame_grid: Option<FrameRows>,
     /// The frame is on a left page (for towards/away-from-spine alignment).
     pub left_page: bool,
     /// The frame is on a right page of a facing spread (spine-relative anchored objects mirror
@@ -786,6 +800,12 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         let grid = (inc > 0.0 && inc.is_finite() && start.is_finite()).then_some((start - ty, inc));
         // Type on a path: one line as long as the path (from the start offset).
         let (area, opts) = frame_text_area(doc, st, item, tf);
+        // A frame grid's rows start at the top of the text area and replace the baseline grid.
+        let frame_grid = st.frame_grid.filter(|_| tf.options.path.is_none()).map(|g| {
+            let g = g.sanitized();
+            FrameRows { top: area.y0, cell: g.cell(false).1, pitch: g.row_pitch(false) }
+        });
+        let grid = if frame_grid.is_some() { None } else { grid };
         // A non-rectangular frame keeps the top inset inward from its outline; its rectangular text
         // area (all four insets) still bounds the lines.
         let outline = match &tf.options.path {
@@ -809,6 +829,8 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         } else {
             (area, exclusions, grid, page_rect, outline)
         };
+        // Vertical frame grids aren't set on their rows yet.
+        let frame_grid = if vertical { None } else { frame_grid };
         out.push(FrameSpec {
             id: fid,
             area,
@@ -821,6 +843,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
             page,
             parent: matches!(spread_ref, Some(designcraft_doc::SpreadRef::Parent(_))),
             grid,
+            frame_grid,
             left_page,
             right_page,
             page_rect,
@@ -1422,15 +1445,20 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         if cur.last_baseline.is_some() {
             baseline += cur.last_reference - reference;
         }
-        let grid = f.grid.filter(|&(_, inc)| {
-            inc > 0.0 && inc.is_finite() && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
-        });
+        let aligned = pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0);
+        // A frame grid's rows replace the baseline grid; its ICF references take the line's em box.
+        let line_ref = if f.frame_grid.is_some() { grid::frame_line_reference(pp.grid_reference) } else { pp.grid_reference };
+        let grid = match f.frame_grid {
+            Some(rows) => Some(rows.grid_for(line_glyphs, pp.grid_reference)),
+            None => f.grid,
+        }
+        .filter(|&(start, inc)| aligned && inc > 0.0 && inc.is_finite() && start.is_finite());
         if let Some((g_start, inc)) = grid {
             let n = pp.grid_gyoudori.min(grid::MAX_GYOUDORI);
             match para_block.filter(|(at, _)| line_no > 0 && *at == (cur.fi, cur.col)) {
                 Some((_, end)) => grid_end = Some(end),
                 None => {
-                    let r = grid::reference_offset(line_glyphs, pp.grid_reference);
+                    let r = grid::reference_offset(line_glyphs, line_ref);
                     let block = n > 0 && pp.paragraph_gyoudori && line_no == 0;
                     let span = if block {
                         let aki_below = |line_model, line_lead| (line_model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(line_lead);
@@ -1447,15 +1475,37 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
-                            last_r = grid::reference_offset(next_glyphs, pp.grid_reference);
+                            last_r = grid::reference_offset(next_glyphs, line_ref);
                         }
                         (down + last_r - r).max(0.0)
                     } else {
                         0.0
                     };
-                    let lines = if block { grid::lines_for(span, inc, n) } else { n.max(1) };
-                    let free = cur.grid_next.filter(|(b, _)| cur.last_baseline == Some(*b)).map(|(_, y)| y);
-                    let band = grid::Band { natural: baseline + r, free, pending: cur.pending, fixed: n > 0, lines, span };
+                    let lines = match f.frame_grid {
+                        _ if block => grid::lines_for(span, inc, n),
+                        // Auto gyoudori in a frame grid: the rows the line's em box needs.
+                        Some(rows) if n == 0 => {
+                            let em = grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmBottom)
+                                - grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmTop);
+                            rows.rows_for(em)
+                        }
+                        _ => n.max(1),
+                    };
+                    // At the top of a column, a frame grid's first row is free: gyoudori given starts there.
+                    let free = cur
+                        .grid_next
+                        .filter(|(b, _)| cur.last_baseline == Some(*b))
+                        .map(|(_, y)| y)
+                        .or_else(|| (f.frame_grid.is_some() && cur.last_baseline.is_none()).then_some(g_start));
+                    let band = grid::Band {
+                        natural: baseline + r,
+                        free,
+                        pending: cur.pending,
+                        fixed: n > 0,
+                        lines,
+                        span,
+                        at_reference: f.frame_grid.is_some(),
+                    };
                     let (y, end) = grid::place((g_start, inc), pp.grid_reference, band);
                     baseline = y - r;
                     grid_end = Some(end);
@@ -5984,6 +6034,7 @@ mod column_allocation_safety_tests {
             page: None,
             parent: false,
             grid: None,
+            frame_grid: None,
             left_page: false,
             right_page: false,
             page_rect: None,

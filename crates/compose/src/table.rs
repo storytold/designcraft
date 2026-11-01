@@ -134,6 +134,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         page: opts.page,
         parent: false,
         grid: None,
+        frame_grid: None,
         left_page,
         right_page,
         page_rect: None,

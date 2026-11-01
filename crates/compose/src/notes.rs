@@ -178,6 +178,7 @@ impl Notes {
             page: f.page,
             parent: f.parent,
             grid: None,
+            frame_grid: None,
             left_page: f.left_page,
             right_page: f.right_page,
             page_rect: None,
