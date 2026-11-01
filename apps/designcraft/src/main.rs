@@ -16,6 +16,7 @@
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
+mod control_token;
 mod gpu;
 mod gpu_limits;
 mod logging;
@@ -429,8 +430,50 @@ fn main() -> std::process::ExitCode {
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
                 if let Some(port) = control_port {
-                    let rx = control_server::start(port, cc.egui_ctx.clone());
-                    app = app.with_control(rx);
+                    // The channel reaches every command, so it opens only with a token a client
+                    // has to know (#1585). A caller that already has one passes it in the
+                    // environment; otherwise one is generated and written to the profile
+                    // directory for a client to read.
+                    //
+                    // If there is no random source, or nowhere to publish the token, the channel
+                    // does not open. Starting it unauthenticated would be the thing the token is
+                    // for, and starting it with a token nothing can learn leaves a port
+                    // listening that refuses every connection -- while the message said to pass
+                    // the token in an environment variable that nothing read (noted in review).
+                    let supplied = std::env::var(control_token::TOKEN_ENV).ok().filter(|t| !t.is_empty());
+                    let token = match supplied {
+                        Some(token) => Some(token),
+                        None => match control_token::new_token() {
+                            None => {
+                                eprintln!("designcraft: the control server did not start: no random source for its token");
+                                None
+                            }
+                            Some(token) => match profile::config_dir().map(|dir| control_token::write_token(&dir, &token)) {
+                                Some(Ok(path)) => {
+                                    eprintln!("designcraft: the control token is in {}", path.display());
+                                    Some(token)
+                                }
+                                Some(Err(e)) => {
+                                    eprintln!(
+                                        "designcraft: the control server did not start: its token could not be written: {e} (pass one in {})",
+                                        control_token::TOKEN_ENV
+                                    );
+                                    None
+                                }
+                                None => {
+                                    eprintln!(
+                                        "designcraft: the control server did not start: no profile directory for its token (pass one in {})",
+                                        control_token::TOKEN_ENV
+                                    );
+                                    None
+                                }
+                            },
+                        },
+                    };
+                    if let Some(token) = token {
+                        let rx = control_server::start(port, token, cc.egui_ctx.clone());
+                        app = app.with_control(rx);
+                    }
                 }
                 if sample {
                     let _ = app.run("file.newSample", serde_json::json!({}));
