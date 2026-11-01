@@ -1878,7 +1878,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let mut hyphen_at: Option<usize> = None;
     let has_tabs = glyphs.iter().any(|g| g.ch == '\t');
     let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
-    let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+    let rtl = lines_rtl(pp);
     // Paragraph gyoudori: the (frame, column) of the block and the grid line after it.
     let mut para_block: Option<((usize, usize), f64)> = None;
     // Segments of a line already placed (beside an object with text on both sides) that the
@@ -2090,7 +2090,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let end_x = end_x + warichu::place(styles_tab, &mut placed);
             // The spaces the break trimmed off the end follow the line undrawn, so the caret
             // and the selection reach them; alignment and justification ignore them.
-            if pp.direction != designcraft_doc::TextDirection::RightToLeft && !placed.iter().any(|g| g.rtl) {
+            if !rtl && !placed.iter().any(|g| g.rtl) {
                 let mut x = end_x;
                 for g in glyphs.get(e..(g0 + b.next).min(glyphs.len())).unwrap_or(&[]).iter().filter(|g| g.is_space()) {
                     placed.push(PlacedGlyph { visible: false, ..place(g, x) });
@@ -2262,7 +2262,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     } = input;
     let drop_end = drop_cap_end(&story.text, prange.clone(), pp, sub.vertical);
     let mut table = StyleTable { styles, missing: missing_fonts };
-    let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+    let env = shape::TypeEnv {
+        auto_leading: pp.auto_leading,
+        adv: doc.settings.advanced_type,
+        glyph_fallback: doc.settings.glyph_fallback,
+        unjoined: !pp.world_ready,
+    };
     let mut sp = shape::shape_para(
         shape::ShapeInput {
             db,
@@ -2300,10 +2305,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
     let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
-    // Align Left Edge (left-to-right paragraphs).
-    let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
+    // Align Left Edge (lines set left to right).
+    let drop_align = pp.drop_cap_align_left && !lines_rtl(pp);
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
-    let drop_tab_indent = if pp.direction == designcraft_doc::TextDirection::RightToLeft { pp.right_indent } else { pp.left_indent };
+    let drop_tab_indent = if lines_rtl(pp) { pp.right_indent } else { pp.left_indent };
     apply_nested_line_styles(NestedLineStyleInput {
         db,
         doc,
@@ -2333,6 +2338,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // The drop cap's mirrored characters resolve in the whole paragraph, before it's split off.
+    if sp.glyphs.first().is_some_and(|g| g.byte < drop_end) {
+        paragraph_bidi(&mut sp.glyphs, &story.text, pp);
+    }
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2398,7 +2407,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         label_aligned = 0;
     }
     let list_align = match pp.list_type {
-        _ if label_aligned == 0 || pp.direction == designcraft_doc::TextDirection::RightToLeft => designcraft_doc::ListAlign::Left,
+        _ if label_aligned == 0 || lines_rtl(pp) => designcraft_doc::ListAlign::Left,
         designcraft_doc::ListType::Bullets => pp.bullet_align,
         _ => pp.number_align,
     };
@@ -2412,14 +2421,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
             g.character_alignment = designcraft_doc::cjk::CharacterAlignment::Baseline;
         }
     }
-    let bidi_text = bidi::paragraph_text(&mut glyphs, &story.text);
-    bidi::resolve_mirroring(
-        &mut glyphs,
-        &unicode_bidi::BidiInfo::new(
-            &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
-        ),
-    );
+    let bidi_text = paragraph_bidi(&mut glyphs, &story.text, pp);
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -2852,10 +2854,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             last_line_mark,
             para_box: _,
         } = shaped;
-        let bidi_info = unicode_bidi::BidiInfo::new(
-            &bidi_text,
-            Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
-        );
+        let bidi_info = unicode_bidi::BidiInfo::new(&bidi_text, Some(bidi_level(&pp)));
         // A paragraph set across the columns moves on to the next frame where others move on to
         // the next column.
         let spanning = matches!(pp.span_columns, SpanColumns::Span(n) if n != 1);
@@ -4499,7 +4498,8 @@ fn page_alignment(align: Align, left_page: bool) -> Align {
 
 /// Allocate justified Arabic elongation before distributing the remaining space.
 fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, f64)> {
-    if !(*extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
+    // Not World-Ready, Arabic letters stand unjoined: there are no joins to stretch.
+    if !(*extra > 0.0 && pp.world_ready && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
         return Vec::new();
     }
     let points: Vec<usize> = kashida_points(line).into_iter().filter(|&i| i >= seg).collect();
@@ -4732,6 +4732,31 @@ fn layout_line(
     }
     append_kashidas(&line, &mut out, kashidas);
     (out, x, ratio)
+}
+
+/// Whether the paragraph's lines run right to left: a World-Ready right-to-left paragraph. A
+/// paragraph that isn't World-Ready sets its lines left to right whatever its direction, as
+/// InDesign's Paragraph Composer does, so its start edge (first-line indent, drop cap, list label)
+/// is the left one and beside an object the left segment fills first.
+fn lines_rtl(pp: &designcraft_doc::ParaProps) -> bool {
+    pp.world_ready && pp.direction == designcraft_doc::TextDirection::RightToLeft
+}
+
+/// The paragraph's base bidi level ([`lines_rtl`]).
+fn bidi_level(pp: &designcraft_doc::ParaProps) -> unicode_bidi::Level {
+    if lines_rtl(pp) { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }
+}
+
+/// The paragraph's bidi input ([`bidi::paragraph_text`]), with its mirrored characters resolved
+/// at their levels. Not World-Ready, the line runs left to right in text order whatever the script:
+/// every glyph is set left to right and bidi controls in the text don't reorder it.
+fn paragraph_bidi(glyphs: &mut [Glyph], source: &str, pp: &designcraft_doc::ParaProps) -> String {
+    if !pp.world_ready {
+        glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
+    }
+    let text = bidi::paragraph_text(glyphs, source, pp.world_ready);
+    bidi::resolve_mirroring(glyphs, &unicode_bidi::BidiInfo::new(&text, Some(bidi_level(pp))));
+    text
 }
 
 /// Arabic letters that join the following letter (dual-joining).

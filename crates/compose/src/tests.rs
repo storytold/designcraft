@@ -8161,6 +8161,131 @@ fn an_empty_last_paragraph_isnt_overset() {
     assert!(compose_story(&d, sid, &ComposeOptions::default()).is_overset(), "an empty paragraph before the last one is text");
 }
 
+/// A paragraph that isn't World-Ready (InDesign's Paragraph Composer) sets Arabic left to right
+/// in text order, each letter in its isolated form, as InDesign does.
+#[test]
+fn arabic_outside_a_world_ready_paragraph_runs_left_to_right_unjoined() {
+    let text = "\u{0628}\u{0644}";
+    let set = |world_ready: bool, text: &str| {
+        let para = ParaAttrs { world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.gid, g.x)).collect::<Vec<_>>()
+    };
+    let beh = set(true, "\u{0628}")[0].1;
+    let lam = set(true, "\u{0644}")[0].1;
+    let joined = set(true, text);
+    let (b, l) = (joined.iter().find(|g| g.0 == 0).unwrap(), joined.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 > l.2 && b.1 != beh, "World-Ready: joined, right to left");
+    let plain = set(false, text);
+    let (b, l) = (plain.iter().find(|g| g.0 == 0).unwrap(), plain.iter().find(|g| g.0 == 2).unwrap());
+    assert!(b.2 < l.2, "left to right: {plain:?}");
+    assert_eq!((b.1, l.1), (beh, lam), "isolated forms");
+}
+
+/// A paragraph that isn't World-Ready sets its lines left to right whatever its direction, as
+/// InDesign's Paragraph Composer does: beside an object the left segment fills first, and the
+/// first-line indent and the drop cap are at the left edge. A right-to-left paragraph's lines
+/// used to start at the right even so.
+#[test]
+fn a_paragraph_that_isnt_world_ready_places_its_lines_from_the_left() {
+    let not_world_ready = |para: &mut ParaAttrs| {
+        para.direction = Some(designcraft_doc::TextDirection::RightToLeft);
+        para.world_ready = Some(false);
+        para.align = Some(Align::Left);
+    };
+    let left_edge = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| g.x).fold(f64::MAX, f64::min);
+    // Beside an object with text on both sides: the left segment, then the right one.
+    let (mut d, sid) = doc_with_ellipse(WrapMode::Contour, WrapSide::BothSides);
+    not_world_ready(&mut d.story_mut(sid).unwrap().paras[0].para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    let pairs: Vec<(&Line, &Line)> = lines.windows(2).filter(|w| w[0].baseline == w[1].baseline).map(|w| (&w[0], &w[1])).collect();
+    assert!(pairs.len() >= 4, "{} lines share a baseline", pairs.len());
+    for (first, second) in &pairs {
+        assert!(first.x1 < 150.0 && second.x0 > 150.0, "left segment first: {} {}", first.x1, second.x0);
+        assert_eq!(first.range.end, second.range.start);
+    }
+    // The first-line indent is at the left.
+    let mut para = ParaAttrs { first_line_indent: Some(20.0), ..Default::default() };
+    not_world_ready(&mut para);
+    let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((left_edge(lines[0]) - 20.0).abs() < 1.0, "first line indented: {}", left_edge(lines[0]));
+    assert!(left_edge(lines[1]).abs() < 1.0, "the next line at the edge: {}", left_edge(lines[1]));
+    // So is the drop cap, with its lines' text after it.
+    let mut para = drop_cap(2, 1);
+    not_world_ready(&mut para);
+    let (d, sid, _) = drop_doc(LOREM, para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!(dc.x < 1.0 && !dc.rtl, "{dc:?}");
+    for l in &lines[..2] {
+        assert!(l.glyphs.iter().filter(|g| g.byte > 0 && g.visible).all(|g| g.x >= dc.x + dc.adv - 0.5));
+    }
+}
+
+/// Outside a World-Ready paragraph a parenthesis in the drop cap is drawn unmirrored, like the
+/// same parenthesis in the line. The drop cap used to be split off before mirroring was resolved,
+/// so it kept the mirrored glyph of the right-to-left run it was shaped in.
+#[test]
+fn a_drop_cap_parenthesis_outside_a_world_ready_paragraph_isnt_mirrored() {
+    let text = "(\u{0627}\u{0628}) \u{0627}\u{0628}";
+    let first = |drop: bool| {
+        let mut para = if drop { drop_cap(2, 1) } else { ParaAttrs::default() };
+        para.world_ready = Some(false);
+        // One face for all of it (no fallback), so the parenthesis is shaped in the Arabic's run.
+        let (mut d, sid, _) = drop_doc(text, para);
+        d.settings.glyph_fallback = false;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let g = cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 0).cloned().unwrap();
+        (g.gid, g.face.glyph_for('('), g.face.glyph_for(')'))
+    };
+    let (gid, open, close) = first(false);
+    assert!(open != 0 && open != close && gid == open, "in the line: {gid} ( {open} ) {close}");
+    let (gid, open, _) = first(true);
+    assert_eq!(gid, open, "in the drop cap");
+}
+
+/// A paragraph that isn't World-Ready stretches no Arabic joins with kashidas: its letters
+/// stand apart.
+#[test]
+fn a_paragraph_that_isnt_world_ready_gets_no_kashidas() {
+    let text = "بسم الله الرحمن الرحيم الحمد لله رب العالمين";
+    let tatweels = |world_ready: bool| {
+        let para = ParaAttrs { align: Some(Align::LeftJustified), world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 160.0, 300.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).filter(|g| g.len == 0 && g.gid != 0 && g.face.glyph_for('\u{0640}') == g.gid).count()
+    };
+    assert!(tatweels(true) > 0, "World-Ready: kashidas");
+    assert_eq!(tatweels(false), 0, "not World-Ready");
+}
+
+/// A paragraph that isn't World-Ready keeps Hebrew in text order even inside a right-to-left
+/// isolate (U+2067 … U+2069) typed in the text: the isolate used to give it a right-to-left level
+/// inside the left-to-right override, and the line reordered it.
+#[test]
+fn bidi_controls_dont_reorder_a_paragraph_that_isnt_world_ready() {
+    let text = "a \u{2067}\u{05D0}\u{05D1}\u{2069} b";
+    let xs = |world_ready: bool| {
+        let para = ParaAttrs { world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let x = |byte: usize| cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == byte).map(|g| g.x).unwrap();
+        (x(5), x(7))
+    };
+    let (alef, bet) = xs(true);
+    assert!(alef > bet, "World-Ready: right to left {alef} {bet}");
+    let (alef, bet) = xs(false);
+    assert!(alef < bet, "not World-Ready: text order {alef} {bet}");
+}
+
 #[test]
 fn greek_text_gets_greek_hyphenation() {
     // Greek had no hyphenation at all: `hypher`'s Greek patterns were not among the features

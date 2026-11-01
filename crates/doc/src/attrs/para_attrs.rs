@@ -37,6 +37,11 @@ attr_set! {
         nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
         grid_align: GridAlign = GridAlign::None,
         composer: Composer = Composer::Paragraph,
+        /// World-Ready (InDesign's World-Ready Paragraph and Single-line Composers): lines are
+        /// ordered by direction (bidi) and joining scripts such as Arabic are shaped. Off, as with
+        /// InDesign's Paragraph and Single-line Composers, a line runs left to right in text order
+        /// and Arabic letters stand unjoined (marks still sit on their letters).
+        world_ready: bool = true,
         // Hyphenation
         hyphenate: bool = true,
         hyph_min_word: u32 = 5,

@@ -967,10 +967,10 @@ fn shape_run_raw(
 }
 
 type WordMap = HashMap<Box<str>, Arc<[ShapedGlyph]>>;
-type WordKey = (u32, bool, bool, String, Option<&'static str>);
+type WordKey = (u32, bool, bool, String, Option<&'static str>, bool);
 
-/// Shaped words (font units) by (face, vertical, caps, features, language), then text. Lookups
-/// take read locks and misses are shaped outside any lock, so parallel composition doesn't
+/// Shaped words (font units) by (face, vertical, caps, features, language, unjoined), then text.
+/// Lookups take read locks and misses are shaped outside any lock, so parallel composition doesn't
 /// serialize here.
 static WORD_CACHE: RwLock<Vec<(WordKey, Arc<RwLock<WordMap>>)>> = RwLock::new(Vec::new());
 const WORD_CACHE_MAX: usize = 50_000;
@@ -994,6 +994,7 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
 /// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
 /// scripts we lay out, and clusters stay byte offsets into `src`.
+#[allow(clippy::too_many_arguments)]
 fn shape_cached(
     face: &FontFace,
     src: &str,
@@ -1002,6 +1003,7 @@ fn shape_cached(
     caps: bool,
     vertical: bool,
     (before, after): (&str, &str),
+    unjoined: bool,
 ) -> Vec<ShapedGlyph> {
     use designcraft_fonts::ShapeContext;
     let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
@@ -1013,9 +1015,9 @@ fn shape_cached(
         }
     };
     if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
-        return shape(src, ShapeContext { before, after, language: lang });
+        return shape(src, ShapeContext { before, after, language: lang, unjoined });
     }
-    let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
+    let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang, unjoined));
     let pieces: Vec<&str> = src.split_inclusive(' ').collect();
     let mut found: Vec<Option<Arc<[ShapedGlyph]>>> = {
         let r = words.read().unwrap_or_else(|e| e.into_inner());
@@ -1024,7 +1026,7 @@ fn shape_cached(
     let mut fresh: Vec<(Box<str>, Arc<[ShapedGlyph]>)> = Vec::new();
     for (k, f) in found.iter_mut().enumerate() {
         if f.is_none() {
-            let g: Arc<[ShapedGlyph]> = shape(pieces[k], ShapeContext { language: lang, ..Default::default() }).into();
+            let g: Arc<[ShapedGlyph]> = shape(pieces[k], ShapeContext { language: lang, unjoined, ..Default::default() }).into();
             fresh.push((pieces[k].into(), g.clone()));
             *f = Some(g);
         }
@@ -1064,6 +1066,9 @@ pub struct TypeEnv {
     pub adv: designcraft_doc::AdvancedType,
     /// Characters the font lacks are drawn from fallback fonts (else as its .notdef glyph).
     pub glyph_fallback: bool,
+    /// The paragraph isn't World-Ready: Arabic letters stand unjoined
+    /// ([`designcraft_fonts::ShapeContext::unjoined`]).
+    pub unjoined: bool,
 }
 
 /// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
@@ -1189,7 +1194,7 @@ fn shape_segment(
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around, auto_leading.unjoined);
         upright.extend(std::iter::repeat_n(up, g.len()));
         shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
     }

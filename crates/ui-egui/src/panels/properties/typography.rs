@@ -356,6 +356,11 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     if item(ui, "Single-line Composer", Some(single), true) {
         attrs = Some(json!({"composer": single_line}));
     }
+    // World-Ready: right-to-left text and Arabic shaping (InDesign's World-Ready composers).
+    let world_ready = p["worldReady"].as_bool().unwrap_or(true);
+    if item(ui, "World-Ready", Some(world_ready), true) {
+        attrs = Some(json!({"worldReady": !world_ready}));
+    }
     ui.separator();
     let grid = p["gridAlign"].as_str().unwrap_or("none");
     if item(ui, "Only Align First Line to Grid", Some(grid == "firstLineOnly"), grid != "none") {
