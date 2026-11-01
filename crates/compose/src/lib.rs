@@ -4604,7 +4604,8 @@ fn layout_line(
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
     // How a line that isn't justified aligns: a justified paragraph's last line by its last-line
-    // alignment.
+    // alignment. Justify All Lines has no last-line alignment of its own (its last line is
+    // justified too), so a line it leaves unjustified starts at the left edge.
     let last_align = match align {
         Align::LeftJustified => Align::Left,
         Align::CenterJustified => Align::Center,
