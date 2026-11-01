@@ -382,9 +382,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Drop Shadow",
             ["Object", "Effects"],
             Some("Cmd+Alt+M"),
-            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, spread? (%), color? (swatch), ids?}",
+            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, spread? (%), color? (swatch), mode?: blend mode (multiply…), ids?}",
             has_selection,
             |s, p| {
+                let mode = blend_param(p, "object.dropShadow")?;
                 let p2 = p.clone();
                 set_effects(s, p, "object.dropShadow", move |fx| {
                     let ds = &mut fx.drop_shadow;
@@ -398,6 +399,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(c) = str_param(&p2, "color") {
                         ds.color = c.into();
                     }
+                    if let Some(m) = mode {
+                        ds.mode = m;
+                    }
                 })
             }
         ),
@@ -406,9 +410,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Inner Shadow",
             ["Object", "Effects"],
             None,
-            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, choke? (%), color?, ids?}",
+            "{on?: bool, distance?, angle?, globalLight?: bool, opacity?, size?, choke? (%), color?, mode?: blend mode, ids?}",
             has_selection,
             |s, p| {
+                let mode = blend_param(p, "object.innerShadow")?;
                 let p2 = p.clone();
                 set_effects(s, p, "object.innerShadow", move |fx| {
                     let e = &mut fx.inner_shadow;
@@ -422,6 +427,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(c) = str_param(&p2, "color") {
                         e.color = c.into();
                     }
+                    if let Some(m) = mode {
+                        e.mode = m;
+                    }
                 })
             }
         ),
@@ -430,9 +438,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Outer Glow",
             ["Object", "Effects"],
             None,
-            "{on?: bool, opacity?, size?, spread? (%), color?, ids?}",
+            "{on?: bool, opacity?, size?, spread? (%), color?, mode?: blend mode (screen…), ids?}",
             has_selection,
             |s, p| {
+                let mode = blend_param(p, "object.outerGlow")?;
                 let p2 = p.clone();
                 set_effects(s, p, "object.outerGlow", move |fx| {
                     let e = &mut fx.outer_glow;
@@ -442,6 +451,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     e.spread = f64_or(&p2, "spread", e.spread);
                     if let Some(c) = str_param(&p2, "color") {
                         e.color = c.into();
+                    }
+                    if let Some(m) = mode {
+                        e.mode = m;
                     }
                 })
             }
@@ -598,7 +610,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
+            "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
             has_selection,
             text_frame_options
         ),
@@ -607,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Corner Options…",
             ["Object"],
             None,
-            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, corners?: [{shape, size}] (4 entries in path order: top-left, top-right, bottom-right, bottom-left; replaces shape and size), ids?}",
+            "{shape: none|rounded|inverseRounded|inset|bevel|fancy, size, corners?: [{shape, size} | null] (4 entries in path order: top-left, top-right, bottom-right, bottom-left; replaces shape and size; null keeps that corner of each object), ids?}",
             has_selection,
             corner_options
         ),
@@ -616,7 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Wrap",
             ["Window"],
             Some("Cmd+Alt+W"),
-            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given: then unchanged), offset?: number|[t,l,b,r], invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
+            "{mode?: none|boundingBox|contour|jumpObject|jumpToNextColumn (boundingBox when absent, unless side or contour is given; null or those: each object's own, unchanged), offset?: number|[t,l,b,r] (a null side keeps each object's own), invert?: bool, side?: bothSides|leftSide|rightSide|towardsSpine|awayFromSpine|largestArea, contour?: boundingBox|graphicFrame|sameAsClipping, content?: bool (the placed graphic instead of its frame; default: whether the selection is the frame's content), ids?}; offset or contour drops an imported custom wrap boundary",
             has_selection,
             text_wrap
         ),
@@ -637,6 +649,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{autoFit?: bool, fitting?: none|fillProportionally|fitProportionally|fitContentToFrame|centerContent, align?: 0..8 (reference point, 4 = centre), crop?: n | [t, l, b, r] (negative adds space), ids?}",
             has_selection,
             fitting_options
+        ),
+        cmd!(
+            "object.clearFittingOptions",
+            "Clear Frame Fitting Options",
+            ["Object", "Fitting"],
+            None,
+            "{ids?} — the frames' fitting options back to the defaults: no auto-fit, no crop amounts, the centre reference point; the content stays where it is",
+            has_selection,
+            clear_fitting_options
         ),
         cmd!("object.rename", "Rename", [], None, "{id | ids?, name}", has_doc, |s, p| {
             let name = str_param(p, "name").unwrap_or("").to_string();
@@ -680,7 +701,15 @@ pub fn specs() -> Vec<CommandSpec> {
             path_reverse
         ),
         cmd!("path.close", "Close Path", ["Object", "Paths"], None, "{id, subpath?: index (default every subpath)}", has_doc, path_close),
-        cmd!("path.moveAnchors", "Move Anchors", [], None, "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out}", has_doc, path_move_anchors),
+        cmd!(
+            "path.moveAnchors",
+            "Move Anchors",
+            [],
+            None,
+            "{id, anchors: [[subpath, index]], dx, dy, handle?: in|out} | {points: [[id, subpath, index, dx?, dy?]], dx?, dy?} (anchors of several paths, as Direct Selection drags them: one step; a point's own dx, dy win over the shared ones) — spread space",
+            has_doc,
+            path_move_anchors
+        ),
         cmd!(
             "object.align",
             "Align",
@@ -2101,13 +2130,18 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let mode: Option<WrapMode> = match p.get("mode") {
+        // Null keeps each object's own mode (an edit of the offsets or Invert alone).
+        Some(Value::Null) => None,
         Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| bad("object.textWrap", "unknown mode"))?),
         None if side.is_some() || contour.is_some() => None,
         None => Some(WrapMode::BoundingBox),
     };
-    let off = match p.get("offset") {
-        Some(Value::Number(n)) => Some([n.as_f64().unwrap_or(0.0); 4]),
-        Some(v) => serde_json::from_value(v.clone()).ok(),
+    // Per side [top, left, bottom, right]; a null side keeps each object's own offset there, so
+    // an edit of one side keeps the others of every object.
+    // An array with no number in it changes no offset (and so keeps a custom boundary).
+    let off: Option<[Option<f64>; 4]> = match p.get("offset") {
+        Some(Value::Number(n)) => Some([n.as_f64(); 4]),
+        Some(v) => serde_json::from_value::<[Option<f64>; 4]>(v.clone()).ok().filter(|o| o.iter().any(Option::is_some)),
         None => None,
     };
     let invert = p.get("invert").and_then(Value::as_bool);
@@ -2127,7 +2161,11 @@ fn text_wrap(s: &mut Session, p: &Value) -> Result<Value> {
                 w.mode = m;
             }
             if let Some(o) = off {
-                w.offsets = o;
+                for (w, v) in w.offsets.iter_mut().zip(o) {
+                    if let Some(v) = v {
+                        *w = v;
+                    }
+                }
             }
             if let Some(v) = invert {
                 w.invert = v;
@@ -2152,19 +2190,31 @@ fn corner_options(s: &mut Session, p: &Value) -> Result<Value> {
     use designcraft_geom::corners::{Corner, CornerOptions, CornerShape};
     let opts = match p.get("corners") {
         Some(v) => {
-            let corners: [Corner; 4] =
-                serde_json::from_value(v.clone()).map_err(|e| bad("object.cornerOptions", format!("corners: four {{shape, size}} entries ({e})")))?;
-            if corners.iter().any(|c| !c.size.is_finite() || c.size < 0.0) {
+            let corners: [Option<Corner>; 4] = serde_json::from_value(v.clone())
+                .map_err(|e| bad("object.cornerOptions", format!("corners: four {{shape, size}} or null entries ({e})")))?;
+            if corners.iter().flatten().any(|c| !c.size.is_finite() || c.size < 0.0) {
                 return Err(bad("object.cornerOptions", "corner sizes must be finite and not negative"));
             }
-            CornerOptions { corners }
+            corners
         }
         None => {
             let shape = p.get("shape").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(CornerShape::Rounded);
-            CornerOptions::uniform(shape, f64_or(p, "size", 12.0))
+            CornerOptions::uniform(shape, f64_or(p, "size", 12.0)).corners.map(Some)
         }
     };
-    set_flag(s, p, move |i| i.corners = opts, false)
+    // A null corner keeps each object's own.
+    set_flag(
+        s,
+        p,
+        move |i| {
+            for (c, new) in i.corners.corners.iter_mut().zip(opts) {
+                if let Some(new) = new {
+                    *c = new;
+                }
+            }
+        },
+        false,
+    )
 }
 
 /// `object.matchAttributes`: the selected objects (or `ids`) take `from`'s appearance.
@@ -2311,6 +2361,15 @@ fn effects_all(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(patch) = &patch {
                 let mut cur = serde_json::to_value(&it.effects).map_err(|e| bad(ID, e.to_string()))?;
+                // Default effects are left out of the serialized form; a patch without `mode` would
+                // then read the legacy Normal instead of the effect's current (Multiply, Screen) mode.
+                for (key, now) in
+                    [("innerShadow", serde_json::to_value(&it.effects.inner_shadow)), ("outerGlow", serde_json::to_value(&it.effects.outer_glow))]
+                {
+                    if let (Some(o), Ok(now)) = (cur.as_object_mut(), now) {
+                        o.entry(key).or_insert(now);
+                    }
+                }
                 merge_json(&mut cur, patch);
                 let mut fx: designcraft_doc::Effects = serde_json::from_value(cur).map_err(|e| bad(ID, format!("effects: {e}")))?;
                 sanitize_effects(&mut fx)?;
@@ -2505,6 +2564,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let min_width = ranged("minimumWidth", 0.0, crate::autosize::MAX_SIDE, "a number of points")?;
     let column_width = ranged("columnWidth", 0.0, 15552.0, "a number of points")?;
     let first_baseline_min = ranged("firstBaselineMin", 0.0, 15552.0, "a number of points")?;
+    let spacing_limit = ranged("paragraphSpacingLimit", 0.0, 15552.0, "a number of points")?;
     let reference = match p.get("autoSizeReference") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
@@ -2591,6 +2651,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = reference {
                 o.auto_size_ref = v;
             }
+            o.vj_paragraph_spacing_limit = spacing_limit.unwrap_or(o.vj_paragraph_spacing_limit);
             if let Some(v) = p.get("useMinimumHeight").and_then(Value::as_bool) {
                 o.auto_size_use_min_height = v;
             }
@@ -2938,9 +2999,40 @@ fn fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
             } else if fitting.is_some() && g.auto_fit != designcraft_doc::Fitting::None {
                 g.auto_fit = mode;
             }
-            if let Some(xf) = g.fitted(r, mode) {
+            // Turning Auto-Fit off alone leaves the picture where the user put it.
+            let turn_off_only = auto == Some(false) && fitting.is_none() && align.is_none() && crop.is_none();
+            if !turn_off_only && let Some(xf) = g.fitted(r, mode) {
                 g.xf = xf;
             }
+            n += 1;
+        }
+        Ok(json!({"changed": n}))
+    })
+}
+
+/// Clear Frame Fitting Options: auto-fit off, no crop, the centre reference point. The content
+/// stays where it is, as in InDesign.
+fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
+    // Locked frames (or frames on a locked layer) keep their options, as with Fit; frames whose
+    // options are already clear are left out; with nothing to change, no edit (and no empty undo
+    // step).
+    let doc = &s.doc()?.doc;
+    let set = |g: &designcraft_doc::Graphic| g.auto_fit != designcraft_doc::Fitting::None || g.crop != [0.0; 4] || g.fit_align != 4;
+    let ids: Vec<ItemId> = targets(s, p)?
+        .into_iter()
+        .filter(|id| doc.item(*id).is_some_and(|it| unlocked(doc, it) && matches!(&it.content, Content::Graphic(g) if set(g))))
+        .collect();
+    if ids.is_empty() {
+        return Ok(json!({"changed": 0}));
+    }
+    s.edit(|d, _| {
+        let mut n = 0;
+        for id in &ids {
+            let Some(it) = d.item_mut(*id) else { continue };
+            let Content::Graphic(g) = &mut it.content else { continue };
+            g.auto_fit = designcraft_doc::Fitting::None;
+            g.crop = [0.0; 4];
+            g.fit_align = 4;
             n += 1;
         }
         Ok(json!({"changed": n}))
@@ -3174,6 +3266,20 @@ fn align(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// An effect's `mode` parameter: a blend mode by name ("multiply", "screen", or as saved).
+/// An effect's `mode`: `None` when omitted or null, an error when it names no blend mode.
+fn blend_param(p: &Value, cmd: &str) -> Result<Option<BlendMode>> {
+    match p.get("mode") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(BlendMode::parse)
+            .or_else(|| serde_json::from_value(v.clone()).ok())
+            .map(Some)
+            .ok_or_else(|| bad(cmd, format!("unknown blend mode {v}"))),
+    }
+}
+
 fn distribute(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     if ids.len() < 3 && p.get("spacing").is_none() {
@@ -3266,29 +3372,36 @@ fn path_create(s: &mut Session, p: &Value) -> Result<Value> {
 fn path_append(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.appendAnchor", "missing id"))?;
     let a = p.get("anchor").and_then(anchor_from).ok_or_else(|| bad("path.appendAnchor", "missing anchor"))?;
-    let subpath = p.get("subpath").and_then(Value::as_u64);
+    // An omitted subpath is the last one; one given must name a subpath (never falls back).
+    let subpath = match p.get("subpath") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| bad("path.appendAnchor", "`subpath` must be a subpath index"))?),
+    };
     let at_start = match p.get("at") {
         None => false,
         Some(v) if v.as_str() == Some("end") => false,
         Some(v) if v.as_str() == Some("start") => true,
         Some(_) => return Err(bad("path.appendAnchor", "`at` must be `start` or `end`")),
     };
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         path_editable(d, id, "path.appendAnchor")?;
         let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let inv = (d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default()).inverse();
         let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let sp = match subpath {
-            Some(i) => {
-                usize::try_from(i).ok().and_then(|i| it.path.subpaths.get_mut(i)).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?
-            }
-            None => it.path.subpaths.last_mut().ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
+        let si = match subpath {
+            Some(i) => usize::try_from(i).ok().filter(|i| *i < it.path.subpaths.len()).ok_or_else(|| bad("path.appendAnchor", "no such subpath"))?,
+            None => it.path.subpaths.len().checked_sub(1).ok_or_else(|| bad("path.appendAnchor", "empty path"))?,
         };
+        let sp = &mut it.path.subpaths[si];
         if sp.closed {
             return Err(bad("path.appendAnchor", "the subpath is closed"));
         }
         if at_start {
             sp.anchors.insert(0, a.transform(inv));
+            // The selected points of this sub-path move up one place with the others.
+            for a in sel.anchors.iter_mut().filter(|a| a.0 == id && a.1 == si) {
+                a.2 += 1;
+            }
         } else {
             sp.anchors.push(a.transform(inv));
         }
@@ -3367,7 +3480,7 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
     {
         path_editable(doc, *id, "path.reverse")?;
     }
-    s.edit(|d, _| {
+    s.edit(|d, sel| {
         let mut reversed = 0;
         for id in &editable {
             let Some(it) = d.item_mut(*id) else { continue };
@@ -3377,6 +3490,11 @@ fn path_reverse(s: &mut Session, p: &Value) -> Result<Value> {
             for (i, sp) in it.path.subpaths.iter_mut().enumerate() {
                 if only.is_some_and(|o| o != i) {
                     continue;
+                }
+                // Selected points keep pointing at the same points, now counted from the other end.
+                let n = sp.anchors.len();
+                for a in sel.anchors.iter_mut().filter(|a| a.0 == *id && a.1 == i && a.2 < n) {
+                    a.2 = n - 1 - a.2;
                 }
                 sp.anchors.reverse();
                 for a in &mut sp.anchors {
@@ -3411,38 +3529,75 @@ fn path_close(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn path_move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
-    let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    // The anchors to move, by path: `points` (several paths) or `id` with `anchors`.
+    // Each anchor with its own spread-space movement, when the points give one.
+    let mut targets: Vec<(ItemId, Vec<(usize, usize, Option<Vec2>)>)> = Vec::new();
+    // A `points` that isn't a list is an error, never the `id` form (which could move another path).
+    let points = match p.get("points") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a),
+        Some(_) => return Err(bad("path.moveAnchors", "`points` must be a list of [id, subpath, index, dx?, dy?]")),
+    };
+    if let Some(points) = points {
+        for v in points {
+            let n = |i: usize| v.get(i).and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok());
+            let (Some(id), Some(si), Some(ai)) = (v.get(0).and_then(Value::as_u64), n(1), n(2)) else {
+                return Err(bad("path.moveAnchors", "each point is [id, subpath, index] or [id, subpath, index, dx, dy]"));
+            };
+            let own = match (v.get(3), v.get(4)) {
+                (None, None) => None,
+                (Some(x), Some(y)) => match (x.as_f64(), y.as_f64()) {
+                    (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some(Vec2::new(x, y)),
+                    _ => return Err(bad("path.moveAnchors", "a point's dx and dy are finite numbers")),
+                },
+                _ => return Err(bad("path.moveAnchors", "a point gives both dx and dy, or neither")),
+            };
+            match targets.iter_mut().find(|(i, _)| i.0 == id) {
+                Some((_, which)) => which.push((si, ai, own)),
+                None => targets.push((ItemId(id), vec![(si, ai, own)])),
+            }
+        }
+    } else {
+        let id = super::id_param(p, "id").ok_or_else(|| bad("path.moveAnchors", "missing id"))?;
+        let which: Vec<(usize, usize)> = p.get("anchors").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        targets.push((id, which.into_iter().map(|(s, a)| (s, a, None)).collect()));
+    }
     let d0 = Vec2::new(f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
     let handle = str_param(p, "handle").map(str::to_string);
     s.edit(|d, _| {
-        path_editable(d, id, "path.moveAnchors")?;
-        let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
-        // Spread-space delta → inner-space delta (linear part only).
-        let inv = m.inverse();
-        let dv = (inv * Point::new(d0.x, d0.y)) - (inv * Point::ZERO);
-        let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
-        for (si, ai) in &which {
-            let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
-            match handle.as_deref() {
-                Some("in") => {
-                    a.h_in += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_out = a.p - (a.h_in - a.p);
-                    }
-                }
-                Some("out") => {
-                    a.h_out += dv;
-                    if a.kind == designcraft_geom::AnchorKind::Smooth {
-                        a.h_in = a.p - (a.h_out - a.p);
-                    }
-                }
-                _ => a.translate(dv),
-            }
+        for (id, _) in &targets {
+            path_editable(d, *id, "path.moveAnchors")?;
         }
-        if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
-            it.shape = Shape::Path;
+        for (id, which) in &targets {
+            let id = *id;
+            let loc = d.find(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            let m = d.parent_xf(&loc) * d.item_at(&loc).map(|i| i.xf).unwrap_or_default();
+            // Spread-space delta → inner-space delta (linear part only).
+            let inv = m.inverse();
+            let inner = |d: Vec2| (inv * Point::new(d.x, d.y)) - (inv * Point::ZERO);
+            let it = d.item_mut(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+            for (si, ai, own) in which {
+                let dv = inner(own.unwrap_or(d0));
+                let Some(a) = it.path.anchor_mut(*si, *ai) else { continue };
+                match handle.as_deref() {
+                    Some("in") => {
+                        a.h_in += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_out = a.p - (a.h_in - a.p);
+                        }
+                    }
+                    Some("out") => {
+                        a.h_out += dv;
+                        if a.kind == designcraft_geom::AnchorKind::Smooth {
+                            a.h_in = a.p - (a.h_out - a.p);
+                        }
+                    }
+                    _ => a.translate(dv),
+                }
+            }
+            if it.shape == Shape::Rectangle || it.shape == Shape::Oval || it.shape == Shape::Polygon {
+                it.shape = Shape::Path;
+            }
         }
         ok()
     })
@@ -4143,6 +4298,31 @@ mod label_tests {
 mod light_tests {
     use super::*;
 
+    /// The shadow and glow commands take a blend mode by name.
+    #[test]
+    fn shadow_and_glow_commands_take_a_blend_mode() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.dropShadow", &json!({"on": true, "mode": "screen", "ids": [id]})).unwrap();
+        s.execute("object.innerShadow", &json!({"on": true, "mode": "overlay", "ids": [id]})).unwrap();
+        s.execute("object.outerGlow", &json!({"on": true, "mode": "normal", "ids": [id]})).unwrap();
+        let fx = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.clone();
+        assert_eq!(fx.drop_shadow.mode, BlendMode::Screen);
+        assert_eq!(fx.inner_shadow.mode, BlendMode::Overlay);
+        assert_eq!(fx.outer_glow.mode, BlendMode::Normal);
+        let before = s.doc().unwrap().doc.clone();
+        for cmd in ["object.dropShadow", "object.innerShadow", "object.outerGlow"] {
+            for mode in [json!("multply"), json!(3)] {
+                let e = s.execute(cmd, &json!({"on": true, "mode": mode, "ids": [id]})).unwrap_err();
+                assert!(e.to_string().contains("unknown blend mode"), "{cmd}: {e}");
+            }
+        }
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "nothing changed");
+        s.execute("object.dropShadow", &json!({"mode": null, "ids": [id]})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.drop_shadow.mode, BlendMode::Screen, "null keeps the mode");
+    }
+
     #[test]
     fn global_light_moves_shadows_that_use_it() {
         let mut s = Session::new();
@@ -4351,6 +4531,60 @@ mod fitting_tests {
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         let g = back.spreads.iter().flat_map(|sp| sp.items.iter()).find_map(|i| i.graphic().cloned()).unwrap();
         assert_eq!(g.auto_fit, designcraft_doc::Fitting::FillProportionally);
+    }
+
+    /// Turning Auto-Fit off by itself keeps a moved picture where it is.
+    #[test]
+    fn auto_fit_off_alone_keeps_the_picture_position() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::base64_encode(&png), "name": "p.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": true, "fitting": "fitProportionally"})).unwrap();
+        let xf = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().unwrap().xf;
+        s.edit(|d, _| {
+            if let Some(Content::Graphic(g)) = d.item_mut(ItemId(f)).map(|it| &mut it.content) {
+                g.xf = designcraft_geom::Affine::translate((7.0, 9.0)) * g.xf;
+            }
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let moved = xf(&s);
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": false})).unwrap();
+        assert_eq!(xf(&s), moved);
+    }
+
+    /// Clear Frame Fitting Options puts auto-fit, crop and the reference point back to their
+    /// defaults and leaves the picture where it is.
+    #[test]
+    fn clear_fitting_options_resets_the_frames_options_and_keeps_the_picture() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        s.execute("file.place", &json!({"base64": crate::cmd::base64_encode(&png), "name": "p.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "autoFit": true, "fitting": "fitProportionally", "crop": 10, "align": 0})).unwrap();
+        let graphic = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().graphic().unwrap().clone();
+        let before = graphic(&s);
+        assert_ne!(before.auto_fit, designcraft_doc::Fitting::None);
+        s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        let g = graphic(&s);
+        assert_eq!(g.auto_fit, designcraft_doc::Fitting::None);
+        assert_eq!(g.crop, [0.0; 4]);
+        assert_eq!(g.fit_align, 4, "the centre reference point");
+        assert_eq!(g.xf, before.xf, "the picture stays where it is");
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!((r["changed"].as_u64(), s.doc().unwrap().history.undo.len()), (Some(0), undo), "already clear: no change, no step");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(graphic(&s).crop, [10.0; 4], "one undo step");
+        s.execute("object.lock", &json!({"ids": [f]})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        assert_eq!(r["changed"], 0);
+        assert_eq!(graphic(&s).crop, [10.0; 4], "a locked frame keeps its options");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo, "no empty undo step");
     }
 }
 
@@ -5538,12 +5772,14 @@ mod effects_command_tests {
         let it = st.doc.item(ItemId(id)).unwrap();
         let e = &it.effects;
         assert!(e.inner_shadow.on && e.inner_shadow.angle == 120.0 && e.inner_shadow.size == 7.0);
+        assert_eq!(e.inner_shadow.mode, designcraft_color::BlendMode::Multiply, "a patch without a mode keeps the default");
         assert!(e.drop_shadow.on && e.drop_shadow.distance == 10.0 && e.drop_shadow.size == 9.0, "untouched fields stay");
         assert_eq!((e.feather, it.opacity, it.blend), (4.0, 0.5, designcraft_color::BlendMode::Multiply));
         // Out of range values are kept in range; garbage changes nothing.
         s.execute("object.effects", &json!({"ids": [id], "effects": {"outerGlow": {"on": true, "opacity": 3, "spread": 400, "size": -5}}})).unwrap();
         let og = s.doc().unwrap().doc.item(ItemId(id)).unwrap().effects.outer_glow.clone();
         assert_eq!((og.opacity, og.spread, og.size), (1.0, 100.0, 0.0));
+        assert_eq!(og.mode, designcraft_color::BlendMode::Screen);
         let before = s.doc().unwrap().doc.clone();
         for bad in [json!({"effects": {"dropShadow": {"distance": "far"}}}), json!({"effects": 5}), json!({"blend": "loud"}), json!({"opacity": "x"})]
         {

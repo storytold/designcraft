@@ -123,9 +123,7 @@ Japanese text (UI and documents) uses fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (font
 files are never committed here; see the public
 [craft-fonts integration guide](https://github.com/storytold/craft-fonts/blob/main/docs/integration.md)
-for build instructions and craftrules
-[`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)
-for the shared standard):
+for build instructions):
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts

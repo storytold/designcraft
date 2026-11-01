@@ -103,22 +103,60 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                 // on the tool (egui reports releases within 0.8 s as clicks).
                                 let hold_id = egui::Id::unique(("flyout_hold", gi));
                                 let ended_hold = resp.clicked() && ui.data_mut(|d| d.remove_temp::<bool>(hold_id)).unwrap_or(false);
-                                if resp.clicked() && !ended_hold {
-                                    chosen = Some(shown.id);
+                                // Plain click selects the shown tool; Alt/Option-click cycles the flyout
+                                // group, as the letter-key cycle does. Read the modifiers from the
+                                // primary-release event (Alt may already be up by the time this frame
+                                // reads i.modifiers), preferring a release on this slot; egui still
+                                // counts a click when the pointer drifts a little outside, so a release
+                                // whose press started here counts too, and one pressed elsewhere doesn't.
+                                let click_mods = ui.input(|i| {
+                                    let press_here = i.pointer.press_origin().is_some_and(|o| resp.rect.contains(o));
+                                    i.events
+                                        .iter()
+                                        .rev()
+                                        .find_map(|e| match e {
+                                            egui::Event::PointerButton {
+                                                pos,
+                                                button: egui::PointerButton::Primary,
+                                                pressed: false,
+                                                modifiers,
+                                                ..
+                                            } if resp.rect.contains(*pos) || press_here => Some(*modifiers),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(i.modifiers)
+                                });
+                                let alt = click_mods.alt;
+                                let modified = click_mods.alt || click_mods.shift || click_mods.ctrl || click_mods.command;
+                                // egui's double-click ignores modifiers: remember whether the previous
+                                // click was modified so dialogs only open for two plain clicks.
+                                let prev_mod_id = egui::Id::unique(("tool-click-mod", gi));
+                                let prev_modified = ui.data(|d| d.get_temp::<bool>(prev_mod_id)).unwrap_or(false);
+                                let slot_click = resp.clicked() && !ended_hold;
+                                if slot_click {
+                                    chosen = Some(if g.len() > 1 && alt {
+                                        let from = g.iter().position(|tl| tl.id == current).unwrap_or(0);
+                                        g[(from + 1) % g.len()].id
+                                    } else {
+                                        shown.id
+                                    });
                                 }
                                 if !resp.is_pointer_button_down_on() {
                                     ui.data_mut(|d| d.remove::<bool>(hold_id));
                                 }
                                 // Double-click a polygon tool: Polygon Settings.
-                                if resp.double_clicked() && matches!(shown.id, "polygon" | "polygonFrame") {
+                                // Modified clicks only cycle / select: exclude them from dialogs.
+                                let plain_double = resp.double_clicked() && !modified && !prev_modified;
+                                if plain_double && matches!(shown.id, "polygon" | "polygonFrame") {
                                     let cur = app.session.execute("tool.polygonSettings", &json!({})).unwrap_or_default();
                                     app.ui.dialog = Some(crate::dialogs::Dialog::new("polygonSettings", cur));
                                 }
                                 // Double-click a transform tool: its Object › Transform dialog.
-                                if resp.double_clicked()
-                                    && let Some(cmd) = transform_dialog_of(shown.id)
-                                {
+                                if plain_double && let Some(cmd) = transform_dialog_of(shown.id) {
                                     crate::menus::activate(app, cmd, &Value::Null);
+                                }
+                                if slot_click {
+                                    ui.data_mut(|d| d.insert_temp(prev_mod_id, modified));
                                 }
                                 let held =
                                     resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.press_start_time().is_some_and(|s| i.time - s > 0.35));

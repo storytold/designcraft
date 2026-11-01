@@ -1,6 +1,6 @@
 use super::export::{download_document, export_bytes, export_epub, export_idml, export_pdf, export_png, separations_view};
 use super::invoke::guide_spread;
-use super::state::{is_window_control, window_control_available};
+use super::state::{is_window_control, menu_enabled, window_control_available};
 use super::tables::{CLASSIC_GROUPS, TYPOGRAPHY_GROUPS, workspace_open_panel};
 use super::tree::recent_label;
 use super::{DesignApp, ScreenMode, Value, json};
@@ -116,7 +116,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.newDocumentDialog" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
+            // In the default units (Preferences with no document open).
+            let fields = crate::new_document::defaults_for(&app.session.default_new_document());
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", fields));
             Ok(Value::Null)
         }
         "app.openDialog" => match p.get("path").and_then(Value::as_str) {
@@ -245,12 +247,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),
         "app.packageDialog" => {
+            // Without a folder, the Package dialog: what the package carries, then the folder.
             let Some(dir) = p.get("dir").and_then(Value::as_str) else {
-                let name = app.session.active().map(|d| format!("{} Folder", d.doc.title)).unwrap_or_default();
-                let p = p.clone();
-                return Some(app.ask_save(&name, Bound::Document, move |app, dir| {
-                    run_ui(app, "app.packageDialog", &with_path(&p, "dir", dir)).unwrap_or(Ok(Value::Null))
-                }));
+                return Some(crate::package_dialog::open(app).map(|()| Value::Null));
             };
             let r = app.run("file.package", json!({"dir": dir}));
             if let Ok(v) = &r {
@@ -345,6 +344,20 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.findChange" => {
             app.session.reset_find_scope();
             app.ui.dialog = Some(crate::dialogs::Dialog::new("findChange", json!({})));
+            Ok(Value::Null)
+        }
+        "app.convertTextToTableDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("select the text to convert to a table".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTextToTable", p.clone()));
+            Ok(Value::Null)
+        }
+        "app.convertTableToTextDialog" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in a table to convert it to text".into()));
+            }
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("convertTableToText", p.clone()));
             Ok(Value::Null)
         }
         "app.insertTableDialog" => {
@@ -510,6 +523,15 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 }
                 f["pasteboard.h"] = m(&doc["pasteboard"][0]);
                 f["pasteboard.v"] = m(&doc["pasteboard"][1]);
+            } else {
+                // No document: Units & Increments are what new documents start with, as InDesign's.
+                let du = app.session.prefs.default_units;
+                f["defaults"] = json!(true);
+                f["horizontalUnits"] = json!(du.horizontal_units);
+                f["verticalUnits"] = json!(du.vertical_units);
+                f["rulerOrigin"] = json!(du.ruler_origin);
+                f["keyboardIncrement"] = json!(designcraft_geom::format_measure(du.keyboard_increment, designcraft_geom::Unit::Points));
+                f["kerningIncrement"] = json!(format!("{}", du.kerning_increment));
             }
             f["snap.alignEdges"] = json!(app.ui.align_edges);
             f["snap.alignCenters"] = json!(app.ui.align_centers);
@@ -523,6 +545,10 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
             f["autoCollapseIconicPanels"] = json!(app.ui.dock_auto_collapse);
+            // Interface: Cancel goes back to the theme Preferences opened with.
+            f["brightness"] = json!(app.ui.brightness.id());
+            f["openedBrightness"] = json!(app.ui.brightness.id());
+            f["toolsColumns"] = json!(if app.ui.tools_double_column { "double" } else { "single" });
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
             f["storyEditorSize"] = json!(app.ui.story_editor_size);
@@ -984,7 +1010,10 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.pending_urls.push(url.clone());
             Ok(json!({"url": url}))
         }
-        "window.toolsDoubleColumn" => flag(&mut app.ui.tools_double_column),
+        "window.toolsDoubleColumn" => {
+            app.ui.tools_double_column = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.tools_double_column);
+            Ok(json!(app.ui.tools_double_column))
+        }
         "window.newWorkspace" => {
             let Some(name) = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) else {
                 app.ui.dialog =

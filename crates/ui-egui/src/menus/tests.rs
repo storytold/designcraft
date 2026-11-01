@@ -6,6 +6,81 @@ fn menu_ids(title: &str) -> Vec<&'static str> {
     items.iter().filter_map(|e| e.split_once(':').map(|(_, rest)| rest.split('|').next().unwrap_or(rest))).collect()
 }
 
+/// The Object menu's top level in InDesign's order and groups (as InDesign 2023 shows it in
+/// Learn Skills Daily's course), with Paths holding Join, Open and Close Path, Convert Shape
+/// only shapes, and a Convert Point submenu.
+#[test]
+fn the_object_menu_is_in_indesigns_order() {
+    let items = MENUS.iter().find(|(t, _)| *t == "Object").map(|(_, items)| *items).unwrap();
+    // The top-level entries: submenus by name, separators as "-", items by command id.
+    let mut top = Vec::new();
+    let mut depth = 0;
+    for e in items {
+        match *e {
+            "<" => depth -= 1,
+            e if e.starts_with('>') => {
+                if depth == 0 {
+                    top.push(e.trim_start_matches('>'));
+                }
+                depth += 1;
+            }
+            e if depth == 0 => top.push(e.split_once(':').map_or(e, |(_, r)| r.split('|').next().unwrap_or(r))),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        top,
+        [
+            "Transform",
+            "Transform Again",
+            "Arrange",
+            "Select",
+            "-",
+            "object.group",
+            "object.ungroup",
+            "object.lock",
+            "object.unlockAll",
+            "object.hide",
+            "object.showAll",
+            "-",
+            "app.qrCode",
+            "-",
+            "object.textFrameOptions",
+            "object.primaryTextFrame",
+            "Anchored Object",
+            "-",
+            "Fitting",
+            "Content",
+            "-",
+            "Effects",
+            "object.cornerOptions",
+            "-",
+            "app.layerOptions",
+            "object.exportOptions",
+            "Captions",
+            "Clipping Path",
+            "-",
+            "Flex Layout",
+            "-",
+            "Paths",
+            "Pathfinder",
+            "Convert Shape",
+            "Convert Point",
+        ]
+    );
+    let ids = menu_ids("Object");
+    for id in ["path.join", "path.reverse", "path.convertPoints"] {
+        assert!(ids.contains(&id), "{id}");
+    }
+    let sub = |name: &str| {
+        let i = items.iter().position(|e| *e == format!(">{name}")).unwrap();
+        items[i + 1..].iter().take_while(|e| **e != "<").copied().collect::<Vec<_>>()
+    };
+    assert!(sub("Paths").iter().any(|e| e.contains("|Open Path|")) && sub("Paths").iter().any(|e| e.contains("|Close Path|")));
+    assert!(!sub("Convert Shape").iter().any(|e| e.contains("openPath") || e.contains("closedPath")), "shapes only");
+    assert_eq!(sub("Convert Point").len(), 4);
+}
+
 #[test]
 fn view_items_are_in_the_view_menu_as_in_indesign() {
     let (view, typ) = (menu_ids("View"), menu_ids("Type"));
@@ -27,6 +102,30 @@ fn view_items_are_in_the_view_menu_as_in_indesign() {
     assert!(typ.contains(&"view.hiddenCharacters") && !view.contains(&"view.hiddenCharacters"));
     // W still toggles Normal / Preview without a menu entry.
     assert_eq!(ui_label("view.togglePreview").and_then(|c| c.1), Some("W"));
+}
+
+/// Object › Fitting in InDesign's groups: the proportional fits, the frame and content fits,
+/// Clear Frame Fitting Options, then the dialog.
+#[test]
+fn the_fitting_menu_is_grouped_as_indesigns() {
+    let items = MENUS.iter().find(|(t, _)| *t == "Object").map(|(_, items)| *items).unwrap();
+    let start = items.iter().position(|e| *e == ">Fitting").unwrap() + 1;
+    let end = start + items[start..].iter().position(|e| *e == "<").unwrap();
+    assert_eq!(
+        &items[start..end],
+        [
+            "ui:fit.fillFrameProportionally",
+            "ui:fit.contentProportionally",
+            "-",
+            "ui:fit.frameToContent",
+            "ui:fit.contentToFrame",
+            "ui:fit.centerContent",
+            "-",
+            "cmd:object.clearFittingOptions",
+            "-",
+            "ui:app.fittingOptions",
+        ]
+    );
 }
 
 /// The submenu paths of a menu bar menu ("View/Screen Mode"), as Edit › Menus keys them.
@@ -1953,7 +2052,7 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     let mut scratch = designcraft_engine::Session::new();
     scratch.execute("file.new", &json!({})).unwrap();
     let pdf = scratch.execute("file.exportPdf", &json!({})).unwrap()["base64"].clone();
-    let contexts = ["nothing selected", "text insertion point", "text frame selected", "table cell", "placed PDF selected"];
+    let contexts = ["nothing selected", "text insertion point", "text frame selected", "table cell", "placed PDF selected", "text selected"];
     // A two-page document, a saved workspace and non-default preferences, a host with window
     // controls, and file dialogs that are dismissed.
     let setup = |context: usize| {
@@ -1986,6 +2085,11 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
                 let f = app.run("frame.create", json!({"rect": [72, 72, 400, 400]})).unwrap()["id"].clone();
                 app.run("file.place", json!({"base64": pdf, "name": "a.pdf", "frame": f})).unwrap();
                 app.run("selection.set", json!({"ids": [f]})).unwrap();
+            }
+            // Convert Text to Table needs text selected.
+            5 => {
+                let f = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "One Two"})).unwrap();
+                app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 7})).unwrap();
             }
             _ => {}
         }
@@ -2105,6 +2209,48 @@ fn context_menus_hold_commands_and_menu_bar_submenus() {
             assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
         }
     }
+}
+
+#[test]
+fn the_table_menu_follows_indesigns_order() {
+    // InDesign's Table menu with a text insertion point (Adobe's "How to make a table").
+    let table = menu_tree().into_iter().find(|(m, _)| *m == "Table").unwrap().1;
+    let labels: Vec<String> = table
+        .iter()
+        .map(|i| match i {
+            Item::Sep => "-".to_string(),
+            Item::Sub(n, _) => format!("{n} >"),
+            Item::Cmd { label, .. } => label.clone(),
+        })
+        .collect();
+    let expected = [
+        "Insert Table…",
+        "Convert Text to Table…",
+        "Convert Table to Text…",
+        "-",
+        "Cell Options >",
+        "-",
+        "Insert >",
+        "Delete >",
+        "Select >",
+        "-",
+        "Merge Cells",
+        "Unmerge Cells",
+        "Split Cell Horizontally",
+        "Split Cell Vertically",
+        "Convert Cell to Graphic Cell…",
+        "Convert Cell to Text Cell",
+        "Convert Rows >",
+        "-",
+        "Distribute Rows Evenly",
+        "Distribute Columns Evenly",
+    ];
+    assert_eq!(labels, expected);
+    // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
+    // its own. The Table panel is in Window › Type & Tables.
+    assert_eq!(ui_label("app.insertTableDialog").and_then(|c| c.1), Some("Cmd+Alt+Shift+T"));
+    assert_eq!(designcraft_engine::find_command("table.insert").unwrap().shortcut, None);
+    assert_eq!(ui_label("app.tablePanel").and_then(|c| c.1), Some("Shift+F9"));
 }
 
 #[test]
@@ -2435,6 +2581,22 @@ fn cjk_menu_items_follow_show_cjk_features() {
     assert!(!quick_apply_items(&app.session, "ruby", crate::cjk_features(&app)).iter().any(|i| i.id == "app.rubyDialog"));
     app.run("app.rubyDialog", json!({})).unwrap();
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("ruby"), "hidden, not removed");
+}
+
+/// The CJK commands sit in a group of their own, after a separator, and hiding them leaves no
+/// separator at the end of the menu.
+#[test]
+fn cjk_menu_items_have_their_own_group() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+    let first = ty.iter().position(|i| matches!(i, Item::Cmd { id, .. } if CJK_ONLY.contains(&id.as_str()))).unwrap();
+    assert!(matches!(ty[first - 1], Item::Sep), "separator before the CJK group");
+    assert!(matches!(ty[first - 2], Item::Sub(..)), "the group comes after Story Direction");
+    app.ui.language = String::new();
+    app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+    assert!(!has_shown_item(&app, &ty[first..]), "nothing left after the separator");
+    app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+    assert!(has_shown_item(&app, &ty[first..]));
 }
 
 /// Preferences › Type › Show CJK Features: left as it is, it keeps following the interface
@@ -2975,4 +3137,18 @@ fn forwarded_keys_run_shortcuts() {
     app.session.execute("selection.set", &json!({"ids": [frame["id"]]})).unwrap();
     forwarded_shortcuts(&mut app, &ctx, press(Key::Delete), Modifiers::NONE);
     assert!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).is_none(), "Delete clears the selection");
+}
+
+#[test]
+fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
+    let file = |tree: Vec<(&'static str, Vec<Item>)>| {
+        let mut out = Vec::new();
+        walk(&tree.into_iter().find(|(t, _)| *t == "File").map(|(_, e)| e).unwrap_or_default(), &mut out);
+        out.into_iter().map(|(_, id, _)| id).collect::<Vec<_>>()
+    };
+    assert_eq!(file(menu_tree()).last().map(String::as_str), Some("app.quit"), "File ends with the quit item");
+    assert!(!file(native_menu_tree()).iter().any(|id| id == "app.quit"), "macOS has Quit only in the app menu");
+    let native = native_menu_tree();
+    let file_items = native.iter().find(|(t, _)| *t == "File").map(|(_, e)| e);
+    assert!(!matches!(file_items.and_then(|e| e.last()), Some(Item::Sep)), "no separator left at the end of File");
 }
