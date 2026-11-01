@@ -24,8 +24,8 @@ The trailer is a length-prefixed list at the offset given at 0x1A. It holds:
 
 | Key | Kind | Meaning |
 |---|---|---|
-| 0x01 | 0x20 | A count; in the first synthetic sample it is 0x104 = 260, the number of entries in the record directory. Not read. |
-| 0x02 | 0x20 | Another number (0x103 in the first synthetic sample). Not read. |
+| 0x01 | 0x20 | A count; in the first synthetic sample it is 0x104 = 260, the number of entries in the record directory (the generated `crates/pub/tests/data/hello.pub` reproduces this count). Not read. |
+| 0x02 | 0x20 | Another number (0x103 in the first synthetic sample, also reproduced by the generated `hello.pub`). Not read. |
 | 0x03 | 0x90 | **The record directory** (nested list). The reader finds it as "the first property of kind 0x90 in the trailer". |
 
 *Source: existing code (looks for the first kind-0x90 property); keys 0x01/0x02 seen in samples only.*

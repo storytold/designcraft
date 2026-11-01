@@ -74,6 +74,9 @@ names the format, never a crash.
   `crates/pub/tests/data/` are synthetic: the importer's tests write every byte of them from
   scratch (`crates/pub/tests/support/mod.rs`), and a test checks that each committed file is
   exactly that output. They are listed in `ASSETS.md`.
+- Some early observations of the compound-file container, cited in the notes as "the first
+  synthetic sample", came from a small test file written by a different tool. Only its bytes were
+  examined (data only, no code), and it is not committed.
 
 ## How it is checked
 
