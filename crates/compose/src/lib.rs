@@ -1459,6 +1459,25 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                     let (y, end) = grid::place((g_start, inc), pp.grid_reference, band);
                     baseline = y - r;
                     grid_end = Some(end);
+                    // InDesign compatibility: the first line set in a column must not vanish
+                    // because the grid pushed it past the column's bottom edge — step back to
+                    // the previous grid line (or the natural position) instead, keeping the line
+                    // on the grid whenever that still fits. Without this, frames shorter than the
+                    // distance to the next grid line lay out zero lines, so imported titles and
+                    // running heads vanished entirely.
+                    if cur.last_baseline.is_none() && baseline > col.y1 + 0.01 {
+                        for cand in [y - r - inc, band.natural - r] {
+                            if cand <= col.y1 + 0.01 {
+                                let delta = cand - baseline;
+                                baseline = cand;
+                                grid_end = Some(end + delta);
+                                if block {
+                                    *para_block = Some(((cur.fi, cur.col), end + delta));
+                                }
+                                break;
+                            }
+                        }
+                    }
                     if block {
                         *para_block = Some(((cur.fi, cur.col), end));
                     }

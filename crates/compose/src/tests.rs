@@ -7222,6 +7222,30 @@ fn on_grid(y: f64, (start, inc): (f64, f64)) -> bool {
 }
 
 #[test]
+fn grid_first_line_falls_back_to_the_previous_grid_line_instead_of_vanishing() {
+    // A title frame shorter than the distance to the next grid line (as imported from InDesign,
+    // e.g. the GB-2025 page titles on a 14 pt document grid): InDesign keeps the first line
+    // visible on the previous grid line. DesignCraft used to lay out zero lines here, so
+    // imported titles and running heads vanished entirely.
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let text = "Konzernbilanz zum 31. Dezember 2025 nach HGB";
+    let para = ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::FirstLineOnly), grid_reference: Some(R::Baseline), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(49.0, 70.0, 545.0, 90.0), para);
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 14.0;
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.size = Some(14.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(15.0));
+    });
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.para.space_before = Some(8.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert_eq!(lines.len(), 1, "the first line must stay visible");
+    assert!(on_grid(lines[0].baseline, (0.0, 14.0)), "it stays on the grid: {}", lines[0].baseline);
+    assert!(lines[0].baseline <= 90.0 + 0.01, "and inside the frame: {}", lines[0].baseline);
+}
+
+#[test]
 fn grid_alignment_puts_the_chosen_point_on_the_grid() {
     use designcraft_doc::cjk::CharacterAlignment as R;
     let para = |r: R| ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(r), ..Default::default() };
