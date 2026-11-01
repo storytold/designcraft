@@ -2070,6 +2070,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "Farbgruppenoptionen …"),
     ("Layer Options", "Ebenenoptionen"),
     ("Layer Options for \"{name}\"…", "Ebenenoptionen für „{name}“ …"),
+    ("Duplicate Layer \"{name}\"", "Ebene „{name}“ duplizieren"),
     ("Swatch Name:", "Farbfeldname:"),
     ("Name with Color Value", "Name mit Farbwert"),
     ("Color Type:", "Farbtyp:"),

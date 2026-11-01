@@ -2253,6 +2253,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Last commit", "ბოლო კომიტი"),
     ("Layer Options", "შრის პარამეტრები"),
     ("Layer Options for \"{name}\"…", "შრის პარამეტრები: „{name}“…"),
+    ("Duplicate Layer \"{name}\"", "შრის დუბლირება: „{name}“"),
     ("Leader:", "მიმთითებელი:"),
     ("Leading Model:", "სტრიქონთაშორისი ინტერვალის მოდელი:"),
     ("Left-aligned tab", "მარცხნივ სწორებული ტაბულაცია"),
