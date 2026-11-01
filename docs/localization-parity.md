@@ -41,7 +41,7 @@ come as Middle East editions with an English or French interface and right-to-le
 | Indonesian | id | ✗ | 0 (0%) | none | Latin ✓ | no | none | 12–18 |
 | Japanese | ja | ✓ | 1,644 (95%) | whole interface (#272), vertical-type commands; no help | vertical text, kinsoku, aki, ruby, warichu ✓ (partial depth, cjk.md); canvas IME ✓, not checked by hand (#322); Japanese UI and Mincho fonts from craft-fonts | no | partial | 6–10 (+ IME checks, shared with zh) |
 | German | de | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; German 2006 hyphenation ✓ (hyph-de-1996, MIT) | no | partial | 6–10 |
-| Korean | ko | ✓ | 0 (0%) | none | Korean line breaking at spaces ✓; canvas IME ✓, not checked by hand (#322) | no | none | 15–25 |
+| Korean | ko | ✓ | 2,891 / 2,891 (100% of `i18n-report`; 0 missing) | whole interface: menus, panels, dialogs, tools, shortcut editor; context captions (table Columns, count Number:); no help | Korean line breaking at spaces or between syllables ✓; Hangul UI glyphs from installed Korean fonts (Malgun Gothic, Apple SD Gothic Neo, Noto Sans KR …); canvas IME ✓, not checked by hand (#322) | no (drafted with Korean desktop-publishing terms, awaiting native review) | partial | 2–4 (native review) |
 | Vietnamese | vi | ✗ | 0 (0%) | none | Latin with stacked diacritics via harfrust, untested | no | none | 12–18 |
 
 Percentages are of the 1,724 measured strings. A language is `full` only when every user-visible
@@ -98,3 +98,4 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | 2026-10-11 | minor | Czech (cs) added: 1,722 strings, plural categories handled |
 | 2026-10-13 | minor | Polish interface added (1,717 strings) |
 | 2026-10-22 | minor | French and Italian hyphenation (hyph-fr, hyph-it): the French row and Document languages updated |
+| 2026-11-01 | minor | Korean (`ko`) interface added: every interface string (0 missing in `i18n-report`), context captions |

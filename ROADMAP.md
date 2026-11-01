@@ -12,6 +12,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-01** · Korean interface (`ko`, Edit ▸ Interface Language ▸ 한국어): every interface
+  string is translated (0 missing in `cargo xtask i18n-report`), with context captions for table
+  columns, selection groups and counts. Hangul UI glyphs come from the installed Korean fonts the
+  theme already lists. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
@@ -350,7 +354,7 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Indonesian | id | none | 0% |
 | Japanese | ja | partial | 95% |
 | German | de | partial | 83% |
-| Korean | ko | none | 0% |
+| Korean | ko | partial (awaiting native review) | 100% |
 | Vietnamese | vi | none | 0% |
 
 Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
