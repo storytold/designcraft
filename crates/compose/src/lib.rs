@@ -4601,6 +4601,12 @@ fn layout_line(
 ) -> (Vec<PlacedGlyph>, f64, f64) {
     let mut line: Vec<Glyph> = glyphs[s..e.max(s)].to_vec();
     mojikumi::edges(&mut line);
+    if e > s
+        && glyphs[s].line_start_hyphen > 0.0
+        && let Some(i) = s.checked_sub(1)
+    {
+        line.insert(0, shape::repeated_hyphen(&glyphs[i]));
+    }
     let reference = line.iter().max_by(|a, b| a.size.total_cmp(&b.size)).cloned();
     if let Some(reference) = reference {
         for g in &mut line {
@@ -4610,12 +4616,6 @@ fn layout_line(
     if hyphen && let Some(g) = line.last() {
         let h = shape::hyphen_after(g);
         line.push(h);
-    }
-    if e > s
-        && glyphs[s].line_start_hyphen > 0.0
-        && let Some(i) = s.checked_sub(1)
-    {
-        line.insert(0, shape::repeated_hyphen(&glyphs[i]));
     }
     let measure = x1 - x0;
     // Optical margin alignment and hanging punctuation: the glyphs at the line's edges hang

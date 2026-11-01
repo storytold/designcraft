@@ -5256,6 +5256,40 @@ fn a_line_is_as_tall_as_its_repeated_hyphen() {
 }
 
 #[test]
+fn a_repeated_hyphen_is_part_of_the_lines_character_alignment() {
+    use designcraft_doc::cjk::CharacterAlignment;
+    let text = SERBIAN_COMPOUNDS;
+    // Em box centre (y down): the font's BASE em box, else 0.88/-0.12 em.
+    let center = |g: &PlacedGlyph| {
+        let upem = g.face.units_per_em();
+        let (top, bottom) = g.face.declared_em_box().unwrap_or((upem * 0.88, upem * -0.12));
+        g.y - (top + bottom) / 2.0 * g.sy
+    };
+    let mut repeated = 0;
+    for w in (60..300).step_by(3) {
+        let para = ParaAttrs { hyphenate: Some(false), ..japanese() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, f64::from(w), 700.0), para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| {
+            f.over.language = Some("Serbian: Latin".into());
+            f.over.size = Some(8.0);
+            f.over.character_alignment = Some(CharacterAlignment::EmCenter);
+        });
+        for (i, _) in text.match_indices('-') {
+            story.format_chars(i..i + 1, |f| f.over.size = Some(30.0));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        for l in all_lines(&cs).iter().filter(|l| l.repeated_hyphen) {
+            // Everything lines up on the hyphen, the largest glyph, as the line's height assumed.
+            assert!((center(&l.glyphs[0]) - center(&l.glyphs[1])).abs() < 1e-6, "{w}");
+            assert!(l.glyphs[1].y < -1.0, "{w}: {}", l.glyphs[1].y);
+            repeated += 1;
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
 fn a_repeated_hyphen_hangs_with_optical_margin_alignment() {
     let para = ParaAttrs { align: Some(Align::Left), optical_margin: Some(true), ..Default::default() };
     let mut repeated = 0;
