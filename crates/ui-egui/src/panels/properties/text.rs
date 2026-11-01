@@ -148,7 +148,7 @@ pub(super) fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
             if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+                NumField::points("tsw", c["strokeWeight"].as_f64(), 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
@@ -204,7 +204,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
     if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+        NumField::points("csize", size, 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
@@ -214,7 +214,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::points(key, lshow, 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }

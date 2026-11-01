@@ -50,7 +50,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let (left_w, right_w) = (caption_width(app, ui, &["Size", "Kerning", "Baseline"]), caption_width(app, ui, &["Leading", "Tracking"]));
     ui.columns(2, |cols| {
         let [left, right] = cols else { return };
-        if let Some(v) = char_field(app, left, "Size", left_w, NumField::number("pcs", c["size"].as_f64(), " pt", 2)) {
+        if let Some(v) = char_field(app, left, "Size", left_w, NumField::points("pcs", c["size"].as_f64(), 2)) {
             let _ = app.run("type.char", json!({"attrs": {"size": v}}));
         }
         left.horizontal(|ui| {
@@ -58,11 +58,11 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let width = (ui.available_width() - ui.spacing().item_spacing.x).max(40.0);
             kerning_control(app, ui, "pck", &c["kerning"], width);
         });
-        if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::number("pcb", c["baselineShift"].as_f64(), " pt", 2)) {
+        if let Some(v) = char_field(app, left, "Baseline", left_w, NumField::points("pcb", c["baselineShift"].as_f64(), 2)) {
             let _ = app.run("type.char", json!({"attrs": {"baselineShift": v}}));
         }
         // Auto leading is shown in parentheses, as the Paragraph panel shows it.
-        if let Some(v) = char_field(app, right, "Leading", right_w, NumField::number("pcl", lv, " pt", 2).parens(auto)) {
+        if let Some(v) = char_field(app, right, "Leading", right_w, NumField::points("pcl", lv, 2).parens(auto)) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
         if let Some(v) = char_field(app, right, "Tracking", right_w, NumField::number("pct", c["tracking"].as_f64(), "", 0)) {

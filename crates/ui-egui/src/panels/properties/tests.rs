@@ -580,6 +580,30 @@ fn character_panel_has_kerning_and_takes_a_typed_manual_value() {
     assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -40.0}));
 }
 
+/// The size field reads the unit typed, as InDesign's does: 13Q is 9.213 pt (it used to keep
+/// the digits only and set 13 pt). A bare number is still points.
+#[test]
+fn character_size_field_reads_the_unit_typed() {
+    let mut h = panel_harness(text_app(), character_panel);
+    h.run_steps(3);
+    let size = |app: &mut DesignApp| text_attrs(app).unwrap()["chars"]["size"].as_f64().unwrap();
+    for (typed, pt) in [("13Q", 13.0 * designcraft_geom::units::PT_PER_Q), ("5mm", 5.0 * designcraft_geom::units::PT_PER_MM), ("14", 14.0)] {
+        let field = h
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.value().is_some_and(|v| v.ends_with(" pt") && !v.starts_with('(') && v != "0 pt"))
+            .unwrap();
+        field.focus();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let got = size(h.state_mut());
+        assert!((got - pt).abs() < 1e-6, "{typed}: {got} pt, want {pt}");
+    }
+}
+
 #[test]
 fn a_manual_kerning_value_at_a_caret_kerns_the_pair() {
     let mut app = text_app();

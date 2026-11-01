@@ -192,7 +192,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
         }
         icon(ui, rect, 36.0, 0, "panel-stroke", &tr("Stroke Weight"));
         if let Some(v) = cell(ui, rect, 56.0, 0, 74.0, selected, |ui| {
-            NumField::number("csw", info.as_ref().map(|i| i.stroke_weight), " pt", 3).width(74.0).spinner().range(0.0, 1000.0).show(ui)
+            NumField::points("csw", info.as_ref().map(|i| i.stroke_weight), 3).width(74.0).spinner().range(0.0, 1000.0).show(ui)
         }) {
             let _ = app.run("object.stroke", json!({"weight": v}));
         }
