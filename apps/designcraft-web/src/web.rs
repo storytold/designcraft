@@ -76,7 +76,7 @@ pub fn start() {
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics, page_title: String::new() }))
                 }),
             )
             .await;
@@ -345,12 +345,23 @@ struct WebShell {
     app: DesignApp,
     inbox: Inbox,
     graphics: GraphicsState,
+    /// The page title last set (`document.title`), so it is written only when it changes.
+    page_title: String,
 }
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        // eframe's web runner ignores `ViewportCommand::Title`: put the same window title on the
+        // page, which a host embedding it reads to tell which document a drop opened (#1356).
+        let title = self.app.window_title();
+        if title != self.page_title
+            && let Some(doc) = web_sys::window().and_then(|w| w.document())
+        {
+            doc.set_title(&title);
+            self.page_title = title;
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {

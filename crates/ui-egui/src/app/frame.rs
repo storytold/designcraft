@@ -46,7 +46,31 @@ impl DesignApp {
         }
         self.request_hidden_paint_for_pending_input(ctx);
         self.handle_quit(ctx);
+        self.sync_window_title(ctx);
         self.flush_window_commands(ctx);
+    }
+
+    /// The window's title: `<document> — DesignCraft`, with ` •` after the name while it has
+    /// unsaved changes, or `DesignCraft` with none open. The desktop shows it where the system
+    /// lists windows (taskbar, window switcher); a host embedding the web build reads it to tell
+    /// which document a drop opened and whether it is saved (#1356).
+    pub fn window_title(&self) -> String {
+        let Some(d) = self.session.active() else { return "DesignCraft".into() };
+        let mut name = d.title();
+        // X11 window titles are C strings: a NUL from a file name or title would not reach the window.
+        name.retain(|c| c != '\0');
+        format!("{name}{} — DesignCraft", if d.is_dirty() { " •" } else { "" })
+    }
+
+    /// Send the window title when it changed: a viewport command schedules a repaint, so sending
+    /// it every tick would keep an idle window redrawing. Runs from `logic_tick`, so a document
+    /// opened or renamed while the window is hidden updates it too.
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = self.window_title();
+        if title != self.sent_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.sent_title = title;
+        }
     }
 
     /// The first pass of a real `run_ui`: fonts, theme, scale and window state, before any widget
