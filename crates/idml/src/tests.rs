@@ -233,6 +233,18 @@ fn fixture_with_styles(styles: &str) -> Vec<u8> {
     ])
 }
 
+fn fixture_with_graphic(graphic: &str) -> Vec<u8> {
+    zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", graphic),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ])
+}
+
 /// Paragraph styles `Body` (based on the root) and `Loose` (no BasedOn), both with `attrs`.
 fn keep_styles(attrs: &str) -> String {
     format!(
@@ -1105,6 +1117,206 @@ fn gradient_stops_keep_their_swatches_through_a_round_trip() {
     let names: Vec<Option<&str>> = gradient.stops.iter().map(|s| s.swatch.as_deref()).collect();
     assert_eq!(names, [Some("Gold"), Some("Gold 40%"), None, Some("[Paper]")]);
     assert_eq!(gradient.stops[2].color, Color::cmyk(0.5, 0.0, 0.0, 0.0));
+}
+
+/// InDesign's gradient tool writes a fresh, machine-named `Color` ("r204g51b51", or a
+/// disambiguating "r204g51b51 2" once it collides with its own earlier one) for every stop it
+/// ever touched, so a real file like CSAS's accumulates dozens of near-duplicates. Two with the
+/// exact same value merge into one cleaned `"R=.. G=.. B=.."` swatch instead of staying apart.
+#[test]
+fn gradient_tools_duplicate_auto_named_colours_are_merged_and_cleaned() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/dup1" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/dup2" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+  <Color Self="Color/dup3" Model="Process" Space="RGB" ColorValue="1 2 3" Name="r1g2b3 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let names: Vec<&str> = d.swatches.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "R=204 G=51 B=51").count(), 1, "{names:?}");
+    assert!(names.contains(&"R=1 G=2 B=3"), "{names:?}");
+    let sw = d.swatch("R=204 G=51 B=51").unwrap();
+    assert!(!sw.named, "a cleaned auto-generated name isn't a real user name");
+}
+
+/// A dirty-looking name on a *spot* colour is left alone: Ink Manager settings (`read_inks`) and
+/// ink aliases are matched by the colour's own name, and a spot's identity is the ink it prints
+/// on, not an RGB preview two spots could coincidentally share.
+#[test]
+fn dirty_named_spot_colours_are_never_cleaned_or_merged() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/spot1" Model="Spot" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/spot2" Model="Spot" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    assert!(d.swatch("r204g51b51").is_some(), "{:?}", d.swatches.iter().map(|s| &s.name).collect::<Vec<_>>());
+    assert!(d.swatch("r204g51b51 2").is_some());
+}
+
+/// Two colours that clean to the same name but hold different values are not the gradient tool's
+/// duplicate: both survive, the second disambiguated like any other name collision, not discarded.
+#[test]
+fn colours_sharing_a_cleaned_name_but_not_a_value_are_kept_apart() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="10 20 30" Name="r204g51b51 2"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let a = d.swatch("R=204 G=51 B=51").expect("the first keeps the plain cleaned name");
+    assert!(matches!(a.value, SwatchValue::Color { color, .. } if color == Color::rgb(204.0 / 255.0, 51.0 / 255.0, 51.0 / 255.0)));
+    let b =
+        d.swatches.iter().find(|s| s.name != a.name && s.name.starts_with("R=204 G=51 B=51")).expect("the second got its own, disambiguated name");
+    assert!(matches!(b.value, SwatchValue::Color { color, .. } if color == Color::rgb(10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0)));
+}
+
+/// A merged duplicate's id, referenced directly by a gradient stop, resolves to the kept swatch's
+/// real colour and its final (possibly disambiguated) name — not to black and not to whichever
+/// other swatch happened to be first in line for that name.
+#[test]
+fn a_gradient_stop_on_a_merged_duplicates_id_keeps_its_colour_and_final_name() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="50 60 70" Name="R=50 G=60 B=70"/>
+  <Color Self="Color/kept" Model="Process" Space="RGB" ColorValue="50 60 70" Name="r50g60b70"/>
+  <Color Self="Color/dup" Model="Process" Space="RGB" ColorValue="50 60 70" Name="r50g60b70 2"/>
+  <Gradient Self="Gradient/FromDup" Type="Linear" Name="FromDup">
+    <GradientStop Self="gs0" StopColor="Color/dup" Location="0"/>
+    <GradientStop Self="gs1" StopColor="Color/taken" Location="100"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    // "Color/kept" collided on name with the literal "Color/taken" and was disambiguated.
+    let kept_name = d
+        .swatches
+        .iter()
+        .map(|s| s.name.as_str())
+        .find(|n| *n != "R=50 G=60 B=70" && n.starts_with("R=50 G=60 B=70"))
+        .expect("the cleaned duplicate got its own, disambiguated name");
+    let SwatchValue::Gradient { gradient } = &d.swatch("FromDup").unwrap().value else { panic!("gradient") };
+    let rgb = Color::rgb(50.0 / 255.0, 60.0 / 255.0, 70.0 / 255.0);
+    assert_eq!(gradient.stops[0].color, rgb, "the merged duplicate's stop must not fall back to black");
+    assert_eq!(gradient.stops[0].swatch.as_deref(), Some(kept_name), "and must carry the kept swatch's final name");
+}
+
+/// A, B, A: the value-mismatched colour in the middle must not knock the first candidate out of
+/// contention — the second `A` still merges with the first, not with `B` or on its own.
+#[test]
+fn a_later_same_value_colour_still_merges_past_an_intervening_mismatch() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a1" Model="Process" Space="RGB" ColorValue="40 50 60" Name="r40g50b60"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="1 2 3" Name="r40g50b60 2"/>
+  <Color Self="Color/a2" Model="Process" Space="RGB" ColorValue="40 50 60" Name="r40g50b60 3"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let names: Vec<&str> = d.swatches.iter().map(|s| s.name.as_str()).collect();
+    // `a1` and `a2` merge under the plain cleaned name; `b` (same cleaned name, different value)
+    // gets its own, disambiguated one — three colours in the file, two swatches out.
+    assert_eq!(names.iter().filter(|n| **n == "R=40 G=50 B=60").count(), 1, "a1 and a2 merged into one: {names:?}");
+    assert_eq!(names.iter().filter(|n| n.starts_with("R=40 G=50 B=60")).count(), 2, "plus b's own, disambiguated one: {names:?}");
+    let a = d.swatch("R=40 G=50 B=60").unwrap();
+    assert!(matches!(a.value, SwatchValue::Color { color, .. } if color == Color::rgb(40.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0)));
+}
+
+/// A tint's `base` is resolved to its base colour's name while that name can still change: once a
+/// cleaned, auto-named duplicate collides with an existing swatch and gets disambiguated, the
+/// tint must follow it to its final name, not keep resolving against whatever now has the old one.
+#[test]
+fn a_tints_base_follows_its_colour_through_disambiguation() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="80 90 100" Name="R=80 G=90 B=100"/>
+  <Color Self="Color/base" Model="Process" Space="RGB" ColorValue="80 90 100" Name="r80g90b100"/>
+  <Tint Self="Tint/OnBase" BaseColor="Color/base" TintValue="50" Name="OnBase 50%"/>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let base_final = d
+        .swatches
+        .iter()
+        .map(|s| s.name.as_str())
+        .find(|n| *n != "R=80 G=90 B=100" && n.starts_with("R=80 G=90 B=100"))
+        .expect("the cleaned colour collided with the literal one and was disambiguated");
+    let SwatchValue::Tint { base, .. } = &d.swatch("OnBase 50%").unwrap().value else { panic!("tint") };
+    assert_eq!(base, base_final, "the tint must resolve against its own colour's final name, not the other swatch's");
+}
+
+/// Two process colours that clean to the same (pre-disambiguation) name but hold different
+/// values: a gradient stop naming the second one directly must get its real colour, not the
+/// first's, even though both still share that name at the point the gradient is read.
+#[test]
+fn a_gradient_stop_on_the_second_of_two_same_named_mismatched_colours_keeps_its_own_colour() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/a" Model="Process" Space="RGB" ColorValue="200 10 10" Name="r200g10b10"/>
+  <Color Self="Color/b" Model="Process" Space="RGB" ColorValue="10 10 200" Name="r200g10b10 2"/>
+  <Gradient Self="Gradient/OnB" Type="Linear" Name="OnB">
+    <GradientStop Self="gs0" StopColor="Color/b" Location="0"/>
+    <GradientStop Self="gs1" StopColor="Color/a" Location="100"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnB").unwrap().value else { panic!("gradient") };
+    assert_eq!(gradient.stops[0].color, Color::rgb(10.0 / 255.0, 10.0 / 255.0, 200.0 / 255.0), "stop 0 names Color/b directly");
+    assert_eq!(gradient.stops[1].color, Color::rgb(200.0 / 255.0, 10.0 / 255.0, 10.0 / 255.0), "stop 1 names Color/a directly");
+}
+
+/// A literal user-named colour and an auto-named one clean/collide onto the same name (still
+/// undisambiguated when gradients are read); a third colour merges into the auto-named one as its
+/// duplicate. A gradient stop naming the duplicate directly must resolve to the kept auto-named
+/// colour's own value, not the user-named one's — `color_for_ref`'s name fallback can't tell them
+/// apart by name alone, so the duplicate must be redirected to its kept id before that lookup runs.
+#[test]
+fn a_gradient_stop_on_a_duplicate_resolves_to_the_kept_colour_even_when_its_name_is_taken() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="1 1 1" Name="R=204 G=51 B=51"/>
+  <Color Self="Color/kept" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/dup" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+  <Gradient Self="Gradient/OnDup" Type="Linear" Name="OnDup">
+    <GradientStop Self="gs0" StopColor="Color/dup" Location="0"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnDup").unwrap().value else { panic!("gradient") };
+    assert_eq!(
+        gradient.stops[0].color,
+        Color::rgb(204.0 / 255.0, 51.0 / 255.0, 51.0 / 255.0),
+        "the duplicate's stop must resolve to the kept colour it merged into, not the unrelated colour that happened to already hold that name"
+    );
+}
+
+/// A gradient stop naming a *tint* directly, whose base colour's cleaned name is shared with an
+/// unrelated, literally-named colour (still undisambiguated when the stop's colour is first
+/// computed): the stop must end up with the tint's real colour, matching an independent
+/// `swatch::resolve` against the tint's own (now-final) base, not whichever of the two same-named
+/// colours `color_for_ref`'s lookup happened to find first.
+#[test]
+fn a_gradient_stop_on_a_tint_of_a_duplicate_named_colour_keeps_its_colour() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="1 1 1" Name="R=100 G=110 B=120"/>
+  <Color Self="Color/base" Model="Process" Space="RGB" ColorValue="100 110 120" Name="r100g110b120"/>
+  <Tint Self="Tint/OnBase" BaseColor="Color/base" TintValue="50" Name="OnBase 50%"/>
+  <Gradient Self="Gradient/OnTint" Type="Linear" Name="OnTint">
+    <GradientStop Self="gs0" StopColor="Tint/OnBase" Location="0"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Tint { base, tint } = &d.swatch("OnBase 50%").unwrap().value else { panic!("tint") };
+    let expected = designcraft_color::swatch::resolve(&d.swatches, base, *tint).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnTint").unwrap().value else { panic!("gradient") };
+    assert_eq!(gradient.stops[0].color, expected, "must match the tint's own (final) base, not the unrelated colour sharing its old name");
 }
 
 #[test]

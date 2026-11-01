@@ -1,6 +1,7 @@
 //! Queries for agents and UIs: document structure, items, pages.
 
 use designcraft_doc::{Content, Item};
+use designcraft_geom::Affine;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, cmd, has_doc};
@@ -43,8 +44,11 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn item_json(it: &Item) -> Value {
-    let b = it.bounds();
+/// `outer`: the absolute transform of `it`'s parent (`Affine::IDENTITY` for a spread's own
+/// items), so a nested item's reported `bounds` is its real spread-space position rather than
+/// its position inside its immediate group alone.
+fn item_json(it: &Item, outer: Affine) -> Value {
+    let b = it.bounds_in(outer);
     let mut v = json!({
         "id": it.id.0, "name": it.name, "kind": it.default_label(), "layer": it.layer.0,
         "bounds": [b.x0, b.y0, b.x1, b.y1], "fill": it.fill.swatch, "stroke": {"swatch": it.stroke.swatch, "weight": it.stroke.weight},
@@ -65,7 +69,10 @@ fn item_json(it: &Item) -> Value {
             }
         }
         Content::Graphic(g) => v["asset"] = json!(g.asset.0),
-        Content::Group { items } => v["children"] = Value::Array(items.iter().map(|c| item_json(c)).collect()),
+        Content::Group { items } => {
+            let inner = outer * it.xf;
+            v["children"] = Value::Array(items.iter().map(|c| item_json(c, inner)).collect());
+        }
         Content::Unassigned => {}
     }
     v
@@ -89,7 +96,7 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
                         "customColumns": p.columns.valid_positions(p.margin_rect().width()).is_some(),
                         "columnRects": p.column_rects().iter().map(|r| [r.x0, r.y0, r.x1, r.y1]).collect::<Vec<_>>()})
                 }).collect::<Vec<_>>(),
-                "items": sp.items.iter().map(|i| item_json(i)).collect::<Vec<_>>(),
+                "items": sp.items.iter().map(|i| item_json(i, Affine::IDENTITY)).collect::<Vec<_>>(),
             })
         })
         .collect();

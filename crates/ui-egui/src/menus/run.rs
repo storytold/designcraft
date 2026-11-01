@@ -125,6 +125,10 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Some(path) => app.open_picked("open", path.to_string()),
             None => app.pick_and_open("open"),
         },
+        "app.importIdmlDialog" => match p.get("path").and_then(Value::as_str) {
+            Some(path) => app.open_picked("idml", path.to_string()),
+            None => app.pick_and_open("idml"),
+        },
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
             let name = index

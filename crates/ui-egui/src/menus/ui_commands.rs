@@ -14,6 +14,12 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
+    (
+        "app.importIdmlDialog",
+        "Import from InDesign…",
+        None,
+        "{path?} — open an InDesign Markup (.idml) package, or an INDD/INDT document or template converted to IDML; without a path, choose the file in a dialog",
+    ),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),

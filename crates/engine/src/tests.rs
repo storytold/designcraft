@@ -2058,3 +2058,44 @@ fn aligning_the_key_object_alone_takes_the_page() {
     let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
     assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
 }
+
+/// `document.inspect`'s `bounds` for an item inside a group nested two levels deep must be its
+/// real spread-space position (the ancestor groups' own transforms composed in), not just its
+/// position inside its immediate parent group — the mistake `item_json` made by recursing into
+/// `Content::Group` without threading an outer transform down to each child.
+#[test]
+fn inspect_bounds_of_a_doubly_nested_item_include_its_ancestors_transforms() {
+    let mut s = session();
+    let leaf = s.execute("frame.create", &json!({"rect": [100.0, 100.0, 140.0, 120.0]})).unwrap()["id"].as_u64().unwrap();
+    let leaf_mate = s.execute("frame.create", &json!({"rect": [150.0, 100.0, 180.0, 120.0]})).unwrap()["id"].as_u64().unwrap();
+    let inner = s.execute("object.group", &json!({"ids": [leaf, leaf_mate]})).unwrap()["id"].as_u64().unwrap();
+    let sibling = s.execute("frame.create", &json!({"rect": [300.0, 300.0, 340.0, 320.0]})).unwrap()["id"].as_u64().unwrap();
+    let outer = s.execute("object.group", &json!({"ids": [inner, sibling]})).unwrap()["id"].as_u64().unwrap();
+
+    fn find(items: &[Value], id: u64) -> Option<&Value> {
+        items.iter().find_map(|it| {
+            if it["id"].as_u64() == Some(id) {
+                return Some(it);
+            }
+            find(it["children"].as_array().map(Vec::as_slice).unwrap_or_default(), id)
+        })
+    }
+    let bounds_of = |s: &mut Session, id: u64| {
+        let d = s.execute("document.inspect", &json!({})).unwrap();
+        let items: Vec<Value> = d["spreads"][0]["items"].as_array().unwrap().clone();
+        let b = find(&items, id).unwrap()["bounds"].as_array().unwrap().clone();
+        let v: Vec<f64> = b.iter().map(|x| x.as_f64().unwrap()).collect();
+        (v[0], v[1], v[2] - v[0], v[3] - v[1])
+    };
+    let (x0, y0, w0, h0) = bounds_of(&mut s, leaf);
+    assert!((x0 - 100.0).abs() < 1e-6 && (y0 - 100.0).abs() < 1e-6 && (w0 - 40.0).abs() < 1e-6 && (h0 - 20.0).abs() < 1e-6, "{x0} {y0} {w0} {h0}");
+
+    // Scaling the outer group 2x (about its bounds' centre, (220, 210): the union of the inner
+    // group's (100,100)-(180,120) and the sibling's (300,300)-(340,320)) must move and resize the
+    // doubly-nested leaf accordingly: p -> centre + 2*(p - centre), so (100,100)-(140,120) ->
+    // (-20,-10)-(60,30). A buggy `bounds` that ignored the ancestors' transforms would report the
+    // leaf's unchanged, pre-scale position instead.
+    s.execute("transform.scale", &json!({"sx": 2.0, "sy": 2.0, "ids": [outer]})).unwrap();
+    let (x1, y1, w1, h1) = bounds_of(&mut s, leaf);
+    assert!((x1 - -20.0).abs() < 1e-6 && (y1 - -10.0).abs() < 1e-6 && (w1 - 80.0).abs() < 1e-6 && (h1 - 40.0).abs() < 1e-6, "{x1} {y1} {w1} {h1}");
+}
