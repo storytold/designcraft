@@ -994,6 +994,96 @@ fn hyphen_limit_is_a_hard_constraint() {
     }
 }
 
+/// Each paragraph's own text decides, not the story's: a Korean document's English paragraphs
+/// still hyphenate, and a mostly-English story's Korean paragraphs still do not (noted in review
+/// of #1688).
+#[test]
+fn hyphenation_follows_each_paragraph_not_the_story() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 / an English paragraph that wants hyphenation
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4}";
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let hyphens = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        // Which paragraph each hyphenated line belongs to: the Korean one is first.
+        lines.iter().filter(|l| l.hyphenated).count()
+    };
+    // The English paragraph in a Korean document still hyphenates: the story is mostly Hangul,
+    // but that paragraph is not.
+    let mixed = format!("{korean}\n{english}");
+    assert!(hyphens(&mixed) > 0, "the English paragraph of a Korean document still hyphenates");
+    // And the Korean paragraph alone invents none.
+    assert_eq!(hyphens(korean), 0, "a Korean paragraph invents no hyphens");
+}
+
+/// The paragraph's *glyphs* decide, not its source text: hidden conditional text is not set, so
+/// it does not get a vote. Reading the source let hidden Korean turn hyphenation off for the
+/// visible English around it (noted in review of #1688).
+#[test]
+fn hidden_text_does_not_decide_whether_a_paragraph_hyphenates() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 — repeated, so the Hangul outweighs the English after it
+    // (`mostly_hangul` wants at least as many Hangul characters as ASCII letters).
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4} ".repeat(6);
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let text = format!("{korean}{english}");
+
+    let hyphens = |hide: bool| {
+        let (mut d, sid, _) = doc_with(&text, rect, para.clone());
+        d.conditions.push(designcraft_doc::Condition { name: "Draft".into(), color: [255, 0, 0], visible: !hide });
+        let story = d.story_mut(sid).expect("the story is there");
+        let chars = designcraft_doc::CharAttrs { conditions: Some(vec!["Draft".into()]), ..Default::default() };
+        story.chars = vec![
+            designcraft_doc::CharRun { len: korean.len(), format: designcraft_doc::CharFormat { over: chars, ..Default::default() } },
+            designcraft_doc::CharRun { len: english.len(), format: designcraft_doc::CharFormat::default() },
+        ];
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // Shown, the Hangul outweighs the English and the paragraph is not hyphenated.
+    assert_eq!(hyphens(false), 0, "a visibly Korean paragraph invents no hyphens");
+    // Hidden, the only text set is English, and it hyphenates like any English paragraph.
+    assert!(hyphens(true) > 0, "hidden Korean does not turn hyphenation off for the visible English");
+}
+
+/// A Korean notice leaves its paragraphs at the default English language, so English
+/// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
+/// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --
+/// that is the cost of not hyphenating, and what #1691 is about -- but no hyphen is invented
+/// inside those tokens.
+#[test]
+fn korean_text_and_addresses_are_not_hyphenated() {
+    // Narrow enough that every line has to break somewhere.
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    let hyphens_in = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // 이번 통지문은 News와 관련된 library.example.kr 주소를 포함합니다
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}\u{B41C} library.example.kr \u{C8FC}\u{C18C}\u{B97C} \u{D3EC}\u{D568}\u{D569}\u{B2C8}\u{B2E4}";
+    assert_eq!(hyphens_in(korean), 0, "a Korean paragraph invents no hyphens");
+
+    // An English paragraph holding the same address: the prose still hyphenates, the address does
+    // not, so the protection is about the token and not about turning hyphenation off.
+    let english = "This notice about hyphenation and composition mentions library.example.kr somewhere inside a long sentence";
+    assert!(hyphens_in(english) > 0, "English prose is still hyphenated");
+    let (d, sid, _) = doc_with(english, rect, para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for l in all_lines(&cs).iter().filter(|l| l.hyphenated) {
+        let upto = &english[..l.range.end.min(english.len())];
+        let token = upto.rsplit(char::is_whitespace).next().unwrap_or("");
+        assert!(!"library.example.kr".starts_with(token) || token.is_empty(), "a hyphen was invented inside the address: {token:?}");
+    }
+}
+
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");
