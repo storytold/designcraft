@@ -128,6 +128,8 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 #[cfg(not(target_arch = "wasm32"))]
 fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    // A bare file name has an empty parent; directory traversal needs an explicit `.`.
+    let dir = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir };
     let exact = dir.join(DOCUMENT_FONTS_FOLDER);
     if crate::io::is_dir(&exact) {
         return exact;
@@ -284,6 +286,75 @@ mod document_fonts_tests {
         assert_eq!(r["documentFonts"], 1, "{r}");
         assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn document_fonts_are_found_for_bare_and_explicit_paths() {
+        // Only the child changes its working directory; parallel tests keep theirs.
+        let dir = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cmd::file::open::document_fonts_tests::document_font_paths_child", "--ignored", "--nocapture"])
+            .env("DESIGNCRAFT_TEST_DOCUMENT_FONT_PATHS", "1")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("test result: ok. 1 passed; 0 failed;"), "the subprocess helper must run exactly once: {stdout}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "subprocess helper, executed by document_fonts_are_found_for_bare_and_explicit_paths"]
+    fn document_font_paths_child() {
+        const FAMILY: &str = "DocFont Bare Path Test";
+        assert!(std::env::var_os("DESIGNCRAFT_TEST_DOCUMENT_FONT_PATHS").is_some(), "run through the parent test");
+        let cwd = std::env::current_dir().unwrap();
+        std::fs::create_dir("nested").unwrap();
+        std::fs::create_dir("other").unwrap();
+        for extension in ["idml", "designcraft"] {
+            let path = PathBuf::from(format!("t.{extension}"));
+            write_document(&cwd.join(&path), FAMILY);
+            write_document(&cwd.join("other").join(&path), FAMILY);
+            assert_eq!(open(&mut Session::new(), &path)["documentFonts"], 0, "no font folder: {path:?}");
+        }
+
+        let roots = crate::file_access::AutomationRoots::new(&[cwd.as_path()], &[]).unwrap();
+        for folder in ["Document fonts", DOCUMENT_FONTS_FOLDER] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(Path::new(folder).join("case.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
+            if folder == DOCUMENT_FONTS_FOLDER {
+                // Both spellings exist on case-sensitive file systems; the exact name still wins.
+                assert_eq!(super::document_fonts_folder(Path::new("")), Path::new(".").join(DOCUMENT_FONTS_FOLDER));
+            }
+            for extension in ["idml", "designcraft"] {
+                let name = format!("t.{extension}");
+                for path in [PathBuf::from(&name), Path::new(".").join(&name), Path::new("nested/..").join(&name), cwd.join(&name)] {
+                    let mut s = Session::new();
+                    let r = crate::file_access::confine(roots.as_ref(), || open(&mut s, &path));
+                    assert_eq!(r["documentFonts"], 1, "{folder}, {path:?}: {r}");
+                    let f = font_entry(&mut s, FAMILY);
+                    assert_eq!((f["missing"].clone(), f["source"].clone()), (json!(false), json!("document")), "{path:?}: {f}");
+                }
+            }
+        }
+
+        // Opening a second document without the folder must not inherit the first one's font.
+        let mut s = Session::new();
+        assert_eq!(open(&mut s, Path::new("t.idml"))["documentFonts"], 1);
+        assert_eq!(open(&mut s, Path::new("other/t.designcraft"))["documentFonts"], 0);
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true);
+        s.execute("file.activate", &json!({"index": 0})).unwrap();
+        assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
+
+        // Normalising the directory must not grant access outside the automation read root.
+        let restricted = crate::file_access::AutomationRoots::new(&[Path::new("other")], &[]).unwrap();
+        let mut doc = s.doc().unwrap().doc.clone();
+        let (scope, faces, _) = crate::file_access::confine(restricted.as_ref(), || super::load_document_fonts(&mut doc, "t.idml"));
+        assert!(scope.is_none());
+        assert_eq!(faces, 0);
+        assert_eq!(doc.font_scope, 0);
     }
 
     #[test]
