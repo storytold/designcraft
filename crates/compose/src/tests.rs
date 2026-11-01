@@ -5289,6 +5289,83 @@ fn a_repeated_hyphen_is_part_of_the_lines_character_alignment() {
     assert!(repeated > 0);
 }
 
+/// `text` in Latin Serbian at 8 pt with its hyphens at 30, `w` wide, on a 12 pt baseline grid.
+fn serbian_with_large_hyphens(text: &str, w: f64, para: ParaAttrs, model: designcraft_doc::cjk::LeadingModel) -> Vec<Line> {
+    let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, w, 700.0), ParaAttrs { hyphenate: Some(false), ..para });
+    if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
+        tf.options.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(0.0, 12.0));
+    }
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| {
+        f.over.language = Some("Serbian: Latin".into());
+        f.over.size = Some(8.0);
+        f.over.leading_model = Some(model);
+    });
+    for (i, _) in text.match_indices('-') {
+        story.format_chars(i..i + 1, |f| f.over.size = Some(30.0));
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    all_lines(&cs).into_iter().cloned().collect()
+}
+
+#[test]
+fn a_repeated_hyphen_sets_its_lines_leading_reference() {
+    use designcraft_doc::cjk::LeadingModel;
+    let mut repeated = 0;
+    for w in (60..300).step_by(3) {
+        let lines = serbian_with_large_hyphens(SERBIAN_COMPOUNDS, f64::from(w), japanese(), LeadingModel::Center);
+        for pair in lines.windows(2) {
+            // The hyphen ending one line and the one starting the next are the largest in each,
+            // so the two lines measure from the same point.
+            if pair[1].repeated_hyphen {
+                assert!((pair[1].baseline - pair[0].baseline - pair[1].leading).abs() < 1e-6, "{w}");
+                repeated += 1;
+            }
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
+fn a_repeated_hyphen_sets_its_lines_grid_position() {
+    use designcraft_doc::cjk::{CharacterAlignment as R, LeadingModel};
+    let para = ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(R::EmCenter), ..Default::default() };
+    let mut repeated = 0;
+    for w in (60..300).step_by(3) {
+        let lines = serbian_with_large_hyphens(SERBIAN_COMPOUNDS, f64::from(w), para.clone(), LeadingModel::Roman);
+        for l in lines.iter().filter(|l| l.repeated_hyphen) {
+            assert!(on_grid(em_centre(l), (0.0, 12.0)), "{w}: {}", em_centre(l));
+            repeated += 1;
+        }
+    }
+    assert!(repeated > 0);
+}
+
+#[test]
+fn paragraph_gyoudori_counts_a_repeated_hyphen() {
+    use designcraft_doc::cjk::{CharacterAlignment as R, LeadingModel};
+    let para = ParaAttrs {
+        grid_align: Some(designcraft_doc::GridAlign::AllLines),
+        grid_reference: Some(R::EmCenter),
+        grid_gyoudori: Some(8),
+        paragraph_gyoudori: Some(true),
+        ..Default::default()
+    };
+    let mut tested = 0;
+    for w in 20..200 {
+        let lines = serbian_with_large_hyphens("naučno-tehnički", f64::from(w), para.clone(), LeadingModel::Roman);
+        if lines.len() != 2 || !lines[1].repeated_hyphen {
+            continue;
+        }
+        // Each line's reference is its hyphen's: the block they span is centred in the eight lines.
+        let second = em_centre(&lines[1]);
+        let first = lines[0].baseline + (second - lines[1].baseline);
+        assert!(on_grid((first + second) / 2.0 - 3.5 * 12.0, (0.0, 12.0)), "{w}: {first} {second}");
+        tested += 1;
+    }
+    assert!(tested > 0);
+}
+
 #[test]
 fn a_repeated_hyphen_hangs_with_optical_margin_alignment() {
     let para = ParaAttrs { align: Some(Align::Left), optical_margin: Some(true), ..Default::default() };

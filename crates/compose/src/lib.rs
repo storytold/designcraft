@@ -1441,17 +1441,17 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         let (mut down, mut prev, mut prev_aki, mut last_r) = (0.0, reference, aki_below(model, lead), r);
                         for (j, next_break) in breaks.iter().enumerate().skip(k + 1) {
                             let (ns, ne) = (g0 + next_break.start, g0 + next_break.end);
-                            let next_glyphs = glyphs.get(ns..ne.max(ns)).unwrap_or_default();
-                            let (_, _, _, next_lead) = line_metrics(next_glyphs, glyphs, ns, mark_leading, mark_chars.size, db, mark_chars);
+                            let next_glyphs = with_repeated_hyphen(glyphs, ns, ne);
+                            let (_, _, _, next_lead) = line_metrics(&next_glyphs, glyphs, ns, mark_leading, mark_chars.size, db, mark_chars);
                             let next_lead = match last_line_mark {
                                 Some(mark) if j + 1 == breaks.len() => next_lead.max(mark),
                                 _ => next_lead,
                             };
-                            let (next_reference, next_model) = cjk_line_reference(next_glyphs);
+                            let (next_reference, next_model) = cjk_line_reference(&next_glyphs);
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
-                            last_r = grid::reference_offset(next_glyphs, pp.grid_reference);
+                            last_r = grid::reference_offset(&next_glyphs, pp.grid_reference);
                         }
                         (down + last_r - r).max(0.0)
                     } else {
@@ -1958,7 +1958,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
             };
-            let (reference, model) = cjk_line_reference(line_glyphs);
+            let (reference, model) = cjk_line_reference(&measured);
             let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
             let position = position_line(PositionLineInput {
                 frame: f,
@@ -1977,7 +1977,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 glyph_offset: g0,
                 breaks: &breaks,
                 break_index: k,
-                line_glyphs,
+                line_glyphs: &measured,
                 spacing,
                 ascent: asc,
                 tops,
