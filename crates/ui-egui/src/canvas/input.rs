@@ -5,8 +5,8 @@ use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
 use super::{
-    CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Item, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, SpreadRef, Stroke,
-    StrokeKind, Tokens, ToolKey, Xf, json, pos2, vec2,
+    CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Item, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, Stroke, StrokeKind, Tokens,
+    ToolKey, Xf, json, pos2, vec2,
 };
 
 /// Whether the pointer this canvas's window last saw is in another of the app's windows: a
@@ -162,10 +162,7 @@ fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::Ite
     let st = app.session.active()?;
     let (sr, sp) = CanvasLayout::new(&st.doc, st.editing_parents).spread_at(p)?;
     let tol = 4.0 / zoom.max(1e-6);
-    let id = match sr {
-        SpreadRef::Doc(si) => st.doc.hit_item(si, sp, tol)?,
-        _ => st.doc.spread(sr)?.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, tol))?.id,
-    };
+    let id = st.doc.hit_stack(sr, sp, tol).next()?;
     Some((id, sp))
 }
 

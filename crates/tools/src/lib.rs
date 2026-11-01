@@ -241,13 +241,18 @@ impl ToolContext<'_> {
         px / self.zoom.max(1e-9)
     }
 
-    /// Frontmost unlocked item under a canvas point.
+    /// The frontmost item under a canvas point: the first of [`Self::hits`].
     pub fn hit(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
         let (sr, sp) = self.layout.spread_at(p)?;
-        let SpreadRef::Doc(si) = sr else {
-            return self.hit_parent(sr, sp);
-        };
-        self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
+        self.doc.hit_stack(sr, sp, self.tol(4.0)).next().map(|id| (sr, id))
+    }
+
+    /// The items under a point, frontmost first, on document and parent spreads alike: the
+    /// stack [`Self::hit`] takes the first of ([`designcraft_doc::Document::hit_stack`]). Empty off
+    /// the spreads.
+    pub fn hits(&self, p: Point) -> Vec<ItemId> {
+        let Some((sr, sp)) = self.layout.spread_at(p) else { return Vec::new() };
+        self.doc.hit_stack(sr, sp, self.tol(4.0)).collect()
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
@@ -297,11 +302,6 @@ impl ToolContext<'_> {
                 !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && designcraft_doc::edit_hit(it, sp - *off, self.tol(4.0))
             })
             .map(|(it, _)| (page, it.id))
-    }
-
-    fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
-        let s = self.doc.spread(sr)?;
-        s.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
     }
 
     /// Spread-space → canvas transform of the spread holding item `id`.

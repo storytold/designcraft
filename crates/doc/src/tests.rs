@@ -351,3 +351,46 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
+
+/// One stack for every pick, on document and parent spreads alike: front to back as drawn (by
+/// layer, then stacking order), without hidden items or items on hidden or locked layers. Parent
+/// spreads also skip locked items, as their picks always have.
+#[test]
+fn the_hit_stack_is_the_drawn_order_of_pickable_items() {
+    for sr in [SpreadRef::Doc(0), SpreadRef::Parent(0)] {
+        let mut d = doc();
+        let below = d.default_layer();
+        let mut upper = d.layers[0].clone();
+        upper.id = LayerId(9_999);
+        upper.name = "Upper".into();
+        d.layers.insert(0, upper);
+        let above = LayerId(9_999);
+        let mut frame = |layer| d.add_text_frame(sr, Rect::new(10.0, 10.0, 100.0, 100.0), layer, "x", ParaFormat::default()).unwrap().0;
+        // Added first but on the upper layer, so drawn in front of the two added after it.
+        let top = frame(above);
+        let back = frame(below);
+        let front = frame(below);
+        let p = designcraft_geom::Point::new(50.0, 50.0);
+        let stack = |d: &Document| d.hit_stack(sr, p, 2.0).collect::<Vec<_>>();
+        assert_eq!(stack(&d), vec![top, front, back], "{sr:?}");
+        if let SpreadRef::Doc(si) = sr {
+            assert_eq!(d.hit_items(si, p, 2.0).collect::<Vec<_>>(), stack(&d));
+            assert_eq!(d.hit_item(si, p, 2.0), Some(top));
+        }
+
+        d.item_mut(front).unwrap().hidden = true;
+        assert_eq!(stack(&d), vec![top, back], "{sr:?}: hidden items are not picked");
+        d.item_mut(front).unwrap().hidden = false;
+
+        d.item_mut(back).unwrap().locked = true;
+        let locked = if sr == SpreadRef::Doc(0) { vec![top, front, back] } else { vec![top, front] };
+        assert_eq!(stack(&d), locked, "{sr:?}: locked items");
+        d.item_mut(back).unwrap().locked = false;
+
+        d.layer_mut(above).unwrap().visible = false;
+        assert_eq!(stack(&d), vec![front, back], "{sr:?}: hidden layer");
+        d.layer_mut(above).unwrap().visible = true;
+        d.layer_mut(above).unwrap().locked = true;
+        assert_eq!(stack(&d), vec![front, back], "{sr:?}: locked layer");
+    }
+}
