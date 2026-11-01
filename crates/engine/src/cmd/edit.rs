@@ -106,15 +106,17 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 let mut stories = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list
                     .iter()
-                    .map(|i| {
-                        let mut i = i.clone();
-                        super::object::renumber(d, &items, &mut i, &mut stories);
+                    .map(|orig| {
+                        let mut i = orig.clone();
+                        if !super::object::renumber(d, &items, &mut i, &mut stories) {
+                            return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups too deeply to copy", orig.id)));
+                        }
                         if d.layer(i.layer).is_none() {
                             i.layer = d.default_layer();
                         }
-                        i
+                        Ok(i)
                     })
-                    .collect();
+                    .collect::<std::result::Result<_, _>>()?;
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
