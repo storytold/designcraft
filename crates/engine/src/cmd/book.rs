@@ -44,6 +44,34 @@ fn chapter(b: &Book, path: &str) -> Result<String> {
         .map_err(|why| EngineError::Other(format!("{path}: {why}")))
 }
 
+/// Chapters whose file is not under the book's own folder, by the path the book names.
+///
+/// A book names its chapters by path, and `book.paginate` and `book.syncStyles` write numbering
+/// and styles into each of them. A book that arrived from somewhere else can therefore name
+/// `~/Documents/x.designcraft` and have the user's own file rewritten by opening it and running
+/// an update. Which files those are is reported, so the UI can ask before writing (#1597);
+/// refusing them outright would break books whose chapters legitimately live in sibling folders,
+/// which is how InDesign books are usually arranged.
+#[cfg(not(target_arch = "wasm32"))]
+fn outside_book_folder(b: &Book) -> Vec<String> {
+    // The folder comes from the chapters' own resolution, so the two cannot disagree about what
+    // a path means. `book.new` stores the path it was given, so a relative book path left the
+    // folder relative while every chapter resolves absolute: `dir/Guide.dcbook` reported the
+    // chapters beside the book as outside it, and a bare `Guide.dcbook` gave an empty folder that
+    // every absolute path starts with, so nothing was reported at all. `std::path::absolute`
+    // fixed those but keeps `..` where `craft_docpath` folds it, so a book opened as
+    // `sub/../Guide.dcbook` had a folder no chapter beside it could start with (both noted in
+    // review). Resolving a name inside the folder and taking its parent uses one rule for both.
+    let Some(folder) = chapter(b, "-").ok().and_then(|p| std::path::Path::new(&p).parent().map(std::path::Path::to_path_buf)) else {
+        return b.documents.clone();
+    };
+    b.documents
+        .iter()
+        .filter(|named| chapter(b, named).map(|resolved| !std::path::Path::new(&resolved).starts_with(&folder)).unwrap_or(true))
+        .cloned()
+        .collect()
+}
+
 /// Every chapter's file ([`chapter`]), in order.
 fn chapters(b: &Book) -> Result<Vec<String>> {
     b.documents.iter().map(|path| chapter(b, path)).collect()
@@ -66,6 +94,33 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
 
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_BATCH_CHAPTERS: usize = 4096;
+
+/// The PDF a book export may have live at once.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_BOOK_PDF_BYTES: usize = 512 << 20;
+
+/// What the chapters themselves may add up to, which is a third of the peak rather than the
+/// peak. Three things are live at the end of the export: the chapters, held to be merged; the
+/// merged output, which is their total again when they share nothing (measured at 0.97 of the
+/// input for a single chapter); and the copy `merge_pdfs` makes of the chapter it is reading.
+/// The first check counted only the chapters, so the export could reach three times the figure
+/// the refusal named (noted in review).
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_BOOK_CHAPTER_BYTES: usize = MAX_BOOK_PDF_BYTES / 3;
+
+/// The two figures have to move together: if the chapters' budget is ever raised without the peak
+/// it is a third of, the export silently goes back to reaching three times what it allows, and
+/// the refusal names a number the check no longer enforces.
+///
+/// Checked here rather than in a test: `assertions_on_constants` refuses these in a test body
+/// (the gate runs clippy with `-D warnings`), and a `const` block evaluates them in every build
+/// instead of only under `cargo test` (noted in review).
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = {
+    assert!(MAX_BOOK_CHAPTER_BYTES * 3 <= MAX_BOOK_PDF_BYTES, "three times the chapter budget is within the peak");
+    assert!((MAX_BOOK_CHAPTER_BYTES + 1) * 3 > MAX_BOOK_PDF_BYTES, "and it is as much as a third allows, not less");
+    assert!(MAX_BOOK_CHAPTER_BYTES / (1 << 20) == 170, "and the refusal names 170 MB");
+};
 
 /// A batch keeps only bounded path records in memory. Chapter snapshots live in a private
 /// temporary directory; only one document and serialized blob are live while staging.
@@ -152,7 +207,9 @@ fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()
 fn paginate(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
     if b.documents.is_empty() {
-        return Ok(json!({"pages": 0, "chapters": []}));
+        // The same shape as a book with chapters, so a caller reads one field either way
+        // (noted in review).
+        return Ok(json!({"pages": 0, "chapters": [], "outsideFolder": []}));
     }
     let mut batch = ChapterBatch::new(b.documents.len(), "book.paginate")?;
     let mut next = 1u32;
@@ -174,7 +231,7 @@ fn paginate(s: &Session) -> Result<Value> {
         batch.stage(path, &d)?;
     }
     batch.commit()?;
-    Ok(json!({"pages": next - 1, "chapters": chapters}))
+    Ok(json!({"pages": next - 1, "chapters": chapters, "outsideFolder": outside_book_folder(b)}))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -216,7 +273,7 @@ fn sync_styles(s: &Session) -> Result<Value> {
         n += 1;
     }
     batch.commit()?;
-    Ok(json!({"synced": n}))
+    Ok(json!({"synced": n, "outsideFolder": outside_book_folder(b)}))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -333,6 +390,14 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
             let b = s.book.clone().ok_or_else(no_book)?;
+            // The same cap the staged updates use, which this path never applied, plus a budget
+            // for what it holds: every chapter's whole PDF is kept in memory to be merged, so a
+            // long book of heavy chapters was unbounded (#1597).
+            #[cfg(not(target_arch = "wasm32"))]
+            if b.documents.len() > MAX_BATCH_CHAPTERS {
+                return Err(bad("book.exportPdf", format!("a book export supports at most {MAX_BATCH_CHAPTERS} chapters")));
+            }
+            let mut held = 0usize;
             let mut parts = Vec::new();
             for path in &chapters(&b)? {
                 let mut d = load(path)?;
@@ -342,6 +407,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
                 let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
                 let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
+                held = held.saturating_add(r.bytes.len());
+                // Checked as soon as the chapter is exported. A chapter over the budget on its
+                // own is still generated once before it is refused: the exporter answers with one
+                // buffer, so there is no point before this one at which its size is known.
+                if held > MAX_BOOK_CHAPTER_BYTES {
+                    return Err(bad(
+                        "book.exportPdf",
+                        format!("the book's chapters are more than {} MB of PDF: export them in parts", MAX_BOOK_CHAPTER_BYTES / (1 << 20)),
+                    ));
+                }
                 parts.push((r.bytes, sizes));
             }
             let pages: usize = parts.iter().map(|p| p.1.len()).sum();
@@ -363,6 +438,51 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// A book names its chapters by path, and an update writes numbering and styles into each
+    /// one, so a book from elsewhere can name a file of the user's own. Which chapters lie
+    /// outside the book's folder is now reported, for the UI to ask about before writing (#1597).
+    #[test]
+    fn an_update_reports_the_chapters_outside_the_books_folder() {
+        let root = std::env::temp_dir().join(format!("dc-book-outside-{}", std::process::id()));
+        let (inside, elsewhere) = (root.join("book"), root.join("elsewhere"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Guide.dcbook").to_string_lossy()})).unwrap();
+        for path in [inside.join("ch1.designcraft"), elsewhere.join("mine.designcraft")] {
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+            s.execute("book.add", &json!({"path": path.to_string_lossy()})).unwrap();
+            s.execute("file.close", &json!({})).unwrap();
+        }
+
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        let outside = r["outsideFolder"].as_array().expect("the report lists them").clone();
+        assert_eq!(outside.len(), 1, "one chapter is outside the book's folder: {outside:?}");
+        assert!(outside[0].as_str().unwrap_or_default().contains("mine.designcraft"), "{outside:?}");
+
+        // Sync Styles reports the same thing, since it writes the same chapters.
+        let r = s.execute("book.syncStyles", &json!({})).unwrap();
+        assert_eq!(r["outsideFolder"].as_array().map(Vec::len), Some(1));
+
+        // A book whose chapters are all beside it reports nothing.
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Tidy.dcbook").to_string_lossy()})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("file.saveAs", &json!({"path": inside.join("only.designcraft").to_string_lossy()})).unwrap();
+        s.execute("book.add", &json!({"path": inside.join("only.designcraft").to_string_lossy()})).unwrap();
+        s.execute("file.close", &json!({})).unwrap();
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        assert_eq!(r["outsideFolder"], json!([]), "nothing to ask about");
+
+        // An empty book answers in the same shape, rather than leaving the field out.
+        let mut s = Session::new();
+        s.execute("book.new", &json!({"path": inside.join("Empty.dcbook").to_string_lossy()})).unwrap();
+        let r = s.execute("book.paginate", &json!({})).unwrap();
+        assert_eq!(r["outsideFolder"], json!([]), "an empty book answers in the same shape");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn book_numbering_resolves_chapter_numbers_in_order() {
