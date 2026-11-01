@@ -15,6 +15,7 @@ mod fr;
 mod it;
 mod ja;
 mod ka;
+mod ko;
 mod pl;
 mod pt_br;
 mod ru;
@@ -36,6 +37,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("cs", "Čeština"),
     ("pl", "Polski"),
     ("ka", "ქართული"),
+    ("ko", "한국어"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -90,6 +92,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static CZECH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static FRENCH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static GEORGIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static KOREAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -132,6 +135,9 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "cs" {
         return CZECH.get_or_init(|| cs::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "ko" {
+        return KOREAN.get_or_init(|| ko::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     let Some(c) = column(lang) else { return s };
     TRANSLATIONS.get_or_init(|| TABLE.iter().copied().collect()).get(s).and_then(|row| row.get(c)).copied().unwrap_or(s)
 }
@@ -151,6 +157,7 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "pl" => pl::CONTEXT,
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
+        "ko" => ko::CONTEXT,
         _ => &[],
     };
     let written = |text: &&str| !text.trim().is_empty();
