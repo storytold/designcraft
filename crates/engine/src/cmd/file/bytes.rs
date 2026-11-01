@@ -27,11 +27,15 @@ pub fn with_document_extension(path: &str) -> String {
     format!("{path}.{}", designcraft_format::EXTENSION)
 }
 
-/// Whether `bytes` are a document `file.open` reads: a DesignCraft package or an IDML package.
+/// Whether `bytes` are a document `file.open` reads: a DesignCraft package, an IDML package or a
+/// Publisher file (a compound file, recognised only when its directory is within `bytes`).
 /// The first [`DOCUMENT_SNIFF_BYTES`] of a file are enough for packages that start with their
 /// `mimetype` entry, as both formats write them.
 pub fn is_document(bytes: &[u8]) -> bool {
-    designcraft_idml::is_idml(bytes) || designcraft_format::starts_designcraft(bytes) || designcraft_format::is_designcraft(bytes)
+    designcraft_idml::is_idml(bytes)
+        || designcraft_format::starts_designcraft(bytes)
+        || designcraft_format::is_designcraft(bytes)
+        || designcraft_pub::is_pub(bytes)
 }
 
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
@@ -109,6 +113,56 @@ mod extension_tests {
     use super::{is_document, with_document_extension};
     use crate::Session;
 
+    /// A synthetic Publisher 2002+ file, written from scratch by the importer's tests: a text
+    /// box and a rectangle.
+    const PUB: &[u8] = include_bytes!("../../../../pub/tests/data/hello.pub");
+
+    fn item_count(s: &Session) -> usize {
+        s.doc().map_or(0, |st| st.doc.spreads.iter().map(|sp| sp.items.len()).sum())
+    }
+
+    #[test]
+    fn a_publisher_file_opens_unsaved_and_saves_reopens_and_exports_natively() {
+        let dir = std::env::temp_dir().join(format!("dc-open-pub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Flyer.pub");
+        std::fs::write(&path, PUB).unwrap();
+        let mut s = Session::new();
+        let r = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        assert_eq!(s.doc().unwrap().path, None, "Save must never write over the .pub");
+        assert_eq!(s.doc().unwrap().doc.title, "Flyer");
+        assert_eq!(item_count(&s), 2);
+
+        // Continue editing, save natively, reopen, edit again, export.
+        s.execute("frame.create", &json!({"rect": [72, 400, 300, 450], "content": "text"})).unwrap();
+        let saved = s.execute("file.save", &json!({"path": dir.join("Flyer").to_string_lossy()})).unwrap();
+        assert_eq!(saved["path"], json!(dir.join("Flyer.designcraft").to_string_lossy()), "{saved}");
+        let mut t = Session::new();
+        t.execute("file.open", &json!({"path": dir.join("Flyer.designcraft").to_string_lossy()})).unwrap();
+        assert_eq!(item_count(&t), 3);
+        t.execute("frame.create", &json!({"rect": [72, 500, 300, 550]})).unwrap();
+        assert_eq!(item_count(&t), 4);
+        let pdf = t.execute("file.exportPdf", &json!({})).unwrap();
+        assert_eq!(designcraft_render::pdf_page_count(&super::base64_decode(pdf["base64"].as_str().unwrap())), Some(1));
+
+        // By content without an extension, and as bytes.
+        let bare = dir.join("Flyer");
+        std::fs::write(&bare, PUB).unwrap();
+        assert!(is_document(PUB));
+        s.execute("file.open", &json!({"path": bare.to_string_lossy()})).unwrap();
+        assert_eq!(item_count(&s), 2);
+        s.execute("file.openBytes", &json!({"name": "Flyer.pub", "base64": super::base64_encode(PUB)})).unwrap();
+        assert_eq!((item_count(&s), s.doc().unwrap().doc.title.as_str()), (2, "Flyer"));
+
+        // A damaged .pub is an error that names the format, not a crash or a native-format error.
+        std::fs::write(&path, &PUB[..PUB.len() / 2]).unwrap();
+        let e = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap_err();
+        assert!(e.to_string().contains("Publisher"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_document_extension_is_added_when_missing_or_different() {
         assert_eq!(with_document_extension("/a/Brochure"), "/a/Brochure.designcraft");
@@ -159,7 +213,7 @@ mod extension_tests {
         std::fs::write(&notes, b"plain text").unwrap();
         assert!(!is_document(b"plain text"));
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
-        assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
+        assert!(e.to_string().contains("not a DesignCraft, IDML or Publisher file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

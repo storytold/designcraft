@@ -79,8 +79,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return crate::cmd::interchange::open_idml(s, p);
         }
+        if designcraft_pub::is_pub(&bytes) || (!native && ext == "pub") {
+            return crate::cmd::interchange::open_pub(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML or Publisher file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -146,6 +149,9 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     // signature (or their name).
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
+    }
+    if designcraft_pub::is_pub(&b) || str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".pub")) {
+        return crate::cmd::interchange::open_pub(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
