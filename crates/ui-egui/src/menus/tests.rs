@@ -729,7 +729,7 @@ fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
     crate::dialogs::confirm(&mut app).unwrap();
     frame(&mut app);
     assert_eq!(app.session.documents().len(), 1);
-    for lang in ["uk", "ru", "zh", "", "ar", "pt-br", "it", "cs", "pl", "ka"] {
+    for lang in ["uk", "ru", "zh", "", "ar", "pt-br", "it", "cs", "pl", "ka", "ko"] {
         app.run("app.language", json!({"lang": lang})).unwrap();
         frame(&mut app);
     }
