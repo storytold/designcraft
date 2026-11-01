@@ -1269,6 +1269,32 @@ fn a_gradient_stop_on_the_second_of_two_same_named_mismatched_colours_keeps_its_
     assert_eq!(gradient.stops[1].color, Color::rgb(200.0 / 255.0, 10.0 / 255.0, 10.0 / 255.0), "stop 1 names Color/a directly");
 }
 
+/// A literal user-named colour and an auto-named one clean/collide onto the same name (still
+/// undisambiguated when gradients are read); a third colour merges into the auto-named one as its
+/// duplicate. A gradient stop naming the duplicate directly must resolve to the kept auto-named
+/// colour's own value, not the user-named one's — `color_for_ref`'s name fallback can't tell them
+/// apart by name alone, so the duplicate must be redirected to its kept id before that lookup runs.
+#[test]
+fn a_gradient_stop_on_a_duplicate_resolves_to_the_kept_colour_even_when_its_name_is_taken() {
+    let graphic = GRAPHIC.replace(
+        "</idPkg:Graphic>",
+        r#"<Color Self="Color/taken" Model="Process" Space="RGB" ColorValue="1 1 1" Name="R=204 G=51 B=51"/>
+  <Color Self="Color/kept" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51"/>
+  <Color Self="Color/dup" Model="Process" Space="RGB" ColorValue="204 51 51" Name="r204g51b51 2"/>
+  <Gradient Self="Gradient/OnDup" Type="Linear" Name="OnDup">
+    <GradientStop Self="gs0" StopColor="Color/dup" Location="0"/>
+  </Gradient>
+</idPkg:Graphic>"#,
+    );
+    let d = import_idml(&fixture_with_graphic(&graphic)).unwrap();
+    let SwatchValue::Gradient { gradient } = &d.swatch("OnDup").unwrap().value else { panic!("gradient") };
+    assert_eq!(
+        gradient.stops[0].color,
+        Color::rgb(204.0 / 255.0, 51.0 / 255.0, 51.0 / 255.0),
+        "the duplicate's stop must resolve to the kept colour it merged into, not the unrelated colour that happened to already hold that name"
+    );
+}
+
 #[test]
 fn round_trips_overridden_parent_items() {
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });

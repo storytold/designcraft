@@ -158,7 +158,12 @@ impl<'r> Importer<'r> {
             let mut stops: Vec<GradientStop> = Vec::new();
             for s in e.find_all("GradientStop") {
                 let r = s.get("StopColor");
-                let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                // A merged duplicate's id has no `pending` entry of its own, and its name alone
+                // can't tell it apart from an unrelated swatch that happens to share it (still
+                // undisambiguated at this point) — resolve it to its kept swatch's id directly,
+                // rather than leaving it to color_for_ref's id-or-name fallback.
+                let resolved = r.map(|r| auto_color_dup.iter().find(|(dup, _)| dup.as_str() == r).map_or(r, |(_, kept)| kept.as_str()));
+                let c = resolved.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
                 // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
                 // unnamed colors stay plain. The id becomes the swatch's name below, once
                 // repeated names are numbered.
