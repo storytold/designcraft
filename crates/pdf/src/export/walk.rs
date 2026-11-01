@@ -3,6 +3,85 @@ use super::graphics::draw_coverage;
 use super::pipeline::{item_exported, layer_exported};
 use super::*;
 
+/// A table's structure with its nested tables in place, or nothing if none of its text was drawn
+/// while tagging. Recursion ends with the cells recorded in `parents`, which are depth-limited.
+fn table_group(
+    tags: &mut HashMap<CellParagraphKey, Vec<Identifier>>,
+    parents: &[TableContext],
+    sid: designcraft_doc::StoryId,
+    table: &designcraft_doc::Table,
+    anchor: usize,
+    parent: Option<usize>,
+) -> Option<TagGroup> {
+    enum Entry<'t> {
+        Paragraph,
+        Nested(&'t designcraft_doc::Table, usize),
+    }
+    let mut any = false;
+    let mut group = TagGroup::new(Tag::Table);
+    for (row_index, row) in table.rows.iter().enumerate() {
+        let mut row_group = TagGroup::new(Tag::TR);
+        for (col_index, _) in table.columns.iter().enumerate() {
+            if table.owner(row_index, col_index) != (row_index, col_index) {
+                continue;
+            }
+            let cell = table.cell(row_index, col_index);
+            let row_span = cell.and_then(|cell| (cell.row_span > 1).then_some(cell.row_span)).and_then(std::num::NonZeroU32::new);
+            let col_span = cell.and_then(|cell| (cell.col_span > 1).then_some(cell.col_span)).and_then(std::num::NonZeroU32::new);
+            let mut cell_group = if row.kind == designcraft_doc::RowKind::Header {
+                TagGroup::new(Tag::TH(krilla::tagging::TableHeaderScope::Column).with_row_span(row_span).with_col_span(col_span))
+            } else {
+                TagGroup::new(Tag::TD.with_row_span(row_span).with_col_span(col_span))
+            };
+            // Paragraphs and nested tables, in reading order.
+            let mut entries: Vec<(usize, Entry<'_>)> = tags
+                .keys()
+                .filter(|key| {
+                    key.story == sid
+                        && key.table == table.id
+                        && key.anchor == anchor
+                        && key.row == row_index
+                        && key.col == col_index
+                        && key.parent == parent
+                })
+                .map(|key| (key.paragraph, Entry::Paragraph))
+                .collect();
+            let context = TableContext { table: table.id, anchor, row: row_index, col: col_index, parent };
+            if let Some(index) = parents.iter().position(|outer| *outer == context)
+                && let Some(cell) = cell
+            {
+                entries.extend(cell.text.tables.values().filter_map(|nested| {
+                    let at = cell.text.table_anchor(nested.id)?;
+                    Some((at, Entry::Nested(nested, index)))
+                }));
+            }
+            entries.sort_by_key(|(offset, entry)| (*offset, matches!(entry, Entry::Nested(..))));
+            for (offset, entry) in entries {
+                match entry {
+                    Entry::Paragraph => {
+                        let key = CellParagraphKey { story: sid, table: table.id, anchor, row: row_index, col: col_index, parent, paragraph: offset };
+                        let mut paragraph_group = TagGroup::new(Tag::P);
+                        for id in tags.remove(&key).unwrap_or_default() {
+                            paragraph_group.push(id);
+                        }
+                        cell_group.push(paragraph_group);
+                        any = true;
+                    }
+                    Entry::Nested(nested, index) => {
+                        if let Some(nested_group) = table_group(tags, parents, sid, nested, offset, Some(index)) {
+                            cell_group.push(nested_group);
+                            any = true;
+                        }
+                    }
+                }
+            }
+            row_group.push(cell_group);
+        }
+        group.push(row_group);
+    }
+    any.then_some(group)
+}
+
 impl Exporter<'_> {
     /// Story `sid` composed for `page` ([`Cache::get`]), asked of the cache once per export.
     fn composed(&mut self, sid: designcraft_doc::StoryId, page: Option<usize>) -> Arc<designcraft_compose::ComposedStory> {
@@ -124,13 +203,39 @@ impl Exporter<'_> {
                     // One structure element per paragraph: headings and quotes from the
                     // paragraph style's Export Tagging, else P.
                     let mut paras: Vec<usize> = self.para_tags.keys().filter(|(s, _)| *s == sid).map(|(_, p)| *p).collect();
+                    if let Some(story) = self.doc.story(sid) {
+                        paras.extend(
+                            story.tables.values().filter_map(|table| self.story_text_indices.get(&sid)?.table_anchors.get(&table.id).copied()),
+                        );
+                    }
                     paras.sort_unstable();
+                    paras.dedup();
                     let story = self.doc.story(sid);
-                    for pi in paras {
-                        let ids = self.para_tags.remove(&(sid, pi)).unwrap_or_default();
+                    let text_index = self.story_text_indices.get(&sid);
+                    for offset in paras {
+                        let pi =
+                            text_index.map_or(0, |index| index.paragraph_ranges.partition_point(|range| range.start <= offset).saturating_sub(1));
+                        let table_at_paragraph = story.and_then(|story_value| {
+                            story_value.tables.values().find_map(|table| {
+                                text_index?.table_anchors.get(&table.id).filter(|anchor| **anchor == offset).map(|anchor| (table, *anchor))
+                            })
+                        });
+                        if let Some((table, anchor)) = table_at_paragraph
+                            && let Some(table_group) = table_group(&mut self.cell_para_tags, &self.table_parents, sid, table, anchor, None)
+                        {
+                            tree.push(table_group);
+                        }
+                        let ids = self.para_tags.remove(&(sid, offset)).unwrap_or_default();
+                        if ids.is_empty() {
+                            continue;
+                        }
                         let style = story.and_then(|st| st.paras.get(pi)).map(|p| p.style.clone()).unwrap_or_default();
                         let tag = self.doc.styles.export_tag(&style, false).map(|e| e.tag.clone()).unwrap_or_default();
-                        let text = || story.and_then(|st| st.para_ranges().get(pi).map(|r| st.text[r.clone()].trim().to_string()));
+                        let text = || {
+                            story.and_then(|st| {
+                                text_index?.paragraph_ranges.get(pi).and_then(|range| st.text.get(range.clone())).map(|text| text.trim().to_string())
+                            })
+                        };
                         let kind: krilla::tagging::TagKind = match tag.as_str() {
                             h if h.len() == 2 && h.starts_with('h') => {
                                 let n = h[1..].parse::<u16>().unwrap_or(1).clamp(1, 6);

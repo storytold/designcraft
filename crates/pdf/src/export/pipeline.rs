@@ -173,6 +173,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         doc,
         cache,
         composed: HashMap::new(),
+        story_text_indices: HashMap::new(),
         opts,
         clip: Rect::ZERO,
         warnings,
@@ -197,6 +198,9 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         tag_story: None,
         text_area: None,
         para_tags: HashMap::new(),
+        table_context: None,
+        cell_para_tags: HashMap::new(),
+        table_parents: Vec::new(),
     };
     if ex.rgb_only {
         ex.warn("PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)");
