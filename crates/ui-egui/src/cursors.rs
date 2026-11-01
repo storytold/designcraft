@@ -331,6 +331,8 @@ pub fn show(ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) ->
     show_in(mode(), ctx, images, c, hover)
 }
 
+/// [`show`] in `mode`, so tests can take the painted path on any platform: a painted glyph
+/// over a window without the focus where [`HIDES_ONLY_WHEN_KEY`] gives way to the system cursor.
 fn show_in(mode: Mode, ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) -> egui::CursorIcon {
     match mode {
         Mode::Painted if !paint_glyphs(HIDES_ONLY_WHEN_KEY, ctx.input(|i| i.focused)) => system(c),
