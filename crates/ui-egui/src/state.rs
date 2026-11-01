@@ -305,6 +305,10 @@ pub struct UiState {
     pub custom_workspaces: Vec<SavedWorkspace>,
     /// File › New › Document › Recent: the settings of the last documents made, newest first.
     pub recent_new_documents: Vec<designcraft_doc::build::NewDocument>,
+    /// File › New › Document: the units of the last print document made, which the window and its
+    /// built-in print presets show next time (`None`: each preset's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_document_units: Option<Unit>,
     /// The folder of the last file saved or exported: where the save dialog starts for a
     /// document never saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -444,6 +448,7 @@ impl Default for UiState {
             workspace: "Essentials".into(),
             custom_workspaces: Vec::new(),
             recent_new_documents: Vec::new(),
+            new_document_units: None,
             last_save_folder: None,
             font_sample: "selected".into(),
             font_preview_size: 1,
