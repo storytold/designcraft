@@ -2237,6 +2237,58 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// A glyph from InDesign's Glyphs panel without a Unicode value (`<?ACE 1a?>` with the run's
+/// CustomGlyph name) imports as a custom-glyph character and goes back out the same way.
+#[test]
+fn custom_glyph_imports_and_round_trips() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>a</Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Properties><CustomGlyph type="string">$ID/laa03</CustomGlyph></Properties><Content><?ACE 1a?></Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>b</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let check = |d: &designcraft_doc::Document| {
+        let st = d.story(*d.stories.keys().next().unwrap()).unwrap();
+        let at = st.text.find(designcraft_doc::story::CUSTOM_GLYPH).expect("the custom glyph");
+        assert_eq!(st.char_format_at(at + 1).over.custom_glyph.as_deref(), Some("laa03"));
+        assert!(st.text.starts_with('a') && st.text.ends_with('b'), "{:?}", st.text);
+    };
+    let d = import_idml_with(&fixture_with_story(story), &|_| None).unwrap();
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+
+/// A custom glyph given by glyph id (CustomGlyph of type long) keeps the id and goes back out as
+/// a long: it used to become a glyph name and go out as the string `$ID/68`.
+#[test]
+fn custom_glyph_id_imports_and_round_trips() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Properties><CustomGlyph type="long">68</CustomGlyph></Properties><Content><?ACE 1a?></Content></CharacterStyleRange>
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Properties><CustomGlyph type="long">-1</CustomGlyph></Properties><Content><?ACE 1a?></Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let glyphs = |d: &designcraft_doc::Document| {
+        let st = d.story(*d.stories.keys().next().unwrap()).unwrap();
+        let ats: Vec<usize> = st.text.match_indices(designcraft_doc::story::CUSTOM_GLYPH).map(|(at, _)| at).collect();
+        ats.iter().map(|&at| st.char_format_at(at + 1).over.custom_glyph.clone()).collect::<Vec<_>>()
+    };
+    let d = import_idml_with(&fixture_with_story(story), &|_| None).unwrap();
+    // A glyph id that can't be one names no glyph.
+    assert_eq!(glyphs(&d), [Some("68".to_string()), None]);
+    let bytes = export_idml(&d);
+    let text = zip_text(&bytes, "Stories/");
+    assert!(text.contains(r#"<CustomGlyph type="long">68</CustomGlyph>"#), "{text}");
+    assert_eq!(glyphs(&import_idml(&bytes).unwrap()), [Some("68".to_string()), None]);
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
