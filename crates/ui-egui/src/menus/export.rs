@@ -1,14 +1,38 @@
 use super::{DesignApp, Value, json};
 use crate::app::file_dialogs::{Bound, with_path};
 
-pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
-    let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
-    let ser = app.run("file.serialize", json!({}))?;
+/// Save in a browser: download the document in the Save documents as format, asking first when
+/// that is IDML and IDML can't keep all of it; then run `after`.
+pub(super) fn download_document(app: &mut DesignApp, after: super::run::After) -> Result<Value, String> {
+    use super::run::LossyAnswer;
+    let format = app.session.prefs.save_format;
+    super::run::guard_idml_loss(app, format == designcraft_engine::SaveFormat::Idml, move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => {
+            download_as(app, format)?;
+            after(app)
+        }
+        LossyAnswer::SaveAsDesigncraft => {
+            download_as(app, designcraft_engine::SaveFormat::Designcraft)?;
+            after(app)
+        }
+        LossyAnswer::Cancel => after(app),
+    })
+}
+
+/// Download the document as `format`: an IDML package (images embedded), or DesignCraft's own
+/// format.
+fn download_as(app: &mut DesignApp, format: designcraft_engine::SaveFormat) -> Result<Value, String> {
+    let name = app.session.active().map(|d| format!("{}.{}", d.doc.title, format.extension())).ok_or("no document")?;
+    let ser = match format {
+        designcraft_engine::SaveFormat::Idml => app.run("file.exportIdml", json!({}))?,
+        designcraft_engine::SaveFormat::Designcraft => app.run("file.serialize", json!({}))?,
+    };
     let bytes = designcraft_engine::cmd::base64_decode(ser["base64"].as_str().unwrap_or_default());
     let download = app.services.download.as_mut().ok_or("no download service")?;
     download(&name, &bytes).map_err(|e| format!("could not download {name}: {e}"))?;
-    // Marks the document saved; on the web the engine doesn't touch a file system.
-    app.run("file.saveAs", json!({"path": name}))
+    // Marks the document saved; on the web the engine doesn't touch a file system. The question
+    // about what IDML loses was asked above.
+    app.run("file.saveAs", json!({"path": name, "allowLoss": true}))
 }
 
 /// Asks where to save `name`, then runs `export` with `p` and the chosen path.

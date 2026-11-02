@@ -405,14 +405,17 @@ fn suggested_extension(name: &str) -> Option<&str> {
 }
 
 /// The file a save dialog's answer writes: `picked` with the suggested extension added when it has
-/// none (Linux dialogs don't add it). A document always ends in `.designcraft`, as `file.save`
-/// writes it.
+/// none (Linux dialogs don't add it). A document keeps a typed `.idml` or `.designcraft` (its
+/// extension decides the format `file.save` writes) and otherwise gets the suggested one, so
+/// "Issue 3.1" saves as "Issue 3.1.idml" with IDML chosen (Preferences › Save documents as).
 #[cfg(not(target_arch = "wasm32"))]
 fn picked_save_path(picked: std::path::PathBuf, ext: Option<&str>) -> std::path::PathBuf {
     let Some(ext) = ext else { return picked };
-    if ext.eq_ignore_ascii_case("designcraft") {
-        let p = picked.to_string_lossy();
-        return designcraft_engine::cmd::with_document_extension(&p).into();
+    if ext.eq_ignore_ascii_case("designcraft") || ext.eq_ignore_ascii_case("idml") {
+        if picked.file_name().is_none() {
+            return picked;
+        }
+        return crate::menus::run::with_save_extension(&picked.to_string_lossy(), ext).into();
     }
     if picked.extension().is_some() || picked.file_name().is_none() {
         return picked;
@@ -521,7 +524,7 @@ mod tests {
     fn save_dialog_answers_get_the_suggested_extension() {
         let save = |picked: &str, name: &str| picked_save_path(PathBuf::from(picked), suggested_extension(name));
         assert_eq!(save("/d/Brochure", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
-        assert_eq!(save("/d/Brochure.idml", "Untitled.designcraft"), PathBuf::from("/d/Brochure.idml.designcraft"));
+        assert_eq!(save("/d/Brochure.idml", "Untitled.designcraft"), PathBuf::from("/d/Brochure.idml"), "a typed .idml is written as IDML");
         assert_eq!(save("/d/Brochure.designcraft", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
         assert_eq!(save("/d/Brochure", "Untitled.pdf"), PathBuf::from("/d/Brochure.pdf"));
         assert_eq!(save("/d/Brochure.txt", "Untitled.rtf"), PathBuf::from("/d/Brochure.txt"), "another export format is kept");

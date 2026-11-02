@@ -60,6 +60,33 @@ mod tests;
 pub use export::{ExportOptions, export_idml, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
 
+/// What an IDML package can't keep of a document (see [`unwritten`]): a save that writes IDML
+/// loses it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unwritten {
+    /// Editorial notes (Type › Notes): not written at all.
+    pub editorial_notes: usize,
+    /// Endnotes: their text stays in the endnote frame as plain text, numbers included, but the
+    /// references and the notes themselves are gone.
+    pub endnotes: usize,
+}
+
+impl Unwritten {
+    /// Nothing is lost.
+    pub fn is_empty(&self) -> bool {
+        *self == Unwritten::default()
+    }
+}
+
+/// What [`export_idml`] leaves out of `d`. Editorial notes and endnotes are anchored only in
+/// stories (not in table cells or footnotes), so the stories are all there is to count.
+pub fn unwritten(d: &designcraft_doc::Document) -> Unwritten {
+    d.stories.values().fold(Unwritten::default(), |u, st| Unwritten {
+        editorial_notes: u.editorial_notes.saturating_add(st.editorial.len()),
+        endnotes: u.endnotes.saturating_add(st.endnotes.len()),
+    })
+}
+
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";
 /// The DOM version written to every part.

@@ -28,8 +28,10 @@ pub fn specs() -> Vec<CommandSpec> {
 fn export_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let opts = designcraft_idml::ExportOptions { embed_images: p.get("embedImages").and_then(Value::as_bool).unwrap_or(true) };
-    let layer_doc = with_pdf_layer_variants(&st.doc, opts.embed_images)?;
-    let bytes = designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(&st.doc), &opts);
+    // A data-merge preview's fill is session state: the unfilled template is exported (as
+    // `file.serialize` and the saves write it).
+    let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+    let bytes = idml_bytes(doc, &opts)?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -56,6 +58,13 @@ pub(crate) fn has_applicable_pdf_layer_overrides(doc: &Document) -> bool {
 /// quietly fall back to the file's defaults. Read and write walks also reach table-cell and
 /// note text. Endnote variants are prepared too, but IDML endnote structures/artwork are not
 /// serialized yet (see `docs/pdf-layer-visibility.md`).
+/// `doc` as an IDML package, with its placed PDFs' layer choices (as Export IDML and an IDML save
+/// write it).
+pub(crate) fn idml_bytes(doc: &Document, opts: &designcraft_idml::ExportOptions) -> Result<Vec<u8>> {
+    let layer_doc = with_pdf_layer_variants(doc, opts.embed_images)?;
+    Ok(designcraft_idml::export_idml_with(layer_doc.as_ref().unwrap_or(doc), opts))
+}
+
 fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Document>> {
     let choices: Vec<_> = doc
         .placed_items()
@@ -404,7 +413,8 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     // preview), as InDesign shows them. One preview can stand for any number of graphics: they
     // share its buffer.
     let mut previews = std::collections::HashMap::new();
-    let bytes = if is_indd(&file, &bytes) {
+    let from_indd = is_indd(&file, &bytes);
+    let bytes = if from_indd {
         // What the converter can't read still comes over as IDML (#21).
         let conversion = indd::convert(&bytes, &file).map_err(|e| {
             EngineError::Other(format!(
@@ -434,8 +444,16 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     warnings.extend(font_warnings);
     warnings.extend(super::style::grep_style_warnings(&d));
     let warning_items: Vec<Value> = warnings.iter().map(|w| warning_item(&d, &story_ids, w).map_or(Value::Null, |i| json!(i.0))).collect();
-    // Never save over the .idml or .indd with the native format: the document starts unsaved.
-    let mut st = DocState::new(d, None);
+    // Saving IDML (Preferences › File Handling): an opened .idml file is the document's file, and
+    // Save writes IDML back to it. Anything else starts unsaved, so neither a converted .indd nor a
+    // file that isn't named .idml is ever overwritten (nor is any .idml with the native format).
+    let path = match s.prefs.save_format {
+        crate::SaveFormat::Idml if !from_indd => str_param(p, "path")
+            .filter(|path| str_param(p, "base64").is_none() && crate::SaveFormat::of_path(path) == crate::SaveFormat::Idml)
+            .map(str::to_string),
+        _ => None,
+    };
+    let mut st = DocState::new(d, path);
     st.fonts = fonts;
     let i = s.add_document(st);
     Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "warningItems": warning_items}))
@@ -478,6 +496,24 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    /// During a data-merge preview, Export IDML (which the web build's Save uses with IDML chosen)
+    /// writes the unfilled template, as Save does: the preview's fill is session state.
+    #[test]
+    fn idml_export_during_a_data_merge_preview_writes_the_template() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+        s.execute("data.source.select", &json!({"bytes": crate::cmd::base64_encode(b"x\nfilled-record\n"), "name": "d.csv"})).unwrap();
+        s.execute("data.placeholder.add", &json!({"field": "x", "story": sid.0, "at": 0})).unwrap();
+        s.execute("data.preview", &json!({"record": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "filled-record");
+        let b64 = s.execute("file.exportIdml", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
+        let back = designcraft_idml::import_idml(&crate::cmd::base64_decode(&b64)).unwrap();
+        assert!(back.stories.values().all(|st| !st.text.contains("filled-record")), "the preview's fill isn't exported");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, "filled-record", "the preview stays on screen");
+    }
 
     fn linked_idml(link: &str, embed_images: bool) -> Result<(Vec<u8>, Vec<u8>)> {
         let png = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![255; 16] }.to_png();

@@ -250,6 +250,9 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// Preferences › File Handling › Save documents as: the format Save suggests for a new
+    /// document, and, as IDML, an opened `.idml` file is saved back to itself.
+    pub save_format: SaveFormat,
     /// Preferences › Units & Increments set with no document open: what new documents start
     /// with, as InDesign's application defaults. A document keeps its own once made.
     pub default_units: DefaultUnits,
@@ -328,6 +331,33 @@ impl Prefs {
     }
 }
 
+/// The format a document is saved in (Preferences › File Handling).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SaveFormat {
+    /// DesignCraft's own `.designcraft` package.
+    #[default]
+    Designcraft,
+    /// InDesign Markup (`.idml`), with the images embedded.
+    Idml,
+}
+
+impl SaveFormat {
+    /// The file extension, without its dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            SaveFormat::Designcraft => "designcraft",
+            SaveFormat::Idml => "idml",
+        }
+    }
+
+    /// The format a file at `path` is written in: IDML for a `.idml` name, else DesignCraft's own.
+    pub fn of_path(path: &str) -> SaveFormat {
+        let idml = std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("idml"));
+        if idml { SaveFormat::Idml } else { SaveFormat::Designcraft }
+    }
+}
+
 /// A starter autocorrect list (common English typing slips).
 pub fn default_autocorrect() -> Vec<(String, String)> {
     [
@@ -379,6 +409,7 @@ impl Default for Prefs {
             link_text_files: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            save_format: SaveFormat::Designcraft,
             default_units: DefaultUnits::default(),
         }
     }

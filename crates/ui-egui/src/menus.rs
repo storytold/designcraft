@@ -10,7 +10,7 @@ mod export;
 mod invoke;
 mod keys;
 mod quick_apply;
-mod run;
+pub(crate) mod run;
 mod state;
 mod tables;
 mod tree;
@@ -31,7 +31,7 @@ pub use keys::{forwarded_shortcuts, shortcuts};
 use quick_apply::quick_commands;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
 pub use run::run_ui;
-pub(crate) use run::save_then;
+pub(crate) use run::{LossyAnswer, LossySave, answer_idml_loss, save_then};
 pub use state::{
     checked, default_shortcut, enabled, menu_enabled, native_menu_enabled, shortcut_label, shortcut_of, shortcut_text, tool_shortcut_label,
 };
@@ -63,6 +63,8 @@ fn cmd_item(id: &str, params: Value) -> Item {
     Item::Cmd { label, id: id.to_string(), params, shortcut }
 }
 
+#[cfg(test)]
+mod save_format_tests;
 #[cfg(test)]
 mod tests;
 
