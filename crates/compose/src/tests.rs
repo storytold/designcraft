@@ -1907,6 +1907,34 @@ fn tab_leaders_fill_the_gap() {
 }
 
 #[test]
+fn indent_to_here_starts_the_paragraphs_later_lines_at_the_character() {
+    // "1.", Indent to Here, then text long enough to wrap: every line after the first starts
+    // where the character sits, in this frame and the next one (#2080).
+    let text = format!("1.\u{e005}{}", [LOREM; 3].join(" "));
+    let para = ParaAttrs { left_indent: Some(6.0), ..Default::default() };
+    let (mut d, sid, a) = doc_with(&text, Rect::new(72.0, 36.0, 272.0, 96.0), para.clone());
+    let lid = d.default_layer();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 200.0, 272.0, 800.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let cs = compose_story(&d, sid, &Default::default());
+    assert!(!cs.is_overset());
+    assert!(cs.frames[0].lines.len() > 1 && !cs.frames[1].lines.is_empty(), "the text wraps into the second frame");
+    let lines = all_lines(&cs);
+    let here = lines[0].glyphs.iter().find(|g| g.byte == 2 && g.len > 0).unwrap().x;
+    assert!(here > 72.0 + 6.0 + 1.0, "the character follows the number");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - here).abs() < 0.01, "line {i} starts at {start}, not at the indent {here}");
+        assert!(line.end_x <= 272.0 + 0.01, "line {i} fits the narrower measure");
+    }
+    // Without the character the later lines keep the paragraph's own indent.
+    let (plain, psid, _) = doc_with(&text.replace('\u{e005}', " "), Rect::new(72.0, 36.0, 272.0, 400.0), para);
+    let pcs = compose_story(&plain, psid, &Default::default());
+    let start = pcs.frames[0].lines[1].glyphs.iter().find(|g| g.visible).unwrap().x;
+    assert!((start - 78.0).abs() < 0.01, "plain second line starts at {start}");
+}
+
+#[test]
 fn right_indent_tab_leaders_follow_stop_precedence_without_moving_text() {
     let text = "Intro\u{e006}12";
     let cases = [
