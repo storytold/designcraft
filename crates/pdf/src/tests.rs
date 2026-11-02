@@ -279,6 +279,32 @@ fn cmyk_tiff() -> (Vec<u8>, Vec<u8>) {
     (b, px)
 }
 
+/// A black `side`² 1-bit grey PNG: well under 1 MB, it decodes to `side`² bytes.
+pub(crate) fn blank_png(side: u32) -> Vec<u8> {
+    use std::io::Write;
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend(kind);
+        out.extend(data);
+        out.extend(crc.sum().to_be_bytes());
+    };
+    let row = vec![0u8; 1 + side.div_ceil(8) as usize];
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..side {
+        z.write_all(&row).unwrap();
+    }
+    let mut ihdr = [side.to_be_bytes(), side.to_be_bytes()].concat();
+    ihdr.extend([1, 0, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &z.finish().unwrap());
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
 fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     let asset = designcraft_doc::AssetId(d.alloc());
     let mime = designcraft_images::mime(&data).into();
@@ -347,6 +373,19 @@ fn a_cut_off_image_is_skipped_not_fatal() {
         let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
         assert!(r.warnings.is_empty(), "{format:?}: {:?}", r.warnings);
         assert_eq!(image_xobjects(&r.bytes).len(), 1, "{format:?}");
+    }
+}
+
+/// A raster past the RGBA budget is skipped with a warning, also when images are recompressed (#1586).
+#[test]
+fn an_image_past_the_decode_budget_is_skipped_with_a_warning() {
+    let side = 16_385;
+    let mut d = doc_with_text("still here");
+    place(&mut d, blank_png(side), (side, side));
+    for compress_images in [false, true] {
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
+        assert!(r.warnings.iter().any(|w| w.contains("could not be decoded and was skipped")), "compress_images {compress_images}: {:?}", r.warnings);
+        assert!(image_xobjects(&r.bytes).is_empty(), "compress_images {compress_images}");
     }
 }
 
