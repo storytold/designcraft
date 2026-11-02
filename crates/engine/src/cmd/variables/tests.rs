@@ -434,3 +434,24 @@ fn running_header_orders_stories_by_their_first_heading() {
     assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::FirstOnPage, 0), "Beta");
     assert_eq!(idx.value("Heading", false, designcraft_doc::vars::Use::LastOnPage, 0), "Gamma");
 }
+
+/// #2093: a Custom variable whose text arrives as a number (the dialog types a typed `2026` as
+/// one) shows those digits; it showed nothing at all before.
+#[test]
+fn a_custom_variable_defined_with_a_number_shows_its_digits() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": 2026})).unwrap();
+    s.execute("variables.define", &json!({"name": "Half", "type": "custom", "text": 0.5})).unwrap();
+    s.execute("variables.define", &json!({"name": "Word", "type": "custom", "text": "year"})).unwrap();
+    let list = s.execute("variables.list", &json!({})).unwrap();
+    let value = |name: &str| list.as_array().unwrap().iter().find(|v| v["name"] == name).unwrap()["value"].as_str().unwrap().to_string();
+    assert_eq!((value("Year"), value("Half"), value("Word")), ("2026".to_string(), "0.5".to_string(), "year".to_string()));
+    // Inserted into a story, the instance composes as four digits.
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": ""})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    s.execute("variables.insert", &json!({"name": "Year"})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    assert_eq!(shown_on_parent(&s, &d, sid), 4, "2026 shows");
+}

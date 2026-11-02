@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text?, format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number is shown as its digits), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -391,11 +391,23 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
     }
 }
 
+/// A parameter's text: a string as it is; a number or a boolean spelled out. A Custom variable's
+/// text typed as `2026` reaches the command as a number (the dialog and JSON callers type their
+/// values), and it is still the text the variable shows (#2093).
+fn text_param(p: &Value, key: &str) -> Option<String> {
+    match p.get(key)? {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
     let kind = match str_param(p, "type").unwrap_or("custom") {
-        "custom" => VarKind::Custom { text: str_param(p, "text").unwrap_or("").into() },
+        "custom" => VarKind::Custom { text: text_param(p, "text").unwrap_or_default() },
         "lastPageNumber" => VarKind::LastPageNumber { section: p.get("section").and_then(Value::as_bool).unwrap_or(false) },
         "chapterNumber" => VarKind::ChapterNumber,
         "fileName" => VarKind::FileName { extension: p.get("extension").and_then(Value::as_bool).unwrap_or(false) },
