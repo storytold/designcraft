@@ -3786,7 +3786,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
-                list_label: false,
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,

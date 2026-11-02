@@ -377,6 +377,37 @@ mod tests {
     /// character marked the last glyph in the range was that mark, sitting over the first
     /// character -- and the link ended there, leaving the rest of it unclickable (noted in
     /// review of #1446).
+    /// A list label's tab can carry a leader: the paragraph defines a stop at the Tab Position
+    /// with one, so the composer does not add its own stop there and the label's tab takes that
+    /// leader. Those leader glyphs carry the paragraph's first byte, as the label does, but were
+    /// not flagged as part of it -- so a link starting at the first text character swept them into
+    /// its rectangle and it reached back across the label (#1495 review).
+    #[test]
+    fn a_links_rectangle_leaves_out_the_leader_of_a_list_labels_tab() {
+        let left_edge = |leader: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 460, 200], "content": "text", "text": "Chapter one here"})).unwrap();
+            let story = r["story"].clone();
+            s.execute("text.select", &json!({"story": story.clone(), "anchor": 0, "focus": 1})).unwrap();
+            s.execute("type.para", &json!({"listType": "numbers", "listTab": 72})).unwrap();
+            if leader {
+                s.execute("type.tabs.add", &json!({"position": 72, "leader": "."})).unwrap();
+            }
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Chapter one".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (leader: {leader}): {rects:?}");
+            rects[0][0]
+        };
+
+        // The same link, with and without a leader on the label's tab: the leader sits between the
+        // label and the text, so taking it in would move the rectangle's left edge leftwards.
+        let plain = left_edge(false);
+        let dotted = left_edge(true);
+        assert!((dotted - plain).abs() < 0.5, "the leader is left out of the link: {dotted} vs {plain}");
+    }
+
     #[test]
     fn a_links_rectangle_spans_its_glyphs_whatever_order_they_are_in() {
         let width = |marked: bool| {
