@@ -384,14 +384,21 @@ impl Item {
         }
     }
 
-    /// [`Item::walk`], with each item's bounds in spread space: a nested item is placed by its
-    /// groups' transforms too, which its own [`Item::bounds`] leaves out.
-    pub fn walk_placed<'a>(&'a self, f: &mut impl FnMut(&'a Item, Rect)) {
+    /// Bounds in spread space of this item placed under `outer`, its groups' transform (as
+    /// [`Item::walk_placed`] gives it).
+    pub fn placed_bounds(&self, outer: Affine) -> Rect {
+        self.bounds_under(outer).unwrap_or(Rect::ZERO)
+    }
+
+    /// [`Item::walk`], with each item's outer transform: a nested item is placed by its groups'
+    /// transforms too, which its own [`Item::bounds`] leaves out. Bounds cost a walk of a group's
+    /// items, so callers measure ([`Item::placed_bounds`]) only the items they need.
+    pub fn walk_placed<'a>(&'a self, f: &mut impl FnMut(&'a Item, Affine)) {
         self.walk_placed_under(Affine::IDENTITY, f);
     }
 
-    fn walk_placed_under<'a>(&'a self, outer: Affine, f: &mut impl FnMut(&'a Item, Rect)) {
-        f(self, self.bounds_under(outer).unwrap_or(Rect::ZERO));
+    fn walk_placed_under<'a>(&'a self, outer: Affine, f: &mut impl FnMut(&'a Item, Affine)) {
+        f(self, outer);
         let xf = outer * self.xf;
         for c in self.children() {
             c.walk_placed_under(xf, f);
