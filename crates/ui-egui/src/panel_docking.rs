@@ -123,7 +123,7 @@ const ICON_GROUPS: &[&[&str]] = &[
     &["flexLayout", "liquid"],
     &["links", "library"],
     &["info"],
-    &["attributes", "preflight"],
+    &["attributes", "preflight", "separations"],
     &["notes", "trackChanges", "conditions"],
     &["hyperlinks", "bookmarks"],
     &["buttons", "states"],
@@ -1370,5 +1370,4 @@ pub(crate) fn close_visible(app: &mut DesignApp) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[path = "panel_docking_tests.rs"]
 mod tests;

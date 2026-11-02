@@ -58,7 +58,7 @@ fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
 /// The trailer of the cross-reference section at `offset`: a table's `trailer` dictionary or an
 /// xref stream's own. A table is read entry by entry rather than searched for the keyword, so a
 /// `trailer` in a comment can't stand in for the real one; reading is bounded either way.
-fn trailer_at(bytes: &[u8], offset: usize) -> Option<Dict<'_>> {
+pub(crate) fn trailer_at(bytes: &[u8], offset: usize) -> Option<Dict<'_>> {
     const MAX_SECTION_BYTES: usize = 4 * 1024 * 1024;
     let data = bytes.get(offset..)?;
     let mut reader = Reader::new(data.get(..data.len().min(MAX_SECTION_BYTES))?);
@@ -239,16 +239,7 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         let is_hidden = match (choice, name.as_ref()) {
             (None, _) => !fallback && (off.contains(&id) || (base_off && !on.contains(&id))),
             (Some([]), None) => false,
-            (Some(_), Some(name)) => {
-                let name = String::from_utf8_lossy(name.as_bytes());
-                let mut is_hidden = false;
-                for (n, found) in hidden.iter().zip(&mut found) {
-                    if n == name.as_ref() {
-                        (*found, is_hidden) = (true, true);
-                    }
-                }
-                is_hidden
-            }
+            (Some(_), Some(name)) => matches_hidden(hidden, &mut found, name.as_bytes()),
             (Some(_), None) => return Err(invalid()),
         };
         if is_hidden {
@@ -260,18 +251,8 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         if !is_hidden && name.is_some() && choice.is_none() {
             continue;
         }
-        let marker = is_hidden.to_string();
-        let body = match name {
-            Some(_) => edited(&group, &[(MARKER, marker.as_bytes())])?,
-            None => {
-                if group.contains_key(b"Name") && group.get::<Object<'_>>(b"Name").is_none() {
-                    return Err(invalid());
-                }
-                renamed = true;
-                let label = format!("(Placed PDF layer {} {})", id.obj_number, id.gen_number);
-                edited(&group, &[(MARKER, marker.as_bytes()), (b"Name", label.as_bytes())])?
-            }
-        };
+        let (body, generated) = layer_edit(&group, id, name.is_some(), is_hidden)?;
+        renamed |= generated;
         changes.push((id, body));
     }
     if found.contains(&false) {
@@ -280,6 +261,39 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
     effective.sort();
     effective.dedup();
     let data = if changes.is_empty() { bytes.clone() } else { Arc::new(append(bytes, &changes, xref.root_id())?) };
+    let warning = layer_warning(fallback, incomplete, renamed);
+    Ok(Variant { data, hidden: effective, warning, has_optional_content: true })
+}
+
+/// Whether the layer called `name` is one of the `hidden` choices. Each choice it matches is
+/// recorded in `found`, so a choice that names no layer can be reported.
+fn matches_hidden(hidden: &[String], found: &mut [bool], name: &[u8]) -> bool {
+    let name = String::from_utf8_lossy(name);
+    let mut is_hidden = false;
+    for (n, found) in hidden.iter().zip(found) {
+        if n == name.as_ref() {
+            (*found, is_hidden) = (true, true);
+        }
+    }
+    is_hidden
+}
+
+/// The rewritten group for a layer in the output: its marker records `is_hidden`, and a layer
+/// without a readable name gets a generated one. The flag reports whether a name was generated.
+fn layer_edit(group: &Dict<'_>, id: ObjectIdentifier, named: bool, is_hidden: bool) -> Result<(Vec<u8>, bool)> {
+    let marker = is_hidden.to_string();
+    if named {
+        return Ok((edited(group, &[(MARKER, marker.as_bytes())])?, false));
+    }
+    if group.contains_key(b"Name") && group.get::<Object<'_>>(b"Name").is_none() {
+        return Err(invalid());
+    }
+    let label = format!("(Placed PDF layer {} {})", id.obj_number, id.gen_number);
+    Ok((edited(group, &[(MARKER, marker.as_bytes()), (b"Name", label.as_bytes())])?, true))
+}
+
+/// The warning a prepared variant carries, or `None` when the layers were read as written.
+fn layer_warning(fallback: bool, incomplete: bool, renamed: bool) -> Option<String> {
     let mut warnings = Vec::new();
     if fallback {
         warnings.push("layer state not readable, all layers shown unless hidden by Object Layer Options");
@@ -290,8 +304,7 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
     if renamed {
         warnings.push("layer display name not readable; generated a name, visibility preserved");
     }
-    let warning = if warnings.is_empty() { None } else { Some(warnings.join("; ")) };
-    Ok(Variant { data, hidden: effective, warning, has_optional_content: true })
+    if warnings.is_empty() { None } else { Some(warnings.join("; ")) }
 }
 
 pub(crate) fn register(bytes: &[u8]) -> Result<Vec<u8>> {

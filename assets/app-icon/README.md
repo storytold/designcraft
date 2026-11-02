@@ -22,10 +22,8 @@ transparent margin.
 
 ## Provenance
 
-The owner drew the cat in ArtCraft. The 2880 px drawing, keyed to the three-colour palette, lives
-outside this repo in craftrules at `assets/app-icons/designcraft/source.png`. It was vectorised with
-craftrules' `assets/logo-options/_tools/vectorize_tile.py`: `designcraft.svg` is traced at 2048 px and
-`designcraft-small.svg` at 1024 px. Design rules: craftrules `standards/icon-design.md`.
+The owner drew the cat in ArtCraft. `designcraft.svg` is traced from the drawing at 2048 px and
+`designcraft-small.svg` at 1024 px.
 
 ## Files
 

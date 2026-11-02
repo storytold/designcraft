@@ -145,7 +145,7 @@ fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool) {
     let menu = panels::font_menu(app);
     let shown = if fam.is_empty() { "—".to_string() } else { panels::font_label(app, &menu, &fam) };
     let field = widgets::dropdown(ui, &shown, 150.0);
-    if let Some(f) = panels::font_popup(app, &field, &menu, &fam) {
+    if let Some(f) = panels::font_popup(app, ui, &field, &menu, &fam) {
         panels::apply_font(app, &f);
     }
     let styles = fonts.styles(&fam);

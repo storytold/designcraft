@@ -32,10 +32,11 @@ use crate::export::{Exporter, solid_fill, tf, to_path};
 
 impl Exporter<'_> {
     /// A text run's paint: solid, or a gradient spanning the frame's box (`area`, text space),
-    /// for glyphs drawn under `origin` (text space ← run space).
-    fn text_paint(&mut self, swatch: &str, tint: f32, origin: Affine, area: Rect) -> Option<Paint> {
+    /// for glyphs drawn under `origin` (text space ← run space). `overprint`: the run's
+    /// overprint attribute for this paint.
+    fn text_paint(&mut self, swatch: &str, tint: f32, overprint: bool, origin: Affine, area: Rect) -> Option<Paint> {
         if designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch).is_some() && origin.determinant().abs() > 1e-12 {
-            let fill = designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() };
+            let fill = designcraft_doc::Fill { swatch: swatch.into(), tint, overprint, ..designcraft_doc::Fill::none() };
             return self.fill_paint_in(&fill, self.text_area.unwrap_or(area), origin.inverse());
         }
         self.swatch_color(swatch, tint).map(Into::into)
@@ -261,10 +262,23 @@ impl Exporter<'_> {
         }
     }
 
-    pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
+    /// The frame's text. With `objects` (the frame text space → page transform and the page),
+    /// the frame's anchored objects are drawn too, over its paragraph shading and under its text;
+    /// returns whether they were.
+    pub(crate) fn frame_text(
+        &mut self,
+        s: &mut Surface,
+        cs: &ComposedStory,
+        ft: &FrameText,
+        story: &str,
+        objects: Option<(Affine, Option<usize>)>,
+    ) -> bool {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in ft.decos.iter().filter(|d| !d.nonprinting) {
+                if d.overprint {
+                    me.warn("overprint is not exported yet");
+                }
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     match &d.path {
                         Some(p) => me.fill_path(s, p, c),
@@ -276,6 +290,17 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
+        // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
+        // into the next line doesn't hide that line. Objects keep their page-space transforms.
+        let drawn = match objects {
+            Some((xf, page)) if xf.determinant().abs() > 1e-12 => {
+                s.push_transform(&tf(xf.inverse()));
+                self.frame_objects(s, ft, xf, page);
+                s.pop();
+                true
+            }
+            _ => false,
+        };
         // All underlines precede all glyph runs, including ink overlapping from another run.
         let underlines = text_rules(cs, ft, true);
         if !underlines.is_empty() {
@@ -300,12 +325,13 @@ impl Exporter<'_> {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
                     let area = std::mem::replace(&mut me.text_area, lines_area(nft));
-                    me.frame_text(s, &n.text, nft, &n.source);
+                    me.frame_text(s, &n.text, nft, &n.source, None);
                     me.text_area = area;
                     s.pop();
                 }
             }
         });
+        drawn
     }
 
     /// One table cell's graphic, or its text composed in the cell's own area.
@@ -321,7 +347,7 @@ impl Exporter<'_> {
         } else if let Some(cft) = c.text.frames.first() {
             s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-            self.frame_text(s, &c.text, cft, &c.source);
+            self.frame_text(s, &c.text, cft, &c.source, None);
             self.text_area = area;
             s.pop();
         }
@@ -490,18 +516,18 @@ impl Exporter<'_> {
         // Outside a frame (no text area), a gradient spans the run.
         let end = glyphs.last().map_or(g0.x, |g| g.x + g.adv);
         let run_area = Rect::new(g0.x, baseline - size, end.max(g0.x + 1.0), baseline + size * 0.25);
-        let fill = self.text_paint(&st.fill, st.fill_tint, origin, run_area);
+        let fill = self.text_paint(&st.fill, st.fill_tint, st.overprint_fill, origin, run_area);
         let stroke = if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 {
-            self.text_paint(&st.stroke, st.stroke_tint, origin, run_area)
+            self.text_paint(&st.stroke, st.stroke_tint, st.overprint_stroke, origin, run_area)
         } else {
             None
         };
         if fill.is_none() && stroke.is_none() {
             return;
         }
-        if st.overprint_fill || st.overprint_stroke {
-            self.warn("overprint is not exported yet");
-        }
+        let fill_op = fill.is_some() && self.overprints(&st.fill, st.fill_tint, st.overprint_fill);
+        let stroke_op = stroke.is_some() && self.overprints(&st.stroke, st.stroke_tint, st.overprint_stroke);
+        let overprint = self.push_overprint(s, fill_op, stroke_op);
         // Stroke behind fill: a double-width stroke first, as outlines so the text is not
         // duplicated, then the fill over its inner half. With no fill, the stroke is clipped
         // to the outside of the glyphs instead.
@@ -530,6 +556,9 @@ impl Exporter<'_> {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         }
         if clipped {
+            s.pop();
+        }
+        if overprint {
             s.pop();
         }
     }
