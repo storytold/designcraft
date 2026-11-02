@@ -135,11 +135,11 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
             let _ = std::fs::write(format!("{d}/{name}.png"), img.to_png());
         }
     };
-    save("fit", r.render(doc, &cache, &all, W, H, fit.1, &greek(fit.0)));
+    save("fit", r.render(doc, &cache, &all, (W, H), fit.1, &greek(fit.0)));
     row(
         &mut rows,
         format!("render spread, fit ({:.0}%), {W}×{H}", fit.0 / HIDPI * 100.0),
-        median_ms(runs, || drop(r.render(doc, &cache, &all, W, H, fit.1, &greek(fit.0)))),
+        median_ms(runs, || drop(r.render(doc, &cache, &all, (W, H), fit.1, &greek(fit.0)))),
         Some(16.0),
     );
     for zoom in [0.25, 1.0, 4.0] {
@@ -147,12 +147,12 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
         // At 100% look at the text block of the left page.
         let c = if zoom >= 1.0 { centre - Vec2::new(placed[mid].1.width() / 4.0, 100.0) } else { centre };
         let v = view_at(c, s);
-        save(&format!("zoom-{:.0}", zoom * 100.0), r.render(doc, &cache, &all, W, H, v, &greek(s)));
+        save(&format!("zoom-{:.0}", zoom * 100.0), r.render(doc, &cache, &all, (W, H), v, &greek(s)));
         let budget = if zoom == 1.0 { Some(16.0) } else { None };
         row(
             &mut rows,
             format!("render at {:.0}%, {W}×{H}", zoom * 100.0),
-            median_ms(runs, || drop(r.render(doc, &cache, &all, W, H, v, &greek(s)))),
+            median_ms(runs, || drop(r.render(doc, &cache, &all, (W, H), v, &greek(s)))),
             budget,
         );
     }
@@ -161,13 +161,13 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
     let pan = median_ms(runs, || {
         dy += 37.0;
         let v = view_at(centre + Vec2::new(-200.0, dy - 300.0), HIDPI);
-        drop(r.render(doc, &cache, &all, W, H, v, &greek(HIDPI)));
+        drop(r.render(doc, &cache, &all, (W, H), v, &greek(HIDPI)));
     });
     row(&mut rows, "render at 100% while panning", pan, Some(16.0));
     // Cold renderer (no glyph-path / image caches): first frame after open.
     let cold = median_ms(runs.min(3), || {
         let mut r = Renderer::new();
-        drop(r.render(doc, &cache, &all, W, H, view_at(centre, HIDPI), &greek(HIDPI)));
+        drop(r.render(doc, &cache, &all, (W, H), view_at(centre, HIDPI), &greek(HIDPI)));
     });
     row(&mut rows, "render at 100%, cold renderer", cold, None);
 
@@ -188,7 +188,7 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
                 st.rev += 1;
                 k += 1;
             }
-            drop(r.render(&d, &cache, &all, W, H, v, &greek(HIDPI)));
+            drop(r.render(&d, &cache, &all, (W, H), v, &greek(HIDPI)));
         });
         row(&mut rows, "keystroke: recompose story + full repaint at 100%", ms, None);
         // What the canvas does: repaint only the damaged region (designcraft_render::damage).
@@ -217,7 +217,7 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
             if let Some(p) = px {
                 let (x0, y0) = (p.x0.floor(), p.y0.floor());
                 let (w, h) = ((p.x1.ceil() - x0) as u32, (p.y1.ceil() - y0) as u32);
-                drop(r.render(&d, &cache, &all, w.max(1), h.max(1), Affine::translate((-x0, -y0)) * v, &greek(HIDPI)));
+                drop(r.render(&d, &cache, &all, (w.max(1), h.max(1)), Affine::translate((-x0, -y0)) * v, &greek(HIDPI)));
             }
         });
         row(&mut rows, "keystroke: recompose story + damage repaint at 100%", ms, Some(8.0));

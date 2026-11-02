@@ -1,5 +1,5 @@
 use super::target::{edit_table, target};
-use super::*;
+use super::{CellRange, CellStroke, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok, str_param};
 
 /// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
 /// right) and the lines between its rows and columns.
@@ -169,6 +169,47 @@ pub(super) fn first_baseline_params(p: &Value, id: &str) -> Result<(Option<desig
     Ok((fb, min))
 }
 
+fn mirror_edited_cell_edges(
+    table: &mut Table,
+    range: CellRange,
+    table_size: (usize, usize, bool),
+    stroke: Option<&(StrokeEdit, EdgeSel)>,
+    edited: &std::collections::HashSet<(usize, usize, usize)>,
+    owners: &[(usize, usize)],
+) {
+    let (rows, columns, rtl) = table_size;
+    let mirror = |table: &mut Table, from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize| {
+        if edited.contains(&(from.0, from.1, edge)) {
+            mirror_cell_edge(table, owners, from, edge, to, opposite);
+        }
+    };
+    let Some((_, edges)) = stroke else { return };
+    if edges.top
+        && let Some(row) = range.r0.checked_sub(1)
+    {
+        for column in range.c0..=range.c1 {
+            mirror(table, (range.r0, column), 0, (row, column), 2);
+        }
+    }
+    if edges.bottom && range.r1.saturating_add(1) < rows {
+        for column in range.c0..=range.c1 {
+            mirror(table, (range.r1, column), 2, (range.r1 + 1, column), 0);
+        }
+    }
+    if (if rtl { edges.right } else { edges.left })
+        && let Some(column) = range.c0.checked_sub(1)
+    {
+        for row in range.r0..=range.r1 {
+            mirror(table, (row, range.c0), if rtl { 3 } else { 1 }, (row, column), if rtl { 1 } else { 3 });
+        }
+    }
+    if (if rtl { edges.left } else { edges.right }) && range.c1.saturating_add(1) < columns {
+        for row in range.r0..=range.r1 {
+            mirror(table, (row, range.c1), if rtl { 1 } else { 3 }, (row, range.c1 + 1), if rtl { 3 } else { 1 });
+        }
+    }
+}
+
 pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.setCell";
     let g = target(s, p, ID)?;
@@ -270,39 +311,8 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
-        // Keep both copies of unmerged shared boundaries consistent: each edited edge is
-        // copied to its neighbour. Left/right name physical sides, also in RTL tables.
-        let mirror = |t: &mut Table, from: (usize, usize), edge: usize, to: (usize, usize), opposite: usize| {
-            if edited.contains(&(from.0, from.1, edge)) {
-                mirror_cell_edge(t, &owners, from, edge, to, opposite);
-            }
-        };
-        if let Some((_, edges)) = &stroke {
-            if edges.top
-                && let Some(row) = rg.r0.checked_sub(1)
-            {
-                for c in rg.c0..=rg.c1 {
-                    mirror(t, (rg.r0, c), 0, (row, c), 2);
-                }
-            }
-            if edges.bottom && rg.r1.saturating_add(1) < nr {
-                for c in rg.c0..=rg.c1 {
-                    mirror(t, (rg.r1, c), 2, (rg.r1 + 1, c), 0);
-                }
-            }
-            if (if rtl { edges.right } else { edges.left })
-                && let Some(col) = rg.c0.checked_sub(1)
-            {
-                for r in rg.r0..=rg.r1 {
-                    mirror(t, (r, rg.c0), if rtl { 3 } else { 1 }, (r, col), if rtl { 1 } else { 3 });
-                }
-            }
-            if (if rtl { edges.left } else { edges.right }) && rg.c1.saturating_add(1) < nc {
-                for r in rg.r0..=rg.r1 {
-                    mirror(t, (r, rg.c1), if rtl { 1 } else { 3 }, (r, rg.c1 + 1), if rtl { 3 } else { 1 });
-                }
-            }
-        }
+        // Keep both copies of unmerged shared boundaries consistent, including in RTL tables.
+        mirror_edited_cell_edges(t, rg, (nr, nc, rtl), stroke.as_ref(), &edited, &owners);
         ok()
     })
 }

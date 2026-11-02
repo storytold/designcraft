@@ -1,5 +1,5 @@
 use super::common::{bool_s, pct, uid};
-use super::*;
+use super::{Affine, CharFormat, Content, El, Ex, Item, ParaFormat, Shape, names, num};
 
 impl<'a> Ex<'a> {
     pub(super) fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &designcraft_doc::CellStroke) {

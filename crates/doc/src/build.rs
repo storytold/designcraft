@@ -661,11 +661,18 @@ impl Document {
     }
 
     /// Parent page (spread index, page index) applied to `page`: the page on its side of its
-    /// parent spread.
+    /// parent spread, or in its place for single-sided pages ([`Spread::parent_page_at`]).
     pub fn parent_page_of(&self, page: &Page) -> Option<(usize, usize)> {
         let pi = self.parent_index(page.parent?)?;
         // A parent spread can come without pages from a file.
-        Some((pi, self.parents.get(pi)?.parent_page_for_side(page.side)?))
+        let parent = self.parents.get(pi)?;
+        // Only a single-sided page's position matters: look for it only then.
+        let index = if page.side == PageSide::Single && parent.pages.len() >= 2 {
+            self.spreads.iter().find_map(|s| s.pages.iter().position(|p| p.id == page.id)).unwrap_or(0)
+        } else {
+            0
+        };
+        Some((pi, parent.parent_page_at(page.side, index)?))
     }
 
     /// The parent page applied to `page`.
@@ -777,7 +784,7 @@ impl Document {
                 c
             }
         };
-        chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_for_side(pg.side)?))).collect()
+        chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_at(pg.side, page)?))).collect()
     }
 
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).

@@ -6,6 +6,81 @@ fn menu_ids(title: &str) -> Vec<&'static str> {
     items.iter().filter_map(|e| e.split_once(':').map(|(_, rest)| rest.split('|').next().unwrap_or(rest))).collect()
 }
 
+/// The Object menu's top level in InDesign's order and groups (as InDesign 2023 shows it in
+/// Learn Skills Daily's course), with Paths holding Join, Open and Close Path, Convert Shape
+/// only shapes, and a Convert Point submenu.
+#[test]
+fn the_object_menu_is_in_indesigns_order() {
+    let items = MENUS.iter().find(|(t, _)| *t == "Object").map(|(_, items)| *items).unwrap();
+    // The top-level entries: submenus by name, separators as "-", items by command id.
+    let mut top = Vec::new();
+    let mut depth = 0;
+    for e in items {
+        match *e {
+            "<" => depth -= 1,
+            e if e.starts_with('>') => {
+                if depth == 0 {
+                    top.push(e.trim_start_matches('>'));
+                }
+                depth += 1;
+            }
+            e if depth == 0 => top.push(e.split_once(':').map_or(e, |(_, r)| r.split('|').next().unwrap_or(r))),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        top,
+        [
+            "Transform",
+            "Transform Again",
+            "Arrange",
+            "Select",
+            "-",
+            "object.group",
+            "object.ungroup",
+            "object.lock",
+            "object.unlockAll",
+            "object.hide",
+            "object.showAll",
+            "-",
+            "app.qrCode",
+            "-",
+            "object.textFrameOptions",
+            "object.primaryTextFrame",
+            "Anchored Object",
+            "-",
+            "Fitting",
+            "Content",
+            "-",
+            "Effects",
+            "object.cornerOptions",
+            "-",
+            "app.layerOptions",
+            "object.exportOptions",
+            "Captions",
+            "Clipping Path",
+            "-",
+            "Flex Layout",
+            "-",
+            "Paths",
+            "Pathfinder",
+            "Convert Shape",
+            "Convert Point",
+        ]
+    );
+    let ids = menu_ids("Object");
+    for id in ["path.join", "path.reverse", "path.convertPoints"] {
+        assert!(ids.contains(&id), "{id}");
+    }
+    let sub = |name: &str| {
+        let i = items.iter().position(|e| *e == format!(">{name}")).unwrap();
+        items[i + 1..].iter().take_while(|e| **e != "<").copied().collect::<Vec<_>>()
+    };
+    assert!(sub("Paths").iter().any(|e| e.contains("|Open Path|")) && sub("Paths").iter().any(|e| e.contains("|Close Path|")));
+    assert!(!sub("Convert Shape").iter().any(|e| e.contains("openPath") || e.contains("closedPath")), "shapes only");
+    assert_eq!(sub("Convert Point").len(), 4);
+}
+
 #[test]
 fn view_items_are_in_the_view_menu_as_in_indesign() {
     let (view, typ) = (menu_ids("View"), menu_ids("Type"));
@@ -29,6 +104,30 @@ fn view_items_are_in_the_view_menu_as_in_indesign() {
     assert!(typ.contains(&"view.hiddenCharacters") && !view.contains(&"view.hiddenCharacters"));
     // W still toggles Normal / Preview without a menu entry.
     assert_eq!(ui_label("view.togglePreview").and_then(|c| c.1), Some("W"));
+}
+
+/// Object › Fitting in InDesign's groups: the proportional fits, the frame and content fits,
+/// Clear Frame Fitting Options, then the dialog.
+#[test]
+fn the_fitting_menu_is_grouped_as_indesigns() {
+    let items = MENUS.iter().find(|(t, _)| *t == "Object").map(|(_, items)| *items).unwrap();
+    let start = items.iter().position(|e| *e == ">Fitting").unwrap() + 1;
+    let end = start + items[start..].iter().position(|e| *e == "<").unwrap();
+    assert_eq!(
+        &items[start..end],
+        [
+            "ui:fit.fillFrameProportionally",
+            "ui:fit.contentProportionally",
+            "-",
+            "ui:fit.frameToContent",
+            "ui:fit.contentToFrame",
+            "ui:fit.centerContent",
+            "-",
+            "cmd:object.clearFittingOptions",
+            "-",
+            "ui:app.fittingOptions",
+        ]
+    );
 }
 
 /// The submenu paths of a menu bar menu ("View/Screen Mode"), as Edit › Menus keys them.
@@ -57,6 +156,7 @@ fn define_lists_command_path_matches_the_type_menu() {
     assert!(menu_ids("Type").contains(&"list.define"));
 }
 
+/// Checks that screen-mode menu checkmarks follow the current Normal or Preview mode.
 #[test]
 fn screen_mode_shows_the_current_mode() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -64,6 +164,24 @@ fn screen_mode_shows_the_current_mode() {
     assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(true), Some(false)));
     app.ui.screen_mode = crate::ScreenMode::Preview;
     assert_eq!((mode(&app, "normal"), mode(&app, "preview")), (Some(false), Some(true)));
+}
+
+/// Checks that translated customization paths match the visible submenu captions, while
+/// allowing uncatalogued paths to keep their English fallback.
+#[test]
+fn hungarian_menu_paths_match_the_visible_submenu_labels() {
+    // These paths are displayed by menu customization; they must use the same
+    // captions as the actual menu tree, including nested special characters.
+    for title in ["Edit", "Type", "View"] {
+        for path in submenu_paths(title) {
+            let translated = crate::i18n::tr("hu", &path);
+            if translated == path {
+                continue; // New, uncatalogued paths still fall back to English.
+            }
+            let visible = path.split('/').map(|part| crate::i18n::tr("hu", part)).collect::<Vec<_>>().join("/");
+            assert_eq!(translated, visible, "{path}");
+        }
+    }
 }
 
 fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
@@ -551,6 +669,7 @@ fn split_window_contextual_bars_have_independent_widget_ids() {
     assert!(!bars[0].intersects(bars[1]), "each pane keeps its own bar: {bars:?}");
 }
 
+/// Checks the document-grid menu label, shortcut, checkmark and repeated toggle behavior.
 #[test]
 fn show_document_grid_toggles_from_the_grids_and_guides_menu() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -569,6 +688,8 @@ fn show_document_grid_toggles_from_the_grids_and_guides_menu() {
     assert!(!app.ui.document_grid);
 }
 
+/// Checks language selection and rejection of unknown language codes, Preferences dispatch,
+/// translated menu labels and preservation of document data when switching to Arabic.
 #[test]
 fn interface_language_switches_and_validates() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -586,6 +707,113 @@ fn interface_language_switches_and_validates() {
     run_ui(&mut app, "app.language", &json!({})).unwrap().unwrap();
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
     assert_eq!(app.ui.language, "de");
+    app.ui.dialog = None;
+
+    run_ui(&mut app, "app.language", &json!({"lang": "zh"})).unwrap().unwrap();
+    assert_eq!(app.ui.language, "zh");
+    assert_eq!(crate::i18n::tr(&app.ui.language, "File"), "文件");
+
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+    run_ui(&mut app, "app.language", &json!({"lang": "ar"})).unwrap().unwrap();
+    assert_eq!(app.ui.language, "ar");
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "ar"})), Some(true));
+    assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+    for (title, _) in menu_tree() {
+        assert_ne!(crate::i18n::tr("ar", title), title, "{title}");
+    }
+    // Every menu title has a translation (Japanese never matches the English).
+    for (title, _) in menu_tree() {
+        assert_ne!(crate::i18n::tr("ja", title), title, "{title}");
+    }
+
+    run_ui(&mut app, "app.language", &json!({"lang": "pt-br"})).unwrap().unwrap();
+    assert_eq!(app.ui.language, "pt-br");
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "pt-br"})), Some(true));
+    for (title, _) in menu_tree() {
+        // "Layout" is the natural Brazilian Portuguese word, so it stays identical
+        // to English; every other title must be translated.
+        if title != "Layout" {
+            assert_ne!(crate::i18n::tr("pt-br", title), title, "{title}");
+        }
+    }
+
+    run_ui(&mut app, "app.language", &json!({"lang": "it"})).unwrap().unwrap();
+    assert_eq!(app.ui.language, "it");
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "it"})), Some(true));
+    for (title, _) in menu_tree() {
+        // "File" and "Layout" are the usual Italian menu names, so they stay identical
+        // to English; every other title must be translated.
+        if title != "File" && title != "Layout" {
+            assert_ne!(crate::i18n::tr("it", title), title, "{title}");
+        }
+    }
+}
+
+/// Checks Hungarian selection, menu captions and saved UI preferences without changing
+/// document data or translating user-defined names.
+#[test]
+fn hungarian_language_is_selectable_persisted_and_keeps_document_data() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Árvíztűrő tükörfúrógép"})).unwrap();
+    let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+    run_ui(&mut app, "app.language", &json!({"lang": "hu"})).unwrap().unwrap();
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "hu"})), Some(true));
+    assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+    for (title, _) in menu_tree() {
+        assert_ne!(crate::i18n::tr("hu", title), title, "{title}");
+    }
+    let bytes = serde_json::to_vec(&app.ui).unwrap();
+    let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(restored.language, "hu");
+    assert_eq!(crate::i18n::tr(&restored.language, "File"), "Fájl");
+    assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+    assert!(crate::i18n::LANGUAGES.contains(&("hu", "Magyar")), "Preferences lists Hungarian by its own name");
+}
+
+/// Checks Ukrainian selection, menu captions and saved UI preferences without changing
+/// document data or translating user-defined names.
+#[test]
+fn ukrainian_language_is_selectable_persisted_and_keeps_document_data() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Мої слова"})).unwrap();
+    let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+    run_ui(&mut app, "app.language", &json!({"lang": "uk"})).unwrap().unwrap();
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "uk"})), Some(true));
+    assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+    for (title, _) in menu_tree() {
+        assert_ne!(crate::i18n::tr("uk", title), title, "{title}");
+    }
+    let bytes = serde_json::to_vec(&app.ui).unwrap();
+    let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(restored.language, "uk");
+    assert_eq!(crate::i18n::tr(&restored.language, "File"), "Файл");
+    assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+    assert!(crate::i18n::LANGUAGES.contains(&("uk", "Українська")), "Preferences lists Ukrainian by its own name");
+}
+
+/// Checks Russian selection, menu captions and saved UI preferences without changing
+/// document data or translating user-defined names.
+#[test]
+fn russian_language_is_selectable_persisted_and_keeps_document_data() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200], "content": "text", "text": "My words · Мои слова"})).unwrap();
+    let before = serde_json::to_value(&app.session.doc().unwrap().doc).unwrap();
+    run_ui(&mut app, "app.language", &json!({"lang": "ru"})).unwrap().unwrap();
+    assert_eq!(checked(&app, "app.language", &json!({"lang": "ru"})), Some(true));
+    assert_eq!(before, serde_json::to_value(&app.session.doc().unwrap().doc).unwrap());
+    for (title, _) in menu_tree() {
+        assert_ne!(crate::i18n::tr("ru", title), title, "{title}");
+    }
+    let bytes = serde_json::to_vec(&app.ui).unwrap();
+    let restored: crate::UiState = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(restored.language, "ru");
+    assert_eq!(crate::i18n::tr(&restored.language, "File"), "Файл");
+    assert_eq!(crate::i18n::tr(&restored.language, "A custom name"), "A custom name");
+    assert!(crate::i18n::LANGUAGES.contains(&("ru", "Русский")), "Preferences lists Russian by its own name");
 }
 
 #[test]
@@ -1955,17 +2183,13 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     let mut scratch = designcraft_engine::Session::new();
     scratch.execute("file.new", &json!({})).unwrap();
     let pdf = scratch.execute("file.exportPdf", &json!({})).unwrap()["base64"].clone();
-    let contexts = ["nothing selected", "text insertion point", "text frame selected", "table cell", "placed PDF selected"];
+    let contexts = ["nothing selected", "text insertion point", "text frame selected", "table cell", "placed PDF selected", "text selected"];
     // A two-page document, a saved workspace and non-default preferences, a host with window
     // controls, and file dialogs that are dismissed.
     let setup = |context: usize| {
-        let services = crate::Services {
-            pick_open: Some(Box::new(|_| None)),
-            pick_save: Some(Box::new(|_| None)),
-            clipboard_text: Some(Box::new(|| None)),
-            ..Default::default()
-        };
+        let services = crate::Services { clipboard_text: Some(Box::new(|| None)), ..Default::default() };
         let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
         app.custom_titlebar = true;
         app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0)));
         app.run("file.new", json!({"pages": 2})).unwrap();
@@ -1992,6 +2216,11 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
                 let f = app.run("frame.create", json!({"rect": [72, 72, 400, 400]})).unwrap()["id"].clone();
                 app.run("file.place", json!({"base64": pdf, "name": "a.pdf", "frame": f})).unwrap();
                 app.run("selection.set", json!({"ids": [f]})).unwrap();
+            }
+            // Convert Text to Table needs text selected.
+            5 => {
+                let f = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "One Two"})).unwrap();
+                app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 7})).unwrap();
             }
             _ => {}
         }
@@ -2111,6 +2340,48 @@ fn context_menus_hold_commands_and_menu_bar_submenus() {
             assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
         }
     }
+}
+
+#[test]
+fn the_table_menu_follows_indesigns_order() {
+    // InDesign's Table menu with a text insertion point (Adobe's "How to make a table").
+    let table = menu_tree().into_iter().find(|(m, _)| *m == "Table").unwrap().1;
+    let labels: Vec<String> = table
+        .iter()
+        .map(|i| match i {
+            Item::Sep => "-".to_string(),
+            Item::Sub(n, _) => format!("{n} >"),
+            Item::Cmd { label, .. } => label.clone(),
+        })
+        .collect();
+    let expected = [
+        "Insert Table…",
+        "Convert Text to Table…",
+        "Convert Table to Text…",
+        "-",
+        "Cell Options >",
+        "-",
+        "Insert >",
+        "Delete >",
+        "Select >",
+        "-",
+        "Merge Cells",
+        "Unmerge Cells",
+        "Split Cell Horizontally",
+        "Split Cell Vertically",
+        "Convert Cell to Graphic Cell…",
+        "Convert Cell to Text Cell",
+        "Convert Rows >",
+        "-",
+        "Distribute Rows Evenly",
+        "Distribute Columns Evenly",
+    ];
+    assert_eq!(labels, expected);
+    // Cmd+Alt+Shift+T opens the dialog, as InDesign's; the engine command has no shortcut of
+    // its own. The Table panel is in Window › Type & Tables.
+    assert_eq!(ui_label("app.insertTableDialog").and_then(|c| c.1), Some("Cmd+Alt+Shift+T"));
+    assert_eq!(designcraft_engine::find_command("table.insert").unwrap().shortcut, None);
+    assert_eq!(ui_label("app.tablePanel").and_then(|c| c.1), Some("Shift+F9"));
 }
 
 #[test]
@@ -2441,6 +2712,22 @@ fn cjk_menu_items_follow_show_cjk_features() {
     assert!(!quick_apply_items(&app.session, "ruby", crate::cjk_features(&app)).iter().any(|i| i.id == "app.rubyDialog"));
     app.run("app.rubyDialog", json!({})).unwrap();
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("ruby"), "hidden, not removed");
+}
+
+/// The CJK commands sit in a group of their own, after a separator, and hiding them leaves no
+/// separator at the end of the menu.
+#[test]
+fn cjk_menu_items_have_their_own_group() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+    let first = ty.iter().position(|i| matches!(i, Item::Cmd { id, .. } if CJK_ONLY.contains(&id.as_str()))).unwrap();
+    assert!(matches!(ty[first - 1], Item::Sep), "separator before the CJK group");
+    assert!(matches!(ty[first - 2], Item::Sub(..)), "the group comes after Story Direction");
+    app.ui.language = String::new();
+    app.run("prefs.set", json!({"cjkFeatures": false})).unwrap();
+    assert!(!has_shown_item(&app, &ty[first..]), "nothing left after the separator");
+    app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+    assert!(has_shown_item(&app, &ty[first..]));
 }
 
 /// Preferences › Type › Show CJK Features: left as it is, it keeps following the interface
@@ -2981,4 +3268,85 @@ fn forwarded_keys_run_shortcuts() {
     app.session.execute("selection.set", &json!({"ids": [frame["id"]]})).unwrap();
     forwarded_shortcuts(&mut app, &ctx, press(Key::Delete), Modifiers::NONE);
     assert!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).is_none(), "Delete clears the selection");
+}
+
+#[test]
+fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
+    let file = |tree: Vec<(&'static str, Vec<Item>)>| {
+        let mut out = Vec::new();
+        walk(&tree.into_iter().find(|(t, _)| *t == "File").map(|(_, e)| e).unwrap_or_default(), &mut out);
+        out.into_iter().map(|(_, id, _)| id).collect::<Vec<_>>()
+    };
+    assert_eq!(file(menu_tree()).last().map(String::as_str), Some("app.quit"), "File ends with the quit item");
+    assert!(!file(native_menu_tree()).iter().any(|id| id == "app.quit"), "macOS has Quit only in the app menu");
+    let native = native_menu_tree();
+    let file_items = native.iter().find(|(t, _)| *t == "File").map(|(_, e)| e);
+    assert!(!matches!(file_items.and_then(|e| e.last()), Some(Item::Sep)), "no separator left at the end of File");
+}
+
+#[test]
+fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    frame(&mut app, vec![]);
+    frame(&mut app, vec![]);
+    let rect = app.canvas_rect.unwrap();
+    let pointer = rect.center() + egui::vec2(200.0, 120.0);
+    let under = |app: &crate::DesignApp, at: egui::Pos2| crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_canvas(at);
+    let before = under(&app, pointer);
+    let zoom = app.view().unwrap().zoom;
+
+    // The command with a pointer position keeps the point under it fixed.
+    app.run("view.zoomIn", json!({"at": [pointer.x, pointer.y]})).unwrap();
+    assert!(app.view().unwrap().zoom > zoom);
+    let after = under(&app, pointer);
+    assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
+    app.run("view.zoomOut", json!({"at": [pointer.x, pointer.y]})).unwrap();
+    let after = under(&app, pointer);
+    assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
+
+    // A position outside the canvas (or none: the menu) zooms around the centre.
+    let centre = under(&app, rect.center());
+    app.run("view.zoomIn", json!({"at": [-50.0, -50.0]})).unwrap();
+    let kept = under(&app, rect.center());
+    assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
+    app.run("view.zoomIn", json!({})).unwrap();
+    let kept = under(&app, rect.center());
+    assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
+
+    // The keyboard shortcut uses the pointer.
+    app.run("view.zoom", json!({"zoom": 1.0})).unwrap();
+    let before = under(&app, pointer);
+    frame(&mut app, vec![egui::Event::PointerMoved(pointer)]);
+    let key = egui::Event::Key { key: egui::Key::Equals, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+    frame(&mut app, vec![key]);
+    assert!(app.view().unwrap().zoom > 1.0);
+    let after = under(&app, pointer);
+    assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
+
+    // The native menu bar's key equivalent (macOS) leaves the pointer in the window and uses it.
+    app.run("view.zoom", json!({"zoom": 1.0})).unwrap();
+    let before = under(&app, pointer);
+    native_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pointer)], Some("view.zoomIn"));
+    assert!(app.view().unwrap().zoom > 1.0);
+    let after = under(&app, pointer);
+    assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
+    // A click in the menu bar takes the pointer out of the window: the centre stays.
+    let centre = under(&app, rect.center());
+    native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
+    let kept = under(&app, rect.center());
+    assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
 }

@@ -104,7 +104,10 @@ fn svg_options() -> &'static usvg::Options<'static> {
 /// family's but a face's PostScript name (as Illustrator's SVG export writes them:
 /// `font-family="'MyriadPro-Regular'"`) sets the text in that face, whatever font-weight and
 /// font-style say: the name already picks the weight and style, and a family's other faces would
-/// contradict it. Families listed before it come first.
+/// contradict it. A name that is a face's legacy family name (name ID 1) or full name (ID 4), as
+/// Windows names faces outside the regular/bold/italic quartet (`'Segoe UI Semibold'`, whose
+/// typographic family is `Segoe UI`), sets the text in that face (the closest to font-weight and
+/// font-style when the legacy family has several). Families listed before it come first.
 fn select_font() -> usvg::FontSelectionFn<'static> {
     use usvg::fontdb::{Family, Query, Stretch, Style, Weight};
     Box::new(move |font, db| {
@@ -112,26 +115,66 @@ fn select_font() -> usvg::FontSelectionFn<'static> {
         let spelled = |db: &usvg::fontdb::Database, name: &str| {
             db.faces().flat_map(|f| &f.families).find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(n, _)| n.clone())
         };
-        for family in font.families() {
+        // (index in the font-family list, face) of the faces a name names by its legacy names.
+        let mut legacy: Vec<(usize, usvg::fontdb::ID)> = Vec::new();
+        for (i, family) in font.families().iter().enumerate() {
             if let usvg::FontFamily::Named(name) = family
                 && spelled(db, name).is_none()
             {
                 if fonts.has_family(name) {
                     for style in fonts.styles(name) {
-                        add_face(db, fonts.face(name, &style));
+                        let face = fonts.face(name, &style);
+                        let named = has_legacy_name(&face, name);
+                        if let Some(id) = add_face(db, face)
+                            && named
+                        {
+                            legacy.push((i, id));
+                        }
                     }
-                } else if postscript_face(db, name).is_none()
-                    && let Some((family, style)) = fonts.postscript_face(name)
-                {
-                    add_face(db, fonts.face(&family, &style));
+                } else if postscript_face(db, name).is_none() {
+                    if let Some((family, style)) = fonts.postscript_face(name) {
+                        add_face(db, fonts.face(&family, &style));
+                    } else {
+                        // A full name: the family is the name without its last words ("Bold").
+                        let mut base = name.as_str();
+                        for _ in 0..3 {
+                            let Some((head, _)) = base.trim_end().rsplit_once(' ') else { break };
+                            base = head;
+                            if fonts.has_family(base) {
+                                for style in fonts.styles(base) {
+                                    let face = fonts.face(base, &style);
+                                    if has_legacy_name(&face, name)
+                                        && let Some(id) = add_face(db, face)
+                                    {
+                                        legacy.push((i, id));
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
-        for family in font.families() {
+        let want_style = match font.style() {
+            usvg::FontStyle::Normal => Style::Normal,
+            usvg::FontStyle::Italic => Style::Italic,
+            usvg::FontStyle::Oblique => Style::Oblique,
+        };
+        for (i, family) in font.families().iter().enumerate() {
             match family {
                 usvg::FontFamily::Named(name) if spelled(db, name).is_none() => {
                     if let Some(id) = postscript_face(db, name) {
                         return Some(id);
+                    }
+                    let closest = legacy
+                        .iter()
+                        .filter(|(at, _)| *at == i)
+                        .filter_map(|(_, id)| db.face(*id))
+                        .min_by_key(|f| (f.style != want_style, f.weight.0.abs_diff(font.weight())))
+                        .map(|f| f.id);
+                    if closest.is_some() {
+                        return closest;
                     }
                 }
                 // A family (or generic family) that matches: the query below.
@@ -173,13 +216,20 @@ fn select_font() -> usvg::FontSelectionFn<'static> {
             usvg::FontStretch::ExtraExpanded => Stretch::ExtraExpanded,
             usvg::FontStretch::UltraExpanded => Stretch::UltraExpanded,
         };
-        let style = match font.style() {
-            usvg::FontStyle::Normal => Style::Normal,
-            usvg::FontStyle::Italic => Style::Italic,
-            usvg::FontStyle::Oblique => Style::Oblique,
-        };
-        db.query(&Query { families: &families, weight: Weight(font.weight()), stretch, style })
+        db.query(&Query { families: &families, weight: Weight(font.weight()), stretch, style: want_style })
     })
+}
+
+/// Is `name` (ignoring case) a legacy family name (name ID 1) or full name (ID 4) of `face`?
+fn has_legacy_name(face: &designcraft_fonts::FontFace, name: &str) -> bool {
+    use skrifa::MetadataProvider;
+    use skrifa::string::StringId;
+    let Some(f) = face.skrifa() else { return false };
+    [StringId::FAMILY_NAME, StringId::FULL_NAME]
+        .into_iter()
+        .flat_map(|id| f.localized_strings(id))
+        .take(256)
+        .any(|s| s.chars().map(|c| c.to_ascii_lowercase()).eq(name.chars().map(|c| c.to_ascii_lowercase())))
 }
 
 /// The face in the SVG's font database with PostScript name `name` (ignoring case).
@@ -324,10 +374,22 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
+/// The largest decoded raster, in RGBA bytes: 256 Mpx, a 300 ppi scan of an A0 sheet fits.
+const MAX_RGBA_BYTES: u64 = 1 << 30;
+
+/// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
+pub fn too_large_to_decode(bytes: &[u8]) -> bool {
+    // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
+    pixel_size(bytes).is_some_and(|(w, h)| u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES)
+}
+
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
 /// applied, and CMYK goes through its own profile or the working CMYK space ([`colour`]).
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
@@ -520,6 +582,9 @@ pub fn is_cmyk_tiff(bytes: &[u8]) -> bool {
 /// over the decoder's 256 MiB limit; [`is_cmyk_tiff`] tells those apart from RGB files.
 pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
     use tiff::tags::Tag;
+    if too_large_to_decode(bytes) {
+        return None;
+    }
     let mut d = tiff_decoder(bytes)?;
     let has_alpha = match d.colortype().ok()? {
         tiff::ColorType::CMYK(8 | 16) => false,

@@ -3,7 +3,7 @@
 //! until the whole story fits (InDesign's Shift-click with a loaded text cursor).
 
 use designcraft_doc::{
-    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, TextDirection, TextFileLink, TextSel,
+    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, StartParagraph, Story, StoryId, TextDirection, TextFileLink, TextSel,
 };
 use designcraft_geom::Rect;
 use serde_json::{Value, json};
@@ -197,21 +197,60 @@ pub(crate) fn reimport(
     Ok(imp.warnings)
 }
 
-/// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?
+/// Is the story overset in its frames, how much text do its full frames hold (bytes, frames), and
+/// how many frames does the overset text start on its own (breaks, Start Paragraph options)?
 /// A frame a column, frame or page break ends early is left out: it says nothing about how much
-/// a frame holds.
-fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize) {
+/// a frame holds. So is one a Start Paragraph option ends early (#1209).
+fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize, usize) {
     let cs = designcraft_compose::compose_story(d, sid, &Default::default());
-    let text = d.story(sid).map_or("", |s| s.text.as_str());
+    let Some(story) = d.story(sid) else { return (cs.overset_at, 0, 0, 0) };
+    let text = story.text.as_str();
+    let ranges = story.para_ranges();
+    let deleted = designcraft_compose::deleted_paras(story, &ranges);
+    let placed = |p: usize| !deleted.get(p).copied().unwrap_or(false);
+    let starts = |p: usize| placed(p) && story.paras.get(p).is_some_and(|pf| d.styles.resolve_para(pf).0.start_paragraph != StartParagraph::Anywhere);
+    // A frame's range stops before the paragraph's return; composing skips deleted paragraphs.
+    let moved_on = |end: usize| {
+        let next = if text.as_bytes().get(end) == Some(&b'\n') { end.saturating_add(1) } else { end };
+        next.checked_sub(1).is_some_and(|i| text.as_bytes().get(i) == Some(&b'\n'))
+            && (story.para_at(next)..story.paras.len()).find(|&p| placed(p)).is_some_and(starts)
+    };
     let (mut held, mut full) = (0, 0);
     for f in &cs.frames {
         let Some(shown) = text.get(f.range.clone()) else { continue };
-        if !shown.is_empty() && !shown.chars().any(designcraft_doc::is_break_char) {
+        if !shown.is_empty() && !shown.chars().any(designcraft_doc::is_break_char) && !moved_on(f.range.end) {
             held += shown.len();
             full += 1;
         }
     }
-    (cs.overset_at, held, full)
+    let forced = cs.overset_at.map_or(0, |at| {
+        let first = story.para_at(at);
+        // The paragraph the overset text starts with counts when it starts there.
+        let from = if at.checked_sub(1).is_none_or(|i| text.as_bytes().get(i) == Some(&b'\n')) { first } else { first.saturating_add(1) };
+        // Once per paragraph: after a break, its start option only fixes odd or even page parity.
+        let sent = (from..ranges.len())
+            .filter(|&p| starts(p) || (placed(p) && designcraft_compose::previous_visible_break(d, story, &ranges, &deleted, p).is_some()))
+            .count();
+        // A break inside a paragraph moves the rest of it.
+        let inside: usize = (first..ranges.len())
+            .filter(|&p| placed(p))
+            .filter_map(|p| Some((p, ranges.get(p)?.clone())))
+            .map(|(p, r)| {
+                let Some(t) = text.get(r.clone()) else { return 0 };
+                let last = t.char_indices().next_back().map(|(i, _)| i);
+                t.char_indices()
+                    .filter(|&(i, c)| {
+                        designcraft_doc::is_break_char(c)
+                            && Some(i) != last
+                            && r.start.saturating_add(i) >= at
+                            && designcraft_compose::visible_break(d, story, p, r.start.saturating_add(i)).is_some()
+                    })
+                    .count()
+            })
+            .sum();
+        sent.saturating_add(inside)
+    });
+    (cs.overset_at, held, full, forced)
 }
 
 /// The frames autoflow sets on a page: one per column inside the margins, in the order a story
@@ -256,12 +295,13 @@ pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &s
     // The next page of the document autoflow may set frames on; it only moves forward.
     let mut following = 0;
     loop {
-        let (overset, held, full) = fit(d, sid);
+        let (overset, held, full, forced) = fit(d, sid);
         let Some(at) = overset else { break };
         let len = d.story(sid).map_or(0, |s| s.len());
-        // Frames still needed at the rate the full ones are filled (at least one); with no full
-        // frame to go by yet, one more.
-        let want = held.checked_div(full).map_or(1, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1))).max(1);
+        // Frames still needed at the rate the full ones are filled, plus one per frame the text
+        // starts on its own (at least one); with neither to go by yet, one more.
+        let rate = held.checked_div(full).map_or(0, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1)));
+        let want = rate.saturating_add(forced).max(1);
         let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad(cmd, "the story has no frame"))?;
         let page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
         let layer = d.default_layer();

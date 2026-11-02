@@ -25,6 +25,32 @@ mod story;
 pub use cell::{AltFills, AltStrokes, Cell, CellStroke, Column, Row, RowHeightMode, RowKind, TableOptions};
 pub use grid::CellRange;
 
+/// Most rows a table holds, as InDesign allows.
+pub const MAX_TABLE_ROWS: usize = 10_000;
+/// Most columns a table holds, as InDesign allows.
+pub const MAX_TABLE_COLS: usize = 1_000;
+/// Most cells a table holds, whatever its shape.
+///
+/// A [`Cell`] is about 1.4 KB (it carries a [`Story`]), so this is roughly 340 MB of cells at the
+/// limit. The row and column limits alone are not enough: 10,000 × 1,000 would be 13.6 GB, and an
+/// IDML story holding one `<Table>` with 5,000 `<Row/>` and 5,000 `<Column/>` -- about 1 KB
+/// zipped -- asked for 25M cells, some 34 GB. That allocation does not fail politely: it aborts
+/// the process through `handle_alloc_error`, which no `catch_unwind` can save, so every open
+/// document's unsaved work goes with it (#1583).
+pub const MAX_TABLE_CELLS: usize = 250_000;
+
+/// The rows and columns a table of `rows × cols` is actually given, inside the limits above.
+///
+/// Columns are clamped first and rows take what is left of the cell budget, because a table is
+/// far more often long than wide: truncating a 5,000-column table to 1,000 columns and then its
+/// rows loses less of it than the other way round. Callers that read a file report the
+/// difference; the counts are a document's claim, not something to trust.
+pub fn clamped_size(rows: usize, cols: usize) -> (usize, usize) {
+    let cols = cols.clamp(1, MAX_TABLE_COLS);
+    let rows = rows.clamp(1, MAX_TABLE_ROWS.min(MAX_TABLE_CELLS / cols).max(1));
+    (rows, cols)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Table {
@@ -46,6 +72,48 @@ mod tests {
 
     fn story(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    /// A table's shape comes out of IDML and DOCX files unchecked, and `Cell` is about 1.4 KB, so
+    /// a file claiming 5,000 x 5,000 asked for 25M cells -- some 34 GB. That allocation aborts the
+    /// process rather than failing, taking every open document's unsaved work with it (#1583).
+    #[test]
+    fn a_table_larger_than_the_limits_is_clamped_not_allocated() {
+        // The reported shape: 5,000 rows and 5,000 columns.
+        let t = Table::new(1, 5_000, 5_000, 0, 0, 500.0);
+        assert_eq!(t.columns.len(), MAX_TABLE_COLS, "columns are clamped to InDesign's limit");
+        assert!(t.cells.len() <= MAX_TABLE_CELLS, "{} cells is within the budget", t.cells.len());
+        assert_eq!(t.rows.len() * t.columns.len(), t.cells.len(), "the grid stays rectangular");
+        // What it would have been: 25,000,000 cells at 1,360 bytes each.
+        assert!(25_000_000 * std::mem::size_of::<Cell>() > 30_000_000_000, "the size this test is about");
+        // Freed before the next large table, so the peak stays at one of them.
+        drop(t);
+
+        // A long table keeps its rows while it fits the budget (the budget itself is checked by
+        // `clamped_size`, which allocates nothing).
+        let long = Table::new(2, 10_000, 5, 0, 0, 500.0);
+        assert_eq!((long.rows.len(), long.columns.len()), (10_000, 5), "a long thin table is untouched");
+        assert_eq!(clamped_size(10_000, 25), (10_000, 25), "10,000 x 25 is inside the budget");
+        drop(long);
+
+        // Past the row limit the rows are clamped too.
+        let longer = Table::new(3, 50_000, 2, 0, 0, 100.0);
+        assert_eq!(longer.rows.len(), MAX_TABLE_ROWS, "rows are clamped to InDesign's limit");
+        drop(longer);
+
+        // Header, body and footer share the budget, and the table still has a body.
+        let with_parts = Table::new(4, 5_000, 5_000, 3, 2, 500.0);
+        assert!(with_parts.rows.len() <= MAX_TABLE_ROWS, "{} rows", with_parts.rows.len());
+        assert!(with_parts.cells.len() <= MAX_TABLE_CELLS, "{} cells", with_parts.cells.len());
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Header), "the header survives");
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Footer), "the footer survives");
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Body), "and so does a body row");
+        drop(with_parts);
+
+        // A header and footer bigger than the whole budget still leave a body row.
+        let all_header = Table::new(6, 1, 1, MAX_TABLE_ROWS * 2, MAX_TABLE_ROWS * 2, 100.0);
+        assert!(all_header.rows.len() <= MAX_TABLE_ROWS, "{} rows", all_header.rows.len());
+        assert!(all_header.rows.iter().any(|r| r.kind == RowKind::Body), "a body row survives");
     }
 
     #[test]
@@ -86,6 +154,19 @@ mod tests {
         let mut right = Table::new(2, 2, 2, 0, 0, 120.0);
         right.merge(CellRange::new(0, 1, 1, 1)).unwrap();
         assert_eq!(right.selected_owners(CellRange::new(1, 0, 1, 1)), vec![(0, 1), (1, 0)], "owner order, not encounter order");
+    }
+
+    /// A short last row's padding cells take the converted text's paragraph and character format,
+    /// like the cells with text.
+    #[test]
+    fn from_strings_formats_the_padding_cells_too() {
+        let data = vec![vec!["a".to_string(), "b".to_string()], vec!["c".to_string()]];
+        let para = ParaFormat { style: "Body".into(), ..Default::default() };
+        let fmt = CharFormat { style: "Strong".into(), ..Default::default() };
+        let t = Table::from_strings(1, &data, 200.0, &para, &fmt);
+        let pad = &t.cell(1, 1).unwrap().text;
+        assert_eq!((pad.paras[0].style.as_str(), pad.chars[0].format.style.as_str()), ("Body", "Strong"));
+        assert_eq!(pad.text, "");
     }
 
     #[test]

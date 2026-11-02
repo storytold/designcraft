@@ -352,7 +352,8 @@ mod tests {
     }
 
     fn double_click(h: &mut Harness<'static, DesignApp>, label: &str) {
-        let at = h.get_by_label(label).rect().center();
+        // A swatch row's accessible name is its name, then what its marks show.
+        let at = h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, label))).rect().center();
         h.hover_at(at);
         // Two clicks without the pointer leaving (`drop_at` would end the double click).
         for pressed in [true, false, true, false] {

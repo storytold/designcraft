@@ -1,6 +1,9 @@
 use super::frame::{Prefs, text_frame_options};
 use super::values::{lab_to_color, nums};
-use super::*;
+use super::{
+    Color, ColorType, El, Gradient, GradientKind, GradientStop, HashMap, HashSet, Importer, Styles, Swatch, SwatchValue, TextFrameOptions, names,
+    swatch,
+};
 
 impl<'r> Importer<'r> {
     // ---------- swatches ----------

@@ -45,12 +45,12 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
+            if it.hidden {
+                continue;
+            }
             let children = it.children();
             if !children.is_empty() {
                 stack.push((children.iter(), xf));
-            }
-            if it.hidden {
-                continue;
             }
             let block = match &it.content {
                 Content::Text(tf) => {

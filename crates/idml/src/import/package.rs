@@ -1,4 +1,4 @@
-use super::*;
+use super::{HashMap, IdmlError, Read, Result};
 
 /// Most entries an IDML package may hold.
 const MAX_ENTRIES: usize = 100_000;

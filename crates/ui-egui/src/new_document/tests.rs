@@ -217,6 +217,43 @@ fn enter_in_the_preset_popup_saves_the_preset_and_keeps_the_dialog() {
 }
 
 #[test]
+fn saved_preset_delete_buttons_keep_the_preview_and_never_create_a_document() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.savePreset", json!({"name":"Portrait draft","pages":3,"facingPages":false})).unwrap();
+    app.run("file.savePreset", json!({"name":"Landscape draft","width":792,"height":612,"pages":2})).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    h.run_steps(4);
+    let saved = h.get_by_label("Saved").rect().center();
+    crate::test_window::click_at(&mut h, saved);
+    let portrait = h.get_by_label("Portrait draft").rect().center();
+    crate::test_window::click_at(&mut h, portrait);
+    h.get_by_label("Preview").click();
+    h.run_steps(20);
+    assert!(h.query_by_label("Delete Preset: Portrait draft").is_some(), "the selected preset has its action");
+    assert!(h.query_by_label("Delete Preset: [Default]").is_none(), "the factory card cannot be deleted");
+    let before = h.state().app.session.active().unwrap().doc.clone();
+    let preview = h.state().app.session.new_document_preview();
+    let count = h.state().app.session.documents().len();
+    let fields = params(h.state().app.ui.dialog.as_ref().unwrap());
+    let landscape = h.get_by_label("Landscape draft").rect().center();
+    h.event(egui::Event::PointerMoved(landscape));
+    h.run_steps(3);
+    let remove = h.get_by_label("Delete Preset: Landscape draft").rect().center();
+    crate::test_window::click_at(&mut h, remove);
+    assert_eq!(h.state().app.session.prefs.document_presets.iter().map(|p| p.title.as_str()).collect::<Vec<_>>(), ["Portrait draft"]);
+    let remove = h.get_by_label("Delete Preset: Portrait draft").rect().center();
+    crate::test_window::click_at(&mut h, remove);
+    let app = &h.state().app;
+    assert!(app.session.prefs.document_presets.is_empty());
+    assert_eq!(app.session.new_document_preview(), preview);
+    assert_eq!(app.session.documents().len(), count);
+    assert_eq!(*app.session.active().unwrap().doc, *before);
+    assert_eq!(params(app.ui.dialog.as_ref().unwrap()), fields, "deletion does not select another preset or create the preview");
+}
+
+#[test]
 fn escape_in_the_preset_popup_closes_only_the_popup() {
     let mut h = window_with_preset_popup();
     h.key_press(egui::Key::Escape);

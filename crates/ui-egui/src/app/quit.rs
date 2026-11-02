@@ -1,4 +1,4 @@
-use super::*;
+use super::{DesignApp, HashMap, QuitState, Value, json, menus};
 
 impl DesignApp {
     /// Quit: close the window the way its close button does, so unsaved documents ask first.
@@ -49,10 +49,18 @@ impl DesignApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if self.quitting.is_none() {
-                self.quitting = Some(QuitState { original_active: self.session.active().map(|d| d.uid), accepted: HashMap::new(), pending: None });
+                self.quitting =
+                    Some(QuitState { original_active: self.session.active().map(|d| d.uid), accepted: HashMap::new(), pending: None, saving: None });
             }
         }
         let Some(q) = self.quitting.as_ref() else { return };
+        if q.saving.is_some() {
+            // Waiting for the save dialog; cancelled, it answers without saving and Quit stops.
+            if !self.file_dialogs_pending() {
+                self.cancel_quit();
+            }
+            return;
+        }
         if let Some(uid) = q.pending {
             let asking = self.ui.dialog.as_ref().is_some_and(|d| {
                 d.id == "closeDocument"
@@ -116,22 +124,39 @@ impl DesignApp {
             return Ok(Value::Null);
         };
         if !discard {
-            let saved = self.run("file.activate", json!({"index": i})).and_then(|_| self.run("app.save", json!({})));
+            if let Some(q) = self.quitting.as_mut() {
+                q.pending = None;
+                q.saving = Some(uid);
+            }
+            let saved = self.run("file.activate", json!({"index": i})).and_then(|_| menus::save_then(self, move |app| app.quit_document_saved(uid)));
             if let Err(e) = saved {
                 self.cancel_quit();
                 return Err(e);
             }
-            if self.session.documents().iter().find(|d| d.uid == uid).is_none_or(|d| d.is_dirty()) {
-                // No file chosen (or an asynchronous host save has not completed): stop quitting.
-                self.cancel_quit();
-                return Ok(Value::Null);
-            }
+            return Ok(Value::Null);
         }
         if let Some(q) = self.quitting.as_mut() {
             if let Some(d) = self.session.documents().iter().find(|d| d.uid == uid) {
                 q.accepted.insert(uid, d.revision);
             }
             q.pending = None;
+        }
+        Ok(Value::Null)
+    }
+
+    /// The Save chosen during Quit has written `uid` (at once, or once its save dialog answered):
+    /// approve its current revision. Still unsaved, Quit stops.
+    fn quit_document_saved(&mut self, uid: u64) -> Result<Value, String> {
+        if self.quitting.as_ref().and_then(|q| q.saving) != Some(uid) {
+            return Ok(Value::Null);
+        }
+        let revision = self.session.documents().iter().find(|d| d.uid == uid).filter(|d| !d.is_dirty()).map(|d| d.revision);
+        match (revision, self.quitting.as_mut()) {
+            (Some(revision), Some(q)) => {
+                q.accepted.insert(uid, revision);
+                q.saving = None;
+            }
+            _ => self.cancel_quit(),
         }
         Ok(Value::Null)
     }

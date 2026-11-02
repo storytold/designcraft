@@ -46,6 +46,14 @@ pub(crate) struct NoteMetrics {
     descent: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct NoteColumn<'a> {
+    pub(crate) frame_index: usize,
+    pub(crate) column_index: usize,
+    pub(crate) width: f64,
+    pub(crate) frame: &'a FrameSpec,
+}
+
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
@@ -168,6 +176,7 @@ impl Notes {
             page_name: f.page_name.clone(),
             section_marker: f.section_marker.clone(),
             page: f.page,
+            parent: f.parent,
             grid: None,
             left_page: f.left_page,
             right_page: f.right_page,
@@ -194,16 +203,16 @@ impl Notes {
     }
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
-    #[allow(clippy::too_many_arguments)]
-    pub fn reserve(&mut self, doc: &Document, fi: usize, col: usize, extra: &[usize], w: f64, f: &FrameSpec, opts: &ComposeOptions) -> f64 {
+    pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
         let o = &doc.footnote_options;
         let (space_between, space_before) = (o.space_between, o.space_before);
-        let mut ms: Vec<NoteMetrics> = self.placed.iter().filter(|p| self.same_area(p, fi, col)).map(|p| p.m).collect();
+        let mut ms: Vec<NoteMetrics> =
+            self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
         for &k in extra {
-            ms.push(self.compose(doc, k, w, f, opts).1);
+            ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
         }
         let r = if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before };
-        if self.span { r.max(self.floor.get(&fi).copied().unwrap_or(0.0)) } else { r }
+        if self.span { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
     }
 
     /// After spanning notes were placed in column `col` of frame `fi`: whether a line of an earlier
@@ -221,12 +230,12 @@ impl Notes {
         hit
     }
 
-    pub fn place(&mut self, doc: &Document, k: usize, fi: usize, col: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) {
+    pub fn place(&mut self, doc: &Document, k: usize, column: NoteColumn<'_>, opts: &ComposeOptions) {
         if self.placed.iter().any(|p| p.k == k) {
             return;
         }
-        let (text, m) = self.compose(doc, k, w, f, opts);
-        self.placed.push(Placed { k, fi, col, m, text });
+        let (text, m) = self.compose(doc, k, column.width, column.frame, opts);
+        self.placed.push(Placed { k, fi: column.frame_index, col: column.column_index, m, text });
     }
 
     /// Stack each column's footnotes against its bottom, rule above the first.

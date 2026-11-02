@@ -1,7 +1,7 @@
 use super::face::FontFace;
 #[cfg(not(target_arch = "wasm32"))]
 use super::system::CatalogEntry;
-use super::*;
+use super::{Arc, MetadataProvider, StringId};
 
 pub(super) fn aliases(font: &skrifa::FontRef<'_>, ids: &[StringId]) -> Vec<String> {
     let mut names: Vec<String> =

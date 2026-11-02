@@ -2,7 +2,7 @@ use super::format::{Target, format_chars, format_targets};
 use super::story::selection_attrs;
 #[cfg(test)]
 use super::story::{SELECTED_TEXT_CHARS, selected_text_preview};
-use super::*;
+use super::{Result, Session, Value, bad, json, ok};
 
 pub(super) fn open_type(s: &mut Session, p: &Value) -> Result<Value> {
     use designcraft_doc::otf;

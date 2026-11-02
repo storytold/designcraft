@@ -94,7 +94,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let r = t2.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
-        st.insert_xref(r.start, CrossRef { target, format });
+        st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))
@@ -169,7 +169,10 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let x = st.xrefs.get_mut(k).ok_or_else(|| bad("xref.setFormat", "no such cross-reference"))?;
-        std::sync::Arc::make_mut(x).format = format;
+        let x = std::sync::Arc::make_mut(x);
+        x.format = format;
+        // A new format generates the text again, replacing any edits (InDesign does the same).
+        x.text = None;
         st.rev = st.rev.wrapping_add(1);
         Ok(Value::Null)
     })

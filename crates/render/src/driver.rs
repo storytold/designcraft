@@ -1,7 +1,9 @@
 use super::color::{PLATE, RICH_BLACK, blend_space_view, rect_overlaps};
 use super::decode::now;
 use super::types::{Frame, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads};
-use super::*;
+use super::{
+    Affine, Cache, Document, HashMap, PageSide, Rect, RenderContext, Renderer, Resources, SpreadRef, Vec2, blendspace, kurbo, peniko, text, vello_cpu,
+};
 
 impl Renderer {
     pub fn new() -> Self {
@@ -37,17 +39,9 @@ impl Renderer {
     }
 
     /// Render the given spreads into a `width`×`height` image with `view` (canvas → pixels).
-    pub fn render(
-        &mut self,
-        doc: &Document,
-        cache: &Cache,
-        spreads: &[Placed],
-        width: u32,
-        height: u32,
-        view: Affine,
-        opts: &RenderOptions,
-    ) -> Rendered {
+    pub fn render(&mut self, doc: &Document, cache: &Cache, spreads: &[Placed], size: (u32, u32), view: Affine, opts: &RenderOptions) -> Rendered {
         let start = now();
+        let (width, height) = size;
         RICH_BLACK.with(|r| r.set(opts.rich_black));
         PLATE.with(|p| p.set(opts.plate));
         if let Some(hit) = self.cmyk_view.as_ref().filter(|entry| entry.matches(doc, spreads, width, height, view, opts, self.threads)) {
@@ -59,7 +53,7 @@ impl Renderer {
         // Release the old snapshot before rendering an edited document or resized viewport.
         self.cmyk_view = None;
         self.cmyk_ran = false;
-        let image = self.render_uncached(doc, cache, spreads, width, height, view, opts);
+        let image = self.render_uncached(doc, cache, spreads, size, view, opts);
         // Kept only when the ink passes ran: other views render at their usual cost anyway.
         if self.cmyk_ran && image.pixels.len() <= blendspace::CachedView::MAX_BYTES {
             self.cmyk_view = Some(blendspace::CachedView::new(doc, spreads, view, opts, &image, self.stats, self.threads));
@@ -68,18 +62,17 @@ impl Renderer {
         image
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_uncached(
         &mut self,
         doc: &Document,
         cache: &Cache,
         spreads: &[Placed],
-        width: u32,
-        height: u32,
+        size: (u32, u32),
         view: Affine,
         opts: &RenderOptions,
     ) -> Rendered {
         let start = now();
+        let (width, height) = size;
         let w = width.clamp(1, MAX_SIDE) as u16;
         let h = height.clamp(1, MAX_SIDE) as u16;
         let mut ctx = match self.ctx.take() {
@@ -156,6 +149,6 @@ impl Renderer {
         let view = Affine::scale(scale) * Affine::translate(-r.origin().to_vec2());
         let mut o = opts.clone();
         o.background = Some([255, 255, 255, 255]);
-        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], w, h, view, &o))
+        Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, &o))
     }
 }

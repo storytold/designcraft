@@ -922,3 +922,76 @@ fn char_css_joins_underline_and_strikethrough_in_one_declaration() {
     assert!(css(false, true).contains("text-decoration: line-through;"));
     assert!(!css(false, false).contains("text-decoration"));
 }
+
+#[test]
+fn character_styles_keep_decorations_caps_and_tracking() {
+    let mut d = Document::new(&NewDocument::default());
+    d.styles_mut().character.push(designcraft_doc::CharacterStyle {
+        name: "Under".into(),
+        based_on: None,
+        chars: CharAttrs {
+            underline: Some(true),
+            strikethrough: Some(true),
+            capitalization: Some(designcraft_doc::Capitalization::AllCaps),
+            tracking: Some(100.0),
+            ..Default::default()
+        },
+        shortcut: String::new(),
+    });
+    let css = css::stylesheet(&d);
+    assert!(css.contains("text-decoration: underline line-through;"), "{css}");
+    assert!(css.contains("text-transform: uppercase;"), "{css}");
+    assert!(css.contains("letter-spacing: 0.100em;"), "{css}");
+    let o = CharAttrs { strikethrough: Some(true), ..Default::default() };
+    assert_eq!(css::override_css(&d, story::NO_CHAR_STYLE, &o), "text-decoration: line-through;");
+}
+
+fn char_style(name: &str, based_on: Option<&str>, chars: CharAttrs) -> designcraft_doc::CharacterStyle {
+    designcraft_doc::CharacterStyle { name: name.into(), based_on: based_on.map(Into::into), chars, shortcut: String::new() }
+}
+
+#[test]
+fn override_keeps_style_decorations_and_resets_tracking_and_caps() {
+    use designcraft_doc::Capitalization;
+    let mut d = Document::new(&NewDocument::default());
+    let styles = d.styles_mut();
+    styles.character.push(char_style(
+        "Base",
+        None,
+        CharAttrs { underline: Some(true), tracking: Some(100.0), capitalization: Some(Capitalization::AllCaps), ..Default::default() },
+    ));
+    styles.character.push(char_style("Child", Some("Base"), CharAttrs::default()));
+    let strike = CharAttrs { strikethrough: Some(true), ..Default::default() };
+    for style in ["Base", "Child"] {
+        assert_eq!(css::override_css(&d, style, &strike), "text-decoration: underline line-through;", "{style}");
+    }
+    let off = CharAttrs { underline: Some(false), ..Default::default() };
+    assert_eq!(css::override_css(&d, "Child", &off), "text-decoration: none;");
+    let reset = CharAttrs { tracking: Some(0.0), capitalization: Some(Capitalization::Normal), ..Default::default() };
+    assert_eq!(css::override_css(&d, "Child", &reset), "letter-spacing: 0em; text-transform: none; font-variant: normal;");
+    assert_eq!(css::override_css(&d, story::NO_CHAR_STYLE, &reset), "");
+    let styles = d.styles_mut();
+    styles.character.push(char_style("Small", None, CharAttrs { capitalization: Some(Capitalization::SmallCaps), ..Default::default() }));
+    let small = CharAttrs { capitalization: Some(Capitalization::SmallCaps), ..Default::default() };
+    let all = CharAttrs { capitalization: Some(Capitalization::AllCaps), ..Default::default() };
+    assert_eq!(css::override_css(&d, "Base", &small), "text-transform: none; font-variant: normal; font-variant: small-caps;");
+    assert_eq!(css::override_css(&d, "Small", &all), "text-transform: none; font-variant: normal; text-transform: uppercase;");
+}
+
+fn grouped_text(hidden: bool) -> Document {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "Grouped text", ParaFormat::default()).unwrap();
+    let child = Arc::make_mut(&mut d.spreads[0]).items.pop().unwrap();
+    let mut g = Item::new(ItemId(d.alloc()), lid, Shape::Group, Default::default());
+    g.content = Content::Group { items: vec![child] };
+    g.hidden = hidden;
+    Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(g));
+    d
+}
+
+#[test]
+fn hidden_group_children_are_not_exported() {
+    assert!(html::reading_order(&grouped_text(true)).is_empty());
+    assert_eq!(html::reading_order(&grouped_text(false)).len(), 1);
+}

@@ -3,7 +3,7 @@ use super::cell::Row;
 use super::cell::{RowHeightMode, RowKind};
 use super::grid::CellRange;
 use super::story::append_story;
-use super::*;
+use super::{Story, Table};
 
 impl Table {
     /// The smallest range containing `r` that doesn't cut through a merged region.

@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use super::PendingDrop;
+use super::{DesignApp, InputGeneration, Value, menus};
 
 impl DesignApp {
     /// Keep pending synthetic input and screenshot settlement repainting while the window may be

@@ -6,6 +6,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+/// DesignCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.designcraft.png")),
+    accent: Some([0x7b, 0xb5, 0x1c]),
+    ..craft_update::suite::DESIGNCRAFT
+};
+
 pub mod about;
 pub mod canvas;
 pub mod chrome;
@@ -22,6 +31,7 @@ pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
@@ -61,7 +71,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PickFn, ReadFn, Services, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -120,6 +130,19 @@ struct ShotRequest {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
+    /// on a later frame (see `app/file_dialogs.rs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) file_dialogs: app::file_dialogs::Dialogs,
+    /// The dialogs asked for and not yet answered, in order: the same one isn't asked twice.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) asked: Vec<app::file_dialogs::AskKey>,
+    /// Dialog answers waiting for an egui dialog to close.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) held_answers: Vec<app::file_dialogs::Held>,
+    /// The context the dialogs' wake-up repaints, once the first frame has run.
+    #[cfg(not(target_arch = "wasm32"))]
+    dialog_wake: std::sync::Arc<std::sync::OnceLock<egui::Context>>,
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
@@ -272,6 +295,8 @@ struct QuitState {
     original_active: Option<u64>,
     accepted: HashMap<u64, u64>,
     pending: Option<u64>,
+    /// The document whose Save answer went to a save dialog that hasn't answered yet.
+    saving: Option<u64>,
 }
 
 /// Whether CJK-only interface is shown (Preferences › Type › Show CJK Features): the explicit

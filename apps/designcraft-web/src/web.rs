@@ -410,8 +410,6 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
                 ctx.request_repaint();
             });
         })),
-        // Exports ask for a name; the browser decides where the download goes.
-        pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         inbox: Some(inbox),

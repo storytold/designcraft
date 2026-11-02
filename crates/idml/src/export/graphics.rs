@@ -1,5 +1,5 @@
 use super::common::{bool_s, color_value, pct, pkg_root};
-use super::*;
+use super::{Color, ColorType, El, Ex, GradientKind, SwatchValue, document, escape_id, num, swatch};
 
 // Retained IDML attributes have unprefixed ASCII names. Native JSON can be
 // edited independently: never let its map keys become XML syntax or Self IDs.

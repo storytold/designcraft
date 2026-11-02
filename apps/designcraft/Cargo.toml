@@ -24,6 +24,8 @@ log = { workspace = true }
 winresource = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Not called here: craft-dialogs shows the dialogs. rfd's default features keep its Wayland
+# support on, so portal dialogs get the window as their parent.
 rfd = { workspace = true }
 arboard = { workspace = true }
 

@@ -212,19 +212,41 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .transpose()?
         .map(|sst| sst.els().filter(|e| e.name == "si").map(string_item).collect())
         .unwrap_or_default();
+    // A `t="s"` cell holds an index into the shared strings and each one is materialised as its
+    // own `String`, so one large shared string referenced by many cells multiplies: a 1 MB string
+    // and 3M references is terabytes, allocated before the grid cap below ever applies, and an
+    // allocation that large aborts the process rather than failing (#1584). Collection carries a
+    // byte budget and a cell count of its own.
+    const MAX_TEXT_BYTES: usize = 64 << 20;
+    const MAX_COLLECTED_CELLS: usize = 400_000;
     let mut cells: Vec<((usize, usize), String)> = Vec::new();
+    let mut text_bytes = 0usize;
+    let mut cut = false;
     if let Some(data) = sheet.child("sheetData") {
-        for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
+        'rows: for (ri, row) in data.els().filter(|e| e.name == "row").enumerate() {
             for (ci, c) in row.els().filter(|e| e.name == "c").enumerate() {
                 let at = c.attr("r").and_then(cell_ref).unwrap_or((ri, ci));
                 let v = value(c, &shared);
-                if !v.is_empty() {
-                    cells.push((at, v));
+                if v.is_empty() {
+                    continue;
                 }
+                if cells.len() >= MAX_COLLECTED_CELLS || text_bytes.saturating_add(v.len()) > MAX_TEXT_BYTES {
+                    cut = true;
+                    break 'rows;
+                }
+                text_bytes = text_bytes.saturating_add(v.len());
+                cells.push((at, v));
             }
         }
     }
     let mut warnings = Vec::new();
+    if cut {
+        warnings.push(format!(
+            "the worksheet holds more than {} cells or {} MB of text: the rest was not read",
+            MAX_COLLECTED_CELLS,
+            MAX_TEXT_BYTES / (1 << 20)
+        ));
+    }
     if cells.is_empty() {
         warnings.push("the worksheet is empty".into());
     }
@@ -291,6 +313,50 @@ mod tests {
             z.finish().unwrap();
         }
         buf.into_inner()
+    }
+
+    /// A `t="s"` cell materialises its own copy of the shared string, so one big string with many
+    /// references multiplies: the audit's case is a 1 MB string and 3M cells, terabytes, built
+    /// before the grid cap applies (#1584). Collection now carries its own byte budget.
+    #[test]
+    fn a_shared_string_referenced_many_times_does_not_multiply() {
+        // A 64 KB shared string referenced 2,000 times would be 128 MB of cell text; the budget
+        // is 64 MB, so collection stops and says so.
+        let big = "y".repeat(64 * 1024);
+        let cells: String = (1..=2_000).map(|r| format!(r#"<row r="{r}"><c r="A{r}" t="s"><v>0</v></c></row>"#)).collect();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default();
+            for (name, body) in [
+                (
+                    "xl/workbook.xml",
+                    r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Big" sheetId="1" r:id="rId1"/></sheets></workbook>"#.to_string(),
+                ),
+                (
+                    "xl/_rels/workbook.xml.rels",
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#.to_string(),
+                ),
+                ("xl/sharedStrings.xml", format!("<sst><si><t>{big}</t></si></sst>")),
+                ("xl/worksheets/sheet1.xml", format!("<worksheet><sheetData>{cells}</sheetData></worksheet>")),
+            ] {
+                z.start_file(name, o).unwrap();
+                z.write_all(body.as_bytes()).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        let imp = import(&buf.into_inner()).unwrap();
+        let table = imp.story.tables.values().next().expect("a table");
+        let text: usize = (0..table.nrows())
+            .flat_map(|r| (0..table.ncols()).map(move |c| (r, c)))
+            .filter_map(|(r, c)| table.cell(r, c).map(|cell| cell.text.text.len()))
+            .sum();
+        assert!(text <= 64 << 20, "the table holds at most the budget: {text} bytes");
+        assert!(imp.warnings.iter().any(|w| w.contains("was not read")), "the report says the sheet was cut: {:?}", imp.warnings);
+
+        // An ordinary workbook is unaffected and reports nothing of the sort.
+        let plain = import(&workbook()).unwrap();
+        assert!(!plain.warnings.iter().any(|w| w.contains("was not read")), "{:?}", plain.warnings);
     }
 
     #[test]

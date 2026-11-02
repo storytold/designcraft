@@ -46,12 +46,12 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
         if para && n == designcraft_doc::NO_PARA_STYLE {
             continue;
         }
-        style_row(app, ui, para, n, current.as_deref(), overrides > 0, &groups, &t);
+        style_row(app, ui, para, n, (current.as_deref(), overrides > 0), &groups, &t);
     }
     for g in &groups {
         egui::CollapsingHeader::new(g.as_str()).id_salt(("style_group", para, g)).default_open(true).show(ui, |ui| {
             for n in names.iter().filter(|n| n.rsplit_once('/').is_some_and(|(x, _)| x == g)) {
-                style_row(app, ui, para, n, current.as_deref(), overrides > 0, &groups, &t);
+                style_row(app, ui, para, n, (current.as_deref(), overrides > 0), &groups, &t);
             }
         });
     }
@@ -107,7 +107,15 @@ pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// One style in the list: click applies (⌥ clears overrides), double-click edits,
 /// right-click: edit, apply, break link, move to group.
-fn style_row(app: &mut DesignApp, ui: &mut egui::Ui, para: bool, n: &str, current: Option<&str>, overridden: bool, groups: &[String], t: &Tokens) {
+fn style_row(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    para: bool,
+    n: &str,
+    (current, overridden): (Option<&str>, bool),
+    groups: &[String],
+    t: &Tokens,
+) {
     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
     if current == Some(n) {
         ui.painter().rect_filled(row, 0.0, t.row_selected);
@@ -219,7 +227,7 @@ mod tests {
         let mut h = Harness::builder().with_size(vec2(360.0, 240.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let tokens = Tokens::get(ui.ctx());
-                style_row(app, ui, true, "Header", Some("Header"), true, &[], &tokens);
+                style_row(app, ui, true, "Header", (Some("Header"), true), &[], &tokens);
             },
             app,
         );

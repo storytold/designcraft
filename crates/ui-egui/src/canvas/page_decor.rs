@@ -1,7 +1,10 @@
 use super::guides::MovingGuides;
 use super::render::c32;
 use super::rulers::hair;
-use super::*;
+use super::{
+    CanvasLayout, Color32, DRect, DesignApp, Document, GuideSel, Item, Point, Pos2, Rect, ScreenMode, SpreadRef, SpreadSlot, Stroke, StrokeKind,
+    Tokens, Xf,
+};
 
 pub(super) fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, dash: f32, gap: f32) {
     painter.extend(egui::Shape::dashed_line(&[a, b], stroke, dash, gap));
@@ -58,7 +61,8 @@ pub(super) fn draw_guides(
                 continue;
             }
             draw_page_grids(painter, xf, doc, slot, p, pr, app.ui.baseline_grid);
-            draw_page_guides(painter, xf, doc, slot, sp, pi, p, pr, pasteboard, moving, &selection);
+            let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard };
+            draw_page_guides(&cx, (pi, p, pr), moving, &selection);
         }
     }
     let _ = t;
@@ -123,21 +127,26 @@ fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &Spre
     }
 }
 
-/// The page's own guides, then those it shows from its parent page. `moving` draws dragged
-/// guides where they would be dropped.
-fn draw_page_guides(
-    painter: &egui::Painter,
-    xf: &Xf,
-    doc: &Document,
-    slot: &SpreadSlot,
-    sp: &designcraft_doc::Spread,
-    pi: usize,
-    p: &designcraft_doc::Page,
-    pr: DRect,
+/// What one page's guides are drawn against.
+struct GuideCtx<'a> {
+    painter: &'a egui::Painter,
+    xf: &'a Xf,
+    doc: &'a Document,
+    slot: &'a SpreadSlot,
+    sp: &'a designcraft_doc::Spread,
     pasteboard: DRect,
+}
+
+/// The page's own guides, then those it shows from its parent page. `moving` draws dragged
+/// guides where they would be dropped. `page`: its index in the spread, the page, and its bounds.
+fn draw_page_guides(
+    cx: &GuideCtx,
+    page: (usize, &designcraft_doc::Page, DRect),
     moving: Option<&MovingGuides>,
     selection: &std::collections::HashSet<GuideSel>,
 ) {
+    let GuideCtx { doc, slot, .. } = *cx;
+    let (pi, p, pr) = page;
     let own = p.guides.len();
     for (gi, mut g) in p.guides.iter().cloned().chain(doc.parent_guides(p)).enumerate().filter(|(_, g)| g.visible_in(doc)) {
         let key = GuideSel { spread: slot.spread, page: pi, index: gi };
@@ -152,22 +161,13 @@ fn draw_page_guides(
                 designcraft_doc::Orientation::Horizontal => m.dy,
             };
         }
-        draw_guide(painter, xf, doc, slot, sp, pr, pasteboard, &g, selected);
+        draw_guide(cx, pr, &g, selected);
     }
 }
 
 /// One guide as a line: across the pasteboard for a spread guide, across its page otherwise.
-fn draw_guide(
-    painter: &egui::Painter,
-    xf: &Xf,
-    doc: &Document,
-    slot: &SpreadSlot,
-    sp: &designcraft_doc::Spread,
-    pr: DRect,
-    pasteboard: DRect,
-    g: &designcraft_doc::Guide,
-    selected: bool,
-) {
+fn draw_guide(cx: &GuideCtx, pr: DRect, g: &designcraft_doc::Guide, selected: bool) {
+    let GuideCtx { painter, xf, doc, slot, sp, pasteboard } = *cx;
     let pt = |q: Point| xf.to_screen(slot.xf * q);
     // Spread guides cross the pasteboard; page guides their page.
     let span = if g.spread { pasteboard } else { pr };

@@ -1,5 +1,5 @@
+use super::Table;
 use super::cell::{Cell, Column, RowKind};
-use super::*;
 
 impl Table {
     /// Insert `n` rows before row `at` (formatted like the neighbouring row).

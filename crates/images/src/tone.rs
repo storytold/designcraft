@@ -39,6 +39,9 @@ pub fn tone(bytes: &[u8]) -> Option<Tone> {
         },
         // Indexed: what the palette holds decides. Transparent pixels are left out of a bitmap.
         F::Gif => {
+            if crate::too_large_to_decode(bytes) {
+                return None;
+            }
             let img = image::load_from_memory_with_format(bytes, F::Gif).ok()?.into_rgba8();
             let mut opaque = true;
             let mut two_level = true;

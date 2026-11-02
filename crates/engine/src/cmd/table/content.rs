@@ -1,6 +1,6 @@
 use super::selection::cell_at;
 use super::target::{clamp_selection, edit_table, target};
-use super::*;
+use super::{CellRange, Result, Session, TableSel, Value, bad, json};
 
 pub(super) fn drop_cells(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "table.dropCells";

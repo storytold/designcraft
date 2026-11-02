@@ -117,9 +117,12 @@ pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
     Ok(plain(&tagged::decode(bytes)))
 }
 
-/// Plain text: line breaks become paragraphs (CRLF / CR normalised).
+/// Plain text: line breaks become paragraphs (CRLF / CR normalised). The private-use characters
+/// (U+E000–U+E1FF) that stories use as markers are dropped, since a stray one would be read as a
+/// marker without its payload.
 pub fn plain(text: &str) -> Imported {
     let t = text.trim_start_matches('\u{FEFF}').replace("\r\n", "\n").replace('\r', "\n");
+    let t: String = t.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect();
     let story = Story::with_text(designcraft_doc::StoryId(0), &t, Default::default());
     Imported { story, para_styles: vec![], char_styles: vec![], warnings: vec![] }
 }
@@ -135,6 +138,12 @@ mod tests {
         assert_eq!(i.story.paras.len(), 3);
         assert!(is_text_file("Report.DOCX") && !is_text_file("a.png"));
         assert!(matches!(import("x.doc", b"\xD0\xCF"), Err(ImportError::Unsupported(_))));
+    }
+
+    #[test]
+    fn plain_text_drops_story_markers() {
+        let i = import("a.txt", "a\u{E009}b\u{E000}c\u{E002}d".as_bytes()).unwrap();
+        assert_eq!(i.story.text, "abcd");
     }
 
     #[test]

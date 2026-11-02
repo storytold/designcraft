@@ -1,6 +1,6 @@
 use super::common::{tf, to_path};
 use super::images::ImageContentCache;
-use super::metadata::{date_time, file_info_metadata, now_unix};
+use super::metadata::{date_time, export_time, file_info_metadata};
 use super::*;
 
 /// Export `doc` as PDF bytes.
@@ -162,7 +162,7 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     };
     let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, configuration, ..base };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let created = opts.created.or_else(now_unix);
+    let created = opts.created.or_else(export_time);
     let metadata = Metadata { created: created.map(date_time), ..file_info_metadata(doc, opts.title.as_deref(), opts.author.as_deref()) };
     let mut writer = Writer::new(settings, metadata);
     let pdf = writer.document_mut();

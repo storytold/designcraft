@@ -230,10 +230,12 @@ fn build(
     path: &str,
     recent: &mut Option<Submenu>,
 ) {
-    for e in entries {
+    for (i, e) in entries.iter().enumerate() {
         match e {
             Item::Sep => {
-                let _ = parent.append(&PredefinedMenuItem::separator());
+                if menus::has_shown_item(app, &entries[i + 1..]) {
+                    let _ = parent.append(&PredefinedMenuItem::separator());
+                }
             }
             Item::Sub(label, children) => {
                 let sub = Submenu::new(menu_title(app, label), true);

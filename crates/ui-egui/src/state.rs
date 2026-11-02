@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use super::render_worker;
+use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, theme};
 
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
@@ -405,7 +407,7 @@ impl Default for UiState {
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
             story_editor_style_column: true,
-            story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_style_width: crate::story_editor::STYLE_COLUMN_WIDTH,
             story_editor_paragraph_marks: false,
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),

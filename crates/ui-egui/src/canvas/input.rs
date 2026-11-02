@@ -4,7 +4,10 @@ use super::ime::{finish_pending_ime_delete, ime_event};
 use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
-use super::*;
+use super::{
+    CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Item, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, SpreadRef, Stroke,
+    StrokeKind, Tokens, ToolKey, Xf, json, pos2, vec2,
+};
 
 /// Whether the pointer this canvas's window last saw is in another of the app's windows: a
 /// floating panel's OS window, or the other window of New Window.
@@ -166,15 +169,8 @@ fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::Ite
     Some((id, sp))
 }
 
-/// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
-pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
-    // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
-    let menu_open = context_menu_open(ui.ctx());
-    let Some(v) = app.view().copied() else { return };
-    let xf = Xf::new(rect, &v);
-    let wants_text = app.session.wants_text();
-    let space = navigation_space(app, ui.ctx());
-    // Scroll / zoom.
+/// Wheel, pinch and Alt/Ctrl/Cmd + wheel over the canvas: zoom at the pointer, else scroll.
+fn wheel_navigate(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf: &Xf) {
     let alt = wheel_alt(ui);
     if resp.hovered() {
         let (scroll, zoom_delta, m, hover) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers, i.pointer.hover_pos()));
@@ -195,6 +191,108 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
             }
         }
     }
+}
+
+/// Where the primary button went down this pass, if egui no longer holds the press origin.
+fn recent_primary_press(ui: &egui::Ui) -> Option<Pos2> {
+    ui.input(|i| {
+        i.events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                _ => None,
+            })
+            .filter(|pos| pos.is_finite())
+    })
+}
+
+/// Power Zoom: whether a press held still with the Hand tool (`active`) has now lasted half a
+/// second. Keeps the hold's state under `hold_id`, and clears it when the hold ends.
+fn power_zoom_fires(ui: &egui::Ui, hold_id: egui::Id, active: bool, latest: Option<Pos2>) -> bool {
+    if !active {
+        ui.data_mut(|d| d.remove::<(f64, bool)>(hold_id));
+        return false;
+    }
+    let (now, origin_pos) = ui.input(|i| (i.time, i.pointer.press_origin()));
+    let (start, fired): (f64, bool) = ui.data(|d| d.get_temp(hold_id)).unwrap_or((now, false));
+    let still = origin_pos.zip(latest).is_some_and(|(o, l)| (o - l).length() < 3.0);
+    if !fired && still && now - start >= 0.5 {
+        ui.data_mut(|d| d.insert_temp(hold_id, (start, true)));
+        return true;
+    }
+    ui.data_mut(|d| d.insert_temp(hold_id, (start, fired)));
+    if !fired {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+/// The zero point, ruler guide and column guide drags; whether one took this pass.
+fn ruler_drags(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf, space: bool, menu_open: bool) -> bool {
+    // The zero point and ruler guides need the rulers (hidden while the view is rotated).
+    if !space && !menu_open && xf.rot == 0 && zero_point_drag(app, ui, resp, rect, xf) {
+        return true;
+    }
+    // Hidden or locked guides can't stay selected.
+    if (!app.ui.guides || app.ui.guides_locked) && app.session.active().is_some_and(|st| !st.selection.guides.is_empty()) {
+        let _ = app.run("guide.deselect", json!({}));
+    }
+    if !space && !menu_open && xf.rot == 0 && guide_drag(app, ui, resp, rect, xf) {
+        return true;
+    }
+    if !space && !menu_open && xf.rot == 0 && column_guide_drag(app, ui, resp, rect, xf) {
+        return true;
+    }
+    false
+}
+
+/// Hand-tool panning (Space-drag, middle drag, or Alt held at a text press); whether it took this pass.
+fn hand_pan(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, xf: &Xf, space: bool, wants_text: bool, menu_open: bool) -> bool {
+    let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::unique(("canvas_pointer_down", app.pane)))).unwrap_or(false);
+    let hand = space && !ui.input(|i| i.modifiers.command);
+    if !tool_drag && ((hand && resp.dragged()) || resp.dragged_by(egui::PointerButton::Middle)) {
+        let d = xf.unrotate_delta(resp.drag_delta());
+        if let Some(v) = app.view_mut() {
+            v.origin = Point::new(v.origin.x - d.x as f64 / v.zoom, v.origin.y - d.y as f64 / v.zoom);
+        }
+        return true;
+    }
+    // Editing text (Space types a space): Alt held at the press gives the Hand tool until the
+    // button is released, and the caret stays. Alt pressed later in a text drag copies the text.
+    let alt_hand_id = egui::Id::unique(("canvas_alt_hand", app.pane));
+    let mut alt_hand: bool = ui.data(|d| d.get_temp(alt_hand_id)).unwrap_or(false);
+    let (press, alt, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt, i.pointer.primary_down()));
+    if press && alt && wants_text && !tool_drag && !menu_open && resp.hovered() {
+        alt_hand = true;
+    }
+    if alt_hand {
+        if resp.dragged() {
+            pan(app, xf, resp.drag_delta());
+        }
+        ui.data_mut(|d| d.insert_temp(alt_hand_id, primary_down));
+        return true;
+    }
+    false
+}
+
+/// A release ends the press run's last click; remembers where and when for the next press.
+fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f64) {
+    if let Some(c) = ui.data(|d| d.get_temp::<Clicks>(clicks_id)) {
+        let dist = ui.ctx().options(|o| o.input_options.max_click_dist);
+        ui.data_mut(|d| d.insert_temp(clicks_id, release_clicks(c, latest.unwrap_or(c.pos), now, dist)));
+    }
+}
+
+/// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
+pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
+    // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
+    let menu_open = context_menu_open(ui.ctx());
+    let Some(v) = app.view().copied() else { return };
+    let xf = Xf::new(rect, &v);
+    let wants_text = app.session.wants_text();
+    let space = navigation_space(app, ui.ctx());
+    wheel_navigate(app, ui, resp, &xf);
     let zoom = spring_zoom_mode(app, ui.ctx(), space);
     if spring_zoom_input(app, ui, resp, &xf, zoom) {
         return;
@@ -207,42 +305,10 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     if ui.data(|d| d.get_temp::<ColumnDrag>(egui::Id::unique((COLUMN_DRAG, app.pane)))).is_some() && column_guide_drag(app, ui, resp, rect, &xf) {
         return;
     }
-    let tool_drag: bool = ui.data(|d| d.get_temp(egui::Id::unique(("canvas_pointer_down", app.pane)))).unwrap_or(false);
-    let hand = space && !ui.input(|i| i.modifiers.command);
-    if !tool_drag && ((hand && resp.dragged()) || resp.dragged_by(egui::PointerButton::Middle)) {
-        let d = xf.unrotate_delta(resp.drag_delta());
-        if let Some(v) = app.view_mut() {
-            v.origin = Point::new(v.origin.x - d.x as f64 / v.zoom, v.origin.y - d.y as f64 / v.zoom);
-        }
+    if hand_pan(app, ui, resp, &xf, space, wants_text, menu_open) {
         return;
     }
-    // Editing text (Space types a space): Alt held at the press gives the Hand tool until the
-    // button is released, and the caret stays. Alt pressed later in a text drag copies the text.
-    let alt_hand_id = egui::Id::unique(("canvas_alt_hand", app.pane));
-    let mut alt_hand: bool = ui.data(|d| d.get_temp(alt_hand_id)).unwrap_or(false);
-    let (press, alt, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt, i.pointer.primary_down()));
-    if press && alt && wants_text && !tool_drag && !menu_open && resp.hovered() {
-        alt_hand = true;
-    }
-    if alt_hand {
-        if resp.dragged() {
-            pan(app, &xf, resp.drag_delta());
-        }
-        ui.data_mut(|d| d.insert_temp(alt_hand_id, primary_down));
-        return;
-    }
-    // The zero point and ruler guides need the rulers (hidden while the view is rotated).
-    if !space && !menu_open && xf.rot == 0 && zero_point_drag(app, ui, resp, rect, &xf) {
-        return;
-    }
-    // Hidden or locked guides can't stay selected.
-    if (!app.ui.guides || app.ui.guides_locked) && app.session.active().is_some_and(|st| !st.selection.guides.is_empty()) {
-        let _ = app.run("guide.deselect", json!({}));
-    }
-    if !space && !menu_open && xf.rot == 0 && guide_drag(app, ui, resp, rect, &xf) {
-        return;
-    }
-    if !space && !menu_open && xf.rot == 0 && column_guide_drag(app, ui, resp, rect, &xf) {
+    if ruler_drags(app, ui, resp, rect, &xf, space, menu_open) {
         return;
     }
     let m = ui.input(|i| mods(i, space));
@@ -256,18 +322,7 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos(), i.time));
     // A complete click can arrive in one pass: release clears egui's held origin.
     // Recover the actual primary press position, preserving the origin for held gestures.
-    let origin = origin.or_else(|| {
-        ui.input(|i| {
-            i.events
-                .iter()
-                .rev()
-                .find_map(|event| match event {
-                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
-                    _ => None,
-                })
-                .filter(|pos| pos.is_finite())
-        })
-    });
+    let origin = origin.or_else(|| recent_primary_press(ui));
     let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
     if pressed
         && !space
@@ -282,38 +337,25 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m, clicks: n });
         down = true;
     }
+    // The place cursor draws a frame from 3 points (its own threshold), before egui starts a
+    // drag (at `max_click_dist`): follow the pointer from there, so a release between the two
+    // places the frame that was previewed.
+    let place_drag = app.session.tool_id() == "placeGun" && origin.zip(latest).is_some_and(|(o, p)| (o - p).length() >= 3.0);
     if down
-        && resp.dragged()
-        && resp.drag_delta() != egui::Vec2::ZERO
+        && ((resp.dragged() && resp.drag_delta() != egui::Vec2::ZERO) || place_drag)
         && let Some(p) = latest
     {
         events.push(PointerEvent { kind: PointerKind::Drag, pos: pos(p), mods: m, clicks: 1 });
     }
     // Power Zoom: holding the Hand tool still for half a second turns the press into one.
     let hold_id = egui::Id::unique(("canvas_hold", app.pane));
-    if down && !released && app.session.tool_id() == "hand" && !m.alt {
-        let (now, origin_pos) = ui.input(|i| (i.time, i.pointer.press_origin()));
-        let (start, fired): (f64, bool) = ui.data(|d| d.get_temp(hold_id)).unwrap_or((now, false));
-        let still = origin_pos.zip(latest).is_some_and(|(o, l)| (o - l).length() < 3.0);
-        if !fired && still && now - start >= 0.5 {
-            let p = pos(latest.unwrap_or(rect.center()));
-            events.push(PointerEvent { kind: PointerKind::Up, pos: p, mods: m, clicks: 1 });
-            events.push(PointerEvent { kind: PointerKind::Down, pos: p, mods: Mods { alt: true, ..m }, clicks: 1 });
-            ui.data_mut(|d| d.insert_temp(hold_id, (start, true)));
-        } else {
-            ui.data_mut(|d| d.insert_temp(hold_id, (start, fired)));
-            if !fired {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-            }
-        }
-    } else {
-        ui.data_mut(|d| d.remove::<(f64, bool)>(hold_id));
+    if power_zoom_fires(ui, hold_id, down && !released && app.session.tool_id() == "hand" && !m.alt, latest) {
+        let p = pos(latest.unwrap_or(rect.center()));
+        events.push(PointerEvent { kind: PointerKind::Up, pos: p, mods: m, clicks: 1 });
+        events.push(PointerEvent { kind: PointerKind::Down, pos: p, mods: Mods { alt: true, ..m }, clicks: 1 });
     }
     if down && released {
-        if let Some(c) = ui.data(|d| d.get_temp::<Clicks>(clicks_id)) {
-            let dist = ui.ctx().options(|o| o.input_options.max_click_dist);
-            ui.data_mut(|d| d.insert_temp(clicks_id, release_clicks(c, latest.unwrap_or(c.pos), now, dist)));
-        }
+        note_release(ui, clicks_id, latest, now);
         let p = latest.unwrap_or(rect.center());
         events.push(PointerEvent { kind: PointerKind::Up, pos: pos(p), mods: m, clicks: 1 });
         down = false;

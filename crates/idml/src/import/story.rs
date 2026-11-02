@@ -1,5 +1,8 @@
 use super::text_attrs::{ace_char, clear_story_drop_cap_styles, inherits_drop_cap_style};
-use super::*;
+use super::{
+    Arc, BTreeMap, CharAttrs, CharFormat, CharRun, El, HashMap, HashSet, Importer, Item, ItemId, ParaFormat, Story, StoryId, Table, names, st,
+};
+use crate::xml::Node;
 
 impl<'r> Importer<'r> {
     // ---------- stories ----------
@@ -44,10 +47,14 @@ impl<'r> Importer<'r> {
             anchor_list.push(Arc::new(designcraft_doc::TextAnchor { id: aid, name }));
         }
         let mut xref_list = Vec::new();
-        for (k, (me, fmt)) in xrefs.into_iter().enumerate() {
-            self.xref_srcs.insert(me, (id, k));
-            let format = self.xref_format_names.get(&fmt).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
-            xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format }));
+        for (k, x) in xrefs.into_iter().enumerate() {
+            self.xref_srcs.insert(x.me, (id, k));
+            let format = self.xref_format_names.get(&x.format).cloned().unwrap_or_else(|| "Full Paragraph & Page Number".into());
+            // The text as saved: once the destinations are known, text the format generates
+            // exactly is dropped to be generated again (`drop_generated_xref_text`), and text
+            // typed over it is kept, as InDesign shows it until the cross-reference is updated.
+            let saved = !x.text.is_empty();
+            xref_list.push(Arc::new(designcraft_doc::CrossRef { target: 0, format, text: saved.then_some(x.text), page: x.page.filter(|_| saved) }));
         }
         let pref = e.find("StoryPreference");
         let optical_margin = designcraft_doc::OpticalMargin {
@@ -168,8 +175,11 @@ impl<'r> Importer<'r> {
                         b.fresh = true;
                     }
                     "Table" => {
-                        let t = self.table(c);
-                        b.push_table(t, pf, cf);
+                        // `None` once the file-wide cell budget is spent: the table is not read
+                        // at all rather than kept as a 1 x 1 (noted in review).
+                        if let Some(t) = self.table(c) {
+                            b.push_table(t, pf, cf);
+                        }
                     }
                     "HyperlinkTextDestination" | "ParagraphDestination" => {
                         b.anchors.push((c.get("Self").unwrap_or("").to_string(), c.get("Name").unwrap_or("Anchor").to_string()));
@@ -189,7 +199,14 @@ impl<'r> Importer<'r> {
                     }
                     "CrossReferenceSource" => {
                         // The generated text is regenerated from the format.
-                        b.xrefs.push((c.get("Self").unwrap_or("").to_string(), c.get("AppliedFormat").unwrap_or("").to_string()));
+                        let (mut text, mut page) = (String::new(), None);
+                        xref_saved_text(c, &self.xref_page_vars, &mut text, &mut page, 0);
+                        b.xrefs.push(XrefSource {
+                            me: c.get("Self").unwrap_or("").to_string(),
+                            format: c.get("AppliedFormat").unwrap_or("").to_string(),
+                            text,
+                            page,
+                        });
                         // A source at paragraph level wraps a range; inside a range it holds the
                         // text directly and takes that range's format.
                         let f = c.find("CharacterStyleRange").map_or_else(|| cf.clone(), |r| self.range_format(r, pchars, cf));
@@ -396,8 +413,48 @@ struct StoryBuilder {
     /// Text destinations (Self, name) and cross-reference sources (Self, format Self) in order.
     anchors: Vec<(String, String)>,
     index_refs: Vec<designcraft_doc::IndexRef>,
-    xrefs: Vec<(String, String)>,
+    xrefs: Vec<XrefSource>,
     objects: Vec<designcraft_doc::AnchoredObject>,
+}
+
+/// A cross-reference source as saved: its id, its format's id, and its text with each page number
+/// as `<pageNum />` (and the page it last showed).
+struct XrefSource {
+    me: String,
+    format: String,
+    text: String,
+    page: Option<String>,
+}
+
+/// Whether a `TextVariableInstance` shows a cross-reference page number: its
+/// `AssociatedTextVariable` is a variable of that type (`page_vars`), or, in a file that doesn't
+/// define it, has the name InDesign gives that variable.
+fn is_xref_page_number(e: &El, page_vars: &HashSet<String>) -> bool {
+    e.get("AssociatedTextVariable").is_some_and(|v| page_vars.contains(v) || (page_vars.is_empty() && v.ends_with("TV XRefPageNumber")))
+}
+
+/// The text a `CrossReferenceSource` holds as shown, with its live page numbers (InDesign's
+/// cross-reference page number variable, `page_vars`) as `<pageNum />`. Tracked insertions count;
+/// tracked deletions don't. Returns the text and the page shown.
+fn xref_saved_text(e: &El, page_vars: &HashSet<String>, text: &mut String, page: &mut Option<String>, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    for c in e.elements() {
+        match c.local() {
+            "Content" => text.push_str(&c.text_content()),
+            "TextVariableInstance" if is_xref_page_number(c, page_vars) => {
+                text.push_str(designcraft_doc::xref::PAGE_NUM_BLOCK);
+                if page.is_none() {
+                    *page = c.get("ResultText").map(str::to_string);
+                }
+            }
+            "TextVariableInstance" => text.push_str(c.get("ResultText").unwrap_or("")),
+            "Change" if c.get("ChangeType") == Some("DeletedText") => {}
+            "CharacterStyleRange" | "Change" => xref_saved_text(c, page_vars, text, page, depth + 1),
+            _ => {}
+        }
+    }
 }
 
 impl StoryBuilder {

@@ -1,4 +1,5 @@
-use super::*;
+use super::{DesignApp, Sense, Tokens, Value, divider, json, sel_info, units, vec2};
+use crate::app::file_dialogs::Bound;
 
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
 /// graphic and linked text file; Relink, Go To Link, Update Link, Embed Link for the chosen row.
@@ -143,10 +144,15 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             p[k] = v;
             p
         };
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-        {
-            let _ = app.run("links.relink", with("path", json!(path)));
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
+            let target = with("path", Value::Null);
+            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+                let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
+                Ok(Value::Null)
+            });
+            if let Err(e) = asked {
+                app.status_error("Relink", e);
+            }
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
@@ -178,12 +184,16 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
             })
             .clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|pick| pick("relink"))
-            && let Some(dir) = std::path::Path::new(&path).parent()
         {
-            let r = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()}));
-            if let Ok(v) = r {
-                app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
+            let asked = app.ask_open("relink", Bound::Document, |app, path| {
+                let Some(dir) = std::path::Path::new(&path).parent() else { return Ok(Value::Null) };
+                if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()})) {
+                    app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
+                }
+                Ok(Value::Null)
+            });
+            if let Err(e) = asked {
+                app.status_error("Relink", e);
             }
         }
     });

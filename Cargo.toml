@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/designcraft", "apps/designcraft-cli", "xtask"]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.16.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -17,7 +17,8 @@ craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff1
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["egui", "ui"] }
 # Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
 craft-prepress = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["flatten"] }
-craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["egui"] }
+# craft-update: app-specific pretend versions apply to startup and manual checks.
+craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "c5a1cbfb5f9049f9270955caffb5bee5997aebf7", features = ["egui"] }
 # internal
 designcraft-geom = { path = "crates/geom" }
 designcraft-color = { path = "crates/color" }
@@ -101,15 +102,20 @@ egui_kittest = "0.37"
 # Monotonic clock on native and web (`Instant`); screenshot settlement must not use wall time.
 web-time = "1"
 rfd = "0.17"
+# Native file and message dialogs that never block the event loop (craft-libs).
+craft-dialogs = { git = "https://github.com/storytold/craft-libs", rev = "1a11a4897865f7410c40d25ca6e452ce399a1a2c" }
+raw-window-handle = "0.6"
 arboard = { version = "3.6", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+wildcard_imports = "deny"
 dbg_macro = "warn"
 todo = "warn"
-too_many_arguments = "allow"
 type_complexity = "allow"
 
 # Line tables keep file and line in panics and backtraces; full debug info

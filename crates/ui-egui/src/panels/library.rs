@@ -4,6 +4,7 @@
 use serde_json::json;
 
 use crate::DesignApp;
+use crate::app::file_dialogs::Bound;
 use crate::theme::Tokens;
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -33,14 +34,14 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Library…"))).clicked() {
-            let path = app.pick_save("Library.dclib");
-            let _ = app.run("library.new", json!({"path": path}));
+            let asked = app.ask_save("Library.dclib", Bound::App, |app, path| app.run("library.new", json!({"path": path})));
+            report(app, "Library", asked);
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("library"))
-            && let Err(e) = app.run("library.open", json!({"path": path}))
-        {
-            app.status_error("Library", e);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked() {
+            let asked = app.ask_open("library", Bound::App, |app, path| {
+                app.run("library.open", json!({"path": path})).or_else(|e| report_err(app, "Library", e))
+            });
+            report(app, "Library", asked);
         }
     });
     let Ok(items) = app.session.execute("library.list", &json!({})) else {
@@ -84,30 +85,57 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
+/// A dialog that couldn't be asked for, in the status line as `feature`'s error.
+fn report(app: &mut DesignApp, feature: &str, asked: Result<serde_json::Value, String>) {
+    if let Err(e) = asked {
+        app.status_error(feature, e);
+    }
+}
+
+/// A command run with a dialog's answer failed: the status line names `feature`.
+fn report_err(app: &mut DesignApp, feature: &str, e: String) -> Result<serde_json::Value, String> {
+    app.status_error(feature, e);
+    Ok(serde_json::Value::Null)
+}
+
+/// Scripts › Load…: the chosen script becomes a new, selected one. Read through the host's
+/// reader, like every other file the UI opens: this crate has no file system of its own.
+fn load_script(app: &mut DesignApp, path: &str, sel_id: egui::Id) {
+    let read = app.services.read.as_mut().map_or_else(|| Err("no file access".to_string()), |r| r(path));
+    match read.and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())) {
+        Ok(text) => {
+            let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
+            app.ui.scripts.push((name, text));
+            let sel = app.ui.scripts.len().saturating_sub(1);
+            if let Some(ctx) = &app.egui_ctx {
+                ctx.data_mut(|d| d.insert_temp(sel_id, sel));
+            }
+        }
+        Err(e) => app.status_error("Scripts", e),
+    }
+}
+
 fn book_open_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked()
-            && let Some(path) = app.pick_save("Book.dcbook")
-            && let Err(e) = app.run("book.new", json!({"path": path}))
-        {
-            app.status_error("Book", e);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New Book…"))).clicked() {
+            let asked = app
+                .ask_save("Book.dcbook", Bound::App, |app, path| app.run("book.new", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
+            report(app, "Book", asked);
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("book"))
-            && let Err(e) = app.run("book.open", json!({"path": path}))
-        {
-            app.status_error("Book", e);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Open…"))).clicked() {
+            let asked =
+                app.ask_open("book", Bound::App, |app, path| app.run("book.open", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
+            report(app, "Book", asked);
         }
     });
 }
 
 fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("open"))
-            && let Err(e) = app.run("book.add", json!({"path": path}))
-        {
-            app.status_error("Book", e);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Add Document…"))).clicked() {
+            let asked =
+                app.ask_open("open", Bound::App, |app, path| app.run("book.add", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
+            report(app, "Book", asked);
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
             let _ = app.run("book.paginate", json!({}));
@@ -115,11 +143,11 @@ fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
             let _ = app.run("book.syncStyles", json!({}));
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked()
-            && let Some(path) = app.pick_save("Book.pdf")
-            && let Err(e) = app.run("book.exportPdf", json!({"path": path}))
-        {
-            app.status_error("Book", e);
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked() {
+            let asked = app.ask_save("Book.pdf", Bound::App, |app, path| {
+                app.run("book.exportPdf", json!({"path": path})).or_else(|e| report_err(app, "Book", e))
+            });
+            report(app, "Book", asked);
         }
     });
 }
@@ -200,20 +228,12 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.ui.scripts.push((format!("Script {}", app.ui.scripts.len() + 1), "# command.id {json} per line\n".into()));
             sel = app.ui.scripts.len() - 1;
         }
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked()
-            && let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("script"))
-        {
-            // Through the host's reader, like every other file the UI opens: this crate has no
-            // file system of its own.
-            let read = app.services.read.as_mut().map_or_else(|| Err("no file access".to_string()), |r| r(&path));
-            match read.and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())) {
-                Ok(text) => {
-                    let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Script".into());
-                    app.ui.scripts.push((name, text));
-                    sel = app.ui.scripts.len() - 1;
-                }
-                Err(e) => app.status_error("Scripts", e),
-            }
+        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Load…"))).clicked() {
+            let asked = app.ask_open("script", Bound::App, move |app, path| {
+                load_script(app, &path, sel_id);
+                Ok(serde_json::Value::Null)
+            });
+            report(app, "Scripts", asked);
         }
         if ui
             .add_enabled(!app.ui.scripts.is_empty(), egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete"))))
