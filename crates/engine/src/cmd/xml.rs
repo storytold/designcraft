@@ -42,6 +42,22 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
+/// Objects on the document pages whose centre lies on a page, not on the pasteboard.
+fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
+    let mut out = std::collections::HashSet::new();
+    for sp in &d.spreads {
+        for top in &sp.items {
+            top.walk(&mut |it: &Item| {
+                let c = it.bounds().center();
+                if sp.pages.iter().any(|pg| c.x >= pg.x && c.x <= pg.x + pg.width && c.y >= 0.0 && c.y <= pg.height) {
+                    out.insert(it.id);
+                }
+            });
+        }
+    }
+    out
+}
+
 /// `text` for text frames, `image` for frames holding a graphic and empty graphic frames, `None`
 /// for anything else: a plain shape is no frame, whatever its object style (InDesign gives every
 /// rectangle the graphics frame style).
@@ -70,7 +86,9 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     let use_names = bool_or(p, "useNames", true);
     let d = &s.doc()?.doc;
     let wanted = |it: &Item| frame_kind(it).is_some_and(|k| kinds.iter().any(|w| w == k)) && (overwrite || it.xml_tag.is_empty());
-    let ids = in_reading_order(d, wanted);
+    // Frames on the pasteboard aren't the page's: they would take numbers before frames on it.
+    let on_page = on_pages(d);
+    let ids: Vec<ItemId> = in_reading_order(d, wanted).into_iter().filter(|id| on_page.contains(id)).collect();
     // Numbers already taken by tags that stay, so `text_3` isn't given twice.
     let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
         .into_iter()
@@ -812,6 +830,29 @@ mod tests {
         assert_eq!(tags, vec![(head.clone(), "headline".into()), (body.clone(), "text_2".into()), (photo.clone(), "image_1".into())]);
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
+        assert!(d.item(designcraft_doc::ItemId(shape.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "a plain shape stays untagged");
+        assert_eq!(d.item(designcraft_doc::ItemId(kept.as_u64().unwrap())).unwrap().xml_tag, "text_1");
+        assert!(d.xml.tags.iter().any(|t| t.name == "headline") && d.xml.tags.iter().any(|t| t.name == "image_1"));
+        // Running again tags nothing new; overwrite with only images retags the photo.
+        assert_eq!(s.execute("xml.autoTag", &json!({})).unwrap()["tagged"].as_array().unwrap().len(), 0);
+        let r = s.execute("xml.autoTag", &json!({"kinds": ["image"], "overwrite": true, "useNames": false})).unwrap();
+        assert_eq!(r["tagged"][0]["tag"], "image_1");
+        assert!(s.execute("xml.autoTag", &json!({"kinds": ["table"]})).is_err());
+        // The tagged frames take imported XML.
+        let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
+        assert_eq!(r["placed"], 2);
+        // A frame on the pasteboard isn't the page's; a text frame made a graphic frame is one.
+        let aside = frame(&mut s, [-300, 72, -100, 120], "text");
+        let converted = frame(&mut s, [450, 300, 550, 400], "text");
+        s.execute("object.content", &json!({"type": "graphic", "ids": [converted]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![converted.clone()], "{r}");
+        assert_eq!(r["tagged"][0]["kind"], "image");
+        assert!(!tagged.contains(&aside));
+        // Made unassigned again, it's a plain shape.
+        s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
+        assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
     }
 
     #[test]
