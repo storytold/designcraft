@@ -62,6 +62,32 @@ pub fn show_spread(app: &mut DesignApp, r: SpreadRef) {
     }
 }
 
+/// Scroll so object `id` is centred, zooming out only when it doesn't fit (leaving the parent
+/// pages for an object on a document page). A jump Go Back can return from.
+pub fn go_to_item(app: &mut DesignApp, id: designcraft_doc::ItemId) {
+    let Some(st) = app.session.active() else { return };
+    let Some(loc) = st.doc.find(id) else { return };
+    if st.editing_parents && matches!(loc.spread, SpreadRef::Doc(_)) {
+        let _ = app.run("layout.parents.edit", serde_json::json!({"on": false}));
+    }
+    let Some(st) = app.session.active() else { return };
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let Some(slot) = layout.slot(loc.spread) else { return };
+    let Some(it) = st.doc.item_at(&loc) else { return };
+    let b = slot.xf.transform_rect_bbox(it.placed_bounds(st.doc.parent_xf(&loc)));
+    let Some(rect) = app.canvas_rect else { return };
+    note_jump(app, false);
+    let fits = app.view().is_some_and(|v| b.width() * v.zoom <= rect.width() as f64 - 80.0 && b.height() * v.zoom <= rect.height() as f64 - 80.0);
+    if fits {
+        if let Some(v) = app.view_mut() {
+            v.origin = Point::new(b.center().x - rect.width() as f64 / 2.0 / v.zoom, b.center().y - rect.height() as f64 / 2.0 / v.zoom);
+        }
+    } else {
+        fit_bounds(app, rect, b);
+    }
+    note_jump(app, true);
+}
+
 /// Index of the slot nearest the view centre.
 pub fn current_slot(app: &DesignApp, layout: &CanvasLayout) -> Option<usize> {
     let v = app.view()?;
