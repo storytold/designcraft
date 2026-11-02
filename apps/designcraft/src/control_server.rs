@@ -23,16 +23,27 @@ pub const MAX_LINE: usize = 4 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 pub const MAX_CONNECTIONS: usize = 16;
 
-pub fn start(port: u16, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
-    let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
+/// Reserve `port` for this launch, or `None` when it cannot be had.
+///
+/// Separate from [`serve`] so a launch can hold the port *before* it publishes a token. Binding
+/// after publishing meant a second launch overwrote the token file and only then discovered the
+/// port was taken -- leaving the first server running while every client read a token it would
+/// refuse (noted in review).
+pub fn bind(port: u16) -> Option<TcpListener> {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => Some(l),
         Err(e) => {
-            eprintln!("designcraft: control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
+            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
+            None
         }
-    };
-    eprintln!("designcraft: control server listening on 127.0.0.1:{port}");
+    }
+}
+
+/// Start serving on a port [`bind`] has already reserved.
+pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
+    let (tx, rx) = channel::<ControlRequest>();
+    let where_ = listener.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "127.0.0.1".into());
+    log::info!("control server listening on {where_}");
     std::thread::spawn(move || accept_loop(listener, tx, ctx, token));
     rx
 }
