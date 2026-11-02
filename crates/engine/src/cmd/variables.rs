@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number is shown as its digits), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -407,7 +407,14 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
     let kind = match str_param(p, "type").unwrap_or("custom") {
-        "custom" => VarKind::Custom { text: text_param(p, "text").unwrap_or_default() },
+        "custom" => VarKind::Custom {
+            // No `text` is empty text; an object or an array is refused rather than stored as
+            // empty text in place of what a variable of that name holds.
+            text: match p.get("text") {
+                None | Some(Value::Null) => String::new(),
+                Some(_) => text_param(p, "text").ok_or_else(|| bad("variables.define", "`text` must be a string, a number or a boolean"))?,
+            },
+        },
         "lastPageNumber" => VarKind::LastPageNumber { section: p.get("section").and_then(Value::as_bool).unwrap_or(false) },
         "chapterNumber" => VarKind::ChapterNumber,
         "fileName" => VarKind::FileName { extension: p.get("extension").and_then(Value::as_bool).unwrap_or(false) },

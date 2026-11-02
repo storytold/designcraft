@@ -444,9 +444,15 @@ fn a_custom_variable_defined_with_a_number_shows_its_digits() {
     s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": 2026})).unwrap();
     s.execute("variables.define", &json!({"name": "Half", "type": "custom", "text": 0.5})).unwrap();
     s.execute("variables.define", &json!({"name": "Word", "type": "custom", "text": "year"})).unwrap();
+    s.execute("variables.define", &json!({"name": "Flag", "type": "custom", "text": true})).unwrap();
+    // Anything else is refused, and a variable of that name keeps its text; no text is empty text.
+    assert!(s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": {"y": 2026}})).is_err());
+    assert!(s.execute("variables.define", &json!({"name": "Year", "type": "custom", "text": [2026]})).is_err());
+    s.execute("variables.define", &json!({"name": "Blank", "type": "custom"})).unwrap();
     let list = s.execute("variables.list", &json!({})).unwrap();
     let value = |name: &str| list.as_array().unwrap().iter().find(|v| v["name"] == name).unwrap()["value"].as_str().unwrap().to_string();
     assert_eq!((value("Year"), value("Half"), value("Word")), ("2026".to_string(), "0.5".to_string(), "year".to_string()));
+    assert_eq!((value("Flag"), value("Blank")), ("true".to_string(), String::new()));
     // Inserted into a story, the instance composes as four digits.
     let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": ""})).unwrap();
     let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
