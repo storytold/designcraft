@@ -193,13 +193,23 @@ fn the_subcommands_that_take_a_word_read_an_unknown_option_as_that_word() {
     // A command id nobody has.
     let err = run(&["describe", "--nope"]).failed("describe --nope");
     assert!(err.contains("no command `--nope`"), "{err:?}");
-    // A path nobody has.
-    let err = run(&["validate-pdf", "--nope"]).failed("validate-pdf --nope");
-    // The error names the path. Not the operating system's wording for a missing file: Windows
-    // says "The system cannot find the file specified", so asserting the Unix phrasing failed
-    // there even when the command refused correctly (noted in review). `failed` already checks
-    // the exit code and the stream.
-    assert!(err.contains("--nope"), "{err:?}");
+    // A path nobody has. `--nope` has to fail the way an ordinary missing path fails, because
+    // that is what shows it reached the file system as a path instead of being read as an
+    // option. Asserting only that the complaint names `--nope` does not show that: a parser that
+    // rejected unknown options would name it too (noted in review).
+    //
+    // So the two are compared with the name taken out. That holds the shape of the failure
+    // without asserting the operating system's wording for a missing file -- Windows says "The
+    // system cannot find the file specified" -- which an earlier round of review rightly took
+    // out of this test. `failed` already checks the exit code and that stdout stayed empty.
+    let as_option = run(&["validate-pdf", "--nope"]).failed("validate-pdf --nope");
+    let as_path = run(&["validate-pdf", "nope.pdf"]).failed("validate-pdf nope.pdf");
+    assert!(as_option.contains("--nope"), "{as_option:?}");
+    assert_eq!(
+        as_option.replace("--nope", "<name>"),
+        as_path.replace("nope.pdf", "<name>"),
+        "`--nope` must fail as a missing path does, not as an option"
+    );
     // A method name for the running app, so the error is about reaching the app.
     let dead = closed_port();
     let err = run(&["app", "--port", &dead, "--nope"]).failed("app --nope");
