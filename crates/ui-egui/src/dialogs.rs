@@ -9021,6 +9021,8 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let old = d.s("hex");
     d.fields.entry("old").or_insert_with(|| json!(old));
+    // The component the picker was last left on, unless the opener chose one.
+    d.fields.entry("component").or_insert_with(|| json!(app.ui.color_picker_component));
     let comp = PickComp::from_key(&d.s("component"));
     let mut p = picked_of(d);
     let before = p;
@@ -9215,6 +9217,7 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     if comp_now != comp {
         d.fields.insert("component".into(), json!(comp_now.key()));
+        app.ui.color_picker_component = comp_now.key().to_string();
     }
     // The hex code, and the eyedropper beside it.
     let cy = area.min.y + at::ROWS[7];
