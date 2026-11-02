@@ -62,45 +62,47 @@ pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -
     Some(join(&prefix, &subfamily))
 }
 
-/// `prefix-subfamily` within [`MAX_LEN`], shortening the **prefix** when it does not fit.
+/// `prefix-subfamily`, or, when that is past [`MAX_LEN`], both halves shortened with a digest of
+/// the whole after them.
 ///
-/// The subfamily is what tells two instances apart, so cutting the end would let `Thin` and
-/// `Thin Italic` -- or any two long subfamilies -- arrive at the same name, and a PDF would then
-/// embed two different instances under one name. TN #5902 keeps the instance's identifier for the
-/// same reason.
+/// Both halves matter. The subfamily is what tells two instances of one family apart, so cutting
+/// its end lets `Thin` and `Thin Italic` meet; the prefix is what tells two families apart, so
+/// cutting *its* end lets `FamilyOne` and `FamilyTwo` meet. Neither can be shortened on its own
+/// and stay unique, so a name that does not fit keeps a readable piece of each and ends in a
+/// digest of `prefix-subfamily` entire -- the shape TN #5902 prescribes as a "last resort" name
+/// for an instance that cannot be named inside the limit. A PDF embedding two instances under one
+/// name is the thing this function exists to stop.
+///
+/// Shortening only one half -- what this did before -- collided two ways, both noted in review: a
+/// 62-character subfamily took a digest of the subfamily alone, so every family reached the same
+/// head and the same digest, and a 60-character one left room for two prefix characters, so
+/// `FamilyOne` and `FamilyTwo` both shortened to `Fa`.
 fn join(prefix: &str, subfamily: &str) -> String {
     let whole = format!("{prefix}-{subfamily}");
     if whole.chars().count() <= MAX_LEN {
         return whole;
     }
-    // A subfamily long enough to fill the limit on its own leaves no tail to cut that would
-    // still tell two of them apart: with one prefix character and a hyphen, two subfamilies
-    // differing only at character 62 arrived at the same name, and a PDF would embed two
-    // instances under it -- the collision this function exists to prevent (noted in review).
-    //
-    // The name then ends with a digest of the whole subfamily rather than its missing tail,
-    // which is the shape TN #5902 prescribes as a "last resort" name for an instance whose name
-    // cannot be formed inside the limit. Answering `None` instead would put the instance back
-    // under the font's default `name` ID 6, which is the bug this file is about (#1690).
-    let sub_len = subfamily.chars().count();
-    if sub_len > MAX_SUBFAMILY {
-        let head: String = subfamily.chars().take(MAX_LEN - 1 - DIGEST_LEN).collect();
-        return format!("{head}-{:08x}", digest(subfamily));
-    }
-    // One character of prefix at least, so the name still says which family it belongs to.
-    let room = MAX_LEN.saturating_sub(sub_len + 1).max(1);
-    let short: String = prefix.chars().take(room).collect();
-    truncate(format!("{short}-{subfamily}"))
+    // The subfamily is usually the short half, so it is served first, down to the floor the
+    // prefix keeps for itself; the prefix takes what is left. The digest, not either piece, is
+    // what actually keeps this name off another one.
+    let sub_room = (VISIBLE - PREFIX_MIN - 1).min(subfamily.chars().count());
+    let short_prefix: String = prefix.chars().take(VISIBLE - 1 - sub_room).collect();
+    let short_subfamily: String = subfamily.chars().take(sub_room).collect();
+    format!("{short_prefix}-{short_subfamily}-{:08x}", digest(&whole))
 }
 
-/// Longest subfamily that still leaves room for a prefix character and the hyphen before it.
-const MAX_SUBFAMILY: usize = MAX_LEN - 2;
+/// Characters a shortened name's readable `prefix-subfamily` gets, the rest going to the digest
+/// and the hyphen before it.
+const VISIBLE: usize = MAX_LEN - DIGEST_LEN - 1;
+
+/// A shortened name keeps at least this much of the prefix, so it still says which family it is.
+const PREFIX_MIN: usize = 8;
 
 /// Hex characters the last-resort digest takes.
 const DIGEST_LEN: usize = 8;
 
-/// FNV-1a over the whole subfamily, so two subfamilies that agree as far as the limit still get
-/// different names. Not a security property -- only that two different strings rarely collide.
+/// FNV-1a over the whole `prefix-subfamily`, so two names that agree as far as the limit still
+/// differ. Not a security property -- only that two different strings rarely collide.
 fn digest(s: &str) -> u32 {
     s.bytes().fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
 }
@@ -199,8 +201,9 @@ mod tests {
 
     /// Two instances must not arrive at the same name. Cutting the end of a long name would do
     /// exactly that, so the family prefix gives way and the subfamily -- the part that tells the
-    /// instances apart -- survives whole (noted in review; TN #5902 keeps the identifier for the
-    /// same reason).
+    /// instances apart -- is kept whole where there is room (noted in review; TN #5902 keeps the
+    /// identifier for the same reason). The digest after it is what keeps the name off another
+    /// family's, which shortening the prefix alone did not.
     #[test]
     fn a_long_name_keeps_the_subfamily_that_tells_instances_apart() {
         let long_prefix = "P".repeat(70);
@@ -210,8 +213,9 @@ mod tests {
         );
         let (a, b) = (at(&font, 700.0).expect("a name"), at(&font, 800.0).expect("a name"));
         assert!(a.len() <= MAX_LEN && b.len() <= MAX_LEN, "within the limit: {} and {}", a.len(), b.len());
-        assert!(a.ends_with("-CondensedExtraBoldItalic"), "the subfamily survives: {a}");
-        assert!(b.ends_with("-CondensedExtraBoldOblique"), "the subfamily survives: {b}");
+        assert!(a.contains("-CondensedExtraBoldItalic-"), "the subfamily survives: {a}");
+        assert!(b.contains("-CondensedExtraBoldOblique-"), "the subfamily survives: {b}");
+        assert!(a.starts_with(&long_prefix[..8]) && b.starts_with(&long_prefix[..8]), "and so does enough of the family: {a}");
         assert_ne!(a, b, "two instances never share a name");
     }
 
@@ -268,7 +272,10 @@ mod tests {
         let font = variable(&[(1, "Fixture"), (25, &long), (257, "Regular")], &[(257, None, vec![400.0])]);
         let name = at(&font, 400.0).expect("a name");
         assert!(name.len() <= MAX_LEN, "within the limit: {name}");
-        assert!(name.ends_with("-Regular"), "and the subfamily is the part kept: {name}");
+        // Both halves are kept, the subfamily whole here because it is short, and the digest
+        // after them is what tells this name from another family's (noted in review).
+        assert!(name.contains("-Regular-"), "and the subfamily is kept: {name}");
+        assert!(name.starts_with(&long[..8]), "with enough of the family to name it: {name}");
     }
 
     /// A static font has no named instances, so it keeps its own `name` ID 6.
@@ -304,23 +311,41 @@ mod tests {
         assert_eq!(slnt(&font, 1.0 + step / 2.0).as_deref(), Some("Test-Regular"), "a point in between takes the nearest match");
     }
 
-    /// A subfamily that fills the limit on its own left one prefix character and a cut subfamily,
-    /// so two subfamilies differing only past the limit arrived at the same name -- the collision
-    /// `join` exists to prevent (noted in review).
+    /// Two instances must never arrive at one name: a PDF would then embed two different ones
+    /// under it. Both halves of the name can be what tells them apart, and shortening either in
+    /// isolation collided -- the subfamily's tail for two instances of a family, the prefix's for
+    /// two families (both noted in review).
     #[test]
-    fn two_subfamilies_that_agree_as_far_as_the_limit_still_differ() {
+    fn two_names_that_agree_as_far_as_the_limit_still_differ() {
+        // Same family, subfamilies differing only past the limit.
         let head = "A".repeat(61);
-        let (one, two) = (format!("{head}B"), format!("{head}C"));
-        let a = join("Family", &one);
-        let b = join("Family", &two);
-        assert_ne!(a, b, "{a} and {b} name different instances");
-        assert!(a.chars().count() <= MAX_LEN, "{} characters", a.chars().count());
-        assert!(b.chars().count() <= MAX_LEN, "{} characters", b.chars().count());
-        // A subfamily that does fit keeps every character of itself, prefix shortened instead.
-        let fits = join("Family", &"A".repeat(MAX_SUBFAMILY));
-        assert!(fits.ends_with(&"A".repeat(MAX_SUBFAMILY)), "the subfamily is kept whole: {fits}");
-        assert_eq!(fits.chars().count(), MAX_LEN);
-        // And an ordinary name is untouched.
+        let (a, b) = (join("Family", &format!("{head}B")), join("Family", &format!("{head}C")));
+        assert_ne!(a, b, "{a} and {b} name different instances of one family");
+
+        // Different families, one subfamily. 62 characters took the digest path, which digested
+        // the subfamily alone, so every family reached the same head and the same digest; 60 left
+        // room for two prefix characters, so `FamilyOne` and `FamilyTwo` both became `Fa`.
+        for len in [60, 62] {
+            let sub = "A".repeat(len);
+            let (one, two) = (join("FamilyOne", &sub), join("FamilyTwo", &sub));
+            assert_ne!(one, two, "subfamily of {len}: {one} and {two} name different families");
+        }
+
+        // A one-character difference anywhere in the prefix is enough, however far past the cut.
+        let long = "P".repeat(80);
+        let (p, q) = (join(&format!("{long}A"), "Thin"), join(&format!("{long}B"), "Thin"));
+        assert_ne!(p, q, "{p} and {q} name different families");
+
+        // Every shortened name is inside the limit, and is a name a PDF can hold.
+        for name in [a, b, p, q, join("FamilyOne", &"A".repeat(62))] {
+            assert!(name.chars().count() <= MAX_LEN, "{} characters: {name}", name.chars().count());
+            assert_eq!(legal(&name), name, "{name} has a character a PostScript name may not hold");
+        }
+
+        // An ordinary name is untouched, and so is one that fits exactly.
         assert_eq!(join("NotoSansKR", "Thin"), "NotoSansKR-Thin");
+        let exact = join("Family", &"A".repeat(MAX_LEN - "Family-".len()));
+        assert_eq!(exact.chars().count(), MAX_LEN);
+        assert!(exact.starts_with("Family-") && exact.ends_with('A'), "kept whole: {exact}");
     }
 }
