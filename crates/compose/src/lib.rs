@@ -1709,6 +1709,21 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             return LineFit::Restart(j);
         }
     }
+    // InDesign compatibility: the first line set in a column is placed even when it overflows
+    // the column's bottom edge (descenders hang below the frame) — frames shorter than one
+    // line (running heads, small table cells) used to lay out zero lines and render nothing.
+    // Restricted to plain horizontal lines holding story text without inline objects whose
+    // descent may hang (fit_descent == 0) with no footnote reserve: object lines keep reporting
+    // genuine geometric overflow, and vertical text, path frames and keep rules keep their
+    // bottom-edge behaviour.
+    if cur.last_baseline.is_none()
+        && line_glyphs.iter().any(|g| g.len > 0 && sub_objects.get(&g.byte).is_none())
+        && !capped
+        && fit_descent == 0.0
+        && reserve == 0.0
+    {
+        return LineFit::Ready(line_notes);
+    }
     carry.clear();
     LineFit::NextColumn
 }
