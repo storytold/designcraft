@@ -249,6 +249,18 @@ fn arrangement_accessible_name_is_localized_in_every_interface_language() {
     }
 }
 
+/// The View › Story Editor items are translated in every interface language.
+#[test]
+fn story_editor_view_items_are_localized_in_every_interface_language() {
+    for key in ["Show/Hide Depth Ruler", "Show/Hide Style Name Column", "Show/Hide Paragraph Break Marks"] {
+        for (code, name) in LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+            let label = tr(code, key);
+            assert_ne!(label, key, "{name}: {key}");
+            assert!(!label.trim().is_empty(), "{name}: {key}");
+        }
+    }
+}
+
 /// Checks language-specific context precedence and fallback to the plain translation.
 #[test]
 fn context_captions_come_from_their_context_or_the_plain_translation() {
