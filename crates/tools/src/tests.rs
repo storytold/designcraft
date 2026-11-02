@@ -1906,6 +1906,52 @@ fn pen_over_a_selected_open_paths_end_point_continues_it() {
     assert!(t.busy(), "the path is being continued");
 }
 
+/// Continuing a path from an end point and dragging its direction lines previews the segment the
+/// drag reshapes: from the anchor joined to that end point, not from the path's other end, from
+/// either end (#1438).
+#[test]
+fn pen_previews_the_segment_joined_to_a_continued_end_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let anchors = vec![
+        designcraft_geom::Anchor::corner(Point::new(100.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 200.0)),
+    ];
+    let mut it = Item::new(id, lid, Shape::Path, designcraft_geom::PathData::single(designcraft_geom::SubPath::new(anchors, false)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::items(vec![id]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let xf = l.xf(SpreadRef::Doc(0));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let solid = |t: &dyn Tool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: false, .. } => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    for (end, joined, far) in [((200.0, 200.0), (200.0, 100.0), (100.0, 100.0)), ((100.0, 100.0), (200.0, 100.0), (200.0, 200.0))] {
+        let mut t = create("pen");
+        let p = xf * Point::new(end.0, end.1);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p.x + 30.0, p.y + 30.0));
+        let [path] = &solid(&*t)[..] else { panic!("one segment preview from {end:?}: {:?}", t.overlays(&cx)) };
+        match path.elements() {
+            [PathEl::MoveTo(a), PathEl::CurveTo(_, _, b)] => {
+                assert!(near(*a, xf * Point::new(joined.0, joined.1)), "from the anchor joined to {end:?}, not the other end {far:?}: {a:?}");
+                assert!(near(*b, p), "to the end point being reshaped: {b:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 #[test]
 fn the_selection_tool_drags_a_path_type_bracket_along_its_path() {
     let mut d = Document::new(&NewDocument::default());

@@ -33,6 +33,9 @@ pub struct PenTool {
     /// Continuing from the subpath's first anchor: `anchors` run in drawing order, the reverse
     /// of the path's, and new anchors go before its first one.
     from_start: bool,
+    /// The anchor the continued end point is joined to (drawing order): the segment a drag of the
+    /// end point's direction lines reshapes runs from it, not from the path's other end.
+    joined: Option<(Point, Point, Point)>,
 }
 
 /// An end point of an open path under canvas point `p`: (item, subpath, whether it is the last
@@ -120,6 +123,7 @@ impl PenTool {
         self.editing_end = false;
         self.end_moved = false;
         self.from_start = false;
+        self.joined = None;
         vec![]
     }
 
@@ -137,6 +141,13 @@ impl PenTool {
         // From the first anchor the anchors run backwards (handles swapped); new ones are added
         // before the first, so the path keeps its direction (and its arrowheads their ends).
         let (other, end) = if at_end { (at(first, false), at(last, false)) } else { (at(last, true), at(first, true)) };
+        // The anchor next to the end point, in drawing order too (the other end when there are two).
+        let joined = if at_end {
+            sp.anchors.len().checked_sub(2).and_then(|i| sp.anchors.get(i)).map(|a| at(a, false))
+        } else {
+            sp.anchors.get(1).map(|a| at(a, true))
+        };
+        self.joined = joined;
         self.path = Some(id.0);
         self.subpath = Some(si);
         self.spread = Some(loc.spread);
@@ -322,9 +333,12 @@ impl Tool for PenTool {
             && let Some(a) = self.anchors.last()
         {
             // The direction line being dragged out, and the segment it shapes: from the previous
-            // anchor's out handle to the new anchor's in handle, live under the pointer (#1438).
+            // anchor's out handle to the new anchor's in handle, live under the pointer (#1438). A
+            // continued end point being reshaped is joined to its neighbour in the path, not to
+            // the other end the anchors start with.
             out.push(Overlay::Line { a: xf * a.1, b: xf * a.2, color: blue, dashed: false });
-            if let Some(prev) = self.anchors.len().checked_sub(2).and_then(|i| self.anchors.get(i)) {
+            let prev = if self.editing_end { self.joined } else { self.anchors.len().checked_sub(2).and_then(|i| self.anchors.get(i)).copied() };
+            if let Some(prev) = prev {
                 let mut path = BezPath::new();
                 path.move_to(xf * prev.0);
                 path.curve_to(xf * prev.2, xf * a.1, xf * a.0);
