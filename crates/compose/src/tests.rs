@@ -3082,11 +3082,18 @@ fn only_english_text_gets_english_hyphenation() {
     let hyphenated = |d: &Document, sid| all_lines(&compose_story(d, sid, &ComposeOptions::default())).iter().filter(|l| l.hyphenated).count();
     let (d, sid, _) = doc_with(text, narrow, ParaAttrs::default());
     assert!(hyphenated(&d, sid) > 0, "English hyphenates");
-    let mut d2 = d.clone();
-    let st = d2.story_mut(sid).unwrap();
-    let n = st.len();
-    st.format_chars(0..n, |f| f.over.language = Some("French".into()));
-    assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+    // A language without bundled patterns isn't hyphenated with English rules.
+    let in_language = |lang: &str| {
+        let mut d2 = d.clone();
+        let st = d2.story_mut(sid).unwrap();
+        let n = st.len();
+        st.format_chars(0..n, |f| f.over.language = Some(lang.into()));
+        hyphenated(&d2, sid)
+    };
+    assert_eq!(in_language("Swedish"), 0, "Swedish isn't hyphenated with English rules");
+    // French and Italian hyphenate with their own patterns.
+    assert!(in_language("French") > 0, "French hyphenates (hyph-fr)");
+    assert!(in_language("Italian") > 0, "Italian hyphenates (hyph-it)");
 }
 
 // A text frame's bottom inset constrains its last baseline. The full font descent
@@ -3738,6 +3745,21 @@ fn text_x(l: &Line, from: usize) -> f64 {
     l.glyphs.iter().find(|g| g.len > 0 && g.byte >= from).map(|g| g.x).unwrap()
 }
 
+/// Vertical justification moves the drop cap's box with its line.
+#[test]
+fn drop_cap_box_follows_vertical_justification() {
+    let (mut d, sid, fid) = drop_doc_in(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 400.0), drop_cap(3, 1));
+    let top = compose_story(&d, sid, &ComposeOptions::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    let bottom = compose_story(&d, sid, &ComposeOptions::default());
+    let (a, b) = (&top.frame(fid).unwrap().lines[0], &bottom.frame(fid).unwrap().lines[0]);
+    let dy = b.baseline - a.baseline;
+    assert!(dy > 1.0);
+    let (da, db) = (a.drop_cap.unwrap(), b.drop_cap.unwrap());
+    assert!((db.baseline - da.baseline - dy).abs() < 1e-6);
+    assert!((db.rect.y0 - da.rect.y0 - dy).abs() < 1e-6 && (db.rect.y1 - da.rect.y1 - dy).abs() < 1e-6);
+}
+
 #[test]
 fn drop_cap_spans_lines_and_indents_them() {
     let text = [LOREM; 2].join(" ");
@@ -4133,6 +4155,56 @@ fn drop_cap_scales_with_its_point_size() {
         assert!((l[0].drop_cap.unwrap().rect.y0 - top).abs() < 1e-6, "{size} pt: the box starts at the line's or the cap's top");
     }
     assert!(b2 - fitted * 1.5 < b0 - base[0].ascent, "a 15 pt cap rises above the first line");
+}
+
+/// Paragraph Rules › Type: a wavy, dashed or dotted rule is drawn as its shape (filled paths in
+/// the rule's box), a striped one as its bands; Gap Color goes under it. Keep In Frame keeps a rule
+/// above the first line inside the frame.
+#[test]
+fn paragraph_rules_have_a_type_a_gap_colour_and_keep_in_frame() {
+    use designcraft_doc::{Rule, StrokeType};
+    let rule = |kind: StrokeType| Rule { on: true, weight: 4.0, kind, ..Default::default() };
+    let decos = |r: Rule| {
+        let para = ParaAttrs { rule_below: Some(r), ..Default::default() };
+        let (d, sid, fid) = doc_with("Recipe Categories", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default()).frame(fid).unwrap().decos.clone()
+    };
+    let solid = decos(rule(StrokeType::Solid));
+    assert!(solid.len() == 1 && solid[0].path.is_none());
+    let wavy = decos(rule(StrokeType::Wavy));
+    let p = wavy[0].path.as_ref().expect("a wavy rule is a shape");
+    assert!(designcraft_geom::Shape::area(p).abs() > 0.0 && (wavy[0].rect.height() - 4.0).abs() < 1e-9);
+    let subpaths = |p: &designcraft_geom::BezPath| p.elements().iter().filter(|e| matches!(e, designcraft_geom::PathEl::MoveTo(_))).count();
+    let dashed = decos(rule(StrokeType::Dashed { pattern: vec![12.0, 4.0] }));
+    assert!(subpaths(dashed[0].path.as_ref().unwrap()) > 5, "one box per dash");
+    let dotted = decos(rule(StrokeType::Dotted));
+    assert!(subpaths(dotted[0].path.as_ref().unwrap()) > 10, "one dot per 2 weights");
+    let gap = decos(Rule { gap_color: "[Black]".into(), gap_tint: 0.3, ..rule(StrokeType::Dotted) });
+    assert_eq!((gap.len(), gap[0].color.as_str(), gap[0].tint, gap[0].path.is_none()), (2, "[Black]", 0.3, true), "the gap colour under the dots");
+    assert_eq!(decos(Rule { gap_color: "[Black]".into(), ..rule(StrokeType::Solid) }).len(), 1, "a solid rule has no gaps");
+    // A gap in Text Color takes the text's colour, whatever swatch the rule itself has.
+    let gap = decos(Rule { color: "[Paper]".into(), gap_color: designcraft_doc::TEXT_COLOR.into(), ..rule(StrokeType::Dotted) });
+    assert_eq!((gap[0].color.as_str(), gap[1].color.as_str()), ("[Black]", "[Paper]"));
+    // Keep In Frame: a rule above raised out of the frame comes back to its top.
+    let above = |keep: bool| {
+        let r = Rule { on: true, weight: 2.0, offset: 30.0, keep_in_frame: keep, ..Default::default() };
+        let para = ParaAttrs { rule_above: Some(r), ..Default::default() };
+        let (d, sid, fid) = doc_with("Title", Rect::new(0.0, 50.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default()).frame(fid).unwrap().decos[0].rect
+    };
+    assert!(above(false).y0 < 50.0, "{:?}", above(false));
+    assert!((above(true).y0 - 50.0).abs() < 1e-6, "{:?}", above(true));
+    // With a top inset the rule may still rise into it: raised out of the frame, it comes back
+    // to the frame's edge, not to the text area's below the inset.
+    let r = Rule { on: true, weight: 2.0, offset: 60.0, keep_in_frame: true, ..Default::default() };
+    let para = ParaAttrs { rule_above: Some(r), ..Default::default() };
+    let (mut d, sid, fid) = doc_with("Title", Rect::new(0.0, 50.0, 300.0, 200.0), para);
+    if let Some(tf) = d.item_mut(fid).and_then(|it| it.text_frame_mut()) {
+        tf.options.inset = [20.0, 0.0, 0.0, 0.0];
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let rule = cs.frame(fid).unwrap().decos[0].rect;
+    assert!((rule.y0 - 50.0).abs() < 1e-6, "kept at the frame's top, in the inset: {rule:?}");
 }
 
 /// A rule in Text Color takes the colour of the paragraph's text: the first character's for the
@@ -7431,6 +7503,60 @@ fn anchored_object_wraps_its_own_storys_later_lines() {
     assert!((o.origin.y - top).abs() < 1e-6);
 }
 
+/// Vertical Justification › Justify with a Paragraph Spacing Limit: the space goes between the
+/// paragraphs (up to the limit each), the lines of a paragraph keep their leading; past the limit
+/// the rest spreads over every line. Without a limit it spreads over every line.
+#[test]
+fn justify_paragraph_spacing_limit() {
+    let text = "One line.
+Two
+Three";
+    let baselines = |limit: f64| {
+        let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+        o.vj_paragraph_spacing_limit = limit;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let (none, big, small) = (baselines(0.0), baselines(1000.0), baselines(20.0));
+    assert_eq!(none.len(), 3);
+    let gaps = |b: &[f64]| (b[1] - b[0], b[2] - b[1]);
+    // No limit: equal steps. A big limit: all of it between paragraphs (here every line is one).
+    assert!((gaps(&none).0 - gaps(&none).1).abs() < 1e-6, "{none:?}");
+    assert!((gaps(&big).0 - gaps(&big).1).abs() < 1e-6, "{big:?}");
+    // A small limit: every paragraph gap takes the whole 20 pt, and the rest spreads over lines,
+    // so each gap is wider than the top-aligned one by at least 20 pt and narrower than with a big limit.
+    let top = {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        all_lines(&compose_story(&d, sid, &ComposeOptions::default())).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let (natural, small_gaps, big_gaps) = (gaps(&top), gaps(&small), gaps(&big));
+    assert!(small_gaps.0 >= natural.0 + 20.0 - 1e-6 && small_gaps.1 >= natural.1 + 20.0 - 1e-6, "{top:?} {small:?}");
+    assert!(small_gaps.0 <= big_gaps.0 + 1e-6, "{small:?} {big:?}");
+    assert!((none[2] - big[2]).abs() < 1e-6 && (none[2] - small[2]).abs() < 1e-6, "the last line stays at the bottom");
+    // A paragraph of two lines keeps its leading when the limit absorbs the space.
+    let (mut d, sid, fid) = doc_with(
+        &[LOREM, "End."].join(
+            "
+",
+        ),
+        Rect::new(0.0, 0.0, 300.0, 600.0),
+        ParaAttrs::default(),
+    );
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    o.vj_paragraph_spacing_limit = 10_000.0;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let first: Vec<f64> = lines.iter().filter(|l| l.para == 0).map(|l| l.baseline).collect();
+    assert!(first.len() > 2, "LOREM runs over several lines");
+    let lead = first[1] - first[0];
+    assert!(first.windows(2).all(|w| (w[1] - w[0] - lead).abs() < 1e-6), "the paragraph's lines keep their leading: {first:?}");
+    let last = lines.iter().find(|l| l.para == 1).unwrap().baseline;
+    assert!(last - first[first.len() - 1] > lead + 50.0, "the space went between the paragraphs");
+}
+
 /// Each object's wrap pushes the anchors after it down, so where each object lands depends on the
 /// wraps of all those before it; every object still ends up wrapping the lines it hangs over.
 #[test]
@@ -8065,6 +8191,43 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+/// An object's wrap pushes the text so that a later object's anchor goes on into the next frame
+/// (Learn Skills Daily's long-document exercise: pictures anchored in headings through a 79-page
+/// story). Each object is placed when its anchor line is set and wraps only the lines after it,
+/// in the frame its anchor lands in: the layout doesn't depend on where an earlier composition put
+/// the objects, and composing again gives the same lines.
+#[test]
+fn an_object_wraps_the_frame_its_anchor_lands_in_after_an_earlier_object_pushed_it_on() {
+    let text = [LOREM; 6].join(" ");
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), lid, &text, ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 300.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    // The second object's anchor sits near the end of the first frame without wrap.
+    let late = plain.frames[0].lines.iter().rev().nth(2).unwrap().range.start + 2;
+    anchor_box(&mut d, sid, late, 0.0, 0.0, true, WrapMode::BoundingBox);
+    // The first, early in the first frame: 60 pt over its whole width pushes the later anchor on.
+    let early = plain.frames[0].lines[1].range.start + 2;
+    anchor_box(&mut d, sid, early, 0.0, 0.0, true, WrapMode::JumpObject);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let late = late + OBJECT_LEN;
+    let anchor_frame = cs.frames.iter().position(|f| f.range.contains(&late) || f.range.end == late).unwrap();
+    assert_eq!(anchor_frame, 1, "the later anchor went on into the second frame");
+    // The first frame's lines under the first object's band keep the full measure (the second
+    // object is in the other frame); in the second frame, the lines under its object move right.
+    let left = cs.frames[0].lines[0].x0;
+    assert!(cs.frames[0].lines.iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    let f1 = &cs.frames[1];
+    let (li, line) = f1.lines.iter().enumerate().find(|(_, l)| l.range.contains(&late)).unwrap();
+    let under: Vec<_> = f1.lines[li + 1..].iter().filter(|l| l.baseline - l.ascent < line.baseline + 60.0).collect();
+    assert!(!under.is_empty() && under.iter().all(|l| l.x0 >= f1.lines[0].x0 + 100.0 - 1e-6));
+    assert_eq!(f1.objects.len(), 1);
+    // Deterministic: the same lines again.
+    assert_eq!(line_layout(&compose_story(&d, sid, &ComposeOptions::default())), line_layout(&cs));
+}
+
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
 /// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
 /// (an INDD project list whose rules crossed the previous paragraph's text).
@@ -8245,4 +8408,35 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     let before = cache.get(&d, nsid, None);
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
+}
+
+/// A cross-reference's text breaks at its spaces like ordinary text (it is real text in
+/// InDesign), not inside words; edited text whose destination is gone shows its saved page.
+#[test]
+fn cross_reference_text_breaks_at_its_spaces() {
+    let (mut d, sid, _) = doc_with("See X.", Rect::new(36.0, 36.0, 110.0, 400.0), ParaAttrs::default());
+    let at = d.story(sid).unwrap().text.find('X').unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.delete(at..at + 1);
+    st.insert_xref(
+        at,
+        designcraft_doc::CrossRef {
+            text: Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.".into()),
+            page: Some("7".into()),
+            ..Default::default()
+        },
+    );
+    let x = d.story(sid).unwrap().xrefs[0].clone();
+    let shown = crate::xref::xref_text(&d, &x, None);
+    assert_eq!(shown, "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines: Vec<String> =
+        cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char).collect::<String>()).collect();
+    assert!(lines.len() > 3, "{lines:?}");
+    let words: Vec<&str> = format!("See {shown}.").leak().split(' ').collect();
+    for l in &lines {
+        for w in l.split(' ').filter(|w| !w.is_empty()) {
+            assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
 }
