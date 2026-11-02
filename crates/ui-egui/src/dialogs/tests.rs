@@ -4931,3 +4931,33 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     let b = added[0].bounds();
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }
+
+#[test]
+fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":400,"height":600,"pages":3,"facingPages":true})).unwrap();
+    app.run("layout.parents.new", json!({"prefix":"B"})).unwrap();
+    app.run("layout.parents.edit", json!({"on":true})).unwrap();
+    app.session.set_tool("page");
+    let before = app.session.doc().unwrap().doc.clone();
+    let sr = designcraft_doc::SpreadRef::Parent(1);
+    let p = app.session.layout().spread_page_rect(&before, sr, 1).unwrap().center();
+    app.session.pointer(&PointerEvent::new(PointerKind::DoubleClick, p.x, p.y), designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
+    let request = app.session.ui_requests.pop().unwrap();
+    let designcraft_engine::UiRequest::Dialog { id, params } = request else { panic!("expected exact-size dialog") };
+    app.ui.dialog = Some(Dialog::new(&id, params));
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("530"));
+    d.fields.insert("height".into(), json!("710"));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.doc().unwrap().doc;
+    assert_eq!((doc.parents[1].pages[1].width, doc.parents[1].pages[1].height), (530.0, 710.0));
+    assert_eq!(doc.parents[0], before.parents[0]);
+    assert_eq!(doc.spreads, before.spreads);
+    let saved = doc.clone();
+    app.ui.dialog = Some(Dialog::new("cmd:layout.parentPageSize", json!({"parent":saved.parents[1].id.0,"page":1,"width":"NaN"})));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
+}
