@@ -398,7 +398,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         pick_folder: Some(Box::new(move |request: ImportRequest| {
             let (inbox, ctx) = (folder_inbox.clone(), folder_ctx.clone());
             wasm_bindgen_futures::spawn_local(async move {
-                let files = pick_folder_files().await;
+                let files = pick_package_files().await;
                 deliver_folder(&inbox, &ctx, &request, files);
             });
         })),
@@ -431,13 +431,13 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
 }
 
 /// The most files a folder hands over (picked or dropped), and the most bytes in all.
-const MAX_FOLDER_FILES: usize = 2000;
+const MAX_PACKAGE_FILES: usize = 2000;
 // The bytes are copied a few times on the way (base64 for the command, then decoded), so the
 // cap keeps the peak well inside the browser's memory for a tab.
-const MAX_FOLDER_BYTES: f64 = 384.0 * 1024.0 * 1024.0;
+const MAX_PACKAGE_BYTES: f64 = 384.0 * 1024.0 * 1024.0;
 /// The most entries (files and folders) looked at in a dropped folder, and how deep it is walked.
-const MAX_FOLDER_ENTRIES: usize = 20_000;
-const MAX_FOLDER_DEPTH: usize = 16;
+const MAX_PACKAGE_ENTRIES: usize = 20_000;
+const MAX_PACKAGE_DEPTH: usize = 16;
 
 /// Whether a file in a folder handed over is read: a document or a font file (a package's
 /// document and its Document Fonts). Links and everything else are left unread, as are macOS
@@ -464,9 +464,9 @@ fn deliver_folder(inbox: &Inbox, ctx: &egui::Context, request: &ImportRequest, f
 /// The documents and font files ([`wanted_in_folder`]) of a folder the user chooses with the
 /// browser's folder picker (an `<input type=file webkitdirectory>`, which every current browser
 /// supports), each named by its path in the folder. Only those files are read, up to
-/// [`MAX_FOLDER_FILES`] and [`MAX_FOLDER_BYTES`]; empty when the picker is cancelled or can't be
+/// [`MAX_PACKAGE_FILES`] and [`MAX_PACKAGE_BYTES`]; empty when the picker is cancelled or can't be
 /// shown.
-async fn pick_folder_files() -> Vec<(String, Vec<u8>)> {
+async fn pick_package_files() -> Vec<(String, Vec<u8>)> {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else { return Vec::new() };
     let Some(input) = document.create_element("input").ok().and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok()) else {
         return Vec::new();
@@ -496,7 +496,7 @@ async fn pick_folder_files() -> Vec<(String, Vec<u8>)> {
         if !wanted_in_folder(&name) {
             continue;
         }
-        if out.len() >= MAX_FOLDER_FILES || bytes + file.size() > MAX_FOLDER_BYTES {
+        if out.len() >= MAX_PACKAGE_FILES || bytes + file.size() > MAX_PACKAGE_BYTES {
             log::warn!("the folder holds more than can be read at once; the rest is left");
             break;
         }
@@ -554,7 +554,7 @@ fn install_folder_drop(inbox: Inbox, ctx: egui::Context) {
 /// none otherwise.
 fn dropped_folder_entries(event: &web_sys::Event) -> Vec<wasm_bindgen::JsValue> {
     let Some(items) = js_get(event.as_ref(), "dataTransfer").and_then(|dt| js_get(&dt, "items")) else { return Vec::new() };
-    let len = js_get(&items, "length").and_then(|l| l.as_f64()).unwrap_or(0.0).clamp(0.0, MAX_FOLDER_FILES as f64) as u32;
+    let len = js_get(&items, "length").and_then(|l| l.as_f64()).unwrap_or(0.0).clamp(0.0, MAX_PACKAGE_FILES as f64) as u32;
     let mut entries = Vec::new();
     let mut folder = false;
     for i in 0..len {
@@ -574,7 +574,7 @@ async fn read_directory(entry: &wasm_bindgen::JsValue) -> Vec<wasm_bindgen::JsVa
     let Some(reader) = js_method(entry, "createReader").and_then(|f| f.call0(entry).ok()) else { return Vec::new() };
     let Some(read) = js_method(&reader, "readEntries") else { return Vec::new() };
     let mut out = Vec::new();
-    while out.len() < MAX_FOLDER_ENTRIES {
+    while out.len() < MAX_PACKAGE_ENTRIES {
         let batch = js_sys::Promise::new(&mut |resolve, reject| {
             let _ = read.call2(&reader, &resolve, &reject);
         });
@@ -605,12 +605,12 @@ async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>
     let mut pending: Vec<(wasm_bindgen::JsValue, usize)> = roots.into_iter().map(|e| (e, 0)).collect();
     while let Some((entry, depth)) = pending.pop() {
         seen += 1;
-        if seen > MAX_FOLDER_ENTRIES {
+        if seen > MAX_PACKAGE_ENTRIES {
             log::warn!("the folder holds more than can be read at once; the rest is left");
             break;
         }
         if js_get(&entry, "isDirectory").and_then(|v| v.as_bool()).unwrap_or(false) {
-            if depth < MAX_FOLDER_DEPTH {
+            if depth < MAX_PACKAGE_DEPTH {
                 pending.extend(read_directory(&entry).await.into_iter().map(|e| (e, depth + 1)));
             }
             continue;
@@ -620,7 +620,7 @@ async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>
             continue;
         }
         let Some(file) = entry_file(&entry).await else { continue };
-        if out.len() >= MAX_FOLDER_FILES || bytes + file.size() > MAX_FOLDER_BYTES {
+        if out.len() >= MAX_PACKAGE_FILES || bytes + file.size() > MAX_PACKAGE_BYTES {
             log::warn!("the folder holds more than can be read at once; the rest is left");
             break;
         }
