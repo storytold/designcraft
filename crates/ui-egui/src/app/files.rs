@@ -77,6 +77,32 @@ impl DesignApp {
         Ok(Value::Null)
     }
 
+    /// Take the folders handed over out of `inbox` and import each (see [`Self::import_folder`]):
+    /// a folder's files arrive together, named by their paths in it, with a `folder:` purpose.
+    fn import_folders(&mut self, inbox: &crate::Inbox) {
+        let folders: Vec<ImportedFile> = {
+            let mut files = inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (folders, rest) = std::mem::take(&mut *files).into_iter().partition(|f| f.request.purpose.starts_with("folder:"));
+            *files = rest;
+            folders
+        };
+        let mut folders = folders;
+        while let Some(purpose) = folders.first().map(|f| f.request.purpose.clone()) {
+            let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) = folders.into_iter().partition(|f| f.request.purpose == purpose);
+            folders = rest;
+            let Some(first) = folder.first() else { continue };
+            let request =
+                ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), target: first.request.target, ..Default::default() };
+            if self.ui.dialog.as_ref().is_some_and(|d| d.id != "findFont") {
+                self.status(crate::i18n::tr(&self.ui.language, "Folder cancelled while a dialog is open; choose it again"));
+                continue;
+            }
+            if let Err(e) = self.import_folder(&request, folder) {
+                self.status(e);
+            }
+        }
+    }
+
     /// A folder handed over (picked or dropped), each file named by its path in it: `package`
     /// opens its document with the `Document Fonts` beside it; `documentFonts` gives its fonts to
     /// the document that asked; `drop` does the first when the folder holds a document, else the
@@ -148,23 +174,8 @@ impl DesignApp {
             }
         }
         let Some(inbox) = self.services.inbox.clone() else { return };
-        let mut files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        // A folder's files arrive together, named by their paths in it (`folder:` purposes).
-        while let Some(at) = files.iter().position(|f| f.request.purpose.starts_with("folder:")) {
-            let purpose = files.get(at).map(|f| f.request.purpose.clone()).unwrap_or_default();
-            let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) = files.into_iter().partition(|f| f.request.purpose == purpose);
-            files = rest;
-            let Some(first) = folder.first() else { continue };
-            let request =
-                ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), target: first.request.target, ..Default::default() };
-            if self.ui.dialog.as_ref().is_some_and(|d| d.id != "findFont") {
-                self.status(crate::i18n::tr(&self.ui.language, "Folder cancelled while a dialog is open; choose it again"));
-                continue;
-            }
-            if let Err(e) = self.import_folder(&request, folder) {
-                self.status(e);
-            }
-        }
+        self.import_folders(&inbox);
+        let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for file in files {
             if file.request.purpose == "shortcuts" {
                 shortcut_import::import_delivered(self, &file.bytes);
