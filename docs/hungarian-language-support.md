@@ -1,6 +1,6 @@
 # Hungarian spelling and hyphenation
 
-This change adds Hungarian text support independently of the interface language. Set the text language to **Hungarian** in the Character panel; paragraph hyphenation must be enabled. The new Hungarian interface strings extend the localization supplied by PR #1223.
+This change adds Hungarian text support independently of the interface language. Set the text language to **Hungarian** in the Character panel; paragraph hyphenation must be enabled. The Hungarian interface strings extend the localization merged in PR #1223.
 
 ## Behavior
 

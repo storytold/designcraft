@@ -2860,6 +2860,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         // Another dialog took its place: its edits are cancelled.
         let _ = crate::shortcuts_dialog::close(app, false);
     }
+    if app.ui.dialog.as_ref().is_some_and(|d| d.id == "spelling") {
+        crate::spelling_ui::show(app, ctx);
+        return;
+    }
     let Some(mut d) = app.ui.dialog.clone() else { return };
     // Enter and Escape belong to an open popup (a menu, a name field) or to Find/Change's Change
     // Format Settings rather than the dialog. Read before the dialog draws: a popup closed by this

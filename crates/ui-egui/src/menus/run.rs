@@ -53,7 +53,7 @@ pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) 
 /// Run a UI command; `None` if `id` isn't one.
 pub fn run_ui(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     let was_find = app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
-    let result = run_ui_inner(app, id, p);
+    let result = if id == "spelling.check" && !app.in_control { Some(crate::spelling_ui::open(app)) } else { run_ui_inner(app, id, p) };
     if was_find && app.ui.dialog.as_ref().is_none_or(|d| d.id != "findChange") {
         app.session.reset_find_scope();
     }

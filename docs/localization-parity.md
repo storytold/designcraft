@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-01 · **Change:** minor (Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-02 · **Change:** minor (Hungarian spelling/hyphenation follow-up; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -54,7 +54,7 @@ caption, table row/column movement and row-height distribution now use the exist
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
 
-Hungarian interface (2026-11-01): `hu.rs` contains **1,906 entries and four context-specific
+Hungarian interface (2026-11-02): `hu.rs` contains **1,929 entries and four context-specific
 captions**, including all 37 tool names. The initial catalog was prepared with AI assistance
 and personally reviewed in the app by **Veress Róbert**, a native Hungarian speaker with over
 30 years of DTP experience. Further terminology and in-context feedback is welcome. This is a
@@ -69,6 +69,11 @@ bytes, every Latin letter used by the catalog and all Hungarian accented vowels 
 including **ŐőŰű**, with system and optional craft-fonts fallbacks disabled. No new font asset
 or font dependency is needed.
 
+The functional follow-up adds 23 catalog entries to the merged #1223 interface, keeping all
+existing translations and contexts. Hungarian spelling and extended hyphenation follow the
+text language; see [Hungarian language support](hungarian-language-support.md) for behavior,
+licenses, compatibility samples and validation commands.
+
 Hungarian regressions cover placeholder/context integrity, formal address and count/column
 terminology, language persistence, matching menu paths, translated tool labels and real
 right-click flyouts in both Tools-panel layouts. Narrow-window coverage exercises horizontal
@@ -79,7 +84,7 @@ scrolling, complete label/shortcut accessibility and selecting a scrolled row at
 
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
-| Hungarian | hu | 1,906 entries + 4 context captions (2026-11-01); initial catalog native-reviewed | partial |
+| Hungarian | hu | 1,929 entries + 4 context captions (2026-11-02); initial catalog native-reviewed | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
@@ -93,7 +98,7 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, Dutch, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, Dutch, French, German (2006 reform), Greek, Hungarian, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English and Hungarian**. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
 German hyphenation accepts `German: 2006 Reform`, `German: Swiss 2006 Reform` and `de` locale
@@ -117,6 +122,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | minor | Hungarian spelling and extended hyphenation; 23 additional interface captions; main integration after #1223 |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-15 | minor | Swedish (`sv`) interface added |

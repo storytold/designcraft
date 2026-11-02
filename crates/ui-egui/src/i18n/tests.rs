@@ -466,8 +466,16 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::credits::SortKey::ALL.iter().flat_map(|key| [key.label().0, key.label().1]));
     // Docking chrome labels reach `tr` through craft-ui's localizer.
     keys.extend(crate::panel_docking::DOCK_LABELS.iter().map(|(_, english)| *english));
+    // Native language names and spelling-dialog captions also reach `tr` directly.
+    keys.extend(LANGUAGES.iter().map(|(_, name)| *name));
     // UI labels passed to `tr` that no other catalog has yet.
     keys.extend([
+        "Checking spelling…",
+        "Only text set to English or Hungarian is checked.",
+        "Skip",
+        "Spelling check complete.",
+        "The document has changed. Reopen the spelling checker.",
+        "The text language is set in the Character panel.",
         "180°",
         "Create Links When Placing Text Files",
         "Delete Character Style…",

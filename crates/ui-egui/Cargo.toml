@@ -31,8 +31,6 @@ unicode-bidi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-# Already used by egui; monotonic browser-safe deadlines for spelling scans.
-web-time = "1.1"
 
 [dev-dependencies]
 # egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables

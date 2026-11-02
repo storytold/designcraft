@@ -20,11 +20,17 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// A menu item was chosen. An engine command whose label ends in "…" and that takes parameters
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
-    if waits_for_ime(app, id) {
-        return;
-    }
     let was_find = app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
-    activate_inner(app, id, params);
+    if id == "spelling.check" {
+        if let Err(e) = crate::spelling_ui::open(app) {
+            app.status(e);
+        }
+    } else {
+        if waits_for_ime(app, id) {
+            return;
+        }
+        activate_inner(app, id, params);
+    }
     if was_find && app.ui.dialog.as_ref().is_none_or(|d| d.id != "findChange") {
         app.session.reset_find_scope();
     }

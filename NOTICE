@@ -143,7 +143,7 @@ list (author, source, license) is in ASSETS.md.
   hayro-interpret embeds PDFium's Foxit standard-14 fonts under PDFium's BSD-style license
   (vendor/hayro-interpret/assets/LICENSE_FOXIT) and a CMYK profile under CC0-1.0.
 
-Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …) are permissively
+Most Rust dependencies (vello_cpu, kurbo, skrifa, harfrust, image, egui, eframe, …) are permissively
 licensed (MIT/Apache-2.0/BSD/ISC/Zlib), fetched through crates.io or the pinned source below.
 
 No Adobe icons, images or artwork are included.
@@ -203,6 +203,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Hungarian spelling
+------------------------------------------
+Spellbook 0.4.2, Michael Davis and contributors: MPL-2.0.
+Locally modified sources and license are in vendor/spellbook/.
+Magyar Ispell 1.9, Németh László and Godó Ferenc (2025): MPL-2.0,
+selected from the upstream MPL-2.0 OR LGPL-3.0-or-later alternatives.
+Dictionary, original notices, transformation notice and provenance:
+assets/dictionaries/hu_HU/. Modified MPL source and dictionary reproduction tools
+are included in this repository. See docs/hungarian-language-support.md.
+
+Hungarian hyphenation: Huhyphn by Bence Nagy, non-standard patch by László Németh.
+MPL-1.1 selected alternative; see assets/hyphenation/hu/COPYING.MPL-1.1 and MODIFICATIONS.txt.
+Rust hyphenation 0.8.4 and hyphenation_commons 0.8.4: MIT OR Apache-2.0.
+Only the Hungarian extended dictionary is embedded. Other dictionaries from the dependency are not embedded.
 
 Bundled egui font icons
 

@@ -81,7 +81,7 @@ impl IncrementalReport {
 pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>> {
     let active = app.session.active()?;
     let key = (active.uid, active.revision);
-    let cell: Arc<Mutex<State>> = ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<State>>>(egui::Id::new("spelling_worker")).clone());
+    let cell: Arc<Mutex<State>> = ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<State>>>(egui::Id::unique("spelling_worker")).clone());
     let mut state = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((job_key, rx)) = &state.running {
@@ -153,7 +153,7 @@ struct SuggestionState {
 }
 fn suggestions_async(ctx: &egui::Context, key: SuggestionKey, doc: Arc<Document>, sid: StoryId, range: Range<usize>) -> Option<Vec<String>> {
     let cell: Arc<Mutex<SuggestionState>> =
-        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<SuggestionState>>>(egui::Id::new("spelling_suggestions")).clone());
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<SuggestionState>>>(egui::Id::unique("spelling_suggestions")).clone());
     let mut state = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((job_key, rx)) = &state.running {
         match rx.try_recv() {
@@ -220,7 +220,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let mut action = None;
     let result = report(app, ctx);
     egui::Window::new(tr("Check Spelling"))
-        .id(egui::Id::new("spelling_dialog"))
+        .id(egui::Id::unique("spelling_dialog"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
