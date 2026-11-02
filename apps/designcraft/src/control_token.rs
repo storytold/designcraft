@@ -196,6 +196,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), first, "the first port's token is still its own");
         assert_eq!(std::fs::read_to_string(&other_path).unwrap(), second);
 
+        // `--control 0` asks the operating system for any free port, so the number a token file
+        // is named after has to be the one it gave and not the 0 that was asked for -- otherwise
+        // every such launch publishes to `control-token-0` (noted in review).
+        let asked = 0;
+        let given = other.local_addr().expect("the bound address").port();
+        assert_ne!(given, asked, "the OS gave a real port for a request of 0");
+        assert_ne!(token_path(&dir, given), token_path(&dir, asked), "and the file is named after the one it gave");
+
         drop(held);
         drop(other);
         let _ = std::fs::remove_dir_all(&dir);

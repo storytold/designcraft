@@ -595,7 +595,12 @@ fn main() -> std::process::ExitCode {
                     // single file (both noted in review).
                     let supplied = std::env::var(control_token::TOKEN_ENV).ok().and_then(|t| control_token::from_env_value(&t).map(str::to_owned));
                     let reserved = control_server::bind(port);
-                    let token = reserved.as_ref().and_then(|_| match supplied {
+                    // The port the operating system actually gave. `--control 0` asks for any
+                    // free one, so the number that was requested is not the number a client
+                    // connects to, and naming the file after it put every such launch on
+                    // `control-token-0` -- the collision this naming is for (noted in review).
+                    let bound = reserved.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port());
+                    let token = bound.and_then(|bound| match supplied {
                         Some(token) => Some(token),
                         None => match control_token::new_token() {
                             None => {
@@ -607,7 +612,7 @@ fn main() -> std::process::ExitCode {
                                 log::error!("the control server did not start: no random source for its token");
                                 None
                             }
-                            Some(token) => match profile::config_dir().map(|dir| control_token::write_token(&dir, port, &token)) {
+                            Some(token) => match profile::config_dir().map(|dir| control_token::write_token(&dir, bound, &token)) {
                                 Some(Ok(path)) => {
                                     log::info!("the control token is in {}", path.display());
                                     Some(token)
