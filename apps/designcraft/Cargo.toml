@@ -37,7 +37,8 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 craft-update = { workspace = true }
 # EnumDisplayDevices (src/gpu.rs): which GPU drives the display, so the window draws on the GPU
 # that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
-# Win32 (MIT); the `user` feature is User32.dll only.
+# Win32 (MIT); the `user` feature is User32.dll only. Also the window frame for the custom title
+# bar (src/window_frame.rs, window styles).
 winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
