@@ -2199,7 +2199,9 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     let setup = |context: usize| {
         // A launcher that starts nothing (Edit Original and Edit With).
         let launch: crate::edit_original::LaunchFn = Box::new(|_, _| Ok(()));
-        let services = crate::Services { clipboard_text: Some(Box::new(|| None)), launch: Some(launch), ..Default::default() };
+        // A file manager that shows nothing (Reveal in Finder).
+        let reveal: crate::reveal::RevealFn = Box::new(|_, _| Ok(()));
+        let services = crate::Services { clipboard_text: Some(Box::new(|| None)), launch: Some(launch), reveal: Some(reveal), ..Default::default() };
         let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
         app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
         app.custom_titlebar = true;
@@ -2339,6 +2341,13 @@ fn every_menu_entry_is_a_command() {
     assert!(special.is_some_and(|c| c.iter().any(|i| matches!(i, Item::Sub(n, _) if n == "Symbols"))));
     // Fixed-parameter variants keep their own labels.
     assert!(all.iter().any(|(l, id, _)| l == "Fill Frame Proportionally" && id == "fit.fillFrameProportionally"));
+}
+
+/// A placed graphic's context menu reveals its file after Edit Original and Edit With.
+#[test]
+fn the_graphic_context_menu_reveals_the_linked_file() {
+    let at = |e: &str| CONTEXT_GRAPHIC_FRAME.iter().position(|x| *x == e);
+    assert!(at("ui:links.reveal").is_some_and(|r| at("menu:Edit/Edit With").is_some_and(|w| w < r)));
 }
 
 #[test]

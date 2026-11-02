@@ -154,6 +154,12 @@ pub fn metadata(path: impl AsRef<Path>) -> std::io::Result<Metadata> {
     std::fs::metadata(path)
 }
 
+/// [`metadata`] of a regular file (links followed): `None` for a folder, a device, a FIFO, a
+/// missing or refused path. One look at the file system.
+pub fn file_metadata(path: impl AsRef<Path>) -> Option<Metadata> {
+    metadata(path).ok().filter(Metadata::is_file)
+}
+
 /// Is there a file at `path` that automation may read?
 pub fn is_file(path: impl AsRef<Path>) -> bool {
     metadata(path).is_ok_and(|m| m.is_file())

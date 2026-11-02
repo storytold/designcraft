@@ -10,7 +10,11 @@
 //!
 //! An edited file is remembered with its size and time. When the window gains focus again, each
 //! remembered file of the active document is looked at (metadata only) and a changed one is
-//! updated (`links.update {asset}`), as the reference app updates a link edited this way.
+//! updated (`links.update {asset}`), as the reference app updates a link edited this way. A save
+//! that lands after the window is back in front (an editor that saves when it is switched away
+//! from, or in the background) is picked up by the link watch's next check
+//! ([`crate::link_watch`]), which calls [`refresh_edited`] whenever it finds a modified link
+//! while the window is in front.
 
 use std::path::{Path, PathBuf};
 

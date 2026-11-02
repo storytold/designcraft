@@ -127,6 +127,7 @@ impl DesignApp {
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
             edit_original: crate::edit_original::State::default(),
+            link_watch: crate::link_watch::State::default(),
         }
     }
 

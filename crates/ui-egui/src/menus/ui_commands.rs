@@ -190,6 +190,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{asset? | ids?, app?: path of an application, list?: true} — open the linked files in `app`; without it, choose the application in a dialog (Other…); list: the applications that can open the first file → [{name, path}] (macOS; empty elsewhere)",
     ),
+    (
+        "links.reveal",
+        crate::reveal::LABEL,
+        None,
+        "{asset? (a Links panel row) | ids?} (default: the selected graphics) — show the linked file in the file manager (Finder, Explorer, the freedesktop file manager), selected in its folder; a missing file's folder is opened when it is there → {path, selected}",
+    ),
     ("view.zoomIn", "Zoom In", Some("Cmd+="), "{at?: [x, y] window pixels, kept in place when over the canvas}"),
     ("view.zoomOut", "Zoom Out", Some("Cmd+-"), "{at?: [x, y] window pixels, kept in place when over the canvas}"),
     ("view.fitPage", "Fit Page in Window", Some("Cmd+0"), "{}"),

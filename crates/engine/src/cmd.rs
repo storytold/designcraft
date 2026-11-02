@@ -32,8 +32,12 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
-/// Edit › Edit Original: the linked files of the selected graphics.
-pub use links::{Original as LinkOriginal, can_edit_original, originals as link_originals};
+/// Edit › Edit Original and Links › Reveal in Finder: the linked files of the selected graphics;
+/// [`link_state`]: how a linked file compares with the copy in the document.
+pub use links::{
+    LinkState, Original as LinkOriginal, Reveal as LinkReveal, can_edit_original, link_state, originals as link_originals,
+    reveal_target as link_reveal_target,
+};
 mod liquid;
 mod lists;
 mod load_styles;

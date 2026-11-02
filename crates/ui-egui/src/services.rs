@@ -46,4 +46,7 @@ pub struct Services {
     /// The applications that can open a file, for Edit › Edit With (macOS). `None`: the submenu
     /// has Other… only.
     pub applications: Option<crate::edit_original::ApplicationsFn>,
+    /// Shows a file in the system's file manager (Links › Reveal in Finder, Explorer or File
+    /// Manager). `None` where there is none (the browser): the command is disabled.
+    pub reveal: Option<crate::reveal::RevealFn>,
 }

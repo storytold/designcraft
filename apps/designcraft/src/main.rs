@@ -231,6 +231,8 @@ fn services() -> Services {
         launch: Some(Box::new(designcraft_ui_egui::edit_original::system_launch)),
         #[cfg(target_os = "macos")]
         applications: Some(Box::new(open_with::applications)),
+        // Links › Reveal in Finder (Explorer, the file manager).
+        reveal: Some(Box::new(designcraft_ui_egui::reveal::system_reveal)),
         ..Default::default()
     }
 }

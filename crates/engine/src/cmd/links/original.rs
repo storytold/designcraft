@@ -108,6 +108,66 @@ pub fn can_edit_original(s: &Session) -> bool {
     s.active().is_some_and(|st| !st.selection.items.is_empty()) && originals(s, &Value::Null).is_ok_and(|o| !o.is_empty())
 }
 
+/// What Links › Reveal in Finder (Explorer, the file manager) shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    /// The linked file, selected in its folder.
+    File(PathBuf),
+    /// The folder a missing file was in, opened (the file can't be selected).
+    Folder(PathBuf),
+}
+
+/// What revealing the graphic a call names shows (see [`named_assets`]: `asset`, else the
+/// graphic frames among `ids`, else the selection's): the first one linked to a file on disk, or
+/// else the folder of the first missing one when that folder is there. An error says why there is
+/// none (embedded, a link that isn't followed, no folder, nothing placed named).
+pub fn reveal_target(s: &Session, p: &Value) -> Result<Reveal> {
+    let st = s.doc()?;
+    let assets = named_assets(&st.doc, &st.selection.items, p)?;
+    if assets.is_empty() {
+        return Err(bad(REVEAL, "select a placed graphic"));
+    }
+    let document = st.path.as_deref().map(Path::new);
+    let mut folder = None;
+    let mut why = None;
+    for aid in assets {
+        let Some(a) = st.doc.assets.get(&aid) else { continue };
+        match on_disk(a, document) {
+            Ok(path) => return Ok(Reveal::File(path)),
+            Err(e) => {
+                why.get_or_insert(e);
+            }
+        }
+        if folder.is_none() {
+            folder = missing_folder(a, document);
+        }
+    }
+    match (folder, why) {
+        (Some(dir), _) => Ok(Reveal::Folder(dir)),
+        (None, Some(e)) => Err(bad(REVEAL, e)),
+        (None, None) => Err(bad(REVEAL, "select a placed graphic")),
+    }
+}
+
+/// The name [`reveal_target`]'s errors carry (the UI command that reveals).
+const REVEAL: &str = "links.reveal";
+
+/// The folder a missing linked file was in, when the link is followed and the folder is there.
+fn missing_folder(a: &designcraft_doc::Asset, document: Option<&Path>) -> Option<PathBuf> {
+    let link = a.link.as_deref()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = crate::io::document_path(link, document).ok()?;
+        let dir = path.parent()?;
+        crate::io::is_dir(dir).then(|| dir.to_path_buf())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (link, document);
+        None
+    }
+}
+
 /// Where an asset's linked file is, when it is a file on disk.
 fn on_disk(a: &designcraft_doc::Asset, document: Option<&Path>) -> std::result::Result<PathBuf, String> {
     let Some(link) = a.link.as_deref() else { return Err(format!("{} is embedded: it has no file to edit", a.name)) };
@@ -202,6 +262,39 @@ mod tests {
         let r = s.execute(COMMAND, &json!({})).unwrap();
         assert_eq!(r["files"].as_array().unwrap().len(), 1);
         assert_eq!(r["files"][0]["name"], "linked.png");
+    }
+
+    #[test]
+    fn reveal_shows_the_file_or_a_missing_file_s_folder() {
+        let (mut s, dir, [linked, embedded, missing], path) = three_graphics("reveal");
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        select(&mut s, &[linked]);
+        match reveal_target(&s, &Value::Null).unwrap() {
+            Reveal::File(p) => assert_eq!(canon(&p), canon(&path)),
+            other => panic!("{other:?}"),
+        }
+        // A missing file: its folder, while the folder is there.
+        select(&mut s, &[missing]);
+        match reveal_target(&s, &Value::Null).unwrap() {
+            Reveal::Folder(p) => assert_eq!(canon(&p), canon(dir.path())),
+            other => panic!("{other:?}"),
+        }
+        // The file on disk wins over the missing one, whatever the order.
+        select(&mut s, &[missing, linked]);
+        assert!(matches!(reveal_target(&s, &Value::Null).unwrap(), Reveal::File(_)));
+        // Embedded: nothing to reveal; nothing selected; hostile params.
+        select(&mut s, &[embedded]);
+        assert!(reveal_target(&s, &Value::Null).unwrap_err().to_string().contains("embedded"));
+        select(&mut s, &[]);
+        assert!(reveal_target(&s, &Value::Null).is_err());
+        for p in [json!({"asset": "x"}), json!({"asset": u64::MAX}), json!({"ids": "all"}), json!({"ids": [u64::MAX]})] {
+            assert!(reveal_target(&s, &p).is_err(), "{p}");
+        }
+        // The folder goes too: nothing to reveal.
+        select(&mut s, &[missing]);
+        drop(dir);
+        assert!(reveal_target(&s, &Value::Null).unwrap_err().to_string().contains("missing"));
+        assert!(reveal_target(&Session::new(), &Value::Null).is_err());
     }
 
     #[test]

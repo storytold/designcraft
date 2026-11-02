@@ -97,7 +97,22 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
+        "linkBadges": link_badges(app),
     })
+}
+
+/// The canvas's link badges: `{asset, status: modified|missing, rect: [x, y, w, h]}` in window
+/// points (where `ui.click` clicks one).
+fn link_badges(app: &DesignApp) -> Value {
+    let (Some(rect), Some(v)) = (app.canvas_rect, app.view()) else { return json!([]) };
+    let xf = crate::canvas::Xf::new(rect, v);
+    let badges = crate::canvas::link_badges::badges(app, &xf, rect);
+    Value::Array(
+        badges
+            .iter()
+            .map(|b| json!({"asset": b.asset, "status": b.state.name(), "rect": [b.rect.left(), b.rect.top(), b.rect.width(), b.rect.height()]}))
+            .collect(),
+    )
 }
 
 fn key_from(name: &str) -> Option<egui::Key> {

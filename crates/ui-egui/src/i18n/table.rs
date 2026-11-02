@@ -1596,6 +1596,51 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Edit With…", ["Bearbeiten mit …", "Modifier avec…", "Editar con…", "アプリケーションで編集…", "编辑方式…"]),
     ("Other…", ["Andere …", "Autre…", "Otra…", "その他…", "其他…"]),
     ("Original Files", ["Originaldateien", "Fichiers originaux", "Archivos originales", "元のファイル", "原始文件"]),
+    ("Reveal in Finder", ["Im Finder anzeigen", "Faire apparaître dans le Finder", "Mostrar en Finder", "Finder で表示", "在 Finder 中显示"]),
+    (
+        "Reveal in Explorer",
+        ["Im Explorer anzeigen", "Faire apparaître dans l’Explorateur", "Mostrar en el Explorador", "エクスプローラーで表示", "在资源管理器中显示"],
+    ),
+    (
+        "Reveal in File Manager",
+        [
+            "Im Dateimanager anzeigen",
+            "Faire apparaître dans le gestionnaire de fichiers",
+            "Mostrar en el gestor de archivos",
+            "ファイルマネージャーで表示",
+            "在文件管理器中显示",
+        ],
+    ),
+    (
+        "Update Modified Links When DesignCraft Comes Back to the Front",
+        [
+            "Geänderte Verknüpfungen aktualisieren, wenn DesignCraft wieder im Vordergrund ist",
+            "Mettre à jour les liens modifiés quand DesignCraft revient au premier plan",
+            "Actualizar los vínculos modificados cuando DesignCraft vuelve al primer plano",
+            "DesignCraft が前面に戻ったときに変更されたリンクを更新",
+            "DesignCraft 回到前台时更新已修改的链接",
+        ],
+    ),
+    (
+        "The linked file was changed. Click to update it.",
+        [
+            "Die verknüpfte Datei wurde geändert. Zum Aktualisieren klicken.",
+            "Le fichier lié a été modifié. Cliquez pour le mettre à jour.",
+            "El archivo vinculado ha cambiado. Haga clic para actualizarlo.",
+            "リンクファイルが変更されました。クリックして更新します。",
+            "链接的文件已更改。单击以更新。",
+        ],
+    ),
+    (
+        "The linked file is missing. Click to relink it.",
+        [
+            "Die verknüpfte Datei fehlt. Zum erneuten Verknüpfen klicken.",
+            "Le fichier lié est manquant. Cliquez pour rééditer le lien.",
+            "Falta el archivo vinculado. Haga clic para volver a vincularlo.",
+            "リンクファイルが見つかりません。クリックして再リンクします。",
+            "链接的文件缺失。单击以重新链接。",
+        ],
+    ),
     (
         "Remove Conditions from Selection",
         [

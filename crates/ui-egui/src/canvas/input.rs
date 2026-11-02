@@ -276,6 +276,37 @@ fn hand_pan(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, xf: &
     false
 }
 
+/// A press on a link badge is the badge's, not the tool's: no selection, no drag. Its release on
+/// the same badge updates or relinks the graphic. Whether the badge took this pass. `busy`: a
+/// tool gesture, the Hand or a menu has the pointer, so a badge can't take a new press.
+fn badge_press(
+    app: &mut DesignApp,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    xf: &Xf,
+    (pressed, released, origin, latest): (bool, bool, Option<Pos2>, Option<Pos2>),
+    busy: bool,
+) -> bool {
+    let id = egui::Id::unique(("canvas_badge_press", app.pane));
+    let held: Option<crate::canvas::link_badges::Badge> = ui.data(|d| d.get_temp(id));
+    let screen = resp.rect;
+    let mut held = held.or_else(|| {
+        let o = origin.filter(|_| pressed && !busy && resp.hovered())?;
+        crate::canvas::link_badges::badge_at(app, xf, screen, o)
+    });
+    let Some(b) = held.take() else { return false };
+    if released || !ui.input(|i| i.pointer.primary_down()) {
+        ui.data_mut(|d| d.remove::<crate::canvas::link_badges::Badge>(id));
+        let on_it = latest.is_some_and(|p| crate::canvas::link_badges::badge_at(app, xf, screen, p).is_some_and(|now| now.asset == b.asset));
+        if released && on_it {
+            crate::canvas::link_badges::activate(app, b);
+        }
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, b));
+    }
+    true
+}
+
 /// A release ends the press run's last click; remembers where and when for the next press.
 fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f64) {
     if let Some(c) = ui.data(|d| d.get_temp::<Clicks>(clicks_id)) {
@@ -324,7 +355,10 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     // Recover the actual primary press position, preserving the origin for held gestures.
     let origin = origin.or_else(|| recent_primary_press(ui));
     let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
+    // A press on a link badge isn't the tool's (the keyboard below still is).
+    let badge = badge_press(app, ui, resp, &xf, (pressed, released, origin, latest), space || menu_open || down);
     if pressed
+        && !badge
         && !space
         && !menu_open
         && let Some(o) = origin.filter(|o| in_view(*o) && resp.hovered())
@@ -359,7 +393,10 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         let p = latest.unwrap_or(rect.center());
         events.push(PointerEvent { kind: PointerKind::Up, pos: pos(p), mods: m, clicks: 1 });
         down = false;
-    } else if !down && let Some(p) = resp.hover_pos() {
+    } else if !down
+        && !badge
+        && let Some(p) = resp.hover_pos()
+    {
         events.push(PointerEvent { kind: PointerKind::Move, pos: pos(p), mods: m, clicks: 1 });
     }
     ui.data_mut(|d| d.insert_temp(down_id, down));
