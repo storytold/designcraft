@@ -1370,5 +1370,4 @@ pub(crate) fn close_visible(app: &mut DesignApp) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[path = "panel_docking_tests.rs"]
 mod tests;

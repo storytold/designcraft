@@ -166,8 +166,9 @@ to icons and `dockExpanded:true` expands the outer column. Activating a floating
 raises its group. These operations change only UI layout.
 
 Clicking an icon in an iconic column opens its group as a flyout beside the column, on the
-canvas side; clicking the icon again closes it. With Auto-Collapse Iconic Panels on (the
-default; a column bar's menu toggles it), Escape or a click outside the flyout closes it too.
+canvas side; clicking the icon again, or another icon, closes it. With Auto-Collapse Iconic
+Panels on (off by default; a column bar's menu toggles it), Escape or a click outside the flyout
+closes it too.
 
 `ui.docking` returns the panel layout in use; `ui.inspect` includes the same object as
 `docking`:
@@ -181,7 +182,7 @@ default; a column bar's menu toggles it), Escape or a click outside the flyout c
      {"groups": [{"panels": ["stroke"], "active": 0}, …], "width": 260.0, "iconic": true,
       "iconic_width": 37.0}]}}}},
   "floating": []},
- "customized": false, "focused": "canvas", "flyout": null, "autoCollapse": true,
+ "customized": false, "focused": "canvas", "flyout": null, "autoCollapse": false,
  "rightToLeft": false, "hidden": [],
  "hitRects": [{"hit": {"Tab": "properties"}, "rect": [983.0, 0.0, 74.0, 27.0]},
               {"hit": {"DragBar": "properties"}, "rect": [1190.0, 0.0, 56.0, 27.0]},

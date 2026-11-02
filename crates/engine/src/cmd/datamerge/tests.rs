@@ -519,6 +519,69 @@ fn typed_fields_keep_style_and_unknown_markers() {
     assert_eq!(story.format_after(at).over.size, Some(21.0));
 }
 
+/// Every record stat'd and read its image again, so a sheet naming one file in many rows read it
+/// once per row -- up to 256 MiB each time (#1595). A merge reads a file once and the records
+/// share the bytes.
+#[test]
+fn one_image_named_by_many_records_is_read_once() {
+    let dir = scratch("image-reads");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    // 25 records, all naming the same file.
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 25);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len).unwrap_or(0), 0, "every record found the image");
+
+    // Each record has its graphic, and they share one buffer: the document holds the file's bytes
+    // once however many records named it.
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let graphics: Vec<_> = doc
+        .spreads
+        .iter()
+        .flat_map(|sp| &sp.items)
+        .filter_map(|it| match &it.content {
+            Content::Graphic(g) => Some(g.asset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(graphics.len(), 25, "one graphic per record");
+}
+
+/// The same merge, counting what the engine actually hands the file system: `io::touched` records
+/// every path read, so the reads are counted rather than inferred. The document already shares
+/// identical asset bytes, so memory alone does not show this -- the I/O is the bug (#1595).
+#[test]
+fn a_merge_reads_a_repeated_image_once_not_once_per_record() {
+    let dir = scratch("image-read-count");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+
+    let (r, seen) = crate::io::touched(|| exec(&mut s, "data.merge", json!({})));
+    assert_eq!(r["records"], 25);
+    let reads = seen.iter().filter(|p| p.ends_with("shared.png")).count();
+    assert!(reads <= 2, "the image is read once for the merge, not once per record: {reads} reads for 25 records");
+}
+
 #[test]
 fn images_resolve_in_order_and_roles_win() {
     let dir = scratch("images");
@@ -814,30 +877,7 @@ fn an_ime_delete_ends_a_preview_and_edits_the_template() {
     assert!(s.doc().unwrap().preview_stash.is_none());
 }
 
-#[test]
-fn update_remove_preview_inline_rows_and_old_files() {
-    let dir = scratch("update");
-    let csv = dir.join("people.csv");
-    write(&csv, "Name\nAda\nGrace\n");
-    let mut s = Session::new();
-    new_doc(&mut s, 1);
-    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
-    exec(&mut s, "data.source.select", json!({"path": csv}));
-    let id = exec(&mut s, "data.placeholder.add", json!({"field": "Name"}))["id"].clone();
-    let undo = s.documents()[0].history.undo.len();
-    let fingerprint = s.documents()[0].doc.data_merge.sources[0].fingerprint;
-    let mut body = std::fs::read(&csv).unwrap();
-    body.extend_from_slice(b"Kai\n");
-    std::fs::write(&csv, &body).unwrap();
-    let r = exec(&mut s, "data.merge", json!({}));
-    assert_eq!(r["records"], 2);
-    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("changed")));
-    assert_eq!(texts(&s), vec!["Ada".to_string(), "Grace".to_string()]);
-    assert_eq!(s.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Modified);
-    assert_eq!(s.documents()[0].doc.data_merge.sources[0].fingerprint, fingerprint);
-    assert_eq!(s.documents()[0].history.undo.len(), undo);
-    assert_eq!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources[0].status, SourceStatus::Modified);
-
+fn check_missing_merge_source(dir: &Path) {
     let gone = dir.join("gone.csv");
     write(&gone, "Name\nAda\nGrace\n");
     let mut missing = Session::new();
@@ -853,7 +893,9 @@ fn update_remove_preview_inline_rows_and_old_files() {
     assert_eq!(texts(&missing), vec!["Ada".to_string(), "Grace".to_string()]);
     assert_eq!(missing.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Missing);
     assert_eq!(missing.documents()[0].history.undo.len(), missing_undo);
+}
 
+fn check_refused_facing_page_merge(dir: &Path) {
     let refuse = dir.join("refuse.csv");
     write(&refuse, "Name\nAda\nGrace\n");
     let mut refused = Session::new();
@@ -870,49 +912,56 @@ fn update_remove_preview_inline_rows_and_old_files() {
     assert_eq!(refused.documents().len(), 1);
     assert_eq!(refused.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Ok);
     assert_eq!(refused.documents()[0].history.undo.len(), refuse_undo);
+}
 
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    exec(&mut s, "data.source.update", json!({}));
-    let r = exec(&mut s, "data.merge", json!({}));
+fn check_preview_update_save(session: &mut Session, dir: &Path, csv: &Path, id: &Value) {
+    exec(session, "file.activate", json!({"index": 0}));
+    exec(session, "data.source.update", json!({}));
+    let r = exec(session, "data.merge", json!({}));
     assert_eq!(r["records"], 3);
-    assert!(texts(&s).iter().any(|t| t == "Kai"));
+    assert!(texts(session).iter().any(|t| t == "Kai"));
 
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    exec(&mut s, "data.source.remove", json!({}));
-    assert!(s.documents()[0].doc.data_merge.sources.is_empty());
-    assert!(s.documents()[0].doc.data_merge.placeholders.iter().any(|ph| ph.id == id.as_u64().unwrap()));
-    assert_eq!(exec(&mut s, "data.fields", json!({})), json!([]));
+    exec(session, "file.activate", json!({"index": 0}));
+    exec(session, "data.source.remove", json!({}));
+    assert!(session.documents()[0].doc.data_merge.sources.is_empty());
+    assert!(session.documents()[0].doc.data_merge.placeholders.iter().any(|ph| ph.id == id.as_u64().unwrap()));
+    assert_eq!(exec(session, "data.fields", json!({})), json!([]));
 
-    select_csv(&mut s, "Name\nAda\nGrace\n");
-    exec(&mut s, "data.preview", json!({"record": 2}));
-    assert!(texts(&s).iter().any(|t| t.contains("Grace")));
-    assert!(!texts(&s).iter().any(|t| t.contains("<<Name>>")));
-    let ser = exec(&mut s, "file.serialize", json!({}));
+    select_csv(session, "Name\nAda\nGrace\n");
+    exec(session, "data.preview", json!({"record": 2}));
+    assert!(texts(session).iter().any(|t| t.contains("Grace")));
+    assert!(!texts(session).iter().any(|t| t.contains("<<Name>>")));
+    let ser = exec(session, "file.serialize", json!({}));
     let saved = crate::cmd::from_bytes(&crate::cmd::base64_decode(ser["base64"].as_str().unwrap())).unwrap();
     assert!(saved.stories.values().any(|st| st.text.contains("<<Name>>")));
     assert!(!saved.stories.values().any(|st| st.text.contains("Grace")));
-    exec(&mut s, "data.preview.stop", json!({}));
-    assert!(texts(&s).iter().any(|t| t.contains("<<Name>>")));
+    exec(session, "data.preview.stop", json!({}));
+    assert!(texts(session).iter().any(|t| t.contains("<<Name>>")));
 
-    exec(&mut s, "data.preview", json!({"record": 2}));
+    exec(session, "data.preview", json!({"record": 2}));
     let path = dir.join("saved.designcraft");
-    exec(&mut s, "file.save", json!({"path": path}));
+    exec(session, "file.save", json!({"path": path}));
     let saved = crate::cmd::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert!(!saved.stories.values().any(|st| st.text.contains("Grace")));
     assert!(saved.stories.values().any(|st| st.text.contains("<<Name>>")));
 
-    exec(&mut s, "data.preview", json!({"record": 2}));
+    exec(session, "data.preview", json!({"record": 2}));
     let rec = dir.join("recovery");
-    s.recovery_dir = Some(rec.clone());
-    crate::recovery::save(&s, &rec).unwrap();
-    let uid = s.documents()[0].uid;
+    session.recovery_dir = Some(rec.clone());
+    crate::recovery::save(session, &rec).unwrap();
+    let uid = session.documents()[0].uid;
     let recovered = crate::cmd::from_bytes(&std::fs::read(rec.join(format!("{uid}.designcraft"))).unwrap()).unwrap();
     assert!(!recovered.stories.values().any(|st| st.text.contains("Grace")));
-    assert!(texts(&s).iter().any(|t| t.contains("Grace")), "recovery writes the stash and leaves the preview on screen");
-    exec(&mut s, "file.new", json!({}));
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    assert!(texts(&s).iter().any(|t| t.contains("<<Name>>")));
+    assert!(texts(session).iter().any(|t| t.contains("Grace")), "recovery writes the stash and leaves the preview on screen");
+    exec(session, "file.new", json!({}));
+    exec(session, "file.activate", json!({"index": 0}));
+    assert!(texts(session).iter().any(|t| t.contains("<<Name>>")));
 
+    check_inline_rows_and_invalid_requests();
+    check_saved_relative_source(dir, csv);
+}
+
+fn check_inline_rows_and_invalid_requests() {
     let mut s = Session::new();
     new_doc(&mut s, 1);
     text_frame(&mut s, [36.0, 36.0, 300.0, 80.0], "<<Name>> <<Qty>>", None);
@@ -940,7 +989,9 @@ fn update_remove_preview_inline_rows_and_old_files() {
     let msg = err(&mut s, "data.merge", json!({"csv": "Name\nAda\n", "limit": 4_294_967_296u64}));
     assert!(msg.contains("too large"), "{msg}");
     assert_eq!(s.documents().len(), before);
+}
 
+fn check_saved_relative_source(dir: &Path, csv: &Path) {
     let fresh = dir.join("fresh.designcraft");
     let mut s = Session::new();
     new_doc(&mut s, 1);
@@ -951,6 +1002,35 @@ fn update_remove_preview_inline_rows_and_old_files() {
     exec(&mut s, "file.save", json!({"path": fresh}));
     let opened = crate::cmd::from_bytes(&std::fs::read(&fresh).unwrap()).unwrap();
     assert_eq!(opened.data_merge.sources[0].relative_path.as_deref(), Some("people.csv"));
+}
+
+#[test]
+fn update_remove_preview_inline_rows_and_old_files() {
+    let dir = scratch("update");
+    let csv = dir.join("people.csv");
+    write(&csv, "Name\nAda\nGrace\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    exec(&mut s, "data.source.select", json!({"path": csv}));
+    let id = exec(&mut s, "data.placeholder.add", json!({"field": "Name"}))["id"].clone();
+    let undo = s.documents()[0].history.undo.len();
+    let fingerprint = s.documents()[0].doc.data_merge.sources[0].fingerprint;
+    let mut body = std::fs::read(&csv).unwrap();
+    body.extend_from_slice(b"Kai\n");
+    std::fs::write(&csv, &body).unwrap();
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 2);
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("changed")));
+    assert_eq!(texts(&s), vec!["Ada".to_string(), "Grace".to_string()]);
+    assert_eq!(s.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Modified);
+    assert_eq!(s.documents()[0].doc.data_merge.sources[0].fingerprint, fingerprint);
+    assert_eq!(s.documents()[0].history.undo.len(), undo);
+    assert_eq!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources[0].status, SourceStatus::Modified);
+
+    check_missing_merge_source(&dir);
+    check_refused_facing_page_merge(&dir);
+    check_preview_update_save(&mut s, &dir, &csv, &id);
 }
 
 #[test]
