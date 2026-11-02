@@ -91,8 +91,7 @@ impl DesignApp {
             let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) = folders.into_iter().partition(|f| f.request.purpose == purpose);
             folders = rest;
             let Some(first) = folder.first() else { continue };
-            let request =
-                ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), target: first.request.target, ..Default::default() };
+            let request = ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), ..first.request.clone() };
             if self.ui.dialog.as_ref().is_some_and(|d| d.id != "findFont") {
                 self.status(crate::i18n::tr(&self.ui.language, "Folder cancelled while a dialog is open; choose it again"));
                 continue;
@@ -985,7 +984,7 @@ mod folder_tests {
             pick_folder: Some(Box::new(move |request: ImportRequest| {
                 seen.lock().unwrap().push(request.purpose.clone());
                 sink.lock().unwrap().extend(folder.iter().map(|(name, bytes)| ImportedFile {
-                    request: ImportRequest { purpose: request.purpose.clone(), target: request.target, ..Default::default() },
+                    request: request.clone(),
                     name: name.clone(),
                     bytes: bytes.clone(),
                 }));
