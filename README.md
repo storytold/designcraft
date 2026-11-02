@@ -69,8 +69,8 @@
 ## The sample magazine
 
 Every page below was laid out by DesignCraft from code (`crates/engine/src/sample.rs`) and exported
-by its own renderer. Try it yourself with `File → New → Sample Document`, or start the app with
-`--sample`.
+by its own renderer. Try it yourself from the start screen, or with `Help → Sample Document`,
+or start the app with `--sample`.
 
 <table>
 <tr>
@@ -248,11 +248,12 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 |---|---|
 | L0 | `geom` (paths, units & measurement parsing, corner options) · `color` (CMYK/RGB/Lab, swatches, tints, gradients) |
 | L1 | `doc` (spreads, pages, parents, layers, frames, stories, styles) · `fonts` (font DB, shaping, outlines) |
-| L2 | `compose` (the text engine) |
-| L3 | `render` (vello_cpu) |
+| L2 | `compose` (the text engine) · `images` (placed-graphic decoding: raster formats and SVG) |
+| L3 | `render` (vello_cpu) · `pdf` (PDF export) · `idml` (IDML import/export) · `epub` (EPUB 3 export) · `pptx` (PowerPoint export) · `textimport` (plain text, Word and RTF import) · `format` (native file format) |
 | L4 | `tools` (pointer events → commands + overlays) |
 | L5 | `engine` (session, history, command registry) |
-| L6 | `ui-egui` (publishing UI, control channel) |
+| L6 | `ui-egui` (publishing UI, control channel) · `mcp` (MCP server over stdio) |
+| testkit | `testkit` (shared test helpers; dev-dependencies only) |
 | L7 | `apps/designcraft`, `apps/designcraft-cli`, `apps/designcraft-web` |
 
 - **Status and milestones:** [ROADMAP.md](ROADMAP.md) (stage: pre-alpha); feature assessment: [`docs/target-app-parity.md`](docs/target-app-parity.md); known gaps: [`docs/gaps.md`](docs/gaps.md)

@@ -37,8 +37,9 @@ impl Renderer {
             StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
                 stroke = stroke.with_dashes(0.0, pattern.iter().copied())
             }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
+            StrokeType::Dotted if dotted_expandable(st.weight, length) => {
+                // Dots are expanded into micro-segments below; the caps alone make each a disc.
+                stroke = stroke.with_caps(kurbo::Cap::Round)
             }
             _ => {}
         }
@@ -50,6 +51,15 @@ impl Renderer {
         // Arrowheads: the path is shortened under them; they're drawn after it.
         let arrows = designcraft_doc::arrow::apply(bp, st, closed);
         let bp = arrows.as_ref().map_or(bp, |a| &a.0);
+        // Dots stroke the expanded micro-segments; the gap underlay, clips and fills below
+        // keep the whole path.
+        let dots;
+        let stroke_bp: &BezPath = if dotted_expandable(st.weight, length) && matches!(kind, StrokeType::Dotted) {
+            dots = dotted_path(bp, st.weight * 2.0, st.weight);
+            &dots
+        } else {
+            bp
+        };
         // Gap colour under dashes and dots: the whole path, undashed.
         let gap = if matches!(kind, StrokeType::Solid) { None } else { f.doc.resolve_color(&st.gap_swatch, st.gap_tint) };
         if let Some(g) = gap
@@ -93,7 +103,7 @@ impl Renderer {
                 // Clip a double-width stroke to the path.
                 ctx.push_clip_layer(bp);
                 ctx.set_stroke(kurbo::Stroke { width: st.weight * 2.0, ..stroke });
-                ctx.stroke_path(bp);
+                ctx.stroke_path(stroke_bp);
                 ctx.pop_layer();
             }
             StrokeAlign::Outside if closed => {
@@ -103,7 +113,7 @@ impl Renderer {
                 // backdrop intact; the same nonzero fill rule also preserves compound holes.
                 ctx.push_layer(None, None, None, None, None);
                 ctx.set_stroke(kurbo::Stroke { width: st.weight * 2.0, ..stroke });
-                ctx.stroke_path(bp);
+                ctx.stroke_path(stroke_bp);
                 ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
                 ctx.fill_path(bp);
                 ctx.pop_layer();
@@ -111,7 +121,7 @@ impl Renderer {
             }
             _ => {
                 ctx.set_stroke(stroke);
-                ctx.stroke_path(bp);
+                ctx.stroke_path(stroke_bp);
             }
         }
         for h in arrows.iter().flat_map(|a| &a.1) {
@@ -202,4 +212,23 @@ impl Renderer {
         ctx.fill_rect(&rect);
         ctx.reset_paint_transform();
     }
+}
+
+/// Whether a dotted stroke of `weight` on a path of `length` is expanded into dots.
+/// Same bound as dashed strokes: a path needing more periods than the expander allows
+/// falls back to solid.
+pub(crate) fn dotted_expandable(weight: f64, length: f64) -> bool {
+    StrokeType::expandable_dashes(&[0.0, weight * 2.0], length)
+}
+
+/// Dots of a dotted stroke as explicit micro-segments.
+///
+/// kurbo's stroke expander skips zero-length segments before drawing caps, so stroking
+/// a `[0.0, gap]` dash pattern paints no dots at all (#1950). Expanding the same placement
+/// with a microscopic on-length keeps kurbo's dash positioning (including closed-path
+/// wraparound) while giving every dot a segment the expander keeps; stroked with round
+/// caps, each is a disc of diameter `weight + dot`, indistinguishable from a true dot.
+pub(crate) fn dotted_path(bp: &BezPath, gap: f64, weight: f64) -> BezPath {
+    let dot = (weight * 1e-3).max(1e-9);
+    kurbo::dash(bp.iter(), 0.0, &[dot, gap]).collect()
 }
