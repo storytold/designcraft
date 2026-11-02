@@ -1428,6 +1428,28 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         let grid = f.grid.filter(|&(_, inc)| {
             inc > 0.0 && inc.is_finite() && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
         });
+        // Simulate the wrap loop below from `start`, returning the baseline it settles on (None
+        // when no slot remains in the column). Lets the grid fallback choose a candidate that
+        // survives the wrap, not just the column bounds.
+        let wrap_from = |start: f64| -> Option<f64> {
+            let jump = cur.jump(f, advance, asc, tops);
+            let line_start = glyphs.get(s).map_or(range_start, |g| g.byte);
+            let snap_at = |y: f64| grid.map_or(y, |(_, gi)| start + ((y - start) / gi - 1e-6).ceil().max(0.0) * gi);
+            let mut b = start;
+            let mut tries = 0;
+            loop {
+                let Some((next, _)) = wrap_slot(f, col, b, asc, desc, jump, base_size, rtl, line_start, &holds) else {
+                    return None;
+                };
+                let pushed = next > b;
+                b = next;
+                tries += 1;
+                if !pushed || grid.is_none() || tries > 4000 {
+                    return Some(b);
+                }
+                b = snap_at(b);
+            }
+        };
         if let Some((g_start, inc)) = grid {
             let n = pp.grid_gyoudori.min(grid::MAX_GYOUDORI);
             match para_block.filter(|(at, _)| line_no > 0 && *at == (cur.fi, cur.col)) {
@@ -1467,11 +1489,26 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                     // the previous grid line (or the natural position) instead, keeping the line
                     // on the grid whenever that still fits. Without this, frames shorter than the
                     // distance to the next grid line lay out zero lines, so imported titles and
-                    // running heads vanished entirely. A candidate only counts while it keeps
-                    // the line inside the column (the previous grid line can sit above its top).
-                    if cur.last_baseline.is_none() && baseline > col.y1 + 0.01 {
+                    // running heads vanished entirely. Only a line whose natural position fits
+                    // the column is rescued (one that overflows naturally advances through the
+                    // normal column/frame flow); a candidate counts only while it keeps the line
+                    // inside the column after wrapping around exclusions (the previous grid line
+                    // can sit above the column top, or an exclusion can push the wrapped line
+                    // past its bottom).
+                    if cur.last_baseline.is_none()
+                        && baseline > col.y1 + 0.01
+                        && band.natural - r <= col.y1 + 0.01
+                    {
                         for cand in [y - r - inc, band.natural - r] {
-                            if cand >= col.y0 - 0.01 && cand <= col.y1 + 0.01 {
+                            if !(cand >= col.y0 - 0.01 && cand <= col.y1 + 0.01) {
+                                continue;
+                            }
+                            let wrapped = if f.exclusions.is_empty() && f.outline.is_none() {
+                                cand
+                            } else {
+                                wrap_from(cand).unwrap_or(f64::INFINITY)
+                            };
+                            if wrapped >= col.y0 - 0.01 && wrapped <= col.y1 + 0.01 {
                                 end += cand - baseline;
                                 baseline = cand;
                                 grid_end = Some(end);

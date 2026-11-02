@@ -7270,6 +7270,21 @@ fn grid_first_line_uses_the_natural_position_when_the_previous_grid_line_is_abov
 }
 
 #[test]
+fn grid_first_line_fallback_does_not_rescue_a_line_that_overflows_naturally() {
+    // A frame shorter than its first line's natural position: the line overflows without any
+    // grid involved, so it advances through the normal column/frame flow instead of being
+    // snapped back onto a grid line inside the frame (setting such a line anyway is #2112).
+    let text = "Geschäftsbericht der audius SE 2025";
+    let para = ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::FirstLineOnly), grid_reference: Some(designcraft_doc::cjk::CharacterAlignment::Baseline), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 0.0, 300.0, 10.0), para);
+    d.settings.baseline_grid.start = 0.0;
+    d.settings.baseline_grid.increment = 30.0;
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.para.space_before = Some(14.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].lines.is_empty(), "the overflowing line must advance, not be rescued onto grid line 0");
+}
+
+#[test]
 fn grid_alignment_puts_the_chosen_point_on_the_grid() {
     use designcraft_doc::cjk::CharacterAlignment as R;
     let para = |r: R| ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(r), ..Default::default() };
