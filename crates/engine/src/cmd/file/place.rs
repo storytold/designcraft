@@ -276,7 +276,7 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Drag: fit proportionally; click: actual size at the point.
         let (r, k) = match rect {
-            Some(r) if r.width() > 2.0 && r.height() > 2.0 => {
+            Some(r) if r.width() > designcraft_tools::PLACE_DRAG_MIN && r.height() > designcraft_tools::PLACE_DRAG_MIN => {
                 let k = (r.width() / nw).min(r.height() / nh);
                 (Rect::new(r.x0, r.y0, r.x0 + nw * k, r.y0 + nh * k), k)
             }
