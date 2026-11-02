@@ -541,7 +541,7 @@ fn install_folder_drop(inbox: Inbox, ctx: egui::Context) {
         let (inbox, ctx) = (inbox.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
             let files = read_dropped(entries).await;
-            deliver_folder(&inbox, &ctx, &ImportRequest { purpose: "folder:drop".into(), target: None }, files);
+            deliver_folder(&inbox, &ctx, &ImportRequest { purpose: "folder:drop".into(), ..Default::default() }, files);
         });
     });
     if window.add_event_listener_with_callback_and_bool("drop", on_drop.as_ref().unchecked_ref(), true).is_err() {
