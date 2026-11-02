@@ -20,6 +20,7 @@ pub mod math;
 pub mod recovery;
 pub mod sample;
 pub mod script;
+pub mod separations;
 mod tooling;
 
 use std::sync::Arc;
@@ -33,7 +34,7 @@ pub use cmd::{CommandInfo, CommandSpec, command_specs, find_command};
 pub use designcraft_compose as compose;
 pub use designcraft_doc as doc;
 pub use designcraft_tools as tools;
-pub use tooling::{SnapView, UiRequest, ViewInfo};
+pub use tooling::{ImeMutation, ImeTextContext, SnapView, UiRequest, ViewInfo, ime_delete_ranges};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -101,6 +102,9 @@ pub struct DocState {
     /// Editing parent spreads (Pages panel double-click on a parent).
     pub editing_parents: bool,
     pub uid: u64,
+    /// Changes whenever this document state is recreated, even if [`Self::uid`] is preserved
+    /// (File › Revert keeps the uid for recovery but replaces the document).
+    pub identity_epoch: u64,
     /// Recovery entries this state actually opened or published, for repeated-open and cleanup.
     /// Bounded, deduplicated checkpoint addresses; never inferred from uid alone.
     pub(crate) recovery_entries: Vec<(std::path::PathBuf, u64)>,
@@ -141,10 +145,12 @@ fn next_revision() -> u64 {
 }
 
 impl DocState {
+    /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
     pub fn new(doc: Document, path: Option<String>) -> Self {
         let active_layer = doc.default_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
+        let identity_epoch = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DocState {
             saved_doc: doc.clone(),
             doc,
@@ -156,7 +162,8 @@ impl DocState {
             active_layer,
             interaction: None,
             editing_parents: false,
-            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            uid: identity_epoch,
+            identity_epoch,
             recovery_entries: Vec::new(),
             preview_stash: None,
             preview_record: None,
@@ -243,6 +250,61 @@ pub struct Prefs {
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
     pub recent_files_max: u32,
+    /// Preferences › Units & Increments set with no document open: what new documents start
+    /// with, as InDesign's application defaults. A document keeps its own once made.
+    pub default_units: DefaultUnits,
+}
+
+/// Units & Increments for new documents (Preferences with no document open), in the keys
+/// `document.preferences` uses.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DefaultUnits {
+    pub horizontal_units: designcraft_geom::Unit,
+    pub vertical_units: designcraft_geom::Unit,
+    pub ruler_origin: designcraft_doc::RulerOrigin,
+    /// Cursor Key, in points.
+    pub keyboard_increment: f64,
+    /// Kerning/Tracking, in 1/1000 em.
+    pub kerning_increment: f64,
+}
+
+impl Default for DefaultUnits {
+    /// A new document's own settings.
+    fn default() -> Self {
+        let d = designcraft_doc::DocSettings::default();
+        DefaultUnits {
+            horizontal_units: designcraft_geom::Unit::Picas,
+            vertical_units: designcraft_geom::Unit::Picas,
+            ruler_origin: d.ruler_origin,
+            keyboard_increment: d.keyboard_increment,
+            kerning_increment: d.kerning_increment,
+        }
+    }
+}
+
+impl DefaultUnits {
+    /// Gives a new document these defaults. Unless it was made from a preset (whose units are its
+    /// own), its vertical ruler follows the preference while it keeps the default horizontal
+    /// units (units picked in New Document set both rulers).
+    pub fn apply(&self, settings: &mut designcraft_doc::DocSettings, preset: bool) {
+        if !preset && settings.horizontal_units == self.horizontal_units {
+            settings.vertical_units = self.vertical_units;
+        }
+        settings.ruler_origin = self.ruler_origin;
+        settings.keyboard_increment = self.keyboard_increment;
+        settings.kerning_increment = self.kerning_increment;
+    }
+
+    /// Refuses increments that aren't finite and positive (at most 1000).
+    pub fn check(&self) -> std::result::Result<(), String> {
+        for (name, v) in [("keyboardIncrement", self.keyboard_increment), ("kerningIncrement", self.kerning_increment)] {
+            if !(v.is_finite() && v > 0.0 && v <= 1000.0) {
+                return Err(format!("`defaultUnits.{name}` must be more than 0 and at most 1000"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The most recent files Preferences lets File › Open Recent keep.
@@ -317,6 +379,7 @@ impl Default for Prefs {
             link_text_files: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
+            default_units: DefaultUnits::default(),
         }
     }
 }
@@ -542,17 +605,7 @@ impl Session {
         // passes that its command's description doesn't name fails the test.
         #[cfg(test)]
         check_params(id, params)?;
-        if let Err(e) = (spec.enabled)(self) {
-            // A command that takes `ids` acts on the objects the call names, so the selection
-            // doesn't matter: with a text caret, nothing selected, or a selection the command
-            // can't act on, `{"ids": [5]}` still runs.
-            let named = if cmd::selection_reason(&e) { cmd::named_targets(spec, params) } else { None };
-            let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
-            let st = self.doc()?;
-            if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
-                return Err(EngineError::Disabled(id.into(), format!("no object with id {}", gone.0)));
-            }
-        }
+        self.check_enabled(spec, id, params)?;
         // Preview is temporary. Save, merge, and every other edit restore the template first.
         // Queries stay read-only so the panel can poll fields during a preview. `data.preview`
         // itself is the one command that fills the live document.
@@ -598,11 +651,38 @@ impl Session {
                 st.doc = Arc::new(d);
             }
         }
-        // Auto-size frames fit the text the command changed, in the same undo step.
+        self.autosize_changed(spec, before.as_ref());
+        self.keep_guide_selection_valid(before.as_ref(), id);
+        self.record_undo_step(spec, before, nested);
+        if spec.journal {
+            self.journal.push((id.to_string(), params.clone()));
+        }
+        self.discard_stale_find_scope();
+        Ok(r)
+    }
+
+    /// Fails with `Disabled` unless the command is enabled or names objects it can act on.
+    fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
+        if let Err(e) = (spec.enabled)(self) {
+            // A command that takes `ids` acts on the objects the call names, so the selection
+            // doesn't matter: with a text caret, nothing selected, or a selection the command
+            // can't act on, `{"ids": [5]}` still runs.
+            let named = if cmd::selection_reason(&e) { cmd::named_targets(spec, params) } else { None };
+            let Some(ids) = named else { return Err(EngineError::Disabled(id.into(), e)) };
+            let st = self.doc()?;
+            if let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+                return Err(EngineError::Disabled(id.into(), format!("no object with id {}", gone.0)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Auto-size frames fit the text the command changed, in the same undo step.
+    fn autosize_changed(&mut self, spec: &CommandSpec, before: Option<&(u64, Arc<Document>, Selection)>) {
         if spec.undoable
             && let Some(st) = self.active_mut()
         {
-            let prev = before.as_ref().filter(|(uid, _, _)| *uid == st.uid).map(|(_, d, _)| d.as_ref());
+            let prev = before.filter(|(uid, _, _)| *uid == st.uid).map(|(_, d, _)| d.as_ref());
             if prev.is_none_or(|p| !std::ptr::eq(p, st.doc.as_ref())) {
                 let todo = autosize::candidates(&st.doc, prev);
                 if !todo.is_empty() {
@@ -614,13 +694,6 @@ impl Session {
                 }
             }
         }
-        self.keep_guide_selection_valid(before.as_ref(), id);
-        self.record_undo_step(spec, before, nested);
-        if spec.journal {
-            self.journal.push((id.to_string(), params.clone()));
-        }
-        self.discard_stale_find_scope();
-        Ok(r)
     }
 
     /// Drops selected guides the command `id` made stale, against the document as it will be
@@ -746,19 +819,3 @@ pub(crate) use push_undo as record_undo;
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_autosize;
-#[cfg(test)]
-mod tests_file_guard;
-#[cfg(test)]
-mod tests_idml;
-#[cfg(test)]
-mod tests_ime;
-#[cfg(test)]
-mod tests_linked_paths;
-#[cfg(test)]
-mod tests_params;
-#[cfg(test)]
-mod tests_roots;
-#[cfg(test)]
-mod tests_table;

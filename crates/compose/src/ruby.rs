@@ -71,6 +71,36 @@ fn tcy_char(c: char, roman: bool) -> bool {
     c.is_ascii_digit() || (roman && c.is_ascii_alphabetic())
 }
 
+/// Tate-chu-yoko in vertical ruby: each short run of digits (and Latin letters) is set in one
+/// ruby em across the line, scaled down to fit when the spec asks for it.
+fn apply_tcy(glyphs: &mut [RubyGlyph], spec: &RubySpec, size: f64) {
+    let roman = spec.auto_tcy_include_roman;
+    let mut i = 0;
+    while i < glyphs.len() {
+        let j = i + glyphs.get(i..).unwrap_or_default().iter().take_while(|g| tcy_char(g.ch, roman)).count();
+        if j == i {
+            i += 1;
+            continue;
+        }
+        if u32::try_from(j - i).is_ok_and(|n| n <= spec.auto_tcy_digits)
+            && let Some(run) = glyphs.get_mut(i..j)
+        {
+            let total: f64 = run.iter().map(|g| g.adv).sum();
+            let f = if spec.auto_tcy_auto_scale && total > size && total > 0.0 { size / total } else { 1.0 };
+            let mut across = -total * f / 2.0;
+            for (n, g) in run.iter_mut().enumerate() {
+                g.tcy = Some([size / 2.0, across + g.x * f, size]);
+                across += g.adv * f;
+                g.sx *= f;
+                g.x = 0.0;
+                g.adv = if n == 0 { size } else { 0.0 };
+                g.joined = n > 0;
+            }
+        }
+        i = j;
+    }
+}
+
 /// Shape `text` as the ruby of parent text `parent_size` points big.
 fn shape_ruby(db: &ScopedFonts<'_>, parent: FaceRef, text: &str, spec: &RubySpec, parent_size: f64, fallback: bool, vertical: bool) -> Shaped {
     let size = spec.size_for(parent_size);
@@ -96,31 +126,7 @@ fn shape_ruby(db: &ScopedFonts<'_>, parent: FaceRef, text: &str, spec: &RubySpec
         .collect();
     // Tate-chu-yoko: short runs of digits (and Latin letters) take one ruby em along the line.
     if vertical && spec.auto_tcy_digits > 0 {
-        let roman = spec.auto_tcy_include_roman;
-        let mut i = 0;
-        while i < glyphs.len() {
-            let j = i + glyphs.get(i..).unwrap_or_default().iter().take_while(|g| tcy_char(g.ch, roman)).count();
-            if j == i {
-                i += 1;
-                continue;
-            }
-            if u32::try_from(j - i).is_ok_and(|n| n <= spec.auto_tcy_digits)
-                && let Some(run) = glyphs.get_mut(i..j)
-            {
-                let total: f64 = run.iter().map(|g| g.adv).sum();
-                let f = if spec.auto_tcy_auto_scale && total > size && total > 0.0 { size / total } else { 1.0 };
-                let mut across = -total * f / 2.0;
-                for (n, g) in run.iter_mut().enumerate() {
-                    g.tcy = Some([size / 2.0, across + g.x * f, size]);
-                    across += g.adv * f;
-                    g.sx *= f;
-                    g.x = 0.0;
-                    g.adv = if n == 0 { size } else { 0.0 };
-                    g.joined = n > 0;
-                }
-            }
-            i = j;
-        }
+        apply_tcy(&mut glyphs, spec, size);
     }
     // Pen positions: a joined glyph sits at its group's start.
     let mut pen = 0.0;

@@ -32,10 +32,11 @@ use crate::export::{Exporter, solid_fill, tf, to_path};
 
 impl Exporter<'_> {
     /// A text run's paint: solid, or a gradient spanning the frame's box (`area`, text space),
-    /// for glyphs drawn under `origin` (text space ← run space).
-    fn text_paint(&mut self, swatch: &str, tint: f32, origin: Affine, area: Rect) -> Option<Paint> {
+    /// for glyphs drawn under `origin` (text space ← run space). `overprint`: the run's
+    /// overprint attribute for this paint.
+    fn text_paint(&mut self, swatch: &str, tint: f32, overprint: bool, origin: Affine, area: Rect) -> Option<Paint> {
         if designcraft_color::swatch::resolve_gradient(&self.doc.swatches, swatch).is_some() && origin.determinant().abs() > 1e-12 {
-            let fill = designcraft_doc::Fill { swatch: swatch.into(), tint, ..designcraft_doc::Fill::none() };
+            let fill = designcraft_doc::Fill { swatch: swatch.into(), tint, overprint, ..designcraft_doc::Fill::none() };
             return self.fill_paint_in(&fill, self.text_area.unwrap_or(area), origin.inverse());
         }
         self.swatch_color(swatch, tint).map(Into::into)
@@ -160,7 +161,7 @@ fn cluster_chars(members: &[PlacedGlyph], cluster: &str) -> Option<Vec<(usize, c
 fn text_rules(cs: &ComposedStory, ft: &FrameText, underline: bool) -> Vec<(designcraft_compose::Rule, Rect)> {
     let mut bars: Vec<(designcraft_compose::Rule, Rect)> = Vec::new();
     for line in &ft.lines {
-        for g in line.glyphs.iter().filter(|g| g.visible) {
+        for g in line.glyphs.iter().filter(|g| g.spans_rules()) {
             let style = &cs.styles[g.style as usize];
             let (on, rule) = if underline { (style.underline, &style.underline_rule) } else { (style.strikethrough, &style.strike_rule) };
             if !on {
@@ -233,10 +234,51 @@ impl Exporter<'_> {
         }
     }
 
-    pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
+    /// One line's glyphs as tagged runs; a glyph that is turned or slanted gets a transform of its own.
+    fn line_glyphs(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, l: &designcraft_compose::Line, story: &str) {
+        let gs = &l.glyphs;
+        let mut i = 0;
+        while i < gs.len() {
+            let g = &gs[i];
+            if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
+                i += 1;
+                continue;
+            }
+            // Vertical type: an upright glyph turns back a quarter about its em box centre.
+            // Shatai slants each glyph about its own em box centre first.
+            let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
+            let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
+            if turn.is_some() || shatai.is_some() {
+                let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
+                s.push_transform(&crate::export::tf(m));
+                self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
+                s.pop();
+                i += 1;
+                continue;
+            }
+            let j = run_end(ft, gs, i);
+            self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
+            i = j;
+        }
+    }
+
+    /// The frame's text. With `objects` (the frame text space → page transform and the page),
+    /// the frame's anchored objects are drawn too, over its paragraph shading and under its text;
+    /// returns whether they were.
+    pub(crate) fn frame_text(
+        &mut self,
+        s: &mut Surface,
+        cs: &ComposedStory,
+        ft: &FrameText,
+        story: &str,
+        objects: Option<(Affine, Option<usize>)>,
+    ) -> bool {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in ft.decos.iter().filter(|d| !d.nonprinting) {
+                if d.overprint {
+                    me.warn("overprint is not exported yet");
+                }
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     match &d.path {
                         Some(p) => me.fill_path(s, p, c),
@@ -248,6 +290,17 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
+        // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
+        // into the next line doesn't hide that line. Objects keep their page-space transforms.
+        let drawn = match objects {
+            Some((xf, page)) if xf.determinant().abs() > 1e-12 => {
+                s.push_transform(&tf(xf.inverse()));
+                self.frame_objects(s, ft, xf, page);
+                s.pop();
+                true
+            }
+            _ => false,
+        };
         // All underlines precede all glyph runs, including ink overlapping from another run.
         let underlines = text_rules(cs, ft, true);
         if !underlines.is_empty() {
@@ -260,30 +313,7 @@ impl Exporter<'_> {
             });
         }
         for l in &ft.lines {
-            let gs = &l.glyphs;
-            let mut i = 0;
-            while i < gs.len() {
-                let g = &gs[i];
-                if !g.visible || g.sx <= 0.0 || g.sy <= 0.0 {
-                    i += 1;
-                    continue;
-                }
-                // Vertical type: an upright glyph turns back a quarter about its em box centre.
-                // Shatai slants each glyph about its own em box centre first.
-                let turn = if ft.vertical { g.vertical_xf(l.baseline) } else { None };
-                let shatai = cs.styles.get(g.style as usize).and_then(|st| st.shatai_xf(g, l.baseline));
-                if turn.is_some() || shatai.is_some() {
-                    let m = turn.unwrap_or(Affine::IDENTITY) * shatai.unwrap_or(Affine::IDENTITY);
-                    s.push_transform(&crate::export::tf(m));
-                    self.tagged_run(s, cs, &gs[i..i + 1], l.baseline, story);
-                    s.pop();
-                    i += 1;
-                    continue;
-                }
-                let j = run_end(ft, gs, i);
-                self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
-                i = j;
-            }
+            self.line_glyphs(s, cs, ft, l, story);
         }
         self.as_artifact(s, |me, s| {
             for (rule, r) in text_rules(cs, ft, false) {
@@ -295,40 +325,52 @@ impl Exporter<'_> {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
                     let area = std::mem::replace(&mut me.text_area, lines_area(nft));
-                    me.frame_text(s, &n.text, nft, &n.source);
+                    me.frame_text(s, &n.text, nft, &n.source, None);
                     me.text_area = area;
                     s.pop();
                 }
             }
         });
+        drawn
+    }
+
+    /// One table cell's graphic, or its text composed in the cell's own area.
+    fn table_cell(&mut self, s: &mut Surface, c: &designcraft_compose::PlacedCell) {
+        if let Some(g) = &c.graphic {
+            if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
+                s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
+                s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
+                self.graphic(s, g, None);
+                s.pop();
+                s.pop();
+            }
+        } else if let Some(cft) = c.text.frames.first() {
+            s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
+            let area = std::mem::replace(&mut self.text_area, lines_area(cft));
+            self.frame_text(s, &c.text, cft, &c.source, None);
+            self.text_area = area;
+            s.pop();
+        }
     }
 
     /// Table fragments: cell fills, cell text (real text), edges and the border.
     fn tables(&mut self, s: &mut Surface, ft: &FrameText) {
         for t in &ft.tables {
             for c in &t.cells {
-                if let Some((sw, tint)) = &c.fill
-                    && let Some(col) = self.swatch_color(sw, *tint)
-                {
-                    self.fill_rect(s, c.rect, col);
+                if let Some((sw, tint)) = &c.fill {
+                    let fill = designcraft_doc::Fill { swatch: sw.clone(), tint: *tint, ..designcraft_doc::Fill::none() };
+                    if let Some(paint) = self.fill_paint(&fill, t.rect)
+                        && let Some(path) = to_path(&c.rect.to_path(0.1))
+                    {
+                        s.set_stroke(None);
+                        s.set_fill(Some(paint_fill(paint)));
+                        s.draw_path(&path);
+                        s.set_fill(None);
+                    }
                 }
             }
             for c in &t.cells {
-                if let Some(g) = &c.graphic {
-                    if let Some(clip) = to_path(&c.clip.to_path(0.1)) {
-                        s.push_clip_path(&clip, &krilla::paint::FillRule::NonZero);
-                        s.push_transform(&tf(Affine::translate((c.clip.x0, c.clip.y0))));
-                        self.graphic(s, g);
-                        s.pop();
-                        s.pop();
-                    }
-                } else if let Some(cft) = c.text.frames.first() {
-                    s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
-                    let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-                    self.frame_text(s, &c.text, cft, &c.source);
-                    self.text_area = area;
-                    s.pop();
-                }
+                self.table_cell(s, c);
             }
             for seg in &t.strokes {
                 let st = &seg.stroke;
@@ -474,18 +516,18 @@ impl Exporter<'_> {
         // Outside a frame (no text area), a gradient spans the run.
         let end = glyphs.last().map_or(g0.x, |g| g.x + g.adv);
         let run_area = Rect::new(g0.x, baseline - size, end.max(g0.x + 1.0), baseline + size * 0.25);
-        let fill = self.text_paint(&st.fill, st.fill_tint, origin, run_area);
+        let fill = self.text_paint(&st.fill, st.fill_tint, st.overprint_fill, origin, run_area);
         let stroke = if st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0 {
-            self.text_paint(&st.stroke, st.stroke_tint, origin, run_area)
+            self.text_paint(&st.stroke, st.stroke_tint, st.overprint_stroke, origin, run_area)
         } else {
             None
         };
         if fill.is_none() && stroke.is_none() {
             return;
         }
-        if st.overprint_fill || st.overprint_stroke {
-            self.warn("overprint is not exported yet");
-        }
+        let fill_op = fill.is_some() && self.overprints(&st.fill, st.fill_tint, st.overprint_fill);
+        let stroke_op = stroke.is_some() && self.overprints(&st.stroke, st.stroke_tint, st.overprint_stroke);
+        let overprint = self.push_overprint(s, fill_op, stroke_op);
         // Stroke behind fill: a double-width stroke first, as outlines so the text is not
         // duplicated, then the fill over its inner half. With no fill, the stroke is clipped
         // to the outside of the glyphs instead.
@@ -514,6 +556,9 @@ impl Exporter<'_> {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         }
         if clipped {
+            s.pop();
+        }
+        if overprint {
             s.pop();
         }
     }
@@ -637,4 +682,40 @@ fn glyph_outlines(glyphs: &[PlacedGlyph], size: f64, tan: f64) -> BezPath {
         bp.extend(o.iter());
     }
     bp
+}
+
+#[cfg(test)]
+mod rule_tests {
+    use super::*;
+    use designcraft_compose::Cache;
+    use designcraft_doc::{Document, ParaFormat, SpreadRef};
+    use designcraft_geom::Rect;
+
+    /// A tab draws nothing but advances to its stop, and the underline runs across it, as it does
+    /// on screen: a form's fill-in lines are underlined tabs (#1466).
+    #[test]
+    fn an_underline_runs_across_a_tab() {
+        let mut doc = Document::new(&Default::default());
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = Some(true);
+        }
+        let layer = doc.default_layer();
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 300.0), layer, "Name\tCity", ParaFormat::default()).unwrap();
+        let cs = Cache::new().get(&doc, sid, None);
+        let line = &cs.frames[0].lines[0];
+        let tab = line.glyphs.iter().find(|g| g.rendered_char == '\t').expect("the tab is placed on the line");
+        let bars = text_rules(&cs, &cs.frames[0], true);
+        assert_eq!(bars.len(), 1, "one bar across the line, not one before the tab and one after: {bars:?}");
+        let bar = bars[0].1;
+        assert!(bar.x0 <= tab.x + 0.5 && bar.x1 >= tab.x + tab.adv - 0.5, "the bar covers the tab: {bar:?}, tab {} + {}", tab.x, tab.adv);
+        // The strikethrough of the same text behaves the same way.
+        for style in &mut doc.styles_mut().paragraph {
+            style.chars.underline = None;
+            style.chars.strikethrough = Some(true);
+        }
+        let cs = Cache::new().get(&doc, sid, None);
+        assert!(text_rules(&cs, &cs.frames[0], true).is_empty(), "no underline now");
+        assert_eq!(text_rules(&cs, &cs.frames[0], false).len(), 1, "one strike across the line");
+    }
 }

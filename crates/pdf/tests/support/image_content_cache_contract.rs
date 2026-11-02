@@ -30,6 +30,7 @@ fn place_named(d: &mut Document, data: Vec<u8>, x: f64, name: &str, mime: &str, 
     let mut item = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(x, 36.0, x + 20.0, 56.0)));
     item.stroke.weight = 0.0;
     item.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset: aid,
         size: (20.0, 20.0),
         xf: Affine::translate((x, 36.0)),

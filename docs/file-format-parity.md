@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-19 · **Change:** minor (PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -41,7 +41,7 @@ layer survive interchange; literal XML and round-trip tests are in
 
 | Format | Ext | InDesign | DesignCraft | Fidelity / tests | Weight |
 |---|---|---|---|---|---|
-| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF | 53 tests in `crates/pdf`; no PDF/X-1a or X-3 (needs flattening to PDF 1.3/1.4); no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
+| PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF; **PDF/X-1a:2003** flattened in its inks by craft-prepress | 53 tests in `crates/pdf`; no PDF/X-3; no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
 | PDF (interactive) | `.pdf` | ✓ | ✓ links, bookmarks, buttons, AcroForm fields, page transitions, object states | | 2% |
 | JPEG / PNG | `.jpg`, `.png` | ✓ | PNG from the UI; JPEG from the CLI only | no resolution / colour space options dialog for JPEG | 3% |
 | EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | | 2% |
@@ -54,6 +54,14 @@ layer survive interchange; literal XML and round-trip tests are in
 | XML | `.xml` | ✓ | ✓ export and import, DTD validate | depth unmeasured | 1% |
 | Print / PostScript | | ✓ printers, PPDs, separations | ~ PDF to CUPS/Windows (craft-print; no PostScript) | | 3% |
 | Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | | 2% |
+
+PDF/X-4 export warns about unembedded fonts that draw visible text, including inside placed PDF
+forms; `designcraft-cli validate-pdf FILE.pdf` reports the same issues, with font names and pages
+(#909). Invisible text (render mode 3) is exempt from this font-embedding check. Detection does not
+automatically embed or outline fonts; embedding, substitution or outlining of placed-PDF fonts
+remains missing. A document-wide operation limit and a form-nesting depth limit report incomplete
+font checks rather than traversing pathological nesting. These built-in checks are not complete
+external PDF/X certification.
 
 ## Placed and imported content
 
@@ -85,7 +93,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | PDF presets | `.joboptions`, `.pdfs` | read/write | ✗ |
 | Print / flattener / document presets | `.prst`, `.flst`, `.dcst` | read/write | ✗ |
 | Preflight profiles | `.idpp` | read/write | ✗ (own profiles in the document) |
-| Keyboard shortcut sets | `.indk` | read/write | ✗ (own JSON) |
+| Keyboard shortcut sets | `.indk`; Show Set `.txt` | read/write; write | ~ (imports a Show Set `.txt`; own JSON) |
 | User dictionary | `.udc` | read/write | ✗ (own, in the document and prefs) |
 | Fonts | OTF, TTF, TTC, variable | ✓ | ✓ (Type 1 retired by both) |
 
@@ -103,7 +111,7 @@ up to 30 points.
 |---|---|
 | INDD real-file corpus, metric, fixes (#21, #114) | 10–30 |
 | IDML real-file corpus, metric, fixes (#193, #338, #339, #340) | 60–100 |
-| PDF/X-1a and X-3 (transparency flattener), PDF presets and `.joboptions`, external validator | 40–70 |
+| PDF/X-3, PDF presets and `.joboptions`, external validator | 30–60 |
 | Print fidelity, PostScript level 3 output and print presets | 25–45 |
 | ICML story import, IDMS snippets | 15–25 |
 | HTML / fixed-layout EPUB with live text | 20–35 |
@@ -114,6 +122,7 @@ up to 30 points.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | PDF/X-4 export and `validate-pdf` report visible unembedded fonts by name and page, including placed forms; invisible text is exempt, operation- or depth-limited checks report incompleteness, and automatic font repair remains missing (#909) |
 | 2026-10-15 | minor | IDML retains liquid versus ruler guide types on document and parent pages, with literal XML and mixed-guide round-trip coverage; object liquid constraints remain unsupported (#872) |
 | 2026-10-13 | minor | Asset loading and compaction use content fingerprints with exact equality checks; tests cover equal-sized distinct buffers, shared copies, independent links and missing data (#727) |
 | 2026-10-13 | minor | `.indd` and `.indt` read through storytold/indd-utils; INDD remaining work is a real-file corpus (10–30 h); score unchanged until it is measured |

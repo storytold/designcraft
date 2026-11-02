@@ -70,6 +70,129 @@ fn package(frames: &[String]) -> Vec<u8> {
     ])
 }
 
+#[test]
+fn nested_graphic_layers_preserve_hierarchy_on_roundtrip() {
+    let option = r#"<GraphicLayerOption UpdateLinkOption="KeepOverrides">
+      <GraphicLayer Self="a" Id="1" Name="Group"><GraphicLayer Self="b" Id="2" Name="Nested" OriginalVisibility="true" CurrentVisibility="false"/></GraphicLayer>
+      <GraphicLayer Self="c" Id="3" Name="Sibling"/>
+    </GraphicLayerOption>"#;
+    let image = image(1, PHOTO, None).replace("</Image>", &format!("{option}</Image>"));
+    let d = import_idml(&package(&[frame(1, 0.0, 0.0, &image)])).unwrap();
+    let options = |d: &Document| d.spreads[0].items[0].graphic().unwrap().layer_options.clone().unwrap();
+    let expected = options(&d);
+    assert_eq!(expected.layers.len(), 3);
+    assert_eq!(expected.parents, [None, Some(0), None]);
+    assert!(expected.has_visibility_overrides());
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(options(&reopened), expected);
+}
+
+#[test]
+fn graphic_layer_options_survive_for_each_placement_of_a_shared_asset() {
+    let option = |n: usize, visible: &str| {
+        format!(
+            r#"<GraphicLayerOption UpdateLinkOption="KeepOverrides"><GraphicLayer Self="gl{n}" Id="7" Name="Synthetic layer" OriginalVisibility="true" CurrentVisibility="{visible}" Locked="true" HasPrintState="true" PrintState="false"/></GraphicLayerOption>"#
+        )
+    };
+    let frames = ["false", "true"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, visible)| {
+            let n = i + 1;
+            frame(n, i as f64 * 100.0, 0.0, &image(n, PHOTO, None).replace("</Image>", &format!("{}</Image>", option(n, visible))))
+        })
+        .collect::<Vec<_>>();
+    let reads = Cell::new(0);
+    let loaded = import_idml_report_with_previews(
+        &package(&frames),
+        &|_| {
+            reads.set(reads.get() + 1);
+            Some(vec![42; 16])
+        },
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(reads.get(), 1);
+    assert_eq!(loaded.document.assets.len(), 1, "layer choices belong to placements, not shared image bytes");
+    let out = export_idml(&loaded.document);
+    let spreads = zip_text(&out, "Spreads/");
+    assert_eq!(spreads.matches("<GraphicLayer ").count(), 2, "both placements must retain their independent layer choices");
+    assert!(spreads.contains("CurrentVisibility=\"false\""));
+    assert!(spreads.contains("CurrentVisibility=\"true\""));
+    assert_eq!(spreads.matches("UpdateLinkOption=\"KeepOverrides\"").count(), 2);
+    assert_eq!(spreads.matches("PrintState=\"false\"").count(), 2);
+    assert!(loaded.warnings.iter().any(|w| w.contains("layer visibility")));
+    let reopened = import_idml(&out).unwrap();
+    let options = |d: &Document| {
+        d.spreads[0]
+            .items
+            .iter()
+            .filter_map(|i| match &i.content {
+                Content::Graphic(g) => g.layer_options.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(options(&loaded.document), options(&reopened));
+    let twice = zip_text(&export_idml(&reopened), "Spreads/");
+    assert_eq!(twice.matches("<GraphicLayer ").count(), 2);
+}
+
+#[test]
+fn malformed_native_graphic_layer_parents_cannot_cycle_or_overflow_xml_depth() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    let mut options = designcraft_doc::GraphicLayerOptions::default();
+    for i in 0..300usize {
+        options.layers.push(std::collections::BTreeMap::from([("Name".into(), format!("Layer {i}"))]));
+        options.parents.push(Some(i.saturating_sub(1)));
+    }
+    options.parents[1] = Some(usize::MAX);
+    g.layer_options = Some(options);
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(reopened.spreads[0].items[0].graphic().unwrap().layer_options.as_ref().unwrap().layers.len(), 300);
+}
+
+#[test]
+fn closed_graphic_layer_subtrees_cannot_reorder_native_layers() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    g.layer_options = Some(designcraft_doc::GraphicLayerOptions {
+        layers: ["A", "B", "C", "D"].into_iter().map(|name| std::collections::BTreeMap::from([("Name".into(), name.into())])).collect(),
+        parents: vec![None, None, Some(0), Some(2)],
+        ..Default::default()
+    });
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    let options = reopened.spreads[0].items[0].graphic().unwrap().layer_options.as_ref().unwrap();
+    assert_eq!(options.layers.iter().map(|a| a["Name"].as_str()).collect::<Vec<_>>(), ["A", "B", "C", "D"]);
+    assert_eq!(options.parents, [None, None, None, Some(2)]);
+}
+
+#[test]
+fn graphic_layer_attributes_from_native_data_cannot_inject_xml_or_self_ids() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    let attributes = std::collections::BTreeMap::from([
+        ("Name".into(), "A < B & C".into()),
+        ("Self".into(), "injected-id".into()),
+        ("xmlns".into(), "urn:injected".into()),
+        ("bad\" injected=\"true".into(), "invalid".into()),
+    ]);
+    g.layer_options = Some(designcraft_doc::GraphicLayerOptions { attributes: attributes.clone(), layers: vec![attributes], ..Default::default() });
+    let out = export_idml(&d);
+    let xml = zip_text(&out, "Spreads/");
+    assert!(!xml.contains("injected-id") && !xml.contains("injected=") && !xml.contains("urn:injected"));
+    let back = import_idml(&out).unwrap();
+    let Content::Graphic(g) = &back.spreads[0].items[0].content else { panic!("graphic") };
+    assert_eq!(g.layer_options.as_ref().unwrap().layers[0]["Name"], "A < B & C");
+}
+
 /// (asset, crop, transform) of each graphic, left to right.
 fn placements(d: &Document) -> Vec<(AssetId, [f64; 4], designcraft_geom::Affine)> {
     let mut out: Vec<(f64, AssetId, [f64; 4], designcraft_geom::Affine)> = d.spreads[0]

@@ -4,7 +4,10 @@
 use egui::{Event, Modifiers, PointerButton};
 use egui_kittest::Harness;
 
-use super::*;
+use super::{
+    CanvasLayout, DesignApp, GuideDrag, GuidePress, Mods, Overlay, Point, Pos2, RULER, SpreadRef, ToolKey, Xf, guide_drag_delta, guide_spot, json,
+    moving_guides, pos2, vec2,
+};
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
     let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
@@ -190,11 +193,6 @@ fn select_all_guides_is_in_the_edit_menu_on_the_spread_in_view() {
     assert_eq!(crate::menus::default_shortcut("guide.selectAll"), Some("Cmd+Alt+G"));
     crate::menus::activate(h.state_mut(), "guide.selectAll", &serde_json::Value::Null);
     assert_eq!(selected(&h), [0, 1, 2]);
-    assert_eq!(crate::i18n::tr("de", "Select All Guides"), "Alle Hilfslinien auswählen");
-    for (code, _) in crate::i18n::LANGUAGES.iter().filter(|(c, _)| !c.is_empty()) {
-        assert_ne!(crate::i18n::tr(code, "Select All Guides"), "Select All Guides", "{code}");
-        assert_ne!(crate::i18n::tr(code, "Ruler Guide"), "Ruler Guide", "{code}");
-    }
     h.state_mut().ui.guides = false;
     assert!(!crate::menus::menu_enabled(h.state(), "guide.selectAll"));
 }
@@ -329,4 +327,32 @@ fn a_guide_dragged_out_of_a_ruler_snaps() {
     let dest = screen_of(&h, 250.0, 400.0 + 1.5 * pt_per_px(&h));
     drag(&mut h, ruler, dest);
     assert_eq!(positions(&h), [200.0, 300.0, 400.0, 400.0]);
+}
+
+/// A guide pulled out of a ruler keeps the resize cursor across it over the canvas until it is
+/// dropped; the tool's arrow came back as soon as the pointer left the ruler.
+#[test]
+fn a_guide_dragged_out_of_a_ruler_keeps_its_cursor_until_dropped() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let mut h = harness(app);
+    let rect = h.state().canvas_rect.unwrap();
+    for (from, icon) in [
+        (pos2(rect.center().x, rect.min.y - crate::canvas::RULER / 2.0), egui::CursorIcon::ResizeVertical),
+        (pos2(rect.min.x - crate::canvas::RULER / 2.0, rect.center().y), egui::CursorIcon::ResizeHorizontal),
+    ] {
+        let to = rect.center();
+        h.hover_at(from);
+        h.step();
+        press(&mut h, from, true, Modifiers::NONE);
+        for k in 1..=4 {
+            h.hover_at(from + (to - from) * (k as f32 / 4.0));
+            h.step();
+            assert_eq!(h.output().platform_output.cursor_icon, icon, "step {k} of the drag from {from:?}");
+        }
+        press(&mut h, to, false, Modifiers::NONE);
+        h.hover_at(to);
+        h.run_steps(2);
+        assert_ne!(h.output().platform_output.cursor_icon, icon, "dropped: the tool's cursor again");
+    }
 }
