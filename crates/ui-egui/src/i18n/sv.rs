@@ -102,6 +102,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Numbering & Section Options…", "Numrerings- och avsnittsalternativ…"),
     ("Go to Page…", "Gå till sida…"),
     ("Go to Page", "Gå till sida"),
+    ("Go to Row…", "Gå till rad…"),
+    ("Go to Row", "Gå till rad"),
     ("Next Page", "Nästa sida"),
     ("Previous Page", "Föregående sida"),
     ("First Page", "Första sidan"),
