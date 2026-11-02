@@ -2078,6 +2078,41 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
 }
 
 #[test]
+fn parent_resize_page_tool_targets_the_visible_parent() {
+    let d = Document::new(&NewDocument { width: 400.0, height: 600.0, pages: 3, facing_pages: true, ..Default::default() });
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, true));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = l.to_canvas(SpreadRef::Parent(0), d.parents[0].pages[0].bounds().center());
+    let mut t = create("page");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+    assert_eq!(
+        a,
+        vec![Action::Dialog(
+            "cmd:layout.parentPageSize".into(),
+            serde_json::json!({"parent": d.parents[0].id.0, "page": 0, "width": 400.0, "height": 600.0})
+        )],
+        "double click must target the visible parent instead of document page zero"
+    );
+}
+
+#[test]
+fn parent_resize_selection_tracks_ids_and_never_crosses_canvas_modes() {
+    let mut d = Document::new(&NewDocument::default());
+    let second = d.add_parent("B", "Parent", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    let selection = Selection { page: Some(0), parent_page: Some((second, 1)), ..Default::default() };
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(1), 1)));
+    d.parents.swap(0, 1);
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(0), 1)));
+    assert_eq!(CanvasLayout::new(&d, false).selected_page(&d, &selection), Some((SpreadRef::Doc(0), 0)));
+    d.parents.remove(0);
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
+    let selection = Selection { page: Some(0), ..Default::default() };
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
+}
+
+#[test]
 fn direct_selection_click_on_one_of_several_selected_frames_selects_only_it() {
     let mut d = Document::new(&NewDocument::default());
     let a = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
