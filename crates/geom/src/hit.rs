@@ -27,7 +27,8 @@ pub fn stroke_contains(path: &BezPath, width: f64, tol: f64, p: Point) -> bool {
 /// Does the path intersect (or lie inside) the rect? Used for marquee selection.
 pub fn intersects_rect(path: &PathData, r: Rect) -> bool {
     let Some(b) = path.bounds() else { return false };
-    if b.intersect(r).area() <= 0.0 && !(b.width() == 0.0 || b.height() == 0.0) {
+    let flat = |q: Rect| q.width() == 0.0 || q.height() == 0.0;
+    if b.intersect(r).area() <= 0.0 && !flat(b) && !flat(r) {
         return false;
     }
     // Any anchor inside?
@@ -89,5 +90,13 @@ mod tests {
         // crossing a line
         let l = shapes::line(Point::new(0.0, 0.0), Point::new(10.0, 10.0));
         assert!(intersects_rect(&l, Rect::new(4.0, 0.0, 6.0, 10.0)));
+    }
+
+    #[test]
+    fn flat_marquee() {
+        let p = shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0));
+        assert!(intersects_rect(&p, Rect::new(-5.0, 5.0, 15.0, 5.0)));
+        assert!(intersects_rect(&p, Rect::new(5.0, -5.0, 5.0, 15.0)));
+        assert!(!intersects_rect(&p, Rect::new(-5.0, 20.0, 15.0, 20.0)));
     }
 }
