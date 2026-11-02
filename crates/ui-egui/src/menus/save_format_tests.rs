@@ -89,3 +89,99 @@ fn a_download_save_follows_the_save_format() {
         assert!(!app.session.active().unwrap().is_dirty(), "the document counts as saved");
     }
 }
+
+/// Answers every file dialog with `path` (as typed in it).
+fn answer_with(app: &mut DesignApp, path: &std::path::Path) {
+    let path = path.to_path_buf();
+    app.answer_dialogs(move |request| match request {
+        craft_dialogs::Request::File(_) => craft_dialogs::Answer::Paths(vec![path.clone()]),
+        _ => craft_dialogs::Answer::Cancelled,
+    });
+}
+
+/// A new document with a text frame holding an editorial note: IDML can't keep it.
+fn document_with_a_note(app: &mut DesignApp, title: &str) {
+    app.run("file.new", json!({"title": title})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Hello"})).unwrap();
+    app.run("note.new", json!({"text": "Check this"})).unwrap();
+}
+
+/// CodeRabbit on #1105: a save as IDML that would lose editorial notes asks first. Cancel saves
+/// nothing; Save Anyway writes the IDML; Save as DesignCraft… asks where and writes DesignCraft's
+/// format instead, which keeps the notes.
+#[test]
+fn an_idml_save_that_would_lose_notes_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"saveFormat": "idml"})).unwrap();
+    document_with_a_note(&mut app, "Notes");
+    let idml = dir.path().join("Notes.idml");
+    answer_with(&mut app, &idml);
+
+    // Cancel: nothing written, still unsaved.
+    app.run("app.save", json!({})).unwrap();
+    app.settle_dialogs();
+    let d = app.ui.dialog.as_ref().expect("the IDML loss question");
+    assert_eq!((d.id.as_str(), &d.fields["editorialNotes"], &d.fields["endnotes"]), ("idmlLoss", &json!(1), &json!(0)));
+    crate::dialogs::cancel(&mut app);
+    assert!(app.ui.dialog.is_none() && app.lossy_save.is_none());
+    assert!(!idml.exists());
+    assert!(app.session.active().unwrap().is_dirty());
+
+    // Save Anyway: the IDML is written and the document counts as saved.
+    app.run("app.save", json!({})).unwrap();
+    app.settle_dialogs();
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert!(designcraft_idml::is_idml(&std::fs::read(&idml).unwrap()));
+    assert!(!app.session.active().unwrap().is_dirty());
+    assert_eq!(app.session.active().unwrap().path.as_deref(), Some(idml.to_str().unwrap()));
+
+    // ⌘S to its own IDML file asks again; Save as DesignCraft… saves as DesignCraft instead.
+    app.run("note.new", json!({"text": "And this"})).unwrap();
+    let before = std::fs::read(&idml).unwrap();
+    let native = dir.path().join("Notes.designcraft");
+    answer_with(&mut app, &native);
+    app.run("app.save", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("idmlLoss"));
+    app.ui.dialog.as_mut().unwrap().fields.insert("asDesigncraft".into(), json!(true));
+    crate::dialogs::confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(std::fs::read(&idml).unwrap(), before, "the IDML file is untouched");
+    let saved = std::fs::read(&native).unwrap();
+    assert!(!designcraft_idml::is_idml(&saved));
+    assert_eq!(app.session.active().unwrap().path.as_deref(), Some(native.to_str().unwrap()));
+    assert!(!app.session.active().unwrap().is_dirty());
+
+    // Save a Copy to an IDML name asks too; Cancel writes nothing.
+    let copy = dir.path().join("Copy.idml");
+    app.run("app.saveCopyDialog", json!({"path": copy.to_string_lossy()})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("idmlLoss"));
+    crate::dialogs::cancel(&mut app);
+    assert!(!copy.exists());
+}
+
+/// In a browser, the download asks the same question; Save as DesignCraft… downloads DesignCraft's
+/// format.
+#[test]
+fn a_download_that_would_lose_notes_asks_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let title = dir.path().join("Notes").to_string_lossy().to_string();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let got: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::default();
+    let sink = got.clone();
+    app.services.download = Some(Box::new(move |name: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push((name.to_string(), bytes.to_vec()));
+        Ok(())
+    }));
+    app.run("prefs.set", json!({"saveFormat": "idml"})).unwrap();
+    document_with_a_note(&mut app, &title);
+    app.run("app.save", json!({})).unwrap();
+    assert!(got.lock().unwrap().is_empty(), "nothing downloaded before the answer");
+    app.ui.dialog.as_mut().unwrap().fields.insert("asDesigncraft".into(), json!(true));
+    crate::dialogs::confirm(&mut app).unwrap();
+    let got = got.lock().unwrap();
+    let [(name, bytes)] = got.as_slice() else { panic!("one download: {:?}", got.len()) };
+    assert!(name.ends_with("Notes.designcraft"), "{name}");
+    assert!(!designcraft_idml::is_idml(bytes));
+    assert!(!app.session.active().unwrap().is_dirty());
+}

@@ -277,6 +277,8 @@ pub struct DesignApp {
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save waiting for the answer to "IDML can't keep all of this document" (`idmlLoss`).
+    pub(crate) lossy_save: Option<menus::LossySave>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.

@@ -38,15 +38,99 @@ fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key:
     app.ask_open(purpose, Bound::Document, move |app, path| run_ui(app, &id, &with_path(&p, key, path)).unwrap_or(Ok(Value::Null)))
 }
 
-/// File › Save As: asks where, saves there, then runs `after`.
+/// What runs once a save has happened (or was cancelled: it checks the document's state).
+pub(crate) type After = Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>;
+
+/// The answer to "IDML can't keep all of this document".
+pub(crate) enum LossyAnswer {
+    /// Save as IDML all the same (also the answer when there is nothing to lose).
+    SaveAnyway,
+    /// Save in DesignCraft's own format instead, which keeps everything.
+    SaveAsDesigncraft,
+    Cancel,
+}
+
+/// The continuation of a save waiting for the IDML loss question.
+pub(crate) type LossySave = Box<dyn FnOnce(&mut DesignApp, LossyAnswer) -> Result<Value, String>>;
+
+/// A save as IDML (`idml`) that would lose part of the active document (editorial notes,
+/// endnotes: `file.idmlLosses`) asks first, and `then` runs with the answer once it is given.
+/// Otherwise `then` runs now, as Save Anyway: there is nothing to lose. The engine refuses such a
+/// save without `allowLoss`, so nothing is lost without this question (CodeRabbit on #1105).
+pub(super) fn guard_idml_loss(
+    app: &mut DesignApp,
+    idml: bool,
+    then: impl FnOnce(&mut DesignApp, LossyAnswer) -> Result<Value, String> + 'static,
+) -> Result<Value, String> {
+    if idml {
+        let lost = app.run("file.idmlLosses", json!({}))?;
+        let count = |k: &str| lost.get(k).and_then(Value::as_u64).unwrap_or(0);
+        if count("editorialNotes") > 0 || count("endnotes") > 0 {
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("idmlLoss", lost));
+            app.lossy_save = Some(Box::new(then));
+            return Ok(Value::Null);
+        }
+    }
+    then(app, LossyAnswer::SaveAnyway)
+}
+
+/// Whether a save to `path` writes IDML.
+fn is_idml_path(path: &str) -> bool {
+    designcraft_engine::SaveFormat::of_path(path) == designcraft_engine::SaveFormat::Idml
+}
+
+/// File › Save As: asks where (suggesting the `ext` format), saves there, then runs `after`.
 #[track_caller]
-fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
-    let ext = app.session.prefs.save_format.extension();
+fn save_as_dialog(app: &mut DesignApp, ext: &str, after: After) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.{ext}", d.doc.title)).unwrap_or_default();
-    app.ask_save(&name, Bound::Document, move |app, path| {
-        app.run("file.saveAs", json!({"path": path}))?;
-        after(app)
+    app.ask_save(&name, Bound::Document, move |app, path| save_as_checked(app, path, after))
+}
+
+/// Save As to `path`, asking first when that is an IDML save that would lose content.
+fn save_as_checked(app: &mut DesignApp, path: String, after: After) -> Result<Value, String> {
+    guard_idml_loss(app, is_idml_path(&path), move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => {
+            app.run("file.saveAs", json!({"path": path, "allowLoss": true}))?;
+            after(app)
+        }
+        LossyAnswer::SaveAsDesigncraft => save_as_dialog(app, designcraft_engine::SaveFormat::Designcraft.extension(), after),
+        LossyAnswer::Cancel => after(app),
     })
+}
+
+/// Save the active document to its own file, asking first when that is an IDML file and the save
+/// would lose content.
+fn save_to_own_file(app: &mut DesignApp, after: After) -> Result<Value, String> {
+    let idml = app.session.active().and_then(|d| d.path.as_deref()).is_some_and(is_idml_path);
+    guard_idml_loss(app, idml, move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => {
+            app.run("file.save", json!({"allowLoss": true}))?;
+            after(app)
+        }
+        LossyAnswer::SaveAsDesigncraft => save_as_dialog(app, designcraft_engine::SaveFormat::Designcraft.extension(), after),
+        LossyAnswer::Cancel => after(app),
+    })
+}
+
+/// Save a Copy to `path`, asking first when that is an IDML save that would lose content.
+fn save_copy_checked(app: &mut DesignApp, path: String) -> Result<Value, String> {
+    guard_idml_loss(app, is_idml_path(&path), move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => app.run("file.saveACopy", json!({"path": path, "allowLoss": true})),
+        LossyAnswer::SaveAsDesigncraft => {
+            let ext = designcraft_engine::SaveFormat::Designcraft.extension();
+            let name = app.session.active().map(|d| format!("{} copy.{ext}", d.doc.title)).unwrap_or_default();
+            app.ask_save(&name, Bound::Document, save_copy_checked)
+        }
+        LossyAnswer::Cancel => Ok(Value::Null),
+    })
+}
+
+/// The IDML loss question was answered: run the save that was waiting for it.
+pub(crate) fn answer_idml_loss(app: &mut DesignApp, answer: LossyAnswer) -> Result<Value, String> {
+    match app.lossy_save.take() {
+        Some(then) => then(app, answer),
+        None => Ok(Value::Null),
+    }
 }
 
 /// Save the active document (a download in a browser; Save As for one never saved), then run
@@ -54,14 +138,13 @@ fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Res
 #[track_caller]
 pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
     if app.services.download.is_some() {
-        download_document(app)?;
-        return after(app);
+        return download_document(app, Box::new(after));
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
-        app.run("file.save", json!({}))?;
-        return after(app);
+        return save_to_own_file(app, Box::new(after));
     }
-    save_as_dialog(app, after)
+    let ext = app.session.prefs.save_format.extension();
+    save_as_dialog(app, ext, Box::new(after))
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -170,27 +253,30 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             ));
             Ok(Value::Null)
         }
-        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
+        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app, Box::new(|_| Ok(Value::Null))),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
-                return Some(app.run("file.save", json!({})));
+                return Some(save_to_own_file(app, Box::new(|_| Ok(Value::Null))));
             }
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveAs", json!({"path": path})),
-            None => save_as_dialog(app, |_| Ok(Value::Null)),
+            Some(path) => save_as_checked(app, path.to_string(), Box::new(|_| Ok(Value::Null))),
+            None => {
+                let ext = app.session.prefs.save_format.extension();
+                save_as_dialog(app, ext, Box::new(|_| Ok(Value::Null)))
+            }
         },
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveACopy", json!({"path": path})),
+            Some(path) => save_copy_checked(app, path.to_string()),
             None => {
                 let ext = app.session.prefs.save_format.extension();
                 let name = app.session.active().map(|d| format!("{} copy.{ext}", d.doc.title)).unwrap_or_default();
-                app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path": path})))
+                app.ask_save(&name, Bound::Document, save_copy_checked)
             }
         },
         "app.exportPng" => export_png(app, p),

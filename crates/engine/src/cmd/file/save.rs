@@ -23,7 +23,8 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     crate::cmd::datamerge::refresh_relative_paths(&mut saved, std::path::Path::new(&path));
     let paths_changed = saved.data_merge != st.doc.data_merge;
     let saved = if paths_changed { Arc::new(saved) } else { st.doc.clone() };
-    let bytes = bytes_for_path(&saved, &path, &s.cache)?;
+    let allow_loss = p.get("allowLoss").and_then(Value::as_bool).unwrap_or(false);
+    let bytes = bytes_for_path(&saved, &path, &s.cache, allow_loss)?;
     #[cfg(not(target_arch = "wasm32"))]
     crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
     let st = s.doc_mut()?;

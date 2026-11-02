@@ -114,3 +114,41 @@ fn the_save_format_preference_takes_only_known_formats() {
     assert_eq!(crate::SaveFormat::of_path("/a/B.designcraft"), crate::SaveFormat::Designcraft);
     assert_eq!(crate::SaveFormat::of_path("/a/idml"), crate::SaveFormat::Designcraft, "a name, not an extension");
 }
+
+/// CodeRabbit on #1105: a save as IDML would drop editorial notes (and turn endnotes into plain
+/// text), then mark the document saved and drop its recovery copy, so the loss would be silent
+/// and for good. Such a save is refused unless `allowLoss`; file.idmlLosses says what it loses.
+#[test]
+fn an_idml_save_that_would_lose_content_is_refused_unless_allowed() {
+    let dir = temp_dir("lossy");
+    let mut s = Session::new();
+    document_with(&mut s, "Has a note");
+    assert_eq!(s.execute("file.idmlLosses", &json!({})).unwrap(), json!({"editorialNotes": 0, "endnotes": 0}));
+    s.execute("note.new", &json!({"text": "Check this"})).unwrap();
+    assert_eq!(s.execute("file.idmlLosses", &json!({})).unwrap(), json!({"editorialNotes": 1, "endnotes": 0}));
+
+    let path = dir.join("Notes.idml");
+    let copy = dir.join("Copy.idml");
+    for (cmd, p) in [("file.saveAs", &path), ("file.saveACopy", &copy)] {
+        let e = s.execute(cmd, &json!({"path": p.to_string_lossy()})).unwrap_err();
+        assert!(e.to_string().starts_with(super::bytes::LOSSY_IDML_SAVE), "{cmd}: {e}");
+        assert!(!p.exists(), "{cmd}: nothing written");
+    }
+    assert!(s.doc().unwrap().is_dirty() && s.doc().unwrap().path.is_none(), "the document is as it was");
+
+    // Saved as DesignCraft, nothing is lost and nothing is asked.
+    s.execute("file.saveAs", &json!({"path": dir.join("Notes.designcraft").to_string_lossy()})).unwrap();
+    // Allowed, the IDML is written; the document's own file is then IDML, and ⌘S is refused again
+    // while there is something to lose.
+    s.execute("file.saveAs", &json!({"path": path.to_string_lossy(), "allowLoss": true})).unwrap();
+    assert!(designcraft_idml::is_idml(&std::fs::read(&path).unwrap()));
+    s.execute("endnote.insert", &json!({"text": "An endnote."})).unwrap();
+    assert_eq!(s.execute("file.idmlLosses", &json!({})).unwrap(), json!({"editorialNotes": 1, "endnotes": 1}));
+    assert!(s.execute("file.save", &json!({})).is_err());
+    assert!(s.doc().unwrap().is_dirty());
+    s.execute("file.save", &json!({"allowLoss": true})).unwrap();
+    assert!(!s.doc().unwrap().is_dirty());
+    s.execute("file.saveACopy", &json!({"path": copy.to_string_lossy(), "allowLoss": true})).unwrap();
+    assert!(copy.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -50,17 +50,24 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.recent_files.clear();
             ok()
         }),
-        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `.idml` path is written as IDML (images embedded); any other `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a `.idml` path is written as IDML (images embedded); any other path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path} — writes the document without changing which file it is or its unsaved state; a `.idml` path is written as IDML, any other without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
+        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?, allowLoss?} — a `.idml` path is written as IDML (images embedded; refused when IDML can't keep some of the document, see file.idmlLosses, unless allowLoss); any other `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path, allowLoss?} — a `.idml` path is written as IDML (images embedded; refused when IDML can't keep some of the document, see file.idmlLosses, unless allowLoss); any other path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, allowLoss?} — writes the document without changing which file it is or its unsaved state; a `.idml` path is written as IDML (refused when IDML can't keep some of the document, unless allowLoss), any other without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, |s, p| {
             let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
             let path = with_save_extension(path);
             let mut copy = (*s.doc()?.doc).clone();
             crate::cmd::datamerge::refresh_relative_paths(&mut copy, std::path::Path::new(&path));
-            let bytes = bytes_for_path(&copy, &path, &s.cache)?;
+            let allow_loss = p.get("allowLoss").and_then(Value::as_bool).unwrap_or(false);
+            let bytes = bytes_for_path(&copy, &path, &s.cache, allow_loss)?;
             #[cfg(not(target_arch = "wasm32"))]
             crate::io::write_file(&path, &bytes).map_err(EngineError::Other)?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
+        }),
+        cmd!(query "file.idmlLosses", "IDML Losses", [], None,
+        "{} → {editorialNotes, endnotes}: what saving the document as IDML would lose (editorial notes aren't written; endnotes become plain text in the endnote frame). A `.idml` save refuses while any is non-zero, unless allowLoss",
+        has_doc, |s, _| {
+            let lost = designcraft_idml::unwritten(&s.doc()?.doc);
+            Ok(json!({"editorialNotes": lost.editorial_notes, "endnotes": lost.endnotes}))
         }),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
         cmd!(query "file.recovery.list", "Recovery Data", [], None, "{dir?} → [{uid, path, title, saved}] unsaved documents left by a crash (default: the session's recovery folder)", always, |s, p| {

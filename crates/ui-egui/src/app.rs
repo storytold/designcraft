@@ -123,6 +123,7 @@ impl DesignApp {
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
+            lossy_save: None,
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
