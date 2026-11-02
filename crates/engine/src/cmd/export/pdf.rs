@@ -541,6 +541,50 @@ mod overset_tests {
         assert!(story["overset"].is_null() && story["oversetChars"].is_null(), "{story}");
     }
 
+    /// A sheet draws its spread's items without asking which page each one sits on, so a frame
+    /// straddling two pages is drawn, in part, on both. Choosing the page by the frame's centre
+    /// alone meant a frame centred on a page the export leaves out had its warning dropped while
+    /// the part on an exported page went into the file (#1493 review).
+    #[test]
+    fn an_export_warns_about_a_frame_that_only_crosses_into_one_of_its_pages() {
+        let mut s = Session::new();
+        // Facing pages, so pages 2 and 3 are one spread and a frame can straddle their boundary.
+        s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 4, "facingPages": true, "margins": 0})).unwrap();
+        let text = "First line is visible.\nSecond paragraph does not fit: this sentence carries the legal notice and must not vanish from the PDF without a warning.";
+        // Spread 1 is pages 2-3; its page 2 runs x 0..300 and page 3 runs x 300..600. The frame
+        // is centred on page 3 and reaches back over the boundary into page 2.
+        let frame = json!({"spread": 1, "rect": [260, 20, 420, 60], "content": "text", "text": text});
+        let id = s.execute("frame.create", &frame).unwrap()["id"].as_u64().unwrap();
+
+        let about = |s: &mut Session, pages: serde_json::Value| {
+            let params = if pages.is_null() { json!({}) } else { json!({"pages": pages}) };
+            let r = s.execute("file.exportPdf", &params).unwrap();
+            let ws = r["warnings"].as_array().cloned().unwrap_or_default();
+            ws.iter().filter_map(|w| w.as_str()).filter(|w| w.contains("not in the export")).map(str::to_owned).collect::<Vec<_>>()
+        };
+
+        // The whole document: reported once, at the page the frame is centred on.
+        let all = about(&mut s, serde_json::Value::Null);
+        assert_eq!(all.len(), 1, "{all:?}");
+        assert!(all[0].contains("page 3") && all[0].contains(&format!("frame {id}")), "{}", all[0]);
+
+        // Exporting page 3 alone: the centre page, reported as before.
+        let three = about(&mut s, json!([3]));
+        assert_eq!(three.len(), 1, "{three:?}");
+        assert!(three[0].contains("page 3"), "{}", three[0]);
+
+        // Exporting page 2 alone: the frame's centre is on page 3, which is not in the export --
+        // but part of the frame is drawn on page 2, so it is still reported, and the page named is
+        // one the export has.
+        let two = about(&mut s, json!([2]));
+        assert_eq!(two.len(), 1, "a frame crossing into page 2 is reported: {two:?}");
+        assert!(two[0].contains("page 2"), "and the page it names is an exported one: {}", two[0]);
+        assert!(two[0].contains(&format!("frame {id}")), "{}", two[0]);
+
+        // A page the frame does not reach at all: nothing to say.
+        assert_eq!(about(&mut s, json!([4])), Vec::<String>::new());
+    }
+
     /// `overset` indexes `text` in UTF-8 bytes, not characters: a client that slices a JavaScript
     /// string at it cuts the wrong place once the text is not ASCII (noted in review).
     #[test]

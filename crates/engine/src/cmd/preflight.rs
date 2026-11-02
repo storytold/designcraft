@@ -38,6 +38,25 @@ fn page_of(d: &Document, sr: SpreadRef, it: &Item, parent: Affine) -> Option<usi
     Some(d.first_page_of_spread(si) + sp.page_at_x(bounds.center().x).unwrap_or(0))
 }
 
+/// Every page of the spread the frame reaches, not just the one its centre is on.
+///
+/// A sheet draws the items of its spread without testing which page they sit on, so a frame that
+/// straddles two pages is drawn, in part, on both. Choosing by the centre alone dropped the
+/// warning for a frame whose centre is on a page the export leaves out while the part on an
+/// exported page went into the file (noted in review). Empty when the frame is on no document
+/// spread, which is the same answer `page_of` gives.
+fn pages_of(d: &Document, sr: SpreadRef, it: &Item, parent: Affine) -> Vec<usize> {
+    let SpreadRef::Doc(si) = sr else { return vec![] };
+    let Some(sp) = d.spreads.get(si) else { return vec![] };
+    let bounds = parent.transform_rect_bbox(it.bounds());
+    let first = d.first_page_of_spread(si);
+    let touched: Vec<usize> =
+        sp.pages.iter().enumerate().filter(|(_, pg)| bounds.x1 > pg.x && bounds.x0 < pg.x + pg.width).map(|(i, _)| first + i).collect();
+    // A frame wholly on the pasteboard touches no page's span; it still belongs to the page
+    // `page_at_x` nominates, so the two functions agree about where it is.
+    if touched.is_empty() { page_of(d, sr, it, parent).into_iter().collect() } else { touched }
+}
+
 /// Characters a missing-glyph report names before "and N more".
 const MISSING_GLYPHS_LISTED: usize = 20;
 
@@ -74,11 +93,19 @@ fn missing_glyphs(
     }
 }
 
-/// Locate an embedded frame at the outer page frame that actually renders it.
-fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(designcraft_doc::ItemId, Option<usize>)> {
+/// Locate an embedded frame at the outer page frame that actually renders it: the frame, the page
+/// its centre is on, and every page it reaches (see [`pages_of`]).
+type Located = (designcraft_doc::ItemId, Option<usize>, Vec<usize>);
+
+fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<Located> {
     let d = &s.active()?.doc;
+    let at = |id: designcraft_doc::ItemId, loc: &designcraft_doc::ItemLoc| {
+        let it = d.item(id);
+        let xf = d.parent_xf(loc);
+        (id, it.and_then(|it| page_of(d, loc.spread, it, xf)), it.map(|it| pages_of(d, loc.spread, it, xf)).unwrap_or_default())
+    };
     if let Some(loc) = d.find(target) {
-        return Some((target, d.item(target).and_then(|it| page_of(d, loc.spread, it, d.parent_xf(&loc)))));
+        return Some(at(target, &loc));
     }
     fn contains(root: &designcraft_compose::FrameText, target: designcraft_doc::ItemId) -> bool {
         let mut frames = vec![root];
@@ -107,7 +134,7 @@ fn overset_location(s: &Session, target: designcraft_doc::ItemId) -> Option<(des
         let frame = cs.frames.iter().find(|f| contains(f, current))?;
         current = frame.frame;
         if let Some(loc) = d.find(current) {
-            return Some((current, d.item(current).and_then(|it| page_of(d, loc.spread, it, d.parent_xf(&loc)))));
+            return Some(at(current, &loc));
         }
     }
     None
@@ -199,13 +226,28 @@ pub fn overset_warnings(s: &Session, pages: Option<&[usize]>) -> Vec<String> {
             continue;
         }
         let location = last.and_then(|f| overset_location(s, f));
-        let page = location.and_then(|(_, page)| page);
-        if let (Some(page), Some(pages)) = (page, pages)
-            && !pages.contains(&page)
-        {
-            continue;
-        }
-        let item = location.map(|(item, _)| item).or(last);
+        let centre = location.as_ref().and_then(|(_, page, _)| *page);
+        let touched: &[usize] = location.as_ref().map(|(_, _, ps)| ps.as_slice()).unwrap_or_default();
+        // A sheet draws its spread's items without asking which page they are on, so a frame
+        // straddling two pages is drawn in part on both. Testing the centre page alone dropped
+        // the warning for a frame centred on a page the export leaves out while the part on an
+        // exported page went into the file (noted in review).
+        //
+        // The page named is one the export has: the centre page when that is exported, so an
+        // ordinary frame reads as before, otherwise the first exported page the frame reaches.
+        let page = match pages {
+            None => centre,
+            Some(sel) => {
+                let exported: Vec<usize> = touched.iter().copied().filter(|p| sel.contains(p)).collect();
+                match centre.filter(|p| sel.contains(p)).or_else(|| exported.first().copied()) {
+                    Some(p) => Some(p),
+                    // Nothing of this frame is on an exported page.
+                    None if centre.is_some() || !touched.is_empty() => continue,
+                    None => None,
+                }
+            }
+        };
+        let item = location.as_ref().map(|(item, _, _)| *item).or(last);
         out.push(match (page, item) {
             (Some(page), Some(item)) => {
                 format!("page {}: {n} character(s) of the story in frame {} do not fit it and are not in the export", page + 1, item.0)
@@ -242,8 +284,8 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
                 } else {
                     format!("Overset text: {n} characters")
                 },
-                item: location.map(|(item, _)| item.0).or(last.map(|i| i.0)),
-                page: location.and_then(|(_, page)| page),
+                item: location.as_ref().map(|(item, _, _)| item.0).or(last.map(|i| i.0)),
+                page: location.as_ref().and_then(|(_, page, _)| *page),
             });
         }
     }
