@@ -272,8 +272,7 @@ fn is_serbian(lang: Lang) -> bool {
 /// never `преду-слов`, though the patterns allow both. A vowel alone between two breaks after a
 /// prefix belongs to the second word, so the break after it goes.
 fn serbian_compound_breaks(core: &[char], pts: Vec<usize>) -> Vec<usize> {
-    let latin = core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c));
-    let (word, at) = if latin {
+    let (word, at) = if is_serbian_latin(core) {
         match serbian_cyrillic(core) {
             Some(x) => x,
             None => return pts,
@@ -375,6 +374,11 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || is_apostrophe(c)
 }
 
+/// Is `core` written in Serbian Latin (any Latin letter)?
+fn is_serbian_latin(core: &[char]) -> bool {
+    core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c))
+}
+
 /// Break points of a Serbian Latin `core` through its Cyrillic spelling, in `lang`'s patterns.
 fn serbian_latin_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let Some((cyr, at)) = serbian_cyrillic(core) else { return (vec![], Source::None) };
@@ -390,11 +394,17 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     }
     let lang = match lang {
         Lang::Installed(i) => {
-            if installed_bundled(i) == Some(hypher::Lang::Serbian) && !serbian_two_letters(core).is_empty() {
+            let serbian = installed_bundled(i) == Some(hypher::Lang::Serbian);
+            if serbian && !serbian_two_letters(core).is_empty() {
                 return serbian_latin_breaks(core, lang);
             }
             if let Some(p) = installed_points(i, core) {
                 return (p, Source::Patterns);
+            }
+            // A Latin word no installed set's alphabet covers: its Cyrillic spelling tries the
+            // installed sets again, a Cyrillic one first, before the bundled patterns.
+            if serbian && is_serbian_latin(core) {
+                return serbian_latin_breaks(core, lang);
             }
             match installed_bundled(i) {
                 Some(l) => Lang::Patterns(l),
@@ -414,7 +424,7 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
             return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
         }
         // Serbian Latin through its Cyrillic spelling, the script of the bundled patterns.
-        if l == hypher::Lang::Serbian && core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c)) {
+        if l == hypher::Lang::Serbian && is_serbian_latin(core) {
             return serbian_latin_breaks(core, lang);
         }
         let s: String = core.iter().collect();
