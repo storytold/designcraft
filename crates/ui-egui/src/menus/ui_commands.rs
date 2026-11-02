@@ -7,6 +7,10 @@ pub const CJK_ONLY: &[&str] = &["type.tateChuYoko", "app.rubyDialog", "type.kent
 /// Whether command `id` has a menu item or Quick Apply entry in the current interface (CJK-only
 /// ones need [`crate::cjk_features`]).
 pub fn shown(app: &DesignApp, id: &str) -> bool {
+    // Only a browser needs the package handed over: the desktop app looks beside the file.
+    if id == "app.openPackageFolder" {
+        return app.services.pick_folder.is_some();
+    }
     !CJK_ONLY.contains(&id) || crate::cjk_features(app)
 }
 
@@ -14,6 +18,12 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
+    (
+        "app.openPackageFolder",
+        "Open Package Folder…",
+        None,
+        "{} — in a browser: choose a package folder (a document with its Document Fonts folder, as File › Package writes it) and open its document with those fonts (file.openPackage). A zipped package opens with Open…",
+    ),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),

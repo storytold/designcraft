@@ -9327,6 +9327,15 @@ fn find_font(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         crate::rtl::label(ui, d.s("error"));
     }
     let missing = fonts.iter().filter(|f| f["missing"] == true || f["styleMissing"] == true).count();
+    // In a browser, which can't look beside the file: the package folder (or its Document Fonts
+    // folder) brings the document's own fonts, as opening it on the desktop does.
+    if missing > 0
+        && app.services.pick_folder.is_some()
+        && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Choose the Document's Folder…"))).clicked()
+        && let Err(e) = app.pick_folder("documentFonts")
+    {
+        d.fields.insert("error".into(), json!(e));
+    }
     crate::rtl::label(
         ui,
         crate::i18n::tr(&app.ui.language, "Fonts in Document: {count}    Missing: {missing}")

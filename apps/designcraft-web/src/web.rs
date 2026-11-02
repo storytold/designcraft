@@ -7,6 +7,10 @@ use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Service
 use wasm_bindgen::JsCast as _;
 
 const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
+/// What Open… offers: the documents, and a zipped package (a document with its Document Fonts).
+const OPEN_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt", "zip"];
+/// The font files a package's `Document Fonts` folder holds.
+const FONT_EXTS: &[&str] = &["ttf", "otf", "ttc", "otc"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -72,6 +76,7 @@ pub fn start() {
                         });
                     }
                     let inbox: Inbox = Inbox::default();
+                    install_folder_drop(inbox.clone(), cc.egui_ctx.clone());
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
@@ -388,7 +393,15 @@ impl eframe::App for WebShell {
 
 fn services(inbox: Inbox, ctx: egui::Context) -> Services {
     let open_inbox = inbox.clone();
+    let (folder_inbox, folder_ctx) = (inbox.clone(), ctx.clone());
     Services {
+        pick_folder: Some(Box::new(move |request: ImportRequest| {
+            let (inbox, ctx) = (folder_inbox.clone(), folder_ctx.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                let files = pick_folder_files().await;
+                deliver_folder(&inbox, &ctx, &request, files);
+            });
+        })),
         open_async: Some(Box::new(move |request: ImportRequest| {
             let inbox = open_inbox.clone();
             let ctx = ctx.clone();
@@ -399,7 +412,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
-                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
+                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML, InDesign or a zipped package", OPEN_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
                 let Some(file) = dialog.pick_file().await else {
@@ -415,6 +428,209 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         inbox: Some(inbox),
         ..Default::default()
     }
+}
+
+/// The most files a folder hands over (picked or dropped), and the most bytes in all.
+const MAX_FOLDER_FILES: usize = 2000;
+// The bytes are copied a few times on the way (base64 for the command, then decoded), so the
+// cap keeps the peak well inside the browser's memory for a tab.
+const MAX_FOLDER_BYTES: f64 = 384.0 * 1024.0 * 1024.0;
+/// The most entries (files and folders) looked at in a dropped folder, and how deep it is walked.
+const MAX_FOLDER_ENTRIES: usize = 20_000;
+const MAX_FOLDER_DEPTH: usize = 16;
+
+/// Whether a file in a folder handed over is read: a document or a font file (a package's
+/// document and its Document Fonts). Links and everything else are left unread, as are macOS
+/// resource forks (`._Name.ttf`).
+fn wanted_in_folder(name: &str) -> bool {
+    !name.starts_with("._") && name.rsplit_once('.').is_some_and(|(_, ext)| DOC_EXTS.iter().chain(FONT_EXTS).any(|e| e.eq_ignore_ascii_case(ext)))
+}
+
+/// Hand a folder's files ((path in the folder, bytes)) to the app, all at once with `request`
+/// (`folder:…`, see `DesignApp::pick_folder`).
+fn deliver_folder(inbox: &Inbox, ctx: &egui::Context, request: &ImportRequest, files: Vec<(String, Vec<u8>)>) {
+    if files.is_empty() {
+        log::warn!("the folder holds no document or font file");
+        return;
+    }
+    inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files.into_iter().map(|(name, bytes)| ImportedFile {
+        request: request.clone(),
+        name,
+        bytes,
+    }));
+    ctx.request_repaint();
+}
+
+/// The documents and font files ([`wanted_in_folder`]) of a folder the user chooses with the
+/// browser's folder picker (an `<input type=file webkitdirectory>`, which every current browser
+/// supports), each named by its path in the folder. Only those files are read, up to
+/// [`MAX_FOLDER_FILES`] and [`MAX_FOLDER_BYTES`]; empty when the picker is cancelled or can't be
+/// shown.
+async fn pick_folder_files() -> Vec<(String, Vec<u8>)> {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return Vec::new() };
+    let Some(input) = document.create_element("input").ok().and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok()) else {
+        return Vec::new();
+    };
+    input.set_type("file");
+    input.set_multiple(true);
+    if input.set_attribute("webkitdirectory", "").is_err() {
+        return Vec::new();
+    }
+    // Settles when files are chosen or the picker is cancelled.
+    let chosen = js_sys::Promise::new(&mut |resolve, _reject| {
+        let done = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
+        });
+        let _ = input.add_event_listener_with_callback("change", done.as_ref().unchecked_ref());
+        let _ = input.add_event_listener_with_callback("cancel", done.as_ref().unchecked_ref());
+        done.forget();
+    });
+    input.click();
+    let _ = wasm_bindgen_futures::JsFuture::from(chosen).await;
+    let Some(list) = input.files() else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut bytes = 0.0;
+    for i in 0..list.length() {
+        let Some(file) = list.get(i) else { continue };
+        let name = file.name();
+        if !wanted_in_folder(&name) {
+            continue;
+        }
+        if out.len() >= MAX_FOLDER_FILES || bytes + file.size() > MAX_FOLDER_BYTES {
+            log::warn!("the folder holds more than can be read at once; the rest is left");
+            break;
+        }
+        bytes += file.size();
+        // Its path in the chosen folder says which files are the Document Fonts beside the document.
+        let path = js_sys::Reflect::get(&file, &wasm_bindgen::JsValue::from_str("webkitRelativePath"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or(name);
+        if let Ok(buf) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+            out.push((path, js_sys::Uint8Array::new(&buf).to_vec()));
+        }
+    }
+    out
+}
+
+/// Property `key` of `v`, unless missing.
+fn js_get(v: &wasm_bindgen::JsValue, key: &str) -> Option<wasm_bindgen::JsValue> {
+    js_sys::Reflect::get(v, &wasm_bindgen::JsValue::from_str(key)).ok().filter(|v| !v.is_undefined() && !v.is_null())
+}
+
+/// Method `name` of `v`.
+fn js_method(v: &wasm_bindgen::JsValue, name: &str) -> Option<js_sys::Function> {
+    js_get(v, name)?.dyn_into::<js_sys::Function>().ok()
+}
+
+/// A folder dropped on the page: eframe hands over dropped files only (a folder arrives as an
+/// unreadable file), so a drop holding a folder is taken here first, in the capture phase, and
+/// its documents and font files go to the app as `folder:drop`. A drop of files only is left to
+/// eframe. Every current browser gives a drop's entries (`webkitGetAsEntry`).
+fn install_folder_drop(inbox: Inbox, ctx: egui::Context) {
+    let Some(window) = web_sys::window() else { return };
+    let on_drop = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // The entries are only there while the event is handled: taken now, read after.
+        let entries = dropped_folder_entries(&event);
+        if entries.is_empty() {
+            return;
+        }
+        event.prevent_default();
+        event.stop_immediate_propagation();
+        let (inbox, ctx) = (inbox.clone(), ctx.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let files = read_dropped(entries).await;
+            deliver_folder(&inbox, &ctx, &ImportRequest { purpose: "folder:drop".into(), target: None }, files);
+        });
+    });
+    if window.add_event_listener_with_callback_and_bool("drop", on_drop.as_ref().unchecked_ref(), true).is_err() {
+        log::warn!("dropped folders can't be read in this browser");
+    }
+    on_drop.forget();
+}
+
+/// The entries of a drop (`DataTransferItem.webkitGetAsEntry`) when one of them is a folder;
+/// none otherwise.
+fn dropped_folder_entries(event: &web_sys::Event) -> Vec<wasm_bindgen::JsValue> {
+    let Some(items) = js_get(event.as_ref(), "dataTransfer").and_then(|dt| js_get(&dt, "items")) else { return Vec::new() };
+    let len = js_get(&items, "length").and_then(|l| l.as_f64()).unwrap_or(0.0).clamp(0.0, MAX_FOLDER_FILES as f64) as u32;
+    let mut entries = Vec::new();
+    let mut folder = false;
+    for i in 0..len {
+        let Ok(item) = js_sys::Reflect::get_u32(&items, i) else { continue };
+        let Some(entry) = js_method(&item, "webkitGetAsEntry").and_then(|f| f.call0(&item).ok()).filter(|e| !e.is_null() && !e.is_undefined()) else {
+            continue;
+        };
+        folder |= js_get(&entry, "isDirectory").and_then(|v| v.as_bool()).unwrap_or(false);
+        entries.push(entry);
+    }
+    if folder { entries } else { Vec::new() }
+}
+
+/// Every entry of a dropped folder (`FileSystemDirectoryReader.readEntries`, read until a batch
+/// comes back empty).
+async fn read_directory(entry: &wasm_bindgen::JsValue) -> Vec<wasm_bindgen::JsValue> {
+    let Some(reader) = js_method(entry, "createReader").and_then(|f| f.call0(entry).ok()) else { return Vec::new() };
+    let Some(read) = js_method(&reader, "readEntries") else { return Vec::new() };
+    let mut out = Vec::new();
+    while out.len() < MAX_FOLDER_ENTRIES {
+        let batch = js_sys::Promise::new(&mut |resolve, reject| {
+            let _ = read.call2(&reader, &resolve, &reject);
+        });
+        let Ok(batch) = wasm_bindgen_futures::JsFuture::from(batch).await else { break };
+        let batch = js_sys::Array::from(&batch);
+        if batch.length() == 0 {
+            break;
+        }
+        out.extend(batch.iter());
+    }
+    out
+}
+
+/// The file of a dropped file entry (`FileSystemFileEntry.file`).
+async fn entry_file(entry: &wasm_bindgen::JsValue) -> Option<web_sys::File> {
+    let file = js_method(entry, "file")?;
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let _ = file.call2(entry, &resolve, &reject);
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await.ok()?.dyn_into::<web_sys::File>().ok()
+}
+
+/// The documents and font files ([`wanted_in_folder`]) of dropped entries, folders walked, each
+/// named by its path (`fullPath`, without the leading `/`), within the folder limits.
+async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let (mut bytes, mut seen) = (0.0, 0usize);
+    let mut pending: Vec<(wasm_bindgen::JsValue, usize)> = roots.into_iter().map(|e| (e, 0)).collect();
+    while let Some((entry, depth)) = pending.pop() {
+        seen += 1;
+        if seen > MAX_FOLDER_ENTRIES {
+            log::warn!("the folder holds more than can be read at once; the rest is left");
+            break;
+        }
+        if js_get(&entry, "isDirectory").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if depth < MAX_FOLDER_DEPTH {
+                pending.extend(read_directory(&entry).await.into_iter().map(|e| (e, depth + 1)));
+            }
+            continue;
+        }
+        let name = js_get(&entry, "name").and_then(|v| v.as_string()).unwrap_or_default();
+        if !wanted_in_folder(&name) {
+            continue;
+        }
+        let Some(file) = entry_file(&entry).await else { continue };
+        if out.len() >= MAX_FOLDER_FILES || bytes + file.size() > MAX_FOLDER_BYTES {
+            log::warn!("the folder holds more than can be read at once; the rest is left");
+            break;
+        }
+        bytes += file.size();
+        let path = js_get(&entry, "fullPath").and_then(|v| v.as_string()).unwrap_or(name);
+        if let Ok(buf) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+            out.push((path.trim_start_matches('/').to_string(), js_sys::Uint8Array::new(&buf).to_vec()));
+        }
+    }
+    out
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.

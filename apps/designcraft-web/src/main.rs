@@ -10,6 +10,10 @@
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
 //! - Save and Export trigger a browser download;
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
+//! - a browser can't look beside a file it opens, so a package's `Document Fonts` come with the
+//!   package: File › Open Package Folder… or a dropped folder (`Services::pick_folder`, delivered
+//!   as `folder:…` files), a zipped package through Open…, or Find Font's Choose the Document's
+//!   Folder… for a document opened by itself.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
 //! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values

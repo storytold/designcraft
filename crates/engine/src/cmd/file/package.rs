@@ -153,7 +153,7 @@ pub(super) fn load_document_fonts(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Whether `bytes` are a zipped package: a zip that is neither an IDML package nor a DesignCraft
 /// file, holding a document.
-pub(super) fn is_zipped_package(bytes: &[u8]) -> bool {
+pub fn is_zipped_package(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04")
         && !designcraft_idml::is_idml(bytes)
         && !designcraft_format::is_designcraft(bytes)
