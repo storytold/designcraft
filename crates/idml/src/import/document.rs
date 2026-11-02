@@ -133,7 +133,13 @@ impl<'r> Importer<'r> {
     pub(super) fn text_variable(&mut self, e: &El) {
         use designcraft_doc::vars::{TextVariable, Use, VAR_MAX, VarKind};
         let ty = e.get("VariableType").unwrap_or("");
-        // Cross-reference internals; export writes its own.
+        // Cross-reference internals; export writes its own. Their page numbers are recognised
+        // inside cross-reference text.
+        if ty == "XrefPageNumberType"
+            && let Some(id) = e.get("Self")
+        {
+            self.xref_page_vars.insert(id.to_string());
+        }
         if ty.is_empty() || ty.starts_with("Xref") {
             return;
         }

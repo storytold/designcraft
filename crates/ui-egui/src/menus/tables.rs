@@ -36,6 +36,8 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             "cmd:layout.documentSetup",
             "cmd:file.info",
+            "-",
+            "ui:app.quit",
         ],
     ),
     (
@@ -274,6 +276,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:type.storyDirection|Horizontal|{\"vertical\": false}",
             "cmd:type.storyDirection|Vertical|{\"vertical\": true}",
             "<",
+            "-",
             "cmd:type.tateChuYoko",
             "ui:app.rubyDialog",
             "cmd:type.kenten",

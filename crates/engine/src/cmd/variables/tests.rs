@@ -1,5 +1,10 @@
 use super::*;
 
+fn shown_on_parent(s: &Session, d: &designcraft_doc::Document, sid: designcraft_doc::StoryId) -> usize {
+    let cs = s.cache.get(d, sid, None);
+    cs.frames.iter().flat_map(|f| f.lines.iter()).map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum()
+}
+
 /// A parent-page page-number marker follows Numbering & Section Options: changing a section's
 /// start number renames its pages without changing their index or the number of sections, and
 /// the marker composed for a page shows the new name.
@@ -350,6 +355,14 @@ fn running_header_on_parent_page_follows_headings() {
     assert_eq!(idx.value("Heading", false, Default::default(), 2), "Epsilon");
     let list = s.execute("variables.list", &json!({})).unwrap();
     assert!(list.as_array().unwrap().iter().any(|v| v["name"] == "Last Page Number" && v["value"] == "3"));
+    // On the parent page itself the header shows which variable it holds, not a blank. Text with
+    // no page that isn't on a parent shows the variable's text before and after, as before.
+    let head = d.variable("Chapter Head").unwrap();
+    assert_eq!(crate::compose::vars::values_shown(&d, None, true, Some(&idx))[head], "<Chapter Head>");
+    assert_eq!(crate::compose::vars::values_shown(&d, None, false, Some(&idx))[head], "");
+    assert_eq!(crate::compose::vars::values(&d, None, Some(&idx))[head], "", "values() is the no-parent case");
+    assert_eq!(crate::compose::vars::values_shown(&d, Some(2), true, Some(&idx))[head], "Epsilon", "composed for a page: its entry");
+    assert!(shown_on_parent(&s, &d, sid) > p1, "the parent shows <Chapter Head>, longer than Alpha");
     // Deleting a variable flattens its instances to text.
     s.execute("variables.delete", &json!({"name": "Last Page Number"})).unwrap();
     assert!(s.doc().unwrap().doc.story(sid).unwrap().text.ends_with(" · 3"));
