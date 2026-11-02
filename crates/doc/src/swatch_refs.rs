@@ -17,6 +17,53 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
+    /// Rename the swatch references in every paragraph, character, object, cell and table style.
+    fn styles(&self, styles: &mut crate::styles::Styles) {
+        let n = self;
+        for p in &mut styles.paragraph {
+            n.para(&mut p.para);
+            n.chars(&mut p.chars);
+        }
+        for c in &mut styles.character {
+            n.chars(&mut c.chars);
+        }
+        for o in &mut styles.object {
+            if let Some(f) = &mut o.fill {
+                n.fill(f);
+            }
+            if let Some(s) = &mut o.stroke {
+                n.stroke(s);
+            }
+            if let Some(tf) = &mut o.text_frame {
+                n.frame(tf);
+            }
+        }
+        for c in &mut styles.cell {
+            n.o(&mut c.fill);
+            if let Some(s) = &mut c.stroke {
+                n.cell_stroke(s);
+            }
+            for s in &mut c.strokes {
+                n.stroke_attrs(s);
+            }
+        }
+        for t in &mut styles.table {
+            if let Some(b) = &mut t.border {
+                n.cell_stroke(b);
+            }
+            for b in &mut t.borders {
+                n.stroke_attrs(b);
+            }
+            if let Some(f) = &mut t.alt_rows {
+                n.alt_fills(f);
+            }
+            n.alt_fill_attrs(&mut t.row_fills);
+            n.alt_fill_attrs(&mut t.column_fills);
+            n.alt_stroke_attrs(&mut t.row_strokes);
+            n.alt_stroke_attrs(&mut t.column_strokes);
+        }
+    }
+
     fn s(&self, v: &mut String) {
         if v == self.from {
             *v = self.to.to_string();
@@ -142,9 +189,50 @@ impl Names<'_> {
 }
 
 impl Document {
+    /// Give gradient stops that name a color swatch that swatch's current color, after a
+    /// swatch edit. Stops whose swatch is gone or isn't a color keep the color they have.
+    pub fn refresh_gradient_stops(&mut self) {
+        let mut fresh: Vec<(usize, usize, designcraft_color::Color)> = Vec::new();
+        for (wi, w) in self.swatches.iter().enumerate() {
+            let SwatchValue::Gradient { gradient } = &w.value else { continue };
+            for (si, stop) in gradient.stops.iter().enumerate() {
+                let Some(name) = &stop.swatch else { continue };
+                if designcraft_color::swatch::resolve_gradient(&self.swatches, name).is_some() {
+                    continue;
+                }
+                if let Some(c) = self.resolve_color(name, 1.0)
+                    && c != stop.color
+                {
+                    fresh.push((wi, si, c));
+                }
+            }
+        }
+        for (wi, si, c) in fresh {
+            if let Some(SwatchValue::Gradient { gradient }) = self.swatches.get_mut(wi).map(|w| &mut w.value)
+                && let Some(stop) = gradient.stops.get_mut(si)
+            {
+                stop.color = c;
+            }
+        }
+    }
+
+    /// Turn gradient stops that name swatch `name` into plain colors (the swatch is being
+    /// deleted); each keeps the color it shows.
+    pub fn forget_gradient_stop_swatch(&mut self, name: &str) {
+        for w in &mut self.swatches {
+            let SwatchValue::Gradient { gradient } = &mut w.value else { continue };
+            for stop in &mut gradient.stops {
+                if stop.swatch.as_deref() == Some(name) {
+                    stop.swatch = None;
+                }
+            }
+        }
+    }
+
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
     /// styles, page items (fills, strokes, gaps, effects, column rules), text, kenten and ruby
     /// colours, rules, shading, borders and border gaps, tables (with stroke gaps), footnotes,
+    /// gradient stops,
     /// endnotes and the footnote rule. The swatch itself is renamed by the
     /// caller.
     pub fn rename_swatch_refs(&mut self, from: &str, to: &str) {
@@ -153,8 +241,14 @@ impl Document {
         }
         let n = Names { from, to };
         for w in &mut self.swatches {
-            if let SwatchValue::Tint { base, .. } = &mut w.value {
-                n.s(base);
+            match &mut w.value {
+                SwatchValue::Tint { base, .. } => n.s(base),
+                SwatchValue::Gradient { gradient } => {
+                    for stop in &mut gradient.stops {
+                        n.o(&mut stop.swatch);
+                    }
+                }
+                _ => {}
             }
         }
         for g in &mut self.color_groups {
@@ -170,49 +264,7 @@ impl Document {
             n.s(b);
         }
         n.s(&mut self.footnote_options.rule.color);
-        let styles = self.styles_mut();
-        for p in &mut styles.paragraph {
-            n.para(&mut p.para);
-            n.chars(&mut p.chars);
-        }
-        for c in &mut styles.character {
-            n.chars(&mut c.chars);
-        }
-        for o in &mut styles.object {
-            if let Some(f) = &mut o.fill {
-                n.fill(f);
-            }
-            if let Some(s) = &mut o.stroke {
-                n.stroke(s);
-            }
-            if let Some(tf) = &mut o.text_frame {
-                n.frame(tf);
-            }
-        }
-        for c in &mut styles.cell {
-            n.o(&mut c.fill);
-            if let Some(s) = &mut c.stroke {
-                n.cell_stroke(s);
-            }
-            for s in &mut c.strokes {
-                n.stroke_attrs(s);
-            }
-        }
-        for t in &mut styles.table {
-            if let Some(b) = &mut t.border {
-                n.cell_stroke(b);
-            }
-            for b in &mut t.borders {
-                n.stroke_attrs(b);
-            }
-            if let Some(f) = &mut t.alt_rows {
-                n.alt_fills(f);
-            }
-            n.alt_fill_attrs(&mut t.row_fills);
-            n.alt_fill_attrs(&mut t.column_fills);
-            n.alt_stroke_attrs(&mut t.row_strokes);
-            n.alt_stroke_attrs(&mut t.column_strokes);
-        }
+        n.styles(self.styles_mut());
         for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
             for it in &mut Arc::make_mut(sp).items {
                 n.item(Arc::make_mut(it), 0);

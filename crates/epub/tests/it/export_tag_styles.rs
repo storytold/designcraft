@@ -39,8 +39,8 @@ fn fixture() -> Document {
 
 fn map(doc: &mut Document, paragraph_tag: &str, paragraph_class: &str, character_tag: &str, character_class: &str) {
     let tags = &mut doc.styles_mut().export_tags;
-    tags.insert("p:Chapter Title".into(), ExportTag { tag: paragraph_tag.into(), class: paragraph_class.into() });
-    tags.insert("c:Key Term".into(), ExportTag { tag: character_tag.into(), class: character_class.into() });
+    tags.insert("p:Chapter Title".into(), ExportTag { tag: paragraph_tag.into(), class: paragraph_class.into(), ..Default::default() });
+    tags.insert("c:Key Term".into(), ExportTag { tag: character_tag.into(), class: character_class.into(), ..Default::default() });
 }
 
 fn package(doc: &Document) -> (String, String) {

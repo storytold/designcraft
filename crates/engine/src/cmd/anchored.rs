@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Anchored Object…",
             ["Object", "Anchored Object"],
             None,
-            "{ids, story?, pos? (default: the text insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?} — moves the items into the text",
+            "{ids, story?, pos? (default: the text insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?, spineRelative? (custom: the settings describe a left-hand page and mirror on a right-hand page)} — moves the items into the text",
             has_doc,
             insert
         ),
@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Anchored Object Options…",
             ["Object", "Anchored Object"],
             None,
-            "{story?, index? (default: the object at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?}",
+            "{story?, index? (default: the object at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?, spineRelative? (custom: the settings describe a left-hand page and mirror on a right-hand page)}",
             has_doc,
             options
         ),
@@ -80,11 +80,18 @@ fn position_param(p: &Value, base: &AnchorPosition) -> Result<AnchorPosition> {
         }
         ("custom", b) => {
             use designcraft_doc::anchored::AnchorRelative as R;
-            let (xr0, yr0, xo0, yo0, op0, rp0, k0) = match b {
-                AnchorPosition::Custom { x_relative, y_relative, x_offset, y_offset, object_point, ref_point, keep_within_column } => {
-                    (*x_relative, *y_relative, *x_offset, *y_offset, *object_point, *ref_point, *keep_within_column)
-                }
-                _ => (R::TextFrame, R::Anchor, 0.0, 0.0, 0, 0, false),
+            let (xr0, yr0, xo0, yo0, op0, rp0, k0, sr0) = match b {
+                AnchorPosition::Custom {
+                    x_relative,
+                    y_relative,
+                    x_offset,
+                    y_offset,
+                    object_point,
+                    ref_point,
+                    keep_within_column,
+                    spine_relative,
+                } => (*x_relative, *y_relative, *x_offset, *y_offset, *object_point, *ref_point, *keep_within_column, *spine_relative),
+                _ => (R::TextFrame, R::Anchor, 0.0, 0.0, 0, 0, false, false),
             };
             let rel = |k: &str, d: R| -> Result<R> {
                 match p.get(k) {
@@ -102,6 +109,7 @@ fn position_param(p: &Value, base: &AnchorPosition) -> Result<AnchorPosition> {
                 object_point: pt("objectPoint", op0),
                 ref_point: pt("refPoint", rp0),
                 keep_within_column: p.get("keepWithinColumn").and_then(Value::as_bool).unwrap_or(k0),
+                spine_relative: p.get("spineRelative").and_then(Value::as_bool).unwrap_or(sr0),
             }
         }
         (o, _) => return Err(bad("anchored", format!("unknown position `{o}`"))),
@@ -316,5 +324,12 @@ mod custom_tests {
             matches!(obj.position, designcraft_doc::AnchorPosition::Custom { x_offset, object_point: 2, .. } if x_offset == -6.0),
             "IDML Anchored position"
         );
+        // Relative to Spine keeps the other custom settings.
+        s.execute("anchored.options", &json!({"story": sid.0, "index": 0, "spineRelative": true})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert!(matches!(
+            st.objects[0].position,
+            designcraft_doc::AnchorPosition::Custom { spine_relative: true, x_offset, object_point: 2, .. } if x_offset == -6.0
+        ));
     }
 }

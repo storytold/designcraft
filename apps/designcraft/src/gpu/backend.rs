@@ -231,7 +231,21 @@ impl Fallback {
                 choice.backend.name(),
                 choice.record.failed
             ),
-            None => log::info!("graphics: {} (WGPU_BACKEND overrides)", choice.backend.name()),
+            // Not a switch from an unfinished start. `begin` has already returned when
+            // `WGPU_BACKEND` names a backend, so wgpu is not being told which to use here -- an
+            // empty or unrecognised value is no choice and reaches this line like an unset one.
+            // The message used to say the environment had been asked, which reads in a log as
+            // though the user had chosen the backend (#1343). What this start did choose is
+            // either the first candidate or the first one that has not failed before, so it says
+            // which of the two it is rather than claiming the first choice.
+            None if choice.record.failed.is_empty() => {
+                log::info!("graphics: {} (nothing has failed before; set WGPU_BACKEND to choose another)", choice.backend.name())
+            }
+            None => log::info!(
+                "graphics: {} (the first that hasn't failed before, after {:?}; set WGPU_BACKEND to choose another)",
+                choice.backend.name(),
+                choice.record.failed
+            ),
         }
         let instance = instance_backends(choice.backend, &choice.record.failed);
         Some(Fallback { backend: choice.backend, switched_from: choice.switched_from, instance, path, record: choice.record })
