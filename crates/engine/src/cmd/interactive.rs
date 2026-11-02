@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "hyperlink.list", "Hyperlinks", [], None, "{}", has_doc, |s, _| Ok(serde_json::to_value(&s.doc()?.doc.hyperlinks).unwrap_or_default())),
         cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based) | anchor?}", has_doc, |s, p| {
             let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("hyperlink.edit", "missing id"))?;
-            let dest = dest_param(&s.doc()?.doc, p);
+            let dest = dest_param("hyperlink.edit", &s.doc()?.doc, p)?;
             let name = str_param(p, "name").map(str::to_string);
             s.edit(|d, _| {
                 let h = d.hyperlinks.iter_mut().find(|h| h.id == id).ok_or_else(|| bad("hyperlink.edit", format!("no hyperlink {id}")))?;
@@ -91,17 +91,29 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).
-fn dest_param(d: &designcraft_doc::Document, p: &Value) -> Option<HyperlinkDest> {
+///
+/// `None` is "no destination given", which `hyperlink.edit` needs for an edit that only renames.
+/// An `anchor` that is given and names none is an error, not `None`: an unknown id was stored as
+/// it stood, so the link went to an anchor nobody has and the export quietly left it out, and on
+/// `hyperlink.edit` the `None` read as "no destination given", so the command reported success
+/// and kept the old destination (noted in review).
+fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Option<HyperlinkDest>> {
     if let Some(u) = str_param(p, "url") {
-        Some(HyperlinkDest::Url(u.to_string()))
-    } else if let Some(e) = str_param(p, "email") {
-        Some(HyperlinkDest::Email(e.to_string()))
-    } else if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
-        let by_name = |name: &str| d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.name == name).map(|x| x.id);
-        a.as_u64().or_else(|| a.as_str().and_then(by_name)).map(HyperlinkDest::Anchor)
-    } else {
-        p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1)))
+        return Ok(Some(HyperlinkDest::Url(u.to_string())));
     }
+    if let Some(e) = str_param(p, "email") {
+        return Ok(Some(HyperlinkDest::Email(e.to_string())));
+    }
+    if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
+        let by_name = |name: &str| d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.name == name).map(|x| x.id);
+        let known = |id: &u64| d.stories.values().any(|st| st.anchors.iter().any(|x| x.id == *id));
+        let found = a.as_u64().filter(known).or_else(|| a.as_str().and_then(by_name));
+        return match found {
+            Some(anchor) => Ok(Some(HyperlinkDest::Anchor(anchor))),
+            None => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
+        };
+    }
+    Ok(p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1))))
 }
 
 /// The anchor's own name, for a link to one that was not given a name.
@@ -116,7 +128,7 @@ fn dest_label(d: &designcraft_doc::Document, dest: &HyperlinkDest) -> String {
 
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
-    let dest = dest_param(&st.doc, p).ok_or_else(|| bad("hyperlink.create", "give `url`, `email`, `page` or `anchor`"))?;
+    let dest = dest_param("hyperlink.create", &st.doc, p)?.ok_or_else(|| bad("hyperlink.create", "give `url`, `email`, `page` or `anchor`"))?;
     let sources: Vec<HyperlinkSource> = if let Some(ids) = super::ids_param(p, "ids") {
         ids.into_iter().map(|id| HyperlinkSource::Item { id }).collect()
     } else if let Some(t) = st.selection.text.filter(|t| !t.is_caret()) {
@@ -233,7 +245,32 @@ mod anchor_dest_tests {
         s.execute("hyperlink.create", &json!({"anchor": anchor["id"].clone(), "ids": [thumb["id"].clone()], "name": "Thumbnail"})).unwrap();
         assert_eq!(s.execute("hyperlink.list", &json!({})).unwrap()[0]["name"], "Thumbnail");
         assert_eq!(link_pages(&mut s), vec![3]);
-        assert!(s.execute("hyperlink.create", &json!({"anchor": "No Such Anchor", "ids": [thumb["id"].clone()]})).is_err());
+        let e = s.execute("hyperlink.create", &json!({"anchor": "No Such Anchor", "ids": [thumb["id"].clone()]})).expect_err("refused").to_string();
+        assert!(e.contains("no text anchor"), "and it says why, rather than that no destination was given: {e}");
+
+        // An unknown anchor *id* is refused as well. `as_u64` answered for any number, so a link
+        // was stored to an anchor nobody has and the export quietly left it out (noted in review).
+        let live = s.execute("hyperlink.list", &json!({})).unwrap()[0]["id"].clone();
+        let missing = anchor["id"].as_u64().expect("the anchor's id") + 9_999;
+        let e = s.execute("hyperlink.create", &json!({"anchor": missing, "ids": [thumb["id"].clone()]})).expect_err("refused").to_string();
+        assert!(e.contains("no text anchor"), "an unknown id is refused: {e}");
+
+        // And `hyperlink.edit` reports it rather than reading it as "no destination given", which
+        // made the command succeed and keep the old destination (noted in review).
+        for unknown in [json!(missing), json!("No Such Anchor")] {
+            let e = s.execute("hyperlink.edit", &json!({"id": live.clone(), "anchor": unknown.clone()})).expect_err("refused").to_string();
+            assert!(e.contains("no text anchor"), "{unknown}: {e}");
+        }
+        let after = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(after[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "the destination is unchanged: {after}");
+        assert_eq!(link_pages(&mut s), vec![3], "and the export still lands on the anchor's page");
+
+        // A rename that names no destination still works: that is what `None` is for, and it must
+        // not have become an error on the way.
+        s.execute("hyperlink.edit", &json!({"id": live.clone(), "name": "Thumb"})).unwrap();
+        let renamed = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(renamed[0]["name"], "Thumb");
+        assert_eq!(renamed[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "the destination survives a rename");
 
         // A link to a deleted anchor is not exported, rather than pointing at the wrong page.
         s.execute("text.select", &json!({"story": dest["story"].clone(), "anchor": 0, "focus": 8})).unwrap();
