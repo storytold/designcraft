@@ -669,6 +669,28 @@ fn an_unknown_subcommand_is_an_error_even_with_help_after_it() {
     }
 }
 
+/// A subcommand's help has to name the options that subcommand accepts. `validate-pdf` takes
+/// `--standard x4|x1a` -- its own usage string and the module docs both say so -- but the line in
+/// the global `USAGE`, which is what `validate-pdf --help` slices out, left it off, so the option
+/// was hidden from the only place a user would look (noted in review).
+#[test]
+fn subcommand_help_names_the_options_that_subcommand_takes() {
+    let help = |sub: &str| {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help: {:?}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let v = help("validate-pdf");
+    assert!(v.contains("--standard"), "validate-pdf --help hides --standard: {v:?}");
+    // The option is refused for a value it cannot mean, so the help and the parser agree on it.
+    let out = cli().arg("validate-pdf").arg("x.pdf").arg("--standard").arg("x9").output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "an unknown standard is refused");
+
+    // A couple of others, so this is about subcommand help in general and not one line.
+    assert!(help("run").contains("--cmd"), "run --help hides --cmd");
+    assert!(help("mcp").contains("--automation-read-root"), "mcp --help hides its roots");
+}
+
 /// The subcommands the binary's usage text lists. Kept here rather than imported because the
 /// binary is not a library; the assertion above on the count is what notices if it drifts.
 const USAGE_SUBCOMMANDS: &[&str] = &["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];
