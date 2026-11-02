@@ -1365,6 +1365,9 @@ struct LinePosition {
     continues: bool,
 }
 
+/// Position one line of a column: its baseline (snapped to the baseline grid where aligned,
+/// with the first-line fallback that keeps a grid-pushed line visible) and the horizontal
+/// extent left after wrapping around exclusions.
 fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
     let PositionLineInput {
         frame: f,
@@ -1456,7 +1459,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                     let lines = if block { grid::lines_for(span, inc, n) } else { n.max(1) };
                     let free = cur.grid_next.filter(|(b, _)| cur.last_baseline == Some(*b)).map(|(_, y)| y);
                     let band = grid::Band { natural: baseline + r, free, pending: cur.pending, fixed: n > 0, lines, span };
-                    let (y, end) = grid::place((g_start, inc), pp.grid_reference, band);
+                    let (y, mut end) = grid::place((g_start, inc), pp.grid_reference, band);
                     baseline = y - r;
                     grid_end = Some(end);
                     // InDesign compatibility: the first line set in a column must not vanish
@@ -1464,16 +1467,14 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                     // the previous grid line (or the natural position) instead, keeping the line
                     // on the grid whenever that still fits. Without this, frames shorter than the
                     // distance to the next grid line lay out zero lines, so imported titles and
-                    // running heads vanished entirely.
+                    // running heads vanished entirely. A candidate only counts while it keeps
+                    // the line inside the column (the previous grid line can sit above its top).
                     if cur.last_baseline.is_none() && baseline > col.y1 + 0.01 {
                         for cand in [y - r - inc, band.natural - r] {
-                            if cand <= col.y1 + 0.01 {
-                                let delta = cand - baseline;
+                            if cand >= col.y0 - 0.01 && cand <= col.y1 + 0.01 {
+                                end += cand - baseline;
                                 baseline = cand;
-                                grid_end = Some(end + delta);
-                                if block {
-                                    *para_block = Some(((cur.fi, cur.col), end + delta));
-                                }
+                                grid_end = Some(end);
                                 break;
                             }
                         }

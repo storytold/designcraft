@@ -7246,6 +7246,30 @@ fn grid_first_line_falls_back_to_the_previous_grid_line_instead_of_vanishing() {
 }
 
 #[test]
+fn grid_first_line_uses_the_natural_position_when_the_previous_grid_line_is_above_the_column() {
+    // A short frame sitting inside one grid cell: the snapped baseline (the cell's bottom line)
+    // misses the frame, and the previous grid line is above the frame's top, so the fallback
+    // must take the natural position — not the previous grid line and not zero lines.
+    use designcraft_doc::cjk::CharacterAlignment as R;
+    let text = "Geschäftsbericht der audius SE 2025";
+    let rect = Rect::new(49.0, 15.0, 300.0, 29.0);
+    let build = |align: Option<designcraft_doc::GridAlign>| {
+        let para = ParaAttrs { grid_align: align, grid_reference: Some(R::Baseline), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, rect, para);
+        d.settings.baseline_grid.start = 0.0;
+        d.settings.baseline_grid.increment = 30.0;
+        (d, sid)
+    };
+    let (d_natural, sid_natural) = build(None);
+    let natural = all_lines(&compose_story(&d_natural, sid_natural, &ComposeOptions::default()))[0].baseline;
+    let (d, sid) = build(Some(designcraft_doc::GridAlign::FirstLineOnly));
+    let lines = &compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines;
+    assert_eq!(lines.len(), 1, "the first line must stay visible");
+    assert!((lines[0].baseline - natural).abs() < 1e-6, "it takes the natural position {} (grid line 0 is above the column top 15)", lines[0].baseline);
+    assert!((15.0 - 0.01..=29.0 + 0.01).contains(&lines[0].baseline), "and stays inside the frame: {}", lines[0].baseline);
+}
+
+#[test]
 fn grid_alignment_puts_the_chosen_point_on_the_grid() {
     use designcraft_doc::cjk::CharacterAlignment as R;
     let para = |r: R| ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), grid_reference: Some(r), ..Default::default() };
