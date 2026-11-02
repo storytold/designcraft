@@ -1368,6 +1368,29 @@ fn keep_with_previous_looks_past_a_deleted_paragraph() {
     assert!(column_of_para(&cs, n).is_empty(), "the deleted paragraph composes no line");
 }
 
+/// A keep that can't be honoured past a deleted paragraph is still reported: the violation check
+/// looks at the same next composed paragraph the keep does.
+#[test]
+fn a_keep_violation_is_found_past_a_deleted_paragraph() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let body = "Body text that follows the heading.";
+    let mut parts: Vec<String> = (0..n - 1).map(|k| format!("Filler {k}")).collect();
+    parts.extend(["Heading".to_string(), "Gone".to_string(), body.to_string()]);
+    let (mut d, sid, fid) = doc_with(&parts.join("\n"), Rect::new(0.0, 0.0, 400.0, h), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    let st = d.story_mut(sid).unwrap();
+    st.paras[n - 1].para.keep_with_next = Some(1);
+    let gone = st.para_ranges()[n].clone();
+    st.format_chars(gone.start..gone.end + 1, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+    // The body starts a column of its own: the heading can't be kept with it.
+    st.paras[n + 1].para.start_paragraph = Some(designcraft_doc::StartParagraph::NextColumn);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let heading: Vec<_> = all_lines(&cs).into_iter().filter(|l| l.para == n - 1).collect();
+    assert!(!heading.is_empty() && heading.iter().all(|l| l.keep_violation), "the heading's lines are flagged: {heading:?}");
+    assert_ne!(column_of_para(&cs, n - 1), column_of_para(&cs, n + 1));
+}
+
 #[test]
 fn keep_with_next_moves_a_heading() {
     let h = 200.0;

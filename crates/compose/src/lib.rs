@@ -3229,9 +3229,15 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
 /// next paragraph composed has Keep with Previous (no break between the two). A paragraph in
 /// between that a tracked change `deleted` is skipped, as composing skips it.
 fn keep_with_next_of(doc: &Document, story: &Story, deleted: &[bool], pi: usize, pp: &ParaProps) -> u32 {
-    let next = (pi + 1..story.paras.len()).find(|q| !deleted.get(*q).copied().unwrap_or(false));
+    let next = next_visible(story, deleted, pi);
     let next_keeps = next.and_then(|q| story.paras.get(q)).is_some_and(|pf| doc.styles.resolve_para(pf).0.keep_with_previous);
     pp.keep_with_next.max(u32::from(next_keeps))
+}
+
+/// The paragraph after `pi` that composes (not tracked-deleted), if any: the one a keep-with-next
+/// keeps with, and the one checked for a violation.
+fn next_visible(story: &Story, deleted: &[bool], pi: usize) -> Option<usize> {
+    (pi + 1..story.paras.len()).find(|q| !deleted.get(*q).copied().unwrap_or(false))
 }
 
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
@@ -3263,7 +3269,7 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
         }
         let kwn = keep_with_next_of(doc, story, &deleted, pi, &pp);
         if kwn > 0
-            && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
+            && let (Some(end), Some(next)) = (v.last(), next_visible(story, &deleted, pi).and_then(|q| cols.get(&q)))
             && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < kwn as usize && next.len() > 1))
         {
             bad.push(pi);
