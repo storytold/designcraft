@@ -23,6 +23,11 @@ impl DesignApp {
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // An undecorated window gets its caption back when the toolkit changes its flags
+        // (maximize, restore, …): take it off again before the frame is laid out (#1295).
+        if let Some(window_frame) = self.services.window_frame.as_mut() {
+            window_frame();
+        }
         if !self.injected_settle_hook {
             let pending = self.injected_pending.clone();
             let settled = self.injected_settled.clone();

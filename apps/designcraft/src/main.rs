@@ -22,6 +22,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod profile;
+mod window_frame;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -428,6 +429,9 @@ fn main() -> std::process::ExitCode {
                 }
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
+                // The custom title bar's undecorated window must stay borderless, or its caption
+                // and border offset the content and the pointer on some Windows systems (#1295).
+                app.services.window_frame = window_frame::service(cc, app.custom_titlebar);
                 if let Some(port) = control_port {
                     let rx = control_server::start(port, cc.egui_ctx.clone());
                     app = app.with_control(rx);
