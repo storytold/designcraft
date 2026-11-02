@@ -245,7 +245,8 @@ fn table_xml(t: &designcraft_doc::Table) -> String {
             } else {
                 ""
             };
-            out.push_str(&format!("<Cell aid:table=\"cell\"{section} aid:crows=\"{rs}\" aid:ccols=\"{cs}\" aid:ccolwidth=\"{width}\">"));
+            let id = if cell.source_id.is_empty() { String::new() } else { format!(" id=\"{}\"", esc(&cell.source_id)) };
+            out.push_str(&format!("<Cell aid:table=\"cell\"{section} aid:crows=\"{rs}\" aid:ccols=\"{cs}\" aid:ccolwidth=\"{width}\"{id}>"));
             let text: Vec<String> = cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, i, r)).collect();
             out.push_str(&text.join("\n"));
             out.push_str("</Cell>");
@@ -308,6 +309,8 @@ struct Element {
 struct Body {
     text: String,
     tables: Vec<XTable>,
+    /// A table cell's ID (its `id`).
+    id: Option<String>,
     /// Inline elements: the text they hold (byte range of `text`) and their names, inner ones
     /// first.
     runs: Vec<(std::ops::Range<usize>, String)>,
@@ -413,6 +416,17 @@ fn image_attrs(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<
     Ok(href.map(|href| Image { href, fit, crop }))
 }
 
+/// A table cell's `id`, unescaped.
+fn cell_id(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<String>, String> {
+    for a in e.attributes() {
+        let a = a.map_err(|e| e.to_string())?;
+        if a.key.as_ref() == b"id" {
+            return Ok(Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
 /// against `base`.
 fn href_path(href: &str, base: Option<&std::path::Path>) -> String {
@@ -491,7 +505,7 @@ fn parse(xml: &str, inline: &dyn Fn(&str) -> bool) -> std::result::Result<Vec<El
                     open_body(&mut stack, el).text.push_str(&anchor);
                     Open::Table(XTable::default())
                 } else if name == "Cell" && matches!(stack.last(), Some(Open::Table(_))) {
-                    Open::Cell(Body::default())
+                    Open::Cell(Body { id: cell_id(&e)?, ..Body::default() })
                 } else if depth == 3 && !inline(&name) {
                     Open::Child(name, Body::default())
                 } else {
@@ -511,7 +525,7 @@ fn parse(xml: &str, inline: &dyn Fn(&str) -> bool) -> std::result::Result<Vec<El
             // An empty cell still takes its place.
             Event::Empty(e) if e.local_name().as_ref() == b"Cell" => {
                 if let Some(Open::Table(t)) = stack.last_mut() {
-                    t.cells.push(Body::default());
+                    t.cells.push(Body { id: cell_id(&e)?, ..Body::default() });
                 }
             }
             ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
@@ -889,8 +903,9 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         fills.push((slot.1, paras, tables));
     }
     let mut placed = fills.len();
+    let mut fx = Fill { cs: char_styles, lost_cells: 0 };
     if !fills.is_empty() {
-        fill_stories(s, fills, char_styles)?;
+        fill_stories(s, fills, &mut fx)?;
     }
     // Each image fills its frame proportionally unless `fit` says otherwise; `crop` picks a PDF's
     // box. One that can't be placed is reported and the rest of the import goes on.
@@ -939,18 +954,25 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             Err(e) => failed.push(json!({"tag": tag, "href": image.href, "error": e.to_string()})),
         }
     }
-    Ok(json!({"placed": placed, "unmatched": unmatched, "unmatchedTags": unmatched_tags, "failed": failed}))
+    Ok(json!({"placed": placed, "unmatched": unmatched, "unmatchedTags": unmatched_tags, "lostCells": fx.lost_cells, "failed": failed}))
 }
 
 /// Character styles by element name, when the XML says where they go.
 type CharStyles = std::collections::HashMap<String, String>;
 
+/// How an import fills stories: `cs` as for [`fill_story`]; counts the XML's cells with no cell
+/// to go into.
+struct Fill<'a> {
+    cs: Option<&'a CharStyles>,
+    lost_cells: usize,
+}
+
 /// Replaces each story's text with the paragraphs, in their mapped styles.
-fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>)>, cs: Option<&CharStyles>) -> Result<()> {
+fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>)>, fx: &mut Fill) -> Result<()> {
     s.edit(|d, _| {
         for (sid, paras, tables) in fills {
             if let Some(st) = d.story_mut(sid) {
-                fill_story(st, &paras, &tables, cs);
+                fill_story(st, &paras, &tables, fx);
             }
         }
         Ok(())
@@ -970,9 +992,9 @@ fn common_ends(a: &str, b: &str) -> (usize, usize) {
 /// first character it replaces), extra paragraphs copy the last one's formats, surplus old
 /// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays.
 /// A table's paragraph is never text: it takes the next of `tables` when the XML has a table
-/// there, cell by cell, and is left as it is otherwise. With `cs`, each paragraph's characters
+/// there, cell by cell, and is left as it is otherwise. With `fx.cs`, each paragraph's characters
 /// take the character styles of the XML's runs, and no style outside them.
-fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], cs: Option<&CharStyles>) {
+fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill) {
     let anchor = designcraft_doc::story::TABLE_ANCHOR;
     let ranges = st.para_ranges();
     let keep_last = ranges.len() > 1 && ranges.last().is_some_and(|r| r.is_empty());
@@ -991,7 +1013,7 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], cs: Option<&Ch
                 && let Some(x) = next_table.next()
                 && let Some(t) = st.tables.get_mut(&tid)
             {
-                fill_table(std::sync::Arc::make_mut(t), x, cs);
+                fill_table(std::sync::Arc::make_mut(t), x, fx);
             }
             continue;
         }
@@ -1040,7 +1062,7 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], cs: Option<&Ch
             pf.style = sty.clone();
         }
     }
-    if let Some(cs) = cs {
+    if let Some(cs) = fx.cs {
         let ranges = st.para_ranges();
         for (i, p) in paras.iter().enumerate() {
             let Some(r) = ranges.get(i).filter(|r| st.paras[i].table.is_none() && st.text[(*r).clone()] == p.text) else { continue };
@@ -1056,23 +1078,37 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], cs: Option<&Ch
     }
 }
 
-/// The XML table's cells put into `t`'s cells in their order (row by row, a merged cell once),
-/// each in place like a story.
-fn fill_table(t: &mut designcraft_doc::Table, x: &XTable, cs: Option<&CharStyles>) {
+/// The XML table's cells put into `t`'s cells, each in place like a story: a cell with an `id`
+/// into the cell of that ID (none there: it is lost), one without into the next cell in order
+/// (row by row, a merged cell once).
+fn fill_table(t: &mut designcraft_doc::Table, x: &XTable, fx: &mut Fill) {
     let (nr, nc) = (t.nrows(), t.ncols());
     let owners = t.owners();
-    let mut cells = x.cells.iter();
-    for r in 0..nr {
-        for c in 0..nc {
-            if owners.get(r * nc + c) != Some(&(r, c)) {
-                continue;
-            }
-            let Some(xc) = cells.next() else { return };
-            if let Some(cell) = t.cell_mut(r, c) {
-                // Export writes a cell's paragraphs as they are: nothing to trim.
-                fill_story(&mut cell.text, &xc.paras(None, |_| false), &xc.tables, cs);
-            }
+    let order: Vec<(usize, usize)> = (0..nr * nc).filter(|&i| owners.get(i) == Some(&(i / nc, i % nc))).map(|i| (i / nc, i % nc)).collect();
+    // Cells by ID; an ID two cells have (a copied row) names neither.
+    let mut by_id: std::collections::HashMap<&str, Option<(usize, usize)>> = std::collections::HashMap::new();
+    for &(r, c) in &order {
+        if let Some(cell) = t.cell(r, c).filter(|cell| !cell.source_id.is_empty()) {
+            by_id.entry(cell.source_id.as_str()).and_modify(|at| *at = None).or_insert(Some((r, c)));
         }
+    }
+    let targets: Vec<Option<(usize, usize)>> = {
+        let mut next = order.iter();
+        x.cells
+            .iter()
+            .map(|xc| match &xc.id {
+                Some(id) => by_id.get(id.as_str()).copied().flatten(),
+                None => next.next().copied(),
+            })
+            .collect()
+    };
+    for (xc, at) in x.cells.iter().zip(targets) {
+        let Some(cell) = at.and_then(|(r, c)| t.cell_mut(r, c)) else {
+            fx.lost_cells += 1;
+            continue;
+        };
+        // Export writes a cell's paragraphs as they are: nothing to trim.
+        fill_story(&mut cell.text, &xc.paras(None, |_| false), &xc.tables, fx);
     }
 }
 
@@ -1253,6 +1289,36 @@ mod tests {
         assert_eq!(bold(&s), ["Only"], "the style moves with the translation");
         s.execute("file.importXml", &json!({"text": "<Root><body>Only within. Not outside! End.</body></Root>"})).unwrap();
         assert_eq!(bold(&s), ["Only"], "XML without styled runs keeps the styles");
+    }
+
+    /// Cells from a file keep its IDs: export names each cell by its `id`, and import puts a cell
+    /// into the cell of its ID wherever it is in the XML; an ID the table hasn't is lost.
+    #[test]
+    fn table_cells_are_matched_by_id() {
+        use designcraft_doc::{ParaFormat, Story, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": "T", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 1, "focus": 1})).unwrap();
+        let tid = s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let t = std::sync::Arc::make_mut(d.story_mut(sid).unwrap().tables.get_mut(&tid).unwrap());
+            for (i, (id, text)) in [("ua1i1", "Links"), ("ua1i2", "Rechts")].into_iter().enumerate() {
+                t.cells[i].source_id = id.into();
+                t.cells[i].text = Story::with_text(StoryId(0), text, ParaFormat::default());
+            }
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains(" id=\"ua1i1\">Links</Cell>") && x.contains(" id=\"ua1i2\">Rechts</Cell>"), "{x}");
+        let table = "<Table aid:table=\"table\"><Cell id=\"ua1i2\">Right</Cell><Cell id=\"ua9i9\">Gone</Cell><Cell id=\"ua1i1\">Left</Cell></Table>";
+        let r = s.execute("file.importXml", &json!({"text": format!("<Root><body>T\n{table}</body></Root>")})).unwrap();
+        assert_eq!(r["lostCells"], 1, "{r}");
+        let t = s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].clone();
+        assert_eq!((t.cells[0].text.text.as_str(), t.cells[1].text.text.as_str()), ("Left", "Right"));
     }
 
     /// Tables in a tagged frame are part of its XML: export writes them as InDesign does, import
