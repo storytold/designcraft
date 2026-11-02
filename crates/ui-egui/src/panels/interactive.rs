@@ -241,12 +241,24 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Structure")).strong());
     let st = app.session.execute("xml.structure", &json!({})).unwrap_or_default();
     crate::rtl::label(ui, egui::RichText::new(st["root"].as_str().unwrap_or("Root")).size(11.0).color(t.text_dim));
+    // Click an element to select its frame and go to it; a frame with tables opens to its cells.
     for el in st["elements"].as_array().cloned().unwrap_or_default() {
+        let id = el["id"].as_u64().unwrap_or(0);
         let text = el["text"].as_str().unwrap_or("").chars().take(40).collect::<String>();
         let label = format!("  <{}> {}", el["tag"].as_str().unwrap_or(""), text);
-        if ui.selectable_label(false, egui::RichText::new(label).size(11.0)).clicked() {
-            let _ = app.run("selection.set", json!({"ids": [el["id"]]}));
+        if el["tables"].as_u64().unwrap_or(0) == 0 {
+            if ui.selectable_label(false, egui::RichText::new(label).size(11.0)).clicked() {
+                go_to_element(app, id);
+            }
+            continue;
         }
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::unique(("xml_structure_cells", id)), false)
+            .show_header(ui, |ui| {
+                if ui.selectable_label(false, egui::RichText::new(label.trim_start()).size(11.0)).clicked() {
+                    go_to_element(app, id);
+                }
+            })
+            .body(|ui| structure_cells(app, ui, id));
     }
     // DTD: load, validate (problems listed until the next validation), delete.
     let vid = egui::Id::unique("dtd_problems");
@@ -301,6 +313,50 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Import XML…"))).clicked() {
             import_xml(app);
+        }
+    });
+}
+
+/// Selects a Structure element's frame and scrolls to it.
+fn go_to_element(app: &mut DesignApp, id: u64) {
+    if app.run("selection.set", json!({"ids": [id]})).is_ok() {
+        crate::canvas::go_to_item(app, designcraft_doc::ItemId(id));
+    }
+}
+
+/// A Structure element's table cells (its ID, else column:row, and the start of its text), those
+/// of nested tables indented: click one to select it (a nested one: the cell holding it) and go to
+/// the frame it is laid out in. Listed while open, read again when the document changes.
+fn structure_cells(app: &mut DesignApp, ui: &mut egui::Ui, frame: u64) {
+    let rev = app.session.active().map_or(0, |d| d.revision);
+    let key = egui::Id::unique(("xml_structure_cells_list", frame));
+    let cached: Option<(u64, std::sync::Arc<Value>)> = ui.data(|d| d.get_temp(key));
+    let cells = match cached {
+        Some((r, v)) if r == rev => v,
+        _ => {
+            let v = std::sync::Arc::new(app.session.execute("xml.cells", &json!({"id": frame})).unwrap_or_default());
+            ui.data_mut(|d| d.insert_temp(key, (rev, v.clone())));
+            v
+        }
+    };
+    let story = cells["story"].clone();
+    let list = cells["cells"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let row_h = ui.text_style_height(&egui::TextStyle::Body);
+    egui::ScrollArea::vertical().id_salt(key).max_height(260.0).show_rows(ui, row_h, list.len(), |ui, rows| {
+        for c in &list[rows] {
+            // A nested table's cells are indented under the cell holding them (which they select).
+            let depth = c["depth"].as_u64().unwrap_or(0) as usize;
+            let name = match c["id"].as_str() {
+                Some(id) => id.to_string(),
+                None if depth == 0 => format!("{}:{}", c["col"], c["row"]),
+                None => "·".into(),
+            };
+            let label = format!("{}{name}  {}", "    ".repeat(depth), c["text"].as_str().unwrap_or(""));
+            if ui.selectable_label(false, egui::RichText::new(label).size(11.0)).clicked()
+                && app.run("table.select", json!({"story": story, "table": c["table"], "row": c["row"], "col": c["col"]})).is_ok()
+            {
+                crate::canvas::go_to_item(app, designcraft_doc::ItemId(c["frame"].as_u64().unwrap_or(frame)));
+            }
         }
     });
 }

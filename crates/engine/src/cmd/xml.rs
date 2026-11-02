@@ -134,6 +134,25 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// The cells of `st`'s tables in story order, row by row (a merged cell once), each followed by
+/// those of tables in it. Cells of nested tables (`depth` > 0) are addressed by the story's cell
+/// `top` holding them; `frame` finds where a story cell is laid out.
+fn list_cells(st: &Story, top: Option<(u64, usize, usize)>, depth: usize, frame: &dyn Fn(u64, usize, usize) -> Option<u64>, out: &mut Vec<Value>) {
+    for tid in st.paras.iter().filter_map(|p| p.table) {
+        let Some(t) = st.tables.get(&tid) else { continue };
+        let (nr, nc) = (t.nrows(), t.ncols());
+        let owners = t.owners();
+        for i in (0..nr * nc).filter(|&i| owners.get(i) == Some(&(i / nc, i % nc))) {
+            let Some(cell) = t.cell(i / nc, i % nc) else { continue };
+            let (tt, r, c) = top.unwrap_or((tid, i / nc, i % nc));
+            let text: String = plain(&cell.text.text).replace('\n', " ").chars().take(60).collect();
+            let id = (!cell.source_id.is_empty()).then(|| cell.source_id.clone());
+            out.push(json!({"table": tt, "row": r, "col": c, "depth": depth, "id": id, "text": text, "frame": frame(tt, r, c)}));
+            list_cells(&cell.text, Some((tt, r, c)), depth + 1, frame, out);
+        }
+    }
+}
+
 /// Escapes markup characters and drops characters XML 1.0 cannot hold.
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -693,21 +712,41 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(query "xml.structure", "Structure", [], None, "{} → {root, elements: [{tag, id, kind, text?}]} in reading order", has_doc, |s, _| {
+        cmd!(query "xml.structure", "Structure", [], None, "{} → {root, elements: [{tag, id, kind, text?, tables?}]} in reading order (`tables`: how many the frame's story has)", has_doc, |s, _| {
             let d = &s.doc()?.doc;
             let elements: Vec<Value> = tagged(d)
                 .into_iter()
                 .filter_map(|id| d.item(id))
                 .map(|it| {
-                    let (kind, text) = match &it.content {
-                        Content::Text(tf) => ("text", d.story(tf.story).map(|st| plain(&st.text))),
-                        Content::Graphic(_) => ("graphic", None),
-                        _ => ("object", None),
+                    let (kind, text, tables) = match &it.content {
+                        Content::Text(tf) => ("text", d.story(tf.story).map(|st| plain(&st.text)), d.story(tf.story).map(|st| st.tables.len())),
+                        Content::Graphic(_) => ("graphic", None, None),
+                        _ => ("object", None, None),
                     };
-                    json!({"tag": it.xml_tag, "id": it.id.0, "kind": kind, "text": text})
+                    json!({"tag": it.xml_tag, "id": it.id.0, "kind": kind, "text": text, "tables": tables})
                 })
                 .collect();
             Ok(json!({"root": root_name(d), "elements": elements}))
+        }),
+        cmd!(query "xml.cells", "Table Cells", [], None, "{id} → {story, cells: [{table, row, col, depth, id?, text, frame?}]}: the cells of the tables in a text frame's story, row by row (a merged cell once), each followed by the cells of tables in it (`depth` 1, …: `table`, `row` and `col` are then the story's cell holding them), with the frame each is laid out in", has_doc, |s, p| {
+            const ID: &str = "xml.cells";
+            let d = &s.doc()?.doc;
+            let frame = p.get("id").and_then(Value::as_u64).map(ItemId).ok_or_else(|| bad(ID, "give the text frame's id"))?;
+            let sid = d.item(frame).and_then(|it| it.text_frame()).map(|tf| tf.story).ok_or_else(|| bad(ID, "not a text frame"))?;
+            let st = d.story(sid).ok_or_else(|| bad(ID, "no story"))?;
+            // Where each cell is laid out: the first frame showing it.
+            let composed = s.cache.get(d, sid, None);
+            let mut shown: std::collections::HashMap<(u64, usize, usize), ItemId> = std::collections::HashMap::new();
+            for ft in &composed.frames {
+                for frag in &ft.tables {
+                    for c in &frag.cells {
+                        shown.entry((frag.table, c.row, c.col)).or_insert(ft.frame);
+                    }
+                }
+            }
+            let mut cells = Vec::new();
+            list_cells(st, None, 0, &|t, r, c| shown.get(&(t, r, c)).map(|f| f.0), &mut cells);
+            Ok(json!({"story": sid.0, "cells": cells}))
         }),
         cmd!(noundo "file.exportXml", "Export XML…", ["File"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
             let text = export_xml(&s.doc()?.doc);
@@ -1287,6 +1326,17 @@ mod tests {
         assert_eq!(r["lostCells"], 1, "{r}");
         let t = s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].clone();
         assert_eq!((t.cells[0].text.text.as_str(), t.cells[1].text.text.as_str()), ("Left", "Right"));
+        // The Structure lists the frame's tables; its cells, with their IDs and frame, go to.
+        assert_eq!(s.execute("xml.structure", &json!({})).unwrap()["elements"][0]["tables"], 1);
+        let cells = s.execute("xml.cells", &json!({"id": f["id"]})).unwrap();
+        assert_eq!(
+            cells["cells"][1],
+            json!({"table": tid, "row": 0, "col": 1, "depth": 0, "id": "ua1i2", "text": "Right", "frame": f["id"]}),
+            "{cells}"
+        );
+        s.execute("table.select", &json!({"story": sid.0, "table": tid, "row": 0, "col": 1})).unwrap();
+        let sel = s.doc().unwrap().selection.text.unwrap();
+        assert_eq!(sel.cell.map(|c| (c.row, c.col)), Some((0, 1)));
     }
 
     /// Tables in a tagged frame are part of its XML: export writes them as InDesign does, import
