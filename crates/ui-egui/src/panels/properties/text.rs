@@ -1,4 +1,4 @@
-use super::object::swatch_menu;
+use super::object::{open_color_picker, swatch_menu};
 use super::typography::{para_field_min, show_typography_panel};
 use super::{
     Align, DesignApp, FIELD_H, NumField, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, icon_toggle, icons, json, link_label,
@@ -128,7 +128,11 @@ pub(super) fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, "T", crate::theme::semibold(12.0), tc);
         }
         let resp = ui.interact(chip, ui.scope_id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if k == 0 { "Text fill swatch" } else { "Text stroke swatch" }));
         swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
+        if resp.double_clicked() {
+            open_color_picker(app, &doc, &sw, k != 0, true);
+        }
         if k == 0 {
             crate::rtl::paint(
                 ui.painter(),
@@ -480,8 +484,9 @@ pub(super) fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
+            // As InDesign's: the Bullets and Numbering dialog for the selected paragraphs.
             if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                show_panel(app, "paragraph");
+                let _ = app.run("app.bulletsNumberingDialog", json!({}));
             }
         });
     });

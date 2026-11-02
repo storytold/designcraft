@@ -302,7 +302,7 @@ impl<'a> Ex<'a> {
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
             .attr("IncludeBookDocuments", "false")
-            .attr("CreatePdfBookmarks", "false");
+            .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
             let position = match e.page_number {
@@ -335,6 +335,17 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
+        el.set(&format!("{k}Type"), names::stroke_type_out(&r.kind));
+        // A gap in Text Color is a string property, as the rule's own colour is.
+        if r.gap_color == designcraft_doc::TEXT_COLOR {
+            props.push(p(&format!("{k}GapColor"), "string", designcraft_doc::TEXT_COLOR));
+        } else {
+            el.set(&format!("{k}GapColor"), self.sw(&r.gap_color));
+        }
+        el.set(&format!("{k}GapTint"), pct(r.gap_tint as f64));
+        if k == "RuleAbove" {
+            el.set("KeepRuleAboveInFrame", bool_s(r.keep_in_frame));
+        }
         props.push(if r.color == designcraft_doc::TEXT_COLOR {
             p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
         } else {

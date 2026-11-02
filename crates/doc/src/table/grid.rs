@@ -55,12 +55,15 @@ impl Table {
     pub fn from_strings(id: u64, data: &[Vec<String>], width: f64, para: &ParaFormat, fmt: &CharFormat) -> Table {
         let cols = data.iter().map(Vec::len).max().unwrap_or(1).max(1);
         let mut t = Table::new(id, data.len().max(1), cols, 0, 0, width);
-        for (r, row) in data.iter().enumerate() {
-            for (c, s) in row.iter().enumerate() {
+        // Every cell takes the text's format, the padding of a short row too.
+        for r in 0..t.nrows() {
+            for c in 0..t.ncols() {
                 let Some(cell) = t.cell_mut(r, c) else { continue };
                 cell.text = Story::with_text(StoryId(0), "", ParaFormat { table: None, ..para.clone() });
                 cell.text.chars[0].format = fmt.clone();
-                cell.text.insert(0, s);
+                if let Some(s) = data.get(r).and_then(|row| row.get(c)) {
+                    cell.text.insert(0, s);
+                }
             }
         }
         t
@@ -180,14 +183,19 @@ impl Table {
 
     /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
     pub fn plain_text(&self) -> String {
+        self.text_with("\t", "\n")
+    }
+
+    /// The cells' text, columns separated by `col` and rows by `row` (Convert Table to Text).
+    pub fn text_with(&self, col: &str, row: &str) -> String {
         let mut out = String::new();
         for r in 0..self.nrows() {
             if r > 0 {
-                out.push('\n');
+                out.push_str(row);
             }
             for c in 0..self.ncols() {
                 if c > 0 {
-                    out.push('\t');
+                    out.push_str(col);
                 }
                 if let Some(cell) = self.cell(r, c) {
                     out.push_str(&cell.text.text.replace('\n', " "));

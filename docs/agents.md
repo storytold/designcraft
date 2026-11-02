@@ -54,6 +54,17 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
 is a PNG of the page; another extension is an error, and nothing runs.
 
+## Table of contents bookmarks
+
+`toc.generate` accepts `createBookmarks: true` to generate page-level PDF bookmarks from the
+included paragraph styles and their levels. `toc.update` refreshes their titles, hierarchy and
+destinations. Refresh keeps the generated outline at its previous position, preserving manual
+bookmarks before and after it; disabling the option removes only the generated
+bookmarks. Without `createBookmarks`, `toc.generate` keeps the document's existing TOC setting,
+which is off when there is no TOC yet, so a script that makes a new TOC gets no bookmarks unless
+it passes `createBookmarks: true`. The Table of Contents dialog differs: its Create PDF Bookmarks
+option is on by default for a new TOC, and for an existing one it shows the saved setting.
+
 ## Color themes
 
 `color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).
