@@ -2950,6 +2950,13 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("The selected fonts have no OpenType features.", "De markerade typsnitten har inga OpenType-funktioner."),
     ("This style is in use. Text using it will be reassigned to:", "Den här stilen används. Text som använder den tilldelas i stället:"),
     ("VA", "VA"),
+    ("ar", "ar"),
+    ("de", "de"),
+    ("fr", "fr"),
+    ("hu", "hu"),
+    ("it", "it"),
+    ("ja", "ja"),
+    ("pt-br", "pt-br"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[
@@ -2959,4 +2966,15 @@ pub(super) const CONTEXT: &[(&str, &str, &str)] = &[
     ("Number:", "count", "Antal:"),
     ("Columns:", "grid", "Kolumner:"),
     ("Span Columns", "paragraphLayout", "Sträck över spalter"),
+    ("de", "Anzahl:", "de"),
+    ("hu", "Columns", "hu"),
+    ("hu", "Columns:", "hu"),
+    ("hu", "Darabszám:", "hu"),
+    ("hu", "Group", "hu"),
+    ("fr", "Nombre :", "fr"),
+    ("en", "Number:", "en"),
+    ("uk", "Кількість:", "uk"),
+    ("ar", "العدد:", "ar"),
+    ("ja", "数:", "ja"),
+    ("zh", "数量：", "zh"),
 ];
