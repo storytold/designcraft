@@ -106,12 +106,28 @@ fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Opti
         return Ok(Some(HyperlinkDest::Email(e.to_string())));
     }
     if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
-        let by_name = |name: &str| d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.name == name).map(|x| x.id);
-        let known = |id: &u64| d.stories.values().any(|st| st.anchors.iter().any(|x| x.id == *id));
-        let found = a.as_u64().filter(known).or_else(|| a.as_str().and_then(by_name));
-        return match found {
-            Some(anchor) => Ok(Some(HyperlinkDest::Anchor(anchor))),
-            None => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
+        let anchors = || d.stories.values().flat_map(|st| st.anchors.iter());
+        // An id names one anchor or none.
+        if let Some(n) = a.as_u64() {
+            return match anchors().any(|x| x.id == n) {
+                true => Ok(Some(HyperlinkDest::Anchor(n))),
+                false => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
+            };
+        }
+        // A name need not. `anchor.create` does not require one to be unique -- and an IDML
+        // import can bring a document that already has two of the same -- so taking the first
+        // match stored whichever anchor happened to come first, and a link on a name shared by
+        // anchors on two pages went to the wrong page with nothing to say so (noted in review).
+        // The id still reaches either of them.
+        let Some(name) = a.as_str() else { return Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))) };
+        let mut named = anchors().filter(|x| x.name == name);
+        return match (named.next(), named.next()) {
+            (Some(x), None) => Ok(Some(HyperlinkDest::Anchor(x.id))),
+            (Some(_), Some(_)) => {
+                let ids: Vec<String> = anchors().filter(|x| x.name == name).map(|x| x.id.to_string()).collect();
+                Err(bad(id, format!("more than one text anchor is named {name:?} ({}); give the id instead", ids.join(", "))))
+            }
+            (None, _) => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
         };
     }
     Ok(p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1))))
@@ -211,6 +227,50 @@ mod anchor_dest_tests {
             }
         }
         out
+    }
+
+    /// `anchor.create` does not require a name to be unique -- and an IDML import can bring a
+    /// document that already has two of the same -- so the lookup taking the first match meant a
+    /// link made on a shared name went to whichever anchor came first, a different page, with
+    /// nothing to say so (noted in review). The id still reaches either of them.
+    #[test]
+    fn a_name_two_anchors_share_cannot_pick_one_of_them() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": false, "margins": 0})).unwrap();
+
+        // Two anchors with one name, in text on different pages.
+        let mut made = Vec::new();
+        for page in [1usize, 2] {
+            let sp = s.doc().unwrap().doc.page_loc(page).unwrap().0;
+            let f = s
+                .execute("frame.create", &json!({"spread": sp, "rect": [20, 20, 280, 100], "content": "text", "text": "Photo 1 full size"}))
+                .unwrap();
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 7})).unwrap();
+            made.push(s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap());
+        }
+        assert_ne!(made[0]["id"], made[1]["id"], "two anchors, one name");
+        let thumb = s.execute("frame.create", &json!({"rect": [20, 20, 120, 80], "content": "unassigned"})).unwrap();
+
+        // Creating on the shared name is refused, and says what to do instead.
+        let e = s.execute("hyperlink.create", &json!({"anchor": "Photo 1", "ids": [thumb["id"].clone()]})).expect_err("ambiguous").to_string();
+        assert!(e.contains("more than one text anchor"), "{e}");
+        assert!(e.contains("give the id instead"), "it says what to do instead: {e}");
+        assert!(s.execute("hyperlink.list", &json!({})).unwrap().as_array().is_some_and(|l| l.is_empty()), "and no link was made");
+
+        // By id it works, and the id picks the one that was asked for.
+        s.execute("hyperlink.create", &json!({"anchor": made[1]["id"].clone(), "ids": [thumb["id"].clone()]})).unwrap();
+        let live = s.execute("hyperlink.list", &json!({})).unwrap()[0]["id"].clone();
+        let dest = |s: &mut Session| s.execute("hyperlink.list", &json!({})).unwrap()[0]["dest"].clone();
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[1]["id"].clone()}));
+
+        // An edit on the shared name is refused and leaves the destination as it was.
+        let e = s.execute("hyperlink.edit", &json!({"id": live.clone(), "anchor": "Photo 1"})).expect_err("ambiguous").to_string();
+        assert!(e.contains("more than one text anchor"), "{e}");
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[1]["id"].clone()}), "the refused edit changed nothing");
+
+        // And the other anchor is still reachable by its id.
+        s.execute("hyperlink.edit", &json!({"id": live, "anchor": made[0]["id"].clone()})).unwrap();
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[0]["id"].clone()}));
     }
 
     /// A frame can link to a text anchor, as a cross-reference refers to one, and the link lands
