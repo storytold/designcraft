@@ -599,7 +599,15 @@ fn main() -> std::process::ExitCode {
                     // free one, so the number that was requested is not the number a client
                     // connects to, and naming the file after it put every such launch on
                     // `control-token-0` -- the collision this naming is for (noted in review).
-                    let bound = reserved.as_ref().and_then(|l| l.local_addr().ok()).map(|a| a.port());
+                    let bound = reserved.as_ref().and_then(|l| match l.local_addr() {
+                        Ok(a) => Some(a.port()),
+                        // Said, not swallowed: this leaves the channel shut, and every other way
+                        // it can fail to start gives its reason (noted in review).
+                        Err(e) => {
+                            log::error!("the control server did not start: its address could not be read: {e}");
+                            None
+                        }
+                    });
                     let token = bound.and_then(|bound| match supplied {
                         Some(token) => Some(token),
                         None => match control_token::new_token() {
