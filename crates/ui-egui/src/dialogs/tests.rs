@@ -3754,6 +3754,40 @@ fn character_style_options_set_the_digits() {
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
 
+#[test]
+fn import_warning_show_selects_the_frame_it_is_about() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let lines = json!([
+        {"text": "a table of 2 rows was read as 1", "item": null},
+        {"text": "story 30892: text orientation of its frames is not known or differs; written as horizontal", "item": f["id"]},
+    ]);
+    app.ui.dialog = Some(Dialog::new("alert", json!({"title": "Import Warnings", "file": "book.indd", "message": "", "lines": lines})));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("import_warning_show_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    // Only the warning that names a frame offers Show.
+    assert_eq!(h.query_all_by_label("Show").count(), 1);
+    h.get_by_label("Show").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialog.is_none(), "Show closes the warnings");
+    assert_eq!(app.session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(f["id"].as_u64().unwrap())]);
+}
+
 /// Replace the text of the field beside the `nth` label `label` (on its row, to its right) with
 /// `new`, and leave the field.
 fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, label: &str, nth: usize, new: &str) {
@@ -4813,4 +4847,87 @@ fn convert_dialogs_use_their_separators() {
     let story = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text.clone();
     // (The empty paragraph after a table that ends its story stays after the text.)
     assert_eq!(story.trim_end(), "Name:, Address:\nCity:, State:");
+}
+
+/// The Rectangle dialog a frame-tool click opens shows the width in the horizontal ruler unit and
+/// the height in the vertical one, not always picas, and reads bare numbers the same way (#1964).
+#[test]
+fn frame_size_dialog_follows_the_ruler_units() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "millimeters"})).unwrap();
+    // As the frame tool asks: a click at (36, 36), 72 pt by 72 pt.
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_ref().expect("the Rectangle dialog");
+    assert_eq!((d.id.as_str(), d.unit), ("frameSize", Unit::Inches));
+    assert_eq!(d.s("width"), format_measure(72.0, Unit::Inches));
+    assert_eq!(d.s("height"), format_measure(72.0, Unit::Millimeters));
+    assert!(!d.s("width").contains('p') && !d.s("height").contains('p'), "no picas: {} x {}", d.s("width"), d.s("height"));
+    // Bare numbers typed in each field are in that field's unit: 2 in by 50 mm.
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("2"));
+    d.fields.insert("height".into(), json!("50"));
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 50.0 / 25.4 * 72.0).abs() < 0.01, "{b:?}");
+    // The properties panel's link opens it in the same units.
+    let d = frame_size_dialog(&app, json!({"width": 36.0, "height": 36.0}));
+    assert_eq!((d.s("width"), d.s("height")), (format_measure(36.0, Unit::Inches), format_measure(36.0, Unit::Millimeters)));
+    // Every ruler unit: the shown size reads back as the size, so OK leaves a 72 pt frame 72 pt.
+    let units = serde_json::to_value(Unit::ALL).unwrap();
+    for (unit, name) in Unit::ALL.iter().zip(units.as_array().unwrap()) {
+        app.run("document.preferences", json!({"horizontalUnits": name, "verticalUnits": name})).unwrap();
+        let d = frame_size_dialog(&app, json!({"width": 72.0, "height": 145.0}));
+        assert_eq!(d.unit, *unit);
+        for (k, pt) in [("width", 72.0), ("height", 145.0)] {
+            let back = d.m_in(k, *unit).unwrap_or(f64::NAN);
+            assert!((back - pt).abs() < 0.05, "{name}: {k} shows {:?}, reads back {back}", d.s(k));
+        }
+    }
+}
+
+/// #2055 review: the Rectangle dialog reads the height in the vertical unit it showed when it
+/// opened. Rulers switched while it is open (the control channel) leave a typed 50 at 50 mm.
+#[test]
+fn frame_size_dialog_keeps_its_units_while_open() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_mut().expect("the Rectangle dialog");
+    d.fields.insert("width".into(), json!("50"));
+    d.fields.insert("height".into(), json!("50"));
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "inches"})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    let mm50 = 50.0 / 25.4 * 72.0;
+    assert!((b.width() - mm50).abs() < 0.01 && (b.height() - mm50).abs() < 0.01, "50 mm by 50 mm (about 141.73 pt): {b:?}");
+    // A dialog made without the vertical unit (`Dialog::new`) reads the height in its own unit.
+    let mut d = Dialog::new("frameSize", json!({"width": "2", "height": "3"}));
+    d.unit = Unit::Inches;
+    assert_eq!(d.vertical_unit, None);
+    app.ui.dialog = Some(d);
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }

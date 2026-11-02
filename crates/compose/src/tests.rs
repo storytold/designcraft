@@ -8409,3 +8409,34 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
 }
+
+/// A cross-reference's text breaks at its spaces like ordinary text (it is real text in
+/// InDesign), not inside words; edited text whose destination is gone shows its saved page.
+#[test]
+fn cross_reference_text_breaks_at_its_spaces() {
+    let (mut d, sid, _) = doc_with("See X.", Rect::new(36.0, 36.0, 110.0, 400.0), ParaAttrs::default());
+    let at = d.story(sid).unwrap().text.find('X').unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.delete(at..at + 1);
+    st.insert_xref(
+        at,
+        designcraft_doc::CrossRef {
+            text: Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.".into()),
+            page: Some("7".into()),
+            ..Default::default()
+        },
+    );
+    let x = d.story(sid).unwrap().xrefs[0].clone();
+    let shown = crate::xref::xref_text(&d, &x, None);
+    assert_eq!(shown, "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines: Vec<String> =
+        cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char).collect::<String>()).collect();
+    assert!(lines.len() > 3, "{lines:?}");
+    let words: Vec<&str> = format!("See {shown}.").leak().split(' ').collect();
+    for l in &lines {
+        for w in l.split(' ').filter(|w| !w.is_empty()) {
+            assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
+}
