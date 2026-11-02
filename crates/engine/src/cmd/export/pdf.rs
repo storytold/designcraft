@@ -169,41 +169,21 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    let st = s.doc()?;
-    let opts = options(p, st.doc.page_count())?;
+    pdf_report(&s.doc()?.doc, &s.cache, p)
+}
+
+/// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
+pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;
-    let mut r = print_pdf(&st.doc, &s.cache, &opts, ppi)?;
-    let doc: &designcraft_doc::Document = &st.doc;
+    let (cat, dest) = view_options(p)?;
+    let mut r = print_pdf(doc, cache, &opts, ppi)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
-    // Interactive PDF view options.
-    let mut cat = String::new();
-    if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
-        cat.push_str("/PageMode/FullScreen");
-    } else if p.get("bookmarksPanel").and_then(Value::as_bool) == Some(true) {
-        cat.push_str("/PageMode/UseOutlines");
-    }
-    match str_param(p, "pageLayout") {
-        Some("single") => cat.push_str("/PageLayout/SinglePage"),
-        Some("continuous") => cat.push_str("/PageLayout/OneColumn"),
-        Some("twoUp") => cat.push_str("/PageLayout/TwoPageLeft"),
-        Some("twoUpCover") => cat.push_str("/PageLayout/TwoPageRight"),
-        Some("twoUpContinuous") => cat.push_str("/PageLayout/TwoColumnRight"),
-        Some(o) => return Err(bad("file.exportPdf", format!("unknown pageLayout `{o}`"))),
-        None => {}
-    }
-    if let Some(v) = str_param(p, "view") {
-        // The first page opens with this view (pages are objects in order, so refer by index 0).
-        let dest = match v {
-            "fitPage" => "/Fit",
-            "fitWidth" => "/FitH null",
-            "actual" => "/XYZ null null 1",
-            o => {
-                return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)")));
-            }
-        };
-        if let Some(first) = first_page_ref(&r.bytes) {
-            cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
-        }
+    let mut cat = cat;
+    if let Some(dest) = dest
+        && let Some(first) = first_page_ref(&r.bytes)
+    {
+        cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
     }
     if !cat.is_empty() {
         match designcraft_pdf::add_catalog_entries(&r.bytes, &cat) {
@@ -213,8 +193,7 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
     }
     // Flip pages every N seconds (presentation).
     if let Some(secs) = p.get("advanceSeconds").and_then(Value::as_f64).filter(|s| *s > 0.0) {
-        let n = designcraft_pdf::sheet_spreads(doc, &opts).len();
-        let dur: Vec<Option<String>> = (0..n).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
+        let dur: Vec<Option<String>> = (0..spreads.len()).map(|_| Some(format!("/Dur {secs:.2}"))).collect();
         match designcraft_pdf::add_page_entries(&r.bytes, &dur) {
             Some(b) => r.bytes = b,
             None => r.warnings.push("page timings couldn't be set".into()),
@@ -230,6 +209,44 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
         }
     }
     Ok(r)
+}
+
+/// The catalog entries of the interactive view options in `p` (page mode and layout) and the
+/// destination the first page opens at (`view`); unknown values are refused.
+fn view_options(p: &Value) -> Result<(String, Option<&'static str>)> {
+    let mut cat = String::new();
+    if p.get("fullScreen").and_then(Value::as_bool) == Some(true) {
+        cat.push_str("/PageMode/FullScreen");
+    } else if p.get("bookmarksPanel").and_then(Value::as_bool) == Some(true) {
+        cat.push_str("/PageMode/UseOutlines");
+    }
+    match str_param(p, "pageLayout") {
+        Some("single") => cat.push_str("/PageLayout/SinglePage"),
+        Some("continuous") => cat.push_str("/PageLayout/OneColumn"),
+        Some("twoUp") => cat.push_str("/PageLayout/TwoPageLeft"),
+        Some("twoUpCover") => cat.push_str("/PageLayout/TwoPageRight"),
+        Some("twoUpContinuous") => cat.push_str("/PageLayout/TwoColumnRight"),
+        Some(o) => return Err(bad("file.exportPdf", format!("unknown pageLayout `{o}`"))),
+        None => {}
+    }
+    // The first page opens with this view (pages are objects in order, so refer by index 0).
+    let dest = match str_param(p, "view") {
+        None => None,
+        Some("fitPage") => Some("/Fit"),
+        Some("fitWidth") => Some("/FitH null"),
+        Some("actual") => Some("/XYZ null null 1"),
+        Some(o) => return Err(bad("file.exportPdf", format!("unknown view `{o}` (fitPage, fitWidth, actual)"))),
+    };
+    Ok((cat, dest))
+}
+
+/// Refuses PDF options `p` that [`pdf_report`] would refuse for a document of `pages` pages,
+/// without exporting: `file.package` checks them before it writes anything.
+pub(crate) fn check_pdf_options(p: &Value, pages: usize) -> Result<()> {
+    options(p, pages)?;
+    flatten_ppi("file.exportPdf", p)?;
+    view_options(p)?;
+    Ok(())
 }
 
 #[cfg(test)]

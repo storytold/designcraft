@@ -153,6 +153,54 @@ pub fn current_parent_page(app: &DesignApp) -> Option<(usize, usize)> {
     Some((pi, qi))
 }
 
+/// The page box's entries (the status bar's, and Properties › Page), as InDesign's: the
+/// document's pages by name, then the parents by label ("A-Parent").
+pub struct PageBox {
+    pub names: Vec<String>,
+    /// The entry in view: the parent shown while parents are edited, else the page.
+    pub current: usize,
+    /// How many of `names` are pages; the parents follow.
+    pub pages: usize,
+    parents: Vec<designcraft_doc::SpreadId>,
+}
+
+impl PageBox {
+    /// The name of the entry in view ("3", "A-Parent").
+    pub fn current_name(&self) -> &str {
+        self.names.get(self.current).map_or("", String::as_str)
+    }
+}
+
+pub fn page_box(app: &DesignApp) -> Option<PageBox> {
+    let st = app.session.active()?;
+    let pages = st.doc.page_count();
+    let mut names: Vec<String> = (0..pages).map(|i| app.session.page_label(i)).collect();
+    names.extend(st.doc.parents.iter().map(|p| p.parent.as_ref().map(|i| i.label()).unwrap_or_default()));
+    let current = match current_parent_page(app) {
+        Some((pi, _)) => pages + pi,
+        None => current_page(app).unwrap_or(0).min(pages.saturating_sub(1)),
+    };
+    Some(PageBox { names, current, pages, parents: st.doc.parents.iter().map(|p| p.id).collect() })
+}
+
+/// Shows entry `i` of `b`: a page (leaving the parents, if they are shown) or a parent.
+pub fn page_box_go(app: &mut DesignApp, b: &PageBox, i: usize) {
+    if i < b.pages {
+        if app.session.active().is_some_and(|st| st.editing_parents) {
+            let _ = app.run("layout.parents.edit", serde_json::json!({"on": false}));
+            // Fit the page's spread first, then centre the page: a later refit would centre the
+            // spread, and the page box would then show its other page.
+            let spread = app.session.active().and_then(|st| st.doc.page_loc(i)).map(|(si, _)| SpreadRef::Doc(si));
+            if let Some(r) = spread {
+                show_spread(app, r);
+            }
+        }
+        go_to_page(app, i);
+    } else if let Some(id) = b.parents.get(i - b.pages) {
+        let _ = app.run("layout.parents.edit", serde_json::json!({"parent": id.0}));
+    }
+}
+
 /// Scroll so absolute page `abs` is centred (keeps zoom). A jump Go Back can return from.
 pub fn go_to_page(app: &mut DesignApp, abs: usize) {
     note_jump(app, false);

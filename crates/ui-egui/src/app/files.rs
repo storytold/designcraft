@@ -161,8 +161,7 @@ impl DesignApp {
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
         } else {
-            let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
-            self.open_file("file.openBytes", json!({"name": title, "base64": b64}))
+            self.open_file("file.openBytes", json!({"name": file.name, "base64": b64}))
         }
     }
 
@@ -258,21 +257,27 @@ impl DesignApp {
             }
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         } else if let Ok(result) = &r {
-            let warnings: Vec<&str> = result
+            // Each warning with the frame it is about (`warningItems`), if any.
+            let items = result.get("warningItems").and_then(Value::as_array);
+            let (warnings, lines): (Vec<&str>, Vec<Value>) = result
                 .get("warnings")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_str)
-                .filter(|warning| !warning.is_empty())
-                .collect();
+                .enumerate()
+                .filter_map(|(i, w)| Some((i, w.as_str()?)))
+                .filter(|(_, warning)| !warning.is_empty())
+                .map(|(i, w)| (w, json!({"text": w, "item": items.and_then(|a| a.get(i)).cloned().unwrap_or(Value::Null)})))
+                .unzip();
             if !warnings.is_empty() {
                 self.status(format!("{file}: {}", warnings.join("; ")));
                 // Find Font, offered for the document's missing fonts, stays up: the status line
                 // keeps the warnings.
                 if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
-                    self.ui.dialog =
-                        Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
+                    self.ui.dialog = Some(dialogs::Dialog::new(
+                        "alert",
+                        json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n"), "lines": lines}),
+                    ));
                 }
             }
         }
@@ -326,6 +331,7 @@ mod import_warning_tests {
         assert_eq!(dialog.id, "alert");
         assert_eq!(dialog.fields["title"], "Import Warnings");
         assert_eq!(dialog.fields["file"], file);
+        assert!(dialog.fields["lines"].as_array().unwrap().iter().all(|l| l["item"].is_null()), "missing parts name no frame");
         for part in ["Spreads/missing.xml", "Stories/missing.xml"] {
             assert!(dialog.fields["message"].as_str().unwrap().contains(part), "every missing part is named");
             assert!(app.ui.status.contains(part), "the status line retains the warning");
@@ -370,7 +376,7 @@ mod import_warning_tests {
         let request = app.import_request("open");
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: "partial.idml".into(), bytes: idml(true) });
         app.drain_inbox();
-        assert_partial_import_warning(&mut app, "partial");
+        assert_partial_import_warning(&mut app, "partial.idml");
     }
 
     #[test]
@@ -416,6 +422,34 @@ pub(crate) mod browser_import_tests {
     fn deliver(app: &mut DesignApp, request: ImportRequest, name: &str, bytes: Vec<u8>) {
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: name.into(), bytes });
         app.drain_inbox();
+    }
+
+    /// A document chosen or dropped in the browser is titled by its file name less one extension,
+    /// as on the desktop: the extension comes off once, in the engine.
+    #[test]
+    fn browser_opens_title_a_document_by_its_name_without_one_extension() {
+        let mut app = app();
+        let native = designcraft_engine::cmd::base64_decode(app.run("file.serialize", json!({})).unwrap()["base64"].as_str().unwrap());
+        for purpose in ["open", "drop"] {
+            for (name, title) in [
+                ("Brochure.designcraft", "Brochure"),
+                ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+                ("Brochure.v2.designcraft", "Brochure.v2"),
+                ("日本.DESIGNCRAFT", "日本"),
+                (".designcraft", ".designcraft"),
+                ("Brochure", "Brochure"),
+            ] {
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, native.clone());
+                assert_eq!(app.session.doc().unwrap().doc.title, title, "{purpose}: {name}");
+            }
+        }
+        let idml = designcraft_idml::export_idml(&app.session.doc().unwrap().doc);
+        for purpose in ["open", "drop"] {
+            let request = app.import_request(purpose);
+            deliver(&mut app, request, "Brochure.idml", idml.clone());
+            assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: IDML");
+        }
     }
     fn image() -> Vec<u8> {
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##.to_vec()
