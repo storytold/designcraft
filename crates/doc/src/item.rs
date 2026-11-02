@@ -383,6 +383,20 @@ impl Item {
             c.walk(f);
         }
     }
+
+    /// [`Item::walk`], with each item's bounds in spread space: a nested item is placed by its
+    /// groups' transforms too, which its own [`Item::bounds`] leaves out.
+    pub fn walk_placed<'a>(&'a self, f: &mut impl FnMut(&'a Item, Rect)) {
+        self.walk_placed_under(Affine::IDENTITY, f);
+    }
+
+    fn walk_placed_under<'a>(&'a self, outer: Affine, f: &mut impl FnMut(&'a Item, Rect)) {
+        f(self, self.bounds_under(outer).unwrap_or(Rect::ZERO));
+        let xf = outer * self.xf;
+        for c in self.children() {
+            c.walk_placed_under(xf, f);
+        }
+    }
 }
 
 #[cfg(test)]

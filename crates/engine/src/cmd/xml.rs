@@ -29,9 +29,8 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     for (si, sp) in d.spreads.iter().enumerate() {
         let first = d.first_page_of_spread(si);
         for top in &sp.items {
-            top.walk(&mut |it: &Item| {
+            top.walk_placed(&mut |it: &Item, b| {
                 if keep(it) {
-                    let b = it.bounds();
                     let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
                     keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it.id));
                 }
@@ -47,8 +46,9 @@ fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
     let mut out = std::collections::HashSet::new();
     for sp in &d.spreads {
         for top in &sp.items {
-            top.walk(&mut |it: &Item| {
-                let c = it.bounds().center();
+            // Placed by their groups' transforms: a group moved onto a page brings its frames.
+            top.walk_placed(&mut |it: &Item, b| {
+                let c = b.center();
                 if sp.pages.iter().any(|pg| c.x >= pg.x && c.x <= pg.x + pg.width && c.y >= 0.0 && c.y <= pg.height) {
                     out.insert(it.id);
                 }
@@ -839,6 +839,26 @@ mod tests {
         // Made unassigned again, it's a plain shape.
         s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
         assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
+    }
+
+    /// Frames in a group take the group's place: a group moved from the pasteboard onto a page
+    /// brings its frames, which autoTag then tags.
+    #[test]
+    fn auto_tag_places_grouped_frames_by_their_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, rect: [i32; 4]| {
+            s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": "x", "caret": false})).unwrap()["id"].clone()
+        };
+        let (a, b) = (frame(&mut s, [-400, 72, -300, 120]), frame(&mut s, [-400, 200, -300, 250]));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].clone();
+        s.execute("transform.move", &json!({"ids": [g], "dx": 500, "dy": 0})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let group = d.item(designcraft_doc::ItemId(g.as_u64().unwrap())).unwrap();
+        assert!(group.xf.translation().x.abs() > 1.0, "the move sits in the group's transform");
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![a, b], "{r}");
     }
 
     #[test]
