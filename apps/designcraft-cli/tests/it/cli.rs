@@ -641,3 +641,34 @@ fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
     assert!(err.contains("not valid UTF-8"), "{err:?}");
     assert!(!err.contains("panicked"), "{err:?}");
 }
+
+/// `<sub> --help` answers about that subcommand, which is right where the subcommand exists. For
+/// one that does not, it printed the whole usage and **succeeded**, so `typo` on its own was an
+/// error while `typo --help` was not, and a script checking the exit status carried on past a
+/// misspelled command (noted in review).
+#[test]
+fn an_unknown_subcommand_is_an_error_even_with_help_after_it() {
+    for sub in ["typo", "nonsense", "valdiate-pdf", "runn"] {
+        for help in ["--help", "-h"] {
+            let out = cli().arg(sub).arg(help).output().unwrap();
+            assert_eq!(out.status.code(), Some(1), "{sub} {help} must fail");
+            assert!(out.stdout.is_empty(), "{sub} {help} must not answer on stdout: {:?}", String::from_utf8_lossy(&out.stdout));
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("usage: designcraft-cli"), "{sub} {help}: {err:?}");
+        }
+    }
+
+    // Every subcommand the usage lists still answers on stdout and succeeds, so this is not a
+    // block on subcommand help. The list is read from the usage text, as the code's own check is.
+    let subs: Vec<&str> = USAGE_SUBCOMMANDS.iter().copied().filter(|s| !s.starts_with('-')).collect();
+    assert!(subs.len() >= 8, "the usage lists {} subcommands", subs.len());
+    for sub in subs {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help must succeed: {:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(!out.stdout.is_empty(), "{sub} --help must answer on stdout");
+    }
+}
+
+/// The subcommands the binary's usage text lists. Kept here rather than imported because the
+/// binary is not a library; the assertion above on the count is what notices if it drifts.
+const USAGE_SUBCOMMANDS: &[&str] = &["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];

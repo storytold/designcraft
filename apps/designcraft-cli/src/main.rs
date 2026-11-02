@@ -124,13 +124,27 @@ fn can_be_value(v: &str) -> bool {
 
 /// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
 /// subcommand, and the indented lines after it belong to it.
+/// Whether `sub` is a subcommand [`USAGE`] lists. Read from the usage text rather than written
+/// out again, so a subcommand added there cannot be missing here.
+fn is_subcommand(sub: &str) -> bool {
+    !sub.starts_with('-') && USAGE.lines().any(|line| usage_subcommand(line) == Some(sub))
+}
+
+/// The subcommand a `USAGE` line introduces, if it introduces one.
+fn usage_subcommand(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix("usage: designcraft-cli ")
+        .or_else(|| trimmed.strip_prefix("designcraft-cli "))
+        .and_then(|rest| rest.split_whitespace().next())
+}
+
 fn usage_for(sub: &str) -> String {
     let mut out = Vec::new();
     let mut keep = false;
     for line in USAGE.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("usage: designcraft-cli ").or_else(|| trimmed.strip_prefix("designcraft-cli ")) {
-            keep = rest.split_whitespace().next() == Some(sub);
+        if let Some(named) = usage_subcommand(line) {
+            keep = named == sub;
         }
         if keep {
             out.push(line);
@@ -156,8 +170,15 @@ fn main() -> ExitCode {
     }
     // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
     // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.
+    //
+    // Only for a subcommand that exists. Without that, `designcraft-cli typo --help` printed the
+    // whole usage and *succeeded*, so a misspelled command was an error on its own and not an
+    // error with `--help` after it -- and a script checking the exit status would carry on
+    // (noted in review). An unknown one now falls through to the dispatch, which fails as it
+    // does for `typo` alone.
     if let Some(sub) = args.first().map(String::as_str)
         && !matches!(sub, "--help" | "-h" | "help" | "script")
+        && is_subcommand(sub)
         && args[1..].iter().any(|a| a == "--help" || a == "-h")
     {
         outln!("{}", usage_for(sub));
