@@ -29,8 +29,9 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     for (si, sp) in d.spreads.iter().enumerate() {
         let first = d.first_page_of_spread(si);
         for top in &sp.items {
-            top.walk_placed(&mut |it: &Item, b| {
+            top.walk_placed(&mut |it: &Item, outer| {
                 if keep(it) {
+                    let b = it.placed_bounds(outer);
                     let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
                     keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it.id));
                 }
@@ -47,8 +48,8 @@ fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
     for sp in &d.spreads {
         for top in &sp.items {
             // Placed by their groups' transforms: a group moved onto a page brings its frames.
-            top.walk_placed(&mut |it: &Item, b| {
-                let c = b.center();
+            top.walk_placed(&mut |it: &Item, outer| {
+                let c = it.placed_bounds(outer).center();
                 if sp.pages.iter().any(|pg| c.x >= pg.x && c.x <= pg.x + pg.width && c.y >= 0.0 && c.y <= pg.height) {
                     out.insert(it.id);
                 }
