@@ -13,6 +13,7 @@ use crate::{DocState, EngineError, Result, Session};
 mod bytes;
 mod new;
 mod open;
+mod package;
 mod place;
 mod registry;
 mod save;
