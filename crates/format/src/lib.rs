@@ -177,20 +177,36 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
 
 /// Most entries a `.designcraft` archive may hold.
 const MAX_ENTRIES: usize = 100_000;
-/// Most bytes `meta.json` or `document.json` may expand to.
-const MAX_JSON_BYTES: u64 = 256 << 20;
-/// Most bytes one embedded asset may expand to.
-const MAX_ASSET_BYTES: u64 = 1 << 30;
-/// Most bytes all the entries read from one archive may expand to together.
-const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses an entry that
-/// expands past `limit` bytes or past what is `left` of the archive's budget, without
-/// decompressing more than that: the sizes the archive claims are not trusted.
+/// How much a `.designcraft` archive may expand to when read. The sizes an archive claims are
+/// not trusted, so deflated entries are capped; a *stored* entry can't expand (its size is its
+/// bytes in the archive, which is already in memory, and all stored entries together can't
+/// exceed the archive), so a placed image — stored as is by [`save`] — opens whatever its size
+/// and counts for nothing against the budget. Saving has no cap, and this keeps every saved
+/// document openable (#2166).
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// Most bytes `meta.json` or `document.json` may expand to.
+    json: u64,
+    /// Most bytes one deflated asset may expand to.
+    asset: u64,
+    /// Most bytes all the deflated entries read from one archive may expand to together.
+    total: u64,
+}
+
+impl Limits {
+    const DEFAULT: Limits = Limits { json: 256 << 20, asset: 1 << 30, total: 4 << 30 };
+}
+
+/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses a deflated entry
+/// that expands past `limit` bytes or past what is `left` of the archive's budget, without
+/// decompressing more than that: the sizes the archive claims are not trusted. A stored entry
+/// is read at its size in the archive and leaves the budget alone.
 fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
-    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
     let Ok(f) = z.by_name(name) else { return Ok(None) };
-    let limit = limit.min(*left);
+    let stored = f.compression() == zip::CompressionMethod::Stored;
+    let limit = if stored { f.compressed_size() } else { limit.min(*left) };
+    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive expands past its {}-byte budget)", *left));
     if f.size() > limit {
         return Err(too_big());
     }
@@ -202,24 +218,30 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
     if n > limit {
         return Err(too_big());
     }
-    *left = left.saturating_sub(n);
+    if !stored {
+        *left = left.saturating_sub(n);
+    }
     Ok(Some(v))
 }
 
 fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+    load_zip_within(bytes, Limits::DEFAULT)
+}
+
+fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
     }
-    let mut left = MAX_TOTAL_BYTES;
-    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
+    let mut left = limits.total;
+    let version = read_entry(&mut z, "meta.json", limits.json, &mut left)?
         .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
         .and_then(|m| m.get("version").and_then(Value::as_u64))
         .unwrap_or(1);
     if version > u64::from(VERSION) {
         return Err(FormatError::TooNew(version));
     }
-    let json = read_entry(&mut z, "document.json", MAX_JSON_BYTES, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
+    let json = read_entry(&mut z, "document.json", limits.json, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
     let mut v: Value = serde_json::from_slice(&json).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     upgrade_json(&mut v);
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
@@ -235,7 +257,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
         if !doc.assets.contains_key(&AssetId(id)) {
             continue;
         }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
+        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, limits.asset, &mut left)?, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
