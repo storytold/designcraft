@@ -32,6 +32,7 @@ struct Shading {
     bottom: BoxBottom,
     clip: bool,
     nonprinting: bool,
+    overprint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +52,8 @@ struct Border {
     display_if_splits: bool,
     gap_color: String,
     gap_tint: f32,
+    overprint: bool,
+    gap_overprint: bool,
 }
 
 fn finite(v: f64) -> f64 {
@@ -72,6 +75,7 @@ impl ParaBox {
             bottom: pp.shading_bottom,
             clip: pp.shading_clip,
             nonprinting: pp.shading_nonprinting,
+            overprint: pp.shading_overprint,
         });
         let border = pp.border_on.then(|| Border {
             color: pp.border_color.clone(),
@@ -88,6 +92,8 @@ impl ParaBox {
             display_if_splits: pp.border_display_if_splits,
             gap_color: pp.border_gap_color.clone(),
             gap_tint: pp.border_gap_tint,
+            overprint: pp.border_overprint,
+            gap_overprint: pp.border_gap_overprint,
         });
         Some(ParaBox { shading, border, merge: pp.border_merge })
     }
@@ -136,7 +142,7 @@ fn shading_deco(s: &Shading, part: &Part<'_>, frames: &[FrameSpec], first_part: 
         // Corners stay square where the box is cut by a split.
         let corners = cut_corners(s.corners, !first_part, !last_part);
         let path = (!corners.iter().all(Corner::is_none)).then(|| box_outline(rect, &corners, [true; 4]));
-        return Some(Deco { rect, color: s.color.clone(), tint: s.tint, path, nonprinting: s.nonprinting });
+        return Some(Deco { rect, color: s.color.clone(), tint: s.tint, path, nonprinting: s.nonprinting, overprint: s.overprint });
     }
     None
 }
@@ -149,15 +155,14 @@ fn border_decos(bd: &Border, part: &Part<'_>, first_part: bool, last_part: bool,
     let open_top = !first_part && !bd.display_if_splits;
     let open_bottom = !last_part && !bd.display_if_splits;
     for (path, gap) in border_paths(bd, o, open_top, open_bottom) {
-        let (color, tint) = if gap { (bd.gap_color.clone(), bd.gap_tint) } else { (bd.color.clone(), bd.tint) };
-        decos.push((part.fi, false, Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false }));
+        let (color, tint, overprint) =
+            if gap { (bd.gap_color.clone(), bd.gap_tint, bd.gap_overprint) } else { (bd.color.clone(), bd.tint, bd.overprint) };
+        decos.push((part.fi, false, Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false, overprint }));
     }
     if is_plain(bd, open_top, open_bottom) {
-        decos.extend(
-            plain_edges(bd, o, open_top, open_bottom)
-                .into_iter()
-                .map(|rect| (part.fi, false, Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false })),
-        );
+        decos.extend(plain_edges(bd, o, open_top, open_bottom).into_iter().map(|rect| {
+            (part.fi, false, Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false, overprint: bd.overprint })
+        }));
     }
 }
 

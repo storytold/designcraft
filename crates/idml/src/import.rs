@@ -60,6 +60,9 @@ pub struct Imported {
     /// One line per problem that did not stop the import (a part listed in `designmap.xml` but
     /// absent from the package, …).
     pub warnings: Vec<String>,
+    /// Each story's IDML `Self` → its id in `document`, so a warning that names a story can
+    /// point at it.
+    pub story_ids: HashMap<String, StoryId>,
 }
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
@@ -119,6 +122,7 @@ pub fn import_idml_report_with_previews(
         ));
     }
     warnings.append(&mut im.warnings);
+    let story_ids = im.story_ids.clone();
     let mut document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
@@ -126,7 +130,7 @@ pub fn import_idml_report_with_previews(
     })?;
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
-    Ok(Imported { document, warnings })
+    Ok(Imported { document, warnings, story_ids })
 }
 
 struct ItemCtx {
@@ -210,6 +214,8 @@ struct Importer<'r> {
     /// The file's text variables (`None`: it defines none) and their Self → index.
     text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
     text_var_ids: HashMap<String, usize>,
+    /// The Self of each cross-reference page number variable (`XrefPageNumberType`).
+    xref_page_vars: HashSet<String>,
     /// Creation and modification times (Unix seconds) from the package metadata.
     created: Option<i64>,
     modified: Option<i64>,
@@ -283,6 +289,7 @@ impl<'r> Importer<'r> {
             index_xrefs: Vec::new(),
             text_vars: None,
             text_var_ids: HashMap::new(),
+            xref_page_vars: HashSet::new(),
             created: None,
             modified: None,
             repaired_tab_lists: 0,
@@ -610,6 +617,9 @@ impl<'r> Importer<'r> {
         {
             d.settings.zero_point = zp;
         }
+        // Cross-reference text the format generates exactly is generated again; any other was
+        // typed over it and is kept (needs the destinations, resolved above).
+        d.drop_generated_xref_text();
         Ok(d)
     }
 }
