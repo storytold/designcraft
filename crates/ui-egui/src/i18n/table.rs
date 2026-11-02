@@ -1591,6 +1591,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Release", ["Release", "Libérer", "Release", "Release", "释放"]),
     ("Relink to Folder…", ["Relink to Folder…", "Rééditer le lien au dossier…", "Relink to Folder…", "Relink to Folder…", "重新链接到文件夹…"]),
     ("Relink…", ["Relink…", "Rééditer le lien…", "Relink…", "Relink…", "重新链接…"]),
+    ("Edit Original", ["Original bearbeiten", "Modifier l’original", "Editar original", "オリジナルを編集", "编辑原稿"]),
+    ("Edit With", ["Bearbeiten mit", "Modifier avec", "Editar con", "アプリケーションで編集", "编辑方式"]),
+    ("Edit With…", ["Bearbeiten mit …", "Modifier avec…", "Editar con…", "アプリケーションで編集…", "编辑方式…"]),
+    ("Other…", ["Andere …", "Autre…", "Otra…", "その他…", "其他…"]),
+    ("Original Files", ["Originaldateien", "Fichiers originaux", "Archivos originales", "元のファイル", "原始文件"]),
     (
         "Remove Conditions from Selection",
         [

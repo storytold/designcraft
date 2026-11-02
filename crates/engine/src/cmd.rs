@@ -32,6 +32,8 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+/// Edit › Edit Original: the linked files of the selected graphics.
+pub use links::{Original as LinkOriginal, can_edit_original, originals as link_originals};
 mod liquid;
 mod lists;
 mod load_styles;

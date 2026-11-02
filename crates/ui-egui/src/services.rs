@@ -39,4 +39,11 @@ pub struct Services {
     /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
     /// needs no fixing.
     pub window_frame: Option<WindowFrameFn>,
+    /// Opens a file in an application, or in its default one (Edit › Edit Original and Edit
+    /// With). `None` where no other application can be started (the browser): the commands are
+    /// disabled.
+    pub launch: Option<crate::edit_original::LaunchFn>,
+    /// The applications that can open a file, for Edit › Edit With (macOS). `None`: the submenu
+    /// has Other… only.
+    pub applications: Option<crate::edit_original::ApplicationsFn>,
 }

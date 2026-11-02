@@ -22,8 +22,11 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 
+mod original;
+pub use original::{Original, can_edit_original, originals};
+
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         cmd!(query "links.list", "Links", [], None, "{} → [{asset, name, path, status: ok|modified|missing|embedded, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), uses: [{id, page}]}]", has_doc, |s, _| {
             // Taken out for the call so the document needn't be cloned on every poll.
             let mut checks = std::mem::take(&mut s.text_link_checks);
@@ -93,7 +96,9 @@ pub fn specs() -> Vec<CommandSpec> {
             st.bump_revision();
             Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
-    ]
+    ];
+    v.extend(original::specs());
+    v
 }
 
 fn asset_param(p: &Value, cmd: &str) -> Result<AssetId> {

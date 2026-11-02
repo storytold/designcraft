@@ -29,7 +29,7 @@ use document::{document_sections, page_sections};
 pub use flex::flex_panel;
 use flex::flex_section;
 pub(crate) use links::run_update_links;
-pub use links::{info_panel, links_panel, preflight_panel, update_links};
+pub use links::{info_panel, links_panel, links_panel_menu, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
 use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};

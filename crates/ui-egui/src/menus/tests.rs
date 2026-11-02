@@ -2181,11 +2181,25 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     let mut scratch = designcraft_engine::Session::new();
     scratch.execute("file.new", &json!({})).unwrap();
     let pdf = scratch.execute("file.exportPdf", &json!({})).unwrap()["base64"].clone();
-    let contexts = ["nothing selected", "text insertion point", "text frame selected", "table cell", "placed PDF selected", "text selected"];
+    let contexts = [
+        "nothing selected",
+        "text insertion point",
+        "text frame selected",
+        "table cell",
+        "placed PDF selected",
+        "text selected",
+        "linked graphic selected",
+    ];
+    // A linked graphic's file, for Edit Original.
+    let linked_dir = tempfile::tempdir().unwrap();
+    let linked = linked_dir.path().join("linked.png");
+    std::fs::write(&linked, designcraft_render::Rendered { width: 2, height: 2, pixels: vec![200; 16] }.to_png()).unwrap();
     // A two-page document, a saved workspace and non-default preferences, a host with window
     // controls, and file dialogs that are dismissed.
     let setup = |context: usize| {
-        let services = crate::Services { clipboard_text: Some(Box::new(|| None)), ..Default::default() };
+        // A launcher that starts nothing (Edit Original and Edit With).
+        let launch: crate::edit_original::LaunchFn = Box::new(|_, _| Ok(()));
+        let services = crate::Services { clipboard_text: Some(Box::new(|| None)), launch: Some(launch), ..Default::default() };
         let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
         app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
         app.custom_titlebar = true;
@@ -2219,6 +2233,10 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
             5 => {
                 let f = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "One Two"})).unwrap();
                 app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 7})).unwrap();
+            }
+            6 => {
+                let f = app.run("file.place", json!({"path": linked.to_string_lossy()})).unwrap()["id"].clone();
+                app.run("selection.set", json!({"ids": [f]})).unwrap();
             }
             _ => {}
         }

@@ -34,6 +34,7 @@ impl DesignApp {
             self.handle_file_dialog_answers();
             self.drain_inbox();
             self.open_os_documents();
+            crate::edit_original::on_frame(self, ctx);
         }
         if self.host_order_pending() {
             ctx.request_repaint();

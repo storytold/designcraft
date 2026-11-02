@@ -31,6 +31,8 @@ unicode-bidi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# InDesign shortcut set files (.indk) are XML.
+quick-xml = { workspace = true }
 
 [dev-dependencies]
 # egui 0.37 no longer enables `default_fonts` for library consumers; egui_kittest disables

@@ -23,6 +23,7 @@ pub mod credits;
 pub mod cursors;
 pub mod dialogs;
 pub mod dock;
+pub mod edit_original;
 pub mod effects_dialog;
 pub mod i18n;
 pub mod icons;
@@ -282,6 +283,8 @@ pub struct DesignApp {
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
     pub(crate) updates_rt: updates_ui::Runtime,
+    /// Edit › Edit Original: the files opened in other applications, picked up on focus.
+    pub(crate) edit_original: edit_original::State,
 }
 
 /// The preview a panel opened with `edit.preview`: it stays open while a panel holds it each frame.

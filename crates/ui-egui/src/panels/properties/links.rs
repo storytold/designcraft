@@ -157,6 +157,16 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
         }
+        // A placed graphic's file, in its own application (greyed when embedded or missing).
+        if !is_text {
+            let can = app.services.launch.is_some() && designcraft_engine::cmd::link_originals(&app.session, &target).is_ok();
+            let edit = ui.add_enabled(can, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Edit Original"))));
+            if edit.clicked()
+                && let Err(e) = app.run(crate::edit_original::EDIT_ORIGINAL, target.clone())
+            {
+                app.status(e);
+            }
+        }
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
         let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
         let update = if edited {
@@ -196,6 +206,38 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 app.status_error("Relink", e);
             }
         }
+    });
+}
+
+/// The Links panel's own rows in its panel menu: Edit Original and Edit With for the chosen
+/// graphic (the selection's, when no row is chosen).
+pub fn links_panel_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let chosen: Option<u64> = ui.data(|d| d.get_temp(egui::Id::unique("links_panel_sel")));
+    // A chosen linked text file is no graphic: the selection's graphic then.
+    let target = match chosen {
+        Some(aid) if app.session.active().is_some_and(|st| st.doc.assets.contains_key(&designcraft_doc::AssetId(aid))) => json!({"asset": aid}),
+        _ => Value::Null,
+    };
+    let lang = app.ui.language.clone();
+    let can = app.services.launch.is_some() && designcraft_engine::cmd::link_originals(&app.session, &target).is_ok();
+    let run = |app: &mut DesignApp, ui: &mut egui::Ui, id: &str, p: Value| {
+        if let Err(e) = app.run(id, p) {
+            app.status(e);
+        }
+        ui.close();
+    };
+    if ui.add_enabled(can, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Edit Original")))).clicked() {
+        run(app, ui, crate::edit_original::EDIT_ORIGINAL, target.clone());
+    }
+    ui.add_enabled_ui(can, |ui| {
+        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Edit With")), |ui| {
+            crate::edit_original::edit_with_menu_items(app, ui, &target);
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Other…"))).clicked() {
+                let mut p = if target.is_null() { json!({}) } else { target.clone() };
+                p["other"] = json!(true);
+                run(app, ui, crate::edit_original::EDIT_WITH, p);
+            }
+        });
     });
 }
 

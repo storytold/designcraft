@@ -11,6 +11,7 @@
 //! Content (a placed graphic, or items pasted into a frame) moves inside its frame: the Direct
 //! Selection tool selects and drags it, the Selection tool drags it by the content grabber (the
 //! circle at the frame's centre), and double-clicking a frame toggles between frame and content.
+//! Alt-double-clicking a placed graphic opens its linked file in another application (Edit Original).
 //!
 //! A selected rectangle frame shows the live-corner widget: clicking it shows a diamond at each
 //! corner; dragging a diamond sets the corner size (Shift: that corner only), Alt-clicking one
@@ -423,6 +424,10 @@ impl SelectionTool {
 pub fn holds_content(it: &Item) -> bool {
     !it.is_group() && (matches!(it.content, Content::Graphic(_)) || it.has_nested_items())
 }
+
+/// The [`Action::Dialog`] an Alt-double-click on a placed graphic asks for: the UI opens the
+/// graphic's linked file in its own application (Edit › Edit Original).
+pub const EDIT_ORIGINAL: &str = "editOriginal";
 
 /// Grab radius of the content grabber, in screen pixels.
 const GRABBER_PX: f64 = 9.0;
@@ -1292,6 +1297,20 @@ impl Tool for SelectionTool {
         {
             self.drag = Drag::None;
             return actions;
+        }
+        // Alt and a double click on a placed graphic: Edit Original. The graphic is selected and
+        // the UI is asked to open its linked file (`links.editOriginal`).
+        if ev.mods.alt
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+            && ev.click_count() == 2
+            && let Some(id) = cx.hit(p).map(|(_, id)| id)
+            && let Some(id) = [Some(id), cx.doc.top_level_of(id)]
+                .into_iter()
+                .flatten()
+                .find(|i| cx.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Graphic(_))))
+        {
+            self.drag = Drag::None;
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]})), Action::Dialog(EDIT_ORIGINAL.into(), json!({"ids": [id.0]}))];
         }
         // The second press of a double click on a frame with content: toggle between the frame and
         // its content.

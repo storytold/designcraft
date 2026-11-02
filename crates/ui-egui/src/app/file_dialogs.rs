@@ -330,18 +330,31 @@ struct OpenFilter {
 #[cfg(not(target_arch = "wasm32"))]
 const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
 
+/// What Edit › Edit With › Other… lets the user choose: an application bundle on macOS, a
+/// program on Windows, any file elsewhere.
+#[cfg(not(target_arch = "wasm32"))]
+const APPLICATIONS: &[&str] = if cfg!(target_os = "macos") {
+    &["app"]
+} else if cfg!(target_os = "windows") {
+    &["exe"]
+} else {
+    &[ALL_FILES]
+};
+
 #[cfg(not(target_arch = "wasm32"))]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
-        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text or set file)", extensions: &["json", "txt", "indk"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["dclib"] }],
         "relink" => &[OpenFilter { name: "Graphics", extensions: GRAPHICS }],
+        // Edit › Edit With › Other….
+        "application" => &[OpenFilter { name: "Applications", extensions: APPLICATIONS }],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {

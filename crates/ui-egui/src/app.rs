@@ -126,6 +126,7 @@ impl DesignApp {
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
+            edit_original: crate::edit_original::State::default(),
         }
     }
 

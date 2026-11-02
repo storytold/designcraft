@@ -4,7 +4,9 @@
 //!
 //! The file lists items under `Product area : <area>` headers, one per line:
 //! `<name> --- [none defined]` or `<name> --- <context>: <keys>, <context>: <keys>`. Item names
-//! use `: ` between submenu levels. This module reads the file into a
+//! use `: ` between submenu levels. InDesign's own set files (`.indk`, XML) are read too: each
+//! `<shortcut>` names its item `KBSCE <area>:<item>`, with a `<context>` and the keys in
+//! `<string>` (see [`parse_set_file`]). This module reads the file into a
 //! [`craft_keymap::ForeignSet`]; `craft_keymap::import` matches and applies it. Default keys bind
 //! in the command's home scope; an item without Default keys takes its Text keys.
 
@@ -84,6 +86,9 @@ fn capped(s: &str) -> &str {
 
 fn parse(text: &str) -> Result<ParsedSet, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    if is_set_file(text) {
+        return parse_set_file(text);
+    }
     let mut set = ParsedSet { name: String::new(), areas: Vec::new(), items: Vec::new(), dropped: 0 };
     let mut header_seen = false;
     for (n, line) in text.lines().enumerate() {
@@ -109,6 +114,198 @@ fn parse(text: &str) -> Result<ParsedSet, String> {
     }
     if set.items.is_empty() && !header_seen {
         return Err("not a shortcut set: no `Product area` or `<item> --- <shortcuts>` lines".into());
+    }
+    Ok(set)
+}
+
+/// Whether `text` is an InDesign set file (`.indk`) rather than Show Set text.
+fn is_set_file(text: &str) -> bool {
+    let head = text.trim_start();
+    let end = head.char_indices().nth(4096).map_or(head.len(), |(i, _)| i);
+    head.starts_with('<') && head.get(..end).is_some_and(|h| h.contains("<shortcut-set"))
+}
+
+/// Items a set file names by a resource key instead of their menu label, with that label.
+const SET_FILE_KEYS: &[(&str, &str)] = &[("#LinksUIEditOriginalLinkMenu", "Edit Original")];
+
+/// Deepest element nesting read in a set file (a real one has three levels).
+const MAX_SET_FILE_DEPTH: usize = 16;
+
+/// A menu label without its mnemonic markers: `&Open...` is `Open...`, `&&` is `&`; an `&` before
+/// a space (`Type & Tables`) is the character.
+fn without_mnemonics(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('&') => {
+                out.push('&');
+                chars.next();
+            }
+            Some(n) if !n.is_whitespace() => {}
+            _ => out.push('&'),
+        }
+    }
+    out
+}
+
+/// A set file's action name (`KBSCE Edit menu:#LinksUIEditOriginalLinkMenu`,
+/// `KBSCE File menu: New: :Document...`) as an area and an item path with `: ` between levels.
+fn set_file_item(name: &str) -> Option<(String, String)> {
+    let name = name.trim();
+    let rest = name.strip_prefix("KBSCE").map_or(name, str::trim_start);
+    let (area, path) = rest.split_once(':')?;
+    let segments: Vec<String> = path
+        .split(':')
+        .map(|seg| without_mnemonics(seg.trim()))
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| SET_FILE_KEYS.iter().find(|(key, _)| *key == seg).map_or(seg, |(_, label)| (*label).to_string()))
+        .collect();
+    let area = area.trim();
+    (!segments.is_empty() && !area.is_empty()).then(|| (capped(area).to_string(), capped(&segments.join(": ")).to_string()))
+}
+
+/// A set file's context (`DefaultContext`, `TextContext`) as Show Set names it (`Default`, `Text`).
+fn set_file_context(context: &str) -> String {
+    let c = context.trim();
+    capped(c.strip_suffix("Context").filter(|c| !c.is_empty()).unwrap_or(c)).to_string()
+}
+
+/// Newlines in `text` between `from` and `to` (byte offsets; none when they aren't boundaries).
+fn lines_between(text: &str, from: usize, to: usize) -> usize {
+    text.get(from..to).map_or(0, |s| s.matches('\n').count())
+}
+
+/// Reads an InDesign set file. Each `<shortcut>` becomes an item with one entry; the same action
+/// in several `<shortcut>`s gives several items, which the importer treats as one command's keys.
+fn parse_set_file(text: &str) -> Result<ParsedSet, String> {
+    use quick_xml::events::{BytesStart, Event};
+    #[derive(Clone, Copy, PartialEq)]
+    enum Field {
+        Context,
+        Keys,
+    }
+    /// The `<shortcut>` being read.
+    #[derive(Default)]
+    struct Shortcut {
+        action: Option<(String, usize)>,
+        context: String,
+        keys: String,
+        field: Option<Field>,
+    }
+    fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
+        e.attributes().with_checks(false).flatten().find(|a| a.key.as_ref() == key).map(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).to_string())
+        })
+    }
+    fn start(e: &BytesStart, line: usize, cur: &mut Shortcut, header_seen: &mut bool) {
+        match e.name().as_ref() {
+            b"shortcut-set" => *header_seen = true,
+            b"shortcut" => *cur = Shortcut::default(),
+            b"action-id" => cur.action = attr(e, b"name").map(|n| (n, line)),
+            b"context" => cur.field = Some(Field::Context),
+            b"string" => cur.field = Some(Field::Keys),
+            _ => {}
+        }
+    }
+    fn push(cur: &mut Shortcut, c: &str) {
+        let target = match cur.field {
+            Some(Field::Context) => &mut cur.context,
+            Some(Field::Keys) => &mut cur.keys,
+            None => return,
+        };
+        if target.len() < MAX_IMPORT_TEXT {
+            target.push_str(c);
+        }
+    }
+    let mut r = quick_xml::Reader::from_str(text);
+    let mut set = ParsedSet { name: String::new(), areas: Vec::new(), items: Vec::new(), dropped: 0 };
+    let mut header_seen = false;
+    let mut cur = Shortcut::default();
+    let mut depth = 0usize;
+    // Lines are counted on from the last element, so the file is scanned once.
+    let (mut line, mut counted) = (1usize, 0usize);
+    loop {
+        let at = usize::try_from(r.buffer_position()).unwrap_or(usize::MAX);
+        match r.read_event().map_err(|e| format!("not a shortcut set file: {e}"))? {
+            Event::Start(e) => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_SET_FILE_DEPTH {
+                    return Err(format!("not a shortcut set file: elements nested deeper than {MAX_SET_FILE_DEPTH} levels"));
+                }
+                line = line.saturating_add(lines_between(text, counted, at));
+                counted = at.max(counted);
+                start(&e, line, &mut cur, &mut header_seen);
+            }
+            Event::Empty(e) => {
+                line = line.saturating_add(lines_between(text, counted, at));
+                counted = at.max(counted);
+                start(&e, line, &mut cur, &mut header_seen);
+            }
+            Event::End(e) => {
+                depth = depth.saturating_sub(1);
+                match e.name().as_ref() {
+                    b"context" | b"string" => cur.field = None,
+                    b"shortcut" => {
+                        let done = std::mem::take(&mut cur);
+                        let Some((area, item, at_line)) = done.action.and_then(|(name, at_line)| set_file_item(&name).map(|(a, i)| (a, i, at_line)))
+                        else {
+                            continue;
+                        };
+                        if set.items.len() >= MAX_IMPORT_ENTRIES {
+                            set.dropped = set.dropped.saturating_add(1);
+                            continue;
+                        }
+                        let area = match set.areas.iter().position(|a| *a == area) {
+                            Some(i) => i,
+                            None => {
+                                set.areas.push(area);
+                                set.areas.len().saturating_sub(1)
+                            }
+                        };
+                        let keys = done.keys.trim();
+                        let entries = if keys.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Entry { context: set_file_context(&done.context), keys: capped(keys).to_string() }]
+                        };
+                        set.items.push(SetItem { area: Some(area), name: item, entries, line: at_line });
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(t) => {
+                let piece = t.decode().map_err(|e| format!("not a shortcut set file: {e}"))?;
+                push(&mut cur, &piece);
+            }
+            Event::GeneralRef(g) => {
+                let c = match g.resolve_char_ref().ok().flatten() {
+                    Some(c) => Some(c),
+                    None => match g.decode().ok().as_deref() {
+                        Some("amp") => Some('&'),
+                        Some("lt") => Some('<'),
+                        Some("gt") => Some('>'),
+                        Some("quot") => Some('"'),
+                        Some("apos") => Some('\''),
+                        _ => None,
+                    },
+                };
+                if let Some(c) = c {
+                    push(&mut cur, c.encode_utf8(&mut [0; 4]));
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if !header_seen {
+        return Err("not a shortcut set: no `<shortcut-set>` element".into());
     }
     Ok(set)
 }
@@ -167,7 +364,7 @@ fn foreign(set: &ParsedSet) -> ForeignSet {
             let a = a.trim();
             if a.eq_ignore_ascii_case("tools") {
                 Area { menu: Some(a), tools: true, panel_menu: false }
-            } else if a.eq_ignore_ascii_case("panel menus") {
+            } else if a.eq_ignore_ascii_case("panel menus") || a.eq_ignore_ascii_case("palette menus") {
                 Area { panel_menu: true, ..Area::default() }
             } else {
                 let menu = strip_suffix_ignore_case(a, " menu").map(str::trim).filter(|m| !m.is_empty() && !m.contains(':'));
@@ -427,6 +624,77 @@ mod tests {
         assert_eq!(crate::keys::shortcut(&app.keymap, &crate::keys::panel("character")).as_deref(), Some("Cmd+T"));
         assert_eq!(menus::shortcut_of(&app, "app.characterPanel").as_deref(), Some("Cmd+T"));
         assert!(!r["conflictsCleared"].as_array().into_iter().flatten().any(|c| c["id"] == "app.characterPanel"), "{r}");
+    }
+
+    /// A small synthetic set file in InDesign's `.indk` XML.
+    pub(crate) const SET_FILE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<shortcut-set platform="mac" file-version="4">
+	<shortcut>
+		<action-id value="0x100 + 3" name="KBSCE File menu:&amp;Open..."></action-id>
+		<context>DefaultContext</context>
+		<string>Opt+Cmd+O</string>
+	</shortcut>
+	<shortcut>
+		<action-id value="0x20600 + 38" name="KBSCE Edit menu:#LinksUIEditOriginalLinkMenu"></action-id>
+		<context>DefaultContext</context>
+		<string>Cmd+E</string>
+	</shortcut>
+	<shortcut>
+		<action-id value="0x1 + 1" name="KBSCE Window menu: Type &amp; Tables: :Character"></action-id>
+		<context>DefaultContext</context>
+		<string>Shift+Cmd+F9</string>
+	</shortcut>
+	<shortcut>
+		<action-id value="0x1 + 2" name="KBSCE Edit menu:Duplicate"></action-id>
+		<context>TableContext</context>
+		<string>Cmd+3</string>
+	</shortcut>
+</shortcut-set>
+"#;
+
+    /// InDesign's own set file: its Edit Original item (named by a resource key) takes Cmd+E from
+    /// Export, menu items with mnemonics and submenus match, other contexts are reported.
+    #[test]
+    fn an_indesign_set_file_maps_edit_original_and_menu_items() {
+        let mut app = app();
+        assert_eq!(menus::shortcut_of(&app, "links.editOriginal"), None);
+        let r = menus::run_ui(&mut app, "window.importShortcuts", &json!({ "text": SET_FILE })).unwrap().unwrap();
+        assert_eq!(menus::shortcut_of(&app, "links.editOriginal").as_deref(), Some("Cmd+E"), "{r}");
+        assert_eq!(menus::shortcut_of(&app, "app.exportPng"), None, "Export gives up Cmd+E");
+        assert!(r["conflictsCleared"].as_array().unwrap().iter().any(|c| c["id"] == "app.exportPng"), "{r}");
+        assert_eq!(menus::shortcut_of(&app, "app.openDialog").as_deref(), Some("Cmd+Alt+O"));
+        assert_eq!(crate::keys::shortcut(&app.keymap, &crate::keys::panel("character")).as_deref(), Some("Cmd+Shift+F9"));
+        // Lines are the file's: the Edit Original shortcut is on line 9.
+        assert!(r["changed"].as_array().unwrap().iter().any(|c| c["id"] == "links.editOriginal" && c["line"] == 9), "{r}");
+        assert_eq!(r["unmatched"][0]["reason"], "context", "{r}");
+        // A set file has no name of its own: it becomes the active set under the default name.
+        assert_eq!(r["shortcutSet"], "Imported", "{r}");
+        assert_eq!(app.ui.shortcut_sets.active(), "Imported");
+        // The item names it reads.
+        assert_eq!(set_file_item("KBSCE File menu: New: :Document..."), Some(("File menu".into(), "New: Document...".into())));
+        assert_eq!(set_file_item("KBSCE Edit menu:#LinksUIEditOriginalLinkMenu"), Some(("Edit menu".into(), "Edit Original".into())));
+        assert_eq!(without_mnemonics("&Save && Close & more&"), "Save & Close & more&");
+        assert_eq!(set_file_context("DefaultContext"), "Default");
+        assert_eq!(set_file_context("TextContext"), "Text");
+    }
+
+    #[test]
+    fn a_hostile_set_file_is_an_error_or_a_report() {
+        let mut app = app();
+        let deep = format!("<shortcut-set>{}{}</shortcut-set>", "<a>".repeat(40), "</a>".repeat(40));
+        for text in [
+            "<shortcut-set",
+            "<shortcut-set><shortcut><action-id name=\"KBSCE\"/></shortcut></shortcut-set>",
+            "<shortcut-set><shortcut><action-id name=\":::\"/><string>Cmd+E</string></shortcut></shortcut-set>",
+            "<shortcut-set><shortcut><action-id name=\"KBSCE Edit menu:x\"/><context>&bogus;</context><string>&#0;</string></shortcut>",
+            "<shortcut-set><string>Cmd+E</string></shortcut-set>",
+            "<shortcut-set><shortcut><action-id/></shortcut></shortcut-set>",
+            deep.as_str(),
+        ] {
+            let _ = menus::run_ui(&mut app, "window.importShortcuts", &json!({ "text": text })).unwrap();
+        }
+        assert!(parse(&deep).is_err());
+        assert!(parse("<other-xml/>").is_err());
     }
 
     #[test]

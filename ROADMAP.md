@@ -382,6 +382,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-02** · Edit › Edit Original and Edit With open a placed graphic's linked file in its default application or one chosen (on macOS the submenu lists the applications that can open it; Other… picks one), also from the graphic's context menu, the Links panel and Alt-double-click. Back in the window, a file saved meanwhile updates its link. No default shortcut; InDesign set files (.indk) import, so a set that binds Edit Original keeps its key. No readiness percentage change.
 - **2026-11-02** · Windows: the custom title bar window stays borderless, so the content is no longer drawn offset by the caption and border (black bars at the top and left, clicks landing off target). The workaround goes when winit carries the fix (storytold/winit#17). No readiness percentage change.
 - **2026-10-30** · The Color Picker takes an eyedropper: dragged from the picker onto the page, it takes the colour the canvas shows (proofed under Proof Colors). No readiness percentage change.
 - **2026-10-30** · The Color Picker is laid out as the reference app's: a field and slider for the component chosen, HSB, Lab, RGB and CMYK values, the old colour, and Add CMYK Swatch; Enter and Esc close it once. No readiness percentage change.

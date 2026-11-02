@@ -1190,6 +1190,10 @@ fn three_line_menu(app: &mut DesignApp, ui: &mut egui::Ui, panel: &str) {
         crate::panels::pages::panel_menu(app, ui);
         ui.separator();
     }
+    if panel == "links" {
+        crate::panels::properties::links_panel_menu(app, ui);
+        ui.separator();
+    }
     panel_menu(app, ui, panel);
 }
 
