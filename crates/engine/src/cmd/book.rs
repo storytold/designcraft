@@ -95,16 +95,26 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_BATCH_CHAPTERS: usize = 4096;
 
-/// The PDF a book export may have live at once.
+/// The figure [`MAX_BOOK_CHAPTER_BYTES`] is derived from, not a limit the export is held to.
+///
+/// Nothing enforces this number. What is enforced is the retained-chapter budget below; this is
+/// only the peak that budget is a third of. A chapter is also generated in full before it is
+/// weighed, so a single chapter larger than this is built and only then refused -- the peak is
+/// not bounded before generation (noted in review).
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_BOOK_PDF_BYTES: usize = 512 << 20;
 
-/// What the chapters themselves may add up to, which is a third of the peak rather than the
-/// peak. Three things are live at the end of the export: the chapters, held to be merged; the
-/// merged output, which is their total again when they share nothing (measured at 0.97 of the
-/// input for a single chapter); and the copy `merge_pdfs` makes of the chapter it is reading.
-/// The first check counted only the chapters, so the export could reach three times the figure
-/// the refusal named (noted in review).
+/// What the retained chapters may add up to: a third of [`MAX_BOOK_PDF_BYTES`], because three
+/// things are live at the end of the export -- the chapters held to be merged, the merged output,
+/// and the copy `merge_pdfs` makes of the chapter it is reading. The first check counted only the
+/// chapters, so the export could reach three times the figure the refusal named (noted in
+/// review).
+///
+/// A third assumes the merged output is no larger than its input. That holds where chapters share
+/// fonts and images, and one measurement put it at 0.97 of the input -- but that was one document,
+/// and chapters that share nothing have no reason to dedupe at all, so the assumption is not
+/// established in general. This is a retained-chapter byte limit, not a guaranteed peak (noted in
+/// review).
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_BOOK_CHAPTER_BYTES: usize = MAX_BOOK_PDF_BYTES / 3;
 
