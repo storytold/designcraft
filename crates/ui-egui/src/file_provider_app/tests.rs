@@ -236,6 +236,7 @@ fn cancel_failure_download_and_later_edits_never_run_a_close_continuation() {
             std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc).title = "New input in the ACK frame".into();
         }
         if outcome == "accountChanged" {
+            app.file_providers.take_events();
             app.file_providers.disconnect().unwrap();
             app.file_providers.connect("test".into(), "Other account".into(), "other".into()).unwrap();
         }
@@ -272,6 +273,7 @@ fn continuations_keep_global_quit_guarded_after_the_host_has_released_its_owner(
     let request = choose(&mut app, Some(After::Test(Box::new(|_| Ok(Value::Null)))));
     save_result(&mut app, &request, "provider", "saved");
     tick(&mut app);
+    app.file_providers.take_events();
     assert!(!app.file_providers.busy());
     assert!(busy(&app));
     assert!(app.finish_confirmed_quit().is_err());
@@ -526,4 +528,171 @@ fn malformed_unknown_and_backpressured_recent_requests_report_persistent_errors_
     assert_eq!(app.ui.status, error);
     assert_eq!(app.file_providers.take_events().len(), 16);
     assert_eq!(app.session.documents().len(), 1);
+}
+
+#[test]
+fn failed_delivery_uses_the_real_consumer_preserves_project_resources_and_checkpoint_and_cancels_close() {
+    const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#2468ac"/></svg>"##;
+    for failed_event in ["saveDialog", "save"] {
+        let mut app = app();
+        app.session.execute("file.place", &json!({"name":"Original.svg","base64":designcraft_engine::cmd::file::base64_encode(SVG)})).unwrap();
+        let original = app.session.active().unwrap().clone();
+        let uid = original.uid;
+        let value = save(&mut app, false, Some(After::Close(uid))).unwrap();
+        let failed_request = value["requestId"].as_str().unwrap().to_string();
+        if failed_event == "save" {
+            app.file_providers.take_events();
+            app.file_providers.resolve_dialog(&failed_request, "provider", "Captured.designcraft").unwrap();
+        }
+        let doc = app.session.active_mut().unwrap();
+        std::sync::Arc::make_mut(&mut doc.doc).title = "Newer layout survives".into();
+        doc.bump_revision();
+        let newer = doc.clone();
+        let host = app.file_providers.clone();
+        assert!(host.publish_events_with(
+            |metadata, bytes| {
+                assert_eq!(metadata["type"], failed_event);
+                assert_eq!(metadata["requestId"], failed_request);
+                if let Some(bytes) = bytes {
+                    let restored = designcraft_engine::cmd::file::from_bytes(&bytes).unwrap();
+                    assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(original.doc.as_ref()).unwrap());
+                    assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
+                }
+                Err("injected delivery failure")
+            },
+            |_| {},
+        ));
+        assert!(host.pending_for(uid));
+        tick(&mut app);
+        let current = app.session.active().unwrap();
+        assert_eq!(current.uid, uid);
+        assert!(std::sync::Arc::ptr_eq(&current.doc, &newer.doc));
+        assert!(std::sync::Arc::ptr_eq(&current.saved_doc, &original.saved_doc));
+        assert_eq!(current.saved_revision, original.saved_revision);
+        assert_eq!(current.revision, newer.revision);
+        assert!(current.is_dirty());
+        assert!(current.path.is_none());
+        assert!(app.provider_after.is_empty(), "failed choice delivery must not leave an orphaned close continuation");
+        assert!(app.quitting.is_none());
+        assert!(!host.pending_for(uid));
+        assert_eq!(host.bound_document("not-persisted"), None);
+        assert!(host.snapshot()["resources"].as_array().unwrap().is_empty());
+        assert!(host.result(failed_request.clone(), "saved".into(), "late".into()).is_err());
+        let mut failed = 0;
+        assert!(host.publish_events_with(
+            |metadata, _| {
+                assert_eq!(metadata["type"], "saveFailed");
+                assert_eq!(metadata["requestId"], failed_request);
+                assert_eq!(metadata["documentId"], uid.to_string());
+                failed += 1;
+                Ok::<_, ()>(())
+            },
+            |_| {},
+        ));
+        assert_eq!(failed, 1);
+        let retry = request(&mut app);
+        host.resolve_dialog(&retry, "provider", "Retry.designcraft").unwrap();
+        let event = host.take_events().remove(0);
+        assert_eq!(event.metadata["filename"], "Retry.designcraft");
+        let restored = designcraft_engine::cmd::file::from_bytes(&event.bytes.unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(newer.doc.as_ref()).unwrap());
+        assert_eq!(restored.assets.values().find(|asset| asset.name == "Original.svg").unwrap().data.as_slice(), SVG);
+        host.result(retry, "saved".into(), "retry-resource".into()).unwrap();
+        tick(&mut app);
+        assert_eq!(host.bound_document("retry-resource"), Some(uid));
+        assert!(!app.session.active().unwrap().is_dirty());
+    }
+}
+
+#[test]
+fn backpressured_failed_read_cannot_open_a_document_from_a_later_callback_and_fresh_retry_decodes() {
+    let mut app = app();
+    let original = app.session.active().unwrap().clone();
+    let serialized = app.session.execute("file.serialize", &json!({})).unwrap();
+    let bytes = designcraft_engine::cmd::base64_decode(serialized["base64"].as_str().unwrap());
+    let host = app.file_providers.clone();
+    let connection = host.connection().unwrap();
+    host.set_resources(
+        &connection,
+        vec![crate::file_providers::Resource { id: "remote".into(), name: "Remote.designcraft".into(), updated_at: String::new() }],
+    )
+    .unwrap();
+    let failed = host.request_open("remote").unwrap();
+    let later = host.request_open("remote").unwrap();
+    let mut late_response_accepted = None;
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            if metadata["type"] == "openRequested" && metadata["requestId"] == failed {
+                fill_event_queue(&host);
+                Err("request dispatch failed")
+            } else {
+                if metadata["type"] == "openRequested" && metadata["requestId"] == later {
+                    late_response_accepted = Some(host.open(failed.clone(), "Late.designcraft".into(), bytes.clone()).is_ok());
+                } else {
+                    assert_eq!(metadata["type"], "saveCancelled");
+                }
+                Ok(())
+            }
+        },
+        |_| {},
+    ));
+    // Do not drain after the late callback: the production consumer must see any illicit Open.
+    tick(&mut app);
+    assert_eq!(late_response_accepted, Some(false));
+    assert_eq!(app.session.documents().len(), 1);
+    let current = app.session.active().unwrap();
+    assert_eq!(current.uid, original.uid);
+    assert!(std::sync::Arc::ptr_eq(&current.doc, &original.doc));
+    assert!(std::sync::Arc::ptr_eq(&current.saved_doc, &original.saved_doc));
+    assert_eq!(current.revision, original.revision);
+    assert_eq!(current.saved_revision, original.saved_revision);
+    assert_eq!(host.bound_document("remote"), None);
+    let mut failures = 0;
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openFailed");
+            assert_eq!(metadata["requestId"], failed);
+            assert_eq!(metadata["resourceId"], "remote");
+            failures += 1;
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert_eq!(failures, 1);
+    host.cancel_open(later.clone(), String::new()).unwrap();
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openCancelled");
+            assert_eq!(metadata["requestId"], later);
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    let retry = host.request_open("remote").unwrap();
+    assert_ne!(retry, failed);
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openRequested");
+            assert_eq!(metadata["requestId"], retry);
+            host.open(retry.clone(), "Retry.designcraft".into(), bytes.clone()).unwrap();
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    tick(&mut app);
+    assert_eq!(app.session.documents().len(), 2);
+    let opened = app.session.active().unwrap();
+    assert_ne!(opened.uid, original.uid);
+    assert_eq!(serde_json::to_value(opened.doc.as_ref()).unwrap(), serde_json::to_value(original.doc.as_ref()).unwrap());
+    assert_eq!(host.bound_document("remote"), Some(opened.uid));
+    assert!(host.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "opened");
+            assert_eq!(metadata["requestId"], retry);
+            assert_eq!(metadata["resourceId"], "remote");
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert!(!host.busy());
 }

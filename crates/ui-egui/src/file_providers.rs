@@ -82,11 +82,20 @@ struct State {
     open_targets: HashMap<String, Vec<u64>>,
     queued_opens: HashSet<String>,
     actions: Vec<Action>,
+    // Delivery failures transfer already-admitted captures here when actions is full.
+    // Their aliases remain in finishing_saves, so the original 16-save bound still applies.
+    failed_deliveries: Vec<Action>,
     events: Vec<Event>,
+    publishing: bool,
     // At most MAX_PENDING saves plus MAX_PENDING reads; never stores transfer bytes.
     finished: VecDeque<Terminal>,
     documents: Value,
 }
+
+fn terminal_event(metadata: &Value) -> bool {
+    matches!(metadata["type"].as_str(), Some("saved" | "downloaded" | "saveFailed" | "saveCancelled" | "opened" | "openFailed" | "openCancelled"))
+}
+
 impl State {
     fn busy(&self) -> bool {
         !self.dialogs.is_empty()
@@ -94,7 +103,10 @@ impl State {
             || !self.finishing_saves.is_empty()
             || !self.opens.is_empty()
             || !self.actions.is_empty()
+            || !self.failed_deliveries.is_empty()
             || !self.finished.is_empty()
+            || self.publishing
+            || self.events.iter().any(|event| terminal_event(&event.metadata))
     }
     fn next(&mut self, kind: &str) -> Result<String, String> {
         if self.nonce.is_empty() {
@@ -146,6 +158,15 @@ impl State {
 }
 #[derive(Clone, Default)]
 pub struct Host(Arc<Mutex<State>>);
+
+struct Publication(Host);
+
+impl Drop for Publication {
+    fn drop(&mut self) {
+        self.0.state().publishing = false;
+    }
+}
+
 impl Host {
     fn state(&self) -> MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -256,6 +277,9 @@ impl Host {
         let mut s = self.state();
         if s.events.len() >= MAX_EVENTS {
             return Err("provider event queue is full".into());
+        }
+        if destination == "cancel" && s.actions.len() >= MAX_PENDING {
+            return Err("provider command queue is full".into());
         }
         let mut capture = s.dialogs.remove(request).ok_or("unknown or completed save dialog")?;
         if destination == "cancel" {
@@ -368,7 +392,84 @@ impl Host {
         Ok(())
     }
     pub(crate) fn take_actions(&self) -> Vec<Action> {
-        std::mem::take(&mut self.state().actions)
+        let mut s = self.state();
+        let mut actions = std::mem::take(&mut s.actions);
+        actions.append(&mut s.failed_deliveries);
+        actions
+    }
+
+    fn delivery_failed(&self, metadata: &Value) {
+        let mut s = self.state();
+        if s.provider.is_none() || metadata["connectionId"].as_str() != Some(s.connection.as_str()) {
+            return;
+        }
+        let Some(request) = metadata["requestId"].as_str() else { return };
+        let capture = match metadata["type"].as_str() {
+            Some("save") => s.pending.remove(request),
+            Some("saveDialog") => s.dialogs.remove(request),
+            Some("openRequested") => {
+                // An admitted read or scheduled terminal already owns completion.
+                // Never turn that settled owner into a second, conflicting failure.
+                if !s.queued_opens.contains(request) {
+                    if let Some(resource) = s.opens.get(request).cloned() {
+                        // A full event queue retains the read/alias maps. Settle completion
+                        // now so a later callback in this batch cannot admit these bytes.
+                        s.queued_opens.insert(request.into());
+                        s.finished.push_back(Terminal {
+                            request: request.into(),
+                            metadata: json!({"type":"openFailed", "requestId":request, "resourceId":resource,
+                                "error":"Provider event delivery failed."}),
+                            owner: TerminalOwner::Open,
+                        });
+                        s.flush_finished();
+                    }
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(mut capture) = capture {
+            // The browser may already have synchronously accepted a result or resolved the
+            // chooser. Only a capture still in its original owner map reaches this branch.
+            capture.bytes = None;
+            s.finishing_saves.insert(request.into(), capture.snapshots.iter().map(|doc| doc.uid).collect());
+            s.failed_deliveries.push(Action::Save { request: request.into(), capture, status: "failed".into(), resource: String::new() });
+        }
+    }
+
+    /// Call the actual publisher without holding a state lock across provider callbacks.
+    /// Recoverable failures retain the exact capture for the application's normal consumer.
+    /// Returns whether another logic/publication frame is needed.
+    pub fn publish_events_with<E>(&self, mut dispatch: impl FnMut(&Value, Option<Vec<u8>>) -> Result<(), E>, mut on_error: impl FnMut(E)) -> bool {
+        {
+            let mut s = self.state();
+            if s.publishing {
+                return false;
+            }
+            s.publishing = true;
+        }
+        let _publication = Publication(self.clone());
+        let mut repaint = false;
+        for _ in 0..2 {
+            let events = self.take_events();
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                // Releasing the last notification owner can unblock a deferred Quit. The
+                // caller must run another frame after the publication guard has dropped.
+                repaint |= terminal_event(&event.metadata);
+                if let Err(error) = dispatch(&event.metadata, event.bytes) {
+                    self.delivery_failed(&event.metadata);
+                    repaint = true;
+                    on_error(error);
+                }
+            }
+        }
+        repaint || {
+            let s = self.state();
+            !s.actions.is_empty() || !s.failed_deliveries.is_empty() || !s.events.is_empty() || !s.finished.is_empty()
+        }
     }
     pub fn take_events(&self) -> Vec<Event> {
         let mut s = self.state();

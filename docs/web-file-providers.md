@@ -125,6 +125,31 @@ Events associated with an account include providerId, namespace and connectionId
 use the provider/account/resource identities, never display names, and the backend should use versioning
 or conditional writes if it allows concurrent clients.
 
+Recoverable outgoing JavaScript byte-copy and dispatch exceptions are caught and logged. A failed
+`save` or `saveDialog` delivery transfers only the still-owned immutable capture into a reserved
+failure-action inbox. The next actual application logic frame consumes that `failed` action through
+the ordinary save-result handler, cancels its Close/Quit continuation and emits `saveFailed`. It
+does not update saved document/revision checkpoints, resource bindings or newer edits. All captured
+aliases remain owned in `finishing_saves` until that consumer can queue the terminal. The inbox
+retains at most the original 16 admitted save captures, with no encoded file bytes or new requests;
+the ordinary action queue remains capped at 16. A full queue refuses cancellation without losing
+the chooser, allowing a later retry after the existing actions are consumed.
+
+Failed unresolved `openRequested` delivery immediately settles response admission and queues a
+correlated `openFailed`. Its read and alias guards remain until that terminal can be queued.
+Even under event-queue backpressure, a later callback in the same publication batch cannot admit
+bytes or cancel the settled request. A synchronously accepted save result,
+resolved chooser or admitted read is preserved even if dispatch subsequently reports an error.
+Publication continues later events in two bounded drains, and nested publication does not steal
+the outer batch. Unregister refuses queued terminal notifications and remains blocked across the
+entire in-flight publication, including its last event. Releasing a terminal requests another
+frame so deferred application Quit can observe the released owner.
+
+The browser normally reports and swallows exceptions thrown inside an event listener; those are
+not observable dispatch failures at this boundary. Such a listener must still settle its request.
+This recovery covers caught JavaScript exceptions, not true out-of-memory aborts or browser/process
+termination, and never constitutes proof of durable backend storage.
+
 ## Validation
 
 Regression fixtures cover the default-off gate, single-use/late replies, account reconnection, resource
@@ -134,6 +159,17 @@ capture aliases, deferred terminal backpressure, exact-identity continuations, q
 uncommitted numeric input arriving with an ACK, provider opt-in/unregister during a focused local
 draft, parked draft ownership and preservation of another tab's IME/preview. The source includes the
 WASM adapter and native encoder/decoder integration.
+The recovery fixtures additionally exercise the production failure consumer, checkpoint/Close
+preservation, full action/event queues, late current-batch read rejection without opening a
+document, fresh native decode retry, reentrant accepted callbacks and account publication.
+`apps/designcraft-web/src/file_provider_browser_tests.rs` defines one real-window WASM fixture
+using the exported API, actual publisher and `DesignApp::logic`. Rust closures inject recoverable
+JavaScript copy and request-dispatch errors. The fixture catches the actual publisher call with
+`Function::call0` and restores each exact own-property descriptor (or removes its temporary
+shadow) before propagating the result. It retries a complete native project containing an
+original embedded SVG, opens it under a distinct resource through the
+actual native decoder, and checks real window-event correlation and in-flight unregister refusal.
+These are test sources, not execution results or a full editor/WebRunner/browser durability claim.
 Run the ordinary repository checks and browser integration checks after publishing the complete suite's
 source, as required by this contribution's development order. This document does not claim those checks
 have been executed merely because fixtures are present.

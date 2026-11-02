@@ -354,7 +354,7 @@ impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
-        crate::file_providers::publish(&self.app.file_providers);
+        crate::file_providers::publish(&self.app.file_providers, ctx);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -383,7 +383,7 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
-        crate::file_providers::publish(&self.app.file_providers);
+        crate::file_providers::publish(&self.app.file_providers, ui.ctx());
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

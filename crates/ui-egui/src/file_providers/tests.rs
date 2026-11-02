@@ -94,6 +94,8 @@ fn resource_reads_and_lists_are_scoped_to_current_account_connection() {
     assert!(h.disconnect().is_err());
     h.take_actions();
     h.finish_open(&request, "file-1", "remote.designcraft", Err("invalid archive".into()));
+    assert!(h.disconnect().is_err(), "the queued terminal still belongs to the old account");
+    h.take_events();
     h.disconnect().unwrap();
     let next = h.connect("test".into(), "Test storage".into(), "account-b".into()).unwrap();
     assert_ne!(connection, next);
@@ -326,4 +328,299 @@ fn provider_recent_heading_uses_the_official_catalog_and_preserves_provider_data
     assert_eq!(recent_heading("es", "Mi {label} — 作品"), "Archivos recientes — Mi {label} — 作品");
     assert_eq!(recent_heading("", "Test storage"), "Recent files — Test storage");
     assert_eq!(recent_heading("unsupported", "Test storage"), "Recent files — Test storage");
+}
+
+#[test]
+fn failed_capture_delivery_keeps_a_bounded_consumer_action_when_the_ordinary_queue_is_full() {
+    let h = host();
+    let (request, uid) = capture(&h, false);
+    h.take_events();
+    h.resolve_dialog(&request, "provider", "Captured.designcraft").unwrap();
+    let filename = terminal_resource(&h);
+    for _ in 0..MAX_PENDING {
+        let read = h.request_open("file-1").unwrap();
+        h.open(read, filename.clone(), vec![7]).unwrap();
+    }
+    let mut continued = 0;
+    let mut errors = 0;
+    assert!(h.publish_events_with(
+        |metadata, bytes| {
+            if metadata["type"] == "save" {
+                assert_eq!(metadata["requestId"], request);
+                assert_eq!(bytes, Some(vec![1, 2, 3]));
+                Err("copy failed")
+            } else {
+                continued += 1;
+                Ok(())
+            }
+        },
+        |_| errors += 1,
+    ));
+    assert_eq!(continued, MAX_PENDING);
+    assert_eq!(errors, 1);
+    assert_eq!(h.state().actions.len(), MAX_PENDING);
+    assert_eq!(h.state().failed_deliveries.len(), 1);
+    assert!(h.pending_for(uid));
+    assert!(h.result(request.clone(), "saved".into(), "late".into()).is_err());
+    let actions = h.take_actions();
+    assert_eq!(actions.len(), MAX_PENDING + 1);
+    let Action::Save { request: failed, capture, status, resource } = actions.last().unwrap() else { panic!("expected failure action") };
+    assert_eq!(failed, &request);
+    assert_eq!(capture.doc, uid);
+    assert!(capture.bytes.is_none());
+    assert_eq!(status, "failed");
+    assert!(resource.is_empty());
+    assert!(h.pending_for(uid), "aliases remain protected until the actual consumer finishes");
+    h.finish_save(failed, capture, status, resource, true);
+    assert!(!h.pending_for(uid));
+    assert!(h.state().bindings.is_empty());
+    assert_eq!(h.state().failed_deliveries.len(), 0);
+    assert!(h.begin(capture.snapshots.clone(), uid, capture.revision, "Retry.designcraft".into(), vec![1], false).is_ok());
+}
+
+#[test]
+fn accepted_reentrant_save_result_survives_dispatch_success_or_error_and_requests_consumption() {
+    for fail in [false, true] {
+        let h = host();
+        let (request, _) = capture(&h, false);
+        h.take_events();
+        h.resolve_dialog(&request, "provider", "Captured.designcraft").unwrap();
+        assert!(h.publish_events_with(
+            |_, _| {
+                h.result(request.clone(), "saved".into(), "durable".into()).unwrap();
+                if fail { Err("error after accepted callback") } else { Ok(()) }
+            },
+            |_| {},
+        ));
+        assert!(h.state().failed_deliveries.is_empty());
+        let actions = h.take_actions();
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::Save { request: owned, status, resource, .. }
+            if owned == &request && status == "saved" && resource == "durable"));
+    }
+}
+
+#[test]
+fn failed_choice_and_read_delivery_retain_only_their_exact_owners_until_consumption_or_terminal_queue() {
+    let h = host();
+    let (request, uid) = capture(&h, false);
+    terminal_resource(&h);
+    h.state().bindings.insert(42, "file-1".into());
+    let read = h.request_open("file-1").unwrap();
+    assert!(h.pending_for(42));
+    let mut terminals = Vec::new();
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            if matches!(metadata["type"].as_str(), Some("saveDialog" | "openRequested")) {
+                Err("request dispatch failed")
+            } else {
+                terminals.push(metadata.clone());
+                Ok(())
+            }
+        },
+        |_| {},
+    ));
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0]["type"], "openFailed");
+    assert_eq!(terminals[0]["requestId"], read);
+    assert_eq!(terminals[0]["resourceId"], "file-1");
+    assert!(!h.pending_for(42));
+    assert!(h.pending_for(uid));
+    assert!(h.resolve_dialog(&request, "provider", "Late.designcraft").is_err());
+    assert!(h.open(read, "Late.designcraft".into(), vec![7]).is_err());
+    let actions = h.take_actions();
+    assert_eq!(actions.len(), 1);
+    let Action::Save { request: owned, capture, status, resource } = &actions[0] else { panic!("expected failure") };
+    assert_eq!(owned, &request);
+    assert_eq!(status, "failed");
+    assert!(capture.bytes.is_none() && resource.is_empty());
+    h.finish_save(owned, capture, status, resource, true);
+    assert_eq!(h.take_events()[0].metadata["type"], "saveFailed");
+    assert!(!h.busy());
+    assert!(h.request_open("file-1").is_ok());
+}
+
+#[test]
+fn dispatch_error_preserves_reentrant_choice_resolution_and_read_admission() {
+    let h = host();
+    let (request, _) = capture(&h, false);
+    let filename = terminal_resource(&h);
+    let read = h.request_open("file-1").unwrap();
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            match metadata["type"].as_str() {
+                Some("saveDialog") => h.resolve_dialog(&request, "provider", "Captured.designcraft").unwrap(),
+                Some("openRequested") => h.open(read.clone(), filename.clone(), vec![7]).unwrap(),
+                Some("save") => h.result(request.clone(), "saved".into(), "other-resource".into()).unwrap(),
+                _ => panic!("unexpected recovery terminal"),
+            }
+            Err("error after accepted callback")
+        },
+        |_| {},
+    ));
+    assert!(h.state().failed_deliveries.is_empty());
+    let actions = h.take_actions();
+    assert_eq!(actions.len(), 2);
+    assert!(matches!(&actions[0], Action::Open { request, .. } if request == &read));
+    assert!(matches!(&actions[1], Action::Save { status, .. } if status == "saved"));
+    assert!(h.take_events().is_empty());
+}
+
+#[test]
+fn queued_and_inflight_terminals_hold_the_account_and_prevent_nested_publication() {
+    let h = host();
+    terminal_resource(&h);
+    let old = h.snapshot()["connectionId"].as_str().unwrap().to_string();
+    let read = h.request_open("file-1").unwrap();
+    h.take_events();
+    h.cancel_open(read.clone(), String::new()).unwrap();
+    assert!(h.disconnect().is_err());
+    let mut delivered = 0;
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openCancelled");
+            assert_eq!(metadata["requestId"], read);
+            assert!(h.disconnect().is_err(), "the last drained terminal is still in flight");
+            assert!(!h.publish_events_with(|_, _| -> Result<(), ()> { panic!("nested publisher ran") }, |_| {}));
+            delivered += 1;
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert_eq!(delivered, 1);
+    assert!(!h.busy());
+    h.disconnect().unwrap();
+    let current = h.connect("test".into(), "Test storage".into(), "account-b".into()).unwrap();
+    assert_ne!(old, current);
+    assert!(h.set_resources(&old, vec![]).is_err());
+}
+
+#[test]
+fn failed_read_terminal_survives_a_reentrant_full_event_queue_and_is_delivered_once() {
+    let h = host();
+    terminal_resource(&h);
+    let read = h.request_open("file-1").unwrap();
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            if metadata["type"] == "openRequested" {
+                fill_transport_event_queue(&h);
+                Err("request dispatch failed")
+            } else {
+                Ok(())
+            }
+        },
+        |_| {},
+    ));
+    assert!(h.state().finished.is_empty());
+    assert_eq!(h.state().events.len(), 1);
+    assert!(h.disconnect().is_err());
+    let mut delivered = 0;
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openFailed");
+            assert_eq!(metadata["requestId"], read);
+            delivered += 1;
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert_eq!(delivered, 1);
+    assert!(!h.busy());
+}
+
+#[test]
+fn a_full_action_queue_does_not_consume_or_overflow_a_cancelled_choice() {
+    let h = host();
+    let (request, uid) = capture(&h, false);
+    let filename = terminal_resource(&h);
+    for _ in 0..MAX_PENDING {
+        let read = h.request_open("file-1").unwrap();
+        h.open(read, filename.clone(), vec![7]).unwrap();
+    }
+    assert!(h.resolve_dialog(&request, "cancel", "").is_err());
+    assert!(h.pending_for(uid));
+    assert_eq!(h.state().actions.len(), MAX_PENDING);
+    h.take_actions();
+    h.resolve_dialog(&request, "cancel", "").unwrap();
+    let actions = h.take_actions();
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(&actions[0], Action::Save { status, .. } if status == "cancel"));
+}
+
+#[test]
+fn backpressured_failed_read_rejects_late_responses_from_the_same_publication_batch() {
+    let h = host();
+    let filename = terminal_resource(&h);
+    let failed = h.request_open("file-1").unwrap();
+    let later = h.request_open("file-1").unwrap();
+    let mut late_response_rejected = false;
+    let mut errors = 0;
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            if metadata["type"] == "openRequested" && metadata["requestId"] == failed {
+                fill_transport_event_queue(&h);
+                Err("request dispatch failed")
+            } else {
+                if metadata["type"] == "openRequested" && metadata["requestId"] == later {
+                    late_response_rejected = h.open(failed.clone(), filename.clone(), vec![7]).is_err();
+                    assert!(h.cancel_open(failed.clone(), String::new()).is_err());
+                    assert!(h.state().finished.iter().any(|terminal| terminal.request == failed));
+                } else {
+                    assert_eq!(metadata["type"], "queued");
+                }
+                Ok(())
+            }
+        },
+        |_| errors += 1,
+    ));
+    assert!(late_response_rejected);
+    assert_eq!(errors, 1);
+    assert!(h.take_actions().is_empty(), "a settled failed read must never enqueue an Open action");
+    let mut failures = 0;
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openFailed");
+            assert_eq!(metadata["requestId"], failed);
+            assert_eq!(metadata["resourceId"], "file-1");
+            failures += 1;
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert_eq!(failures, 1);
+    assert!(h.open(failed.clone(), filename.clone(), vec![7]).is_err());
+    h.cancel_open(later.clone(), String::new()).unwrap();
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openCancelled");
+            assert_eq!(metadata["requestId"], later);
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert!(!h.busy());
+    let retry = h.request_open("file-1").unwrap();
+    assert_ne!(retry, failed);
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "openRequested");
+            assert_eq!(metadata["requestId"], retry);
+            h.open(retry.clone(), filename.clone(), vec![9]).unwrap();
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    let actions = h.take_actions();
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(&actions[0], Action::Open { request, .. } if request == &retry));
+    h.finish_open(&retry, "file-1", &filename, Ok(99));
+    assert!(h.publish_events_with(
+        |metadata, _| {
+            assert_eq!(metadata["type"], "opened");
+            assert_eq!(metadata["requestId"], retry);
+            Ok::<_, ()>(())
+        },
+        |_| {},
+    ));
+    assert!(!h.busy());
 }
