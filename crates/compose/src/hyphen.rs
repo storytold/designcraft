@@ -293,6 +293,40 @@ pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
     hangul > 0 && hangul >= latin
 }
 
+/// [`mostly_hangul`] over a paragraph's set glyphs, given as `(source byte, character,
+/// generated)` so it can be tested without a font.
+///
+/// One vote per set character, not per glyph. Shaping makes a cluster several glyphs over one
+/// character and each repeats that character, so a syllable shaped into three glyphs voted three
+/// times -- and since the test is `hangul >= latin`, that can turn hyphenation off for a
+/// paragraph that is mostly Latin. Consecutive glyphs on one source byte are one character.
+///
+/// Generated glyphs do not vote: a list bullet or number, or a footnote label, is not the
+/// paragraph's own text, and `prepend_label` gives it the paragraph's *first* byte -- so counting
+/// it would also swallow the real first character in the deduplication (noted in review).
+///
+/// **Approximation.** A ligature is one glyph over several characters, so those characters vote
+/// once between them and Latin is under-counted. That can change the answer: 16 Hangul with
+/// `office hyphenation` is 17 Latin letters, and a font that shapes `fi` counts at most 16, so
+/// the paragraph classifies as Korean and loses its hyphens (review's example). Fixing it needs
+/// the visible source characters each cluster stands for; `byte..byte + len` is not that, because
+/// the glyph after a hidden run spans it -- measured, every byte of the paragraph came out
+/// covered -- which would revive the hidden-text bug this function was changed to avoid.
+pub fn korean_paragraph(glyphs: impl Iterator<Item = (usize, char, bool)>) -> bool {
+    let mut chars: Vec<char> = Vec::new();
+    let mut last: Option<usize> = None;
+    for (byte, ch, generated) in glyphs {
+        if generated {
+            continue;
+        }
+        if last != Some(byte) {
+            chars.push(ch);
+        }
+        last = Some(byte);
+    }
+    mostly_hangul_chars(chars.into_iter())
+}
+
 pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
     hyphen_points_in(word, lim, Lang::English)
 }
@@ -585,5 +619,77 @@ mod tests {
     fn heuristic_fallback() {
         let c: Vec<char> = "happen".chars().collect();
         assert_eq!(heuristic_points(&c), vec![3]);
+    }
+}
+
+#[cfg(test)]
+mod korean_paragraph_tests {
+    use super::korean_paragraph;
+
+    /// `(byte, ch, generated)` per glyph, which is all the classification reads -- so these cases
+    /// need no font and state the counting rules directly (review's suggestion).
+    fn k(glyphs: &[(usize, char, bool)]) -> bool {
+        korean_paragraph(glyphs.iter().copied())
+    }
+
+    /// One character per source byte, however many glyphs shaping made of it. A syllable shaped
+    /// into three glyphs voted three times, which could classify a mostly-Latin paragraph as
+    /// Korean (noted in review).
+    #[test]
+    fn glyphs_of_one_cluster_vote_once() {
+        // Two Hangul characters, the first shaped into three glyphs, against three Latin letters.
+        let clustered = [
+            (0, '\u{AC00}', false),
+            (0, '\u{AC00}', false),
+            (0, '\u{AC00}', false),
+            (3, '\u{B098}', false),
+            (6, 'a', false),
+            (7, 'b', false),
+            (8, 'c', false),
+        ];
+        assert!(!k(&clustered), "two Hangul against three Latin is not Korean");
+        // Counting each glyph instead gives four Hangul against three, which flips it -- so the
+        // deduplication is what decides this case.
+        let per_glyph: Vec<char> = clustered.iter().map(|(_, c, _)| *c).collect();
+        assert!(super::mostly_hangul_chars(per_glyph.into_iter()), "per-glyph counting would call it Korean");
+    }
+
+    /// A generated label is not the paragraph's own text, and `prepend_label` gives it the
+    /// paragraph's *first* byte -- so counting it also swallowed the real first character in the
+    /// deduplication (noted in review).
+    #[test]
+    fn a_generated_label_neither_votes_nor_hides_the_first_character() {
+        // A footnote label at byte 0, then two Hangul characters (the first also at byte 0) and
+        // two Latin letters. Two against two is Korean, since the test is `hangul >= latin` --
+        // and losing one Hangul character to the label makes it one against two, which is not.
+        let labelled = [(0, '1', true), (0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'a', false), (7, 'b', false)];
+        assert!(k(&labelled), "two Hangul against two Latin is Korean");
+        // Without the exclusion the label takes byte 0, the Hangul character there is deduplicated
+        // away, and one Hangul against two Latin is no longer Korean.
+        let counted: Vec<char> = {
+            let mut out = Vec::new();
+            let mut last = None;
+            for (b, c, _) in labelled {
+                if last != Some(b) {
+                    out.push(c);
+                }
+                last = Some(b);
+            }
+            out
+        };
+        assert!(!super::mostly_hangul_chars(counted.into_iter()), "counting the label loses the first character");
+    }
+
+    /// The remaining approximation, pinned so it is visible rather than surprising: a ligature is
+    /// one glyph over several characters, so Latin is under-counted and this paragraph classifies
+    /// as Korean although it has more Latin letters (review's example).
+    #[test]
+    fn a_ligature_under_counts_latin_which_is_a_known_approximation() {
+        // Two Hangul characters against three Latin letters shaped as one `ffi` glyph.
+        let ligated = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, '\u{FB03}', false)];
+        assert!(k(&ligated), "the ligature counts as one character, so this reads as Korean");
+        // Spelled out, the same text is not Korean -- which is the error the approximation makes.
+        let spelled = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'f', false), (7, 'f', false), (8, 'i', false)];
+        assert!(!k(&spelled), "the same characters unligated are not Korean");
     }
 }

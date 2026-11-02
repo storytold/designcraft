@@ -1152,6 +1152,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
             for _ in 0..3 {
                 // The same drop cap, spacing, hyphenation and breaker as the layout below.
                 let mut gl = sp.glyphs.clone();
+                let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
                 let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
                 let width = |j: usize| {
                     let ind = match &dc {
@@ -1163,7 +1164,8 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                 };
                 apply_desired_spacing(&mut gl, &pp);
                 mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-                let mut hy = hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
+                let mut hy =
+                    hyphenation_points(&story.text, &gl, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars), korean);
                 suppress_hyphens(&mut hy, &gl, no_hyph.get(pi).map_or(&[], Vec::as_slice));
                 let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                     let tab = |j: usize, x: f64, i: usize| {
@@ -1222,6 +1224,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let rule_color = |r: &designcraft_doc::Rule, text: &(String, f32)| {
             if r.color == designcraft_doc::TEXT_COLOR { text.clone() } else { (r.color.clone(), r.tint) }
         };
+        let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
         let drop_cap = split_drop_cap(db, &mut sp.glyphs, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
         // List labels take the default super/subscript settings.
         let label_env = shape::TypeEnv { adv: Default::default(), ..env };
@@ -1300,7 +1303,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         apply_desired_spacing(&mut glyphs, &pp);
         mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
         let mut hyph_after =
-            hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars));
+            hyphenation_points(&story.text, &glyphs, &pp, &hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), &base_chars), korean);
         suppress_hyphens(&mut hyph_after, &glyphs, no_hyph.get(pi).map_or(&[], Vec::as_slice));
         let base_size = base_chars.size;
         let spacing = spacing_for(&pp, base_size, story);
@@ -4187,6 +4190,7 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
@@ -4196,36 +4200,11 @@ fn hyphenation_points(
     // leaves the paragraph language at the default English, so the paragraph's own text decides
     // rather than its language setting (#1688).
     //
-    // This paragraph's glyphs, not the whole story's text: judging the story would have turned
-    // hyphenation off in the English paragraphs of a Korean document, and left it on in the
-    // Korean paragraphs of a mostly-English one. The glyphs are what is actually set, so hidden
-    // text does not vote -- reading the paragraph's source let hidden Korean turn hyphenation
-    // off for the visible English around it (both noted in review).
-    // One vote per set character, not per glyph. Shaping makes a cluster several glyphs over one
-    // character, and each of them repeats that character, so a Hangul syllable shaped into three
-    // glyphs voted three times -- which, since the test is `hangul >= latin`, could turn
-    // hyphenation off for a paragraph that is mostly Latin. Consecutive glyphs on one source byte
-    // are one character. A generated bullet or number is left out as well: it is not the
-    // paragraph's own text (noted in review).
-    //
-    // A ligature is the remaining case and is *not* expanded, deliberately. It is one glyph over
-    // several characters, so those characters vote once between them, which under-counts Latin.
-    // The fix for that would be to count the characters in `g.byte..g.byte + g.len`, and that
-    // range is not "the characters this glyph shows": measured on
-    // `hidden_text_does_not_decide_whether_a_paragraph_hyphenates`, the glyph after a hidden run
-    // carries a range spanning it, so every byte of the paragraph came out covered (336 of 336)
-    // and hidden Korean voted again -- the bug the previous round of review fixed. Under-counting
-    // a ligature biases towards "Korean", and a paragraph with enough Latin to form ligatures has
-    // far more Latin than Hangul, so the ratio does not turn on it.
-    let mut shown: Vec<char> = Vec::with_capacity(glyphs.len());
-    let mut last: Option<usize> = None;
-    for g in glyphs.iter().filter(|g| !g.list_label) {
-        if last != Some(g.byte) {
-            shown.push(g.ch);
-        }
-        last = Some(g.byte);
-    }
-    if hyphen::mostly_hangul_chars(shown.into_iter()) {
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English (noted in review). See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
