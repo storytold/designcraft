@@ -147,6 +147,10 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
         return crate::cmd::interchange::open_idml(s, p);
     }
+    // A zip of a package folder: its document, with the fonts of the Document Fonts folder beside it.
+    if super::package::is_zipped_package(&b) {
+        return super::package::open_zipped_package(s, &b);
+    }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {

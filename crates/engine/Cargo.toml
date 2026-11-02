@@ -34,6 +34,8 @@ log = { workspace = true }
 quick-xml = { workspace = true }
 caseless = { workspace = true }
 unicode-segmentation = { workspace = true }
+# Zipped packages (file.openBytes); designcraft-format already builds it, on the web too.
+zip = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft-atomic = { workspace = true }
