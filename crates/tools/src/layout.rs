@@ -77,7 +77,7 @@ impl CanvasLayout {
             // command -- past the pasteboard, and its edges are still drawn there, so a cull
             // that tested the pasteboard rectangle alone would drop them (#1343).
             let mut reach = pr;
-            let mut cover = |m: Affine, it: &designcraft_doc::Item| reach = reach.union(m.transform_rect_bbox(it.visible_bounds()));
+            let mut cover = |m: Affine, it: &designcraft_doc::Item| cover_edges(&mut reach, m, it);
             for it in &sp.items {
                 cover(xf, it);
             }
@@ -144,6 +144,23 @@ fn dist_y(r: Rect, y: f64) -> f64 {
     }
 }
 
+/// Union into `reach` every edge the canvas draws for `it` under `m`.
+///
+/// Including the edges of items pasted into a frame (Edit > Paste Into). Their *content* is
+/// clipped to the frame's path, but their edges are drawn where they are, and such a frame's own
+/// bounds do not cover them -- `Item::bounds` unions children only for a real group, which
+/// `is_group` requires `Shape::Group` for. So an edge beyond the frame fell outside `reach` and
+/// was culled although it was on screen (noted in review). A real group needs no recursion: its
+/// bounds are already its children's.
+fn cover_edges(reach: &mut Rect, m: Affine, it: &designcraft_doc::Item) {
+    *reach = reach.union(m.transform_rect_bbox(it.visible_bounds()));
+    if !it.is_group() {
+        for c in it.children() {
+            cover_edges(reach, m * it.xf, c);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +219,41 @@ mod tests {
         // Only this slot grew: the others still cull.
         let others = CanvasLayout::new(&d, false);
         assert_eq!(others.slots[0].reach, inside.slots[0].reach, "another slot's reach is unchanged");
+    }
+
+    /// A frame holding items pasted into it (Edit > Paste Into) clips their content to its path,
+    /// but the canvas draws their edges where they are. Such a frame's own bounds do not cover
+    /// them -- `Item::bounds` unions children only for a real group -- so an edge beyond the
+    /// frame was outside the reach and culled although it was on screen (#1370 review).
+    #[test]
+    fn a_slots_reach_covers_an_item_pasted_into_a_frame_and_sticking_out_of_it() {
+        use designcraft_doc::{Content, Item, ItemId, Shape};
+        use designcraft_geom::shapes;
+        use std::sync::Arc;
+
+        let mut d = Document::new(&NewDocument { pages: 4, ..Default::default() });
+        let layer = d.default_layer();
+        let before = CanvasLayout::new(&d, false);
+        let slot = before.slots[1];
+
+        // A small frame on the page, holding a pasted-in child that reaches far past it.
+        let frame_box = Rect::new(100.0, 100.0, 200.0, 200.0);
+        let child_box = Rect::new(-9000.0, -4000.0, -8900.0, -3900.0);
+        let child = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, shapes::rectangle(child_box));
+        let mut frame = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, shapes::rectangle(frame_box));
+        frame.content = Content::Group { items: vec![Arc::new(child)] };
+        // A frame with pasted-in items, not a group: that distinction is the whole case.
+        assert!(frame.has_nested_items() && !frame.is_group(), "a frame with items pasted into it");
+        assert!(!frame.bounds().contains_rect(child_box), "whose own bounds do not reach the child: {:?}", frame.bounds());
+        d.insert_item(slot.spread, frame, None).unwrap();
+
+        let after = CanvasLayout::new(&d, false).slots[1];
+        let drawn = slot.xf.transform_rect_bbox(child_box);
+        assert!(after.reach.contains_rect(drawn), "the reach covers the child's outline: {:?} vs {drawn:?}", after.reach);
+        assert!(!slot.reach.contains_rect(drawn), "which it did not before the frame was added: {:?}", slot.reach);
+        // The pages and the pasteboard around them are still inside it, and no other slot grew.
+        assert!(after.reach.contains_rect(slot.reach), "{:?} vs {:?}", after.reach, slot.reach);
+        assert_eq!(CanvasLayout::new(&d, false).slots[0].reach, before.slots[0].reach, "another slot's reach is unchanged");
     }
 
     #[test]
