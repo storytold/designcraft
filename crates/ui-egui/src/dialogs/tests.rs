@@ -2964,9 +2964,8 @@ fn epub_export_options_take_a_cover_image_file() {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
     let mut app = test_app();
-    let dir = std::env::temp_dir().join(format!("designcraft-epub-cover-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let png = dir.join("cover.png");
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("cover.png");
     let bytes = b"\x89PNG\r\n\x1a\ncover".to_vec();
     std::fs::write(&png, &bytes).unwrap();
     let written: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2975,7 +2974,7 @@ fn epub_export_options_take_a_cover_image_file() {
         *sink.lock().unwrap() = b.to_vec();
         Ok(())
     }));
-    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.join("book.epub").to_string_lossy().into_owned())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.path().join("book.epub").to_string_lossy().into_owned())));
     app.run("app.exportEpub", json!({})).unwrap();
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "", "no file by default: the first page is the cover");
     // Choose… puts the picked file into the field; OK passes it to the export.
@@ -2997,7 +2996,6 @@ fn epub_export_options_take_a_cover_image_file() {
     app.run("app.exportEpub", json!({})).unwrap();
     assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "");
     cancel(&mut app);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
