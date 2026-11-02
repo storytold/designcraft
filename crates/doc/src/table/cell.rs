@@ -207,6 +207,10 @@ pub struct Cell {
     /// content box, origin at the box's top left).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graphic: Option<crate::Graphic>,
+    /// The cell's ID in the file it came from (IDML `Self`), "" for a cell made here: XML
+    /// export names the cell by it, so import finds the cell whatever its place.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_id: String,
 }
 
 impl Default for Cell {
@@ -228,6 +232,7 @@ impl Default for Cell {
             stroke_defined: [false; 4],
             style: String::new(),
             graphic: None,
+            source_id: String::new(),
         }
     }
 }
@@ -238,7 +243,7 @@ impl Cell {
     }
     /// A cell with this cell's formatting and no text (new rows / columns, unmerged cells).
     pub fn blank_like(&self) -> Cell {
-        let mut c = Cell { row_span: 1, col_span: 1, ..self.clone() };
+        let mut c = Cell { row_span: 1, col_span: 1, source_id: String::new(), ..self.clone() };
         let para = self.text.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
         let fmt = self.text.chars.first().map(|r| r.format.clone()).unwrap_or_default();
         c.text = Story::new(StoryId(0));
