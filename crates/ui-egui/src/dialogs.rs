@@ -22,6 +22,10 @@ pub struct Dialog {
     /// Set from the active document when the dialog is shown or confirmed (picas without one).
     #[serde(skip)]
     pub unit: Unit,
+    /// The vertical ruler unit, for a dialog with a height field (the Rectangle dialog): kept
+    /// from when it opened, so a bare `50` means what it did then. `None` falls back to `unit`.
+    #[serde(skip)]
+    pub vertical_unit: Option<Unit>,
 }
 
 impl Dialog {
@@ -81,14 +85,7 @@ impl Dialog {
         if id == "ruby" {
             fields.entry("section".to_string()).or_insert(json!("cjk.rubyPlacement"));
         }
-        if id == "frameSize" {
-            for k in ["width", "height"] {
-                if let Some(v) = fields.get(k).and_then(Value::as_f64) {
-                    fields.insert(k.into(), json!(format_measure(v, Unit::Picas)));
-                }
-            }
-        }
-        Dialog { id: id.into(), fields, unit: Unit::Picas }
+        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
@@ -108,9 +105,13 @@ impl Dialog {
         }
     }
     fn m(&self, k: &str) -> Option<f64> {
+        self.m_in(k, self.unit)
+    }
+    /// A measure where a bare number is in `unit`.
+    fn m_in(&self, k: &str, unit: Unit) -> Option<f64> {
         match self.fields.get(k) {
             Some(Value::Number(n)) => n.as_f64(),
-            Some(Value::String(s)) => parse_measure(s, self.unit).ok(),
+            Some(Value::String(s)) => parse_measure(s, unit).ok(),
             _ => None,
         }
     }
@@ -1503,6 +1504,26 @@ fn doc_unit(app: &DesignApp) -> Unit {
     app.session.active().map(|s| s.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
 
+/// The document's vertical ruler unit: what a bare number means in a height field.
+fn doc_vertical_unit(app: &DesignApp) -> Unit {
+    app.session.active().map(|s| s.doc.settings.vertical_units).unwrap_or(Unit::Picas)
+}
+
+/// The Rectangle dialog a click with a frame tool opens: the width (points in `params`) shown in
+/// the horizontal ruler unit, the height in the vertical one, as Preferences › Units &
+/// Increments and the rulers' menus set them (#1964).
+pub fn frame_size_dialog(app: &DesignApp, params: Value) -> Dialog {
+    let mut d = Dialog::new("frameSize", params);
+    for (k, unit) in [("width", doc_unit(app)), ("height", doc_vertical_unit(app))] {
+        if let Some(v) = d.fields.get(k).and_then(Value::as_f64) {
+            d.fields.insert(k.into(), json!(format_measure(v, unit)));
+        }
+    }
+    d.unit = doc_unit(app);
+    d.vertical_unit = Some(doc_vertical_unit(app));
+    d
+}
+
 /// Layout › Create Guides…: guides go on every page of the spread in view (or of the parent
 /// spread being edited), as InDesign's do; "This page" narrows them to
 /// the page in view. The gutters are typed in the document's ruler unit.
@@ -2798,6 +2819,36 @@ fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
     }
 }
 
+/// An alert's message. Import warnings (`lines`: `{text, item}`) list one per line, scrolling
+/// when there are many, with Show beside each that names a frame (sets `show`).
+fn alert_message(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lines: Vec<(String, Option<u64>)> = d
+        .fields
+        .get("lines")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|l| (l.get("text").and_then(Value::as_str).unwrap_or_default().to_string(), l.get("item").and_then(Value::as_u64)))
+        .collect();
+    if lines.iter().all(|(_, item)| item.is_none()) {
+        crate::rtl::label(ui, d.s("message"));
+        return;
+    }
+    let show = crate::i18n::tr(&app.ui.language, "Show");
+    egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
+        for (text, item) in &lines {
+            ui.horizontal_wrapped(|ui| {
+                if let Some(item) = item
+                    && ui.small_button(crate::rtl::widget(ui, show)).clicked()
+                {
+                    d.fields.insert("show".into(), json!(item));
+                }
+                crate::rtl::label(ui, text.as_str());
+            });
+        }
+    });
+}
+
 /// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
@@ -3683,7 +3734,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             crate::rtl::label(ui, egui::RichText::new(crate::rtl::isolate(&file)).font(semibold(13.0)));
                             ui.add_space(4.0);
                         }
-                        crate::rtl::label(ui, d.s("message"));
+                        alert_message(app, ui, &mut d);
                     }
                     _ => {}
                 }
@@ -3754,6 +3805,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             });
         });
     });
+    // Show on an import warning: close the warnings (the status line keeps them) and select the
+    // frame the warning is about, in view, so it can be fixed.
+    if let Some(item) = d.fields.remove("show").and_then(|v| v.as_u64()) {
+        app.ui.dialog = None;
+        if app.run("selection.set", json!({"ids": [item]})).is_ok() {
+            let _ = app.run("view.fitSelection", json!({}));
+        }
+        return;
+    }
     // Preferences › General › Interface Language takes effect at once, like any other app setting.
     if let Some(lang) = d.fields.remove("applyLanguage")
         && let Err(e) = app.run("app.language", json!({"lang": lang}))
@@ -4056,8 +4116,12 @@ fn format_settings(app: &mut DesignApp, ctx: &egui::Context, d: &mut Dialog) {
         d.fields.remove(FORMAT_EDIT);
         return;
     };
-    let mut fd =
-        Dialog { id: "changeFormat".into(), fields: d.fields.get(FORMAT_EDIT).and_then(Value::as_object).cloned().unwrap_or_default(), unit: d.unit };
+    let mut fd = Dialog {
+        id: "changeFormat".into(),
+        fields: d.fields.get(FORMAT_EDIT).and_then(Value::as_object).cloned().unwrap_or_default(),
+        unit: d.unit,
+        vertical_unit: None,
+    };
     let base = json!({});
     let cf = CharFields { base: &base, sparse: true };
     let find = fd.s("for") == "find";
@@ -4220,7 +4284,8 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let x = d.fields.get("x").and_then(Value::as_f64).unwrap_or(0.0);
             let y = d.fields.get("y").and_then(Value::as_f64).unwrap_or(0.0);
             let w = d.m("width").unwrap_or(72.0);
-            let h = d.m("height").unwrap_or(72.0);
+            // In the units the dialog showed, not ones changed while it was open.
+            let h = d.m_in("height", d.vertical_unit.unwrap_or(d.unit)).unwrap_or(72.0);
             app.run(
                 "frame.create",
                 json!({"spread": d.fields.get("spread").cloned().unwrap_or(json!(0)), "shape": d.s("shape"), "content": d.s("content"), "rect": [x, y, x + w, y + h]}),
