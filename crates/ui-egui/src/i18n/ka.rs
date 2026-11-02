@@ -2242,6 +2242,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Keep Lines Together", "სტრიქონების ერთად დატოვება"),
     ("Keep Options", "ერთად შენარჩუნების პარამეტრები"),
     ("Keep with Next:", "შემდეგთან ერთად:"),
+    ("Keep with Previous", "წინასთან ერთად"),
     ("Kenten Color", "კენტენის ფერი"),
     ("Kenten Settings", "კენტენის პარამეტრები"),
     ("Kenten Type:", "კენტენის ტიპი:"),

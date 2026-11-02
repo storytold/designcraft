@@ -2468,6 +2468,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
 struct ParagraphFinishInput<'a> {
     doc: &'a Document,
     story: &'a Story,
+    /// Paragraphs tracked changes deleted (composing skips them).
+    deleted: &'a [bool],
     frames: &'a [FrameSpec],
     cols: &'a [Vec<Rect>],
     out: &'a mut ComposedStory,
@@ -2506,6 +2508,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     let ParagraphFinishInput {
         doc,
         story,
+        deleted,
         frames,
         cols,
         out,
@@ -2541,7 +2544,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
         end: (cur.fi, cur.col),
         lines: line_no,
         lines_in_end_col: line_no - col_first_line,
-        keep_with_next: keep_with_next_of(doc, story, pi, pp),
+        keep_with_next: keep_with_next_of(doc, story, deleted, pi, pp),
         keep_together: pp.keep_lines_together,
         keep_all: pp.keep_all_lines,
         keep_first: pp.keep_first as usize,
@@ -3044,6 +3047,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let ends_split = match finish_paragraph(ParagraphFinishInput {
             doc,
             story,
+            deleted: &deleted,
             frames,
             cols: &cols,
             out: &mut out,
@@ -3222,9 +3226,11 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
 }
 
 /// The lines a paragraph keeps with the next one: its own Keep with Next, or one line when the
-/// next paragraph has Keep with Previous (no break between the two).
-fn keep_with_next_of(doc: &Document, story: &Story, pi: usize, pp: &ParaProps) -> u32 {
-    let next_keeps = story.paras.get(pi + 1).is_some_and(|pf| doc.styles.resolve_para(pf).0.keep_with_previous);
+/// next paragraph composed has Keep with Previous (no break between the two). A paragraph in
+/// between that a tracked change `deleted` is skipped, as composing skips it.
+fn keep_with_next_of(doc: &Document, story: &Story, deleted: &[bool], pi: usize, pp: &ParaProps) -> u32 {
+    let next = (pi + 1..story.paras.len()).find(|q| !deleted.get(*q).copied().unwrap_or(false));
+    let next_keeps = next.and_then(|q| story.paras.get(q)).is_some_and(|pf| doc.styles.resolve_para(pf).0.keep_with_previous);
     pp.keep_with_next.max(u32::from(next_keeps))
 }
 
@@ -3232,6 +3238,7 @@ fn keep_with_next_of(doc: &Document, story: &Story, pi: usize, pp: &ParaProps) -
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next (or the next one's keep-with-previous) paragraph separated from the next one.
 fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) {
+    let deleted = deleted_paras(story, &story.para_ranges());
     // Per paragraph, the columns its lines sit in: ((frame, column), line count) in order.
     let mut cols: HashMap<usize, Vec<((usize, u32), usize)>> = HashMap::new();
     for (fi, ft) in out.frames.iter().enumerate() {
@@ -3254,7 +3261,7 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
                 continue;
             }
         }
-        let kwn = keep_with_next_of(doc, story, pi, &pp);
+        let kwn = keep_with_next_of(doc, story, &deleted, pi, &pp);
         if kwn > 0
             && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
             && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < kwn as usize && next.len() > 1))

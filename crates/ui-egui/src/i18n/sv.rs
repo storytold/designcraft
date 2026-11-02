@@ -1985,6 +1985,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Keep Lines Together", "Håll ihop raderna"),
     ("Keep Options", "Alternativ för att hålla ihop"),
     ("Keep with Next:", "Håll ihop med nästa:"),
+    ("Keep with Previous", "Håll ihop med föregående"),
     ("List Type:", "Listtyp:"),
     ("List:", "Lista:"),
     ("Mode:", "Läge:"),

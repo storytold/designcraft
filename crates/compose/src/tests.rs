@@ -1349,6 +1349,25 @@ fn keep_with_previous_keeps_a_paragraph_with_the_one_before() {
     assert!(!cs.is_overset());
 }
 
+/// A paragraph a tracked change deleted between the two is skipped, as composing skips it: the
+/// keep still binds the heading to the body (#1989).
+#[test]
+fn keep_with_previous_looks_past_a_deleted_paragraph() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let body = "Body text that follows the heading.";
+    let (mut d, sid, _) = keep_doc(n - 1, &["Heading", "Gone", body], h);
+    let st = d.story_mut(sid).unwrap();
+    // "Gone" and its return deleted: the paragraph after the heading is the body again.
+    let gone = st.para_ranges()[n].clone();
+    st.format_chars(gone.start..gone.end + 1, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+    st.paras[n + 1].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![1], "the heading comes down to the body past the deleted paragraph");
+    assert_eq!(column_of_para(&cs, n + 1), vec![1]);
+    assert!(column_of_para(&cs, n).is_empty(), "the deleted paragraph composes no line");
+}
+
 #[test]
 fn keep_with_next_moves_a_heading() {
     let h = 200.0;
