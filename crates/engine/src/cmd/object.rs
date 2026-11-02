@@ -2514,6 +2514,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                     d.stories.insert(sid, Arc::new(st));
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
+                        it.graphic_frame = false;
                     }
                 }
                 ("graphic" | "unassigned", Some(Content::Text(tf))) => {
@@ -2526,11 +2527,24 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Unassigned;
+                        // An empty frame for a graphic, or a plain shape.
+                        it.graphic_frame = t == "graphic";
                     }
                 }
                 ("graphic" | "unassigned", Some(Content::Graphic(_))) if t == "unassigned" => {
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Unassigned;
+                        it.graphic_frame = false;
+                    }
+                }
+                ("graphic", Some(Content::Unassigned)) => {
+                    if let Some(it) = d.item_mut(*id) {
+                        it.graphic_frame = true;
+                    }
+                }
+                ("unassigned", Some(Content::Unassigned)) => {
+                    if let Some(it) = d.item_mut(*id) {
+                        it.graphic_frame = false;
                     }
                 }
                 _ => {}
