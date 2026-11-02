@@ -586,29 +586,34 @@ fn main() -> std::process::ExitCode {
                     // for, and starting it with a token nothing can learn leaves a port
                     // listening that refuses every connection -- while the message said to pass
                     // the token in an environment variable that nothing read (noted in review).
-                    let supplied = std::env::var(control_token::TOKEN_ENV).ok().filter(|t| !t.is_empty());
+                    let supplied = std::env::var(control_token::TOKEN_ENV).ok().and_then(|t| control_token::from_env_value(&t).map(str::to_owned));
                     let token = match supplied {
                         Some(token) => Some(token),
                         None => match control_token::new_token() {
                             None => {
-                                eprintln!("designcraft: the control server did not start: no random source for its token");
+                                // Through `log`, not `eprintln!`: a release Windows build is a
+                                // GUI subsystem binary with no console, so standard error alone
+                                // reaches nobody. The logger writes to standard error as well as
+                                // to the log file, so nothing visible today is lost, and records
+                                // from before `attach_dir` are replayed into the file (review).
+                                log::error!("the control server did not start: no random source for its token");
                                 None
                             }
                             Some(token) => match profile::config_dir().map(|dir| control_token::write_token(&dir, &token)) {
                                 Some(Ok(path)) => {
-                                    eprintln!("designcraft: the control token is in {}", path.display());
+                                    log::info!("the control token is in {}", path.display());
                                     Some(token)
                                 }
                                 Some(Err(e)) => {
-                                    eprintln!(
-                                        "designcraft: the control server did not start: its token could not be written: {e} (pass one in {})",
+                                    log::error!(
+                                        "the control server did not start: its token could not be written: {e} (pass one in {})",
                                         control_token::TOKEN_ENV
                                     );
                                     None
                                 }
                                 None => {
-                                    eprintln!(
-                                        "designcraft: the control server did not start: no profile directory for its token (pass one in {})",
+                                    log::error!(
+                                        "the control server did not start: no profile directory for its token (pass one in {})",
                                         control_token::TOKEN_ENV
                                     );
                                     None

@@ -26,6 +26,19 @@ pub fn new_token() -> Option<String> {
     Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The token a `TOKEN_ENV` value supplies, or `None` when it names none.
+///
+/// Trimmed, because the value arrives from a shell, a `.env` file or a CI setting, any of which
+/// can leave a newline or a space on it, and [`matches`] compares the bytes exactly. The CLI
+/// trims the same variable before presenting the token, so an untrimmed one here opened the
+/// channel and then refused every ordinary connection (noted in review). `designcraft-cli` is a
+/// separate crate and cannot call this, so its own trim stays; the rule the two share is what the
+/// test below pins.
+pub fn from_env_value(value: &str) -> Option<&str> {
+    let token = value.trim();
+    (!token.is_empty()).then_some(token)
+}
+
 /// `<profile>/control-token`.
 pub fn token_path(config_dir: &Path) -> PathBuf {
     config_dir.join(TOKEN_FILE)
@@ -71,6 +84,19 @@ pub fn matches(expected: &str, given: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_environment_token_is_trimmed_and_an_empty_one_names_none() {
+        assert_eq!(from_env_value("0123456789abcdef0123456789abcdef"), Some("0123456789abcdef0123456789abcdef"));
+        // What the CLI presents for each of these is the trimmed token, and `matches` compares
+        // exactly, so the app has to reach the same string or refuse every connection.
+        assert_eq!(from_env_value("  abc  "), Some("abc"), "spaces around it");
+        assert_eq!(from_env_value("abc\n"), Some("abc"), "a trailing newline");
+        assert_eq!(from_env_value("\tabc\r\n"), Some("abc"), "a tab and a CRLF");
+        assert_eq!(from_env_value(""), None, "an empty value names no token");
+        assert_eq!(from_env_value("   \n\t "), None, "and neither does whitespace alone");
+        assert_eq!(from_env_value("a b"), Some("a b"), "but a space inside it is part of the token");
+    }
 
     #[test]
     fn a_token_is_128_random_bits_in_hex() {
