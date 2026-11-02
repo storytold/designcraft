@@ -562,7 +562,12 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     }
     let min_before = lim.after_first.max(1);
     let min_after = lim.before_last.max(1);
-    let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
+    let base = match lang {
+        Lang::Patterns(l) => Some(l),
+        Lang::Installed(i) => installed_bundled(i),
+        Lang::English => None,
+    };
+    let elides = matches!(base, Some(hypher::Lang::French | hypher::Lang::Italian));
     // Run bounds of each point's letter run (trimmed of apostrophes).
     let run_of = |p: usize| {
         let mut a = p;
