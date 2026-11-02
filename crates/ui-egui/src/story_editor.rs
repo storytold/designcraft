@@ -83,9 +83,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     let ruler = depths.as_ref().map(|_| ui.allocate_exact_size(vec2(RULER_WIDTH, 0.0), egui::Sense::hover()).0);
                     let mut text = story.text.clone();
                     let font = egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0));
-                    // With paragraph break marks shown, the text wraps one text size short of the edge, so a
-                    // mark after a full row stays within the width the text has without marks.
-                    let width = if app.ui.story_editor_paragraph_marks { (ui.available_width() - font.size).max(font.size) } else { f32::INFINITY };
+                    // With paragraph break marks shown, the text wraps one text size short of the right edge and
+                    // starts one text size in from the left, so a mark after a full row, left-to-right or
+                    // right-to-left, stays within the width the text has without marks.
+                    let marks = app.ui.story_editor_paragraph_marks;
+                    let width = if marks { (ui.available_width() - font.size).max(font.size) } else { f32::INFINITY };
+                    let left = if marks { font.size.round().clamp(0.0, f32::from(i8::MAX)) as i8 } else { 0 };
                     // The text field has a fixed id, so it keeps its focus and caret when the columns before it
                     // are shown or hidden.
                     let out = egui::TextEdit::multiline(&mut text)
@@ -93,7 +96,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         .font(font.clone())
                         .desired_width(width)
                         .desired_rows(20)
-                        .frame(egui::Frame::NONE)
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left, ..egui::Margin::ZERO }))
                         .show(ui);
                     let r = out.response;
                     let changed = r.changed();
@@ -120,8 +123,8 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
                     }
                     if app.ui.story_editor_paragraph_marks {
-                        for spot in paragraph_mark_spots(&out.galley) {
-                            ui.painter().text(out.galley_pos + spot.to_vec2(), egui::Align2::LEFT_TOP, PARAGRAPH_MARK, font.clone(), t.text_dim);
+                        for (spot, corner) in paragraph_mark_spots(&out.galley) {
+                            ui.painter().text(out.galley_pos + spot.to_vec2(), corner, PARAGRAPH_MARK, font.clone(), t.text_dim);
                         }
                     }
                     let overset_y = overset.filter(|_| !changed).map(|o| {
@@ -199,10 +202,23 @@ pub(crate) fn style_column_width(width: f32) -> f32 {
     if width.is_finite() { width.clamp(STYLE_COLUMN_RANGE.0, STYLE_COLUMN_RANGE.1) } else { STYLE_COLUMN_WIDTH }
 }
 
-/// Where the paragraph break marks go, in galley coordinates (each mark's top left): just after the
-/// last row of every paragraph that a paragraph break ends, past any spaces at its end.
-fn paragraph_mark_spots(galley: &egui::Galley) -> Vec<egui::Pos2> {
-    galley.rows.iter().filter(|row| row.ends_with_newline).map(|row| pos2(row.rect().max.x + 1.0, row.rect().min.y)).collect()
+/// Where the paragraph break marks go, in galley coordinates, with the corner of the mark at that
+/// point: just after the last row of every paragraph that a paragraph break ends, past any spaces at
+/// its end. A right-to-left paragraph ends on the left, so its mark goes left of the row.
+fn paragraph_mark_spots(galley: &egui::Galley) -> Vec<(egui::Pos2, egui::Align2)> {
+    galley
+        .rows
+        .iter()
+        .filter(|row| row.ends_with_newline)
+        .map(|row| {
+            let rect = row.rect();
+            if row.rtl_paragraph {
+                (pos2(rect.min.x - 1.0, rect.min.y), egui::Align2::RIGHT_TOP)
+            } else {
+                (pos2(rect.max.x + 1.0, rect.min.y), egui::Align2::LEFT_TOP)
+            }
+        })
+        .collect()
 }
 
 /// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)`
@@ -726,6 +742,29 @@ mod tests {
         assert!(rect.max.x <= edge, "the mark stays left of the text's right edge {edge}: {rect:?}");
     }
 
+    /// A right-to-left paragraph ends on the left, so its mark goes left of its last row, within
+    /// the editor even when that row starts at the text's left edge.
+    #[test]
+    fn a_right_to_left_paragraph_has_its_mark_on_the_left() {
+        let field = |h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str| {
+            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect()
+        };
+        // The right-to-left row is wider than "End", so it starts at the text's left edge.
+        let text = format!("{}\nEnd", "\u{628}".repeat(12));
+        let mut h = story_editor_harness(&text);
+        let size = h.state().app.ui.story_editor_size;
+        let before = paragraph_marks(&h);
+        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
+        h.run_steps(2);
+        let field = field(&h, &text);
+        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let (rect, clip) = marks[0];
+        assert!(rect.max.x <= field.min.x + size, "the mark is left of the row, where the paragraph ends: {rect:?} in {field:?}");
+        assert!(rect.min.x >= field.min.x, "the mark stays within the editor: {rect:?} in {field:?}");
+        assert!(clip.contains_rect(rect), "the mark is not cut off: {rect:?} in {clip:?}");
+    }
+
     /// A mark goes after the last row of a wrapped paragraph and after an empty paragraph, and not
     /// after the story's last paragraph, which no paragraph break ends.
     #[test]
@@ -738,6 +777,8 @@ mod tests {
         output.textures_delta.clear();
         let galley = galley.expect("laid out");
         let spots = super::paragraph_mark_spots(&galley);
+        assert!(spots.iter().all(|s| s.1 == egui::Align2::LEFT_TOP), "{spots:?}");
+        let spots: Vec<_> = spots.into_iter().map(|s| s.0).collect();
         assert_eq!(spots.len(), 3, "{spots:?}");
         let rows = &galley.rows;
         assert!(rows.len() >= 5, "the second paragraph wraps: {} rows", rows.len());
