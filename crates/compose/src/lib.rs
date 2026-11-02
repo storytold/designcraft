@@ -4201,7 +4201,31 @@ fn hyphenation_points(
     // Korean paragraphs of a mostly-English one. The glyphs are what is actually set, so hidden
     // text does not vote -- reading the paragraph's source let hidden Korean turn hyphenation
     // off for the visible English around it (both noted in review).
-    if hyphen::mostly_hangul_chars(glyphs.iter().map(|g| g.ch)) {
+    // One vote per set character, not per glyph. Shaping makes a cluster several glyphs over one
+    // character, and each of them repeats that character, so a Hangul syllable shaped into three
+    // glyphs voted three times -- which, since the test is `hangul >= latin`, could turn
+    // hyphenation off for a paragraph that is mostly Latin. Consecutive glyphs on one source byte
+    // are one character. A generated bullet or number is left out as well: it is not the
+    // paragraph's own text (noted in review).
+    //
+    // A ligature is the remaining case and is *not* expanded, deliberately. It is one glyph over
+    // several characters, so those characters vote once between them, which under-counts Latin.
+    // The fix for that would be to count the characters in `g.byte..g.byte + g.len`, and that
+    // range is not "the characters this glyph shows": measured on
+    // `hidden_text_does_not_decide_whether_a_paragraph_hyphenates`, the glyph after a hidden run
+    // carries a range spanning it, so every byte of the paragraph came out covered (336 of 336)
+    // and hidden Korean voted again -- the bug the previous round of review fixed. Under-counting
+    // a ligature biases towards "Korean", and a paragraph with enough Latin to form ligatures has
+    // far more Latin than Hangul, so the ratio does not turn on it.
+    let mut shown: Vec<char> = Vec::with_capacity(glyphs.len());
+    let mut last: Option<usize> = None;
+    for g in glyphs.iter().filter(|g| !g.list_label) {
+        if last != Some(g.byte) {
+            shown.push(g.ch);
+        }
+        last = Some(g.byte);
+    }
+    if hyphen::mostly_hangul_chars(shown.into_iter()) {
         return out;
     }
     let lim = hyphen::Limits {
