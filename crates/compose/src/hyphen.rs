@@ -441,6 +441,13 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
             if serbian && !serbian_two_letters(core).is_empty() {
                 return serbian_latin_breaks(core, lang);
             }
+            // An elision, as for the bundled patterns below: only the word after it hyphenates.
+            if matches!(installed_bundled(i), Some(hypher::Lang::French | hypher::Lang::Italian))
+                && let Some(ap) = core.iter().rposition(|&c| c == '\'')
+            {
+                let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+                return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
+            }
             if let Some(p) = installed_points(i, core) {
                 return (p, Source::Patterns);
             }
@@ -593,6 +600,10 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     pts.into_iter()
         .filter(|&p| {
             let (a, b) = run_of(p);
+            // A break in an elided prefix never counts.
+            if p <= a {
+                return false;
+            }
             let run = &chars[a..b];
             // Serbian `lj`, `nj` and `dž` are one letter each (Pravopis, §186г).
             let digraphs = is_serbian(lang).then(|| {

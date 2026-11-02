@@ -16,3 +16,14 @@ fn elision_limits_apply_to_installed_french_patterns() {
     let lim = Limits { min_word: 11, ..Limits::default() };
     assert!(hyphen_points_in("l'imprimerie", &lim, fr).is_empty(), "imprimerie has ten letters");
 }
+
+#[test]
+fn installed_italian_patterns_break_only_the_word_after_an_elision() {
+    // Breaks before every letter, `dell` included; `'` is in the alphabet, so the set covers
+    // the whole of dell'impaginazione.
+    install_patterns("it_IT", "UTF-8\n'1i\n1d\n1e\n1l\n1i\n1m\n1p\n1a\n1g\n1n\n1z\n1o\n").unwrap();
+    let it = Lang::for_language("it_IT").unwrap();
+    assert!(matches!(it, Lang::Installed(_)));
+    let pts = hyphen_points_in("dell'impaginazione", &Limits::default(), it);
+    assert!(!pts.is_empty() && pts.iter().all(|&p| p > 5), "no break in dell': {pts:?}");
+}
