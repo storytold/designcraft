@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -29,7 +29,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Chrome: app bar, Control panel, Tools panel, dock, doc tabs, status bar | Medium Dark, measured sizes | measured look; the text Control panel switches between Character (A) and Paragraph (¶) Formatting Controls (¶ with the Bulleted and Numbered List buttons, Shading and Border), and Escape in a field reverts what was typed | ✓ | 11-observed-ui.md; Learn Skills Daily course, chapter 16 |
 | Properties panel and Contextual Task Bar | per selection | ✓, task bar movable (#143); ••• expands Character (scales, baseline shift, skew, language, case and position buttons) and Paragraph (indents, spacing, drop cap, baseline grid, hyphenation) in place | ✓ | Learn Skills Daily course, chapter 16; `properties.rs` `more_options_expand_character_and_paragraph_in_place` |
 | Selection tool: click, marquee, move, Alt-duplicate, resize handles, rotate from corners | ✓ | ✓ | ✓ | Cmd/Ctrl held with another tool borrows the selection tool used last (Selection or Direct Selection) for one gesture, #919 |
-| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | moving reference point "0" fails (#337) |
+| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | the Pen previews the segment while a smooth point is dragged out and curves the rubber band out of a smooth point's direction line (`pen_previews_the_curve_while_dragging_and_after_a_smooth_point`, #1438); moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
@@ -134,6 +134,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | patch | Pen: while a smooth point's direction line is dragged out, the segment it shapes (from the previous anchor's out handle to the new anchor's in handle) shows live under the pointer; after a smooth point the rubber band to the pointer curves out of its direction line, a corner's stays straight (#1438, first item; the Option/Alt handle split is the other). Test: `pen_previews_the_curve_while_dragging_and_after_a_smooth_point` |
 | 2026-10-30 | minor | Dialogs: Table of Contents title field keeps its edit width; More Options toggles without losing hidden settings |
 | 2026-10-24 | minor | Panels row: Story panel (Optical Margin Alignment and its size) |
 | 2026-10-21 | minor | Chrome row: the text Control panel's A/¶ modes; Properties row: ••• expands Character and Paragraph in place |

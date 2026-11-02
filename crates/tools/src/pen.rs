@@ -299,21 +299,37 @@ impl Tool for PenTool {
             return out;
         };
         let xf = cx.layout.xf(sr);
+        let blue = [79, 153, 255];
         if let Some(last) = self.anchors.last()
             && !self.dragging
         {
-            // Rubber band to the pointer.
-            out.push(Overlay::Line { a: xf * last.0, b: self.hover, color: [79, 153, 255], dashed: true });
+            // Rubber band to the pointer: the segment the next click would make, straight from
+            // a corner, curved out of a smooth point's direction line (#1438).
+            if (last.2 - last.0).hypot() > 1e-9 {
+                let mut path = BezPath::new();
+                path.move_to(xf * last.0);
+                path.curve_to(xf * last.2, self.hover, self.hover);
+                out.push(Overlay::Path { path, color: blue, dashed: true });
+            } else {
+                out.push(Overlay::Line { a: xf * last.0, b: self.hover, color: blue, dashed: true });
+            }
         }
         if self.path.is_none() && self.anchors.len() == 1 {
             let a = self.anchors[0];
-            out.push(Overlay::Line { a: xf * a.1, b: xf * a.2, color: [79, 153, 255], dashed: false });
+            out.push(Overlay::Line { a: xf * a.1, b: xf * a.2, color: blue, dashed: false });
         }
         if self.dragging
             && let Some(a) = self.anchors.last()
         {
-            out.push(Overlay::Line { a: xf * a.1, b: xf * a.2, color: [79, 153, 255], dashed: false });
-            let _ = BezPath::new();
+            // The direction line being dragged out, and the segment it shapes: from the previous
+            // anchor's out handle to the new anchor's in handle, live under the pointer (#1438).
+            out.push(Overlay::Line { a: xf * a.1, b: xf * a.2, color: blue, dashed: false });
+            if let Some(prev) = self.anchors.len().checked_sub(2).and_then(|i| self.anchors.get(i)) {
+                let mut path = BezPath::new();
+                path.move_to(xf * prev.0);
+                path.curve_to(xf * prev.2, xf * a.1, xf * a.0);
+                out.push(Overlay::Path { path, color: blue, dashed: false });
+            }
         }
         // Guides are already canvas. Do not run them through the spread transform again.
         out.extend(self.guides.iter().cloned());

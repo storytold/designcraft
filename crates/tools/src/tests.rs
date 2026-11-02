@@ -888,6 +888,62 @@ fn pen_click_snaps_to_a_guide() {
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
 
+/// #1438: dragging a smooth point shows the segment it shapes under the pointer (from the
+/// previous anchor's out handle to the new anchor's in handle), and after a smooth point the
+/// rubber band to the pointer curves out of its direction line; a corner keeps the straight one.
+#[test]
+fn pen_previews_the_curve_while_dragging_and_after_a_smooth_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (sr, _) = cx.layout.spread_at(Point::new(100.0, 100.0)).expect("the page is under the pointer");
+    let xf = cx.layout.xf(sr);
+    let sp = |x: f64, y: f64| cx.layout.to_spread(sr, Point::new(x, y));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let paths = |t: &dyn Tool, dashed: bool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: d, .. } if d == dashed => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut t = create("pen");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 100.0, 100.0));
+    // A corner's rubber band is a straight line: no curve.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 150.0, 120.0));
+    assert!(paths(&*t, true).is_empty() && paths(&*t, false).is_empty(), "a corner's rubber band is a line");
+    // Dragging the second anchor out: the segment from the first anchor is previewed live.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 230.0, 130.0));
+    let [p] = &paths(&*t, false)[..] else { panic!("one solid curve preview: {:?}", t.overlays(&cx)) };
+    let in_handle = sp(200.0, 100.0) - (sp(230.0, 130.0) - sp(200.0, 100.0));
+    match p.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(100.0, 100.0)) && near(*c1, xf * sp(100.0, 100.0)), "from the corner, whose out handle is itself: {a:?} {c1:?}");
+            assert!(near(*c2, xf * in_handle) && near(*b, xf * sp(200.0, 100.0)), "to the dragged anchor by its in handle: {c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Let go: the anchor is committed and the segment preview goes; the rubber band now curves
+    // out of the smooth point's direction line towards the pointer.
+    let up = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 230.0, 130.0));
+    assert!(matches!(&up[..], [Action::Exec(cmd, _)] if cmd == "path.create"), "{up:?}");
+    assert!(paths(&*t, false).is_empty(), "no segment preview once let go");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 300.0, 100.0));
+    let [band] = &paths(&*t, true)[..] else { panic!("a curved rubber band: {:?}", t.overlays(&cx)) };
+    match band.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(200.0, 100.0)) && near(*c1, xf * sp(230.0, 130.0)), "{a:?} {c1:?}");
+            assert!(near(*c2, Point::new(300.0, 100.0)) && near(*b, Point::new(300.0, 100.0)), "{c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A text frame with overset text (selected), an empty frame and a threaded pair x → y, on page 1.
 struct ThreadDoc {
     d: Document,
