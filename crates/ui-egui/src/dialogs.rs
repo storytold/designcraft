@@ -3535,7 +3535,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .replace("{}", &d.s("title"));
                         crate::rtl::label(ui, text);
                     }
-                    "idmlLoss" => idml_loss_text(app, ui, &d),
+                    "idmlLoss" => {
+                        idml_loss_text(app, ui, &d);
+                        ui.add_space(8.0);
+                        // With Save Anyway: no more asking about this document until DesignCraft
+                        // quits.
+                        check(ui, &mut d, "dontAskAgain", crate::i18n::tr(&app.ui.language, "Don't ask again for this document"));
+                    }
                     "deletePages" => {
                         let several = d.fields.get("pages").and_then(Value::as_array).is_some_and(|p| p.len() > 1);
                         crate::rtl::label(
@@ -4913,6 +4919,12 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
         "idmlLoss" => {
             let answer = if d.b("asDesigncraft") { crate::menus::LossyAnswer::SaveAsDesigncraft } else { crate::menus::LossyAnswer::SaveAnyway };
+            if matches!(answer, crate::menus::LossyAnswer::SaveAnyway)
+                && d.b("dontAskAgain")
+                && let Some(uid) = d.fields.get("uid").and_then(Value::as_u64)
+            {
+                app.idml_loss_accepted.insert(uid);
+            }
             crate::menus::answer_idml_loss(app, answer)
         }
         "closeDocument" => {

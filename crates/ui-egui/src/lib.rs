@@ -279,6 +279,9 @@ pub struct DesignApp {
     quitting: Option<QuitState>,
     /// A save waiting for the answer to "IDML can't keep all of this document" (`idmlLoss`).
     pub(crate) lossy_save: Option<menus::LossySave>,
+    /// Documents (by uid) whose IDML losses were accepted with Don't ask again: for this session
+    /// only, never saved.
+    pub(crate) idml_loss_accepted: std::collections::HashSet<u64>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.

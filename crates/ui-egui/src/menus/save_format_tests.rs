@@ -185,3 +185,41 @@ fn a_download_that_would_lose_notes_asks_first() {
     assert!(!designcraft_idml::is_idml(bytes));
     assert!(!app.session.active().unwrap().is_dirty());
 }
+
+/// Don't ask again (with Save Anyway) stops the question for that document, for this session
+/// only (it is kept by the app, not in the document or the preferences): another document is
+/// still asked about.
+#[test]
+fn dont_ask_again_holds_for_the_document_in_this_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    document_with_a_note(&mut app, "Notes");
+    let idml = dir.path().join("Notes.idml");
+    // Not ticked: asked again next time.
+    app.run("app.saveDialog", json!({"path": idml.to_string_lossy()})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["dontAskAgain"], false);
+    crate::dialogs::confirm(&mut app).unwrap();
+    app.run("note.new", json!({"text": "Two"})).unwrap();
+    app.run("app.save", json!({})).unwrap();
+    // Ticked, but Save as DesignCraft… chosen: it doesn't count.
+    let d = app.ui.dialog.as_mut().expect("asked again");
+    d.fields.insert("dontAskAgain".into(), json!(true));
+    d.fields.insert("asDesigncraft".into(), json!(true));
+    answer_with(&mut app, &dir.path().join("Notes.designcraft"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    app.run("app.saveDialog", json!({"path": idml.to_string_lossy()})).unwrap();
+    // Ticked with Save Anyway: saved, and not asked again for this document.
+    app.ui.dialog.as_mut().expect("still asked").fields.insert("dontAskAgain".into(), json!(true));
+    crate::dialogs::confirm(&mut app).unwrap();
+    app.run("note.new", json!({"text": "Three"})).unwrap();
+    app.run("app.save", json!({})).unwrap();
+    assert!(app.ui.dialog.is_none(), "not asked again");
+    assert!(!app.session.active().unwrap().is_dirty(), "saved as IDML");
+    assert!(designcraft_idml::is_idml(&std::fs::read(&idml).unwrap()));
+    // Another document is still asked about.
+    document_with_a_note(&mut app, "Other");
+    app.run("app.saveDialog", json!({"path": dir.path().join("Other.idml").to_string_lossy()})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("idmlLoss"));
+    crate::dialogs::cancel(&mut app);
+}

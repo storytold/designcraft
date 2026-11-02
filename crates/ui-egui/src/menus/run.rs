@@ -55,17 +55,21 @@ pub(crate) type LossySave = Box<dyn FnOnce(&mut DesignApp, LossyAnswer) -> Resul
 
 /// A save as IDML (`idml`) that would lose part of the active document (editorial notes,
 /// endnotes: `file.idmlLosses`) asks first, and `then` runs with the answer once it is given.
-/// Otherwise `then` runs now, as Save Anyway: there is nothing to lose. The engine refuses such a
-/// save without `allowLoss`, so nothing is lost without this question (CodeRabbit on #1105).
+/// Otherwise `then` runs now, as Save Anyway: there is nothing to lose, or the losses were
+/// accepted for this document with Don't ask again (this session only). The engine refuses such
+/// a save without `allowLoss`, so nothing is lost without this question (CodeRabbit on #1105).
 pub(super) fn guard_idml_loss(
     app: &mut DesignApp,
     idml: bool,
     then: impl FnOnce(&mut DesignApp, LossyAnswer) -> Result<Value, String> + 'static,
 ) -> Result<Value, String> {
-    if idml {
-        let lost = app.run("file.idmlLosses", json!({}))?;
+    let uid = app.session.active().map(|d| d.uid);
+    if idml && !uid.is_some_and(|uid| app.idml_loss_accepted.contains(&uid)) {
+        let mut lost = app.run("file.idmlLosses", json!({}))?;
         let count = |k: &str| lost.get(k).and_then(Value::as_u64).unwrap_or(0);
         if count("editorialNotes") > 0 || count("endnotes") > 0 {
+            lost["uid"] = json!(uid);
+            lost["dontAskAgain"] = json!(false);
             app.ui.dialog = Some(crate::dialogs::Dialog::new("idmlLoss", lost));
             app.lossy_save = Some(Box::new(then));
             return Ok(Value::Null);
