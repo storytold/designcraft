@@ -2945,6 +2945,11 @@ pub(super) const TABLE: &[(&str, &str)] = &[
         "Links and Images: {found} linked, {modified} changed, {missing} not found",
         "Länkar och bilder: {found} länkade, {modified} ändrade, {missing} hittades inte",
     ),
+    ("180°", "180°"),
+    ("IT", "IT"),
+    ("The selected fonts have no OpenType features.", "De markerade typsnitten har inga OpenType-funktioner."),
+    ("This style is in use. Text using it will be reassigned to:", "Den här stilen används. Text som använder den tilldelas i stället:"),
+    ("VA", "VA"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[
