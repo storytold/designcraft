@@ -5,10 +5,10 @@ pub const MENUS: &[(&str, &[&str])] = &[
         &[
             "ui:app.newDocumentDialog",
             "ui:app.openDialog",
-            "ui:app.openPackageFolder",
             ">Open Recent",
             "cmd:file.clearRecent",
             "<",
+            "ui:app.openPackageFolder",
             "-",
             "cmd:file.close",
             "ui:app.save",
