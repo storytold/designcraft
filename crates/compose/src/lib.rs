@@ -2541,7 +2541,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
         end: (cur.fi, cur.col),
         lines: line_no,
         lines_in_end_col: line_no - col_first_line,
-        keep_with_next: pp.keep_with_next,
+        keep_with_next: keep_with_next_of(doc, story, pi, pp),
         keep_together: pp.keep_lines_together,
         keep_all: pp.keep_all_lines,
         keep_first: pp.keep_first as usize,
@@ -3221,9 +3221,16 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
     Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
+/// The lines a paragraph keeps with the next one: its own Keep with Next, or one line when the
+/// next paragraph has Keep with Previous (no break between the two).
+fn keep_with_next_of(doc: &Document, story: &Story, pi: usize, pp: &ParaProps) -> u32 {
+    let next_keeps = story.paras.get(pi + 1).is_some_and(|pf| doc.styles.resolve_para(pf).0.keep_with_previous);
+    pp.keep_with_next.max(u32::from(next_keeps))
+}
+
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
-/// keep-with-next paragraph separated from the next one.
+/// keep-with-next (or the next one's keep-with-previous) paragraph separated from the next one.
 fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) {
     // Per paragraph, the columns its lines sit in: ((frame, column), line count) in order.
     let mut cols: HashMap<usize, Vec<((usize, u32), usize)>> = HashMap::new();
@@ -3247,9 +3254,10 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
                 continue;
             }
         }
-        if pp.keep_with_next > 0
+        let kwn = keep_with_next_of(doc, story, pi, &pp);
+        if kwn > 0
             && let (Some(end), Some(next)) = (v.last(), cols.get(&(pi + 1)))
-            && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < pp.keep_with_next as usize && next.len() > 1))
+            && next.first().is_some_and(|(c, n)| *c != end.0 || (*n < kwn as usize && next.len() > 1))
         {
             bad.push(pi);
         }

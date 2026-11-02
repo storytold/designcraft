@@ -62,6 +62,9 @@ fn smart_quotes_and_formatting() {
     assert_eq!(a["chars"]["size"], 24.0);
     s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
     assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["align"], "center");
+    // Keep with Previous (#1989) is a paragraph attribute like the other keeps.
+    s.execute("type.para", &json!({"attrs": {"keepWithPrevious": true}})).unwrap();
+    assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["keepWithPrevious"], true);
 }
 
 /// Issue #919: with Cmd held, a press with the Type (or any drawing) tool selects and drags like

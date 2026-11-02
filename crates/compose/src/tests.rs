@@ -1331,6 +1331,24 @@ fn lines_per_column(height: f64) -> usize {
     all_lines(&cs).iter().filter(|l| l.column == 0).count()
 }
 
+/// Keep with Previous (Keep Options): no column break between a paragraph and the one before it,
+/// composed as that one keeping a line with it (#1989).
+#[test]
+fn keep_with_previous_keeps_a_paragraph_with_the_one_before() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let body = "Body text that follows the heading.";
+    let (mut d, sid, _) = keep_doc(n - 1, &["Heading", body], h);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![0], "without keeps the heading ends column 0");
+    d.story_mut(sid).unwrap().paras[n].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![1], "the heading comes down to the paragraph that keeps with it");
+    assert_eq!(column_of_para(&cs, n), vec![1]);
+    assert_eq!(column_of_para(&cs, n - 2), vec![0]);
+    assert!(!cs.is_overset());
+}
+
 #[test]
 fn keep_with_next_moves_a_heading() {
     let h = 200.0;

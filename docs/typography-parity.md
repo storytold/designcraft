@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (Keep with Previous in Keep Options, composed as the paragraph before keeping a line with it, kept through IDML (#1989); German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -52,7 +52,7 @@ Fidelity: **unmeasured** unless stated.
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |
 | Column rules | ✓ | ✓ (screen, PDF, IDML) | ~ | no stroke types or overprint (#274) |
 | Balance columns | ✓ | ✓ (IDML `VerticalBalanceColumns`) | ✓ | evens out the columns of the frame the story ends in, after its last column break (#609) |
-| Keep options and breaks | keep with next, lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
+| Keep options and breaks | keep with next, keep with previous (#1989), lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
 | Drop caps, nested, line and GREP styles | ✓ | ✓ | ✓ | |
 | Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Convert Bullets/Numbering to Text missing |
 | Tabs | left/center/right/decimal/align-on, leaders, right-indent tab | ✓ | ~ | Tabs panel with a ruler over the text column, and a Tabs section in Paragraph Style Options (#343); wrapping of lines with tabs fixed (#282) |
@@ -90,5 +90,6 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | patch | Keep with Previous (#1989): a paragraph attribute and Keep Options checkbox, composed as the paragraph before keeping one line with it (`keep_with_next_of`), kept through IDML `KeepWithPrevious`. Test: `compose::tests::keep_with_previous_keeps_a_paragraph_with_the_one_before`. |
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
