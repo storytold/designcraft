@@ -144,14 +144,22 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             p[k] = v;
             p
         };
+        // A browser hands over the chosen files' bytes, not paths: they arrive through the inbox.
+        let browser = app.services.open_async.is_some();
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
-            let target = with("path", Value::Null);
-            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
-                let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
+            if browser {
+                if !is_text {
+                    app.request_files(&format!("relink:{aid}"));
+                }
+            } else {
+                let target = with("path", Value::Null);
+                let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+                    let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
+                    Ok(Value::Null)
+                });
+                if let Err(e) = asked {
+                    app.status_error("Relink", e);
+                }
             }
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
@@ -177,14 +185,21 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     ui.horizontal(|ui| {
-        // Choose any file in the folder: missing links are looked up there by name.
+        // Choose any file in the folder: missing links are looked up there by name. In a browser,
+        // which hands over files rather than paths, choose the folder itself.
+        let browser = app.services.open_async.is_some();
+        let hint = if browser { "Choose the folder holding the moved graphics" } else { "Pick a file in the folder holding the moved graphics" };
         if ui
             .button(crate::i18n::tr(&app.ui.language, "Relink to Folder…"))
             .on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, hint));
             })
             .clicked()
         {
+            if browser {
+                app.request_files("relinkFiles");
+                return;
+            }
             let asked = app.ask_open("relink", Bound::Document, |app, path| {
                 let Some(dir) = std::path::Path::new(&path).parent() else { return Ok(Value::Null) };
                 if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()})) {

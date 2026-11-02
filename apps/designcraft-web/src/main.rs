@@ -9,7 +9,10 @@
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
 //! - Save and Export trigger a browser download;
-//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
+//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox;
+//! - linked graphics can't be read from their paths (an IDML's Links folder): they show as
+//!   missing, and relink from files handed over instead (Links › Relink… and Relink to Folder…
+//!   pick the files; dropped images named like a missing graphic relink it, `links.relinkFiles`).
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
 //! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values

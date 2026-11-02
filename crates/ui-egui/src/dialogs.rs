@@ -4604,7 +4604,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
-                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target), wanted: Vec::new() })?;
             }
             app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
         }
