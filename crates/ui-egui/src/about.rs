@@ -36,7 +36,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
     let ctx = ui.ctx();
     let ppp = ctx.pixels_per_point();
     let px = ((rect.width().min(rect.height()) * ppp).round() as u32).clamp(8, 1024);
-    let key = egui::Id::new(("artcraft_mark", px, color.to_array()));
+    let key = egui::Id::unique(("artcraft_mark", px, color.to_array()));
     let tex: Option<egui::TextureHandle> = ctx.data(|d| d.get_temp(key));
     let tex = tex.unwrap_or_else(|| {
         let mut rc = vello_cpu::RenderContext::new_with(px as u16, px as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
@@ -114,7 +114,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let mut open: Option<&'static str> = None;
-    let area = egui::Id::new("about");
+    let area = egui::Id::unique("about");
     let instance = area.with("placement");
     let resp = crate::modal_drag::modal(ctx, area, instance).show(ctx, |ui| {
         ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 640.0 });

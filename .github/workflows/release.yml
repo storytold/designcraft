@@ -63,12 +63,13 @@ jobs:
     needs: git-sources
     permissions:
       contents: write
+      packages: write
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/release.yml@main
     with:
       app-name: designcraft
       app-title: DesignCraft
-      craft-fonts-ref: a71c20e30af613287c504f7e685ca8fad77752bc
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       web-craft-fonts: true
       version: ${{ inputs.version }}
     secrets:

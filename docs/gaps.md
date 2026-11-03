@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -116,12 +116,13 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 10–20 h. **Doc:** [localization-parity.md](localization-parity.md)
 
 ### 9. PDF output presets and standards (FF)
-- **Missing:** PDF/X-1a and PDF/X-3 (no flattener to PDF 1.3/1.4), Adobe PDF Presets and
-  `.joboptions` load/save, output-intent choice beyond the built-in profile, PDF/UA validation;
-  #159, #32.
-- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/A-2b, tagged PDF, CMYK and
-  spot, marks and bleed, the options dialog with remembered settings (#196).
-- **Estimate:** 40–70 h. **Doc:** [file-format-parity.md](file-format-parity.md)
+- **Missing:** PDF/X-3, Adobe PDF Presets and `.joboptions` load/save, output-intent choice
+  beyond the built-in profile, PDF/UA validation; soft effects other than the drop shadow reach
+  the PDF/X-1a flattener as RGB images; #159, #32.
+- **Have:** PDF/X-4 with output intent and a validator (`#200`), PDF/X-1a:2003 through
+  craft-prepress's flattener with its own checks, PDF/A-2b, tagged PDF, CMYK and spot, marks and
+  bleed, the options dialog with remembered settings (#196).
+- **Estimate:** 30–60 h. **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 28. Placed-PDF font repair for PDF/X-4 (FF)
 - **Missing:** embedding, substitution or outlining of unembedded fonts in placed PDFs; export
@@ -155,7 +156,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
-- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian and Greek; spelling for
+- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Greek, German (2006 reform), French, Italian and Dutch; spelling for
   every language but English. InDesign ships dictionaries for ~40 languages.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)
@@ -177,15 +178,18 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 30–50 h.
 
 ### 16. Menu items still missing (U)
-- **Missing:** 151 of 482 in-scope items of InDesign 21.6's menu dump have no match (measured 2026-10-10; some exist under other labels): Type ▸ Notes
+- **Missing:** 149 of 482 in-scope items of InDesign 21.6's menu dump have no match (measured 2026-10-10; some exist under other labels): Type ▸ Notes
+- **Missing:** 150 of 482 in-scope items of InDesign 21.6's menu dump have no match (measured 2026-10-10; some exist under other labels): Type ▸ Notes
   and Track Changes submenus (the panels and commands exist), hyperlink and cross-reference
   update commands, Convert Bullets/Numbering to Text, Convert Variable to Text, Object ▸ Clear
+  Effects / Clear All Transparency / Rotate 180° / Reverse Path,
+  update commands, Convert Bullets/Numbering to Text, Object ▸ Clear
   Effects / Clear All Transparency / Rotate 180° / Reverse Path, Layout ▸ Go Back/Forward,
   Window ▸ Arrange (2-up … 6-up), Trap Presets, Overlays, Edit ▸ Assign Profiles / Convert to
-  Profile / Edit Original, File ▸ File Info / Open PDF / Document and Print Presets / User
+  Profile / Edit Original, File ▸ Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
-  View ▸ Extras badges and Story Editor options. Pages panel ▸ Parent Options (Based on Parent is
+  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler is there). Pages panel ▸ Parent Options (Based on Parent is
   the `layout.parents.options` command only); overriding a base parent's items on a parent spread
   itself (overrides work on document pages only).
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
@@ -202,9 +206,18 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 20–35 h.
 
 ### 19. Placed graphics depth (FF)
+- **Have:** per-placement IDML graphic-layer settings survive IDML/native round trips; native format 4 guards older readers. Unsupported layer visibility is reported by import, preflight and PDF export. See [graphic-layer-options.md](graphic-layer-options.md).
+- **Still missing:** DesignCraft does not apply retained IDML graphic-layer visibility to raster or PDF output; layer-comp choices and the layer-options UI are also missing. Metadata preservation does not establish visual fidelity. Placed-PDF layer choices are applied (see **Layer choices** below).
 - **Safety:** PDF visibility variants preserve catalog/configuration entries and nonzero-generation
   references, redefining the existing catalog rather than choosing an arbitrary object number.
   Encrypted, hybrid-reference and over-budget rewrites are rejected; no print-fidelity claim.
+- **Layer choices:** placed PDFs distinguish explicit all-on visibility from file defaults;
+  choices survive native saves, raster/PDF output and embedded IDML export for the placements the
+  export walks reach: document and parent spreads, groups, and objects anchored in a story. A
+  placement anchored inside table-cell or footnote/endnote text is also prepared for PDF/A-2b.
+  Embedded IDML applies variants inside table-cell and footnote text; endnote variants are prepared,
+  but IDML endnote structures/artwork are not serialized yet. IDML layer variants are embedded
+  copies; external-only export is rejected when choices would be lost.
 - **Missing:** EPS is shown through its preview only (no PostScript interpreter); PSD layer
   comps beyond visibility; the Clipping Path Options dialog (tracing into a clip that keeps the
   frame, Threshold/Tolerance/Inset Frame preview, picking an alpha channel or a path saved in a

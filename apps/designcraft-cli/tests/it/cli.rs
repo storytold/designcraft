@@ -347,6 +347,29 @@ fn make_document(path: &std::path::Path) {
     assert!(path.exists());
 }
 
+/// `path` without the `\\?\` or `\\?\UNC\` prefix that `canonicalize` adds on Windows, as the
+/// server shows a root (`file_access::plain`).
+fn without_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path,
+    }
+}
+
+#[test]
+fn without_verbatim_prefix_keeps_a_share_a_share() {
+    let p = |t: &str| without_verbatim_prefix(std::path::PathBuf::from(t));
+    assert_eq!(p(r"\\?\UNC\server\share\dir"), std::path::PathBuf::from(r"\\server\share\dir"));
+    assert_eq!(p(r"\\?\C:\Users\dir"), std::path::PathBuf::from(r"C:\Users\dir"));
+    assert_eq!(p("/private/var/dir"), std::path::PathBuf::from("/private/var/dir"));
+}
+
 #[test]
 fn mcp_automation_roots_confine_the_server() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-{}", std::process::id()));
@@ -401,6 +424,99 @@ fn mcp_automation_roots_confine_the_server() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// #1552: each root flag may be given more than once. A path inside any root of its kind passes;
+/// the roots' common parent, a sibling whose name starts like a root's, `..` out of a root, the
+/// other kind's roots and a link out of a root stay refused.
+#[test]
+fn mcp_automation_roots_take_several_folders() {
+    let base = std::env::temp_dir().join(format!("dc-cli-roots-several-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["in", "shared", "out", "scratch", "outside", "in2", "scratch2"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS), and without the
+    // `\\?\` prefix that `canonicalize` adds on Windows: the server shows the roots without it, and
+    // Windows does not resolve `..` in a path that has it.
+    let base = without_verbatim_prefix(std::fs::canonicalize(base).unwrap());
+    for f in ["in/a.designcraft", "shared/b.designcraft", "outside/secret.designcraft", "parent.designcraft", "in2/c.designcraft"] {
+        make_document(&base.join(f));
+    }
+    // Windows' canonical `\\?\` form is not a prefix under which `..` is a path component:
+    // traversal requests use the ordinary spelling, while the other requests keep the resolved one.
+    let plain = |path: &std::path::Path| -> String {
+        let text = path.to_string_lossy();
+        if !cfg!(windows) {
+            return text.into_owned();
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_owned(),
+            None => text.into_owned(),
+        }
+    };
+    let p = |f: &str| base.join(f).to_str().unwrap().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+    let up = |root: &str, rest: &str| format!("{}{sep}..{sep}{rest}", plain(&base.join(root)));
+    let calls = [
+        ("open_document", serde_json::json!({"path": p("in/a.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("shared/b.designcraft")})),
+        // The roots' common parent is not a root.
+        ("open_document", serde_json::json!({"path": p("parent.designcraft")})),
+        ("open_document", serde_json::json!({"path": up("shared", &format!("outside{sep}secret.designcraft"))})),
+        // `in2` only starts like `in`.
+        ("open_document", serde_json::json!({"path": p("in2/c.designcraft")})),
+        // `..` from one read root into another stays inside.
+        ("open_document", serde_json::json!({"path": up("shared", &format!("in{sep}a.designcraft"))})),
+        ("save_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch/y.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("z.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch2/z.designcraft")})),
+        // Read and write stay separate: a read root is not a write root, nor the other way round.
+        ("save_document", serde_json::json!({"path": p("shared/w.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("export_png", serde_json::json!({"path": up("scratch", &format!("outside{sep}p.png"))})),
+    ];
+    let read2 = format!("--automation-read-root={}", p("shared"));
+    let args = ["--automation-read-root", &p("in"), &read2, "--automation-write-root", &p("out"), "--automation-write-root", &p("scratch")];
+    let (success, stderr, replies) = mcp_session(&args, &calls);
+    assert!(success, "{stderr}");
+    let confined = format!(
+        "files confined: read {}, {}; write {}, {}",
+        plain(&base.join("in")),
+        plain(&base.join("shared")),
+        plain(&base.join("out")),
+        plain(&base.join("scratch"))
+    );
+    assert!(stderr.contains(&confined), "expected {confined:?} in {stderr:?}");
+    let errors: Vec<bool> = replies.iter().map(|r| r["result"]["isError"] == true).collect();
+    assert_eq!(errors, [false, false, true, true, true, false, false, false, true, true, true, true, true], "{replies:?}");
+    for (i, kind) in [(2, "read"), (3, "read"), (4, "read"), (8, "write"), (9, "write"), (10, "write"), (11, "read"), (12, "write")] {
+        assert!(text(&replies[i]).contains(&format!("outside the {kind} roots ")), "{i}: {}", text(&replies[i]));
+    }
+    assert!(base.join("out/x.designcraft").is_file() && base.join("scratch/y.designcraft").is_file());
+    for f in ["z.designcraft", "scratch2/z.designcraft", "shared/w.designcraft", "outside/p.png"] {
+        assert!(!base.join(f).exists(), "{f} was written outside the write roots");
+    }
+
+    // A link in one root that leads out of all of them is outside, for reading and for writing.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(base.join("outside/secret.designcraft"), base.join("shared/leak.designcraft")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("scratch/away")).unwrap();
+        let calls = [
+            ("open_document", serde_json::json!({"path": p("shared/leak.designcraft")})),
+            ("save_document", serde_json::json!({"path": p("scratch/away/x.designcraft")})),
+        ];
+        let (_, _, replies) = mcp_session(&args, &calls);
+        assert!(text(&replies[0]).contains("outside the read roots"), "{}", text(&replies[0]));
+        assert!(text(&replies[1]).contains("outside the write roots"), "{}", text(&replies[1]));
+        assert!(!base.join("outside/x.designcraft").exists());
+    }
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[test]
 fn mcp_automation_root_flags_are_checked_up_front() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-args-{}", std::process::id()));
@@ -419,9 +535,11 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     // The flags confine the in-process server, so they cannot be combined with --connect.
     fails(&["--connect", "7979", "--automation-read-root", dir], "--connect");
     fails(&["--automation-write-root", dir, "--connect", "7979"], "--connect");
-    fails(&["--automation-read-root", dir, "--automation-read-root", dir], "given twice");
-    fails(&["--automation-write-root", dir, "--automation-write-root", dir], "given twice");
-    fails(&["--automation-read-root", dir, "--automation-read-root=x"], "given twice");
+    // #1552: a flag may be given again, but every folder it names must exist and be given.
+    fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
+    fails(&["--automation-write-root", missing.to_str().unwrap(), "--automation-write-root", dir], "cannot open the automation write root");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
+    fails(&["--automation-read-root", dir, "--automation-read-root="], "needs a non-empty folder");
     fails(&["--automation-read-root"], "needs a folder");
     fails(&["--automation-write-root", "--sample"], "needs a folder");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
@@ -437,4 +555,111 @@ fn usage_lists_the_automation_root_flags() {
     let out = cli().arg("--help").output().unwrap();
     let usage = String::from_utf8_lossy(&out.stdout);
     assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
+}
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let be = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    (be(16), be(20))
+}
+
+/// Linux file managers (Dolphin, Nautilus, Thunar) draw a `.designcraft` file's icon through the
+/// freedesktop thumbnailer, which runs `designcraft-cli thumbnail %i %o %s` (#1782). The picture is
+/// the first-page preview the file already holds, fitted to the size asked for and never enlarged.
+#[test]
+fn thumbnail_writes_the_saved_preview_fitted_to_the_size() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let preview = designcraft_format::read_preview(std::fs::File::open(&doc).unwrap()).unwrap();
+    let (pw, ph) = png_size(&preview);
+    assert!(pw.max(ph) > 128, "the saved preview is {pw}×{ph}");
+
+    let small = dir.join("small.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&small).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&small).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h} from a {pw}×{ph} preview");
+    // The page's proportions stay.
+    let ratio = |a: u32, b: u32| f64::from(a) / f64::from(b);
+    assert!((ratio(w, h) - ratio(pw, ph)).abs() < 0.02, "{w}×{h} from a {pw}×{ph} preview");
+
+    let large = dir.join("large.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&large).arg("1024").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read(&large).unwrap(), preview, "a preview smaller than the size is written as saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file saved without a preview (by an older version, or not by DesignCraft) has no picture: the
+/// thumbnailer fails and writes nothing, so the file manager keeps the file type's icon.
+#[test]
+fn thumbnail_of_a_file_without_a_preview_fails_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-none-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let with = dir.join("with.designcraft");
+    make_document(&with);
+    let doc = designcraft_format::load(&std::fs::read(&with).unwrap()).unwrap();
+    let without = dir.join("without.designcraft");
+    std::fs::write(&without, designcraft_format::save(&doc).unwrap()).unwrap();
+    let text = dir.join("notes.designcraft");
+    std::fs::write(&text, "not a document").unwrap();
+    for input in [&without, &text] {
+        let png = dir.join("out.png");
+        let out = cli().arg("thumbnail").arg(input).arg(&png).arg("256").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{}", input.display());
+        assert!(err.contains("no preview"), "{}: {err}", input.display());
+        assert!(!png.exists(), "{}", input.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `thumbnail a.designcraft a.designcraft` would replace the document with a PNG. An output that
+/// names the input, by the same path, through a symlink or (on Unix) as a hard link, is refused
+/// before anything is read or written, and the document keeps its bytes.
+#[test]
+fn thumbnail_refuses_an_output_that_names_the_input() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-self-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let saved = std::fs::read(&doc).unwrap();
+    let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        outs.push(link);
+        let hard = dir.join("hard.png");
+        std::fs::hard_link(&doc, &hard).unwrap();
+        outs.push(hard);
+    }
+    for out_path in &outs {
+        let out = cli().arg("thumbnail").arg(&doc).arg(out_path).arg("128").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{}: {err}", out_path.display());
+        assert!(err.contains("is the document"), "{}: {err}", out_path.display());
+        assert!(std::fs::read(&doc).unwrap() == saved, "{} changed the document", out_path.display());
+        assert!(std::fs::read(out_path).unwrap() == saved, "{} was written", out_path.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Another existing file at the output path is still replaced by the thumbnail.
+#[test]
+fn thumbnail_replaces_another_existing_file() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let png = dir.join("old.png");
+    std::fs::write(&png, b"an older thumbnail").unwrap();
+    let out = cli().arg("thumbnail").arg(&doc).arg(&png).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&png).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

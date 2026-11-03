@@ -32,6 +32,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                 let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
                 let r = it.inner_bounds();
                 it.content = Content::Graphic(Graphic {
+                    layer_options: None,
                     asset: aid,
                     size: (r.width(), r.height()),
                     xf: Affine::translate((r.x0, r.y0)),
@@ -52,6 +53,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
                 let r = super::finite_rect("file.place", Rect::new(x, y, x + w, y + h))?;
                 let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
                 it.content = Content::Graphic(Graphic {
+                    layer_options: None,
                     asset: aid,
                     size: (w, h),
                     xf: Affine::translate((x, y)),

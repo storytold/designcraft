@@ -6,9 +6,13 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services, UiState};
 use serde_json::json;
 
-/// The app's first frame, where saved settings are applied.
+/// The app's first frame, where saved settings are applied: the host's `logic` tick and the
+/// first real `run_ui` pass (where fonts, theme and colour settings are installed).
 fn start(app: &mut DesignApp) {
-    let mut out = egui::Context::default().run_ui(egui::RawInput::default(), |ui| app.logic(&ui.ctx().clone()));
+    let mut out = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
     out.textures_delta.clear();
 }
 

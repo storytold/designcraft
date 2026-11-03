@@ -118,11 +118,7 @@ fn exported(hidden: bool) -> Vec<u8> {
         session.execute("object.layerOptions", &json!({"ids": [placed["id"]], "hidden": ["Red"]})).unwrap();
     }
     let report = session.execute("file.exportPdf", &json!({"compress": false})).unwrap();
-    let bytes = base64_decode(report["base64"].as_str().unwrap());
-    if hidden {
-        assert!(report["warnings"].to_string().contains("hidden layers"));
-    }
-    bytes
+    base64_decode(report["base64"].as_str().unwrap())
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -185,7 +181,8 @@ fn oversized_image_does_not_silently_disappear_from_layered_export() {
         .unwrap();
     session.execute("object.layerOptions", &json!({"ids": [placed["id"]], "hidden": ["Blue"]})).unwrap();
     let before = session.execute("file.serialize", &json!({})).unwrap();
-    let result = session.execute("file.exportPdf", &json!({}));
+    // PDF/A-2b has no optional content: placed PDFs with hidden layers go out as images there.
+    let result = session.execute("file.exportPdf", &json!({"standard": "pdfa2b"}));
     assert!(result.is_err(), "export must report the image omitted by the backend's resource limit");
     assert_eq!(session.execute("file.serialize", &json!({})).unwrap(), before, "a failed export must leave the document unchanged");
     let error = result.unwrap_err().to_string();
@@ -317,7 +314,8 @@ fn failed_content_decode_aborts_layered_export_without_changing_the_document() {
             .unwrap();
         session.execute("object.layerOptions", &json!({"ids": [placed["id"]], "hidden": ["Blue"]})).unwrap();
         let before = session.execute("file.serialize", &json!({})).unwrap();
-        let error = session.execute("file.exportPdf", &json!({})).unwrap_err().to_string();
+        // PDF/A-2b has no optional content: placed PDFs with hidden layers go out as images there.
+        let error = session.execute("file.exportPdf", &json!({"standard": "pdfa2b"})).unwrap_err().to_string();
         assert!(error.contains("broken-content.pdf") && error.contains("content"), "{filter}: {error}");
         assert_eq!(session.execute("file.serialize", &json!({})).unwrap(), before, "{filter}");
     }

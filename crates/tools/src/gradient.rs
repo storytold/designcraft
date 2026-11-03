@@ -1,6 +1,7 @@
 //! Gradient Swatch tool (G): drag across the selected objects (or the object under the pointer)
 //! to set where their gradient fill starts and ends; Shift constrains the angle to 45° steps.
 
+use designcraft_doc::SpreadRef;
 use designcraft_geom::{Point, Vec2};
 use serde_json::json;
 
@@ -10,8 +11,8 @@ use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, Tool
 pub struct GradientTool {
     /// Gradient Feather tool (Shift+G): the drag sets the fade instead of the fill gradient.
     pub feather: bool,
-    /// Canvas start point, spread-space start point and the target ids.
-    drag: Option<(Point, Point, Vec<u64>)>,
+    /// Canvas start point, spread-space start point and the target ids, and the spread.
+    drag: Option<(Point, Point, Vec<u64>, SpreadRef)>,
     end: Option<Point>,
 }
 
@@ -44,27 +45,27 @@ impl Tool for GradientTool {
                 } else {
                     cx.selection.items.iter().map(|i| i.0).collect()
                 };
-                let Some((_, sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
+                let Some((spread, sp)) = cx.layout.spread_at(ev.pos) else { return vec![] };
                 if ids.is_empty() {
                     return vec![];
                 }
-                self.drag = Some((ev.pos, sp, ids));
+                self.drag = Some((ev.pos, sp, ids, spread));
                 self.end = None;
                 vec![Action::Begin(if self.feather { "Gradient Feather".into() } else { "Gradient".into() })]
             }
             PointerKind::Drag => {
-                let Some((start, sp, ids)) = &self.drag else { return vec![] };
+                let Some((start, sp, ids, spread)) = &self.drag else { return vec![] };
                 let end = constrain(*start, ev.pos, ev.mods);
                 self.end = Some(end);
                 if (end - *start).hypot() < cx.tol(2.0) {
                     return vec![];
                 }
-                let to = *sp + (end - *start);
+                let to = *sp + cx.layout.delta_to_spread(*spread, end - *start);
                 let cmd = if self.feather { "object.gradientFeather" } else { "object.gradient" };
                 vec![Action::Preview(cmd.into(), json!({"ids": ids, "from": [sp.x, sp.y], "to": [to.x, to.y]}))]
             }
             PointerKind::Up => {
-                let moved = self.end.zip(self.drag.as_ref()).is_some_and(|(e, (s, _, _))| (e - *s).hypot() >= cx.tol(2.0));
+                let moved = self.end.zip(self.drag.as_ref()).is_some_and(|(e, (s, ..))| (e - *s).hypot() >= cx.tol(2.0));
                 let was = self.drag.take().is_some();
                 self.end = None;
                 match (was, moved) {
@@ -79,7 +80,7 @@ impl Tool for GradientTool {
 
     fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
         match (&self.drag, self.end) {
-            (Some((a, _, _)), Some(b)) => vec![Overlay::Line { a: *a, b, color: [0, 0, 0], dashed: false }],
+            (Some((a, ..)), Some(b)) => vec![Overlay::Line { a: *a, b, color: [0, 0, 0], dashed: false }],
             _ => vec![],
         }
     }

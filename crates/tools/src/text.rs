@@ -5,7 +5,8 @@
 //!
 //! IME: the marked text of a composition is a preview of `text.insert` at the caret (so it lays
 //! out in place like typed text), underlined, until the IME commits it (one `text.insert`, one
-//! undo step) or clears it (the preview goes, leaving no undo step).
+//! undo step) or clears it (the preview goes, leaving no undo step). A delete-surrounding batch
+//! is one `text.deleteSurrounding` instead; the engine runs it through the command pipeline.
 
 use std::ops::Range;
 
@@ -31,6 +32,9 @@ pub struct TypeTool {
     start: Option<Point>,
     selecting: Option<u64>,
     drawing: bool,
+    /// A press on an empty frame: (frame, press point in spread space). A click turns it into a
+    /// text frame with the caret in it; a drag draws a new text frame over it, as in InDesign.
+    convert: Option<(u64, Point)>,
     /// A press on a table whose whole rows or columns are selected: (frame, press point in
     /// spread space) — a drag moves them, a click places the caret.
     cell_drag: Option<(u64, Point)>,
@@ -136,6 +140,13 @@ impl TypeTool {
     }
 }
 
+/// The text an IME commit types: `\r` becomes a paragraph break, and other control characters
+/// are dropped (Tab and the line break stay). The engine and the UI share this so a commit's
+/// exact accepted text is known without inspecting the document.
+pub fn ime_commit_text(text: &str) -> String {
+    text.chars().map(|c| if c == '\r' { '\n' } else { c }).filter(|c| !c.is_control() || matches!(c, '\n' | '\t')).collect()
+}
+
 /// Byte range in `s` of the characters `r` (IME ranges count characters; carets count bytes).
 /// `None` when `r` runs past the end of `s` or backwards.
 fn char_range_to_bytes(s: &str, r: Range<usize>) -> Option<Range<usize>> {
@@ -220,6 +231,7 @@ impl TypeTool {
         self.cell_drag = None;
         self.unit = None;
         self.border = None;
+        self.convert = None;
         if ev.kind == PointerKind::Down
             && let Some(b) = border_at(cx, ev.pos)
         {
@@ -238,6 +250,11 @@ impl TypeTool {
             // Whole rows/columns selected: wait to see whether this is a drag.
             if clicks == 1 && !ev.mods.shift && whole_rows_or_cols(cx) {
                 self.cell_drag = Some((id.0, sp));
+                return vec![];
+            }
+            // An empty frame: wait to see whether this is a click or a drag.
+            if clicks == 1 && !ev.mods.shift && !it.is_text_frame() {
+                self.convert = Some((id.0, sp));
                 return vec![];
             }
             self.selecting = Some(id.0);
@@ -291,6 +308,7 @@ impl TypeTool {
         let mut out = vec![];
         if !self.drawing {
             self.drawing = true;
+            self.convert = None;
             out.push(Action::Begin("Create Text Frame".into()));
         }
         out.push(Action::Preview(
@@ -318,6 +336,14 @@ impl TypeTool {
         if std::mem::take(&mut self.drawing) {
             self.selecting = None;
             return vec![Action::Commit];
+        }
+        // A click in an empty frame: it becomes a text frame with the caret in it. A release
+        // away from the press (with no drag in between) isn't a click: nothing changes.
+        if let Some((fid, at)) = self.convert.take() {
+            if start.is_some_and(|a| (ev.pos - a).hypot() >= cx.tol(3.0)) {
+                return vec![];
+            }
+            return vec![Action::Exec("text.placeCaret".into(), json!({"frame": fid, "point": [at.x, at.y]}))];
         }
         // Ends a press in text: drops dragged text, or is ignored by the engine.
         if let Some(fid) = self.selecting.take() {
@@ -364,6 +390,8 @@ impl Tool for TypeTool {
             let steps = if mods.cmd || mods.ctrl { 5.0 } else { 1.0 };
             vec![Action::Exec("type.kernStep".into(), json!({"steps": sign * steps}))]
         };
+        // A table cell's text, not a footnote's (which is addressed as a cell too).
+        let in_cell = cx.selection.text.is_some_and(|t| t.cell.is_some_and(|c| c.footnote_id().is_none()));
         match key {
             ToolKey::Left if mods.alt && !mods.shift => kern(-1.0),
             ToolKey::Right if mods.alt && !mods.shift => kern(1.0),
@@ -376,7 +404,11 @@ impl Tool for TypeTool {
             ToolKey::Backspace => vec![Action::Exec("text.delete".into(), json!({"forward": false, "word": mods.alt}))],
             ToolKey::Delete => vec![Action::Exec("text.delete".into(), json!({"forward": true, "word": mods.alt}))],
             ToolKey::Enter => vec![Action::Exec("text.insert".into(), json!({"text": if mods.shift { "\u{2028}" } else { "\n" }}))],
+            // In a table cell Shift+Tab goes back a cell (Tab goes on through `text.insert`).
+            ToolKey::Tab if mods.shift && in_cell => vec![Action::Exec("table.prevCell".into(), json!({}))],
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
+            // In a table Esc toggles between the cell's text and the cell, as InDesign.
+            ToolKey::Escape if in_cell => vec![Action::Exec("table.toggleSelection".into(), json!({}))],
             ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
             _ => vec![],
         }
@@ -441,8 +473,9 @@ impl Tool for TypeTool {
         out
     }
 
+    /// Normalize commit text, cancel marked text, and emit one `text.insert` when text remains and a text selection is active.
     fn ime_commit(&mut self, cx: &ToolContext, text: &str) -> Vec<Action> {
-        let text: String = text.chars().map(|c| if c == '\r' { '\n' } else { c }).filter(|c| !c.is_control() || matches!(c, '\n' | '\t')).collect();
+        let text = ime_commit_text(text);
         // The marked text goes; the result is typed in its place like any typing: one command,
         // one undo step.
         let mut out = if self.preedit.take().is_some() { vec![Action::Cancel] } else { vec![] };

@@ -100,6 +100,7 @@ fn nested_and_item_rotations_are_combined_before_measuring_graphics() {
     let image = ItemId(doc.alloc());
     let mut item = Item::new(image, doc.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 10.0)));
     item.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset: aid,
         size: (1.0, 1.0),
         xf: Affine::IDENTITY,
