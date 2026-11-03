@@ -350,7 +350,7 @@ mod document_fonts_tests {
 
         // Normalising the directory must not grant access outside the automation read root.
         let restricted = crate::file_access::AutomationRoots::new(&[Path::new("other")], &[]).unwrap();
-        let mut doc = s.doc().unwrap().doc.clone();
+        let mut doc = s.doc().unwrap().doc.as_ref().clone();
         let (scope, faces, _) = crate::file_access::confine(restricted.as_ref(), || super::load_document_fonts(&mut doc, "t.idml"));
         assert!(scope.is_none());
         assert_eq!(faces, 0);
