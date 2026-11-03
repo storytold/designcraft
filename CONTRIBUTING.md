@@ -3,6 +3,9 @@
 Before starting a change, read [AGENTS.md](AGENTS.md) for the clean-room, asset, architecture and
 verification rules. These apply to human and agent contributions.
 
+This guide covers only how to coordinate work. [AGENTS.md](AGENTS.md) is the authoritative source for
+the rules it describes; this file links to them instead of repeating them, so the two cannot drift apart.
+
 ## Check existing work
 
 Search [issues](https://github.com/storytold/designcraft/issues) and
