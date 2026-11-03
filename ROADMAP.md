@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-30** · Recovery data keeps what the user saw: a linked file that was moved, edited or
   deleted after placement keeps its copy in the snapshot (and in the copy republished after
   recovering), a snapshot still being written when its document is saved, reverted or closed is
