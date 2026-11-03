@@ -277,37 +277,74 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// Pages a merge may make in all, checked before any is built.
+const MAX_MERGED_PAGES: usize = 1_000_000;
+
 fn copy_records(dst: &mut Document, src: &Document, table: &Table, selected: &[usize], sources: &Sources, sink: &mut Sink) -> Result<()> {
     if let Some(&idx) = selected.first() {
         let maps = identity_map(dst);
         fill_at(dst, table, idx, sources, &maps, sink);
     }
-    for &idx in selected.iter().skip(1) {
-        let maps = append_copy(dst, src)?;
+    let rest = selected.len().saturating_sub(1);
+    if rest == 0 {
+        return Ok(());
+    }
+    // The pages of every further record in one insertion (one repagination, not one per record),
+    // then each copy goes onto its own.
+    let n = src.page_count().max(1);
+    let first_new = dst.page_count();
+    let total = n
+        .checked_mul(rest)
+        .filter(|t| t.saturating_add(first_new) <= MAX_MERGED_PAGES)
+        .ok_or_else(|| bad("data.merge", format!("the merge would make more than {MAX_MERGED_PAGES} pages")))?;
+    let parent = src.page(0).and_then(|p| p.parent);
+    dst.insert_pages(Some(first_new.saturating_sub(1)), total, parent)?;
+    let dst_starts = spread_starts(dst);
+    let src_starts = spread_starts(src);
+    for (k, &idx) in selected.iter().skip(1).enumerate() {
+        let maps = append_copy(dst, src, first_new + k * n, &dst_starts, &src_starts)?;
         fill_at(dst, table, idx, sources, &maps, sink);
     }
     Ok(())
 }
 
-fn append_copy(dst: &mut Document, src: &Document) -> Result<Maps> {
-    let start = dst.page_count();
+/// Absolute index of each spread's first page: page lookups by search rather than by walking the spreads.
+fn spread_starts(d: &Document) -> Vec<usize> {
+    let mut n = 0;
+    d.spreads
+        .iter()
+        .map(|s| {
+            let at = n;
+            n += s.pages.len();
+            at
+        })
+        .collect()
+}
+
+/// (spread, page in spread) of absolute page `abs`, as [`Document::page_loc`] says, given `starts`.
+fn loc_of(d: &Document, starts: &[usize], abs: usize) -> Option<(usize, usize)> {
+    let si = starts.partition_point(|&s| s <= abs).checked_sub(1)?;
+    let pi = abs - starts.get(si)?;
+    (pi < d.spreads.get(si)?.pages.len()).then_some((si, pi))
+}
+
+/// Copy `src`'s pages and items onto the pages of `dst` from absolute page `start`.
+fn append_copy(dst: &mut Document, src: &Document, start: usize, dst_starts: &[usize], src_starts: &[usize]) -> Result<Maps> {
     let n = src.page_count().max(1);
-    let parent = src.page(0).and_then(|p| p.parent);
-    dst.insert_pages(Some(start.saturating_sub(1)), n, parent)?;
     for i in 0..n {
         if let Some(pg) = src.page(i).cloned() {
-            assign_page(dst, start.saturating_add(i), &pg);
+            assign_page(dst, loc_of(dst, dst_starts, start.saturating_add(i)), &pg);
         }
     }
     let mut maps = Maps::default();
     for (spi, sp) in src.spreads.iter().enumerate() {
         for it in &sp.items {
             let pi = sp.page_at_x(it.bounds().center().x).unwrap_or(0);
-            let abs = src.first_page_of_spread(spi).saturating_add(pi);
+            let abs = src_starts.get(spi).copied().unwrap_or(0).saturating_add(pi);
             let dest_abs = start.saturating_add(abs);
-            let Some((dsi, _)) = dst.page_loc(dest_abs) else { continue };
+            let Some((dsi, dpi)) = loc_of(dst, dst_starts, dest_abs) else { continue };
             let src_x = src.page(abs).map(|p| p.x).unwrap_or(0.0);
-            let dst_x = dst.page(dest_abs).map(|p| p.x).unwrap_or(0.0);
+            let dst_x = dst.spreads.get(dsi).and_then(|s| s.pages.get(dpi)).map(|p| p.x).unwrap_or(0.0);
             copy_item(dst, src, it, SpreadRef::Doc(dsi), Vec2::new(dst_x - src_x, 0.0), &mut maps)?;
         }
     }
@@ -336,11 +373,13 @@ fn tile_records(dst: &mut Document, src: &Document, table: &Table, selected: &[u
         let template = src.page(0).cloned();
         dst.insert_pages(Some(0), plan.pages.saturating_sub(1), parent)?;
         if let Some(pg) = template {
+            let starts = spread_starts(dst);
             for i in 1..plan.pages {
-                assign_page(dst, i, &pg);
+                assign_page(dst, loc_of(dst, &starts, i), &pg);
             }
         }
     }
+    let starts = spread_starts(dst);
     for hit in plan.hits {
         let Some(&idx) = selected.get(hit.index) else { continue };
         if hit.index == 0 && hit.page == 0 && hit.col == 0 && hit.row == 0 {
@@ -348,7 +387,7 @@ fn tile_records(dst: &mut Document, src: &Document, table: &Table, selected: &[u
             fill_at(dst, table, idx, sources, &maps, sink);
             continue;
         }
-        let Some((dsi, _)) = dst.page_loc(hit.page) else { continue };
+        let Some((dsi, _)) = loc_of(dst, &starts, hit.page) else { continue };
         let mut maps = Maps::default();
         for id in &ids {
             let Some(it) = src.item(*id) else { continue };
@@ -409,8 +448,8 @@ fn block_of(doc: &Document) -> (Rect, Vec<ItemId>) {
     (block.unwrap_or(Rect::ZERO), ids)
 }
 
-fn assign_page(dst: &mut Document, abs: usize, from: &Page) {
-    let Some((si, pi)) = dst.page_loc(abs) else { return };
+fn assign_page(dst: &mut Document, loc: Option<(usize, usize)>, from: &Page) {
+    let Some((si, pi)) = loc else { return };
     let Some(sp) = dst.spreads.get_mut(si) else { return };
     let sp = Arc::make_mut(sp);
     let Some(p) = sp.pages.get_mut(pi) else { return };
