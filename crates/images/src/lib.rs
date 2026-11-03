@@ -86,7 +86,7 @@ fn svg_options() -> &'static usvg::Options<'static> {
                     Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP)
                 );
                 if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
-                    let xml = svg_data(&data)?;
+                    let xml = svg_data(&data, MAX_NESTED_SVG_BYTES.saturating_sub(NESTED_SVG_BYTES.get()).min(MAX_SVG_BYTES))?;
                     charge_nested_svg(xml.len())?;
                     svg_preflight(&xml)?;
                     default_data(mime, Arc::new(xml.into_owned()), options)
@@ -297,8 +297,8 @@ fn charge_nested_svg(n: usize) -> Option<()> {
     Some(())
 }
 
-/// Enforce the encoded-size cap, gunzip SVGZ data with that bound, and return the decoded content within the cap as an owned or borrowed `Cow`.
-fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+/// Enforce the encoded-size cap, gunzip SVGZ data to at most `limit` bytes, and return the decoded content as an owned or borrowed `Cow`.
+fn svg_data(bytes: &[u8], limit: usize) -> Option<std::borrow::Cow<'_, [u8]>> {
     use std::io::Read;
 
     if bytes.len() > MAX_SVG_BYTES {
@@ -306,8 +306,8 @@ fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
     }
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut xml = Vec::new();
-        flate2::read::GzDecoder::new(bytes).take(MAX_SVG_BYTES as u64 + 1).read_to_end(&mut xml).ok()?;
-        (xml.len() <= MAX_SVG_BYTES).then_some(std::borrow::Cow::Owned(xml))
+        flate2::read::GzDecoder::new(bytes).take(limit as u64 + 1).read_to_end(&mut xml).ok()?;
+        (xml.len() <= limit).then_some(std::borrow::Cow::Owned(xml))
     } else {
         Some(std::borrow::Cow::Borrowed(bytes))
     }
@@ -352,7 +352,7 @@ fn svg_preflight(bytes: &[u8]) -> Option<()> {
 /// Parse an SVG with at most 16 MiB encoded/decoded data, 100,000 XML events and
 /// 64 nested elements. Reject internal DTD subsets before recursive conversion.
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
-    let xml = svg_data(bytes)?;
+    let xml = svg_data(bytes, MAX_SVG_BYTES)?;
     svg_preflight(&xml)?;
     NESTED_SVG_BYTES.set(0);
     usvg::Tree::from_data(&xml, svg_options()).ok()
