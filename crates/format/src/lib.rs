@@ -224,10 +224,13 @@ fn read_entry(
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
+    let read = f.take(limit.saturating_add(1)).read_to_end(&mut v);
+    let n = v.len() as u64;
+    // What a failed read produced was inflated all the same: it counts against the archive's budget.
+    *left = left.saturating_sub(n);
+    if read.is_err() {
         return Ok(None);
     }
-    let n = v.len() as u64;
     if n > limit {
         return Err(too_big());
     }
