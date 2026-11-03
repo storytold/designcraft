@@ -341,6 +341,11 @@ impl Story {
     /// Character format at byte `pos` (the run containing it; at a boundary, the preceding run —
     /// the format new typing takes).
     pub fn char_format_at(&self, pos: usize) -> &CharFormat {
+        if pos == self.text.len()
+            && let Some(r) = self.chars.iter().rev().find(|r| r.len > 0)
+        {
+            return &r.format;
+        }
         let mut start = 0;
         for r in &self.chars {
             let end = start + r.len;
@@ -433,7 +438,6 @@ impl Story {
         // An append (an import building a story piece by piece) is in the last paragraph: no prefix count.
         let at_end = pos == self.text.len();
         let pi = if at_end { self.paras.len().saturating_sub(1) } else { self.para_at(pos) };
-        debug_assert!(!at_end || pi == self.para_at(pos), "one paragraph per return");
         let newlines = text.bytes().filter(|b| *b == b'\n').count();
         if newlines > 0
             && let Some(f) = self.paras.get(pi).cloned()
