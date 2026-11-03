@@ -233,7 +233,7 @@ pub fn mip_now(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -
     if let Some(pm) = level.and_then(|l| cached_level(bytes, page, l)) {
         return Mip::Ready(pm);
     }
-    if !background::queue(bytes, page, width_pt, on_screen) {
+    if !background::queue(bytes, page, level, width_pt, on_screen) {
         return mip(bytes, page, width_pt, on_screen).map_or(Mip::Failed, Mip::Ready);
     }
     DEFERRED.with(|d| d.set(true));
@@ -298,6 +298,7 @@ mod background {
     struct Job {
         bytes: Arc<Vec<u8>>,
         page: u32,
+        level: Option<u8>,
         width_pt: f64,
         on_screen: f64,
     }
@@ -313,7 +314,7 @@ mod background {
         /// Being decoded now (one per thread).
         busy: Vec<(usize, u32)>,
         /// The last decodes finished, newest last.
-        done: VecDeque<((usize, u32), std::time::Instant)>,
+        done: VecDeque<((usize, u32), Option<u8>, std::time::Instant)>,
         threads: usize,
     }
 
@@ -321,15 +322,15 @@ mod background {
     static READY: Condvar = Condvar::new();
 
     /// Ask for a background decode; false when no decode thread can run (decode in place).
-    pub(super) fn queue(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> bool {
-        let job = Job { bytes: bytes.clone(), page, width_pt, on_screen };
+    pub(super) fn queue(bytes: &Arc<Vec<u8>>, page: u32, level: Option<u8>, width_pt: f64, on_screen: f64) -> bool {
+        let job = Job { bytes: bytes.clone(), page, level, width_pt, on_screen };
         let key = job.key();
         let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
         if q.busy.contains(&key) {
             // Finishing it advances the generation; a different size is asked for then.
             return true;
         }
-        if q.done.iter().any(|(k, at)| *k == key && at.elapsed() < RECENT) {
+        if q.done.iter().any(|(k, l, at)| *k == key && *l == level && at.elapsed() < RECENT) {
             return false;
         }
         q.jobs.retain(|j| j.key() != key);
@@ -338,11 +339,12 @@ mod background {
             q.jobs.pop_front();
         }
         if q.threads < THREADS {
-            if std::thread::Builder::new().name("designcraft-decode".into()).spawn(run).is_err() {
+            if std::thread::Builder::new().name("designcraft-decode".into()).spawn(run).is_ok() {
+                q.threads += 1;
+            } else if q.threads == 0 {
                 q.jobs.retain(|j| j.key() != key);
-                return q.threads > 0;
+                return false;
             }
-            q.threads += 1;
         }
         READY.notify_one();
         true
@@ -362,18 +364,17 @@ mod background {
             };
             // A decoder panic must not take the thread with it.
             let key = job.key();
-            let decoded = matches!(std::panic::catch_unwind(|| super::mip(&job.bytes, job.page, job.width_pt, job.on_screen)), Ok(Some(_)));
+            let result = std::panic::catch_unwind(|| super::mip(&job.bytes, job.page, job.width_pt, job.on_screen));
+            if result.is_err() {
+                super::with(|c| c.mark_bad(key, &job.bytes));
+            }
             {
                 let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
                 q.busy.retain(|k| *k != key);
-                q.done.push_back((key, std::time::Instant::now()));
+                q.done.push_back((key, job.level, std::time::Instant::now()));
                 while q.done.len() > 64 {
                     q.done.pop_front();
                 }
-            }
-            // A failure is remembered (`Mip::Failed`); only new pixels need a render.
-            if !decoded {
-                continue;
             }
             GENERATION.fetch_add(1, Ordering::AcqRel);
             let waker = WAKER.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -394,7 +395,7 @@ mod background {
     pub(super) static WAKER: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
     /// No threads: always decode in place.
-    pub(super) fn queue(_: &Arc<Vec<u8>>, _: u32, _: f64, _: f64) -> bool {
+    pub(super) fn queue(_: &Arc<Vec<u8>>, _: u32, _: Option<u8>, _: f64, _: f64) -> bool {
         false
     }
 }
