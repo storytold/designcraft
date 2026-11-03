@@ -324,10 +324,23 @@ impl Search {
                 .filter(|(m, _)| within(&spans, m))
                 .take(limit)
                 .collect()),
-            _ => Ok(self.find_all(d, sid, cell, r, text, limit)?.into_iter().map(|m| (m, rep.to_string())).collect()),
+            _ => {
+                let found = self.find_all(d, sid, cell, r, text, limit)?;
+                // Every match gets its own copy of the change: bounded before any is made.
+                if found.len().saturating_mul(rep.len()) > MAX_CHANGE_BYTES {
+                    return Err(bad(
+                        "find.change",
+                        format!("changing {} matches to {} bytes each would put more than {MAX_CHANGE_BYTES} bytes in", found.len(), rep.len()),
+                    ));
+                }
+                Ok(found.into_iter().map(|m| (m, rep.to_string())).collect())
+            }
         }
     }
 }
+
+/// The most text one Change All may put into a story: the matches times the change's length.
+const MAX_CHANGE_BYTES: usize = 64 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Domain {

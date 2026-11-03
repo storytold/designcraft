@@ -1,6 +1,8 @@
 //! Books (File › New / Open Book): an ordered list of documents with continuous page numbers,
 //! styles synchronised from a style source, and one PDF for the whole book. Saved as `.dcbook`.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -195,21 +197,25 @@ fn sync_styles(s: &Session) -> Result<Value> {
         writable_chapter(s, path, "book.syncStyles")?;
         let mut d = load(path)?;
         {
+            // The source's styles replace the chapter's of the same names and go last, in the
+            // source's order (one pass over each list, not one per style).
             let st = d.styles_mut();
-            for ps in &styles.paragraph {
-                st.paragraph.retain(|x| x.name != ps.name);
-                st.paragraph.push(ps.clone());
-            }
-            for cs in &styles.character {
-                st.character.retain(|x| x.name != cs.name);
-                st.character.push(cs.clone());
-            }
+            let names: HashSet<&str> = styles.paragraph.iter().map(|x| x.name.as_str()).collect();
+            st.paragraph.retain(|x| !names.contains(x.name.as_str()));
+            st.paragraph.extend(styles.paragraph.iter().cloned());
+            let names: HashSet<&str> = styles.character.iter().map(|x| x.name.as_str()).collect();
+            st.character.retain(|x| !names.contains(x.name.as_str()));
+            st.character.extend(styles.character.iter().cloned());
         }
+        let mut at: HashMap<String, usize> = d.swatches.iter().enumerate().map(|(i, w)| (w.name.clone(), i)).collect();
         for sw in &swatches {
-            match d.swatches.iter_mut().find(|w| w.name == sw.name) {
+            match at.get(&sw.name).and_then(|i| d.swatches.get_mut(*i)) {
                 Some(w) if !w.locked => *w = sw.clone(),
                 Some(_) => {}
-                None => d.swatches.push(sw.clone()),
+                None => {
+                    at.insert(sw.name.clone(), d.swatches.len());
+                    d.swatches.push(sw.clone());
+                }
             }
         }
         batch.stage(path, &d)?;

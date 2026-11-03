@@ -959,3 +959,18 @@ fn change_takes_any_selection_find_next_made() {
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().text, if grep { "a<a>" } else { "ab" });
     }
 }
+
+/// Change All with a long change and many matches is refused before any copy of the change is
+/// made, not after the memory for all of them has gone.
+#[test]
+fn change_all_is_bounded_by_what_it_would_put_in() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let text = "x ".repeat(2048);
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": text})).unwrap();
+    let huge = "y".repeat(40_000);
+    let e = s.execute("find.change", &json!({"find": "x", "change": huge})).unwrap_err().to_string();
+    assert!(e.contains("would put more than"), "{e}");
+    let r = s.execute("find.change", &json!({"find": "x", "change": "yy"})).unwrap();
+    assert_eq!(r["count"], 2048);
+}
