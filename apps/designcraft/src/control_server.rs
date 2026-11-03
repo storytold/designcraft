@@ -508,19 +508,25 @@ mod tests {
         assert!(text.contains("no token in time"), "{text}");
         assert!(started.elapsed() < wait * 5, "closed at the deadline, not later: {:?}", started.elapsed());
 
-        // A byte every 100 ms, never a whole line: each read is short, but the wait is in all.
+        // A byte every 100 ms for two seconds, never a whole line: every read is well inside the
+        // wait, but the wait is in all, so the server closes during the drip, not after it.
         let mut c = client();
+        let mut watch = c.try_clone().unwrap();
         let started = Instant::now();
-        for b in TOKEN.bytes().take(8) {
+        let closed = std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = watch.read_to_string(&mut text);
+            (text, started.elapsed())
+        });
+        for b in TOKEN.bytes().take(20) {
             if c.write_all(&[b]).is_err() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        let mut text = String::new();
-        let _ = c.read_to_string(&mut text);
+        let (text, at) = closed.join().unwrap();
         assert!(text.contains("no token in time"), "{text}");
-        assert!(started.elapsed() < wait * 5, "{:?}", started.elapsed());
+        assert!(at < wait * 3, "closed {at:?} in, while the bytes were still coming");
 
         // The token, then idle past the wait: still connected. The next line is read and
         // answered (junk, so the answer is an error), which a closed connection could not do.
