@@ -35,6 +35,6 @@ pub struct Services {
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
     /// Open a linked file in its application or show it in the file manager (Edit Original,
-    /// Reveal in Explorer / Finder). Without it, the file's `file://` URL is opened instead.
+    /// Reveal in Explorer / Finder). Without it (the web build), Edit Original and Reveal are greyed out.
     pub open_path: Option<OpenPathFn>,
 }
