@@ -1405,50 +1405,53 @@ fn scale_text_frame(d: &mut Document, id: ItemId, m: Affine, k: f64, strokes: bo
     // paragraph's style). Each paragraph keeps its mark.
     let mut runs = Vec::new();
     let mut paras = Vec::new();
+    let all: Vec<_> = st.runs().collect();
     for (i, pr) in st.para_ranges().into_iter().enumerate() {
         let Some(pf) = st.paras.get(i) else { break };
         let (pp, base) = d.styles.resolve_para(pf);
         let end = pr.end.saturating_add(1).min(st.text.len());
-        for (r, f) in st.runs() {
+        // Runs ascend, so the first one reaching into the paragraph is a search away.
+        for (r, f) in &all[all.partition_point(|(r, _)| r.end <= pr.start)..] {
+            if r.start >= end {
+                break;
+            }
             let (a, z) = (r.start.max(pr.start), r.end.min(end));
             if a < z {
                 runs.push((a..z, d.styles.resolve_char(&base, f)));
             }
         }
-        paras.push((pr.start, pp));
+        paras.push((i, pp));
     }
     let h = sx / sy;
     let Some(st) = d.story_mut(story) else { return false };
-    for (r, cp) in runs {
-        st.format_chars(r, |f| {
-            let o = &mut f.over;
-            o.size = Some(cp.size * sy);
-            if let designcraft_doc::Leading::Points(v) = cp.leading {
-                o.leading = Some(designcraft_doc::Leading::Points(v * sy));
+    st.format_pieces(&runs, |f, cp| {
+        let o = &mut f.over;
+        o.size = Some(cp.size * sy);
+        if let designcraft_doc::Leading::Points(v) = cp.leading {
+            o.leading = Some(designcraft_doc::Leading::Points(v * sy));
+        }
+        if cp.baseline_shift != 0.0 {
+            o.baseline_shift = Some(cp.baseline_shift * sy);
+        }
+        if (h - 1.0).abs() > 1e-9 {
+            o.h_scale = Some(cp.h_scale * h);
+        }
+        if cp.stroke != "[None]" {
+            o.stroke_weight = Some(cp.stroke_weight * sy);
+        }
+        for (v, w) in [
+            (&mut o.underline_weight, cp.underline_weight),
+            (&mut o.underline_offset, cp.underline_offset),
+            (&mut o.strikethrough_weight, cp.strikethrough_weight),
+            (&mut o.strikethrough_offset, cp.strikethrough_offset),
+        ] {
+            if let Some(w) = w {
+                *v = Some(Some(w * sy));
             }
-            if cp.baseline_shift != 0.0 {
-                o.baseline_shift = Some(cp.baseline_shift * sy);
-            }
-            if (h - 1.0).abs() > 1e-9 {
-                o.h_scale = Some(cp.h_scale * h);
-            }
-            if cp.stroke != "[None]" {
-                o.stroke_weight = Some(cp.stroke_weight * sy);
-            }
-            for (v, w) in [
-                (&mut o.underline_weight, cp.underline_weight),
-                (&mut o.underline_offset, cp.underline_offset),
-                (&mut o.strikethrough_weight, cp.strikethrough_weight),
-                (&mut o.strikethrough_offset, cp.strikethrough_offset),
-            ] {
-                if let Some(w) = w {
-                    *v = Some(Some(w * sy));
-                }
-            }
-        });
-    }
-    for (at, pp) in paras {
-        st.format_paras(at..at, |p| {
+        }
+    });
+    for (i, pp) in paras {
+        st.format_para(i, |p| {
             let a = &mut p.para;
             for (v, w, s) in [
                 (&mut a.left_indent, pp.left_indent, sx),
