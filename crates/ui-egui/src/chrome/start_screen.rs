@@ -215,20 +215,20 @@ pub(super) fn recent_file_stat_at(ctx: &egui::Context, path: &str, now: f64) -> 
     ctx.data_mut(|d| d.insert_temp(key, st.clone()));
     #[cfg(not(target_arch = "wasm32"))]
     if !cfg!(test) {
-        reader::submit(ctx, path.to_owned());
+        reader::submit(ctx, path.to_owned(), st.clone());
         return st;
     }
     // The web has no threads, and a test reads the file it made itself.
-    let st = read_recent_at(path, now);
+    let st = read_recent_at(path, now, &st);
     ctx.data_mut(|d| d.insert_temp(key, st.clone()));
     st
 }
 
 /// `path` as it is on disk now: what [`reader`]'s thread reads.
-fn read_recent_at(path: &str, now: f64) -> RecentStat {
+fn read_recent_at(path: &str, now: f64, known: &RecentStat) -> RecentStat {
     let meta = designcraft_engine::io::metadata(path).ok().filter(designcraft_engine::io::Metadata::is_file);
     let modified = meta.as_ref().and_then(|m| m.modified().ok());
-    let image = modified.and_then(|_| recent_picture(path));
+    let image = if modified.is_some() && modified == known.modified { known.image.clone() } else { modified.and_then(|_| recent_picture(path)) };
     RecentStat { exists: meta.is_some(), modified, checked: now, image }
 }
 
@@ -272,7 +272,7 @@ mod reader {
     use super::{RecentStat, read_recent_at};
 
     struct Reader {
-        jobs: Sender<String>,
+        jobs: Sender<(String, RecentStat)>,
         done: Mutex<Receiver<(String, RecentStat)>>,
     }
 
@@ -281,12 +281,12 @@ mod reader {
     fn reader(ctx: &egui::Context) -> Option<&'static Reader> {
         READER
             .get_or_init(|| {
-                let (jobs, job_rx) = std::sync::mpsc::channel::<String>();
+                let (jobs, job_rx) = std::sync::mpsc::channel::<(String, RecentStat)>();
                 let (result_tx, result_rx) = std::sync::mpsc::channel::<(String, RecentStat)>();
                 let ctx = ctx.clone();
                 let spawned = std::thread::Builder::new().name("recent-files".into()).spawn(move || {
-                    while let Ok(path) = job_rx.recv() {
-                        let stat = read_recent_at(&path, crate::now_ms());
+                    while let Ok((path, known)) = job_rx.recv() {
+                        let stat = read_recent_at(&path, crate::now_ms(), &known);
                         if result_tx.send((path, stat)).is_err() {
                             break;
                         }
@@ -302,9 +302,9 @@ mod reader {
     }
 
     /// Queue a read of `path`.
-    pub(super) fn submit(ctx: &egui::Context, path: String) {
+    pub(super) fn submit(ctx: &egui::Context, path: String, known: RecentStat) {
         if let Some(r) = reader(ctx) {
-            let _ = r.jobs.send(path);
+            let _ = r.jobs.send((path, known));
         }
     }
 
