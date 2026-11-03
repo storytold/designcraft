@@ -357,13 +357,20 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
         return;
     }
     if st.text.chars().any(|c| designcraft_doc::vars::var_index(c).is_some_and(|k| k >= i)) {
+        // The instances as they are now, replaced last first so earlier positions stay valid:
+        // text put in isn't searched again (a value holding the marker would never end).
+        let instances = |text: &str, target: &str| {
+            let mut at: Vec<usize> = text.match_indices(target).map(|(pos, _)| pos).collect();
+            at.reverse();
+            at
+        };
         let target = var_char(i).unwrap_or(' ').to_string();
-        while let Some(pos) = st.text.find(&target) {
+        for pos in instances(&st.text, &target) {
             st.replace(pos..pos + target.len(), value);
         }
         for k in i + 1..n {
             let (from, to) = (var_char(k).unwrap_or(' ').to_string(), var_char(k - 1).unwrap_or(' ').to_string());
-            while let Some(pos) = st.text.find(&from) {
+            for pos in instances(&st.text, &from) {
                 st.replace(pos..pos + from.len(), &to);
             }
         }
