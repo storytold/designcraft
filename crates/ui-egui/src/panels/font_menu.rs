@@ -217,8 +217,7 @@ fn preview(
     ui: &Ui,
     fonts: &designcraft_fonts::ScopedFonts<'static>,
     scope: u32,
-    family: &str,
-    style: &str,
+    (family, style): (&str, &str),
     text: &str,
     size: f32,
     color: Color32,
@@ -536,6 +535,51 @@ pub fn font_menu_header<'a>(app: &'a mut DesignApp, ui: &mut Ui, menu: &'a [Fami
     FontMenu { app, menu, current, st, rows, highlighted_row, loading, sample, row_h, sample_size, down, up, escape, pick }
 }
 
+/// A family row's favourite star and (for a family of several styles) its open/close arrow.
+/// `flags`: favourite, expanded, has an arrow. Says which of the two was clicked.
+fn star_and_arrow(
+    ui: &Ui,
+    p: &egui::Painter,
+    r: Rect,
+    (f, recent): (&String, bool),
+    (fav, open, has_arrow): (bool, bool, bool),
+    t: &Tokens,
+    arrow_label: &str,
+) -> (bool, bool) {
+    let cy = r.center().y;
+    let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
+    let sr = ui.interact(star, ui.scope_id().with(("fav", f, recent)), Sense::click());
+    paint_star(p, star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
+    let mut arrow_hit = false;
+    // The arrow opens a family of several styles.
+    if has_arrow {
+        let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
+        let ar = ui.interact(arrow, ui.scope_id().with(("open", f)), Sense::click());
+        ar.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, arrow_label));
+        crate::icons::paint(p, arrow.shrink(2.0), if open { "chevron-down" } else { "chevron-right" }, t.icon);
+        arrow_hit = ar.clicked();
+    }
+    (sr.clicked(), arrow_hit)
+}
+
+/// Removes `f` from the favourites if it is one, else adds it.
+fn toggle_favorite(favs: &mut Vec<String>, f: String) {
+    if favs.contains(&f) {
+        favs.retain(|x| *x != f);
+    } else {
+        favs.push(f);
+    }
+}
+
+/// Recently used fonts, newest first.
+fn remember_recent(app: &mut DesignApp, family: &str) {
+    let mut recent = app.session.prefs.recent_fonts.clone();
+    recent.retain(|f| f != family);
+    recent.insert(0, family.to_string());
+    recent.truncate(RECENT);
+    let _ = app.run("prefs.set", json!({ "recentFonts": recent }));
+}
+
 /// The Font menu's rows, under [`font_menu_header`]. Returns the font picked.
 pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
     let FontMenu { app, menu, current, mut st, rows, highlighted_row, loading, sample, row_h, sample_size, down, up, escape, mut pick } = m;
@@ -550,10 +594,8 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
     let mut toggle_expand = None;
     let mut toggle_fav = None;
     let mut similar = None;
-    if loading {
-        crate::rtl::label(ui, egui::RichText::new(tr("Loading fonts…")).color(t.text_dim));
-    } else if rows.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(tr("No fonts match")).color(t.text_dim));
+    if let Some(note) = if loading { Some("Loading fonts…") } else { rows.is_empty().then_some("No fonts match") } {
+        crate::rtl::label(ui, egui::RichText::new(tr(note)).color(t.text_dim));
     }
     for (i, row) in rows.iter().enumerate() {
         let (family, style, recent) = match row {
@@ -597,28 +639,17 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let cy = r.center().y;
         let mut handled = false;
         if style.is_none() {
-            // Favourite star.
-            let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
-            let fav = favs.contains(f);
-            let sr = ui.interact(star, ui.scope_id().with(("fav", f, recent)), Sense::click());
-            paint_star(&p, star.center(), 6.5, fav, if fav { t.accent } else { t.text_dim });
-            if sr.clicked() {
+            let expanded = st.expanded.contains(f);
+            let arrow_label = tr(if expanded { "Hide Styles" } else { "Show Styles" });
+            let flags = (favs.contains(f), expanded, m.styles.len() > 1 && !recent);
+            let (star_hit, arrow_hit) = star_and_arrow(ui, &p, r, (f, recent), flags, &t, arrow_label);
+            if star_hit {
                 toggle_fav = Some(f.clone());
                 handled = true;
             }
-            // The arrow opens a family of several styles.
-            if m.styles.len() > 1 && !recent {
-                let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
-                let ar = ui.interact(arrow, ui.scope_id().with(("open", f)), Sense::click());
-                ar.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::Role::Button, true, tr(if st.expanded.contains(f) { "Hide Styles" } else { "Show Styles" }))
-                });
-                let open = st.expanded.contains(f);
-                crate::icons::paint(&p, arrow.shrink(2.0), if open { "chevron-down" } else { "chevron-right" }, t.icon);
-                if ar.clicked() {
-                    toggle_expand = Some(f.clone());
-                    handled = true;
-                }
+            if arrow_hit {
+                toggle_expand = Some(f.clone());
+                handled = true;
             }
         }
         // Name (and how many styles), then the sample in the face, then the format.
@@ -628,7 +659,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let preview_x = r.min.x + (r.width() * 0.42).max(190.0);
         let icons_x = r.max.x - 52.0;
         let face_style = style.map_or_else(|| regular(&m.styles), str::to_string);
-        let tex = preview(ui, &fonts, scope, f, &face_style, &sample, sample_size, t.text);
+        let tex = preview(ui, &fonts, scope, (f, &face_style), &sample, sample_size, t.text);
         let size = tex.size_vec2() / ui.ctx().pixels_per_point();
         let shown = Rect::from_min_size(pos2(preview_x, cy - size.y / 2.0), size);
         let clip = Rect::from_min_max(pos2(preview_x, r.min.y), pos2(icons_x - 6.0, r.max.y));
@@ -659,11 +690,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         st.expanded.insert(f);
     }
     if let Some(f) = toggle_fav {
-        if favs.contains(&f) {
-            favs.retain(|x| *x != f);
-        } else {
-            favs.push(f);
-        }
+        toggle_favorite(&mut favs, f);
         favs_changed = true;
     }
     if let Some(f) = similar {
@@ -675,12 +702,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         let _ = app.run("prefs.set", json!({ "favoriteFonts": favs }));
     }
     if let Some(p) = &pick {
-        // Recently used, newest first.
-        let mut recent = app.session.prefs.recent_fonts.clone();
-        recent.retain(|f| *f != p.family);
-        recent.insert(0, p.family.clone());
-        recent.truncate(RECENT);
-        let _ = app.run("prefs.set", json!({ "recentFonts": recent }));
+        remember_recent(app, &p.family);
         ui.close();
     } else if escape {
         ui.close();

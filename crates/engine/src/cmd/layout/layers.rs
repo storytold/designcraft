@@ -1,4 +1,4 @@
-use super::*;
+use super::{LAYER_COLORS, LayerId, Result, Session, Value, bad, ok};
 
 /// Layer Options: every field in one undo step; a bad name or colour changes nothing.
 pub(super) fn set_layer(s: &mut Session, p: &Value) -> Result<Value> {

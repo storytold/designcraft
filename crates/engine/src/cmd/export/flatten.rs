@@ -1,4 +1,4 @@
-use super::*;
+use super::{EngineError, Result};
 
 /// Does this object (or anything in it) need the transparency flattener?
 pub(super) fn transparent(it: &designcraft_doc::Item) -> bool {
@@ -100,8 +100,7 @@ pub(super) fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose
                 &below,
                 cache,
                 &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
-                w,
-                h,
+                (w, h),
                 view,
                 &opts,
             );
@@ -220,7 +219,7 @@ pub(super) fn shadow_masks(
             let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
             let opts = designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
             let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::IDENTITY }];
-            rr.render(&solo, cache, &placed, w, h, view, &opts).pixels.as_chunks::<4>().0.iter().map(|px| px[3]).collect::<Vec<u8>>()
+            rr.render(&solo, cache, &placed, (w, h), view, &opts).pixels.as_chunks::<4>().0.iter().map(|px| px[3]).collect::<Vec<u8>>()
         };
         let (with, without) = (alpha(true), alpha(false));
         let n = w as usize * h as usize;
@@ -289,8 +288,7 @@ pub(super) fn rasterize_where(
             &solo,
             cache,
             &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
-            w,
-            h,
+            (w, h),
             view,
             &opts,
         );
