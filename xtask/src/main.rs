@@ -255,16 +255,18 @@ const PNGSUITE_MAX_ARCHIVE: u64 = 1 << 20;
 const PNGSUITE_MAX_ENTRIES: usize = 1000;
 const PNGSUITE_MAX_EXTRACTED: u64 = 16 << 20;
 
-/// Bytes of the files under `dir`.
+/// Bytes of the files under `dir`; `u64::MAX` when any part of it cannot be read, so the caller refuses it.
 fn dir_bytes(dir: &std::path::Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+        let Ok(rd) = std::fs::read_dir(&d) else { return u64::MAX };
+        for e in rd {
+            let Ok(e) = e else { return u64::MAX };
             match e.metadata() {
                 Ok(m) if m.is_dir() => stack.push(e.path()),
                 Ok(m) => total = total.saturating_add(m.len()),
-                Err(_) => {}
+                Err(_) => return u64::MAX,
             }
         }
     }
@@ -309,7 +311,10 @@ Tests that use a corpus skip cleanly when it is absent.
     }
     let mut tar = Command::new("tar");
     tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
-    run(tar, "tar -xzf PngSuite-2017jul19.tgz")?;
+    if let Err(e) = run(tar, "tar -xzf PngSuite-2017jul19.tgz") {
+        let _ = std::fs::remove_dir_all(&dest);
+        return refuse(e);
+    }
     let _ = std::fs::remove_file(&tgz);
     if dir_bytes(&dest) > PNGSUITE_MAX_EXTRACTED {
         let _ = std::fs::remove_dir_all(&dest);
