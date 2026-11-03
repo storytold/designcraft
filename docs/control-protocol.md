@@ -15,8 +15,13 @@ boundary between users, so a connection runs nothing until it presents the token
 A bare token on its own line is accepted too. A wrong or missing token gets one error reply and
 the connection is closed, like any other line that is not a request.
 
-Each launch makes a fresh 128-bit token and writes it to the profile directory as `control-token`,
-readable only by its owner (mode 600 on unix); the app prints the path on startup. Clients:
+Send it as soon as you connect: a connection has **10 seconds in all** to present the token, its
+line may be at most 256 bytes, and at most 8 blank lines may come before it. Past any of these it
+gets one error reply and is closed, so connections that never authenticate cannot hold the
+channel's slots. Once the token is accepted the connection may stay idle as long as you like.
+
+Each launch makes a fresh 128-bit token and writes it to the profile directory as
+`control-token-<port>`, readable only by its owner (mode 600 on unix); the app prints the path on startup. Clients:
 `designcraft-cli mcp --connect` reads `DESIGNCRAFT_CONTROL_TOKEN`, else the file named by
 `DESIGNCRAFT_CONTROL_TOKEN_FILE`. Without a random source for a token the channel does not open at
 all, rather than opening without one.
