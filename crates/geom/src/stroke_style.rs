@@ -147,6 +147,17 @@ pub fn hashed(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stripes_draw_at_most_the_band_cap() {
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((100.0, 0.0));
+        let one = stripes(&line, 4.0, &[(0.0, 0.1)], 0.1).elements().len();
+        let many = vec![(0.0, 0.1); 100_000];
+        let all = stripes(&line, 4.0, &many, 0.1).elements().len();
+        assert_eq!(all, one * MAX_STRIPE_BANDS);
+    }
     use kurbo::Shape;
 
     fn line() -> BezPath {
@@ -191,16 +202,5 @@ mod tests {
         let w = wavy(&b, 4.0, 0.01);
         let bridged = (0..=2000).map(|i| f64::from(i) * 0.05).filter(|&x| w.contains(Point::new(x, 25.0))).count();
         assert_eq!(bridged, 0, "wavy bridges the subpaths: {:?}", w.bounding_box());
-    }
-
-    #[test]
-    fn stripes_draw_at_most_the_band_cap() {
-        let mut line = BezPath::new();
-        line.move_to((0.0, 0.0));
-        line.line_to((100.0, 0.0));
-        let one = stripes(&line, 4.0, &[(0.0, 0.1)], 0.1).elements().len();
-        let many = vec![(0.0, 0.1); 100_000];
-        let all = stripes(&line, 4.0, &many, 0.1).elements().len();
-        assert_eq!(all, one * MAX_STRIPE_BANDS);
     }
 }
