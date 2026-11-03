@@ -448,7 +448,6 @@ pub(super) fn place_text(
             // Into the text at the insertion point (replacing the selection).
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
-            let ins_len = imp.story.text.len();
             story.delete(r.clone());
             // An insertion point in an empty paragraph takes the first imported paragraph's style
             // (insert_story would keep the empty paragraph's own, losing the styleMap result).
@@ -458,6 +457,7 @@ pub(super) fn place_text(
             if blank && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0)) {
                 *p = ParaFormat { table: p.table, ..first.clone() };
             }
+            let ins_len = end.saturating_sub(r.start);
             d.adjust_text_ranges(t.story, r, ins_len);
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             if link.is_some() {

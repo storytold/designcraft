@@ -96,61 +96,13 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
 
-            let redirect_links: Vec<u64> = if !r.is_empty() && !text.is_empty() {
-                d.hyperlinks
-                    .iter()
-                    .filter_map(|h| match &h.source {
-                        designcraft_doc::HyperlinkSource::Text { story: sid, start, end }
-                            if *sid == t.story && *start >= r.start && *end <= r.end =>
-                        {
-                            Some(h.id)
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
-            let redirect_phs: Vec<u64> = if !r.is_empty() && !text.is_empty() {
-                d.data_merge
-                    .placeholders
-                    .iter()
-                    .filter_map(|ph| match &ph.anchor {
-                        designcraft_doc::PlaceholderAnchor::Text { story: sid, start, end }
-                            if *sid == t.story && *start >= r.start && *end <= r.end =>
-                        {
-                            Some(ph.id)
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
-
+            if let Some((range, len)) = auto_edit {
+                d.adjust_text_ranges(t.story, range, len);
+            }
             for rr in removed {
                 d.adjust_text_ranges(t.story, rr, 0);
             }
             d.adjust_text_ranges(t.story, at..at, text.len());
-            if !redirect_links.is_empty() || !redirect_phs.is_empty() {
-                let ins_span = at..at + text.len();
-                for id in redirect_links {
-                    if let Some(h) = d.hyperlinks.iter_mut().find(|h| h.id == id)
-                        && let designcraft_doc::HyperlinkSource::Text { start, end, .. } = &mut h.source
-                    {
-                        *start = ins_span.start;
-                        *end = ins_span.end;
-                    }
-                }
-                for id in redirect_phs {
-                    if let Some(ph) = d.data_merge.placeholders.iter_mut().find(|ph| ph.id == id)
-                        && let designcraft_doc::PlaceholderAnchor::Text { start, end, .. } = &mut ph.anchor
-                    {
-                        *start = ins_span.start;
-                        *end = ins_span.end;
-                    }
-                }
-            }
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));

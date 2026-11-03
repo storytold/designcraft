@@ -379,7 +379,7 @@ fn track_changes_accept_all_shifts_later_hyperlinks() {
 }
 
 #[test]
-fn track_changes_replacing_hyperlink_text_and_accepting_preserves_link() {
+fn track_changes_replacing_hyperlink_text_leaves_link_on_deleted_span_until_resolved() {
     let initial = "Hello world. See page 2 for details.";
     let (mut s, sid, _) = fixture(initial);
 
@@ -395,14 +395,38 @@ fn track_changes_replacing_hyperlink_text_and_accepting_preserves_link() {
     s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
     s.execute("text.insert", &json!({"text": "p. 2", "raw": true})).unwrap();
 
-    // Accept All
-    s.execute("changes.acceptAll", &json!({})).unwrap();
+    // While pending, "page 2" remains in text (marked Deleted). Link stays on 17..23.
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
 
+    // Reject All restores original text and keeps the link intact.
+    s.execute("changes.rejectAll", &json!({})).unwrap();
     let text = &s.doc().unwrap().doc.story(sid).unwrap().text;
-    assert_eq!(text, "Hello world. See p. 2 for details.");
-    // Link must now cover "p. 2" at 17..21
-    assert_eq!(text_hyperlink_range(&s, hid), (17, 21));
-    assert_eq!(&text[17..21], "p. 2");
+    assert_eq!(text, "Hello world. See page 2 for details.");
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+}
+
+#[test]
+fn track_changes_accepting_deletion_of_hyperlink_text_prunes_link() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    // "page 2" at 17..23
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Track Changes on
+    s.execute("changes.track", &json!({"on": true})).unwrap();
+
+    // Select "page 2" (17..23) and replace with "p. 2" (length 4)
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    s.execute("text.insert", &json!({"text": "p. 2", "raw": true})).unwrap();
+
+    // Accepting all removes the deleted text, pruning the link
+    s.execute("changes.acceptAll", &json!({})).unwrap();
+    let doc = &s.doc().unwrap().doc;
+    assert_eq!(doc.story(sid).unwrap().text, "Hello world. See p. 2 for details.");
+    assert!(doc.hyperlinks.iter().all(|h| h.id != hid));
 }
 
 #[test]
@@ -548,4 +572,48 @@ fn tracked_replacement_pruning_selected_entry_does_not_corrupt_unrelated_entry()
     let doc = &s.doc().unwrap().doc;
     let st_text = &doc.story(sid).unwrap().text;
     assert_eq!(&st_text[19..33], "Unrelated link");
+}
+
+#[test]
+fn place_text_at_caret_shifts_subsequent_hyperlinks_by_actual_inserted_length() {
+    let initial = "Hello world. See link here.";
+    let (mut s, sid, _) = fixture(initial);
+
+    let link_start = initial.find("link").unwrap();
+    let link_end = link_start + 4;
+    s.execute("text.select", &json!({"story": sid.0, "anchor": link_start, "focus": link_end})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start, link_end));
+
+    // Place caret at offset 6 ("world.")
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 6})).unwrap();
+    // Base64 for "amazing new " (12 bytes)
+    let b64 = "YW1hemluZyBuZXcg";
+    s.execute("file.place", &json!({"base64": b64, "name": "insert.txt"})).unwrap();
+
+    let doc = &s.doc().unwrap().doc;
+    let text = &doc.story(sid).unwrap().text;
+    assert!(text.contains("amazing new "));
+    // Subsequent hyperlink must shift by 12 bytes
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start + 12, link_end + 12));
+}
+
+#[test]
+fn wholesale_story_replacement_prunes_links_and_undo_restores_them() {
+    let initial = "Hello world. See page 2 for details.";
+    let (mut s, sid, _) = fixture(initial);
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 17, "focus": 23})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
+
+    // Replace the entire story text via story.setText
+    s.execute("story.setText", &json!({"story": sid.0, "text": "Brand new story content entirely."})).unwrap();
+
+    // Hyperlink in sid must be pruned
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().all(|h| h.id != hid));
+
+    // Undo restores the document snapshot including the hyperlink
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
 }

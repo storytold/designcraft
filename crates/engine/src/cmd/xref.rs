@@ -103,7 +103,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
         st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
-        d.adjust_text_ranges(t.story, r.clone(), designcraft_doc::XREF_MARK.len_utf8());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), designcraft_doc::XREF_MARK.len_utf8());
+        }
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))
@@ -125,7 +127,9 @@ fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let at = t.range().start.min(st.len());
         let id = st.insert_anchor(at, &name);
-        d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
+        }
         let pos = t.focus + designcraft_doc::ANCHOR_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"id": id}))
