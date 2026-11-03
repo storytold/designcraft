@@ -3698,6 +3698,42 @@ fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
     assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
 }
 
+/// The Color Picker reopens on the component it was left on, and the choice survives the
+/// preferences file; an opener that names a component still gets it.
+#[test]
+fn the_color_picker_remembers_its_component() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
+    assert_eq!(app.ui.color_picker_component, "r", "R at first, as before");
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "r");
+    h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "H:").click();
+    h.run_steps(2);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    assert_eq!(h.state().app.ui.color_picker_component, "h", "the choice is kept outside the dialog");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().app.ui.dialog.is_none());
+    // Reopened: H, not R.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    // An opener's own choice wins.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "l");
+    // Saved with the preferences, and read back; a file without it is R.
+    let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
+    assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
+    assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
+}
+
 #[test]
 fn create_guides_dialog_covers_the_spread_in_view() {
     let mut app = facing_app(6);
