@@ -194,14 +194,11 @@ fn dist_y(r: Rect, y: f64) -> f64 {
 /// clipped to the frame's path, but their edges are drawn where they are, and such a frame's own
 /// bounds do not cover them -- `Item::bounds` unions children only for a real group, which
 /// `is_group` requires `Shape::Group` for. So an edge beyond the frame fell outside `reach` and
-/// was culled although it was on screen (noted in review). A real group needs no recursion: its
-/// bounds are already its children's.
+/// was culled although it was on screen (noted in review). A real group is recursed into as well: it may hold such a frame, whose pasted-in edges its bounds do not cover.
 fn cover_edges(reach: &mut Rect, m: Affine, it: &designcraft_doc::Item) {
     *reach = reach.union(m.transform_rect_bbox(it.visible_bounds()));
-    if !it.is_group() {
-        for c in it.children() {
-            cover_edges(reach, m * it.xf, c);
-        }
+    for c in it.children() {
+        cover_edges(reach, m * it.xf, c);
     }
 }
 
