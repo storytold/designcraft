@@ -249,6 +249,27 @@ fn cmd_ci() -> Result<(), String> {
 }
 
 const PNGSUITE_URL: &str = "http://www.schaik.com/pngsuite/PngSuite-2017jul19.tgz";
+/// The real archive is 68 KB, 178 entries and 256 KB expanded; the site has no HTTPS, so what
+/// arrives is bounded instead of trusted: compressed size, entries, and expanded bytes.
+const PNGSUITE_MAX_ARCHIVE: u64 = 1 << 20;
+const PNGSUITE_MAX_ENTRIES: usize = 1000;
+const PNGSUITE_MAX_EXTRACTED: u64 = 16 << 20;
+
+/// Bytes of the files under `dir`.
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.metadata() {
+                Ok(m) if m.is_dir() => stack.push(e.path()),
+                Ok(m) => total = total.saturating_add(m.len()),
+                Err(_) => {}
+            }
+        }
+    }
+    total
+}
 
 fn cmd_corpus(download: bool) -> Result<(), String> {
     let corpus = root().join("corpus");
@@ -273,12 +294,27 @@ Tests that use a corpus skip cleanly when it is absent.
     std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     let tgz = corpus.join("PngSuite-2017jul19.tgz");
     let mut curl = Command::new("curl");
-    curl.args(["-fsSL", "-o"]).arg(&tgz).arg(PNGSUITE_URL);
+    curl.args(["-fsSL", "--max-filesize"]).arg(PNGSUITE_MAX_ARCHIVE.to_string()).arg("-o").arg(&tgz).arg(PNGSUITE_URL);
     run(curl, &format!("curl {PNGSUITE_URL}"))?;
+    let refuse = |why: String| {
+        let _ = std::fs::remove_file(&tgz);
+        Err(why)
+    };
+    if std::fs::metadata(&tgz).map_or(true, |m| m.len() > PNGSUITE_MAX_ARCHIVE) {
+        return refuse(format!("the PngSuite download is larger than {PNGSUITE_MAX_ARCHIVE} bytes"));
+    }
+    let listing = Command::new("tar").arg("-tzf").arg(&tgz).output().map_err(|e| format!("tar -tzf: failed to spawn: {e}"))?;
+    if !listing.status.success() || listing.stdout.iter().filter(|b| **b == b'\n').count() > PNGSUITE_MAX_ENTRIES {
+        return refuse(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
+    }
     let mut tar = Command::new("tar");
     tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
     run(tar, "tar -xzf PngSuite-2017jul19.tgz")?;
     let _ = std::fs::remove_file(&tgz);
+    if dir_bytes(&dest) > PNGSUITE_MAX_EXTRACTED {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", dest.display()));
+    }
     let n = std::fs::read_dir(&dest).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
     println!("PngSuite: {n} PNG files in {}", dest.display());
     if n == 0 { Err("no PNG files extracted".into()) } else { Ok(()) }
