@@ -3020,3 +3020,33 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
 }
+
+/// Typing in one story must not re-proof the others; a language or dictionary change must.
+#[test]
+fn dynamic_spelling_reproofs_only_after_a_relevant_change() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    let layer = doc.default_layer();
+    let rect = designcraft_geom::Rect::new(0.0, 0.0, 200.0, 100.0);
+    let add = |doc: &mut designcraft_doc::Document, text: &str| {
+        doc.add_text_frame(designcraft_doc::SpreadRef::Doc(0), rect, layer, text, Default::default()).unwrap().1
+    };
+    let (edited, other) = (add(&mut doc, "jumpd"), add(&mut doc, "lazzy"));
+    let marks = |doc: &designcraft_doc::Document, id| dynamic_misspellings(&ctx, doc, doc.stories.get(&id).unwrap());
+    let (first, unrelated) = (marks(&doc, edited), marks(&doc, other));
+    assert_eq!(first.len(), 1);
+    assert!(std::sync::Arc::ptr_eq(&first, &marks(&doc, edited)), "unchanged: cached");
+    doc.story_mut(edited).unwrap().replace(0..0, "wrng ");
+    assert_eq!(marks(&doc, edited).len(), 2, "the edited story is checked again");
+    assert!(std::sync::Arc::ptr_eq(&unrelated, &marks(&doc, other)), "the other story stays cached");
+    doc.user_words.push("lazzy".into());
+    assert!(marks(&doc, other).is_empty(), "the user dictionary counts at once");
+    doc.user_words.clear();
+    assert_eq!(marks(&doc, other).len(), 1);
+    for style in &mut std::sync::Arc::make_mut(&mut doc.styles).paragraph {
+        style.chars.language = Some("[No Language]".into());
+    }
+    assert!(marks(&doc, other).is_empty(), "a style's language counts at once");
+}

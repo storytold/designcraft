@@ -67,7 +67,7 @@ set exists; depth gaps are in gaps.md.
 | M7 | Long documents (sections, TOC, index, footnotes, books) | ✅ except Books (shallow) |
 | M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |
-| M10 | Find/Change, spelling, Preflight | ✅ (spelling English only) |
+| M10 | Find/Change, spelling, Preflight | ✅ (spelling through the shared `craft-proof`) |
 | M11 | Layout power features (liquid/alternate layouts, data merge) | present, shallow; Flex Layout (new in InDesign 2026) ✗ |
 | M12 | Interactive & digital (EPUB, HTML, interactive PDF) | present; HTML basic (#314), fixed-layout EPUB as images |
 | M13 | Automation (scripts, batch) | ✅ own command scripts, CLI, MCP; ExtendScript/UXP compatibility ✗ |

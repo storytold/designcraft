@@ -83,6 +83,10 @@ fn flag(b: &mut bool) -> Result<Value, String> {
 /// One slice of the UI commands: `None` if `id` isn't one of them.
 fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
+        "app.checkSpelling" => crate::panels::spelling::open(app),
+        "app.spelling" => {
+            crate::panels::spelling::action(app, p.get("action").and_then(Value::as_str).unwrap_or(""), p.get("to").and_then(Value::as_str))
+        }
         "window.minimize" => {
             app.pending_window_commands.push(egui::ViewportCommand::Minimized(true));
             Ok(Value::Null)
