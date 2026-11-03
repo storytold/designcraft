@@ -147,12 +147,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     // The Page tool with no objects selected: the page's own settings, as InDesign's.
-    if info.is_none() && app.session.tool_id() == "page" {
-        let page = app.session.active().and_then(|st| st.selection.page).or_else(|| crate::canvas::current_page(app));
-        if let Some(page) = page {
-            page_sections(app, ui, page);
-            return;
+    if info.is_none() && (app.session.tool_id() == "page" || app.session.active().is_some_and(|st| st.editing_parents)) {
+        if let Some((spread, page)) = crate::canvas::page_target(app) {
+            page_sections(app, ui, spread, page);
         }
+        return;
     }
     let Some(i) = info else {
         document_sections(app, ui);

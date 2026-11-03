@@ -2989,6 +2989,38 @@ fn round_trips_the_zero_point_and_ruler_origin() {
     assert_eq!(fixture("NaN 4").settings.zero_point, [0.0, 0.0]);
 }
 
+/// Q is `Q` in IDML, as InDesign writes it (`U` is another unit). Units DesignCraft lacks are
+/// read as points, and the import report says so.
+#[test]
+fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
+    use designcraft_geom::Unit;
+    let mut d = Document::new(&NewDocument::default());
+    for (h, v) in [(Unit::Q, Unit::Ha), (Unit::Ha, Unit::Q), (Unit::Millimeters, Unit::Points)] {
+        (d.settings.horizontal_units, d.settings.vertical_units) = (h, v);
+        let bytes = export_idml(&d);
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!((back.settings.horizontal_units, back.settings.vertical_units), (h, v));
+    }
+    d.settings.horizontal_units = Unit::Q;
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"HorizontalMeasurementUnits="Q""#), "{prefs}");
+
+    let prefs =
+        PREFS.replace("<MarginPreference", r#"<ViewPreference HorizontalMeasurementUnits="U" VerticalMeasurementUnits="Q"/><MarginPreference"#);
+    let zip = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", &prefs),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
+    assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
+}
+
 #[test]
 fn round_trips_lock_column_guides() {
     let mut d = Document::new(&NewDocument::default());
@@ -4893,6 +4925,41 @@ fn split_document_round_trips() {
     assert!(split(&d, "Part") && split(&d, "Chapter") && !split(&d, "Body"));
     let back = import_idml(&export_idml(&d)).unwrap();
     assert!(split(&back, "Part") && split(&back, "Chapter") && !split(&back, "Body"));
+}
+
+/// Export Tagging (tag and class) of paragraph and character styles comes from the style's EPUB
+/// export tag map, not another export type's, and is written back.
+#[test]
+fn export_tags_round_trip() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootCharacterStyleGroup Self="rc">
+    <CharacterStyle Self="CharacterStyle/$ID/[No character style]" Name="$ID/[No character style]"/>
+    <CharacterStyle Self="CharacterStyle/Lead" Name="Lead">
+      <StyleExportTagMap Self="cs1" ExportType="PDF" ExportTag="Artifact" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="cs2" ExportType="EPUB" ExportTag="em" ExportClass="lead" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </CharacterStyle>
+  </RootCharacterStyleGroup>
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12"/>
+    <ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter" SplitDocument="false">
+      <StyleExportTagMap Self="ps1" ExportType="PDF" ExportTag="H1" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="ps2" ExportType="EPUB" ExportTag="h1" ExportClass="title" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Body" Name="Body"/>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(xml), &|_| None).unwrap();
+    let tag = |d: &designcraft_doc::Document, name: &str, character: bool| {
+        d.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone(), t.split))
+    };
+    let check = |d: &designcraft_doc::Document| {
+        assert_eq!(tag(d, "Chapter", false), Some(("h1".into(), "title".into(), false)));
+        assert_eq!(tag(d, "Lead", true), Some(("em".into(), "lead".into(), false)));
+        assert_eq!(tag(d, "Body", false), None);
+    };
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
 }
 
 /// EPUB Export Options › Split Document: off, one style (built in or not) or the styles' export
