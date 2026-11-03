@@ -51,7 +51,7 @@ mod transitions;
 pub use export::{
     BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, print_color, sheet_spreads,
 };
-pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4};
+pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
