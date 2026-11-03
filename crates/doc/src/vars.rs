@@ -197,7 +197,11 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
             let z = zone.get(1..)?;
             let digits = |t: &str| -> Option<i64> { t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten() };
             let zh = digits(z.get(0..2)?)?;
-            let zm = z.get(2..).map(|r| r.trim_start_matches(':')).filter(|r| !r.is_empty()).map_or(Some(0), digits)?;
+            let zm = match z.get(2..)? {
+                "" => 0,
+                r if r.len() == 2 => digits(r)?,
+                r => digits(r.strip_prefix(':').filter(|m| m.len() == 2)?)?,
+            };
             if zh > 23 || zm > 59 {
                 return None;
             }
@@ -342,7 +346,16 @@ mod tests {
 
     #[test]
     fn iso_date_rejects_malformed_zone() {
-        for bad in ["2019-12-16T09:48:02+-5:00", "2019-12-16T09:48:02+05:+30", "2019-12-16T09:48:02+24:00", "2019-12-16T09:48:02+05:60"] {
+        for bad in [
+            "2019-12-16T09:48:02+-5:00",
+            "2019-12-16T09:48:02+05:+30",
+            "2019-12-16T09:48:02+24:00",
+            "2019-12-16T09:48:02+05:60",
+            "2019-12-16T09:48:02+05::30",
+            "2019-12-16T09:48:02+05:",
+            "2019-12-16T09:48:02+053",
+            "2019-12-16T09:48:02+05:3",
+        ] {
             assert_eq!(parse_iso_date(bad), None, "{bad}");
         }
     }
