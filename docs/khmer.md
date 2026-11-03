@@ -55,7 +55,7 @@ See the [Khmer OpenType shaping specification](https://learn.microsoft.com/en-us
 
 [DesignCraft #516](https://github.com/storytold/designcraft/pull/516), by
 visarutforthaipbs, addresses Thai, Lao, Khmer and Myanmar composition using ICU4X.
-Its word-gap glue and attached-glyph reasoning informed this integration.
+Its attached-glyph reasoning informed this integration.
 This change supplies the Aksara-derived shared engine for Khmer; it does not
 replace that contribution's work on the other three languages. Existing
 [font fallback #504](https://github.com/storytold/designcraft/pull/504) supplies
