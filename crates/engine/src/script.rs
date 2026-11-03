@@ -11,7 +11,7 @@
 //! **Script text** ([`parse`]): a JSON array of steps, JSON lines (`{"command": …, "params": …}`),
 //! or compact lines `command.id {json}` / `command.id={json}` / `command.id`; blank lines and
 //! lines starting with `#` or `//` are ignored. A leading byte order mark and CRLF line endings are
-//! accepted.
+//! accepted. A JSON step takes only `command` and `params`; any other key is an error.
 
 use serde_json::{Value, json};
 
@@ -53,7 +53,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             let (id, rest) = l.split_at(split);
             let rest = rest.trim_start_matches(['=', ' ', '\t']).trim();
             let params = if rest.is_empty() { Ok(json!({})) } else { serde_json::from_str(rest).map_err(|e| e.to_string()) };
-            params.map(|params| Step { command: id.to_string(), params })
+            params.map(|p: Value| if p.is_null() { json!({}) } else { p }).and_then(|params: Value| {
+                if params.is_object() { Ok(Step { command: id.to_string(), params }) } else { Err("`params` must be an object".to_string()) }
+            })
         };
         out.push(step.map_err(|e| format!("line {}: {e}", n + 1))?);
     }
@@ -61,6 +63,10 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
 }
 
 fn step_of(v: &Value) -> Result<Step, String> {
+    // A misspelt key (`parms`) would otherwise run the command with its defaults.
+    if let Some(key) = v.as_object().and_then(|o| o.keys().find(|k| !matches!(k.as_str(), "command" | "params"))) {
+        return Err(format!("unknown key `{key}` (a step takes `command` and `params`)"));
+    }
     let command = v.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or("missing `command`")?.to_string();
     let params = v.get("params").cloned().filter(|p| !p.is_null()).unwrap_or(json!({}));
     if !params.is_object() {
@@ -201,6 +207,25 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert!(parse("frame.create {bad").unwrap_err().contains("line 1"));
+    }
+
+    /// A misspelt step key ran the command with its defaults.
+    #[test]
+    fn a_step_with_an_unknown_key_is_refused() {
+        for text in [r#"[{"command": "file.new", "parms": {"width": 300}}]"#, r#"{"command": "file.new", "parms": {"width": 300}}"#] {
+            let e = parse(text).unwrap_err();
+            assert!(e.contains("unknown key `parms`"), "{e}");
+        }
+        assert!(parse(r#"[{"command": "file.new", "params": {"width": 300}}]"#).is_ok());
+    }
+
+    #[test]
+    fn compact_lines_require_object_params() {
+        for bad in ["a.b 5", "a.b [1]", "a.b \"x\"", "a.b=true"] {
+            assert_eq!(parse(bad), Err("line 1: `params` must be an object".to_string()), "{bad}");
+        }
+        assert_eq!(parse("\na.b={\"x\":1}").unwrap()[0].params, json!({"x": 1}));
+        assert_eq!(parse("a.b null").unwrap()[0].params, json!({}));
     }
 
     /// Windows editors and PowerShell 5.1 save "UTF-8 with BOM" with CRLF line endings; the BOM
