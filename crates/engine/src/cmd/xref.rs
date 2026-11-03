@@ -372,11 +372,6 @@ mod tests {
         assert!(listed_x0 >= plain_x0, "the numbered paragraph's text starts no earlier: {listed_x0} vs {plain_x0}");
     }
 
-    /// The rectangle is the extent of the selected glyphs, not the first and the last of them.
-    /// Kenten marks and ruby are appended after a line's base glyphs, so with only the first
-    /// character marked the last glyph in the range was that mark, sitting over the first
-    /// character -- and the link ended there, leaving the rest of it unclickable (noted in
-    /// review of #1446).
     /// A list label's tab can carry a leader: the paragraph defines a stop at the Tab Position
     /// with one, so the composer does not add its own stop there and the label's tab takes that
     /// leader. Those leader glyphs carry the paragraph's first byte, as the label does, but were
@@ -408,6 +403,11 @@ mod tests {
         assert!((dotted - plain).abs() < 0.5, "the leader is left out of the link: {dotted} vs {plain}");
     }
 
+    /// The rectangle is the extent of the selected glyphs, not the first and the last of them.
+    /// Kenten marks and ruby are appended after a line's base glyphs, so with only the first
+    /// character marked the last glyph in the range was that mark, sitting over the first
+    /// character -- and the link ended there, leaving the rest of it unclickable (noted in
+    /// review of #1446).
     #[test]
     fn a_links_rectangle_spans_its_glyphs_whatever_order_they_are_in() {
         let width = |marked: bool| {
