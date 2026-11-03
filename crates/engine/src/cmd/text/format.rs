@@ -1,7 +1,9 @@
 use super::asian::bool_param;
 use super::caret::hit_byte_with;
 use super::story::selection_attrs;
-use super::*;
+use super::{
+    CellAddr, CharAttrs, ParaAttrs, Result, Session, StoryId, TextSel, Value, bad, compose, floor_char_boundary, id_param, json, ok, point_param,
+};
 
 /// The Eyedropper with text selected: the formatting of the text under `point` in `frame` goes to
 /// the selection, as InDesign's does (character style and overrides on the selected characters,

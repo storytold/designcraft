@@ -1103,21 +1103,95 @@ fn hyphenate_across_column_off_keeps_nested_line_styles_on_their_lines() {
 }
 
 #[test]
-fn discretionary_hyphen_replaces_automatic_points() {
-    let text = "aaaa bbbb cccc extraordi\u{AD}narily dddd eeee";
-    let para = ParaAttrs { align: Some(Align::Left), ..Default::default() };
-    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 120.0, 1000.0), para);
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let soft = text.find('\u{AD}').unwrap();
-    for l in all_lines(&cs) {
-        if l.hyphenated {
-            let last = l.glyphs.iter().rfind(|g| g.len > 0).unwrap();
-            assert!(last.byte + last.len >= soft && last.byte <= soft + 2, "{:?}", &text[l.range.clone()]);
+fn discretionary_hyphen_breaks_with_both_composers_and_hyphenation_settings() {
+    let text = "Wir möchten uns ganz besonders herzlich bei folgenden Personen bedanken, die auf unterschied\u{ad}lichste Weise zur Entstehung dieses Lehrbuches beigetragen haben:";
+    let soft_end = text.find('\u{ad}').unwrap() + '\u{ad}'.len_utf8();
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        for hyphenate in [false, true] {
+            let para = ParaAttrs { composer: Some(composer), hyphenate: Some(hyphenate), ..Default::default() };
+            let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 430.0, 1000.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(9.5));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let first = all_lines(&cs)[0];
+            assert_eq!(first.range.end, soft_end, "{composer:?}, hyphenate={hyphenate}: {:?}", &text[first.range.clone()]);
+            assert!(first.hyphenated);
+            let hyphen = first.glyphs.last().unwrap();
+            assert!(hyphen.visible && hyphen.len == 0 && hyphen.adv > 0.0);
         }
     }
-    // Hyphenation points of the word itself: none besides the discretionary one.
-    let lines = all_lines(&cs);
-    assert!(lines.iter().filter(|l| l.hyphenated).count() <= 1);
+}
+
+#[test]
+fn discretionary_hyphen_before_cjk_single_line() {
+    discretionary_hyphen_before_cjk(Composer::SingleLine);
+}
+
+#[test]
+fn discretionary_hyphen_before_cjk_paragraph() {
+    discretionary_hyphen_before_cjk(Composer::Paragraph);
+}
+
+fn discretionary_hyphen_before_cjk(composer: Composer) {
+    let text = "abc\u{ad}\u{65e5}\u{672c}\u{8a9e}\u{65e5}\u{672c}\u{8a9e}";
+    let soft_end = text.find('\u{ad}').unwrap() + '\u{ad}'.len_utf8();
+    for hyphenate in [false, true] {
+        let para = ParaAttrs { composer: Some(composer), hyphenate: Some(hyphenate), ..Default::default() };
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 24.0, 1000.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let first = all_lines(&cs)[0];
+        assert_eq!(first.range.end, soft_end, "{composer:?}, hyphenate={hyphenate}: {:?}", &text[first.range.clone()]);
+        assert!(first.hyphenated, "{composer:?}, hyphenate={hyphenate}");
+        let hyphen = first.glyphs.last().unwrap();
+        assert!(hyphen.visible && hyphen.len == 0 && hyphen.adv > 0.0);
+    }
+}
+
+#[test]
+fn discretionary_hyphen_is_invisible_and_zero_width_when_unbroken() {
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        let mut widths = Vec::new();
+        for text in ["unterschiedlichste", "unterschied\u{ad}lichste"] {
+            let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 1000.0, 100.0), ParaAttrs { composer: Some(composer), ..Default::default() });
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let lines = all_lines(&cs);
+            assert_eq!(lines.len(), 1);
+            assert!(!lines[0].hyphenated);
+            if let Some(soft) = text.find('\u{ad}') {
+                let glyph = lines[0].glyphs.iter().find(|g| g.byte == soft).unwrap();
+                assert!(!glyph.visible && glyph.adv == 0.0);
+            }
+            widths.push(lines[0].end_x);
+        }
+        assert!((widths[0] - widths[1]).abs() < 1e-6, "{composer:?}: {widths:?}");
+    }
+}
+
+#[test]
+fn discretionary_hyphen_replaces_automatic_points() {
+    let text = "aaaa bbbb cccc extraordi\u{AD}narily dddd eeee";
+    let soft = text.find('\u{AD}').unwrap();
+    for composer in [Composer::SingleLine, Composer::Paragraph] {
+        let mut discretionary_breaks = 0;
+        let mut automatic_breaks = 0;
+        for width in (90..181).step_by(10) {
+            for discretionary in [false, true] {
+                let source = if discretionary { text.to_string() } else { text.replace('\u{AD}', "") };
+                let para = ParaAttrs { composer: Some(composer), hyphenate: Some(true), align: Some(Align::Left), ..Default::default() };
+                let (d, sid, _) = doc_with(&source, Rect::new(0.0, 0.0, f64::from(width), 1000.0), para);
+                let cs = compose_story(&d, sid, &ComposeOptions::default());
+                for l in all_lines(&cs).into_iter().filter(|l| l.hyphenated) {
+                    if discretionary {
+                        assert_eq!(l.range.end, soft + '\u{AD}'.len_utf8(), "{composer:?}: {:?}", &source[l.range.clone()]);
+                        discretionary_breaks += 1;
+                    } else {
+                        automatic_breaks += 1;
+                    }
+                }
+            }
+        }
+        assert!(discretionary_breaks > 0, "{composer:?}: discretionary breaks exercised");
+        assert!(automatic_breaks > 0, "{composer:?}: pattern breaks exercised without U+00AD");
+    }
 }
 
 #[test]
@@ -1994,6 +2068,178 @@ fn footnotes_sit_at_the_column_bottom_and_push_text() {
     assert!(note_caret(&cs, n.id, 0).is_some());
 }
 
+fn justified_content_clears_footnotes(mode: designcraft_doc::VerticalJustification, table: bool) {
+    for span in [false, true] {
+        let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 240.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        d.footnote_options.span_columns = span;
+        d.footnote_options.space_before = 60.0;
+        let st = d.story_mut(sid).unwrap();
+        st.insert_note(5, "Synthetic footnote.", ParaFormat::default());
+        if table {
+            let mut t = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+            t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+            t.rows[0].height = 90.0;
+            st.insert_table(st.len(), t);
+        }
+        let top = compose_story(&d, sid, &ComposeOptions::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = mode;
+
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+        assert!(!cs.is_overset());
+        let ft = cs.frame(fid).unwrap();
+        let original = top.frame(fid).unwrap();
+        assert_eq!(ft.notes.len(), 1);
+        assert_eq!(ft.notes[0].rect, original.notes[0].rect, "footnotes must not move");
+        let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+        assert!(ft.lines.iter().all(|l| l.baseline + l.descent <= limit + 0.01), "lines overlap footnotes in {mode:?}, span {span}");
+        assert!(ft.tables.iter().flat_map(|t| &t.cells).all(|c| c.rect.y1 <= limit + 0.01), "cells overlap footnotes in {mode:?}, span {span}");
+        assert!(ft.lines.last().unwrap().baseline > original.lines.last().unwrap().baseline + 0.01, "content must still move down");
+        if table {
+            assert_eq!(ft.tables.len(), 1);
+            assert!(ft.tables[0].rect.y1 > original.tables[0].rect.y1 + 0.01, "table must still move down");
+        }
+    }
+}
+
+#[test]
+fn bottom_justified_paragraphs_clear_footnotes() {
+    justified_content_clears_footnotes(designcraft_doc::VerticalJustification::Bottom, false);
+}
+
+#[test]
+fn bottom_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(designcraft_doc::VerticalJustification::Bottom, true);
+}
+
+#[test]
+fn center_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(designcraft_doc::VerticalJustification::Center, true);
+}
+
+#[test]
+fn vertically_justified_tables_clear_footnotes() {
+    justified_content_clears_footnotes(designcraft_doc::VerticalJustification::Justify, true);
+}
+
+#[test]
+fn vertical_justification_counts_table_fragment_bottoms() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center, Justify};
+    let (mut d, sid, fid) = doc_with("Reference.", Rect::new(0.0, 0.0, 200.0, 240.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "Synthetic footnote.", ParaFormat::default());
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    table.rows[0].height = 120.0;
+    st.insert_table(st.len(), table);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for mode in [Bottom, Center, Justify] {
+        let mut ft = cs.frame(fid).unwrap().clone();
+        let t = &ft.tables[0];
+        let (anchor, bottom, baseline) = (t.line, t.rect.y1, t.rect.y0);
+        // Exercise a fragment extending below its anchor, without a later text line hiding it.
+        ft.lines.truncate(anchor + 1);
+        ft.lines[anchor].baseline = baseline;
+        let mut spec = frame_specs(&d, sid).remove(0);
+        spec.opts.vertical_justification = mode;
+
+        vertical_justify(&mut ft, &spec, false, &d.footnote_options);
+
+        let moved = ft.lines[anchor].baseline - baseline;
+        let limit = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+        assert!(moved > 0.01);
+        assert!(bottom + moved <= limit + 0.01, "fragment overlaps footnotes in {mode:?}");
+    }
+}
+
+#[test]
+fn table_rows_clear_footnotes_and_continue_in_the_next_column() {
+    for span in [false, true] {
+        for row_height in [24.0, 150.0] {
+            let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+            d.footnote_options.span_columns = span;
+            let st = d.story_mut(sid).unwrap();
+            st.insert_note(5, "First synthetic footnote.", ParaFormat::default());
+            st.insert_note(25, "Second synthetic footnote.", ParaFormat::default());
+            let mut table = designcraft_doc::Table::new(77, 8, 1, 0, 0, 180.0);
+            for row in &mut table.rows {
+                row.mode = designcraft_doc::RowHeightMode::Exactly;
+                row.height = row_height;
+            }
+            st.insert_table(st.len(), table);
+            let (next, _) =
+                d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 220.0, 420.0, 1720.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+            d.thread(fid, next).unwrap();
+
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+            assert!(!cs.is_overset());
+            let ft = cs.frame(fid).unwrap();
+            assert_eq!(ft.notes.len(), 2);
+            let top = ft.notes[0].rect.y0 - d.footnote_options.space_before;
+            for frag in &ft.tables {
+                if span || frag.column == 0 {
+                    assert!(frag.cells.iter().all(|c| c.rect.y1 <= top + 0.01), "rows overlap footnotes: {:?}, top {top}", frag.rect);
+                }
+            }
+            assert!(cs.frames.iter().skip(1).any(|f| !f.tables.is_empty()) || ft.tables.iter().any(|t| t.column == 1));
+            let rows: Vec<_> = cs.frames.iter().flat_map(|f| &f.tables).flat_map(|t| &t.cells).filter(|c| !c.repeated).map(|c| c.row).collect();
+            assert_eq!(rows, (0..8).collect::<Vec<_>>());
+            if row_height == 150.0 {
+                assert!(!ft.tables.iter().any(|t| t.column == 0), "the whole table moves when no row fits");
+            }
+        }
+    }
+}
+
+#[test]
+fn table_reports_overset_when_every_remaining_column_has_footnotes() {
+    let (mut d, sid, fid) = doc_with("Reference.", Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 3;
+    d.footnote_options.span_columns = true;
+    d.footnote_options.space_before = 40.0;
+    let st = d.story_mut(sid).unwrap();
+    st.insert_note(5, "Synthetic spanning footnote.", ParaFormat::default());
+    let mut table = designcraft_doc::Table::new(77, 2, 1, 0, 0, 100.0);
+    for row in &mut table.rows {
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+        row.height = 90.0;
+    }
+    table.cells[0].row_span = 2;
+    let anchor = st.insert_table(st.len(), table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+    assert!(cs.is_overset());
+    assert_eq!(cs.overset_at, Some(anchor));
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.notes.len(), 1);
+    assert!(ft.notes[0].rect.y0 - d.footnote_options.space_before < 180.0);
+    assert!(cs.frames.iter().all(|f| f.tables.is_empty()), "the unplaced row group must remain overset");
+}
+
+#[test]
+fn table_cell_footnotes_fit_inside_the_row() {
+    let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 200.0, 200.0), ParaAttrs::default());
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    let cell = &mut table.cells[0];
+    cell.text.insert(0, "Cell reference.");
+    cell.text.insert_note(5, "Synthetic cell footnote.", ParaFormat::default());
+    d.story_mut(sid).unwrap().insert_table(0, table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+
+    let cell = &cs.frames[0].tables[0].cells[0];
+    assert!(!cell.overset);
+    let frame = &cell.text.frames[0];
+    assert_eq!(frame.notes.len(), 1);
+    let note = &frame.notes[0];
+    assert!(cell.origin.y + note.rect.y1 <= cell.clip.y1 + 0.01, "cell footnote must remain within the row");
+    assert!(frame.lines.iter().all(|l| l.baseline + l.descent <= note.rect.y0 - d.footnote_options.space_before + 0.01));
+}
+
 #[test]
 fn footnotes_stack_baseline_to_baseline() {
     // Single-line footnotes read as one text: consecutive baselines sit one leading (plus
@@ -2836,11 +3082,18 @@ fn only_english_text_gets_english_hyphenation() {
     let hyphenated = |d: &Document, sid| all_lines(&compose_story(d, sid, &ComposeOptions::default())).iter().filter(|l| l.hyphenated).count();
     let (d, sid, _) = doc_with(text, narrow, ParaAttrs::default());
     assert!(hyphenated(&d, sid) > 0, "English hyphenates");
-    let mut d2 = d.clone();
-    let st = d2.story_mut(sid).unwrap();
-    let n = st.len();
-    st.format_chars(0..n, |f| f.over.language = Some("French".into()));
-    assert_eq!(hyphenated(&d2, sid), 0, "French isn't hyphenated with English rules");
+    // A language without bundled patterns isn't hyphenated with English rules.
+    let in_language = |lang: &str| {
+        let mut d2 = d.clone();
+        let st = d2.story_mut(sid).unwrap();
+        let n = st.len();
+        st.format_chars(0..n, |f| f.over.language = Some(lang.into()));
+        hyphenated(&d2, sid)
+    };
+    assert_eq!(in_language("Swedish"), 0, "Swedish isn't hyphenated with English rules");
+    // French and Italian hyphenate with their own patterns.
+    assert!(in_language("French") > 0, "French hyphenates (hyph-fr)");
+    assert!(in_language("Italian") > 0, "Italian hyphenates (hyph-it)");
 }
 
 // A text frame's bottom inset constrains its last baseline. The full font descent
@@ -3492,6 +3745,21 @@ fn text_x(l: &Line, from: usize) -> f64 {
     l.glyphs.iter().find(|g| g.len > 0 && g.byte >= from).map(|g| g.x).unwrap()
 }
 
+/// Vertical justification moves the drop cap's box with its line.
+#[test]
+fn drop_cap_box_follows_vertical_justification() {
+    let (mut d, sid, fid) = drop_doc_in(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 400.0), drop_cap(3, 1));
+    let top = compose_story(&d, sid, &ComposeOptions::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    let bottom = compose_story(&d, sid, &ComposeOptions::default());
+    let (a, b) = (&top.frame(fid).unwrap().lines[0], &bottom.frame(fid).unwrap().lines[0]);
+    let dy = b.baseline - a.baseline;
+    assert!(dy > 1.0);
+    let (da, db) = (a.drop_cap.unwrap(), b.drop_cap.unwrap());
+    assert!((db.baseline - da.baseline - dy).abs() < 1e-6);
+    assert!((db.rect.y0 - da.rect.y0 - dy).abs() < 1e-6 && (db.rect.y1 - da.rect.y1 - dy).abs() < 1e-6);
+}
+
 #[test]
 fn drop_cap_spans_lines_and_indents_them() {
     let text = [LOREM; 2].join(" ");
@@ -3889,6 +4157,56 @@ fn drop_cap_scales_with_its_point_size() {
     assert!(b2 - fitted * 1.5 < b0 - base[0].ascent, "a 15 pt cap rises above the first line");
 }
 
+/// Paragraph Rules › Type: a wavy, dashed or dotted rule is drawn as its shape (filled paths in
+/// the rule's box), a striped one as its bands; Gap Color goes under it. Keep In Frame keeps a rule
+/// above the first line inside the frame.
+#[test]
+fn paragraph_rules_have_a_type_a_gap_colour_and_keep_in_frame() {
+    use designcraft_doc::{Rule, StrokeType};
+    let rule = |kind: StrokeType| Rule { on: true, weight: 4.0, kind, ..Default::default() };
+    let decos = |r: Rule| {
+        let para = ParaAttrs { rule_below: Some(r), ..Default::default() };
+        let (d, sid, fid) = doc_with("Recipe Categories", Rect::new(0.0, 0.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default()).frame(fid).unwrap().decos.clone()
+    };
+    let solid = decos(rule(StrokeType::Solid));
+    assert!(solid.len() == 1 && solid[0].path.is_none());
+    let wavy = decos(rule(StrokeType::Wavy));
+    let p = wavy[0].path.as_ref().expect("a wavy rule is a shape");
+    assert!(designcraft_geom::Shape::area(p).abs() > 0.0 && (wavy[0].rect.height() - 4.0).abs() < 1e-9);
+    let subpaths = |p: &designcraft_geom::BezPath| p.elements().iter().filter(|e| matches!(e, designcraft_geom::PathEl::MoveTo(_))).count();
+    let dashed = decos(rule(StrokeType::Dashed { pattern: vec![12.0, 4.0] }));
+    assert!(subpaths(dashed[0].path.as_ref().unwrap()) > 5, "one box per dash");
+    let dotted = decos(rule(StrokeType::Dotted));
+    assert!(subpaths(dotted[0].path.as_ref().unwrap()) > 10, "one dot per 2 weights");
+    let gap = decos(Rule { gap_color: "[Black]".into(), gap_tint: 0.3, ..rule(StrokeType::Dotted) });
+    assert_eq!((gap.len(), gap[0].color.as_str(), gap[0].tint, gap[0].path.is_none()), (2, "[Black]", 0.3, true), "the gap colour under the dots");
+    assert_eq!(decos(Rule { gap_color: "[Black]".into(), ..rule(StrokeType::Solid) }).len(), 1, "a solid rule has no gaps");
+    // A gap in Text Color takes the text's colour, whatever swatch the rule itself has.
+    let gap = decos(Rule { color: "[Paper]".into(), gap_color: designcraft_doc::TEXT_COLOR.into(), ..rule(StrokeType::Dotted) });
+    assert_eq!((gap[0].color.as_str(), gap[1].color.as_str()), ("[Black]", "[Paper]"));
+    // Keep In Frame: a rule above raised out of the frame comes back to its top.
+    let above = |keep: bool| {
+        let r = Rule { on: true, weight: 2.0, offset: 30.0, keep_in_frame: keep, ..Default::default() };
+        let para = ParaAttrs { rule_above: Some(r), ..Default::default() };
+        let (d, sid, fid) = doc_with("Title", Rect::new(0.0, 50.0, 300.0, 200.0), para);
+        compose_story(&d, sid, &ComposeOptions::default()).frame(fid).unwrap().decos[0].rect
+    };
+    assert!(above(false).y0 < 50.0, "{:?}", above(false));
+    assert!((above(true).y0 - 50.0).abs() < 1e-6, "{:?}", above(true));
+    // With a top inset the rule may still rise into it: raised out of the frame, it comes back
+    // to the frame's edge, not to the text area's below the inset.
+    let r = Rule { on: true, weight: 2.0, offset: 60.0, keep_in_frame: true, ..Default::default() };
+    let para = ParaAttrs { rule_above: Some(r), ..Default::default() };
+    let (mut d, sid, fid) = doc_with("Title", Rect::new(0.0, 50.0, 300.0, 200.0), para);
+    if let Some(tf) = d.item_mut(fid).and_then(|it| it.text_frame_mut()) {
+        tf.options.inset = [20.0, 0.0, 0.0, 0.0];
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let rule = cs.frame(fid).unwrap().decos[0].rect;
+    assert!((rule.y0 - 50.0).abs() < 1e-6, "kept at the frame's top, in the inset: {rule:?}");
+}
+
 /// A rule in Text Color takes the colour of the paragraph's text: the first character's for the
 /// rule above, the last character's for the rule below. A swatch colour is used as is.
 #[test]
@@ -4074,6 +4392,36 @@ fn empty_paragraph_uses_its_own_mark_not_the_previous_one() {
     let lines = all_lines(&cs);
     assert_eq!(lines.len(), 3);
     assert!((lines[1].baseline - lines[0].baseline - 8.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[1].baseline);
+}
+
+#[test]
+fn german_2006_text_gets_german_hyphenation() {
+    let text = "Silbentrennung Fußgänger Bäcker Fenster Donaudampfschifffahrt Silbentrennung";
+    let de = hyphen::Lang::for_language("German: 2006 Reform").unwrap();
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for language in ["German: 2006 Reform", "de_DE_2006"] {
+            let para = ParaAttrs { composer: Some(composer), ..Default::default() };
+            let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 96.0, 700.0), para);
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some(language.into()));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(!cs.is_overset(), "{composer:?}, {language}");
+            let lines = all_lines(&cs);
+            assert!(lines.iter().any(|l| l.hyphenated), "{composer:?}, {language}: German text hyphenates");
+            for line in lines.iter().filter(|l| l.hyphenated) {
+                // Check the actual character offset in the original word, including when the
+                // word spans more than two lines; UTF-8 byte offsets must not become char counts.
+                let end = line.range.end;
+                let start = text[..end].rfind(' ').map_or(0, |at| at + 1);
+                let word = text[start..].split_whitespace().next().unwrap();
+                let point = text[start..end].chars().count();
+                assert!(hyphen::hyphen_points_in(word, &hyphen::Limits::default(), de).contains(&point), "{word} at {point}");
+            }
+            // The existing paragraph switch must still disable automatic German hyphenation.
+            d.story_mut(sid).unwrap().format_paras(0..text.len(), |f| f.para.hyphenate = Some(false));
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            assert!(all_lines(&cs).iter().all(|l| !l.hyphenated));
+        }
+    }
 }
 
 #[test]
@@ -7155,6 +7503,98 @@ fn anchored_object_wraps_its_own_storys_later_lines() {
     assert!((o.origin.y - top).abs() < 1e-6);
 }
 
+/// Vertical Justification › Justify with a Paragraph Spacing Limit: the space goes between the
+/// paragraphs (up to the limit each), the lines of a paragraph keep their leading; past the limit
+/// the rest spreads over every line. Without a limit it spreads over every line.
+#[test]
+fn justify_paragraph_spacing_limit() {
+    let text = "One line.
+Two
+Three";
+    let baselines = |limit: f64| {
+        let (mut d, sid, fid) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        o.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+        o.vj_paragraph_spacing_limit = limit;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let (none, big, small) = (baselines(0.0), baselines(1000.0), baselines(20.0));
+    assert_eq!(none.len(), 3);
+    let gaps = |b: &[f64]| (b[1] - b[0], b[2] - b[1]);
+    // No limit: equal steps. A big limit: all of it between paragraphs (here every line is one).
+    assert!((gaps(&none).0 - gaps(&none).1).abs() < 1e-6, "{none:?}");
+    assert!((gaps(&big).0 - gaps(&big).1).abs() < 1e-6, "{big:?}");
+    // A small limit: every paragraph gap takes the whole 20 pt, and the rest spreads over lines,
+    // so each gap is wider than the top-aligned one by at least 20 pt and narrower than with a big limit.
+    let top = {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), ParaAttrs::default());
+        all_lines(&compose_story(&d, sid, &ComposeOptions::default())).iter().map(|l| l.baseline).collect::<Vec<_>>()
+    };
+    let (natural, small_gaps, big_gaps) = (gaps(&top), gaps(&small), gaps(&big));
+    assert!(small_gaps.0 >= natural.0 + 20.0 - 1e-6 && small_gaps.1 >= natural.1 + 20.0 - 1e-6, "{top:?} {small:?}");
+    assert!(small_gaps.0 <= big_gaps.0 + 1e-6, "{small:?} {big:?}");
+    assert!((none[2] - big[2]).abs() < 1e-6 && (none[2] - small[2]).abs() < 1e-6, "the last line stays at the bottom");
+    // A paragraph of two lines keeps its leading when the limit absorbs the space.
+    let (mut d, sid, fid) = doc_with(
+        &[LOREM, "End."].join(
+            "
+",
+        ),
+        Rect::new(0.0, 0.0, 300.0, 600.0),
+        ParaAttrs::default(),
+    );
+    let o = &mut d.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+    o.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+    o.vj_paragraph_spacing_limit = 10_000.0;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let first: Vec<f64> = lines.iter().filter(|l| l.para == 0).map(|l| l.baseline).collect();
+    assert!(first.len() > 2, "LOREM runs over several lines");
+    let lead = first[1] - first[0];
+    assert!(first.windows(2).all(|w| (w[1] - w[0] - lead).abs() < 1e-6), "the paragraph's lines keep their leading: {first:?}");
+    let last = lines.iter().find(|l| l.para == 1).unwrap().baseline;
+    assert!(last - first[first.len() - 1] > lead + 50.0, "the space went between the paragraphs");
+}
+
+/// Each object's wrap pushes the anchors after it down, so where each object lands depends on the
+/// wraps of all those before it; every object still ends up wrapping the lines it hangs over.
+#[test]
+fn chained_anchored_objects_all_wrap_their_own_storys_lines() {
+    const OBJECTS: usize = 8;
+    let text = [LOREM; 12].join(" ");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 3000.0), ParaAttrs::default());
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&plain);
+    assert!(lines.len() > 2 + 6 * OBJECTS);
+    let left = lines[0].x0;
+    // One object every six lines, each hanging from its anchor's baseline over the lines below;
+    // inserted last first so the earlier offsets still hold.
+    let ats: Vec<usize> = (0..OBJECTS).map(|k| lines[2 + 6 * k].range.start + 3).collect();
+    for &at in ats.iter().rev() {
+        anchor_box(&mut d, sid, at, 0.0, 0.0, true, WrapMode::BoundingBox);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let lines = all_lines(&cs);
+    let anchors: Vec<usize> = d.story(sid).unwrap().text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect();
+    let objects = &cs.frames[0].objects;
+    assert_eq!(objects.len(), OBJECTS);
+    for o in objects {
+        let anchor_line = lines.iter().find(|l| l.range.contains(&anchors[o.index])).unwrap();
+        assert!((o.origin.y - anchor_line.baseline).abs() < 1e-6, "object {} at {}, anchor line at {}", o.index, o.origin.y, anchor_line.baseline);
+        let under = lines_in_band(&cs, o.origin.y, o.origin.y + 60.0);
+        assert!(under.len() >= 2);
+        assert!(
+            under.iter().all(|l| l.x0 >= left + 100.0 - 1e-6),
+            "object {} at {}: {:?}",
+            o.index,
+            o.origin.y,
+            under.iter().map(|l| (l.baseline, l.x0)).collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn anchored_object_without_wrap_leaves_layout_unchanged() {
     let long = [LOREM; 3].join(" ");
@@ -7751,6 +8191,43 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+/// An object's wrap pushes the text so that a later object's anchor goes on into the next frame
+/// (Learn Skills Daily's long-document exercise: pictures anchored in headings through a 79-page
+/// story). Each object is placed when its anchor line is set and wraps only the lines after it,
+/// in the frame its anchor lands in: the layout doesn't depend on where an earlier composition put
+/// the objects, and composing again gives the same lines.
+#[test]
+fn an_object_wraps_the_frame_its_anchor_lands_in_after_an_earlier_object_pushed_it_on() {
+    let text = [LOREM; 6].join(" ");
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), lid, &text, ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 0.0, 620.0, 300.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    // The second object's anchor sits near the end of the first frame without wrap.
+    let late = plain.frames[0].lines.iter().rev().nth(2).unwrap().range.start + 2;
+    anchor_box(&mut d, sid, late, 0.0, 0.0, true, WrapMode::BoundingBox);
+    // The first, early in the first frame: 60 pt over its whole width pushes the later anchor on.
+    let early = plain.frames[0].lines[1].range.start + 2;
+    anchor_box(&mut d, sid, early, 0.0, 0.0, true, WrapMode::JumpObject);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let late = late + OBJECT_LEN;
+    let anchor_frame = cs.frames.iter().position(|f| f.range.contains(&late) || f.range.end == late).unwrap();
+    assert_eq!(anchor_frame, 1, "the later anchor went on into the second frame");
+    // The first frame's lines under the first object's band keep the full measure (the second
+    // object is in the other frame); in the second frame, the lines under its object move right.
+    let left = cs.frames[0].lines[0].x0;
+    assert!(cs.frames[0].lines.iter().all(|l| (l.x0 - left).abs() < 1e-6));
+    let f1 = &cs.frames[1];
+    let (li, line) = f1.lines.iter().enumerate().find(|(_, l)| l.range.contains(&late)).unwrap();
+    let under: Vec<_> = f1.lines[li + 1..].iter().filter(|l| l.baseline - l.ascent < line.baseline + 60.0).collect();
+    assert!(!under.is_empty() && under.iter().all(|l| l.x0 >= f1.lines[0].x0 + 100.0 - 1e-6));
+    assert_eq!(f1.objects.len(), 1);
+    // Deterministic: the same lines again.
+    assert_eq!(line_layout(&compose_story(&d, sid, &ComposeOptions::default())), line_layout(&cs));
+}
+
 /// Rule Above's offset runs from the first line's baseline up to the rule's bottom edge, as in
 /// InDesign: a rule set clear of the cap height sits between the rows, not across the row above
 /// (an INDD project list whose rules crossed the previous paragraph's text).
@@ -7931,4 +8408,35 @@ fn anchored_text_frames_compose_against_the_grid_where_they_are_placed() {
     let before = cache.get(&d, nsid, None);
     Arc::make_mut(&mut d.spreads[1]).pages[1].side = designcraft_doc::PageSide::Left;
     assert!(!Arc::ptr_eq(&before, &cache.get(&d, nsid, None)));
+}
+
+/// A cross-reference's text breaks at its spaces like ordinary text (it is real text in
+/// InDesign), not inside words; edited text whose destination is gone shows its saved page.
+#[test]
+fn cross_reference_text_breaks_at_its_spaces() {
+    let (mut d, sid, _) = doc_with("See X.", Rect::new(36.0, 36.0, 110.0, 400.0), ParaAttrs::default());
+    let at = d.story(sid).unwrap().text.find('X').unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.delete(at..at + 1);
+    st.insert_xref(
+        at,
+        designcraft_doc::CrossRef {
+            text: Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.".into()),
+            page: Some("7".into()),
+            ..Default::default()
+        },
+    );
+    let x = d.story(sid).unwrap().xrefs[0].clone();
+    let shown = crate::xref::xref_text(&d, &x, None);
+    assert_eq!(shown, "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996. Volume 6, issue 5.");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines: Vec<String> =
+        cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char).collect::<String>()).collect();
+    assert!(lines.len() > 3, "{lines:?}");
+    let words: Vec<&str> = format!("See {shown}.").leak().split(' ').collect();
+    for l in &lines {
+        for w in l.split(' ').filter(|w| !w.is_empty()) {
+            assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
 }

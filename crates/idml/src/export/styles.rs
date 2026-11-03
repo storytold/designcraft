@@ -1,7 +1,9 @@
 use super::common::{bool_s, p, pct, pkg_root, with_props};
 use super::item::{Group, text_frame_pref};
 use super::story::with_list_tab;
-use super::*;
+use super::{
+    CHAR_BUILTINS, El, Ex, NO_PARA_ID, OBJECT_BUILTINS, PARA_BUILTINS, Rule, TOC_STYLE_ID, TOC_STYLE_NAME, document, escape_id, names, num, st,
+};
 
 impl<'a> Ex<'a> {
     // ---------- Styles.xml ----------
@@ -72,132 +74,8 @@ impl<'a> Ex<'a> {
         pg.emit(&mut rp, "ParagraphStyleGroup", "");
         root.push(rp);
 
-        // Cell and table styles.
-        let mut cells = El::new("RootCellStyleGroup")
-            .attr("Self", self.fresh())
-            .child(El::new("CellStyle").attr("Self", "CellStyle/$ID/[None]").attr("AppliedParagraphStyle", NO_PARA_ID).attr("Name", "$ID/[None]"));
-        for cs in styles.cell.iter().filter(|c| c.name != designcraft_doc::NO_CELL_STYLE) {
-            let mut el = El::new("CellStyle")
-                .attr("Self", names::style_self("CellStyle", names::CELL_BUILTINS, &cs.name))
-                .attr("Name", names::style_name_out(names::CELL_BUILTINS, &cs.name));
-            if let Some(f) = &cs.fill {
-                el.set("FillColor", self.sw(f));
-            }
-            if let Some(t) = cs.fill_tint {
-                el.set("FillTint", pct(t as f64));
-            }
-            if let Some(i) = cs.insets {
-                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
-                    el.set(k, num(v));
-                }
-            }
-            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
-                if let Some(value) = value {
-                    el.set(key, num(value));
-                }
-            }
-            if let Some(vj) = cs.vj {
-                el.set("VerticalJustification", names::vj_out(vj));
-            }
-            if let Some(fb) = cs.first_baseline {
-                el.set("FirstBaselineOffset", names::first_baseline_out(fb));
-            }
-            if let Some(min) = cs.first_baseline_min {
-                el.set("MinimumFirstBaselineOffset", num(min));
-            }
-            if let Some(st) = &cs.stroke {
-                for side in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"] {
-                    self.cell_stroke_attrs(&mut el, side, st);
-                }
-            }
-            for (side, attrs) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().zip(&cs.strokes) {
-                self.partial_cell_stroke_attrs(&mut el, side, attrs);
-            }
-            if let Some(ps) = &cs.paragraph_style {
-                el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
-            }
-            let base = cs.based_on.as_deref().unwrap_or(designcraft_doc::NO_CELL_STYLE);
-            let based_on = if base == designcraft_doc::NO_CELL_STYLE {
-                p("BasedOn", "string", "$ID/[None]")
-            } else {
-                p("BasedOn", "object", names::style_self("CellStyle", names::CELL_BUILTINS, base))
-            };
-            cells = cells.child(with_props(el, vec![based_on]));
-        }
-        root.push(cells);
-        let mut tables = El::new("RootTableStyleGroup").attr("Self", self.fresh());
-        if !styles.table.iter().any(|s| s.name == designcraft_doc::NO_TABLE_STYLE) {
-            tables.push(El::new("TableStyle").attr("Self", "TableStyle/$ID/[No table style]").attr("Name", "$ID/[No table style]"));
-        }
-        if !styles.table.iter().any(|s| s.name == designcraft_doc::BASIC_TABLE) {
-            tables.push(with_props(
-                El::new("TableStyle").attr("Self", "TableStyle/$ID/[Basic Table]").attr("Name", "$ID/[Basic Table]"),
-                vec![p("BasedOn", "string", "$ID/[No table style]")],
-            ));
-        }
-        for ts in &styles.table {
-            let mut el = El::new("TableStyle")
-                .attr("Self", names::style_self("TableStyle", names::TABLE_BUILTINS, &ts.name))
-                .attr("Name", names::style_name_out(names::TABLE_BUILTINS, &ts.name));
-            for (k, v) in [
-                ("HeaderRegionCellStyle", &ts.header),
-                ("BodyRegionCellStyle", &ts.body),
-                ("FooterRegionCellStyle", &ts.footer),
-                ("LeftColumnRegionCellStyle", &ts.left_column),
-                ("RightColumnRegionCellStyle", &ts.right_column),
-            ] {
-                if let Some(n) = v {
-                    el.set(k, names::style_self("CellStyle", names::CELL_BUILTINS, n));
-                }
-            }
-            for (key, value) in [
-                ("HeaderRegionSameAsBodyRegion", ts.header_same_as_body),
-                ("FooterRegionSameAsBodyRegion", ts.footer_same_as_body),
-                ("LeftColumnRegionSameAsBodyRegion", ts.left_column_same_as_body),
-                ("RightColumnRegionSameAsBodyRegion", ts.right_column_same_as_body),
-            ] {
-                if let Some(value) = value {
-                    el.set(key, value);
-                }
-            }
-            if let Some(b) = &ts.border {
-                for side in ["Top", "Left", "Bottom", "Right"] {
-                    self.cell_stroke_attrs(&mut el, &format!("{side}Border"), b);
-                }
-            }
-            for (side, attrs) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&ts.borders) {
-                self.partial_cell_stroke_attrs(&mut el, side, attrs);
-            }
-            if let Some(a) = &ts.alt_rows {
-                el.set("StartRowFillColor", self.sw(&a.first_color));
-                el.set("StartRowFillCount", a.first);
-                el.set("StartRowFillTint", pct(a.first_tint as f64));
-                el.set("EndRowFillColor", self.sw(&a.next_color));
-                el.set("EndRowFillCount", a.next);
-                el.set("EndRowFillTint", pct(a.next_tint as f64));
-            }
-            self.partial_alt_fill_attrs(&mut el, "Row", &ts.row_fills);
-            self.partial_alt_fill_attrs(&mut el, "Column", &ts.column_fills);
-            self.partial_alt_stroke_attrs(&mut el, "Row", &ts.row_strokes);
-            self.partial_alt_stroke_attrs(&mut el, "Column", &ts.column_strokes);
-            if let Some(v) = ts.space_before {
-                el.set("SpaceBefore", num(v));
-            }
-            if let Some(v) = ts.space_after {
-                el.set("SpaceAfter", num(v));
-            }
-            let mut props = Vec::new();
-            if ts.name != designcraft_doc::NO_TABLE_STYLE {
-                let base = ts.based_on.as_deref().unwrap_or(designcraft_doc::NO_TABLE_STYLE);
-                props.push(if base == designcraft_doc::NO_TABLE_STYLE {
-                    p("BasedOn", "string", "$ID/[No table style]")
-                } else {
-                    p("BasedOn", "object", names::style_self("TableStyle", names::TABLE_BUILTINS, base))
-                });
-            }
-            tables = tables.child(with_props(el, props));
-        }
-        root.push(tables);
+        self.append_cell_styles(&mut root, &styles);
+        self.append_table_styles(&mut root, &styles);
         // Named numbered lists.
         for l in &self.d.settings.lists {
             root.push(
@@ -281,6 +159,137 @@ impl<'a> Ex<'a> {
         document(&root)
     }
 
+    fn append_cell_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
+        let mut cells = El::new("RootCellStyleGroup")
+            .attr("Self", self.fresh())
+            .child(El::new("CellStyle").attr("Self", "CellStyle/$ID/[None]").attr("AppliedParagraphStyle", NO_PARA_ID).attr("Name", "$ID/[None]"));
+        for cs in styles.cell.iter().filter(|c| c.name != designcraft_doc::NO_CELL_STYLE) {
+            let mut el = El::new("CellStyle")
+                .attr("Self", names::style_self("CellStyle", names::CELL_BUILTINS, &cs.name))
+                .attr("Name", names::style_name_out(names::CELL_BUILTINS, &cs.name));
+            if let Some(f) = &cs.fill {
+                el.set("FillColor", self.sw(f));
+            }
+            if let Some(t) = cs.fill_tint {
+                el.set("FillTint", pct(t as f64));
+            }
+            if let Some(i) = cs.insets {
+                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
+                    el.set(k, num(v));
+                }
+            }
+            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+                if let Some(value) = value {
+                    el.set(key, num(value));
+                }
+            }
+            if let Some(vj) = cs.vj {
+                el.set("VerticalJustification", names::vj_out(vj));
+            }
+            if let Some(fb) = cs.first_baseline {
+                el.set("FirstBaselineOffset", names::first_baseline_out(fb));
+            }
+            if let Some(min) = cs.first_baseline_min {
+                el.set("MinimumFirstBaselineOffset", num(min));
+            }
+            if let Some(st) = &cs.stroke {
+                for side in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"] {
+                    self.cell_stroke_attrs(&mut el, side, st);
+                }
+            }
+            for (side, attrs) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().zip(&cs.strokes) {
+                self.partial_cell_stroke_attrs(&mut el, side, attrs);
+            }
+            if let Some(ps) = &cs.paragraph_style {
+                el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
+            }
+            let base = cs.based_on.as_deref().unwrap_or(designcraft_doc::NO_CELL_STYLE);
+            let based_on = if base == designcraft_doc::NO_CELL_STYLE {
+                p("BasedOn", "string", "$ID/[None]")
+            } else {
+                p("BasedOn", "object", names::style_self("CellStyle", names::CELL_BUILTINS, base))
+            };
+            cells = cells.child(with_props(el, vec![based_on]));
+        }
+        root.push(cells);
+    }
+
+    fn append_table_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
+        let mut tables = El::new("RootTableStyleGroup").attr("Self", self.fresh());
+        if !styles.table.iter().any(|s| s.name == designcraft_doc::NO_TABLE_STYLE) {
+            tables.push(El::new("TableStyle").attr("Self", "TableStyle/$ID/[No table style]").attr("Name", "$ID/[No table style]"));
+        }
+        if !styles.table.iter().any(|s| s.name == designcraft_doc::BASIC_TABLE) {
+            tables.push(with_props(
+                El::new("TableStyle").attr("Self", "TableStyle/$ID/[Basic Table]").attr("Name", "$ID/[Basic Table]"),
+                vec![p("BasedOn", "string", "$ID/[No table style]")],
+            ));
+        }
+        for ts in &styles.table {
+            let mut el = El::new("TableStyle")
+                .attr("Self", names::style_self("TableStyle", names::TABLE_BUILTINS, &ts.name))
+                .attr("Name", names::style_name_out(names::TABLE_BUILTINS, &ts.name));
+            for (k, v) in [
+                ("HeaderRegionCellStyle", &ts.header),
+                ("BodyRegionCellStyle", &ts.body),
+                ("FooterRegionCellStyle", &ts.footer),
+                ("LeftColumnRegionCellStyle", &ts.left_column),
+                ("RightColumnRegionCellStyle", &ts.right_column),
+            ] {
+                if let Some(n) = v {
+                    el.set(k, names::style_self("CellStyle", names::CELL_BUILTINS, n));
+                }
+            }
+            for (key, value) in [
+                ("HeaderRegionSameAsBodyRegion", ts.header_same_as_body),
+                ("FooterRegionSameAsBodyRegion", ts.footer_same_as_body),
+                ("LeftColumnRegionSameAsBodyRegion", ts.left_column_same_as_body),
+                ("RightColumnRegionSameAsBodyRegion", ts.right_column_same_as_body),
+            ] {
+                if let Some(value) = value {
+                    el.set(key, value);
+                }
+            }
+            if let Some(b) = &ts.border {
+                for side in ["Top", "Left", "Bottom", "Right"] {
+                    self.cell_stroke_attrs(&mut el, &format!("{side}Border"), b);
+                }
+            }
+            for (side, attrs) in ["TopBorder", "LeftBorder", "BottomBorder", "RightBorder"].iter().zip(&ts.borders) {
+                self.partial_cell_stroke_attrs(&mut el, side, attrs);
+            }
+            if let Some(a) = &ts.alt_rows {
+                el.set("StartRowFillColor", self.sw(&a.first_color));
+                el.set("StartRowFillCount", a.first);
+                el.set("StartRowFillTint", pct(a.first_tint as f64));
+                el.set("EndRowFillColor", self.sw(&a.next_color));
+                el.set("EndRowFillCount", a.next);
+                el.set("EndRowFillTint", pct(a.next_tint as f64));
+            }
+            self.partial_alt_fill_attrs(&mut el, "Row", &ts.row_fills);
+            self.partial_alt_fill_attrs(&mut el, "Column", &ts.column_fills);
+            self.partial_alt_stroke_attrs(&mut el, "Row", &ts.row_strokes);
+            self.partial_alt_stroke_attrs(&mut el, "Column", &ts.column_strokes);
+            if let Some(v) = ts.space_before {
+                el.set("SpaceBefore", num(v));
+            }
+            if let Some(v) = ts.space_after {
+                el.set("SpaceAfter", num(v));
+            }
+            let mut props = Vec::new();
+            if ts.name != designcraft_doc::NO_TABLE_STYLE {
+                let base = ts.based_on.as_deref().unwrap_or(designcraft_doc::NO_TABLE_STYLE);
+                props.push(if base == designcraft_doc::NO_TABLE_STYLE {
+                    p("BasedOn", "string", "$ID/[No table style]")
+                } else {
+                    p("BasedOn", "object", names::style_self("TableStyle", names::TABLE_BUILTINS, base))
+                });
+            }
+            tables = tables.child(with_props(el, props));
+        }
+        root.push(tables);
+    }
+
     /// The document's table of contents as a TOC style; its story names it in `AppliedTOCStyle`.
     fn toc_style_el(&mut self, toc: &designcraft_doc::Toc) -> El {
         let para = |n: &str| names::style_self("ParagraphStyle", PARA_BUILTINS, n);
@@ -293,7 +302,7 @@ impl<'a> Ex<'a> {
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
             .attr("IncludeBookDocuments", "false")
-            .attr("CreatePdfBookmarks", "false");
+            .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
             let position = match e.page_number {
@@ -326,6 +335,17 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
+        el.set(&format!("{k}Type"), names::stroke_type_out(&r.kind));
+        // A gap in Text Color is a string property, as the rule's own colour is.
+        if r.gap_color == designcraft_doc::TEXT_COLOR {
+            props.push(p(&format!("{k}GapColor"), "string", designcraft_doc::TEXT_COLOR));
+        } else {
+            el.set(&format!("{k}GapColor"), self.sw(&r.gap_color));
+        }
+        el.set(&format!("{k}GapTint"), pct(r.gap_tint as f64));
+        if k == "RuleAbove" {
+            el.set("KeepRuleAboveInFrame", bool_s(r.keep_in_frame));
+        }
         props.push(if r.color == designcraft_doc::TEXT_COLOR {
             p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
         } else {

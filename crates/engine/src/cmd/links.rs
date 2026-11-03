@@ -934,6 +934,47 @@ mod text_link_tests {
         st.paras.iter().map(|p| p.style.clone()).collect()
     }
 
+    fn assert_link_update_replaces_and_warns(s: &mut Session, path: &std::path::Path, sid: StoryId, a: u64, b: u64) {
+        // The file changes (with tracked changes): Modified; Update imports it as if accepted, with
+        // the saved style map, into the same frames, without new renamed styles.
+        std::fs::write(
+            path,
+            docx(r#"<w:r><w:t xml:space="preserve">Second </w:t></w:r><w:ins w:id="1" w:author="A"><w:r><w:t>revised </w:t></w:r></w:ins><w:del w:id="2" w:author="A"><w:r><w:delText>old </w:delText></w:r></w:del><w:r><w:t>draft.</w:t></w:r>"#),
+        )
+        .unwrap();
+        assert_eq!(text_rows(s)[0]["status"], "modified");
+        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
+        assert_eq!(r["updated"], 1);
+        assert_eq!(r["warnings"], json!([]), "no edits in the layout to replace");
+        let updated = story(s, sid);
+        assert_eq!(updated.text, "Head\nSecond revised draft.");
+        assert_eq!(styles(&updated), ["Headline", "Body_wrd_1"]);
+        assert_eq!(updated.frames, [ItemId(a), ItemId(b)], "frames and thread kept");
+        assert!(s.doc().unwrap().doc.styles.para("Body_wrd_2").is_none());
+        assert!(s.doc().unwrap().doc.styles.para("Title").is_none(), "mapped styles aren't imported");
+        assert_eq!(text_rows(s)[0]["status"], "ok");
+
+        // An edit in the layout, then the file changes again: Update replaces the edit and warns.
+        s.execute("story.setText", &json!({"story": sid.0, "text": "Fixed in layout"})).unwrap();
+        assert_eq!(text_rows(s)[0]["edited"], true);
+        std::fs::write(path, docx("<w:r><w:t>Third draft.</w:t></w:r>")).unwrap();
+        let r = s.execute("links.update", &json!({})).unwrap();
+        assert_eq!(r["updated"], 1);
+        let w = r["warnings"][0].as_str().unwrap();
+        assert!(w.contains("chapter.docx") && w.contains("replaced"), "{w}");
+        assert_eq!(story(s, sid).text, "Head\nThird draft.");
+        assert_eq!(text_rows(s)[0]["edited"], false);
+        // Undo brings the edit back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(story(s, sid).text, "Fixed in layout");
+        s.execute("edit.redo", &json!({})).unwrap();
+
+        // Saved and opened again: the link and its options are kept.
+        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(back.story(sid).unwrap().file_link, story(s, sid).file_link);
+        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
+    }
+
     #[test]
     fn linked_word_file_status_update_relink_and_unlink() {
         let dir = std::env::temp_dir().join(format!("dc-text-link-{}", std::process::id()));
@@ -973,44 +1014,7 @@ mod text_link_tests {
         assert_eq!((rows[0]["status"].as_str(), rows[0]["edited"].as_bool()), (Some("ok"), Some(false)));
         assert_eq!(rows[0]["uses"].as_array().unwrap().len(), 2, "both threaded frames");
 
-        // The file changes (with tracked changes): Modified; Update imports it as if accepted, with
-        // the saved style map, into the same frames, without new renamed styles.
-        std::fs::write(
-            &path,
-            docx(r#"<w:r><w:t xml:space="preserve">Second </w:t></w:r><w:ins w:id="1" w:author="A"><w:r><w:t>revised </w:t></w:r></w:ins><w:del w:id="2" w:author="A"><w:r><w:delText>old </w:delText></w:r></w:del><w:r><w:t>draft.</w:t></w:r>"#),
-        )
-        .unwrap();
-        assert_eq!(text_rows(&mut s)[0]["status"], "modified");
-        let r = s.execute("links.update", &json!({"story": sid.0})).unwrap();
-        assert_eq!(r["updated"], 1);
-        assert_eq!(r["warnings"], json!([]), "no edits in the layout to replace");
-        let updated = story(&s, sid);
-        assert_eq!(updated.text, "Head\nSecond revised draft.");
-        assert_eq!(styles(&updated), ["Headline", "Body_wrd_1"]);
-        assert_eq!(updated.frames, [ItemId(a), ItemId(b)], "frames and thread kept");
-        assert!(s.doc().unwrap().doc.styles.para("Body_wrd_2").is_none());
-        assert!(s.doc().unwrap().doc.styles.para("Title").is_none(), "mapped styles aren't imported");
-        assert_eq!(text_rows(&mut s)[0]["status"], "ok");
-
-        // An edit in the layout, then the file changes again: Update replaces the edit and warns.
-        s.execute("story.setText", &json!({"story": sid.0, "text": "Fixed in layout"})).unwrap();
-        assert_eq!(text_rows(&mut s)[0]["edited"], true);
-        std::fs::write(&path, docx("<w:r><w:t>Third draft.</w:t></w:r>")).unwrap();
-        let r = s.execute("links.update", &json!({})).unwrap();
-        assert_eq!(r["updated"], 1);
-        let w = r["warnings"][0].as_str().unwrap();
-        assert!(w.contains("chapter.docx") && w.contains("replaced"), "{w}");
-        assert_eq!(story(&s, sid).text, "Head\nThird draft.");
-        assert_eq!(text_rows(&mut s)[0]["edited"], false);
-        // Undo brings the edit back.
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(story(&s, sid).text, "Fixed in layout");
-        s.execute("edit.redo", &json!({})).unwrap();
-
-        // Saved and opened again: the link and its options are kept.
-        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
-        assert_eq!(back.story(sid).unwrap().file_link, story(&s, sid).file_link);
-        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
+        assert_link_update_replaces_and_warns(&mut s, &path, sid, a, b);
 
         // The file moves: Missing; Relink to it imports it into the story.
         let moved = dir.join("moved").join("chapter.docx");
@@ -1090,6 +1094,16 @@ mod text_link_tests {
         assert_eq!(status(&mut s), "ok", "a future time is remembered");
         readable(true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn placed_plain_text_drops_story_markers() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let b64 = crate::cmd::base64_encode("a\u{E009}b\u{E000}c\u{E002}d".as_bytes());
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "n.txt", "rect": [72, 72, 300, 200]})).unwrap();
+        let st = s.doc().unwrap().doc.story(StoryId(r["story"].as_u64().unwrap())).unwrap();
+        assert_eq!(st.text, "abcd");
     }
 
     #[test]

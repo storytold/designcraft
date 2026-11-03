@@ -250,6 +250,117 @@ fn line_box(l: &Line) -> Option<Rect> {
     Some(Rect::new(x0 - pad, l.baseline - l.ascent - pad, x1 + pad, bottom + pad))
 }
 
+fn draw_text_indicators(ctx: &mut RenderContext, f: &Frame, cs: &ComposedStory, ft: &FrameText, m: Affine) {
+    // Text in fonts that aren't installed: pink behind the glyphs (screen only).
+    if f.opts.highlight_missing_fonts && cs.styles.iter().any(|s| s.missing_font) {
+        ctx.set_transform(m);
+        ctx.set_paint(screen_color([255, 166, 214], 255));
+        for l in &ft.lines {
+            for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.missing_font)) {
+                ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
+            }
+        }
+    }
+    if f.opts.highlight_keeps && ft.lines.iter().any(|l| l.keep_violation) {
+        ctx.set_transform(m);
+        ctx.set_paint(screen_color([255, 236, 120], 255));
+        for l in ft.lines.iter().filter(|l| l.keep_violation) {
+            ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.x1, l.baseline + l.descent));
+        }
+    }
+    if f.opts.highlight_hj && ft.lines.iter().any(|l| l.hj > 0) {
+        ctx.set_transform(m);
+        for l in ft.lines.iter().filter(|l| l.hj > 0) {
+            let shade = [0u8, 0xF6, 0xEA, 0xD8][l.hj.min(3) as usize];
+            ctx.set_paint(screen_color([255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]], 255));
+            ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.end_x.max(l.x0 + 1.0), l.baseline + l.descent));
+        }
+    }
+    if f.opts.highlight_custom_tracking && cs.styles.iter().any(|s| s.custom_tracking) {
+        ctx.set_transform(m);
+        ctx.set_paint(screen_color([176, 236, 176], 255));
+        for l in &ft.lines {
+            for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.custom_tracking)) {
+                ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
+            }
+        }
+    }
+    if f.opts.tag_markers && cs.styles.iter().any(|s| s.xml_tag.is_some()) {
+        ctx.set_transform(m);
+        let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
+        for l in &ft.lines {
+            let tag_of = |g: &designcraft_compose::PlacedGlyph| cs.styles.get(g.style as usize).and_then(|s| s.xml_tag.clone());
+            let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0).collect();
+            let mut i = 0;
+            while i < gs.len() {
+                let Some(tag) = tag_of(gs[i]) else {
+                    i += 1;
+                    continue;
+                };
+                let mut j = i + 1;
+                while j < gs.len() && tag_of(gs[j]).as_deref() == Some(tag.as_str()) {
+                    j += 1;
+                }
+                let c = f.doc.xml.tags.iter().find(|t| t.name == tag).map_or([100, 100, 220], |t| t.color);
+                ctx.set_paint(screen_color([c[0], c[1], c[2]], 255));
+                let (x0, x1) = (gs[i].x, gs[j - 1].x + gs[j - 1].adv);
+                let (top, bot) = (l.baseline - l.ascent, l.baseline + l.descent);
+                let (w, t) = (2.5 * px, px.max(0.3));
+                // [ before the element, ] after it.
+                for (x, dir) in [(x0, 1.0), (x1, -1.0)] {
+                    ctx.fill_rect(&kurbo::Rect::new(x - t / 2.0, top, x + t / 2.0, bot));
+                    for y in [top, bot - t] {
+                        let (a, b) = if dir > 0.0 { (x, x + w) } else { (x - w, x) };
+                        ctx.fill_rect(&kurbo::Rect::new(a, y, b, y + t));
+                    }
+                }
+                i = j;
+            }
+        }
+    }
+    if f.opts.change_markup && cs.styles.iter().any(|s| s.inserted) {
+        ctx.set_transform(m);
+        for l in &ft.lines {
+            for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.inserted)) {
+                ctx.set_paint(screen_color([120, 190, 255], 110));
+                ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
+            }
+        }
+    }
+    if f.opts.note_indicators
+        && let Some(st) = f.doc.story(cs.story).filter(|st| !st.editorial.is_empty())
+    {
+        // A small flag at each note anchor, in the notes' amber.
+        ctx.set_transform(m);
+        ctx.set_paint(screen_color([232, 160, 32], 255));
+        for l in &ft.lines {
+            for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(designcraft_doc::NOTE_MARK))) {
+                let h = l.ascent.max(4.0);
+                let mut p = BezPath::new();
+                p.move_to((g.x - h * 0.25, l.baseline - h));
+                p.line_to((g.x + h * 0.25, l.baseline - h));
+                p.line_to((g.x, l.baseline - h * 0.55));
+                p.close_path();
+                ctx.fill_path(&p);
+                ctx.fill_rect(&kurbo::Rect::new(g.x - h * 0.03, l.baseline - h * 0.6, g.x + h * 0.03, l.baseline + l.descent * 0.5));
+            }
+        }
+    }
+    if f.opts.condition_indicators && !f.doc.conditions.is_empty() && cs.styles.iter().any(|s| s.condition.is_some()) {
+        ctx.set_transform(m);
+        let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
+        for l in &ft.lines {
+            for g in l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0) {
+                let Some(name) = cs.styles.get(g.style as usize).and_then(|s| s.condition.as_deref()) else { continue };
+                let Some(c) = f.doc.conditions.iter().find(|c| c.name == name) else { continue };
+                ctx.set_paint(screen_color([c.color[0], c.color[1], c.color[2]], 255));
+                let y = l.baseline + l.descent * 0.6;
+                ctx.fill_rect(&kurbo::Rect::new(g.x, y, g.x + g.adv, y + 2.0 * px));
+            }
+        }
+    }
+}
+
 impl Renderer {
     pub(crate) fn draw_text(&mut self, ctx: &mut RenderContext, f: &Frame, cs: &Arc<ComposedStory>, ft: &FrameText, xf: Affine) {
         let doc = f.doc;
@@ -276,114 +387,12 @@ impl Renderer {
         if !ft.tables.is_empty() {
             self.draw_tables(ctx, f, ft, xf);
         }
-        // Text in fonts that aren't installed: pink behind the glyphs (screen only).
-        if f.opts.highlight_missing_fonts && cs.styles.iter().any(|s| s.missing_font) {
-            ctx.set_transform(m);
-            ctx.set_paint(screen_color([255, 166, 214], 255));
-            for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.missing_font)) {
-                    ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
-                }
-            }
+        // Anchored objects ride on their lines, under the frame's text (as InDesign draws them):
+        // a picture whose frame reaches into the next line doesn't hide that line.
+        for o in &ft.objects {
+            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
         }
-        if f.opts.highlight_keeps && ft.lines.iter().any(|l| l.keep_violation) {
-            ctx.set_transform(m);
-            ctx.set_paint(screen_color([255, 236, 120], 255));
-            for l in ft.lines.iter().filter(|l| l.keep_violation) {
-                ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.x1, l.baseline + l.descent));
-            }
-        }
-        if f.opts.highlight_hj && ft.lines.iter().any(|l| l.hj > 0) {
-            ctx.set_transform(m);
-            for l in ft.lines.iter().filter(|l| l.hj > 0) {
-                let shade = [0u8, 0xF6, 0xEA, 0xD8][l.hj.min(3) as usize];
-                ctx.set_paint(screen_color([255, shade, [0u8, 0xB0, 0x70, 0x30][l.hj.min(3) as usize]], 255));
-                ctx.fill_rect(&kurbo::Rect::new(l.x0, l.baseline - l.ascent, l.end_x.max(l.x0 + 1.0), l.baseline + l.descent));
-            }
-        }
-        if f.opts.highlight_custom_tracking && cs.styles.iter().any(|s| s.custom_tracking) {
-            ctx.set_transform(m);
-            ctx.set_paint(screen_color([176, 236, 176], 255));
-            for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.custom_tracking)) {
-                    ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
-                }
-            }
-        }
-        if f.opts.tag_markers && cs.styles.iter().any(|s| s.xml_tag.is_some()) {
-            ctx.set_transform(m);
-            let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
-            for l in &ft.lines {
-                let tag_of = |g: &designcraft_compose::PlacedGlyph| cs.styles.get(g.style as usize).and_then(|s| s.xml_tag.clone());
-                let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0).collect();
-                let mut i = 0;
-                while i < gs.len() {
-                    let Some(tag) = tag_of(gs[i]) else {
-                        i += 1;
-                        continue;
-                    };
-                    let mut j = i + 1;
-                    while j < gs.len() && tag_of(gs[j]).as_deref() == Some(tag.as_str()) {
-                        j += 1;
-                    }
-                    let c = f.doc.xml.tags.iter().find(|t| t.name == tag).map_or([100, 100, 220], |t| t.color);
-                    ctx.set_paint(screen_color([c[0], c[1], c[2]], 255));
-                    let (x0, x1) = (gs[i].x, gs[j - 1].x + gs[j - 1].adv);
-                    let (top, bot) = (l.baseline - l.ascent, l.baseline + l.descent);
-                    let (w, t) = (2.5 * px, px.max(0.3));
-                    // [ before the element, ] after it.
-                    for (x, dir) in [(x0, 1.0), (x1, -1.0)] {
-                        ctx.fill_rect(&kurbo::Rect::new(x - t / 2.0, top, x + t / 2.0, bot));
-                        for y in [top, bot - t] {
-                            let (a, b) = if dir > 0.0 { (x, x + w) } else { (x - w, x) };
-                            ctx.fill_rect(&kurbo::Rect::new(a, y, b, y + t));
-                        }
-                    }
-                    i = j;
-                }
-            }
-        }
-        if f.opts.change_markup && cs.styles.iter().any(|s| s.inserted) {
-            ctx.set_transform(m);
-            for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| g.adv > 0.0 && cs.styles.get(g.style as usize).is_some_and(|s| s.inserted)) {
-                    ctx.set_paint(screen_color([120, 190, 255], 110));
-                    ctx.fill_rect(&kurbo::Rect::new(g.x, l.baseline - l.ascent, g.x + g.adv, l.baseline + l.descent));
-                }
-            }
-        }
-        if f.opts.note_indicators
-            && let Some(st) = f.doc.story(cs.story).filter(|st| !st.editorial.is_empty())
-        {
-            // A small flag at each note anchor, in the notes' amber.
-            ctx.set_transform(m);
-            ctx.set_paint(screen_color([232, 160, 32], 255));
-            for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| st.text.get(g.byte..).is_some_and(|t| t.starts_with(designcraft_doc::NOTE_MARK))) {
-                    let h = l.ascent.max(4.0);
-                    let mut p = BezPath::new();
-                    p.move_to((g.x - h * 0.25, l.baseline - h));
-                    p.line_to((g.x + h * 0.25, l.baseline - h));
-                    p.line_to((g.x, l.baseline - h * 0.55));
-                    p.close_path();
-                    ctx.fill_path(&p);
-                    ctx.fill_rect(&kurbo::Rect::new(g.x - h * 0.03, l.baseline - h * 0.6, g.x + h * 0.03, l.baseline + l.descent * 0.5));
-                }
-            }
-        }
-        if f.opts.condition_indicators && !f.doc.conditions.is_empty() && cs.styles.iter().any(|s| s.condition.is_some()) {
-            ctx.set_transform(m);
-            let px = 1.0 / m.determinant().abs().sqrt().max(1e-9);
-            for l in &ft.lines {
-                for g in l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0) {
-                    let Some(name) = cs.styles.get(g.style as usize).and_then(|s| s.condition.as_deref()) else { continue };
-                    let Some(c) = f.doc.conditions.iter().find(|c| c.name == name) else { continue };
-                    ctx.set_paint(screen_color([c.color[0], c.color[1], c.color[2]], 255));
-                    let y = l.baseline + l.descent * 0.6;
-                    ctx.fill_rect(&kurbo::Rect::new(g.x, y, g.x + g.adv, y + 2.0 * px));
-                }
-            }
-        }
+        draw_text_indicators(ctx, f, cs, ft, m);
         let scale = m.determinant().abs().sqrt();
         let greek_px = f.opts.greek_below_px;
         let mut greek = BezPath::new();
@@ -456,10 +465,6 @@ impl Renderer {
             if let Some(nft) = n.text.frames.first() {
                 self.draw_text(ctx, f, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()));
             }
-        }
-        // Anchored objects ride on their lines.
-        for o in &ft.objects {
-            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
         }
     }
 }

@@ -24,6 +24,8 @@ log = { workspace = true }
 winresource = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Not called here: craft-dialogs shows the dialogs. rfd's default features keep its Wayland
+# support on, so portal dialogs get the window as their parent.
 rfd = { workspace = true }
 arboard = { workspace = true }
 
@@ -35,7 +37,8 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 craft-update = { workspace = true }
 # EnumDisplayDevices (src/gpu.rs): which GPU drives the display, so the window draws on the GPU
 # that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
-# Win32 (MIT); the `user` feature is User32.dll only.
+# Win32 (MIT); the `user` feature is User32.dll only. Also the window frame for the custom title
+# bar (src/window_frame.rs, window styles).
 winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -53,3 +56,8 @@ craft-window = { workspace = true }
 # PdfCraft and WordCraft) registers the handler behind a safe API (Objective-C interop needs unsafe,
 # which the workspace forbids). Pinned exactly: review the diff before bumping.
 fmv-macos-events = "=0.1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Native GNOME/Wayland controls without a bundled title font.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita-notitle"] }
+

@@ -2,7 +2,10 @@ use super::frame::{Prefs, frame_grid_relative, text_frame_options, text_wrap};
 use super::object_style::INDESIGN_CORNER_SIZE;
 use super::package::uri_to_path;
 use super::values::{nums, parse_affine, parse_point, tint};
-use super::*;
+use super::{
+    Affine, Anchor, Arc, Asset, AssetId, Content, Corner, CornerOptions, El, Fill, Importer, Item, ItemId, OBJECT_BUILTINS, PathData, Point, Shape,
+    Story, StoryId, Stroke, SubPath, TextFrame, TextFrameOptions, base64_decode, names, sniff_image, swatch, unescape_id,
+};
 
 /// The viewBox size of an SVG whose root has a viewBox but no width/height (percentages count as
 /// none): InDesign places such a file at one viewBox unit to the point.
@@ -177,7 +180,11 @@ impl<'r> Importer<'r> {
                 self.ctx.threads.push((id, story_self, "n".into(), "n".into()));
             }
         }
-        // Content.
+        self.read_content(e, tag, id, &mut it);
+        Some(it)
+    }
+
+    fn read_content(&mut self, e: &El, tag: &str, id: ItemId, item: &mut Item) {
         match tag {
             "TextFrame" => {
                 let story_self = e.get("ParentStory").unwrap_or("n").to_string();
@@ -206,7 +213,7 @@ impl<'r> Importer<'r> {
                         relative_to: g.get("BaselineFrameGridRelativeOption").map(frame_grid_relative).unwrap_or_default(),
                     });
                 }
-                it.content = Content::Text(TextFrame { story, options });
+                item.content = Content::Text(TextFrame { story, options });
                 self.ctx.threads.push((
                     id,
                     story_self,
@@ -221,18 +228,18 @@ impl<'r> Importer<'r> {
                         kids.push(Arc::new(k));
                     }
                 }
-                it.content = Content::Group { items: kids };
-                it.fill = Fill::none();
-                it.stroke = Stroke::none();
+                item.content = Content::Group { items: kids };
+                item.fill = Fill::none();
+                item.stroke = Stroke::none();
             }
             _ => {
                 if let Some(g) = e.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG")) {
-                    it.content = self.graphic(g);
+                    item.content = self.graphic(g);
                     let fill = self.image_fill(g);
-                    if let Content::Graphic(gr) = &mut it.content {
+                    if let Content::Graphic(gr) = &mut item.content {
                         gr.fill = fill;
                     }
-                    if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut it.content) {
+                    if let (Some(ff), Content::Graphic(gr)) = (self.with_style(e, "FrameFittingOption"), &mut item.content) {
                         gr.crop = [ff.num("TopCrop"), ff.num("LeftCrop"), ff.num("BottomCrop"), ff.num("RightCrop")].map(|v| v.unwrap_or(0.0));
                         gr.fit_align = ff.get("FittingAlignment").map_or(4, names::anchor_in);
                         if ff.get("AutoFit") == Some("true") {
@@ -251,12 +258,11 @@ impl<'r> Importer<'r> {
                         .map(Arc::new)
                         .collect();
                     if !kids.is_empty() {
-                        it.content = Content::Group { items: kids };
+                        item.content = Content::Group { items: kids };
                     }
                 }
             }
         }
-        Some(it)
     }
 
     /// The swatch applied to a placed image (`FillColor`, `FillTint`): it colours a greyscale or

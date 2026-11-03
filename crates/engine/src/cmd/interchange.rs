@@ -160,7 +160,7 @@ pub fn import(bytes: &[u8], package: Option<&std::path::Path>) -> Result<Documen
 
 /// [`import`], with the problems that did not stop it (parts missing from the package, …).
 pub fn import_report(bytes: &[u8], package: Option<&std::path::Path>) -> Result<(Document, Vec<String>)> {
-    import_report_with_previews(bytes, package, &std::collections::HashMap::new())
+    import_report_with_previews(bytes, package, &std::collections::HashMap::new()).map(|(document, warnings, _)| (document, warnings))
 }
 
 /// [`import_report`], showing `previews` (graphic `Self` → image) for linked files that can't be read.
@@ -168,7 +168,7 @@ fn import_report_with_previews(
     bytes: &[u8],
     package: Option<&std::path::Path>,
     previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
-) -> Result<(Document, Vec<String>)> {
+) -> Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -184,7 +184,7 @@ fn import_report_with_previews(
             None
         }
     };
-    let designcraft_idml::Imported { mut document, warnings } =
+    let designcraft_idml::Imported { mut document, warnings, story_ids } =
         designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
     resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
@@ -199,7 +199,7 @@ fn import_report_with_previews(
         resolve_packaged_links(&mut document, package);
         document
     };
-    Ok((document, warnings))
+    Ok((document, warnings, story_ids))
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -422,7 +422,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         bytes
     };
-    let (mut d, import_warnings) = import_report_with_previews(&bytes, package.as_deref(), &previews)?;
+    let (mut d, import_warnings, story_ids) = import_report_with_previews(&bytes, package.as_deref(), &previews)?;
     warnings.extend(import_warnings);
     if !title.is_empty() {
         d.title = title;
@@ -433,11 +433,25 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     warnings.extend(font_warnings);
     warnings.extend(super::style::grep_style_warnings(&d));
+    let warning_items: Vec<Value> = warnings.iter().map(|w| warning_item(&d, &story_ids, w).map_or(Value::Null, |i| json!(i.0))).collect();
     // Never save over the .idml or .indd with the native format: the document starts unsaved.
     let mut st = DocState::new(d, None);
     st.fonts = fonts;
     let i = s.add_document(st);
-    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "warningItems": warning_items}))
+}
+
+/// The frame an import warning is about, so it can be shown: the first frame of the story a
+/// "story …: …" warning names, by the converter's INDD id (`story 30892`, which it writes to the
+/// IDML as `u78ac`) or by its IDML `Self` (`story u78ac`).
+fn warning_item(
+    d: &Document,
+    story_ids: &std::collections::HashMap<String, designcraft_doc::StoryId>,
+    warning: &str,
+) -> Option<designcraft_doc::ItemId> {
+    let name = warning.strip_prefix("story ")?.split([':', ' ']).next()?;
+    let self_id = name.parse::<u32>().map_or_else(|_| name.to_string(), |uid| format!("u{uid:x}"));
+    d.stories.get(story_ids.get(&self_id)?)?.frames.first().copied()
 }
 
 /// An InDesign document or template (.indd, .indt): known by its signature, or by its name when
@@ -477,6 +491,24 @@ mod tests {
         })?;
         let bytes = designcraft_idml::export_idml_with(&session.doc()?.doc, &designcraft_idml::ExportOptions { embed_images });
         Ok((bytes, png))
+    }
+
+    #[test]
+    fn story_warnings_point_at_the_story_frame() {
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        session.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+        let idml = designcraft_idml::export_idml_with(&session.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: true });
+        let (d, _, story_ids) = import_report_with_previews(&idml, None, &std::collections::HashMap::new()).unwrap();
+        let (self_id, sid) = story_ids.iter().find(|(_, sid)| d.stories.get(*sid).is_some_and(|s| !s.frames.is_empty())).unwrap();
+        let frame = d.stories[sid].frames[0];
+        assert_eq!(warning_item(&d, &story_ids, &format!("story {self_id}: something")), Some(frame));
+        // The INDD converter names stories by their number, which it writes as `u` + hex.
+        if let Some(uid) = self_id.strip_prefix('u').and_then(|h| u32::from_str_radix(h, 16).ok()) {
+            assert_eq!(warning_item(&d, &story_ids, &format!("story {uid}: text orientation of its frames is not known")), Some(frame));
+        }
+        assert_eq!(warning_item(&d, &story_ids, "story 999999999: unknown"), None);
+        assert_eq!(warning_item(&d, &story_ids, "a table of 2 rows was read as 1"), None);
     }
 
     #[test]

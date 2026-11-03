@@ -64,11 +64,11 @@ fn very_wide_renders_do_not_panic() {
     let doc = Document::new(&NewDocument::default());
     let cache = Cache::new();
     let mut r = Renderer::new();
-    let img = r.render(&doc, &cache, &[], 70_000, 4, Affine::IDENTITY, &RenderOptions::default());
+    let img = r.render(&doc, &cache, &[], (70_000, 4), Affine::IDENTITY, &RenderOptions::default());
     assert_eq!(img.width, MAX_SIDE);
     let page = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-    let img = r.render(&doc, &cache, &page, 70_000, 64, Affine::scale(120.0), &opts);
+    let img = r.render(&doc, &cache, &page, (70_000, 64), Affine::scale(120.0), &opts);
     assert_eq!(img.width, MAX_SIDE);
     assert!(r.render_page(&doc, &cache, 0, 500.0, true, &RenderOptions::default()).is_none());
 }
@@ -668,4 +668,30 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
+}
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture
+/// whose frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
+    let mut d = Document::new(&NewDocument::default());
+    let (fid, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 300.0, 300.0), d.default_layer(), "A\nWWWW", ParaFormat::default()).unwrap();
+    let mut item =
+        Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 250.0, 60.0)));
+    item.fill = Fill::swatch(designcraft_color::swatch::PAPER);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -40.0 }));
+    let cache = Cache::new();
+    let cs = cache.get(&d, sid, None);
+    let (ft, obj) = (&cs.frames[0], &cs.frames[0].objects[0]);
+    let l = ft.lines.iter().find(|l| l.range.start > 1).unwrap();
+    // The second line lies inside the white box.
+    assert!(obj.origin.y + obj.size.1 > l.baseline && obj.origin.y < l.baseline - l.ascent, "{:?} {}", obj.origin, l.baseline);
+    let m = d.text_xf(d.item(fid).unwrap());
+    let image = Renderer::new().render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    let (a, b) = (m * designcraft_geom::Point::new(l.x0, l.baseline - l.ascent), m * designcraft_geom::Point::new(l.end_x, l.baseline));
+    let dark =
+        (a.y as u32..b.y as u32).flat_map(|y| (a.x as u32..b.x as u32).map(move |x| (x, y))).filter(|&(x, y)| image.pixel(x, y)[0] < 100).count();
+    assert!(dark > 20, "the line's glyphs show over the box: {dark} dark pixels");
 }
