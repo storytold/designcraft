@@ -412,14 +412,24 @@ impl Grep {
     /// Non-empty matches in `text`, at most `limit` of them: an empty match styles nothing, so it
     /// doesn't count toward a GREP style's cap. Empty matches still cost a search each, so the
     /// scan stops after `limit` × [`SEARCHES_PER_MATCH`] searches in all.
-    pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<Vec<Range<usize>>, GrepError> {
-        self.re
-            .find_iter(text)
-            .take(limit.saturating_mul(SEARCHES_PER_MATCH))
-            .filter(|m| !m.as_ref().is_ok_and(|m| m.range().is_empty()))
-            .take(limit)
-            .map(|m| m.map(|m| m.range()).map_err(run_err))
-            .collect()
+    ///
+    /// The flag is true when the search budget ran out with text left to scan, so the matches may
+    /// be incomplete (reaching `limit` is not flagged: the caller sees the full vector).
+    pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<(Vec<Range<usize>>, bool), GrepError> {
+        let mut it = self.re.find_iter(text);
+        let mut out = Vec::new();
+        for _ in 0..limit.saturating_mul(SEARCHES_PER_MATCH) {
+            if out.len() >= limit {
+                return Ok((out, false));
+            }
+            let Some(m) = it.next() else { return Ok((out, false)) };
+            let r = m.map_err(run_err)?.range();
+            if !r.is_empty() {
+                out.push(r);
+            }
+        }
+        let more = out.len() < limit && it.next().is_some();
+        Ok((out, more))
     }
 
     /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see
@@ -533,9 +543,10 @@ mod tests {
         // found within the budget and not past it.
         let g = grep("a*");
         let near = format!("{}a", "b".repeat(10 * SEARCHES_PER_MATCH - 2));
-        assert_eq!(g.find_nonempty(&near, 10).unwrap().len(), 1);
+        let (ms, exhausted) = g.find_nonempty(&near, 10).unwrap();
+        assert_eq!((ms.len(), ms[0].clone(), exhausted), (1, near.len() - 1..near.len(), false));
         let far = format!("{}a", "b".repeat(10 * SEARCHES_PER_MATCH + 50));
-        assert!(g.find_nonempty(&far, 10).unwrap().is_empty(), "the scan stops at the search budget");
+        assert_eq!(g.find_nonempty(&far, 10).unwrap(), (vec![], true), "the scan stops at the search budget and says so");
     }
 
     #[test]

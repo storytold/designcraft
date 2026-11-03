@@ -107,7 +107,10 @@ pub(crate) fn overlays(text: &str, range: Range<usize>, nested: &[NestedStyle], 
         with_pattern(&g.pattern, |slot| {
             let Some(re) = slot else { return };
             match re.find_nonempty(text.get(range.start..end).unwrap_or(""), crate::grep::MAX_MATCHES_PER_PARAGRAPH) {
-                Ok(ms) => {
+                Ok((ms, exhausted)) => {
+                    if exhausted {
+                        log::warn!("GREP style {:?} ran out of search budget in one paragraph; the rest may not be styled", g.pattern);
+                    }
                     if ms.len() == crate::grep::MAX_MATCHES_PER_PARAGRAPH {
                         log::warn!("GREP style {:?} matched more than {} times in one paragraph; the rest are not styled", g.pattern, ms.len());
                     }
