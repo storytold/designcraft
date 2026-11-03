@@ -351,3 +351,24 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
+
+#[test]
+fn page_numbers_in_one_pass_match_page_number() {
+    let mut d = crate::Document::new(&crate::build::NewDocument { pages: 12, facing_pages: false, ..Default::default() });
+    let sec = |start, start_number| crate::Section {
+        start,
+        start_number,
+        style: Default::default(),
+        prefix: String::new(),
+        marker: String::new(),
+        include_prefix: false,
+    };
+    // Out of order, a repeated start, continuing sections and one with its own number.
+    d.sections = vec![sec(7, None), sec(2, Some(10)), sec(4, None), sec(7, Some(3)), sec(9, None), sec(11, Some(u32::MAX)), sec(12, None)];
+    assert_eq!(d.page_numbers(14), (0..14).map(|i| d.page_number(i)).collect::<Vec<_>>());
+    d.sections = vec![sec(3, None)];
+    assert_eq!(d.page_numbers(6), (0..6).map(|i| d.page_number(i)).collect::<Vec<_>>());
+    // Many continuing sections: one pass, not one walk per page.
+    d.sections = (1..5000).map(|i| sec(i, None)).collect();
+    assert_eq!(d.page_numbers(5000)[4999], 5000);
+}
