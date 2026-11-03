@@ -12,6 +12,11 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-29** · File ▸ Open reads Apple Pages documents (`.pages`, single files and package
+  folders, Pages 5.1 and later) through the new `designcraft-pages` crate (`file.openPages`):
+  pages, shapes, text boxes, images with masks and opacity, groups, rotation, fills, strokes and
+  text formatting. Tables, charts, shadows, gradients, inline objects and body-text flow are
+  named in the open warnings. Pages is not an InDesign format: no readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps

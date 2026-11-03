@@ -31,6 +31,7 @@ designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
+designcraft-pages = { path = "crates/pages" }
 designcraft-textimport = { path = "crates/textimport" }
 designcraft-format = { path = "crates/format" }
 designcraft-tools = { path = "crates/tools" }
