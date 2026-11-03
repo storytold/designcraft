@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::render_worker;
-use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, theme};
+use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, story_editor, theme};
 
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
