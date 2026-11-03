@@ -3,7 +3,7 @@
 use designcraft_doc::{ItemId, Shape};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_selection};
+use super::{CommandSpec, bad, cmd, has_doc, has_selection};
 use crate::{Result, Session};
 
 fn target(s: &Session, p: &Value) -> Result<ItemId> {
@@ -42,12 +42,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(query "states.list", "Object States", [], None, "{id?} → {states, active}", has_selection, |s, p| {
+        cmd!(query "states.list", "Object States", [], None, "{id?} → {states, active}", has_doc, |s, p| {
             let id = target(s, p)?;
             let it = s.doc()?.doc.item(id).ok_or_else(|| bad("states.list", "no such object"))?;
             Ok(json!({"states": it.states, "active": it.active_state}))
         }),
-        cmd!("states.show", "Show State", [], None, "{id?, index? | name?}", has_selection, |s, p| {
+        cmd!("states.show", "Show State", [], None, "{id?, index? | name?}", has_doc, |s, p| {
             let id = target(s, p)?;
             let idx = p.get("index").and_then(Value::as_u64).map(|v| v as usize);
             let name = p.get("name").and_then(Value::as_str).map(str::to_string);
