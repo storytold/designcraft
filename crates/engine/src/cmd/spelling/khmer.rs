@@ -58,9 +58,10 @@ fn segmented_words(text: &str) -> usize {
 
 /// Words in one paragraph holding Khmer, by the same rules as WordCraft: word spans from the shared
 /// model, whitespace tokens for other text. Counts recur on every frame of the Story Editor, so
-/// paragraphs are cached by their text, bounded; each gets its own refinement budget.
+/// paragraphs are cached by their text; each gets its own refinement budget. A count walks them
+/// in order, so the bound sits far above real books: past it, entries clear before their next use.
 fn paragraph_words(text: &str) -> usize {
-    const MAX_TEXT: usize = 8 << 20;
+    const MAX_TEXT: usize = 64 << 20;
     const MAX_PARAGRAPH: usize = 64 << 10;
     #[derive(Default)]
     struct Counts {

@@ -33,9 +33,10 @@ struct Cache {
     bytes: usize,
 }
 // A bounded cache avoids recomputing unchanged paragraphs during whole-story recomposition.
-// Scoring happens outside the lock; oversized inputs are computed but never retained.
+// Scoring happens outside the lock; oversized inputs are computed but never retained. Recomposing
+// walks paragraphs in order, so a book past this limit would clear each entry before its next use.
 fn boundaries(text: &str) -> Arc<[usize]> {
-    const MAX_BYTES: usize = 4 << 20;
+    const MAX_BYTES: usize = 64 << 20;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(found) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values.get(text) {
