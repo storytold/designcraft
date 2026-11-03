@@ -303,8 +303,9 @@ mod document_fonts_tests {
         std::fs::create_dir_all(folder.join("Index")).unwrap();
         std::fs::write(folder.join("Index").join("Document.iwa"), [0u8, 9, 0, 0, 1]).unwrap();
         let mut s = Session::new();
-        for path in [&file, &folder] {
-            let e = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap_err().to_string();
+        let folder_slash = format!("{}{}", folder.to_string_lossy(), std::path::MAIN_SEPARATOR);
+        for path in [file.to_string_lossy().to_string(), folder.to_string_lossy().to_string(), folder_slash] {
+            let e = s.execute("file.open", &json!({"path": path})).unwrap_err().to_string();
             assert!(e.contains("Pages document"), "{e}");
         }
         let e = s.execute("file.openBytes", &json!({"name": "Poster.pages", "base64": ""})).unwrap_err().to_string();

@@ -78,7 +78,8 @@ pub(crate) struct Importer<'p> {
     pub(crate) warnings: BTreeSet<String>,
     para_styles: HashMap<u64, (CharProps, ParaProps)>,
     char_styles: HashMap<u64, CharProps>,
-    assets: HashMap<u64, Option<AssetId>>,
+    /// Placed assets by data file, with their natural size when it can be read.
+    assets: HashMap<u64, Option<(AssetId, Option<(f64, f64)>)>>,
     /// Drawables still allowed to be visited ([`MAX_VISITS`]).
     visits_left: usize,
 }
@@ -103,14 +104,15 @@ pub(crate) fn import(pkg: &Package, fonts: FontLookup) -> Result<Import> {
     let z: HashMap<u64, usize> = root
         .reference(20)
         .and_then(|z| pkg.typed(z, Z_ORDER))
-        .map(|z| z.msgs(1).filter_map(|r| r.uint(1)).enumerate().map(|(i, id)| (id, i)).collect())
+        .map(|z| z.msgs(1).filter_map(|r| r.uint(1)).take(MAX_VISITS).enumerate().map(|(i, id)| (id, i)).collect())
         .unwrap_or_default();
     for g in groups {
         let Some(page) = g.uint(1).and_then(|p| usize::try_from(p).ok()) else { continue };
         let Some((si, pi)) = im.doc.page_loc(page) else { continue };
         let x = im.doc.spreads.get(si).and_then(|s| s.pages.get(pi)).map_or(0.0, |p| p.x);
         // Drawables the order doesn't list stay above those it does, in page-group order.
-        let mut ids: Vec<u64> = g.msgs(4).filter_map(|o| o.reference(1)).collect();
+        // One past the visit budget, so a page that lists more is cut short with its warning.
+        let mut ids: Vec<u64> = g.msgs(4).filter_map(|o| o.reference(1)).take(im.visits_left.saturating_add(1)).collect();
         ids.sort_by_key(|id| z.get(id).copied().unwrap_or(usize::MAX));
         for id in ids {
             if let Some(mut item) = im.drawable(id, 0) {
@@ -357,8 +359,8 @@ impl<'p> Importer<'p> {
             self.warnings.insert("some images are missing from the package or in a format DesignCraft can't place".into());
             return None;
         };
-        let Some(natural) = self.doc.assets.get(&asset).and_then(|a| designcraft_images::natural_size(&a.data)).filter(|(w, h)| *w > 0.0 && *h > 0.0)
-        else {
+        let (asset, natural) = asset;
+        let Some(natural) = natural else {
             self.warnings.insert("some images (such as PDFs) have no size DesignCraft can read and were skipped".into());
             return None;
         };
@@ -399,8 +401,9 @@ impl<'p> Importer<'p> {
         Some(item)
     }
 
-    /// The asset of data file `id`, placed once however often it is used.
-    fn asset(&mut self, id: u64) -> Option<AssetId> {
+    /// The asset of data file `id` and its natural size, placed and measured once however
+    /// often it is used.
+    fn asset(&mut self, id: u64) -> Option<(AssetId, Option<(f64, f64)>)> {
         if let Some(a) = self.assets.get(&id) {
             return *a;
         }
@@ -418,7 +421,7 @@ impl<'p> Importer<'p> {
                 ..Default::default()
             };
             self.doc.assets.insert(aid, Arc::new(asset));
-            aid
+            (aid, designcraft_images::natural_size(bytes).filter(|(w, h)| *w > 0.0 && *h > 0.0))
         });
         self.assets.insert(id, asset);
         asset

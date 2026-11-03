@@ -407,6 +407,35 @@ fn images_without_a_readable_size_are_named_in_warnings() {
 }
 
 #[test]
+fn a_page_listing_more_objects_than_the_budget_is_cut_short() {
+    let root = M::new().reference(3, 10).f32(30, 100.0).f32(31, 100.0);
+    let mut entry = M::new().uint(1, 0);
+    for _ in 0..200_100 {
+        entry = entry.msg(4, M::new().reference(1, 20));
+    }
+    let doc = iwa(&[(1, 10000, root), (10, 10010, M::new().msg(1, entry)), (20, 2011, shape_at(0.0))]);
+    let im = import(&zip(&[("Index/Document.iwa", &doc)]), NO_FONTS).unwrap();
+    assert_eq!(im.document.spreads[0].items.len(), 200_000);
+    assert!(im.warnings.iter().any(|w| w.contains("objects were imported")), "{:?}", im.warnings);
+}
+
+#[test]
+fn images_sharing_a_data_file_share_one_asset() {
+    let root = M::new().reference(3, 10).f32(30, 100.0).f32(31, 100.0);
+    let group = M::new().msg(1, M::new().uint(1, 0).msg(4, M::new().reference(1, 20)).msg(4, M::new().reference(1, 21)));
+    let image = |x: f32| M::new().msg(1, M::new().msg(1, geometry(x, 0.0, 40.0, 20.0, 0.0))).msg(11, M::new().uint(1, 7));
+    let metadata = M::new().msg(4, M::new().uint(1, 7).str(3, "pic.svg").str(4, "pic-7.svg"));
+    let doc = iwa(&[(1, 10000, root), (10, 10010, group), (20, 3005, image(0.0)), (21, 3005, image(50.0))]);
+    let meta = iwa(&[(2, 11006, metadata)]);
+    let im = import(&zip(&[("Index/Document.iwa", &doc), ("Index/Metadata.iwa", &meta), ("Data/pic-7.svg", SVG)]), NO_FONTS).unwrap();
+    let d = &im.document;
+    assert_eq!(d.assets.len(), 1);
+    let sizes: Vec<_> =
+        d.spreads[0].items.iter().map(|i| if let Content::Graphic(g) = &i.content { g.size } else { panic!("{:?}", i.content) }).collect();
+    assert!(sizes.len() == 2 && sizes[0] == sizes[1] && sizes[0].0 > 0.0, "{sizes:?}");
+}
+
+#[test]
 fn keynote_files_are_not_pages() {
     let doc = iwa(&[(1, 1, M::new())]);
     assert!(matches!(import(&zip(&[("Index/Document.iwa", &doc)]), NO_FONTS), Err(PagesError::NotPages(_))));

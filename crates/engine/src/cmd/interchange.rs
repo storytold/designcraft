@@ -515,7 +515,8 @@ fn read_pages_package(path: &str) -> Result<Vec<(String, Vec<u8>)>> {
 
 /// An Apple Pages document: a ZIP holding `Index/Document.iwa`, or a file named `.pages`.
 pub(crate) fn is_pages(name: &str, bytes: &[u8]) -> bool {
-    designcraft_pages::is_pages(bytes) || name.to_ascii_lowercase().ends_with(".pages")
+    // A package folder's path may end in a separator.
+    designcraft_pages::is_pages(bytes) || name.trim_end_matches(['/', '\\']).to_ascii_lowercase().ends_with(".pages")
 }
 
 /// `name` without a trailing .pages (any case).
