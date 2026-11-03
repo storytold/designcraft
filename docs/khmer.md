@@ -85,8 +85,8 @@ hashes and the upstream MIT notice are checked during the offline build;
 `CRAFT_KHMER_REQUIRED=1` rejects missing data. The six losslessly compressed
 resources total 714,343 bytes, with no dictionary pruning or model quantization.
 SBBIC identifies its internal work, the SEAlang frequency lists and SIL NRSI's khmerlbdict
-as the data's sources; their MIT notices are in `NOTICE`. The exact composition of the
-tagger's training corpus is unconfirmed.
+as the data's sources; their MIT notices are in `NOTICE`. The tagger was trained on internal
+documents that SBBIC has permission to train with; those documents are not distributed.
 This is resource size, not an installer-size measurement. Existing installed
 Khmer fonts remain necessary unless the release's craft-fonts input supplies one.
 

@@ -16,7 +16,8 @@ use std::{
 use crate::shape::Glyph;
 use unicode_segmentation::UnicodeSegmentation;
 
-pub(crate) fn character(c: char) -> bool {
+/// A Khmer-script character: the one definition composition, proofing and the UI share.
+pub fn character(c: char) -> bool {
     matches!(c, '\u{1780}'..='\u{17ff}' | '\u{19e0}'..='\u{19ff}')
 }
 fn mark(c: char) -> bool {

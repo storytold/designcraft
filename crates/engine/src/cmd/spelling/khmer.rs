@@ -4,9 +4,7 @@
 
 use super::ProofIssue;
 
-pub(super) fn character(c: char) -> bool {
-    ('\u{1780}'..='\u{17ff}').contains(&c) || ('\u{19e0}'..='\u{19ff}').contains(&c)
-}
+pub(super) use designcraft_compose::is_khmer as character;
 
 fn user_word(user: &[String], word: &str) -> bool {
     user.iter().any(|entry| entry == word)

@@ -251,3 +251,10 @@ fn native_check_change_dictionary_and_undo_preserve_repetition_and_ranges() {
         .unwrap();
     assert!(session.execute("spelling.suggest", &request).is_err(), "language changes invalidate the issue");
 }
+
+#[test]
+fn has_khmer_agrees_with_proofing_at_the_script_boundaries() {
+    use crate::cmd::spelling::has_khmer;
+    assert!(has_khmer("abc ក") && has_khmer("\u{17ff}") && has_khmer("\u{19e0}") && has_khmer("\u{19ff}"));
+    assert!(!has_khmer("") && !has_khmer("plain text") && !has_khmer("\u{177f}\u{1800}\u{19df}\u{1a00}\u{200b}"));
+}

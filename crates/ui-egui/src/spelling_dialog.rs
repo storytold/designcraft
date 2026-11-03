@@ -49,7 +49,7 @@ fn refresh(app: &mut DesignApp, d: &mut Dialog) -> Result<(), String> {
     let issues = result.as_array().ok_or("invalid spelling response")?;
     let status = if designcraft_engine::find_command("spelling.status").is_some() { app.run("spelling.status", json!({}))? } else { Value::Null };
     let st = app.session.active().ok_or("no document open")?;
-    let has_khmer = st.doc.stories.values().any(|s| s.text.chars().any(|c| matches!(c, '\u{1780}'..='\u{17ff}' | '\u{19e0}'..='\u{19ff}')));
+    let has_khmer = st.doc.stories.values().any(|s| designcraft_engine::cmd::spelling::has_khmer(&s.text));
     let r = d.spelling.as_mut().ok_or("review was not initialized; run app.checkSpelling")?;
     // Text edits outside this review invalidate Skip's offsets too.
     if r.texts.iter().any(|(sid, text)| st.doc.story(designcraft_doc::StoryId(*sid)).is_none_or(|s| s.text.as_str() != text.as_ref())) {

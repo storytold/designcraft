@@ -18,6 +18,7 @@ mod grid;
 pub mod hyphen;
 pub mod kenten;
 mod khmer;
+pub use khmer::character as is_khmer;
 mod mojikumi;
 mod notes;
 pub mod optical;

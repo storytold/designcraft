@@ -260,6 +260,11 @@ pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
     out
 }
 
+/// Whether `text` holds Khmer, by the same rule proofing uses.
+pub fn has_khmer(text: &str) -> bool {
+    text.chars().any(khmer::character)
+}
+
 /// A spelling or preferred-form finding; `range` always addresses original story UTF-8 bytes.
 #[derive(Clone, Debug)]
 pub struct ProofIssue {
