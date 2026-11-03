@@ -17,12 +17,15 @@ const MAX_LEN: usize = 63;
 /// Axis values count as the same instance within this much (user units).
 const AXIS_EPSILON: f32 = 1e-4;
 
-/// The PostScript name for the instance of `font` at `coords`, or `None` when the font names no
-/// such instance (a point in between, or a static font).
+/// The PostScript name for the instance of `font` at `coords`, or `None` for a static font and for
+/// the default instance, which `name` ID 6 already names.
 ///
 /// TN #5902: a named instance's own `postScriptNameID` wins; otherwise the name is the family
-/// prefix (`name` ID 25, else the typographic family, else the family) joined to the instance's
-/// subfamily with a hyphen, keeping only ASCII letters and digits and no more than 63 characters.
+/// prefix (`name` ID 25, else the typographic family, else the family -- OpenType reads a missing
+/// ID 16 as ID 1) joined to the instance's subfamily with a hyphen, keeping only ASCII letters and
+/// digits. A point no named instance covers is named by its axis values
+/// ([`arbitrary_instance_name`]). No more than 63 characters either way, the limit of the `name`
+/// ID 6 this goes into, where the note allows 127.
 pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -> Option<String> {
     let axes = font.axes();
     // `fvar` coordinates are 16.16, so two instances can sit 1/65536 apart -- closer than
@@ -40,7 +43,9 @@ pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -
     };
     let exact = at(0.0);
     let near = at(AXIS_EPSILON);
-    let instance = font.named_instances().iter().find(|ni| exact(ni)).or_else(|| font.named_instances().iter().find(|ni| near(ni)))?;
+    let Some(instance) = font.named_instances().iter().find(|ni| exact(ni)).or_else(|| font.named_instances().iter().find(|ni| near(ni))) else {
+        return arbitrary_instance_name(font, coords);
+    };
     if let Some(id) = instance.postscript_name_id()
         && let Some(name) = string(font, id)
     {
@@ -53,13 +58,92 @@ pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -
             return Some(truncate(kept));
         }
     }
-    let prefix = [NameId::VARIATIONS_POSTSCRIPT_NAME_PREFIX, NameId::TYPOGRAPHIC_FAMILY_NAME, NameId::FAMILY_NAME]
+    let prefix = family_prefix(font)?;
+    let subfamily = string(font, instance.subfamily_name_id()).map(|s| keep(&s)).filter(|s| !s.is_empty())?;
+    Some(join(&prefix, &subfamily))
+}
+
+/// TN #5902's family prefix: `name` ID 25, else the typographic family (ID 16), else the family
+/// (ID 1, which OpenType says stands in for a missing ID 16), keeping ASCII letters and digits.
+fn family_prefix(font: &FontRef<'_>) -> Option<String> {
+    [NameId::VARIATIONS_POSTSCRIPT_NAME_PREFIX, NameId::TYPOGRAPHIC_FAMILY_NAME, NameId::FAMILY_NAME]
         .into_iter()
         .find_map(|id| string(font, id))
         .map(|s| keep(&s))
-        .filter(|s| !s.is_empty())?;
-    let subfamily = string(font, instance.subfamily_name_id()).map(|s| keep(&s)).filter(|s| !s.is_empty())?;
-    Some(join(&prefix, &subfamily))
+        .filter(|s| !s.is_empty())
+}
+
+/// TN #5902's name for a point no named instance covers: the family prefix, then `_<value><tag>`
+/// for each axis away from its default, in `fvar` order -- `AndreVar_900wght_5.5wdth`. Axes at
+/// their default are left out, as the note allows, so the default point itself has no
+/// descriptors and gets `None`: `name` ID 6 is its name.
+///
+/// Returning `None` for every such point, which this did first, left all of them embedding under
+/// the default instance's name -- the bug this module is for, at any weight that is not a named
+/// one (noted in review).
+fn arbitrary_instance_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -> Option<String> {
+    let axes = font.axes();
+    if axes.is_empty() {
+        return None;
+    }
+    let prefix = family_prefix(font)?;
+    let mut name = prefix.clone();
+    for axis in axes.iter() {
+        let tag = axis.tag().to_be_bytes();
+        let asked = coords.iter().find(|(t, _)| *t == tag).map_or(axis.default_value(), |(_, v)| *v);
+        // Where the font draws it: inside the axis. Compared, not `clamp`ed -- `fvar` is font data,
+        // and `f32::clamp` panics on a range whose minimum is past its maximum.
+        let (min, max) = (axis.min_value(), axis.max_value());
+        let value = if asked < min {
+            min
+        } else if asked > max {
+            max
+        } else {
+            asked
+        };
+        let fixed = to_fixed(value);
+        if fixed == to_fixed(axis.default_value()) {
+            continue;
+        }
+        name.push('_');
+        name.push_str(&fixed_decimal(fixed));
+        // Trailing spaces are dropped from a tag (`ital`, `wd  `); anything else not a letter or
+        // digit cannot be in the name either.
+        name.push_str(&keep(&String::from_utf8_lossy(&tag)));
+    }
+    if name == prefix {
+        return None;
+    }
+    if name.chars().count() <= MAX_LEN {
+        return Some(name);
+    }
+    // TN #5902's last resort: the prefix, `-`, an identifier for this instance, and `...`.
+    let id = format!("{:08X}", digest(&name));
+    let room = MAX_LEN - 1 - id.len() - 3;
+    Some(format!("{}-{id}...", prefix.chars().take(room).collect::<String>()))
+}
+
+/// A user coordinate as `fvar`'s 16.16 fixed point. A value past `i32` saturates and NaN is 0, as
+/// `as` does; neither reaches here from a font that parsed.
+fn to_fixed(v: f32) -> i32 {
+    (f64::from(v) * 65536.0).round() as i32
+}
+
+/// The shortest decimal that reads back as the 16.16 value `v` (TN #5902 and its appendix): no
+/// trailing zeroes, no decimal point for a whole number, `0` for zero and no `+`. A value under
+/// one keeps the `0` before its point (`0.5`), the zero the integer part needs, not padding.
+fn fixed_decimal(v: i32) -> String {
+    let x = f64::from(v) / 65536.0;
+    // Sixteen fractional bits need at most six decimal places to come back exactly.
+    for places in 0..=6 {
+        let s = format!("{x:.places$}");
+        let back = s.parse::<f64>().map(|b| (b * 65536.0).round() as i64);
+        if back == Ok(i64::from(v)) {
+            let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+            return if s == "-0" { "0".into() } else { s };
+        }
+    }
+    format!("{x}")
 }
 
 /// `prefix-subfamily`, or, when that is past [`MAX_LEN`], both halves shortened with a digest of
@@ -178,8 +262,9 @@ mod tests {
         assert_eq!(at(&font, 400.0).as_deref(), Some("NotoSansKR-Regular"));
         assert_eq!(at(&font, 700.0).as_deref(), Some("NotoSansKR-Bold"));
         assert_eq!(at(&font, 900.0).as_deref(), Some("NotoSansKR-Black"));
-        // A point between the named instances is not a named instance.
-        assert_eq!(at(&font, 550.0), None);
+        // A point between the named instances is not one of them, and is named by its value
+        // (TN #5902, arbitrary instances).
+        assert_eq!(at(&font, 550.0).as_deref(), Some("NotoSansKR_550wght"));
     }
 
     /// An instance that names its own PostScript name uses it **as it stands**: the font is
@@ -347,5 +432,67 @@ mod tests {
         let exact = join("Family", &"A".repeat(MAX_LEN - "Family-".len()));
         assert_eq!(exact.chars().count(), MAX_LEN);
         assert!(exact.starts_with("Family-") && exact.ends_with('A'), "kept whole: {exact}");
+    }
+
+    /// TN #5902's own examples for arbitrary instances, and the rules beside them: axes at their
+    /// default are left out, the default point itself keeps `name` ID 6, and values are the
+    /// shortest decimal that reads back as the same 16.16 number (noted in review).
+    #[test]
+    fn a_point_no_instance_names_is_named_by_its_axis_values() {
+        // 16 "Andre Var" and no prefix of its own; `wght` and `wdth`, no named instances.
+        let base = crate::testing::font_with_names(&[(1, "Andre Var"), (16, "Andre Var")], &['A']).expect("a font with these names");
+        let font =
+            crate::testing::with_fvar(&base, &[(*b"wght", -10.0, 400.0, 1000.0, 256), (*b"wdth", -10.0, 100.0, 200.0, 257)], &[]).expect("an fvar");
+        let f = skrifa::FontRef::new(&font).expect("the fixture parses");
+        let name = |wght: f32, wdth: f32| instance_postscript_name(&f, &[(*b"wght", wght), (*b"wdth", wdth)]);
+        assert_eq!(name(900.0, 5.5).as_deref(), Some("AndreVar_900wght_5.5wdth"), "the note's example");
+        assert_eq!(name(-2.9, -1.4).as_deref(), Some("AndreVar_-2.9wght_-1.4wdth"), "and its negative one");
+        assert_eq!(name(900.0, 100.0).as_deref(), Some("AndreVar_900wght"), "an axis at its default is left out");
+        assert_eq!(name(400.0, 100.0), None, "the default point is the one name ID 6 names");
+        assert_eq!(name(5000.0, 100.0).as_deref(), Some("AndreVar_1000wght"), "a value past the axis is where the font draws it");
+        // An axis the caller does not mention is at its default.
+        assert_eq!(instance_postscript_name(&f, &[(*b"wdth", 150.0)]).as_deref(), Some("AndreVar_150wdth"));
+
+        // The shortest decimal that comes back as the same fixed value.
+        assert_eq!(fixed_decimal(0), "0");
+        assert_eq!(fixed_decimal(to_fixed(0.5)), "0.5");
+        assert_eq!(fixed_decimal(to_fixed(-2.9)), "-2.9");
+        assert_eq!(fixed_decimal(1), "0.00002", "one 65536th");
+        assert_eq!(fixed_decimal(to_fixed(100.0)), "100");
+        for v in [1, -1, 3, 32768, 65535, 65537, -190054, 0x7fff_ffff, -0x7fff_ffff] {
+            let s = fixed_decimal(v);
+            assert_eq!((s.parse::<f64>().unwrap() * 65536.0).round() as i64, i64::from(v), "{v} came back from {s}");
+            assert!(!s.ends_with('0') || !s.contains('.'), "no trailing zero: {s}");
+        }
+    }
+
+    /// Too many axes for the limit: TN #5902's last resort, the prefix, an identifier and `...`,
+    /// still one name per point.
+    #[test]
+    fn a_point_too_long_to_describe_gets_the_last_resort_name() {
+        let tags: Vec<[u8; 4]> = (0..12u8).map(|i| [b'a', b'x', b'0' + i / 10, b'0' + i % 10]).collect();
+        let axes: Vec<_> = tags.iter().map(|t| (*t, 0.0, 0.0, 1000.0, 256)).collect();
+        let base = crate::testing::font_with_names(&[(16, "Andre Var"), (25, "AndreVar")], &['A']).expect("names");
+        let font = crate::testing::with_fvar(&base, &axes, &[]).expect("an fvar");
+        let f = skrifa::FontRef::new(&font).expect("the fixture parses");
+        let point = |v: f32| instance_postscript_name(&f, &tags.iter().map(|t| (*t, v)).collect::<Vec<_>>()).expect("a name");
+        let (a, b) = (point(123.25), point(456.5));
+        for n in [&a, &b] {
+            assert!(n.starts_with("AndreVar-") && n.ends_with("..."), "the last resort's shape: {n}");
+            assert!(n.chars().count() <= MAX_LEN, "within the limit: {n}");
+            assert_eq!(legal(n), *n, "only characters a PostScript name may hold: {n}");
+        }
+        assert_ne!(a, b, "two points, two names");
+    }
+
+    /// `fvar` is font data: an axis whose minimum is past its maximum names a point without a
+    /// panic (`f32::clamp` would have panicked).
+    #[test]
+    fn a_malformed_axis_range_does_not_panic() {
+        let base = crate::testing::font_with_names(&[(16, "Odd")], &['A']).expect("names");
+        let font = crate::testing::with_fvar(&base, &[(*b"wght", 900.0, 400.0, 100.0, 256)], &[]).expect("an fvar");
+        let Ok(f) = skrifa::FontRef::new(&font) else { return };
+        let _ = instance_postscript_name(&f, &[(*b"wght", 550.0)]);
+        let _ = instance_postscript_name(&f, &[(*b"wght", f32::NAN)]);
     }
 }

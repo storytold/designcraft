@@ -278,8 +278,9 @@ impl FontFace {
             .get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| name(&f, &[StringId::POSTSCRIPT_NAME])) })
             .as_deref()
     }
-    /// The PostScript name of this face as an instance of its variable font (Adobe TN #5902), or
-    /// `None` for a static face or a point no named instance covers.
+    /// The PostScript name of this face as an instance of its variable font (Adobe TN #5902): a
+    /// named instance's name, or one built from the axis values for a point between them. `None`
+    /// for a static face and for the default instance, which [`Self::postscript_name`] names.
     ///
     /// [`Self::postscript_name`] is the file's own `name` ID 6, which names the font's default
     /// instance: embedding by it put every weight of a variable font into a PDF under one name
