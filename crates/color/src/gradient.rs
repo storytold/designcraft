@@ -72,14 +72,14 @@ impl Default for Gradient {
 impl Gradient {
     /// Colour and opacity at `t` (honours midpoints).
     pub fn sample(&self, t: f32) -> (Color, f32) {
-        self.sample_in(&self.window_ends(), t)
+        self.sample_in(None, t)
     }
 
     /// For each window `(stops[k], stops[k + 1])`, the largest end offset of windows `0..=k`: the
     /// first window whose end reaches `t` is the first `k` where this does, so a binary search
     /// finds it (stops in any order).
     fn window_ends(&self) -> Vec<f32> {
-        let mut end = f32::NEG_INFINITY;
+        let mut end = f32::NAN;
         self.stops
             .iter()
             .skip(1)
@@ -90,8 +90,8 @@ impl Gradient {
             .collect()
     }
 
-    /// [`Self::sample`] with [`Self::window_ends`] worked out once.
-    fn sample_in(&self, ends: &[f32], t: f32) -> (Color, f32) {
+    /// [`Self::sample`], with [`Self::window_ends`] given when it was worked out once (else a scan).
+    fn sample_in(&self, ends: Option<&[f32]>, t: f32) -> (Color, f32) {
         let stops = &self.stops;
         let Some(first) = stops.first() else {
             return (Color::BLACK, 1.0);
@@ -99,8 +99,11 @@ impl Gradient {
         if t <= first.offset {
             return (first.color, first.opacity);
         }
-        // The first window whose end offset is at or past `t` (none for a NaN `t`; no end is NaN).
-        let k = if t.is_nan() { ends.len() } else { ends.partition_point(|e| *e < t) };
+        // The first window whose end offset is at or past `t` (none for a NaN `t`).
+        let k = match ends {
+            None => stops.windows(2).position(|w| t <= w[1].offset).unwrap_or(stops.len()),
+            Some(ends) => ends.partition_point(|e| !(*e >= t)),
+        };
         if let (Some(a), Some(b)) = (stops.get(k), stops.get(k + 1)) {
             let span = (b.offset - a.offset).max(1e-6);
             let u = (t - a.offset) / span;
@@ -124,7 +127,7 @@ impl Gradient {
                 && (s.midpoint - 0.5).abs() > 1e-3
             {
                 let t = s.offset + (n.offset - s.offset) * s.midpoint;
-                let (c, o) = self.sample_in(&ends, t);
+                let (c, o) = self.sample_in(Some(&ends), t);
                 out.push((t, c, o));
             }
         }
@@ -135,6 +138,7 @@ impl Gradient {
     pub fn display_stops(&self) -> Vec<(f32, Color, f32)> {
         const STEPS: usize = 16;
         let stops = self.expanded_stops();
+        let ends = self.window_ends();
         let mut out: Vec<(f32, Color, f32)> = Vec::with_capacity(stops.len() * STEPS);
         for (i, s) in stops.iter().enumerate() {
             out.push(*s);
@@ -144,7 +148,7 @@ impl Gradient {
             }
             for j in 1..STEPS {
                 let t = s.0 + (n.0 - s.0) * j as f32 / STEPS as f32;
-                let (c, a) = self.sample(t);
+                let (c, a) = self.sample_in(Some(&ends), t);
                 out.push((t, c, a));
             }
         }
