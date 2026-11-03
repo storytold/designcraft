@@ -2123,7 +2123,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             }
             ruby::annotate(db, styles_tab, &story.text, &mut placed, doc.settings.glyph_fallback, f.vertical);
             kenten::annotate(db, styles_tab, &mut placed, doc.settings.glyph_fallback);
-            let here_props = indent_here(line_glyphs, &placed, pp, x0, x1, rtl);
+            let here_props = indent_here(&placed, pp, x0, x1, rtl);
             let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
             let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
@@ -4966,21 +4966,15 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     }
 }
 
-/// The paragraph settings for the lines after `line` when it holds an Indent to Here character
-/// (the last one, if several): the start-side indent reaches the character, measured from the
-/// start edge of the line's segment `x0..x1`. Like the paragraph's own indents it then applies
-/// from each later line's segment, so beside a text wrap it starts at the wrap's edge. `None`
-/// when there is none or the indent is unchanged.
-fn indent_here(
-    line: &[Glyph],
-    placed: &[PlacedGlyph],
-    pp: &designcraft_doc::ParaProps,
-    x0: f64,
-    x1: f64,
-    rtl: bool,
-) -> Option<designcraft_doc::ParaProps> {
-    let byte = line.iter().rev().find(|g| g.ch == story::INDENT_HERE)?.byte;
-    let x = placed.iter().find(|g| g.byte == byte && g.len > 0)?.x;
+/// The paragraph settings for the lines after the `placed` line when it holds an Indent to Here
+/// character (the last one, if several): the start-side indent reaches the character, measured
+/// from the start edge of the line's segment `x0..x1`. Like the paragraph's own indents it then
+/// applies from each later line's segment, so beside a text wrap it starts at the wrap's edge.
+/// `None` when there is none or the indent is unchanged.
+fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64, x1: f64, rtl: bool) -> Option<designcraft_doc::ParaProps> {
+    // The placed glyphs stay in text order (bidi only moves them) and include the drop cap's
+    // and a list label's, so a character in either counts too.
+    let x = placed.iter().rev().find(|g| g.rendered_char == story::INDENT_HERE)?.x;
     let indent = if rtl { x1 - x } else { x - x0 };
     if !indent.is_finite() {
         return None;

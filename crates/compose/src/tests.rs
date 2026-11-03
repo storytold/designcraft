@@ -1968,6 +1968,39 @@ fn indent_to_here_beside_a_drop_cap_is_not_indented_by_the_drop_cap_again() {
 }
 
 #[test]
+fn indent_to_here_inside_the_drop_cap_indents_the_lines_below_it() {
+    // A two-character drop cap whose second character is Indent to Here: the lines beside the
+    // drop cap and the ones below it all start at the character, at the drop cap's edge.
+    let (here, starts) = indent_to_here_starts(&format!("A\u{e005}{LOREM}"), drop_cap(3, 2));
+    assert!(here > 72.0 + 10.0, "the character sits past the drop cap: {here}");
+    assert!(starts.len() > 3, "lines below the drop cap");
+    for (i, start) in starts.iter().enumerate() {
+        assert!((start - here).abs() < 0.01, "line {} starts at {start}, not at {here}", i + 1);
+    }
+}
+
+#[test]
+fn indent_to_here_in_a_list_number_indents_to_the_generated_character() {
+    // "^#.^i^t": the paragraph's later lines start where the number's Indent to Here sits,
+    // right after "1.", not at the text after the tab.
+    let mut para = numbered(designcraft_doc::NumberStyle::Arabic, "^#.^i^t");
+    para.list_tab = Some(Some(36.0));
+    let (d, sid, _) = doc_with(LOREM, Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 3, "the text wraps");
+    let label = |c: char| lines[0].glyphs.iter().find(|g| g.len == 0 && g.rendered_char == c).unwrap();
+    let (dot, here) = (label('.'), label('\u{e005}').x);
+    assert!((here - (dot.x + dot.adv)).abs() < 0.01, "the character follows the number: {here}");
+    let text = lines[0].glyphs.iter().find(|g| g.len > 0).unwrap().x;
+    assert!((text - (72.0 + 36.0)).abs() < 0.01 && here < text - 1.0, "the text after the tab is further in: {text}");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - here).abs() < 0.01, "line {i} starts at {start}, not at {here}");
+    }
+}
+
+#[test]
 fn indent_to_here_in_a_right_to_left_paragraph_indents_from_the_right() {
     // Hebrew words (the bidi classes decide the order; no Hebrew font has to be present): the
     // lines after the first end where the character sits, measured from the right edge.
