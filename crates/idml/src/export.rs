@@ -18,6 +18,7 @@ mod common;
 mod designmap;
 mod fonts_prefs;
 mod graphics;
+mod icml;
 mod item;
 mod spread;
 mod story;
@@ -28,6 +29,7 @@ mod text_attrs;
 use common::pkg_root;
 pub(crate) use common::uid;
 use designmap::{CONTAINER, metadata_xmp};
+pub use icml::export_icml;
 pub(crate) use item::corner_names;
 #[cfg(test)]
 pub(crate) use item::path_to_uri;
