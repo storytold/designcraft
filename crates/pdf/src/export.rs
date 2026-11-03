@@ -187,15 +187,23 @@ impl<'a> Exporter<'a> {
         Some(table)
     }
 
-    /// Does the structure tree reach this table fragment? A nested one sits in the cell text it
-    /// walks; any other must be anchored in the tagged story itself.
+    /// Does the structure tree reach this table fragment? A nested table must be anchored at its
+    /// fragment's anchor in the enclosing cell's text; any other must be anchored in the tagged story itself.
     pub(crate) fn table_is_reachable(
         &self,
         story_id: designcraft_doc::StoryId,
         enclosing: Option<TableContext>,
         fragment: &designcraft_compose::TableFrag,
     ) -> bool {
-        enclosing.is_some() || self.doc.story(story_id).and_then(|story| story.table_anchor(fragment.table)) == Some(fragment.anchor)
+        match enclosing {
+            Some(context) => {
+                self.context_table(story_id, context)
+                    .and_then(|table| table.cell(context.row, context.col))
+                    .and_then(|cell| cell.text.table_anchor(fragment.table))
+                    == Some(fragment.anchor)
+            }
+            None => self.doc.story(story_id).and_then(|story| story.table_anchor(fragment.table)) == Some(fragment.anchor),
+        }
     }
 
     /// How many tables enclose a context's table.
