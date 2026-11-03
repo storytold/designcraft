@@ -175,6 +175,9 @@ pub fn parse_iso_date(s: &str) -> Option<i64> {
         let t = time.get(a..b)?;
         t.bytes().all(|c| c.is_ascii_digit()).then(|| t.parse().ok()).flatten()
     };
+    if time.get(2..3) != Some(":") {
+        return None;
+    }
     let (h, mi) = (tnum(0, 2)?, tnum(3, 5)?);
     let mut i = 5;
     let mut sec = 0;
@@ -289,6 +292,12 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso_date_requires_colon_separator() {
+        assert_eq!(parse_iso_date("2019-12-16T09:48:00Z"), Some(1_576_489_680));
+        assert_eq!(parse_iso_date("2019-12-16T09x48:00Z"), None);
+    }
 
     #[test]
     fn dates() {

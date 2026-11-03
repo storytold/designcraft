@@ -1,4 +1,4 @@
-use super::*;
+use super::{Effects, Item, ObjectStyle, Result, Session, Styles, Value, bad, json, str_param};
 
 pub(super) fn apply_object(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.object.apply", "missing name"))?.to_string();
