@@ -263,7 +263,7 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod book_update_tests {
     use super::*;
 
