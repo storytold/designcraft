@@ -20,3 +20,7 @@ pub use sections::chapter_numbering;
 #[cfg(test)]
 #[path = "parent_delete_tests.rs"]
 mod parent_delete_tests;
+
+#[cfg(test)]
+#[path = "parent_resize_tests.rs"]
+mod parent_resize_tests;

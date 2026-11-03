@@ -60,6 +60,9 @@ pub struct Imported {
     /// One line per problem that did not stop the import (a part listed in `designmap.xml` but
     /// absent from the package, …).
     pub warnings: Vec<String>,
+    /// Each story's IDML `Self` → its id in `document`, so a warning that names a story can
+    /// point at it.
+    pub story_ids: HashMap<String, StoryId>,
 }
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
@@ -119,6 +122,7 @@ pub fn import_idml_report_with_previews(
         ));
     }
     warnings.append(&mut im.warnings);
+    let story_ids = im.story_ids.clone();
     let mut document = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
@@ -126,7 +130,7 @@ pub fn import_idml_report_with_previews(
     })?;
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
-    Ok(Imported { document, warnings })
+    Ok(Imported { document, warnings, story_ids })
 }
 
 struct ItemCtx {
@@ -139,6 +143,14 @@ struct Importer<'r> {
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
     next_id: u64,
+    /// Cells every table in this import has reserved. One table is capped, but a file chooses
+    /// how many tables it has, so the cap has to be document-wide as well (noted in review).
+    table_cells: usize,
+    /// Tables whose size the file claimed and did not get, warned about so far. A file chooses
+    /// how many tables it has, so a line each is its own flood (noted in review).
+    table_warnings: usize,
+    /// Whether the file has already been told its tables ran out of cells between them.
+    table_budget_spent: bool,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
     swatches: Vec<Swatch>,
@@ -183,6 +195,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
+    asset_index: designcraft_doc::AssetIndex,
     /// Assets read from a link path at a page and crop, so later placements of that path, page
     /// and crop reuse them unread.
     linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
@@ -202,6 +216,8 @@ struct Importer<'r> {
     /// The file's text variables (`None`: it defines none) and their Self → index.
     text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
     text_var_ids: HashMap<String, usize>,
+    /// The Self of each cross-reference page number variable (`XrefPageNumberType`).
+    xref_page_vars: HashSet<String>,
     /// Creation and modification times (Unix seconds) from the package metadata.
     created: Option<i64>,
     modified: Option<i64>,
@@ -225,6 +241,9 @@ impl<'r> Importer<'r> {
             read_link,
             previews,
             next_id: 0,
+            table_cells: 0,
+            table_warnings: 0,
+            table_budget_spent: false,
             settings: DocSettings::default(),
             default_margins: None,
             swatches: specials,
@@ -260,6 +279,7 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            asset_index: designcraft_doc::AssetIndex::new(),
             linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
@@ -272,6 +292,7 @@ impl<'r> Importer<'r> {
             index_xrefs: Vec::new(),
             text_vars: None,
             text_var_ids: HashMap::new(),
+            xref_page_vars: HashSet::new(),
             created: None,
             modified: None,
             repaired_tab_lists: 0,
@@ -312,11 +333,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            designcraft_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
@@ -601,6 +628,9 @@ impl<'r> Importer<'r> {
         {
             d.settings.zero_point = zp;
         }
+        // Cross-reference text the format generates exactly is generated again; any other was
+        // typed over it and is kept (needs the destinations, resolved above).
+        d.drop_generated_xref_text();
         Ok(d)
     }
 }
