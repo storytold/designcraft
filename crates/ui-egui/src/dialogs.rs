@@ -2239,6 +2239,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
+        "bookOutsideFolder" => crate::i18n::tr(&app.ui.language, "Chapters Outside the Book's Folder"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
         "updateLink" => crate::i18n::tr(&app.ui.language, "Update Link"),
         "menus" => crate::i18n::tr(&app.ui.language, "Menu Customization"),
@@ -2272,6 +2273,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
             "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" => 380.0,
+            "bookOutsideFolder" => 480.0,
             "newDocument" => 960.0,
             "hyphenation" => 560.0,
             "numberingSection" => 560.0,
@@ -2765,6 +2767,15 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .replace("{}", &d.s("title"));
                         crate::rtl::label(ui, text);
                     }
+                    "bookOutsideFolder" => {
+                        crate::rtl::label(
+                            ui,
+                            crate::i18n::tr(&app.ui.language, "These chapters are not in the book's folder. Updating the book will rewrite them:"),
+                        );
+                        for chapter in d.fields.get("chapters").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                            crate::rtl::label(ui, chapter);
+                        }
+                    }
                     "deletePages" => {
                         let several = d.fields.get("pages").and_then(Value::as_array).is_some_and(|p| p.len() > 1);
                         crate::rtl::label(
@@ -3015,6 +3026,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "colorTheme" => crate::i18n::tr(&app.ui.language, "Add to Swatches").to_string(),
             "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
             "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
+            "bookOutsideFolder" => crate::i18n::tr(&app.ui.language, "Update Anyway").to_string(),
             "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
             _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
@@ -3713,6 +3725,11 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
             "window.newWorkspace",
             json!({"name": d.s("name"), "panelLocations": d.b("panelLocations"), "menuCustomization": d.b("menuCustomization")}),
         ),
+        // Only the two updates the panel asks about, whatever the dialog's fields say.
+        "bookOutsideFolder" => match d.s("command").as_str() {
+            command @ ("book.paginate" | "book.syncStyles") => app.run(command, json!({"allowOutside": true})),
+            other => Err(format!("not a book update: {other}")),
+        },
         "deletePages" => {
             if d.b("dontShowAgain") {
                 app.ui.skip_delete_pages_warning = true;

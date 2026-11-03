@@ -91,6 +91,36 @@ fn real_location(path: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The chapters outside the book's folder that `command` writes: every one for Update Numbering,
+/// all but the style source for Synchronize, which only reads that one.
+#[cfg(not(target_arch = "wasm32"))]
+fn written_outside(b: &Book, command: &str) -> Vec<String> {
+    let source = (command == "book.syncStyles").then(|| b.documents.get(b.style_source)).flatten();
+    outside_book_folder(b).into_iter().filter(|named| Some(named) != source).collect()
+}
+
+/// Refuse an update that would rewrite chapters outside the book's folder unless the caller said
+/// it may (`allowOutside`), before anything is written (#1597).
+///
+/// Reporting them afterwards, which is what an update did first, told the caller what had already
+/// been rewritten and left nothing to ask. Refusing by default protects a script or an MCP client
+/// as well as the UI, which asks with `book.outsideFolder` and passes the answer here.
+#[cfg(not(target_arch = "wasm32"))]
+fn allowed_outside(command: &str, outside: &[String], p: &Value) -> Result<()> {
+    if outside.is_empty() || p.get("allowOutside").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(bad(
+        command,
+        format!(
+            "{} outside the book's folder would be rewritten: {}; pass {{\"allowOutside\": true}} to update {}",
+            if outside.len() == 1 { "a chapter" } else { "chapters" },
+            outside.join(", "),
+            if outside.len() == 1 { "it" } else { "them" }
+        ),
+    ))
+}
+
 /// Every chapter's file ([`chapter`]), in order.
 fn chapters(b: &Book) -> Result<Vec<String>> {
     b.documents.iter().map(|path| chapter(b, path)).collect()
@@ -230,8 +260,10 @@ fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn paginate(s: &Session) -> Result<Value> {
+fn paginate(s: &Session, p: &Value) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
+    let outside = written_outside(b, "book.paginate");
+    allowed_outside("book.paginate", &outside, p)?;
     if b.documents.is_empty() {
         // The same shape as a book with chapters, so a caller reads one field either way
         // (noted in review).
@@ -257,12 +289,14 @@ fn paginate(s: &Session) -> Result<Value> {
         batch.stage(path, &d)?;
     }
     batch.commit()?;
-    Ok(json!({"pages": next - 1, "chapters": chapters, "outsideFolder": outside_book_folder(b)}))
+    Ok(json!({"pages": next - 1, "chapters": chapters, "outsideFolder": outside}))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn sync_styles(s: &Session) -> Result<Value> {
+fn sync_styles(s: &Session, p: &Value) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
+    let outside = written_outside(b, "book.syncStyles");
+    allowed_outside("book.syncStyles", &outside, p)?;
     let mut batch = ChapterBatch::new(b.documents.len(), "book.syncStyles")?;
     let paths = chapters(b)?;
     let src_path = paths.get(b.style_source).ok_or_else(|| bad("book.syncStyles", "the book is empty"))?;
@@ -299,16 +333,16 @@ fn sync_styles(s: &Session) -> Result<Value> {
         n += 1;
     }
     batch.commit()?;
-    Ok(json!({"synced": n, "outsideFolder": outside_book_folder(b)}))
+    Ok(json!({"synced": n, "outsideFolder": outside}))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn paginate(_: &Session) -> Result<Value> {
+fn paginate(_: &Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn sync_styles(_: &Session) -> Result<Value> {
+fn sync_styles(_: &Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("books need a file system".into()))
 }
 
@@ -408,11 +442,23 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
-        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved) → {pages, chapters}", has_book, |s, _| {
-            paginate(s)
+        cmd!(noundo "book.paginate", "Update Numbering", [], None, "{allowOutside?: bool} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved; chapters outside the book's folder only with allowOutside, see book.outsideFolder) → {pages, chapters, outsideFolder}", has_book, |s, p| {
+            paginate(s, p)
         }),
-        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{} — paragraph and character styles and swatches of the style source go into every document (by name)", has_book, |s, _| {
-            sync_styles(s)
+        cmd!(noundo "book.syncStyles", "Synchronize Book", [], None, "{allowOutside?: bool} — paragraph and character styles and swatches of the style source go into every document (by name) (chapters outside the book's folder only with allowOutside, see book.outsideFolder) → {synced, outsideFolder}", has_book, |s, p| {
+            sync_styles(s, p)
+        }),
+        cmd!(noundo "book.outsideFolder", "Chapters Outside the Book's Folder", [], None, "{command?: \"book.paginate\"|\"book.syncStyles\"} — the chapters that update would rewrite outside the book's own folder, links resolved, to ask about first (default book.paginate, which writes them all) → {chapters}", has_book, |s, p| {
+            let b = s.book.as_ref().ok_or_else(no_book)?;
+            let command = p.get("command").and_then(Value::as_str).unwrap_or("book.paginate");
+            if !matches!(command, "book.paginate" | "book.syncStyles") {
+                return Err(bad("book.outsideFolder", format!("`command` is book.paginate or book.syncStyles, not {command}")));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let chapters = written_outside(b, command);
+            #[cfg(target_arch = "wasm32")]
+            let chapters: Vec<String> = { let _ = b; Vec::new() };
+            Ok(json!({"chapters": chapters}))
         }),
         cmd!(noundo "book.exportPdf", "Export Book to PDF…", [], None, "{path?} — every document in order as one PDF → {path, bytes, pages} (no path: {base64, …})", has_book, |s, p| {
             let b = s.book.clone().ok_or_else(no_book)?;
@@ -466,10 +512,12 @@ mod tests {
     use crate::Session;
 
     /// A book names its chapters by path, and an update writes numbering and styles into each
-    /// one, so a book from elsewhere can name a file of the user's own. Which chapters lie
-    /// outside the book's folder is now reported, for the UI to ask about before writing (#1597).
+    /// one, so a book from elsewhere can name a file of the user's own. An update now refuses,
+    /// before writing anything, while a chapter lies outside the book's folder, unless the caller
+    /// says it may; `book.outsideFolder` names them so the UI can ask first (#1597). Reporting
+    /// them after the write, which is what this did first, left nothing to ask (noted in review).
     #[test]
-    fn an_update_reports_the_chapters_outside_the_books_folder() {
+    fn an_update_asks_before_it_rewrites_a_chapter_outside_the_books_folder() {
         let root = std::env::temp_dir().join(format!("dc-book-outside-{}", std::process::id()));
         let (inside, elsewhere) = (root.join("book"), root.join("elsewhere"));
         std::fs::create_dir_all(&inside).unwrap();
@@ -483,13 +531,31 @@ mod tests {
             s.execute("file.close", &json!({})).unwrap();
         }
 
-        let r = s.execute("book.paginate", &json!({})).unwrap();
-        let outside = r["outsideFolder"].as_array().expect("the report lists them").clone();
+        // What the UI asks about: the one chapter elsewhere.
+        let asked = s.execute("book.outsideFolder", &json!({})).unwrap();
+        let outside = asked["chapters"].as_array().expect("the chapters are listed").clone();
         assert_eq!(outside.len(), 1, "one chapter is outside the book's folder: {outside:?}");
         assert!(outside[0].as_str().unwrap_or_default().contains("mine.designcraft"), "{outside:?}");
 
-        // Sync Styles reports the same thing, since it writes the same chapters.
-        let r = s.execute("book.syncStyles", &json!({})).unwrap();
+        // Without consent neither update writes anything, the chapter beside the book included,
+        // and the refusal names the chapter it is about.
+        let mine = elsewhere.join("mine.designcraft");
+        let before = (std::fs::read(inside.join("ch1.designcraft")).unwrap(), std::fs::read(&mine).unwrap());
+        for command in ["book.paginate", "book.syncStyles"] {
+            let e = s.execute(command, &json!({})).unwrap_err().to_string();
+            assert!(e.contains("mine.designcraft") && e.contains("allowOutside"), "{command}: {e}");
+            for no in [json!({"allowOutside": false}), json!({"allowOutside": "yes"})] {
+                assert!(s.execute(command, &no).is_err(), "{command} with {no}: only `true` is consent");
+            }
+        }
+        let after = (std::fs::read(inside.join("ch1.designcraft")).unwrap(), std::fs::read(&mine).unwrap());
+        assert!(before == after, "a refused update rewrote a chapter");
+
+        // With consent both run, and say which chapters elsewhere they wrote.
+        let r = s.execute("book.paginate", &json!({"allowOutside": true})).unwrap();
+        assert_eq!(r["outsideFolder"], json!(outside));
+        assert_ne!(std::fs::read(&mine).unwrap(), before.1, "the consented update wrote the chapter");
+        let r = s.execute("book.syncStyles", &json!({"allowOutside": true})).unwrap();
         assert_eq!(r["outsideFolder"].as_array().map(Vec::len), Some(1));
 
         // A book whose chapters are all beside it reports nothing.

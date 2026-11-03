@@ -110,10 +110,10 @@ fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.status_error("Book", e);
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update Numbering"))).clicked() {
-            let _ = app.run("book.paginate", json!({}));
+            update_book(app, "book.paginate");
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Synchronize"))).clicked() {
-            let _ = app.run("book.syncStyles", json!({}));
+            update_book(app, "book.syncStyles");
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Export PDF…"))).clicked()
             && let Some(path) = app.pick_save("Book.pdf")
@@ -122,6 +122,26 @@ fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
             app.status_error("Book", e);
         }
     });
+}
+
+/// Update Numbering and Synchronize rewrite the book's chapters, so a chapter outside the book's
+/// folder -- a book from elsewhere can name a file of the user's own -- is asked about first, and
+/// the update runs with consent only once the user says so (#1597). A failure is shown, not
+/// dropped as it was.
+pub(crate) fn update_book(app: &mut DesignApp, command: &str) {
+    let outside = app
+        .run("book.outsideFolder", json!({"command": command}))
+        .ok()
+        .and_then(|r| r.get("chapters").and_then(serde_json::Value::as_array).cloned())
+        .unwrap_or_default();
+    if !outside.is_empty() {
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("bookOutsideFolder", json!({"command": command, "chapters": outside})));
+        return;
+    }
+    // Without consent: should a chapter be outside after all, the engine refuses and says so.
+    if let Err(e) = app.run(command, json!({})) {
+        app.status_error("Book", e);
+    }
 }
 
 /// Book panel: the open book's documents with their page ranges; numbering, synchronising and
@@ -241,4 +261,84 @@ pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod book_update_tests {
+    use super::*;
+
+    /// A book in `book/` with one chapter beside it and one in `elsewhere/`, and the two files.
+    fn book_with_a_chapter_elsewhere(root: &std::path::Path) -> (DesignApp, std::path::PathBuf, std::path::PathBuf) {
+        let (inside, elsewhere) = (root.join("book"), root.join("elsewhere"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("book.new", json!({"path": inside.join("Guide.dcbook").to_string_lossy()})).unwrap();
+        let (beside, mine) = (inside.join("ch1.designcraft"), elsewhere.join("mine.designcraft"));
+        for path in [&beside, &mine] {
+            app.run("file.new", json!({})).unwrap();
+            app.run("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+            app.run("book.add", json!({"path": path.to_string_lossy()})).unwrap();
+            app.run("file.close", json!({})).unwrap();
+        }
+        (app, beside, mine)
+    }
+
+    /// The panel's Update Numbering and Synchronize ask before they rewrite a chapter outside the
+    /// book's folder, and write only once the user says so (#1597; noted in review: a report that
+    /// nothing reads protects nobody).
+    #[test]
+    fn a_book_update_asks_before_it_rewrites_a_chapter_elsewhere() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut app, beside, mine) = book_with_a_chapter_elsewhere(root.path());
+        let files = |a: &std::path::Path, b: &std::path::Path| (std::fs::read(a).unwrap(), std::fs::read(b).unwrap());
+        let before = files(&beside, &mine);
+
+        for command in ["book.paginate", "book.syncStyles"] {
+            update_book(&mut app, command);
+            let d = app.ui.dialog.clone().expect("the update asks first");
+            assert_eq!((d.id.as_str(), d.s("command")), ("bookOutsideFolder", command.to_string()));
+            let named: Vec<String> = d.fields["chapters"].as_array().unwrap().iter().filter_map(|c| c.as_str().map(str::to_owned)).collect();
+            assert_eq!(named.len(), 1, "{named:?}");
+            assert!(named[0].ends_with("mine.designcraft"), "{named:?}");
+            assert!(files(&beside, &mine) == before, "{command}: nothing is written while it asks");
+
+            // Cancel: still nothing written.
+            crate::dialogs::cancel(&mut app);
+            assert!(app.ui.dialog.is_none());
+            assert!(files(&beside, &mine) == before, "{command}: Cancel writes nothing");
+        }
+
+        // OK: the update runs, the chapter elsewhere included.
+        update_book(&mut app, "book.paginate");
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_ne!(std::fs::read(&mine).unwrap(), before.1, "Update Anyway rewrote the chapter");
+
+        // The dialog runs only the two updates, whatever its fields are made to say.
+        update_book(&mut app, "book.syncStyles");
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("command".into(), json!("file.close"));
+        }
+        let e = crate::dialogs::confirm(&mut app).unwrap_err();
+        assert!(e.contains("not a book update"), "{e}");
+    }
+
+    /// A book whose chapters are all beside it updates at once, without a question.
+    #[test]
+    fn a_tidy_book_updates_without_asking() {
+        let root = tempfile::tempdir().unwrap();
+        let inside = root.path().join("book");
+        std::fs::create_dir_all(&inside).unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("book.new", json!({"path": inside.join("Tidy.dcbook").to_string_lossy()})).unwrap();
+        let only = inside.join("only.designcraft");
+        app.run("file.new", json!({})).unwrap();
+        app.run("file.saveAs", json!({"path": only.to_string_lossy()})).unwrap();
+        app.run("book.add", json!({"path": only.to_string_lossy()})).unwrap();
+        app.run("file.close", json!({})).unwrap();
+        let before = std::fs::read(&only).unwrap();
+        update_book(&mut app, "book.paginate");
+        assert!(app.ui.dialog.is_none(), "nothing to ask about");
+        assert_ne!(std::fs::read(&only).unwrap(), before, "and the update ran");
+    }
 }
