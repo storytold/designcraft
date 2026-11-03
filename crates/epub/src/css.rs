@@ -7,14 +7,18 @@ use super::*;
 fn class_names<'a>(names: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, String> {
     let mut out = BTreeMap::new();
     let mut used = std::collections::BTreeSet::new();
+    // The last suffix given for each slug: the next name that slugs alike carries on from it
+    // (still checked against every class, since a name can itself end in `-2`).
+    let mut last: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for name in names {
         let base = slug(name);
         let mut class = base.clone();
-        let mut n = 1;
+        let mut n = last.get(&base).copied().unwrap_or(1);
         while !used.insert(class.clone()) {
             n += 1;
             class = format!("{base}-{n}");
         }
+        last.insert(base, n);
         out.insert(name, class);
     }
     out
@@ -250,4 +254,28 @@ fn class_selector(tag: &str, class: &str) -> Option<String> {
         }
     }
     Some(selector)
+}
+
+#[cfg(test)]
+mod class_name_tests {
+    use super::class_names;
+
+    /// Names that slug alike are numbered in order, each carrying on from the last number given,
+    /// and a name that already ends in a number never takes another's class.
+    #[test]
+    fn colliding_names_get_unique_classes_in_one_pass() {
+        // 20,000 distinct names that all slug to `body-text` (any non-ASCII letter is a `-`).
+        let names: Vec<String> = (0..20_000u32).filter_map(|i| char::from_u32(0x4E00 + i)).map(|c| format!("Body{c}Text")).collect();
+        let mut all: Vec<&str> = vec!["Body Text", "body-text-3"];
+        all.extend(names.iter().map(String::as_str));
+        let t = std::time::Instant::now();
+        let classes = class_names(all.iter().copied());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!(classes["Body Text"], "body-text");
+        assert_eq!(classes["body-text-3"], "body-text-3");
+        assert_eq!(classes[names[0].as_str()], "body-text-2");
+        assert_eq!(classes[names[1].as_str()], "body-text-4", "-3 is the class of the name that is it");
+        let distinct: std::collections::HashSet<&String> = classes.values().collect();
+        assert_eq!(distinct.len(), classes.len());
+    }
 }
