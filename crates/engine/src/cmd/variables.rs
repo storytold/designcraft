@@ -369,8 +369,9 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
             at
         };
         let target = var_char(i).unwrap_or(' ').to_string();
+        let value = match var_char(i) { Some(c) => value.replace(c, ""), None => value.to_string() };
         for pos in instances(&st.text, &target) {
-            st.replace(pos..pos + target.len(), value);
+            st.replace(pos..pos + target.len(), &value);
             on_replace(pos, target.len());
         }
         for k in i + 1..n {
