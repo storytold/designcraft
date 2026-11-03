@@ -1094,7 +1094,7 @@ fn several_dropped_images_load_the_place_cursor_in_order() {
     let text = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-many.txt", std::process::id()));
     std::fs::write(&text, "Dropped words").unwrap();
     let paths = [&a, &text, &b, &c].map(|p| p.to_string_lossy().to_string());
-    app.open_dropped_batch(paths.to_vec(), Some(inside));
+    app.open_dropped_batch(paths.iter().map(|p| (p.clone(), Some(inside))).collect());
     for p in [&a, &b, &c, &text] {
         let _ = std::fs::remove_file(p);
     }
@@ -1114,6 +1114,38 @@ fn several_dropped_images_load_the_place_cursor_in_order() {
     app.session.tool_key(designcraft_tools::ToolKey::Escape, mods, designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
     assert!(app.session.loaded.is_none() && app.session.loaded_queue.is_empty());
     assert_eq!(app.session.tool_id(), "selection");
+}
+
+/// A drop is handled in the order its files came, each at its own pointer: an image dropped on a
+/// frame before a document fills that frame in the document that was open, not in the one the
+/// drop opens after it.
+#[test]
+fn a_mixed_drop_keeps_its_order() {
+    let (mut app, frame, inside, outside) = frame_drop_app();
+    let mut other = DesignApp::new(Session::new(), Services::default());
+    other.run("file.new", json!({})).unwrap();
+    let document = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-mixed.designcraft", std::process::id()));
+    other.run("file.saveAs", json!({"path": document})).unwrap();
+    let image = temporary_png("drop-mixed");
+    let text = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-mixed.txt", std::process::id()));
+    std::fs::write(&text, "Dropped words").unwrap();
+    let drops = vec![
+        (image.to_string_lossy().to_string(), Some(inside)),
+        (text.to_string_lossy().to_string(), Some(outside)),
+        (document.to_string_lossy().to_string(), Some(outside)),
+    ];
+    app.open_dropped_batch(drops);
+    for p in [&image, &text, &document] {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(app.session.documents().len(), 2, "the document opened last");
+    let d = &app.session.documents()[0].doc;
+    assert!(
+        matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)),
+        "the image filled the frame in the document open before the drop"
+    );
+    assert_eq!(d.spreads[0].items.len(), 2, "the text got a frame of its own");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
 }
 
 #[test]

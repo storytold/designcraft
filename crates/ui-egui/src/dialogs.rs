@@ -1530,9 +1530,15 @@ fn doc_unit(app: &DesignApp) -> Unit {
 /// File › Place Contact Sheet…: bare numbers typed in the dialog are in the document's ruler unit
 /// (the defaults keep their explicit `pt`).
 pub fn open_contact_sheet(app: &mut DesignApp) {
-    let mut d = Dialog::new("contactSheet", json!({}));
+    app.ui.dialog = Some(contact_sheet_dialog(app, json!({})));
+}
+
+/// The Place Contact Sheet dialog with `fields`, its bare numbers in the document's ruler unit,
+/// for the menu and for `ui.dialog.open` alike.
+pub fn contact_sheet_dialog(app: &DesignApp, fields: Value) -> Dialog {
+    let mut d = Dialog::new("contactSheet", fields);
     d.unit = doc_unit(app);
-    app.ui.dialog = Some(d);
+    d
 }
 
 /// The document's vertical ruler unit: what a bare number means in a height field.
@@ -3346,9 +3352,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         }
                         ui.label(crate::i18n::tr(&app.ui.language, "Place loaded images on new pages, in file order."));
                         for (label, key) in [("Columns", "columns"), ("Rows", "rows"), ("Gutter", "gutter"), ("Page margin", "margin")] {
+                            let label = crate::i18n::tr(&app.ui.language, label);
                             ui.horizontal(|ui| {
-                                ui.add_sized([95.0, 20.0], egui::Label::new(crate::i18n::tr(&app.ui.language, label)));
-                                text_field(ui, &mut d, key, 80.0);
+                                ui.add_sized([95.0, 20.0], egui::Label::new(label));
+                                text_field_named(ui, &mut d, key, 80.0, label);
                             });
                         }
                     }

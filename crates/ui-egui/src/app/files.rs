@@ -20,10 +20,7 @@ impl DesignApp {
         if purpose == "place" {
             return self.ask_open_many(purpose, file_dialogs::Bound::Document, |app, paths| match paths.as_slice() {
                 [path] => app.open_picked("place", path.clone()),
-                _ => {
-                    app.place_paths(paths);
-                    Ok(Value::Null)
-                }
+                _ => app.place_paths(paths).map(|()| Value::Null),
             });
         }
         let purpose_owned = purpose.to_string();
@@ -57,8 +54,10 @@ impl DesignApp {
     /// Place an ordered batch of files, as File › Place with several chosen. The batch stops when
     /// a file opens a dialog (a multi-page PDF's Import Options, an alert), as the inbox's does;
     /// every file that loads the cursor adds to what the earlier ones loaded, in the order the
-    /// files were chosen (images in a row load together, before the file after them).
-    pub(crate) fn place_paths(&mut self, paths: Vec<String>) {
+    /// files were chosen (images in a row load together, before the file after them). A file that
+    /// can't be placed gets an alert and stops the batch; its error is returned, so automation
+    /// doesn't carry on as if the batch had loaded.
+    pub(crate) fn place_paths(&mut self, paths: Vec<String>) -> Result<(), String> {
         let mut images = Vec::new();
         // Images already in the place cursor stay: the batch queues after them.
         let mut loaded = self.session.loaded.is_some();
@@ -75,19 +74,18 @@ impl DesignApp {
             }
             if self.ui.dialog.is_some() {
                 self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
-                return;
+                return Ok(());
             }
-            if !images.is_empty()
-                && let Ok(r) = self.load_place_cursor(std::mem::take(&mut images), loaded)
-            {
+            if !images.is_empty() {
+                let r = self.load_place_cursor(std::mem::take(&mut images), loaded)?;
                 loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
             }
-            if let Some(p) = path
-                && let Ok(r) = self.place_path(&p, loaded)
-            {
+            if let Some(p) = path {
+                let r = self.place_path(&p, loaded)?;
                 loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
             }
         }
+        Ok(())
     }
 
     /// `place.load` of `files` (`{path}` or `{name, base64}` each), queued after the images
@@ -276,28 +274,42 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
-        let paths = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).collect();
-        self.open_dropped_batch(paths, pointer);
+        let drops = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
+        self.open_dropped_batch(drops);
     }
 
-    /// Files dropped on the window together, in the order they came. Each that isn't an image
-    /// opens or is placed as [`Self::open_dropped_at`] does; then one image is dropped as that
-    /// does too (filling the frame under the pointer, else loading the place cursor), and several
-    /// load the place cursor together, after any images it already holds, whatever is under the
-    /// pointer: click to place them one by one, drag with the arrow keys for a grid.
-    pub fn open_dropped_batch(&mut self, paths: Vec<String>, pointer: Option<egui::Pos2>) {
-        let (images, others): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| is_cursor_image(p));
+    /// Files dropped on the window together, each with the pointer it was dropped at, handled in
+    /// the order they came. Each that isn't an image opens or is placed as
+    /// [`Self::open_dropped_at`] does at its own pointer. One image is dropped as that does too
+    /// (filling the frame under the pointer, else loading the place cursor); several load the place
+    /// cursor, each run of them where it came in the order, after any images it already holds,
+    /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
+    /// a grid. The rest of the drop is cancelled once a file opens a dialog (a multi-page PDF's
+    /// Import Options, an alert), as File › Place with several chosen is.
+    pub fn open_dropped_batch(&mut self, drops: Vec<(String, Option<egui::Pos2>)>) {
+        let several = drops.iter().filter(|(p, _)| is_cursor_image(p)).count() > 1;
         // Only the first graphic of a drop fills the frame under the pointer.
         let mut frame_free = true;
-        for path in others {
-            let _ = self.place_dropped(&path, pointer, &mut frame_free);
-        }
-        match images.as_slice() {
-            [] => {}
-            [path] => {
-                let _ = self.place_dropped(path, pointer, &mut frame_free);
+        let mut images = Vec::new();
+        // `None` at the end flushes the images left.
+        for drop in drops.into_iter().map(Some).chain([None]) {
+            if several
+                && let Some((path, _)) = &drop
+                && is_cursor_image(path)
+            {
+                images.push(path.clone());
+                continue;
             }
-            _ => self.place_paths(images),
+            // A file that can't be placed has its alert, which cancels the rest below.
+            if !images.is_empty() {
+                let _ = self.place_paths(std::mem::take(&mut images));
+            }
+            let Some((path, pointer)) = drop else { break };
+            if self.ui.dialog.is_some() {
+                self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
+                return;
+            }
+            let _ = self.place_dropped(&path, pointer, &mut frame_free);
         }
     }
 
@@ -972,7 +984,7 @@ pub(crate) mod browser_import_tests {
     fn native_batch_stops_when_a_dialog_is_open_and_appends_to_the_cursor() {
         let mut app = app();
         app.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": "t", "message": "m"})));
-        app.place_paths(vec!["one.pdf".into(), "two.png".into()]);
+        let _ = app.place_paths(vec!["one.pdf".into(), "two.png".into()]);
         assert_eq!(app.ui.status, "Place cancelled while a dialog is open");
         assert!(app.session.loaded.is_none());
         app.ui.dialog = None;
@@ -997,11 +1009,11 @@ pub(crate) mod browser_import_tests {
         std::fs::write(path("b.svg"), image()).unwrap();
         let mut app = app();
         app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
-        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]);
+        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]).unwrap();
         assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg"]);
         // A second batch queues after what the cursor still holds.
         std::fs::write(path("c.svg"), image()).unwrap();
-        app.place_paths(vec![path("c.svg"), path("a.svg")]);
+        app.place_paths(vec![path("c.svg"), path("a.svg")]).unwrap();
         assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg", "c.svg", "a.svg"]);
     }
 

@@ -176,14 +176,17 @@ impl Tool for PlaceGun {
             self.start = None;
             return vec![Action::Exec("place.cancel".into(), json!({}))];
         }
+        // During a drag the arrow keys change the grid, and are handled even when it is already
+        // at its limit, so they don't go on to nudge the selection.
         if self.start.is_some() {
             match key {
                 ToolKey::Right => self.columns = (self.columns + 1).min(100),
                 ToolKey::Left => self.columns = self.columns.saturating_sub(1).max(1),
                 ToolKey::Up => self.rows = (self.rows + 1).min(100),
                 ToolKey::Down => self.rows = self.rows.saturating_sub(1).max(1),
-                _ => {}
+                _ => return vec![],
             }
+            return vec![Action::Handled];
         }
         vec![]
     }

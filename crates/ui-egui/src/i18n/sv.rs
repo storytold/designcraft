@@ -23,6 +23,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Place…", "Placera…"),
     ("Place Contact Sheet…", "Placera kontaktark…"),
     ("Place Contact Sheet", "Placera kontaktark"),
+    ("Place loaded images on new pages, in file order.", "Placera inlästa bilder på nya sidor, i filordning."),
+    ("Page margin", "Sidmarginal"),
     ("Export PDF…", "Exportera PDF…"),
     ("Print…", "Skriv ut…"),
     ("Print", "Skriv ut"),

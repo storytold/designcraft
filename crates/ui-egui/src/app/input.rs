@@ -152,10 +152,13 @@ impl DesignApp {
         // suppress later files that belong to the same captured batch.
         let current = self.input_generation();
         let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
-        let Some(first) = drops.first() else { return };
-        // Dropped together, they go together: several images load the place cursor at once.
-        let pointer = first.pointer.or_else(|| self.system_pointer(ctx));
-        self.open_dropped_batch(drops.into_iter().map(|d| d.path).collect(), pointer);
+        if drops.is_empty() {
+            return;
+        }
+        // Dropped together, they go together: several images load the place cursor at once. Each
+        // file keeps the pointer it was dropped at.
+        let system = drops.iter().any(|d| d.pointer.is_none()).then(|| self.system_pointer(ctx)).flatten();
+        self.open_dropped_batch(drops.into_iter().map(|d| (d.path, d.pointer.or(system))).collect());
     }
 
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
