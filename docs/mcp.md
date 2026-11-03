@@ -75,14 +75,27 @@ The release packages ship `designcraft-cli` alongside the desktop app, so no bui
 |---|---|
 | Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\DesignCraft\designcraft-cli.exe` by default (`C:\Program Files\ArtCraft\DesignCraft\designcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/designcraft-cli` |
-| macOS | the separate `designcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
+| macOS (DMG) | `/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli` after installing the app; the separate CLI ZIP is also available |
 
 ```sh
 # Windows (PowerShell), default install folder
 claude mcp add designcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\DesignCraft\designcraft-cli.exe" mcp
-# Linux, or macOS with the CLI unzipped onto PATH
+# macOS, app installed in Applications
+claude mcp add designcraft -- "/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" mcp
+# Linux, or the separate CLI unzipped onto PATH
 claude mcp add designcraft -- designcraft-cli mcp
 ```
+
+The bundled macOS CLI can also run headless jobs directly, without an MCP client or a window:
+
+```sh
+"/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" --version
+"/Applications/DesignCraft.app/Contents/MacOS/designcraft-cli" commands frame.create
+```
+
+If the app lives elsewhere, use its actual path. Updating the app updates its bundled CLI; moving
+it requires updating any saved command or MCP configuration path. Removing the app removes this
+CLI too. An independently installed CLI is unaffected, and the DMG adds nothing to `PATH`.
 
 ## Confining file access
 
