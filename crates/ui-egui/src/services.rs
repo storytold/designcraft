@@ -14,8 +14,9 @@ pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 /// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
 pub type WindowFrameFn = Box<dyn FnMut()>;
 
-/// Where the pointer is on the screen now, in points from the top left of the main display (the
-/// coordinates of the window's `inner_rect`). `None` when the system doesn't say.
+/// Where the pointer is on the screen now, in the system's points from the top left of the main
+/// display, before the UI scale: the app divides them by egui's zoom factor to compare them with
+/// the window's `inner_rect`. `None` when the system doesn't say.
 pub type PointerFn = Box<dyn Fn() -> Option<egui::Pos2>>;
 
 /// Files delivered asynchronously with their original operation and document identity.
