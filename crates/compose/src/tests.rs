@@ -2001,6 +2001,26 @@ fn indent_to_here_in_a_list_number_indents_to_the_generated_character() {
 }
 
 #[test]
+fn indent_to_here_in_a_list_number_after_one_in_the_drop_cap_wins() {
+    // The drop cap "A^i" sits at the indent and the number "1.^i" follows it on the first line,
+    // so the number's character is the line's last one: the later lines start there, not at
+    // the drop cap's.
+    let mut para = ParaAttrs { drop_cap_lines: Some(3), drop_cap_chars: Some(2), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^i^t") };
+    para.list_tab = Some(Some(36.0));
+    let (d, sid, _) = doc_with(&format!("A\u{e005}{LOREM}"), Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 4, "the text wraps below the drop cap");
+    let marker = |label: bool| lines[0].glyphs.iter().find(|g| g.rendered_char == '\u{e005}' && (g.len == 0) == label).unwrap().x;
+    let (in_cap, in_label) = (marker(false), marker(true));
+    assert!(in_label > in_cap + 1.0, "the number follows the drop cap: {in_cap} then {in_label}");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - in_label).abs() < 0.01, "line {i} starts at {start}, not at {in_label}");
+    }
+}
+
+#[test]
 fn indent_to_here_in_a_right_to_left_paragraph_indents_from_the_right() {
     // Hebrew words (the bidi classes decide the order; no Hebrew font has to be present): the
     // lines after the first end where the character sits, measured from the right edge.

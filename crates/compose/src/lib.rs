@@ -4972,8 +4972,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
 /// applies from each later line's segment, so beside a text wrap it starts at the wrap's edge.
 /// `None` when there is none or the indent is unchanged.
 fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64, x1: f64, rtl: bool) -> Option<designcraft_doc::ParaProps> {
-    // The placed glyphs stay in text order (bidi only moves them) and include the drop cap's
-    // and a list label's, so a character in either counts too.
+    // The placed glyphs are in the line's order (bidi only moves them): the drop cap's, then a
+    // list label's, which is set beside the drop cap, then the text's. A character in the drop
+    // cap or the label counts too, and one in the label comes after one in the drop cap.
     let x = placed.iter().rev().find(|g| g.rendered_char == story::INDENT_HERE)?.x;
     let indent = if rtl { x1 - x } else { x - x0 };
     if !indent.is_finite() {
