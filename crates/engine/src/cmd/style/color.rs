@@ -1,5 +1,5 @@
 use super::swatches::{parse_color, value_name};
-use super::*;
+use super::{CharAttrs, Result, Session, Styles, Swatch, SwatchValue, Value, bad, has_doc, json, str_param};
 
 fn gradient_json(name: &str, g: &designcraft_color::Gradient) -> Value {
     let stops: Vec<Value> = g

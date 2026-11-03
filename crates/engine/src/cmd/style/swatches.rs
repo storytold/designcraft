@@ -1,5 +1,5 @@
 use super::color::check_text_nesting;
-use super::*;
+use super::{Result, Session, Styles, Swatch, SwatchValue, Value, bad, json, str_param};
 
 pub(super) fn create_swatch(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(g) = p.get("gradient") {

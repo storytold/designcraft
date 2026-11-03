@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use super::json;
+use super::{DesignApp, canvas, chrome, new_document, now_ms, theme, updates_ui};
 
 impl DesignApp {
     /// Install the UI fonts on the first frame, and again when the language or the system fonts change.
@@ -34,9 +36,16 @@ impl DesignApp {
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.dialog_wake.set(ctx.clone());
         if self.fonts_ready && !self.host_order_pending() && !self.pdf_export.busy() {
-            self.drain_inbox();
-            self.open_os_documents();
+            #[cfg(not(target_arch = "wasm32"))]
+            self.handle_file_dialog_answers();
+            // A save-dialog answer can start the export on this very tick.
+            if !self.pdf_export.busy() {
+                self.drain_inbox();
+                self.open_os_documents();
+            }
         }
         if self.host_order_pending() {
             ctx.request_repaint();
