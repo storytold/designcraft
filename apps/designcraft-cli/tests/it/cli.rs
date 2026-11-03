@@ -95,6 +95,35 @@ fn export_to_an_unknown_file_type_is_an_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `run --export` prints what the PDF export reports, and `script --export` dropped it: the same
+/// PDF with a drop shadow came out of a script with nothing on stderr.
+#[test]
+fn script_export_prints_the_export_warnings_as_run_does() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-warnings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let steps = [
+        r#"frame.create={"rect": [72, 72, 300, 200]}"#,
+        r#"object.fill={"ids": ["$0.id"], "swatch": "[Black]"}"#,
+        r#"object.dropShadow={"ids": ["$0.id"], "on": true, "distance": 8, "size": 6}"#,
+    ];
+    let script = dir.join("shadow.dcs");
+    std::fs::write(&script, steps.join("\n")).unwrap();
+    let pdf = dir.join("shadow.pdf");
+    let pdf = pdf.to_str().unwrap();
+    let mut run = vec!["run"];
+    for step in steps {
+        run.extend(["--cmd", step]);
+    }
+    run.extend(["--export", pdf]);
+    for args in [run, vec!["script", script.to_str().unwrap(), "--export", pdf]] {
+        let out = cli().args(&args).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{}: {err}", args[0]);
+        assert!(err.contains("warning: 1 object(s) with soft effects"), "{}: {err}", args[0]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With `--connect` the exports happen in the running app. `--export copy.designcraft` saves a
 /// copy there: Save As would make the copy the file the open document saves to from then on.
 #[test]
