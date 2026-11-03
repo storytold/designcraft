@@ -522,41 +522,7 @@ impl<'r> Importer<'r> {
         for e in top.iter().filter(|e| e.local() == "CrossReferenceFormat") {
             self.xref_format(e);
         }
-        // Hyperlink sources, destinations and the `Hyperlink` elements that join them (#1446).
-        // Only the names are taken here: the pages, page items and anchors they name are read
-        // later, so the two ends are put together in `finish`.
-        for e in top {
-            let me = || e.get("Self").unwrap_or("").trim().to_string();
-            match e.local() {
-                "HyperlinkURLDestination" => {
-                    if let Some(u) = attr_or_prop(e, "DestinationURL") {
-                        self.link_dests.insert(me(), PendingDest::Url(u));
-                    }
-                }
-                "HyperlinkPageDestination" => {
-                    if let Some(pg) = attr_or_prop(e, "DestinationPage") {
-                        self.link_dests.insert(me(), PendingDest::Page(pg));
-                    }
-                }
-                "HyperlinkPageItemSource" => {
-                    if let Some(it) = attr_or_prop(e, "SourcePageItem") {
-                        self.link_item_srcs.insert(me(), it);
-                    }
-                }
-                "Hyperlink" => {
-                    if let (Some(src), Some(dest)) = (attr_or_prop(e, "Source"), attr_or_prop(e, "Destination")) {
-                        let name = e.get("Name").unwrap_or("").trim().to_string();
-                        self.links.push((name, src, dest));
-                    }
-                }
-                // A destination kind this importer does not read (an external page, say): kept
-                // by name so a link dropped for it can say what it led to.
-                other if other.starts_with("Hyperlink") && other.ends_with("Destination") => {
-                    self.other_dests.insert(me(), other.to_string());
-                }
-                _ => {}
-            }
-        }
+        self.read_hyperlinks(top);
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &IndexTopic::default());
         }
@@ -577,31 +543,7 @@ impl<'r> Importer<'r> {
             self.stories.insert(id, story);
         }
         self.toc = self.toc_of(top);
-        // Topic cross-references (See / See also) become markers at the start of the first story
-        // with text.
-        let index_xrefs = std::mem::take(&mut self.index_xrefs);
-        if !index_xrefs.is_empty() {
-            let mut moved = None;
-            if let Some((&sid, st)) = self.stories.iter_mut().find(|(_, s)| !s.text.is_empty()) {
-                let before = st.text.len();
-                for r in index_xrefs.into_iter().rev() {
-                    st.insert_index_ref(0, r);
-                }
-                moved = Some((sid, st.text.len().saturating_sub(before)));
-            }
-            // The markers go in at the start of the story, so every byte range already recorded
-            // for it moved along by what they added. The hyperlink step reads those ranges after
-            // this, and a range left unshifted covered different text than the run it came from
-            // (noted in review).
-            if let Some((sid, shift)) = moved.filter(|(_, n)| *n > 0) {
-                for (story, start, end) in self.link_text_srcs.values_mut() {
-                    if *story == sid {
-                        *start += shift;
-                        *end += shift;
-                    }
-                }
-            }
-        }
+        self.place_index_xrefs();
         // Cross-references point at their hyperlink's destination.
         for h in top.iter().filter(|e| e.local() == "Hyperlink") {
             let (Some(src), Some(dest)) = (h.get("Source"), h.prop("Destination")) else { continue };
@@ -665,6 +607,72 @@ impl<'r> Importer<'r> {
         }
         self.link_threads();
         Ok(())
+    }
+
+    /// Hyperlink sources, destinations and the `Hyperlink` elements that join them (#1446), by
+    /// name: the pages, page items and anchors they name are read later, so `finish` puts the two
+    /// ends together.
+    fn read_hyperlinks(&mut self, top: &[El]) {
+        for e in top {
+            let me = || e.get("Self").unwrap_or("").trim().to_string();
+            match e.local() {
+                "HyperlinkURLDestination" => {
+                    if let Some(u) = attr_or_prop(e, "DestinationURL") {
+                        self.link_dests.insert(me(), PendingDest::Url(u));
+                    }
+                }
+                "HyperlinkPageDestination" => {
+                    if let Some(pg) = attr_or_prop(e, "DestinationPage") {
+                        self.link_dests.insert(me(), PendingDest::Page(pg));
+                    }
+                }
+                "HyperlinkPageItemSource" => {
+                    if let Some(it) = attr_or_prop(e, "SourcePageItem") {
+                        self.link_item_srcs.insert(me(), it);
+                    }
+                }
+                "Hyperlink" => {
+                    if let (Some(src), Some(dest)) = (attr_or_prop(e, "Source"), attr_or_prop(e, "Destination")) {
+                        let name = e.get("Name").unwrap_or("").trim().to_string();
+                        self.links.push((name, src, dest));
+                    }
+                }
+                // A destination kind this importer does not read (an external page, say): kept
+                // by name so a link dropped for it can say what it led to.
+                other if other.starts_with("Hyperlink") && other.ends_with("Destination") => {
+                    self.other_dests.insert(me(), other.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Topic cross-references (See / See also) become markers at the start of the first story
+    /// with text, and the hyperlink text ranges recorded for that story move along with them.
+    fn place_index_xrefs(&mut self) {
+        let index_xrefs = std::mem::take(&mut self.index_xrefs);
+        if !index_xrefs.is_empty() {
+            let mut moved = None;
+            if let Some((&sid, st)) = self.stories.iter_mut().find(|(_, s)| !s.text.is_empty()) {
+                let before = st.text.len();
+                for r in index_xrefs.into_iter().rev() {
+                    st.insert_index_ref(0, r);
+                }
+                moved = Some((sid, st.text.len().saturating_sub(before)));
+            }
+            // The markers go in at the start of the story, so every byte range already recorded
+            // for it moved along by what they added. The hyperlink step reads those ranges after
+            // this, and a range left unshifted covered different text than the run it came from
+            // (noted in review).
+            if let Some((sid, shift)) = moved.filter(|(_, n)| *n > 0) {
+                for (story, start, end) in self.link_text_srcs.values_mut() {
+                    if *story == sid {
+                        *start += shift;
+                        *end += shift;
+                    }
+                }
+            }
+        }
     }
 
     /// The document's hyperlinks, put together from the sources, destinations and `Hyperlink`
