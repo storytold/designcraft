@@ -1,7 +1,7 @@
 //! Placing EPS artwork: the source is kept and only the preview is rasterised.
 //!
 //! These helpers write real files, so they live in their own `_tests.rs` file: the
-//! file-system guard in `tests_file_guard.rs` checks `src` files but exempts test ones.
+//! file-system guard in `tests/file_guard.rs` checks `src` files but exempts test ones.
 
 use super::{Arc, AssetId, Content, ItemId, Session, base64_encode, json};
 

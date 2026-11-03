@@ -129,8 +129,8 @@ fn build() -> designcraft_doc::Result<Document> {
             gradient: Gradient {
                 kind: GradientKind::Linear,
                 stops: vec![
-                    GradientStop { offset: 0.0, color: Color::cmyk(0.62, 0.95, 0.30, 0.25), opacity: 1.0, midpoint: 0.5 },
-                    GradientStop { offset: 1.0, color: Color::cmyk(0.0, 0.62, 0.78, 0.0), opacity: 1.0, midpoint: 0.5 },
+                    GradientStop { swatch: Some("Ink Plum".into()), ..GradientStop::new(0.0, Color::cmyk(0.62, 0.95, 0.30, 0.25)) },
+                    GradientStop { swatch: Some("Sunset".into()), ..GradientStop::new(1.0, Color::cmyk(0.0, 0.62, 0.78, 0.0)) },
                 ],
             },
         },

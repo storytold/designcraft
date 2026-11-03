@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use hayro_syntax::content::UntypedIter;
-use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier};
+use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
 use hayro_syntax::page::Resources;
 
 use super::MAX_DEPTH;
@@ -127,46 +127,46 @@ impl<'a> FontScan<'a> {
                             false
                         })
                         && self.active.insert(form.obj_id())
+                        && self.scan_form(form, res, depth)
                     {
-                        let mut resources = Vec::new();
-                        let mut parent = Some(res);
-                        while let Some(r) = parent {
-                            resources.push((r.fonts.data(), r.x_objects.data()));
-                            parent = r.parent();
-                        }
-                        let key = FormContext {
-                            form: form.obj_id(),
-                            font: self.font.as_ref().map(Dict::data),
-                            mode: self.mode,
-                            resources,
-                            ancestors: self.path.clone(),
-                        };
-                        if let Some(found) = self.completed.get(&key) {
-                            self.found.extend(found.iter().cloned());
-                            self.active.remove(&form.obj_id());
-                            continue;
-                        }
-                        let inner = Resources::from_parent(form.dict().get::<Dict<'_>>(b"Resources").unwrap_or_default(), res.clone());
-                        let state = (self.font.clone(), self.mode);
-                        let outer_found = std::mem::take(&mut self.found);
-                        self.path.push(form.obj_id());
-                        if let Ok(data) = form.decoded() {
-                            self.content(&data, &inner, depth + 1);
-                        }
-                        self.path.pop();
-                        if !self.limited {
-                            self.completed.insert(key, self.found.clone());
-                        }
-                        self.found.extend(outer_found);
-                        (self.font, self.mode) = state;
-                        self.active.remove(&form.obj_id());
-                        if self.limited {
-                            return;
-                        }
+                        return;
                     }
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Scans a form XObject the caller has marked active. Returns `true` when the operation
+    /// limit stopped the scan, so the caller must stop too.
+    fn scan_form(&mut self, form: Stream<'a>, res: &Resources<'a>, depth: usize) -> bool {
+        let mut resources = Vec::new();
+        let mut parent = Some(res);
+        while let Some(r) = parent {
+            resources.push((r.fonts.data(), r.x_objects.data()));
+            parent = r.parent();
+        }
+        let key =
+            FormContext { form: form.obj_id(), font: self.font.as_ref().map(Dict::data), mode: self.mode, resources, ancestors: self.path.clone() };
+        if let Some(found) = self.completed.get(&key) {
+            self.found.extend(found.iter().cloned());
+            self.active.remove(&form.obj_id());
+            return false;
+        }
+        let inner = Resources::from_parent(form.dict().get::<Dict<'_>>(b"Resources").unwrap_or_default(), res.clone());
+        let state = (self.font.clone(), self.mode);
+        let outer_found = std::mem::take(&mut self.found);
+        self.path.push(form.obj_id());
+        if let Ok(data) = form.decoded() {
+            self.content(&data, &inner, depth + 1);
+        }
+        self.path.pop();
+        if !self.limited {
+            self.completed.insert(key, self.found.clone());
+        }
+        self.found.extend(outer_found);
+        (self.font, self.mode) = state;
+        self.active.remove(&form.obj_id());
+        self.limited
     }
 }
