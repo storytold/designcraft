@@ -314,8 +314,8 @@ fn main() -> std::process::ExitCode {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
-    // The adapter's largest texture side instead of eframe's 8192, so a window across several
-    // monitors keeps its surface (see `gpu_limits`).
+    // The adapter's largest texture side and buffer instead of eframe's 8192 and wgpu's 256 MiB, so a
+    // window across several monitors keeps its surface and a large frame its vertex buffer (see `gpu_limits`).
     gpu_limits::request_adapter_sizes(&mut options);
     // The graphics backend, decided before the window exists: a driver that faults takes the
     // process down before any Rust code can catch it (see `gpu::backend`).
