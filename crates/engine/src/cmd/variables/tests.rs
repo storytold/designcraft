@@ -291,7 +291,8 @@ fn delete_variable_reaches_table_cells() {
 }
 
 /// A custom variable whose text holds its own instance marker: deleting it puts that text in
-/// once per instance and ends (the text put in isn't searched for instances again).
+/// once per instance, without the value's own marker, and ends (the text put in isn't searched
+/// for instances again).
 #[test]
 fn delete_variable_whose_value_holds_its_marker_ends() {
     let mut s = Session::new();
@@ -303,7 +304,7 @@ fn delete_variable_whose_value_holds_its_marker_ends() {
     s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": format!("x{marker}y{marker}z")})).unwrap();
     s.execute("variables.delete", &json!({"name": "A"})).unwrap();
     let d = &s.doc().unwrap().doc;
-    assert_eq!(d.stories.values().next().unwrap().text, format!("x<{marker}>y<{marker}>z"));
+    assert_eq!(d.stories.values().next().unwrap().text, "x<>y<>z");
 }
 
 /// Deleting a variable flattens its instances in footnotes and endnotes too and moves the
