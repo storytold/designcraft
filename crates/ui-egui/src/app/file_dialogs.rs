@@ -365,6 +365,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                     "docx",
                     "rtf",
                     "md",
+                    "icml",
                     "xlsx",
                     "idml",
                     "designcraft",
@@ -379,7 +380,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                 ],
             },
             OpenFilter { name: "Graphics", extensions: GRAPHICS },
-            OpenFilter { name: "Text (Word, RTF, plain, Excel)", extensions: &["docx", "rtf", "txt", "md", "xlsx"] },
+            OpenFilter { name: "Text (Word, RTF, plain, InCopy, Excel)", extensions: &["docx", "rtf", "txt", "md", "icml", "xlsx"] },
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[

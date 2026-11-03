@@ -95,10 +95,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "snippet.export", "Export Selection as Snippet", ["File", "Export"], None,
             "{path?} — the selected items (with their stories, styles and images) as a .designcraft snippet; no path: {base64}", crate::cmd::has_selection, snippet_export),
         cmd!(query "place.styles", "Import Options: Styles", [], None,
-        "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word/RTF file brings (for styleMap / styleConflicts)",
+        "{path | base64, name} → {paragraph: [name], character: [name], conflicts: [name]} — the styles a Word, RTF or InCopy (.icml) file brings (for styleMap / styleConflicts)",
         has_doc, |s, p| {
             let (bytes, name, _) = read_source(p)?;
-            let imp = designcraft_textimport::import(&name, &bytes).map_err(|e| bad("place.styles", e.to_string()))?;
+            let imp = crate::cmd::place_text::icml::import(&name, &bytes, None).map_err(|e| bad("place.styles", e))?.imp;
             let st = &s.doc()?.doc.styles;
             let conflicts: Vec<&str> = imp
                 .para_styles

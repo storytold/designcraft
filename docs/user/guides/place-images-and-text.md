@@ -22,12 +22,12 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 |----------|---------------------------------------------------------------------------------|
 | Images   | png, jpg, jpeg, gif, webp, tif, tiff, bmp, psd, svg                             |
 | Vector   | pdf, ai, eps                                                                    |
-| Text     | txt, docx, rtf, md                                                              |
+| Text     | txt, docx, rtf, md, icml (InCopy story)                                         |
 | Table    | xlsx (placed as a table)                                                        |
 | Layout   | idml, designcraft (one page's objects, placed as a group)                       |
 | Media    | mp4, m4v, mov, webm, mp3, m4a, wav, ogg (placed in a media frame)               |
 
-The same dialog has separate filters for **Graphics**, **Text (Word, RTF, plain, Excel)** and **Video and sound**.
+The same dialog has separate filters for **Graphics**, **Text (Word, RTF, plain, InCopy, Excel)** and **Video and sound**.
 
 ## Place a page of a PDF
 
@@ -41,6 +41,12 @@ A PDF with one page is placed without this dialog.
 ## Place Word or RTF text with your styles
 
 **File**, then **Place with Import Options…** (Ctrl+Shift+D) opens an **Import Options** dialog for `.docx` and `.rtf` files, where you can map the file's styles to your document's styles before the text lands. For other file types it places the file straight away.
+
+## Place an InCopy story
+
+An `.icml` file is a story saved by InDesign or InCopy (**File**, **Export**, **InCopy Document**), or written by a converter such as Pandoc. Place it like any text file. Its paragraph and character styles, swatches, footnotes, tables and inline images come with it. Styles your document already has keep your definitions. Images the story links to are looked for in the file's folder.
+
+To write a story as an InCopy story, click in it, choose **File**, then **Export Text…**, and give the file name the `.icml` extension.
 
 ## If a file cannot be placed
 

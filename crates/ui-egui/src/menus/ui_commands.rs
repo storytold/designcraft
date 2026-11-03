@@ -82,7 +82,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.graphicCell", "Convert Cell to Graphic Cell…", None, "{path?} — pick an image for the target table cell"),
     ("app.placeAndLink", "Place and Link", None, "{} — a linked copy of the selected frame's story, beside it"),
     ("app.placeWithOptions", "Place with Import Options…", Some("Cmd+Shift+D"), "{path?} — Word/RTF style mapping before placing"),
-    ("app.exportText", "Export Text…", None, "{path?} — the story being edited, as Text Only (.txt) or Rich Text Format (.rtf)"),
+    (
+        "app.exportText",
+        "Export Text…",
+        None,
+        "{path?} — the story being edited, as Text Only (.txt), Rich Text Format (.rtf) or an InCopy Document (.icml)",
+    ),
     ("app.exportPdf", "Export PDF…", None, "{path?, …file.exportPdf options} — asks for a path when none is given"),
     ("app.palette", "Quick Apply…", Some("Cmd+Return"), "{} — search styles and commands"),
     ("app.preferences", "Preferences…", Some("Cmd+K"), "{}"),

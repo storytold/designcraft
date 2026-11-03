@@ -1,4 +1,5 @@
-//! IDML (InDesign Markup Language) interchange: [`export_idml`] and [`import_idml`].
+//! IDML (InDesign Markup Language) interchange: [`export_idml`] and [`import_idml`]; and InCopy
+//! stories (ICML, one story with its resources in one XML file): [`import_icml`] and [`export_icml`].
 //!
 //! Implemented clean-room from the public IDML File Format Specification and from inspecting
 //! IDML packages exported from synthetic documents. An IDML package is a ZIP whose first entry is
@@ -57,8 +58,10 @@ mod xml;
 #[cfg(test)]
 mod tests;
 
+pub use export::export_icml;
 pub use export::{ExportOptions, export_idml, export_idml_with};
 pub use import::{Imported, import_idml, import_idml_report, import_idml_report_with_previews, import_idml_with};
+pub use import::{ImportedStory, MAX_ICML_BYTES, import_icml, is_icml};
 
 /// The IDML package mimetype (content of the first, stored `mimetype` entry).
 pub const MIMETYPE: &str = "application/vnd.adobe.indesign-idml-package";

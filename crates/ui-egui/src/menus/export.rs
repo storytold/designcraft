@@ -92,8 +92,14 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         _ => json!({}),
     };
     if cmd == "file.exportText" {
-        let txt = path.to_ascii_lowercase().ends_with(".txt");
-        params["format"] = json!(if txt { "txt" } else { "rtf" });
+        let lower = path.to_ascii_lowercase();
+        params["format"] = json!(if lower.ends_with(".txt") {
+            "txt"
+        } else if lower.ends_with(".icml") {
+            "icml"
+        } else {
+            "rtf"
+        });
     }
     let r = app.run(cmd, params)?;
     let bytes = match r["text"].as_str() {
