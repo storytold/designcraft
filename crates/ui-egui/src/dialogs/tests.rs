@@ -2957,6 +2957,47 @@ fn epub_export_options_store_split_document() {
     assert_eq!(app.session.active().unwrap().doc.settings.epub_split, EpubSplit::ExportTags, "Cancel stores nothing");
 }
 
+/// EPUB Export Options › Cover Image: a PNG or JPEG file named there (typed, or picked with
+/// Choose…) is the cover; left empty, the first page is, as before (#1934).
+#[test]
+fn epub_export_options_take_a_cover_image_file() {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+    let mut app = test_app();
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("cover.png");
+    let bytes = b"\x89PNG\r\n\x1a\ncover".to_vec();
+    std::fs::write(&png, &bytes).unwrap();
+    let written: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = written.clone();
+    app.services.write = Some(Box::new(move |_: &str, b: &[u8]| {
+        *sink.lock().unwrap() = b.to_vec();
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.path().join("book.epub").to_string_lossy().into_owned())));
+    app.run("app.exportEpub", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "", "no file by default: the first page is the cover");
+    // Choose… puts the picked file into the field; OK passes it to the export.
+    let path = png.to_string_lossy().into_owned();
+    set_epub_cover(&mut app, path.clone()).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), path);
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    let out = written.lock().unwrap().clone();
+    assert!(!out.is_empty(), "the EPUB was written");
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(out)).unwrap();
+    let mut cover = Vec::new();
+    z.by_name("OEBPS/images/cover.png").unwrap().read_to_end(&mut cover).unwrap();
+    assert_eq!(cover, bytes, "the file is the cover image");
+    let mut opf = String::new();
+    z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+    assert!(opf.contains("properties=\"cover-image\""), "{opf}");
+    // The field is per export: the next dialog starts empty again.
+    app.run("app.exportEpub", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "");
+    cancel(&mut app);
+}
+
 #[test]
 fn pdf_export_defaults() {
     let d = Dialog::new("pdfExport", json!({}));
@@ -3698,6 +3739,42 @@ fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
     assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
 }
 
+/// The Color Picker reopens on the component it was left on, and the choice survives the
+/// preferences file; an opener that names a component still gets it.
+#[test]
+fn the_color_picker_remembers_its_component() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
+    assert_eq!(app.ui.color_picker_component, "r", "R at first, as before");
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "r");
+    h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "H:").click();
+    h.run_steps(2);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    assert_eq!(h.state().app.ui.color_picker_component, "h", "the choice is kept outside the dialog");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().app.ui.dialog.is_none());
+    // Reopened: H, not R.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    // An opener's own choice wins.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "l");
+    // Saved with the preferences, and read back; a file without it is R.
+    let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
+    assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
+    assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
+}
+
 #[test]
 fn create_guides_dialog_covers_the_spread_in_view() {
     let mut app = facing_app(6);
@@ -3752,6 +3829,40 @@ fn character_style_options_set_the_digits() {
     ctl(&mut app, "ui.dialog.set", json!({"field": "c.digits", "value": "farsi"}));
     assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
+}
+
+#[test]
+fn import_warning_show_selects_the_frame_it_is_about() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let lines = json!([
+        {"text": "a table of 2 rows was read as 1", "item": null},
+        {"text": "story 30892: text orientation of its frames is not known or differs; written as horizontal", "item": f["id"]},
+    ]);
+    app.ui.dialog = Some(Dialog::new("alert", json!({"title": "Import Warnings", "file": "book.indd", "message": "", "lines": lines})));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("import_warning_show_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    // Only the warning that names a frame offers Show.
+    assert_eq!(h.query_all_by_label("Show").count(), 1);
+    h.get_by_label("Show").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialog.is_none(), "Show closes the warnings");
+    assert_eq!(app.session.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(f["id"].as_u64().unwrap())]);
 }
 
 /// Replace the text of the field beside the `nth` label `label` (on its row, to its right) with
@@ -4813,4 +4924,117 @@ fn convert_dialogs_use_their_separators() {
     let story = app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid.as_u64().unwrap())).unwrap().text.clone();
     // (The empty paragraph after a table that ends its story stays after the text.)
     assert_eq!(story.trim_end(), "Name:, Address:\nCity:, State:");
+}
+
+/// The Rectangle dialog a frame-tool click opens shows the width in the horizontal ruler unit and
+/// the height in the vertical one, not always picas, and reads bare numbers the same way (#1964).
+#[test]
+fn frame_size_dialog_follows_the_ruler_units() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "millimeters"})).unwrap();
+    // As the frame tool asks: a click at (36, 36), 72 pt by 72 pt.
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_ref().expect("the Rectangle dialog");
+    assert_eq!((d.id.as_str(), d.unit), ("frameSize", Unit::Inches));
+    assert_eq!(d.s("width"), format_measure(72.0, Unit::Inches));
+    assert_eq!(d.s("height"), format_measure(72.0, Unit::Millimeters));
+    assert!(!d.s("width").contains('p') && !d.s("height").contains('p'), "no picas: {} x {}", d.s("width"), d.s("height"));
+    // Bare numbers typed in each field are in that field's unit: 2 in by 50 mm.
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("2"));
+    d.fields.insert("height".into(), json!("50"));
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 50.0 / 25.4 * 72.0).abs() < 0.01, "{b:?}");
+    // The properties panel's link opens it in the same units.
+    let d = frame_size_dialog(&app, json!({"width": 36.0, "height": 36.0}));
+    assert_eq!((d.s("width"), d.s("height")), (format_measure(36.0, Unit::Inches), format_measure(36.0, Unit::Millimeters)));
+    // Every ruler unit: the shown size reads back as the size, so OK leaves a 72 pt frame 72 pt.
+    let units = serde_json::to_value(Unit::ALL).unwrap();
+    for (unit, name) in Unit::ALL.iter().zip(units.as_array().unwrap()) {
+        app.run("document.preferences", json!({"horizontalUnits": name, "verticalUnits": name})).unwrap();
+        let d = frame_size_dialog(&app, json!({"width": 72.0, "height": 145.0}));
+        assert_eq!(d.unit, *unit);
+        for (k, pt) in [("width", 72.0), ("height", 145.0)] {
+            let back = d.m_in(k, *unit).unwrap_or(f64::NAN);
+            assert!((back - pt).abs() < 0.05, "{name}: {k} shows {:?}, reads back {back}", d.s(k));
+        }
+    }
+}
+
+/// #2055 review: the Rectangle dialog reads the height in the vertical unit it showed when it
+/// opened. Rulers switched while it is open (the control channel) leave a typed 50 at 50 mm.
+#[test]
+fn frame_size_dialog_keeps_its_units_while_open() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+    app.session.ui_requests.push(designcraft_engine::UiRequest::Dialog {
+        id: "frameSize".into(),
+        params: json!({"spread": 0, "shape": "rectangle", "content": "graphic", "x": 36.0, "y": 36.0, "width": 72.0, "height": 72.0}),
+    });
+    app.after_engine();
+    let d = app.ui.dialog.as_mut().expect("the Rectangle dialog");
+    d.fields.insert("width".into(), json!("50"));
+    d.fields.insert("height".into(), json!("50"));
+    app.run("document.preferences", json!({"horizontalUnits": "inches", "verticalUnits": "inches"})).unwrap();
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    let mm50 = 50.0 / 25.4 * 72.0;
+    assert!((b.width() - mm50).abs() < 0.01 && (b.height() - mm50).abs() < 0.01, "50 mm by 50 mm (about 141.73 pt): {b:?}");
+    // A dialog made without the vertical unit (`Dialog::new`) reads the height in its own unit.
+    let mut d = Dialog::new("frameSize", json!({"width": "2", "height": "3"}));
+    d.unit = Unit::Inches;
+    assert_eq!(d.vertical_unit, None);
+    app.ui.dialog = Some(d);
+    let before = app.session.doc().unwrap().doc.clone();
+    confirm(&mut app).unwrap();
+    let after = &app.session.doc().unwrap().doc;
+    let added: Vec<_> = after.spreads[0].items.iter().filter(|i| !before.spreads[0].items.iter().any(|b| b.id == i.id)).collect();
+    assert_eq!(added.len(), 1, "one frame");
+    let b = added[0].bounds();
+    assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
+}
+
+#[test]
+fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":400,"height":600,"pages":3,"facingPages":true})).unwrap();
+    app.run("layout.parents.new", json!({"prefix":"B"})).unwrap();
+    app.run("layout.parents.edit", json!({"on":true})).unwrap();
+    app.session.set_tool("page");
+    let before = app.session.doc().unwrap().doc.clone();
+    let sr = designcraft_doc::SpreadRef::Parent(1);
+    let p = app.session.layout().spread_page_rect(&before, sr, 1).unwrap().center();
+    app.session.pointer(&PointerEvent::new(PointerKind::DoubleClick, p.x, p.y), designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
+    let request = app.session.ui_requests.pop().unwrap();
+    let designcraft_engine::UiRequest::Dialog { id, params } = request else { panic!("expected exact-size dialog") };
+    app.ui.dialog = Some(Dialog::new(&id, params));
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("530"));
+    d.fields.insert("height".into(), json!("710"));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.doc().unwrap().doc;
+    assert_eq!((doc.parents[1].pages[1].width, doc.parents[1].pages[1].height), (530.0, 710.0));
+    assert_eq!(doc.parents[0], before.parents[0]);
+    assert_eq!(doc.spreads, before.spreads);
+    let saved = doc.clone();
+    app.ui.dialog = Some(Dialog::new("cmd:layout.parentPageSize", json!({"parent":saved.parents[1].id.0,"page":1,"width":"NaN"})));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }

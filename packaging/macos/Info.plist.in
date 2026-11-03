@@ -16,12 +16,14 @@
     <string>de</string>
     <string>es</string>
     <string>fr</string>
+    <string>hu</string>
     <string>it</string>
     <string>ja</string>
     <string>ka</string>
     <string>pl</string>
     <string>pt-BR</string>
     <string>ru</string>
+    <string>sv</string>
     <string>uk</string>
     <string>zh-Hans</string>
   </array>
@@ -105,6 +107,18 @@
       <string>Alternate</string>
       <key>CFBundleTypeExtensions</key>
       <array><string>idml</string></array>
+    </dict>
+    <!-- InDesign documents and templates, converted to IDML on open (file.open); by extension
+         for the same reason as above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>indd</string><string>indt</string></array>
     </dict>
   </array>
 

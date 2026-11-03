@@ -370,15 +370,29 @@ pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painte
                     };
                     let y = l.baseline + l.descent * 0.5;
                     let (p0, p1) = (xf.to_screen(m * Point::new(x0, y)), xf.to_screen(m * Point::new(x1, y)));
-                    // A zigzag 2 px high, 4 px per wave.
-                    let n = ((p1.x - p0.x) / 2.0).max(1.0) as usize;
-                    let pts: Vec<Pos2> =
-                        (0..=n).map(|k| pos2(p0.x + (p1.x - p0.x) * k as f32 / n as f32, p0.y + if k % 2 == 0 { 0.0 } else { 2.0 })).collect();
-                    painter.add(egui::Shape::line(pts, red));
+                    // Screen direction of the text's own "down", so the wave hangs below the baseline in rotated, flipped and vertical frames.
+                    let down = xf.to_screen(m * Point::new(x0, y + 1.0)) - p0;
+                    painter.add(egui::Shape::line(squiggle_points(p0, p1, down), red));
                 }
             }
         }
     }
+}
+
+/// Zigzag points for a spelling squiggle from `p0` to `p1` (screen space): 2 px high, 4 px per wave,
+/// offset along `down` (the screen direction of the text's own "down") so it follows the text frame's
+/// rotation and flips.
+pub(super) fn squiggle_points(p0: Pos2, p1: Pos2, down: egui::Vec2) -> Vec<Pos2> {
+    let d = p1 - p0;
+    let n = (d.length() / 2.0).max(1.0) as usize;
+    let len = down.length();
+    let off = if len > 1e-6 { down / len } else { egui::vec2(0.0, 1.0) };
+    (0..=n)
+        .map(|k| {
+            let wave = if k % 2 == 0 { 0.0 } else { 2.0 };
+            p0 + d * (k as f32 / n as f32) + off * wave
+        })
+        .collect()
 }
 
 /// Plain text of the current text selection (story markers resolved to readable characters).
@@ -391,4 +405,39 @@ pub fn selected_text(app: &DesignApp) -> Option<String> {
         return None;
     }
     Some(s.replace(designcraft_doc::story::FORCED_LINE_BREAK, "\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn squiggle_horizontal_offsets_down() {
+        let pts = squiggle_points(pos2(0.0, 10.0), pos2(20.0, 10.0), egui::vec2(0.0, 1.0));
+        assert_eq!(pts.len(), 11);
+        assert!((pts[0].y - 10.0).abs() < 1e-4);
+        assert!((pts[1].y - 12.0).abs() < 1e-4);
+        assert!((pts[1].x - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn squiggle_follows_rotation() {
+        // Frame rotated 90 degrees: the line runs down the screen and the text's "down" points left,
+        // so the wave must move sideways, not along y.
+        let pts = squiggle_points(pos2(10.0, 0.0), pos2(10.0, 20.0), egui::vec2(-3.0, 0.0));
+        assert_eq!(pts.len(), 11);
+        assert!((pts[1].y - 2.0).abs() < 1e-4);
+        assert!((pts[1].x - 8.0).abs() < 1e-4);
+        assert!((pts[0].x - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn squiggle_follows_horizontal_flip() {
+        // A horizontally flipped frame runs the word right to left; the wave still hangs below it.
+        let pts = squiggle_points(pos2(20.0, 10.0), pos2(0.0, 10.0), egui::vec2(0.0, 1.0));
+        assert_eq!(pts.len(), 11);
+        assert!((pts[1].x - 18.0).abs() < 1e-4);
+        assert!((pts[1].y - 12.0).abs() < 1e-4);
+        assert!(pts[10].x.abs() < 1e-4);
+    }
 }

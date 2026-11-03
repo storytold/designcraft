@@ -10,7 +10,10 @@ use super::{
 /// Spread-space → canvas transform for an item at `loc`.
 pub(super) fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
-    Some((layout.xf(loc.spread) * doc.parent_xf(&loc), ""))
+    // Items on spreads that aren't laid out (document pages while parents are being edited, or
+    // the reverse) have no place on the canvas.
+    let slot = layout.slot(loc.spread)?;
+    Some((slot.xf * doc.parent_xf(&loc), ""))
 }
 
 pub(super) fn path_screen(it: &Item, xf: &Xf, a: Affine) -> Vec<Vec<Pos2>> {
