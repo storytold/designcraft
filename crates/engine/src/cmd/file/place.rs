@@ -132,23 +132,14 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let id = if let Some(fid) = target_frame {
             let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
             let r = it.inner_bounds();
-            // Fill the frame proportionally once. Auto-Fit stays off, so resizing the frame crops.
+            // Over the graphic it replaces, so the frame's crop and zoom carry over; else fill the
+            // frame proportionally once. Auto-Fit stays off, so resizing the frame crops.
             let k = (r.width() / bw).max(r.height() / bh);
             let (gw, gh) = (bw * k, bh * k);
-            let xf = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
+            let fill = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
+            let xf = in_place_of(it, (bw, bh)).unwrap_or(fill);
             validate_placement((bw, bh), r, xf, "file.place")?;
-            it.content = Content::Graphic(Graphic {
-                layer_options: None,
-                asset: aid,
-                size: (bw, bh),
-                xf,
-                clip: None,
-                auto_fit: Default::default(),
-                fit_align: 4,
-                crop: [0.0; 4],
-                wrap: Default::default(),
-                fill: Default::default(),
-            });
+            it.content = Content::Graphic(replacing_graphic(it, aid, (bw, bh), xf));
             fid
         } else {
             let sp = d.spread(spread).ok_or_else(|| bad("file.place", "no such spread"))?;
@@ -219,6 +210,60 @@ fn eps_size(bytes: &[u8], command: &str) -> Result<Option<(f64, f64)>> {
         .ok_or_else(|| bad(command, "the EPS has a missing or invalid bounding box (dimensions must be 0.001–20,000 points)"))
 }
 
+/// The graphic `frame` shows (in it, or as the one graphic pasted into it) and the transform from
+/// that graphic's frame space into `frame`'s.
+fn shown_graphic(frame: &Item) -> Option<(&Graphic, Affine)> {
+    match &frame.content {
+        Content::Graphic(g) => Some((g, Affine::IDENTITY)),
+        Content::Group { items } if frame.has_nested_items() => match items.as_slice() {
+            [c] => match &c.content {
+                Content::Graphic(g) => Some((g, c.xf)),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A new graphic for `asset` placed with `xf` into a frame. Replacing the one `frame` shows, it
+/// keeps that one's Frame Fitting Options (Auto-Fit, Align From, Crop Amount) and its swatch. Its
+/// clipping path and its own text wrap are not kept: both can be traced from the old image.
+fn replacing_graphic(frame: &Item, asset: AssetId, size: (f64, f64), xf: Affine) -> Graphic {
+    let base = Graphic {
+        layer_options: None,
+        asset,
+        size,
+        xf,
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    };
+    match shown_graphic(frame) {
+        Some((old, _)) => Graphic { auto_fit: old.auto_fit, fit_align: old.fit_align, crop: old.crop, fill: old.fill.clone(), ..base },
+        None => base,
+    }
+}
+
+/// Where a graphic of natural `size` goes when it replaces the one `frame` shows (in the frame, or
+/// as the one graphic pasted into it): over the same area, scaled to cover it and centred on it,
+/// so the frame's crop and zoom carry over. An edited copy of the same picture lands exactly where
+/// the old one was. `None` when the frame shows no graphic, or the result isn't finite.
+fn in_place_of(frame: &Item, size: (f64, f64)) -> Option<Affine> {
+    let (old, outer) = shown_graphic(frame)?;
+    let ((ow, oh), (nw, nh)) = (old.size, size);
+    // Written so a NaN size fails too.
+    if !(ow > 0.0 && oh > 0.0 && nw > 0.0 && nh > 0.0) {
+        return None;
+    }
+    let k = (ow / nw).max(oh / nh);
+    let xf = outer * old.xf * Affine::translate(((ow - nw * k) / 2.0, (oh - nh * k) / 2.0)) * Affine::scale(k);
+    xf.as_coeffs().iter().all(|n| n.is_finite()).then_some(xf)
+}
+
 /// Fitting can overflow even with finite inputs. Never persist NaN/Inf as JSON nulls.
 pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, command: &str) -> Result<()> {
     let valid_rect = |r: Rect| [r.x0, r.y0, r.x1, r.y1, r.width(), r.height()].iter().all(|n| n.is_finite()) && r.width() >= 0.0 && r.height() >= 0.0;
@@ -271,11 +316,13 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     let (x, y) = (crate::cmd::f64_or(p, "x", 0.0), crate::cmd::f64_or(p, "y", 0.0));
     let d = &s.doc()?.doc;
     let (frame_rect, xf, auto_fit) = if let Some(fid) = frame {
-        let r = d.item(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.inner_bounds();
+        let it = d.item(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
+        let r = it.inner_bounds();
         let k = (r.width() / nw).max(r.height() / nh);
-        let xf = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
-        // Fill the frame proportionally once. Auto-Fit stays off, so resizing the frame crops.
-        (r, xf, Default::default())
+        let fill = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
+        // Over the graphic it replaces (the frame's crop and zoom carry over), else fill the frame
+        // proportionally once. Auto-Fit stays off, so resizing the frame crops.
+        (r, in_place_of(it, (nw, nh)).unwrap_or(fill), Default::default())
     } else {
         if d.spread(sr).is_none() {
             return Err(bad("place.drop", "no such spread"));
@@ -305,7 +352,8 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
             fill: Default::default(),
         });
         let id = if let Some(fid) = frame {
-            d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.content = graphic;
+            let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
+            it.content = Content::Graphic(replacing_graphic(it, aid, (nw, nh), xf));
             fid
         } else {
             let id = ItemId(d.alloc());
@@ -822,5 +870,99 @@ mod nested_frame_tests {
         assert_eq!(d.assets[&g.asset].name, "new.png");
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+
+    /// A graphic placed or dropped in place of the one a frame shows keeps its Frame Fitting
+    /// Options.
+    #[test]
+    fn a_replaced_graphic_keeps_the_fitting_options() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("file.place", &json!({"base64": png(200), "name": "a.png", "frame": frame.0})).unwrap();
+        s.edit(|d, _| {
+            let Content::Graphic(g) = &mut d.item_mut(frame).unwrap().content else { panic!("a graphic") };
+            g.auto_fit = designcraft_doc::Fitting::FitProportionally;
+            g.fit_align = 0;
+            g.crop = [1.0, 2.0, 3.0, 4.0];
+            Ok(())
+        })
+        .unwrap();
+        for cmd in ["file.place", "place.drop"] {
+            if cmd == "place.drop" {
+                s.execute("place.load", &json!({"base64": png(40), "name": "c.png"})).unwrap();
+                s.execute(cmd, &json!({"frame": frame.0})).unwrap();
+            } else {
+                s.execute(cmd, &json!({"base64": png(20), "name": "b.png", "frame": frame.0})).unwrap();
+            }
+            let d = &s.doc().unwrap().doc;
+            let Content::Graphic(g) = &d.item(frame).unwrap().content else { panic!("a graphic") };
+            assert_eq!(g.auto_fit, designcraft_doc::Fitting::FitProportionally, "{cmd}");
+            assert_eq!((g.fit_align, g.crop), (0, [1.0, 2.0, 3.0, 4.0]), "{cmd}");
+        }
+    }
+
+    /// A graphic replacing the one a frame shows keeps the frame's crop and zoom: one of the same
+    /// proportions lands exactly over the old one (in the frame or pasted into it), another covers
+    /// the same area, centred on it.
+    #[test]
+    fn a_replaced_graphic_keeps_the_crop_and_zoom() {
+        let png_of = |w: u32, h: u32, red: u8| {
+            let png = designcraft_render::Rendered { width: w, height: h, pixels: [red, 90, 30, 255].repeat((w * h) as usize) }.to_png();
+            super::super::base64_encode(&png)
+        };
+        let graphic = |s: &Session, id: ItemId| match &s.doc().unwrap().doc.item(id).unwrap().content {
+            Content::Graphic(g) => g.clone(),
+            other => panic!("a graphic: {other:?}"),
+        };
+        let close = |a: Affine, b: Affine| a.as_coeffs().iter().zip(b.as_coeffs()).all(|(x, y)| (x - y).abs() < 1e-9);
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap();
+        let frame = ItemId(frame);
+        s.execute("file.place", &json!({"base64": png_of(40, 20, 200), "name": "a.png", "frame": frame.0})).unwrap();
+        // Zoomed in and moved within the frame.
+        let zoomed = Affine::translate((90.0, 95.0)) * Affine::scale(5.0);
+        s.edit(|d, _| {
+            if let Content::Graphic(g) = &mut d.item_mut(frame).unwrap().content {
+                g.xf = zoomed;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // Same proportions: exactly where the old one was.
+        s.execute("file.place", &json!({"base64": png_of(80, 40, 20), "name": "b.png", "frame": frame.0})).unwrap();
+        let g = graphic(&s, frame);
+        let shown = |g: &designcraft_doc::Graphic| g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
+        assert!(close(g.xf * Affine::scale(g.size.0 / 40.0), zoomed), "{:?}", g.xf);
+        assert_eq!(shown(&g), Rect::new(90.0, 95.0, 290.0, 195.0));
+        // Other proportions: covers the same area, centred.
+        s.execute("file.place", &json!({"base64": png_of(20, 20, 60), "name": "c.png", "frame": frame.0})).unwrap();
+        let c = shown(&graphic(&s, frame));
+        assert!((c.width() - 200.0).abs() < 1e-9 && (c.height() - 200.0).abs() < 1e-9, "{c:?}");
+        assert!((c.center().x - 190.0).abs() < 1e-9 && (c.center().y - 145.0).abs() < 1e-9, "{c:?}");
+        // Pasted into the frame: the nested image's own transform carries over too.
+        s.edit(|d, _| {
+            let it = d.item_mut(frame).unwrap();
+            let mut image = it.clone();
+            image.id = ItemId(d.alloc());
+            image.xf = Affine::translate((-7.0, 3.0));
+            let it = d.item_mut(frame).unwrap();
+            it.content = Content::Group { items: vec![Arc::new(image)] };
+            Ok(())
+        })
+        .unwrap();
+        let before = match &s.doc().unwrap().doc.item(frame).unwrap().content {
+            Content::Group { items } => match &items[0].content {
+                Content::Graphic(g) => items[0].xf.transform_rect_bbox(shown(g)),
+                other => panic!("a nested graphic: {other:?}"),
+            },
+            other => panic!("a frame with a nested image: {other:?}"),
+        };
+        s.execute("file.place", &json!({"base64": png_of(30, 30, 90), "name": "d.png", "frame": frame.0})).unwrap();
+        let after = shown(&graphic(&s, frame));
+        for (a, b) in [(after.x0, before.x0), (after.y0, before.y0), (after.x1, before.x1), (after.y1, before.y1)] {
+            assert!((a - b).abs() < 1e-9, "{after:?} is where the nested image was, {before:?}");
+        }
     }
 }
