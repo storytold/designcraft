@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
-pub use assets::{find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
+pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
     DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
@@ -831,6 +831,9 @@ pub struct Toc {
     /// Paragraph style of the title; `None` is the generated "TOC Title" style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_style: Option<String>,
+    /// Generate a nested PDF outline from the included paragraphs when the TOC is updated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_bookmarks: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -841,6 +844,16 @@ pub struct Bookmark {
     pub page: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Bookmark>,
+    /// Owned by the document's generated TOC, so updating it preserves manual bookmarks.
+    ///
+    /// Stored only in native files. Bookmarks (and so this flag) are not written to or read
+    /// from IDML yet, so after an IDML round trip the next TOC update builds the outline fresh.
+    /// If IDML bookmark import is added, imported bookmarks arrive with this flag false and the
+    /// next update would keep them as manual and add a second, duplicate outline. That import
+    /// must set this flag on the bookmarks the TOC generated (for example by matching them to
+    /// the TOC entries) when the TOC has `create_bookmarks` on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub generated_by_toc: bool,
 }
 
 impl Document {

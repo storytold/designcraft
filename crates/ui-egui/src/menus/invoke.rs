@@ -66,6 +66,11 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::section_options::open(app);
         return;
     }
+    if params.is_null() && id == "layout.pages.insert" {
+        let cur = crate::canvas::current_page(app).unwrap_or(0);
+        crate::dialogs::open_insert_pages(app, cur);
+        return;
+    }
     if params.is_null() && id == "layout.createGuides" {
         crate::dialogs::open_create_guides(app);
         return;
@@ -151,11 +156,26 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
     if params.is_null() && app.session.wants_text() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") && forward_to_text_edit(app, ctx, id) {
         return;
     }
+    // Zoom In/Out by key equivalent: the pointer is still in the window. A click in the menu bar
+    // takes it out, so that zooms around the centre.
+    if params.is_null()
+        && let Some(p) = pointer_zoom_params(ctx, id)
+    {
+        activate(app, id, &p);
+        return;
+    }
     activate(app, id, params);
 }
 
 /// Menu items that type a character at the canvas insertion point.
 const TEXT_INSERTS: [&str; 3] = ["app.insertCurrentPageNumber", "app.insertEmSpace", "app.insertEnSpace"];
+
+/// Zoom In/Out from a key: the pointer's position (`at`), so the zoom keeps the point under it
+/// when it is over the canvas. `None` for other commands or with no pointer in the window.
+pub(super) fn pointer_zoom_params(ctx: &egui::Context, id: &str) -> Option<Value> {
+    let at = ctx.pointer_hover_pos()?;
+    matches!(id, "view.zoomIn" | "view.zoomOut").then(|| json!({"at": [at.x, at.y]}))
+}
 
 /// The editing commands a focused text field takes from the native menu bar.
 pub(super) const TEXT_FIELD_COMMANDS: [&str; 6] = ["edit.selectAll", "edit.copy", "edit.cut", "edit.paste", "edit.undo", "edit.redo"];

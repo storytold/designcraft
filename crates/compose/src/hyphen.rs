@@ -3,9 +3,12 @@
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
-//! Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
+//! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
-//! polytonic text hyphenates by them as well.
+//! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
+//! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
+//! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
+//! hyphenates after its apostrophe.
 //! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
@@ -137,8 +140,14 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         return (vec![], Source::None);
     }
     if let Lang::Patterns(l) = lang {
-        if core.contains(&'\'') {
-            return (vec![], Source::None);
+        if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
+            // An elision (French "l'", Italian "dell'"): the word after the apostrophe hyphenates,
+            // with no break up to it. Elsewhere (German "Rock'n'Roll") an apostrophe word gets none.
+            if !matches!(l, hypher::Lang::French | hypher::Lang::Italian) {
+                return (vec![], Source::None);
+            }
+            let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+            return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
         }
         let s: String = core.iter().collect();
         let mut out = Vec::new();
@@ -229,6 +238,7 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     }
     let min_before = lim.after_first.max(1);
     let min_after = lim.before_last.max(1);
+    let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
     // Run bounds of each point's letter run (trimmed of apostrophes).
     let run_of = |p: usize| {
         let mut a = p;
@@ -244,6 +254,10 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
         }
         while b > a && is_apostrophe(chars[b - 1]) {
             b -= 1;
+        }
+        // After an elision the word is the part after its last apostrophe: the limits count that.
+        if elides && let Some(ap) = chars[a..b].iter().rposition(|&c| is_apostrophe(c)) {
+            a += ap + 1;
         }
         (a, b)
     };
@@ -305,6 +319,25 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
         return vec![];
     }
     let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+    // A trailing silent `ed`, `es` or `e` comes off the right part. Which one depends only on how
+    // the word ends, so the right part's core is `c[i..n - silent]` (nothing comes off a right
+    // part shorter than the ending). Prefix sums of vowels and UTF-8 lengths then answer "does the
+    // core have a vowel" and "is it longer than one byte" without building each suffix, which was
+    // quadratic in the word's length.
+    let ends = |s: &str| c.ends_with(&s.chars().collect::<Vec<char>>());
+    let silent = if ends("ed") || ends("es") {
+        2
+    } else if ends("e") {
+        1
+    } else {
+        0
+    };
+    let mut vowels = vec![0_usize; n + 1];
+    let mut bytes = vec![0_usize; n + 1];
+    for (k, ch) in c.iter().enumerate() {
+        vowels[k + 1] = vowels[k] + usize::from(v[k]);
+        bytes[k + 1] = bytes[k] + ch.len_utf8();
+    }
     let mut out = vec![];
     for i in 1..n {
         let ok = if v[i - 1] && !v[i] {
@@ -315,9 +348,8 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
             false
         };
         // Both parts need a sounded vowel: a trailing silent `e`, `ed` or `es` doesn't count.
-        let right: String = c[i..].iter().collect();
-        let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
-        if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+        let core_end = if n - i >= silent { n - silent } else { n };
+        if ok && vowels[core_end] > vowels[i] && bytes[core_end] - bytes[i] > 1 && vowels[i] > 0 {
             out.push(i);
         }
     }
@@ -395,6 +427,15 @@ mod tests {
         assert!(hyphen_points("Paragraph", &lim).is_empty());
         let lim = Limits { min_word: 12, ..Limits::default() };
         assert!(hyphen_points("typography", &lim).is_empty());
+    }
+
+    /// Only French and Italian elide at an apostrophe; other languages leave such words unbroken.
+    #[test]
+    fn apostrophe_words_hyphenate_only_in_french_and_italian() {
+        let de = Lang::for_language("German: 2006 Reform").unwrap();
+        assert!(hyphen_points_in("Rock'n'Roll", &Limits::default(), de).is_empty());
+        let fr = Lang::for_language("French").unwrap();
+        assert!(!hyphen_points_in("l'information", &Limits::default(), fr).is_empty());
     }
 
     #[test]
@@ -478,7 +519,7 @@ mod tests {
         assert_eq!(h("desesperación"), "de-ses-pe-ra-ción");
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
-        assert!(Lang::for_language("French").is_none(), "only languages built in");
+        assert!(Lang::for_language("Swedish").is_none(), "only languages built in");
     }
 
     #[test]
@@ -520,9 +561,149 @@ mod tests {
         assert_eq!(h("beveger"), "be-ve-ger");
     }
 
+    /// The paragraph limits count the letters of the word after an elision, not the elided prefix.
+    #[test]
+    fn elision_limits_apply_to_the_word_after_it() {
+        let fr = Lang::for_language("French").unwrap();
+        let lim = Limits { min_word: 5, after_first: 3, before_last: 2, capitalized: true };
+        assert_eq!(hyphen_points_in("l'imprimerie", &lim, fr), vec![7, 9]);
+        let lim = Limits { min_word: 11, ..Limits::default() };
+        assert!(hyphen_points_in("l'imprimerie", &lim, fr).is_empty());
+    }
+
+    /// A word with an elision ("l'", "dell'") hyphenates as the word after it.
+    fn marked(w: &str, l: Lang) -> String {
+        let pts = hyphen_points_in(w, &Limits::default(), l);
+        w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect()
+    }
+
+    #[test]
+    fn french_uses_the_hyph_fr_patterns() {
+        let fr = Lang::for_language("French").unwrap();
+        for name in ["fr", "fr_FR", "French: Canadian", "French: Swiss"] {
+            assert_eq!(Lang::for_language(name), Some(fr), "{name}");
+        }
+        assert_eq!(marked("hyphénation", fr), "hy-phé-na-tion");
+        assert_eq!(marked("typographie", fr), "ty-po-gra-phie");
+        assert_eq!(marked("Développement", fr), "Dé-ve-lop-pe-ment");
+        assert_eq!(marked("anticonstitutionnellement", fr), "an-ti-cons-ti-tu-tion-nel-le-ment");
+        assert_eq!(marked("paragraphe", fr), "pa-ra-graphe", "no break before a final mute syllable of two letters");
+        assert_eq!(marked("l'imprimerie", fr), "l'im-pri-me-rie", "after an elision");
+        assert_eq!(marked("l’imprimerie", fr), "l’im-pri-me-rie", "a typographer's apostrophe too");
+    }
+
+    #[test]
+    fn italian_uses_the_hyph_it_patterns() {
+        let it = Lang::for_language("Italian").unwrap();
+        for name in ["it", "it_IT"] {
+            assert_eq!(Lang::for_language(name), Some(it), "{name}");
+        }
+        assert_ne!(it, Lang::for_language("French").unwrap());
+        assert_eq!(marked("sillabazione", it), "sil-la-ba-zio-ne");
+        assert_eq!(marked("tipografia", it), "ti-po-gra-fia");
+        assert_eq!(marked("Repubblica", it), "Re-pub-bli-ca");
+        assert_eq!(marked("impaginazione", it), "im-pa-gi-na-zio-ne");
+        assert_eq!(marked("dell'impaginazione", it), "dell'im-pa-gi-na-zio-ne", "after an elision");
+    }
+
+    #[test]
+    fn dutch_uses_the_hyph_nl_patterns() {
+        let nl = Lang::for_language("Dutch").unwrap();
+        // InDesign writes the 2005 spelling as `nl_NL_2005`.
+        assert_eq!(nl, Lang::for_language("nl_NL_2005").unwrap());
+        assert_ne!(nl, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), nl);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("uitspraak"), "uit-spraak");
+        assert_eq!(h("kinderen"), "kin-de-ren");
+        assert_eq!(h("leesvaardigheid"), "lees-vaar-dig-heid");
+        assert_eq!(h("zelfvertrouwen"), "zelf-ver-trou-wen");
+        assert_eq!(h("Ontwikkelen"), "Ont-wik-ke-len");
+        // Long compounds break at their parts and at the syllables inside them.
+        assert_eq!(h("arbeidsongeschiktheidsverzekering"), "ar-beids-on-ge-schikt-heids-ver-ze-ke-ring");
+        assert_eq!(h("ziekenhuisopname"), "zie-ken-huis-op-na-me");
+        assert_eq!(h("gemeenteraadsverkiezingen"), "ge-meen-te-raads-ver-kie-zin-gen");
+        assert_eq!(h("kinderdagverblijf"), "kin-der-dag-ver-blijf");
+    }
+
     #[test]
     fn heuristic_fallback() {
         let c: Vec<char> = "happen".chars().collect();
         assert_eq!(heuristic_points(&c), vec![3]);
+    }
+
+    /// The heuristic as it was written before the prefix sums, building each right part.
+    fn heuristic_by_suffixes(c: &[char]) -> Vec<usize> {
+        let n = c.len();
+        if n < 4 || !c.iter().all(|c| c.is_alphabetic()) {
+            return vec![];
+        }
+        let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+        let mut out = vec![];
+        for i in 1..n {
+            let ok = if v[i - 1] && !v[i] {
+                (i + 1 < n && v[i + 1]) || (i + 2 < n && onset_pair(c[i], c[i + 1]) && v[i + 2])
+            } else if !v[i - 1] && !v[i] {
+                i >= 2 && v[i - 2] && i + 1 < n && v[i + 1] && !onset_pair(c[i - 1], c[i]) && c[i - 1] != c[i]
+                    || (c[i - 1] == c[i] && i >= 2 && v[i - 2])
+            } else {
+                false
+            };
+            let right: String = c[i..].iter().collect();
+            let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
+            if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn heuristic_matches_building_each_suffix() {
+        for w in [
+            "happen",
+            "typography",
+            "zzzzed",
+            "bakes",
+            "baked",
+            "flute",
+            "strengths",
+            "aeiou",
+            "rhythms",
+            "bookkeeper",
+            "naïveté",
+            "çabcde",
+            "ABCDE",
+            "plopped",
+            "staples",
+            "queued",
+            "ed",
+            "eded",
+            "abed",
+            "abes",
+            "cafés",
+            "aed",
+            "xaxed",
+            "xaxes",
+            "xaxe",
+            "ŝtupoe",
+            "ŝtupoed",
+            "ababababed",
+        ] {
+            let c: Vec<char> = w.chars().collect();
+            assert_eq!(heuristic_points(&c), heuristic_by_suffixes(&c), "{w}");
+        }
+    }
+
+    /// A very long word (no dictionary or pattern entry) takes time linear in its length.
+    #[test]
+    fn heuristic_on_a_long_word_is_linear() {
+        let c: Vec<char> = "taco".repeat(100_000).chars().collect();
+        let t = std::time::Instant::now();
+        let pts = heuristic_points(&c);
+        assert!(!pts.is_empty());
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 }

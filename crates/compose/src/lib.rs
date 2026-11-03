@@ -268,6 +268,8 @@ pub struct Deco {
     pub path: Option<designcraft_geom::BezPath>,
     /// Shown on screen only (not printed or exported).
     pub nonprinting: bool,
+    /// Set to overprint (paragraph shading or border); PDF export doesn't overprint yet.
+    pub overprint: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -579,8 +581,10 @@ pub struct FrameSpec {
     pub page_name: Option<String>,
     /// Marker text of the section the frame's page is in (None on parent pages).
     pub section_marker: Option<String>,
-    /// Absolute document page the frame is on (None on parent pages).
+    /// Absolute document page the frame is on (None on parent pages and the pasteboard).
     pub page: Option<usize>,
+    /// The frame is on a parent spread.
+    pub parent: bool,
     /// Baseline grid in inner space: (first grid line y, increment).
     pub grid: Option<(f64, f64)>,
     /// The frame is on a left page (for towards/away-from-spine alignment).
@@ -815,6 +819,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
             page_name,
             section_marker,
             page,
+            parent: matches!(spread_ref, Some(designcraft_doc::SpreadRef::Parent(_))),
             grid,
             left_page,
             right_page,
@@ -828,16 +833,31 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
 /// objects ([`wrap`]).
 /// Anchored frames are composed where their host story places them (unless `opts` places them).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
-    compose_story_at(doc, sid, opts, 0)
+    compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
-/// [`compose_story`] for a story `depth` hosts down from the story asked for.
-fn compose_story_at(doc: &Document, sid: StoryId, opts: &ComposeOptions, depth: usize) -> ComposedStory {
+/// [`compose_story`] for a story `depth` hosts down from the story asked for. `hosts` holds the
+/// hosts already composed (by story and depth) while composing the story asked for, so a host
+/// that many anchored frames lead to is composed once.
+fn compose_story_at(
+    doc: &Document,
+    sid: StoryId,
+    opts: &ComposeOptions,
+    depth: usize,
+    hosts: &mut HashMap<(StoryId, usize), Arc<ComposedStory>>,
+) -> ComposedStory {
     let others: Vec<ComposedStory> =
         wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
     let others: Vec<&ComposedStory> = others.iter().collect();
     if opts.placed.is_empty() && depth < placed::MAX_DEPTH {
-        let placed = placed::placements(doc, sid, &mut |host| Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1)));
+        let placed = placed::placements(doc, sid, &mut |host| {
+            if let Some(c) = hosts.get(&(host, depth + 1)) {
+                return c.clone();
+            }
+            let c = Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1, hosts));
+            hosts.insert((host, depth + 1), c.clone());
+            c
+        });
         if !placed.is_empty() {
             return wrap::compose_among(doc, sid, &ComposeOptions { placed, ..opts.clone() }, &others);
         }
@@ -860,7 +880,7 @@ struct SubstitutionInput<'a> {
     frame: Option<&'a FrameSpec>,
     opts: &'a ComposeOptions,
     var_story: bool,
-    var_cache: &'a mut HashMap<Option<usize>, Arc<Vec<String>>>,
+    var_cache: &'a mut HashMap<(Option<usize>, bool), Arc<Vec<String>>>,
     notes: &'a mut Notes,
 }
 
@@ -868,7 +888,9 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
-        var_cache.entry(page).or_insert_with(|| std::sync::Arc::new(vars::values(doc, page, opts.running.as_deref()))).clone()
+        // A parent page itself (not composed for one of the pages it applies to).
+        let parent = page.is_none() && cur_frame.is_some_and(|f| f.parent);
+        var_cache.entry((page, parent)).or_insert_with(|| std::sync::Arc::new(vars::values_shown(doc, page, parent, opts.running.as_deref()))).clone()
     } else {
         Default::default()
     };
@@ -1810,6 +1832,8 @@ fn place_sub_objects(
     }
 }
 
+/// Sets one paragraph's lines, column after column and frame after frame. It stops when the
+/// paragraph ends, when the frames run out, or when an earlier paragraph has to be set again.
 fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLines<'_>) -> LinePlacement {
     let PlacementShared {
         doc,
@@ -1842,7 +1866,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let ParagraphLines {
         paragraph: pi,
         range: prange,
-        props: pp,
+        props: para_props,
         glyphs,
         hyph_after,
         drop_cap,
@@ -1871,7 +1895,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let mut hyphen_at: Option<usize> = None;
     let has_tabs = glyphs.iter().any(|g| g.ch == '\t');
     let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
-    let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+    let rtl = para_props.direction == designcraft_doc::TextDirection::RightToLeft;
+    // The paragraph's settings with the start-side indent an Indent to Here character set for
+    // the lines after it (InDesign's ^i): those lines start where the character sits.
+    let mut indented: Option<designcraft_doc::ParaProps> = None;
     // Paragraph gyoudori: the (frame, column) of the block and the grid line after it.
     let mut para_block: Option<((usize, usize), f64)> = None;
     // Segments of a line already placed (beside an object with text on both sides) that the
@@ -1905,6 +1932,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 no_hyph,
             });
         }
+        let pp = indented.as_ref().unwrap_or(para_props);
+        // The Indent to Here character sits past the drop cap, so the lines that start at it
+        // aren't indented by the drop cap again.
+        let beside_cap = drop_cap.filter(|_| indented.is_none());
         let f = &frames[cur.fi];
         let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
         let col = cur.clip(base);
@@ -1930,7 +1961,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             props: pp,
             slots: &slots,
             column: col,
-            drop_cap,
+            drop_cap: beside_cap,
             line_no,
             col_first_line,
             rtl,
@@ -1938,6 +1969,8 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             spacing,
         });
         let mut moved = false;
+        // Set by a line with an Indent to Here character, for the lines broken again after it.
+        let mut reindented = None;
         for (k, b) in breaks.iter().enumerate() {
             let (s, e) = (g0 + b.start, g0 + b.end);
             let line_glyphs = &glyphs[s..e.max(s)];
@@ -2053,7 +2086,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
-            let beside = drop_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
+            let beside = beside_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
             let first_line = if line_no == 0 { pp.first_line_indent } else { 0.0 };
             let (ind_l, ind_r) = match beside {
                 Some(w) if rtl => (pp.left_indent, pp.right_indent + w),
@@ -2105,6 +2138,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             }
             ruby::annotate(db, styles_tab, &story.text, &mut placed, doc.settings.glyph_fallback, f.vertical);
             kenten::annotate(db, styles_tab, &mut placed, doc.settings.glyph_fallback);
+            let here_props = indent_here(&placed, pp, x0, x1, rtl);
             let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
             let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
@@ -2163,6 +2197,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             hyphen_at =
                 e.checked_sub(1).filter(|&i| b.hyphen && hyph_after.get(i) == Some(&true)).and_then(|i| glyphs.get(i)).map(|g| g.byte + g.len);
             line_no += 1;
+            // An Indent to Here character in this line moves the start of the lines after it:
+            // break them again with that indent (it holds into the next columns too).
+            let reindent = here_props.is_some();
+            reindented = here_props.or(reindented);
             // A column / frame / page break inside the paragraph: the rest of it continues in the
             // new column/frame/page, re-broken there. (A break that ends the paragraph moves the
             // next paragraph instead.)
@@ -2176,12 +2214,13 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             }
             // An own-story anchored object anchored in this line wraps the lines after it,
             // which were broken without it: break them again.
-            if k + 1 < breaks.len() && line_has_wrapping_exclusion(f, range_start..range_end, col, baseline) {
+            if k + 1 < breaks.len() && (reindent || line_has_wrapping_exclusion(f, range_start..range_end, col, baseline)) {
                 g0 += b.next;
                 moved = true;
                 break;
             }
         }
+        indented = reindented.or(indented);
         if !moved {
             break;
         }
@@ -2569,7 +2608,12 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
                 .map(|l| if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) })
                 .unwrap_or((0.0, 0.0));
             let (color, tint) = rule_color(r, above);
-            ft.decos.push(Deco { rect: Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y), color, tint, ..Deco::default() });
+            // Keep In Frame: not above the frame, as InDesign's (its top, not the text area's
+            // below the top inset).
+            let top = frames.get(fi).map_or(f64::NEG_INFINITY, |f| f.area.y0 - if f.vertical { 0.0 } else { f.opts.inset[0] });
+            let y = if r.keep_in_frame && y - r.weight < top { top + r.weight } else { y };
+            let rect = Rect::new(col.0 + r.left_indent, y - r.weight, col.1 - r.right_indent, y);
+            ft.decos.extend(rule_decos(doc, r, rect, (color, tint), above));
         }
     }
     if pp.rule_below.on
@@ -2580,7 +2624,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
         let y = l.baseline + r.offset;
         let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
         let (color, tint) = rule_color(r, below);
-        ft.decos.push(Deco { rect: Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), color, tint, ..Deco::default() });
+        ft.decos.extend(rule_decos(doc, r, Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), (color, tint), below));
     }
     // The end of a split block: text after it continues below its deepest sub-column, which
     // are balanced first. A block that ends the story fills its sub-columns in turn.
@@ -2674,7 +2718,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
     let var_story = vars::has_vars(story);
     let mut notes = Notes::new(doc, story);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
-    let mut var_cache: std::collections::HashMap<Option<usize>, std::sync::Arc<Vec<String>>> = Default::default();
+    let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
     // in progress, and a budget for the re-lays.
     let mut limits: Rc<Vec<(BandKey, f64)>> = Rc::default();
@@ -3296,15 +3340,22 @@ pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptio
             continue;
         }
         // Vertical bands of the paragraphs whose lines cross this gutter.
+        // Grouped by paragraph through an index, in first-seen order: searching the bands for
+        // each line was quadratic in the number of paragraphs.
         let mut spans: Vec<(usize, f64, f64)> = Vec::new();
+        let mut band_of: HashMap<usize, usize> = HashMap::new();
         for l in lines.iter().filter(|l| l.x0 < cx && l.x1 > cx) {
             let (t, z) = (l.baseline - l.ascent, l.baseline + l.descent);
-            match spans.iter_mut().find(|s| s.0 == l.para) {
-                Some(s) => {
+            match band_of.get(&l.para) {
+                Some(&k) => {
+                    let s = &mut spans[k];
                     s.1 = s.1.min(t);
                     s.2 = s.2.max(z);
                 }
-                None => spans.push((l.para, t, z)),
+                None => {
+                    band_of.insert(l.para, spans.len());
+                    spans.push((l.para, t, z));
+                }
             }
         }
         spans.sort_by(|p, q| p.1.total_cmp(&q.1));
@@ -4937,6 +4988,34 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     }
 }
 
+/// The paragraph settings for the lines after the `placed` line when it holds an Indent to Here
+/// character (the last one, if several): the start-side indent reaches the character, measured
+/// from the start edge of the line's segment `x0..x1`. Like the paragraph's own indents it then
+/// applies from each later line's segment, so beside a text wrap it starts at the wrap's edge.
+/// `None` when there is none or the indent is unchanged.
+fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64, x1: f64, rtl: bool) -> Option<designcraft_doc::ParaProps> {
+    // The placed glyphs are in the line's order (bidi only moves them): the drop cap's, then a
+    // list label's, which is set beside the drop cap, then the text's. A character in the drop
+    // cap or the label counts too, and one in the label comes after one in the drop cap.
+    let x = placed.iter().rev().find(|g| g.rendered_char == story::INDENT_HERE)?.x;
+    let indent = if rtl { x1 - x } else { x - x0 };
+    if !indent.is_finite() {
+        return None;
+    }
+    let indent = indent.max(0.0);
+    let current = if rtl { pp.right_indent } else { pp.left_indent };
+    if (indent - current).abs() < 0.01 {
+        return None;
+    }
+    let mut props = pp.clone();
+    if rtl {
+        props.right_indent = indent;
+    } else {
+        props.left_indent = indent;
+    }
+    Some(props)
+}
+
 fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     let visible = !(g.ch == '\t'
         || g.ch == '\n'
@@ -5247,6 +5326,40 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     }
 }
 
+/// Hyphenation points of `word`, remembered per set of limits: words repeat a lot. The points of
+/// a word not seen yet are worked out without holding the cache's lock, so a long word in one
+/// paragraph doesn't hold up hyphenation in others.
+fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) -> Arc<[usize]> {
+    type Words = HashMap<(hyphen::Lang, Box<str>), Arc<[usize]>>;
+    static CACHE: Mutex<Vec<(LimitsKey, Words)>> = Mutex::new(Vec::new());
+    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
+    let word_key = (lang, Box::<str>::from(word));
+    {
+        let guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pts) = guard.iter().find(|e| e.0 == key).and_then(|e| e.1.get(&word_key)) {
+            return pts.clone();
+        }
+    }
+    let pts: Arc<[usize]> = hyphen::hyphen_points_in(word, lim, lang).into();
+    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let idx = match guard.iter().position(|e| e.0 == key) {
+        Some(i) => i,
+        None => {
+            if guard.len() > 32 {
+                guard.clear();
+            }
+            guard.push((key, HashMap::new()));
+            guard.len() - 1
+        }
+    };
+    let cache = &mut guard[idx].1;
+    if cache.len() > 100_000 {
+        cache.clear();
+    }
+    cache.insert(word_key, pts.clone());
+    pts
+}
+
 fn hyphenation_points(
     text: &str,
     glyphs: &[Glyph],
@@ -5264,24 +5377,6 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
-    // Words repeat a lot: remember their points per set of limits.
-    static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
-    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
-    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let idx = match guard.iter().position(|e| e.0 == key) {
-        Some(i) => i,
-        None => {
-            if guard.len() > 32 {
-                guard.clear();
-            }
-            guard.push((key, HashMap::new()));
-            guard.len() - 1
-        }
-    };
-    let cache = &mut guard[idx].1;
-    if cache.len() > 100_000 {
-        cache.clear();
-    }
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5307,22 +5402,84 @@ fn hyphenation_points(
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
             if !is_last_word && let Some(lang) = lang {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
+                let cached;
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry((lang, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, lang).into_boxed_slice()),
+                    None => {
+                        cached = cached_hyphen_points(&lim, lang, word);
+                        &cached
+                    }
                 };
-                for &p in pts.iter() {
-                    // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
-                    if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
-                        out[k] = true;
+                if !pts.is_empty() {
+                    // char index p → byte → the first glyph whose cluster ends at that byte. Both
+                    // indexed once per word: looking each point up by scanning was quadratic in
+                    // a long word's length.
+                    let char_bytes: Vec<usize> = word.char_indices().map(|(bi, _)| bi).collect();
+                    let mut glyph_ending_at: HashMap<usize, usize> = HashMap::new();
+                    for k in (i..j).filter(|&k| glyphs[k].len > 0) {
+                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(k);
+                    }
+                    for &p in pts.iter() {
+                        let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                        if let Some(&k) = glyph_ending_at.get(&byte) {
+                            out[k] = true;
+                        }
                     }
                 }
             }
         }
         i = j.max(i + 1);
     }
+    out
+}
+
+/// A paragraph rule drawn in `rect` (its length and weight) with its Type: the gap colour under
+/// it, then the line, as dashes, dots, stripes, waves or hash marks. A pattern that can't be laid
+/// out along the rule draws solid.
+/// `(color, tint)` is the rule's (Text Color already resolved); `text`, the colour of the text
+/// the rule goes with, for a gap in Text Color.
+fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tint): (String, f32), text: &(String, f32)) -> Vec<Deco> {
+    use designcraft_doc::StrokeType;
+    let kind = doc.stroke_kind(&r.kind);
+    let (w, len) = (rect.height(), rect.width());
+    let mut out = Vec::new();
+    if !matches!(kind, StrokeType::Solid) && r.gap_color != designcraft_color::swatch::NONE && w > 0.0 && len > 0.0 {
+        let gap = if r.gap_color == designcraft_doc::TEXT_COLOR { text.0.clone() } else { r.gap_color.clone() };
+        out.push(Deco { rect, color: gap, tint: r.gap_tint, ..Deco::default() });
+    }
+    let y = rect.center().y;
+    let mut line = designcraft_geom::BezPath::new();
+    line.move_to((rect.x0, y));
+    line.line_to((rect.x1, y));
+    let path = match &kind {
+        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, len) => {
+            let mut p = designcraft_geom::BezPath::new();
+            let (mut x, mut k, mut on) = (rect.x0, 0, true);
+            while x < rect.x1 {
+                let step = pattern[k % pattern.len()];
+                if on && step > 0.0 {
+                    let r = Rect::new(x, rect.y0, (x + step).min(rect.x1), rect.y1);
+                    p.extend(designcraft_geom::Shape::path_elements(&r, 0.1));
+                }
+                x += step;
+                k += 1;
+                on = !on;
+            }
+            Some(p)
+        }
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[w, w], len) => {
+            let mut p = designcraft_geom::BezPath::new();
+            let mut x = rect.x0 + w / 2.0;
+            while x <= rect.x1 - w / 2.0 + 1e-9 {
+                p.extend(designcraft_geom::Shape::path_elements(&designcraft_geom::kurbo::Circle::new((x, y), w / 2.0), 0.1));
+                x += 2.0 * w;
+            }
+            Some(p)
+        }
+        k => k.outline(&line, w, 0.05),
+    };
+    out.push(Deco { rect, color, tint, path, ..Deco::default() });
     out
 }
 
@@ -5352,6 +5509,7 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
             continue;
         }
         let _ = a;
+        let before: Vec<f64> = idx.iter().map(|&i| ft.lines[i].baseline).collect();
         match f.opts.vertical_justification {
             VerticalJustification::Center => idx.iter().for_each(|&i| ft.lines[i].baseline += space / 2.0),
             VerticalJustification::Bottom => idx.iter().for_each(|&i| ft.lines[i].baseline += space),
@@ -5370,13 +5528,38 @@ fn vertical_justify(ft: &mut FrameText, f: &FrameSpec, spanned: bool, notes: &de
                     .collect();
                 let n = rows.last().copied().unwrap_or(0);
                 if n > 0 {
-                    let per = space / n as f64;
+                    // Paragraph Spacing Limit: the space goes between paragraphs, up to the limit
+                    // each; what is left spreads over every line (all of it with no limit).
+                    let mut starts = vec![false; n + 1];
                     for (&i, &k) in idx.iter().zip(&rows) {
-                        ft.lines[i].baseline += per * k as f64;
+                        if k > 0 && ft.lines[i].first_in_para {
+                            starts[k] = true;
+                        }
+                    }
+                    let gaps = starts.iter().filter(|s| **s).count();
+                    let limit = f.opts.vj_paragraph_spacing_limit.max(0.0);
+                    let para = if gaps > 0 && limit > 0.0 { (space / gaps as f64).min(limit) } else { 0.0 };
+                    let per = (space - para * gaps as f64) / n as f64;
+                    let mut shift = vec![0.0; n + 1];
+                    for k in 1..=n {
+                        shift[k] = shift[k - 1] + per + if starts[k] { para } else { 0.0 };
+                    }
+                    for (&i, &k) in idx.iter().zip(&rows) {
+                        ft.lines[i].baseline += shift[k];
                     }
                 }
             }
             _ => {}
+        }
+        // A drop cap moves with its line.
+        for (&i, b) in idx.iter().zip(before) {
+            let line = &mut ft.lines[i];
+            let dy = line.baseline - b;
+            if let Some(dc) = &mut line.drop_cap {
+                dc.baseline += dy;
+                dc.rect.y0 += dy;
+                dc.rect.y1 += dy;
+            }
         }
     }
 }
@@ -5895,6 +6078,7 @@ mod column_allocation_safety_tests {
             page_name: None,
             section_marker: None,
             page: None,
+            parent: false,
             grid: None,
             left_page: false,
             right_page: false,
