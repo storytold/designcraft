@@ -39,7 +39,9 @@ fn follows_title(text: &str, start: usize) -> bool {
 /// Tokens separated by whitespace that hold a letter or digit. Detached marks, repetition signs
 /// and punctuation are not words.
 fn spaced_words(text: &str) -> usize {
-    text.split_whitespace().filter(|token| token.chars().any(|c| c.is_alphanumeric() && c != 'ៗ')).count()
+    // Unicode counts Khmer vowel signs as alphabetic; alone, they are not a word.
+    let word_char = |c: char| if character(c) { ('\u{1780}'..='\u{17b3}').contains(&c) || c.is_numeric() } else { c.is_alphanumeric() };
+    text.split_whitespace().filter(|token| token.chars().any(word_char)).count()
 }
 
 fn segmented_words(text: &str) -> usize {
