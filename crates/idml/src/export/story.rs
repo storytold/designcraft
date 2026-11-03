@@ -361,31 +361,7 @@ impl<'a> Ex<'a> {
         let segs = Self::paragraph_runs(s, &r);
         // A hyperlink on a run of text is written as a `HyperlinkTextSource` around the
         // ranges it covers, so the runs are cut at its edges first (#1446).
-        let links: Vec<(usize, std::ops::Range<usize>)> = self
-            .d
-            .hyperlinks
-            .iter()
-            .enumerate()
-            .filter_map(|(i, h)| match &h.source {
-                designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
-                    let (a, b) = ((*start).max(r.start), (*end).min(r.end));
-                    (a < b).then_some((i, a..b))
-                }
-                _ => None,
-            })
-            .collect();
-        let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
-        cuts.sort_unstable();
-        cuts.dedup();
-        let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
-            let mut at = rr.start;
-            for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
-                out.push((at..c, f.clone()));
-                at = c;
-            }
-            out.push((at..rr.end, f));
-            out
-        });
+        let (links, segs) = self.cut_runs_at_links(s, &r, segs);
         let nseg = segs.len();
         // Each segment's ranges, with the link they belong to; wrapped once the paragraph is
         // built so that consecutive ranges of one link share a single source element.
@@ -555,7 +531,50 @@ impl<'a> Ex<'a> {
                 psr_csrs.push((link, c));
             }
         }
-        // Consecutive ranges of one link go inside one `HyperlinkTextSource`.
+        self.wrap_link_sources(&mut psr, psr_csrs);
+        psr
+    }
+
+    /// The hyperlinks on story text that fall in the paragraph `r` (each link's index and its
+    /// range clipped to `r`), and the paragraph's runs `segs` cut at their edges, so a link's
+    /// ranges can be wrapped on their own (#1446).
+    fn cut_runs_at_links(
+        &self,
+        s: &Story,
+        r: &std::ops::Range<usize>,
+        segs: Vec<(std::ops::Range<usize>, CharFormat)>,
+    ) -> (Vec<(usize, std::ops::Range<usize>)>, Vec<(std::ops::Range<usize>, CharFormat)>) {
+        let links: Vec<(usize, std::ops::Range<usize>)> = self
+            .d
+            .hyperlinks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| match &h.source {
+                designcraft_doc::HyperlinkSource::Text { story, start, end } if *story == s.id => {
+                    let (a, b) = ((*start).max(r.start), (*end).min(r.end));
+                    (a < b).then_some((i, a..b))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut cuts: Vec<usize> = links.iter().flat_map(|(_, l)| [l.start, l.end]).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let segs = segs.into_iter().fold(Vec::new(), |mut out: Vec<(std::ops::Range<usize>, CharFormat)>, (rr, f)| {
+            let mut at = rr.start;
+            for c in cuts.iter().copied().filter(|c| rr.start < *c && *c < rr.end) {
+                out.push((at..c, f.clone()));
+                at = c;
+            }
+            out.push((at..rr.end, f));
+            out
+        });
+        (links, segs)
+    }
+
+    /// Push the paragraph's character ranges into `psr`, with each run of consecutive ranges of
+    /// one link inside a single `HyperlinkTextSource` (#1446).
+    fn wrap_link_sources(&mut self, psr: &mut El, psr_csrs: Vec<(Option<usize>, El)>) {
         let mut groups: Vec<(Option<usize>, Vec<El>)> = Vec::new();
         for (link, c) in psr_csrs {
             match groups.last_mut() {
@@ -581,7 +600,6 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        psr
     }
 
     pub(super) fn psr_el(&mut self, pf: &ParaFormat) -> El {
