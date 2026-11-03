@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions};
 
 use crate::export::Sheet;
-use crate::transitions::{bracketed, int_after, object, rfind};
+use crate::transitions::{Xref, int_after, object, page_kids, rfind};
 
 /// A field placed on an output page: (page index, PDF rectangle, field, border width, 0 when the
 /// item has no stroke).
@@ -121,13 +121,9 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
     let prev = int_after(&trailer, "startxref")?;
     let info = int_after(&trailer, "/Info");
     let id = trailer.find("/ID").and_then(|i| trailer[i..].find(']').map(|j| trailer[i..i + j + 1].to_string()));
-    let cat = String::from_utf8_lossy(&pdf[object(pdf, root)?]).to_string();
-    let pages_id = int_after(&cat, "/Pages")?;
-    let pages = String::from_utf8_lossy(&pdf[object(pdf, pages_id)?]).to_string();
-    let kids_str = &pages[pages.find("/Kids")? + 5..];
-    let kids_str = bracketed(kids_str)?;
-    let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
+    let xref = Xref::read(pdf)?;
+    let cat = String::from_utf8_lossy(&pdf[object(pdf, &xref, root)?]).to_string();
+    let kids = page_kids(pdf, &xref, root)?;
 
     let mut out = pdf.to_vec();
     if !out.ends_with(b"\n") {
@@ -250,13 +246,13 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
             continue;
         }
         let refs: String = ids.iter().map(|i| format!(" {i} 0 R")).collect();
-        let body = String::from_utf8_lossy(&pdf[object(pdf, kids[k])?]).to_string();
+        let body = String::from_utf8_lossy(&pdf[object(pdf, &xref, kids[k])?]).to_string();
         let new = if let Some(a) = body.find("/Annots[") {
             let close = a + body[a..].find(']')?;
             format!("{}{refs}{}", &body[..close], &body[close..])
         } else if let Some(arr_id) = int_after(&body, "/Annots") {
             // An indirect array: re-state it with the widgets added.
-            let arr = String::from_utf8_lossy(&pdf[object(pdf, arr_id)?]).to_string();
+            let arr = String::from_utf8_lossy(&pdf[object(pdf, &xref, arr_id)?]).to_string();
             let close = arr.rfind(']')?;
             put(&mut out, arr_id, format!("{}{refs}{}", arr[..close].trim(), &arr[close..]).trim().as_bytes());
             body.clone()

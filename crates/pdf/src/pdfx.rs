@@ -14,7 +14,7 @@ use craft_pdf::write::WriteError;
 use craft_pdf::write::backend as krilla;
 use craft_pdf::write::print::{self, PrintColor};
 
-use crate::transitions::{find, int_after, object, rfind};
+use crate::transitions::{Xref, find, int_after, object, rfind};
 
 mod fonts;
 
@@ -61,9 +61,10 @@ pub fn make_pdfx4(pdf: &[u8], date: Option<i64>) -> Option<Vec<u8>> {
     let prev = int_after(&trailer, "startxref")?;
     let info = int_after(&trailer, "/Info").map(|i| format!("/Info {i} 0 R")).unwrap_or_default();
     let id = trailer.find("/ID").and_then(|i| trailer.get(i..)?.find(']').and_then(|j| trailer.get(i..i + j + 1)).map(str::to_string));
-    let cat = String::from_utf8_lossy(pdf.get(object(pdf, root)?)?).to_string();
+    let xref = Xref::read(pdf)?;
+    let cat = String::from_utf8_lossy(pdf.get(object(pdf, &xref, root)?)?).to_string();
     let meta = int_after(&cat, "/Metadata")?;
-    let body = pdf.get(object(pdf, meta)?)?;
+    let body = pdf.get(object(pdf, &xref, meta)?)?;
     let s0 = find(body, b"stream", 0)? + b"stream".len();
     let s0 = s0 + body.get(s0..)?.iter().take_while(|c| **c == b'\r' || **c == b'\n').count();
     let s1 = rfind(body, b"endstream")?;

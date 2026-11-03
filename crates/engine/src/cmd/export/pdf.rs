@@ -80,13 +80,6 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
     })
 }
 
-/// Object number of the first page of a PDF (its page tree's first kid).
-fn first_page_ref(pdf: &[u8]) -> Option<usize> {
-    let s = String::from_utf8_lossy(pdf);
-    let i = s.find("/Kids[")? + 6;
-    s[i..].split_whitespace().next()?.parse().ok()
-}
-
 pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let r = pdf_export(s, p)?;
     match str_param(p, "path") {
@@ -181,7 +174,7 @@ pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_co
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     let mut cat = cat;
     if let Some(dest) = dest
-        && let Some(first) = first_page_ref(&r.bytes)
+        && let Some(first) = designcraft_pdf::first_page_ref(&r.bytes)
     {
         cat.push_str(&format!("/OpenAction[{first} 0 R{dest}]"));
     }
