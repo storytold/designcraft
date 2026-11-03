@@ -42,16 +42,15 @@ pub fn tables(ex: &mut Exporter, ft: &FrameText, m: Affine, k: f64, opacity: f32
 /// A table's stroke segments by where they lie, so the sides of each cell don't search them all.
 struct EdgeIndex<'a> {
     strokes: &'a [StrokeSeg],
-    /// (x of the first end, index), for segments with both ends finite; sorted by x.
+    /// (x of the first end, index), for segments whose first end is finite; sorted by x.
     by_x: Vec<(f64, usize)>,
     by_y: Vec<(f64, usize)>,
 }
 
 impl<'a> EdgeIndex<'a> {
     fn new(strokes: &'a [StrokeSeg]) -> Self {
-        let finite = |s: &StrokeSeg| [s.a.x, s.a.y, s.b.x, s.b.y].iter().all(|v| v.is_finite());
-        let mut by_x: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| finite(s)).map(|(i, s)| (s.a.x, i)).collect();
-        let mut by_y: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| finite(s)).map(|(i, s)| (s.a.y, i)).collect();
+        let mut by_x: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| s.a.x.is_finite()).map(|(i, s)| (s.a.x, i)).collect();
+        let mut by_y: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| s.a.y.is_finite()).map(|(i, s)| (s.a.y, i)).collect();
         by_x.sort_by(|p, q| p.0.total_cmp(&q.0));
         by_y.sort_by(|p, q| p.0.total_cmp(&q.0));
         EdgeIndex { strokes, by_x, by_y }
@@ -64,8 +63,8 @@ impl<'a> EdgeIndex<'a> {
         let (lo, hi) = if vertical { (a.1, b.1) } else { (a.0, b.0) };
         let (list, line) = if vertical { (&self.by_x, a.0) } else { (&self.by_y, a.1) };
         // Segments whose first end is within 0.75 of the line: the only ones that can be on it.
-        let from = list.partition_point(|(v, _)| *v <= line - 0.75);
-        let to = list.partition_point(|(v, _)| *v < line + 0.75);
+        let from = list.partition_point(|(v, _)| line - *v >= 0.75);
+        let to = list.partition_point(|(v, _)| *v - line < 0.75);
         let mut near: Vec<usize> = list.get(from..to).unwrap_or_default().iter().map(|(_, i)| *i).collect();
         // Back in the segments' own order: the first one on the line is the one that shows.
         near.sort_unstable();
