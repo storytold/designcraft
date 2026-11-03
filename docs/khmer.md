@@ -10,15 +10,9 @@ contributions must land before official release integration.
 ## User behavior
 
 With the Khmer data included, unspaced Khmer receives dictionary/model word
-boundaries for wrapping, spelling suggestions, and preferred
-spelling/phrase checks. These are limited rules, not a general grammar checker.
-The model can segment unknown or misspelled words so proofreading can still
-identify them. It never inserts spaces or normalizes document text.
-
-Select **Khmer** in the Character panel, or use Khmer text in the default English
-style. Explicit other-language and No Language proofreading choices remain
-respected. **Edit > Spelling > Check Spelling** offers review and correction;
-corrections use the existing undo history and document user dictionary.
+boundaries for wrapping. The model can segment unknown or misspelled words, and it
+never inserts spaces or normalizes document text. Spelling and proofreading are a
+separate change.
 
 Authored U+200B zero-width spaces are optional wrap opportunities, not mandatory
 newlines. U+2060 word joiners and No Break formatting prevent wrapping. Shaped
@@ -70,9 +64,8 @@ compound is incorrectly segmented.
 
 ## Build and data
 
-The default build contains no Khmer dictionaries. It must not report Khmer text
-as checked when the data is absent; `spelling.status` exposes availability.
-There is no runtime pack downloader in this change. For an explicit build,
+The default build contains no Khmer dictionaries, so only real and authored
+zero-width spaces separate Khmer words. There is no runtime pack downloader in this change. For an explicit build,
 check out craft-i18n revision `305a53fc197cce0e7b2c90b86c9c37083ae216bd` beside this
 repository and, from this repository's root, stage its verified source pack:
 
@@ -106,7 +99,7 @@ Khmer fonts remain necessary unless the release's craft-fonts input supplies one
 
 Validation covers actual composed glyph positions and line extents, not only
 segmenter output. Targeted regressions cover authored boundaries, narrow columns,
-formatting boundaries, repeated words, correction/undo and unchanged Latin text; the
+formatting boundaries, repeated words and unchanged Latin text; the
 justification regressions use a synthetic font and authored boundaries, so they need
 neither the data pack nor a Khmer font.
 The local corpus comes from five real, professionally typeset Khmer books: 3,331
@@ -129,11 +122,6 @@ These are layout measurements, not linguistic accuracy ratings. It is not a
 held-out linguistic gold standard, and model-counted word occurrences are not
 an accuracy score. Private book text, source documents and reference PDFs stay outside
 the repository.
-
-Native macOS checks also verified readable Khmer suggestions, correction and undo.
-The two supplied passages produced no spelling findings. The read-only
-`spelling.check {suggestions:false}` query avoids candidate generation for bulk
-review; `spelling.suggest {story,start,end}` revalidates and returns one issue.
 
 The local reference PDF and recovered source document have different edition dates. Matched
 passages can support visual comparison; exact pagination and pixel equality

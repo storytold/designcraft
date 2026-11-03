@@ -1411,7 +1411,6 @@ dependencies = [
  "caseless",
  "craft-atomic",
  "craft-docpath",
- "craft-khmer",
  "craft-prepress",
  "craft-print",
  "designcraft-color",

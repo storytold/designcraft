@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-03 · **Change:** minor (optional Khmer composition and proofreading; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-03 · **Change:** minor (optional Khmer composition; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -93,7 +93,7 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, Dutch, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English**, plus **Khmer** when its optional data pack is included. Khmer also has word-based wrapping, justification at real word spaces with glyph scaling, and limited preferred-form checks; this does not add a Khmer interface translation. See [khmer.md](khmer.md). Text language
+DesignCraft hyphenates **English, Dutch, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English**. With its optional data pack, Khmer has word-based wrapping and justification at real word spaces with glyph scaling; this does not add a Khmer interface translation. See [khmer.md](khmer.md). Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping. See [typography-parity.md](typography-parity.md).
 German hyphenation accepts `German: 2006 Reform`, `German: Swiss 2006 Reform` and `de` locale

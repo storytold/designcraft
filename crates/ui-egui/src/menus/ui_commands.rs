@@ -12,12 +12,6 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
-    (
-        "app.checkSpelling",
-        "Check Spelling…",
-        None,
-        "{} — opens spellingReview; ui.dialog.set suggestion (index), to, action (change|skip|add|refresh); ui.dialog.confirm applies action",
-    ),
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),

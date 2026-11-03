@@ -341,49 +341,19 @@ pub(super) fn hidden_marks(text: &str, l: &compose::Line) -> Vec<(f64, &'static 
     out
 }
 
-/// One story's dynamic-spelling marks and everything they were computed from. `Weak` identifies
-/// the story and styles (their addresses can't be reused while it lives) without keeping a closed
-/// document's text in memory.
-#[derive(Clone)]
-struct DynamicSpelling {
-    story: std::sync::Weak<designcraft_doc::Story>,
-    styles: std::sync::Weak<designcraft_doc::styles::Styles>,
-    user_words: Vec<String>,
-    bad: std::sync::Arc<Vec<std::ops::Range<usize>>>,
-}
-
-/// A story's marks, proofed again only when its text and formatting, the styles that give it a
-/// language, or the user dictionary change: typing in one story leaves the rest of a book alone.
-pub(super) fn dynamic_misspellings(
-    ctx: &egui::Context,
-    doc: &Document,
-    story: &std::sync::Arc<designcraft_doc::Story>,
-) -> std::sync::Arc<Vec<std::ops::Range<usize>>> {
-    let key = egui::Id::unique(("dyn_spell", story.id));
-    // Shared, so a cache hit on every frame copies nothing.
-    let cached: Option<std::sync::Arc<DynamicSpelling>> = ctx.data(|d| d.get_temp(key));
-    if let Some(c) = cached
-        && c.story.as_ptr() == std::sync::Arc::as_ptr(story)
-        && c.styles.as_ptr() == std::sync::Arc::as_ptr(&doc.styles)
-        && c.user_words == doc.user_words
-    {
-        return c.bad.clone();
-    }
-    let bad = std::sync::Arc::new(designcraft_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
-    let entry = std::sync::Arc::new(DynamicSpelling {
-        story: std::sync::Arc::downgrade(story),
-        styles: std::sync::Arc::downgrade(&doc.styles),
-        user_words: doc.user_words.clone(),
-        bad: bad.clone(),
-    });
-    ctx.data_mut(|d| d.insert_temp(key, entry));
-    bad
-}
-
-/// Edit › Spelling › Dynamic Spelling: red squiggles under misspelled words.
+/// Edit › Spelling › Dynamic Spelling: red squiggles under misspelled words (checked once per
+/// story version).
 pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     for story in doc.stories.values() {
-        let bad = dynamic_misspellings(ctx, doc, story);
+        let key = egui::Id::unique(("dyn_spell", std::sync::Arc::as_ptr(story) as usize, doc.user_words.len()));
+        let bad: std::sync::Arc<Vec<std::ops::Range<usize>>> = match ctx.data(|d| d.get_temp(key)) {
+            Some(v) => v,
+            None => {
+                let v = std::sync::Arc::new(designcraft_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
+                ctx.data_mut(|d| d.insert_temp(key, v.clone()));
+                v
+            }
+        };
         if bad.is_empty() {
             continue;
         }

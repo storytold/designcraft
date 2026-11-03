@@ -32,9 +32,6 @@ pub fn enabled(app: &DesignApp, id: &str) -> bool {
     if is_window_control(id) {
         return window_control_available(app, id);
     }
-    if id == "app.checkSpelling" {
-        return enabled(app, "spelling.check");
-    }
     // Shared docking commands DesignCraft does not provide (native panel windows, Lock Workspace).
     if matches!(id, "window.panel.window" | "window.workspace.lock") {
         return false;
@@ -163,9 +160,6 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
 
 /// Enablement for menu display (UI commands need a document unless they're app/window-level).
 pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
-    if id == "app.checkSpelling" {
-        return enabled(app, id);
-    }
     if waits_for_ime(app, id) {
         return false;
     }

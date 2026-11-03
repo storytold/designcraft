@@ -31,10 +31,6 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
 }
 
 fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
-    if id == "spelling.check" {
-        let _ = app.run("app.checkSpelling", json!({}));
-        return;
-    }
     // Object › Effects › Drop Shadow… (and its shortcut): the Effects dialog on that page.
     if params.is_null()
         && let Some(page) = crate::effects_dialog::page_of_command(id)

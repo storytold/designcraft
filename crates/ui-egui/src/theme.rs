@@ -789,37 +789,6 @@ mod japanese_font_tests {
         });
     }
 
-    /// A fresh English UI must install Khmer fallback glyphs before any Khmer dialog has drawn.
-    #[test]
-    fn fresh_ui_renders_khmer_in_body_and_suggestion_fonts() {
-        let dir = tempfile::tempdir().unwrap();
-        let text = "អក្ខរាវិរុទ្ធ";
-        let chars: Vec<char> = text.chars().collect();
-        let bytes = designcraft_fonts::testing::font_with("Khmer Sangam MN", &chars).unwrap();
-        std::fs::write(dir.path().join("khmer.ttf"), bytes).unwrap();
-        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_path_buf()]);
-        let system = super::installed_ui_fonts(&db, &[]);
-        assert!(system.iter().any(|f| f.script == "Khmr"));
-        let mut defs = super::font_definitions(&[], "en");
-        super::add_system_fallbacks(&mut defs, &system, "en");
-        let ctx = egui::Context::default();
-        ctx.set_fonts(defs);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            for family in families() {
-                let font = egui::FontId::new(20.0, family);
-                ui.fonts_mut(|fonts| {
-                    for ch in text.chars() {
-                        assert!(fonts.has_glyph(&font, ch), "missing {ch}");
-                    }
-                    let galley = fonts.layout_no_wrap(text.into(), font.clone(), egui::Color32::WHITE);
-                    assert!(galley.rect.is_finite() && galley.size().x > 0.0);
-                });
-                ui.label(egui::RichText::new(text).font(font));
-            }
-        });
-        output.textures_delta.clear();
-    }
-
     #[test]
     fn ui_works_without_craft_fonts() {
         let ctx = ctx_with(&[]);

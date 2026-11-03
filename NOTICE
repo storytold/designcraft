@@ -231,7 +231,7 @@ SBBIC identifies internal work, the SEAlang frequency lists
 (http://sealang.net/project/list/) and SIL NRSI’s Khmer line-breaking dictionary
 (https://github.com/silnrsi/khmerlbdict) as sources. These materials are MIT
 licensed; their copyright and permission notices follow. Builds without
-CRAFT_KHMER_DIR omit this data. See docs/khmer.md for provenance and its limits.
+CRAFT_KHMER_DIR omit this data. See the craft-khmer README for provenance and its limits.
 The attached-glyph protection in composition was informed by visarutforthaipbs’s
 DesignCraft #516. Shared-core contributions are credited in craft-khmer.
 

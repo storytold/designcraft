@@ -457,3 +457,23 @@ fn zero_width_characters_in_other_scripts_keep_their_letter_spacing() {
         assert!(before_zwsp.adv > natural + 0.01, "{composer:?}: {} <= {natural}", before_zwsp.adv);
     }
 }
+
+#[test]
+fn word_count_uses_khmer_boundaries_and_leaves_other_text_alone() {
+    const PHRASE: &str = "ខ្ញុំស្រឡាញ់ភាសាខ្មែរ";
+    for (text, words) in [("", 0), ("Hello world", 2), ("one - two", 3), ("日本語の文字", 1)] {
+        assert_eq!(word_count(text), words, "{text}: whitespace counting is unchanged");
+    }
+    assert_eq!(word_count("ខ្មែរ\u{200b}ភាសា"), 2, "authored breaks work even without a dictionary");
+    assert_eq!(word_count("ខ្មែរ ភាសា"), 2);
+    assert_eq!(word_count("ៗ។! ា្"), 0, "detached marks and signs are not words");
+    if craft_khmer::data_available() {
+        assert_eq!(word_count(PHRASE), 4, "Khmer counts by word boundaries, not real spaces");
+        assert_eq!(word_count(&format!("{PHRASE}\r\n{PHRASE}\n")), 8);
+        assert_eq!(word_count(&format!("Hello{PHRASE}world ១២៣ 42")), 8);
+        assert_eq!(word_count("អ្នកចម្រៀង ក្រុមហ៊ុន អ្វីៗ"), 4);
+        assert_eq!(word_count(PHRASE), 4, "a cached paragraph counts the same");
+    } else {
+        assert_eq!(word_count(PHRASE), 1);
+    }
+}
