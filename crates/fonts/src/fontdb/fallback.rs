@@ -10,7 +10,16 @@ pub(super) struct SysFallback {
     pub(super) misses: std::collections::HashSet<char>,
     /// CJK chain families already looked up in the catalog (loaded, or not installed).
     pub(super) chain_tried: std::collections::HashSet<&'static str>,
+    /// The code points each installed file covers (as ranges), by path, valid for the file's
+    /// stamp: one character after another is looked up without reading every file again.
+    pub(super) coverage: std::collections::HashMap<std::path::PathBuf, (super::system::FileStamp, std::sync::Arc<Vec<(u32, u32)>>)>,
+    /// Ranges held in `coverage` (it stops growing at [`MAX_COVERAGE_RANGES`]).
+    pub(super) coverage_ranges: usize,
 }
+
+/// Most coverage ranges kept across all files (8 bytes each).
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) const MAX_COVERAGE_RANGES: usize = 4 * 1024 * 1024;
 
 #[cfg(all(test, target_os = "linux"))]
 pub(super) struct FallbackSnapshotHook {

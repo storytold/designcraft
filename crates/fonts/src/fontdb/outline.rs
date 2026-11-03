@@ -14,7 +14,13 @@ pub(super) fn has_serifs(face: &FontFace) -> Option<bool> {
     let mut edges = Vec::new();
     let mut last = None;
     let mut start = None;
-    kurbo::flatten(&path, 1.0, |el| match el {
+    // A tolerance of one unit is fine for outlines of normal size; a transform that blows one up
+    // gets a tolerance in proportion, so the subdivision stays bounded (4096 units stay at 1).
+    let tol = (bbox.width().max(bbox.height()) / 4096.0).max(1.0);
+    if !tol.is_finite() {
+        return None;
+    }
+    kurbo::flatten(&path, tol, |el| match el {
         kurbo::PathEl::MoveTo(p) => {
             last = Some(p);
             start = Some(p);
