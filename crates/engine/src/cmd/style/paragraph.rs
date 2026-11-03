@@ -522,6 +522,8 @@ fn CharProps_to_attrs(p: &designcraft_doc::CharProps) -> CharAttrs {
     designcraft_doc::CharProps::common([p])
 }
 
+/// `style.paragraph.edit`: change a paragraph style's attributes, based-on, next style or name;
+/// a rename follows the style into every use.
 pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.paragraph.edit", "missing name"))?.to_string();
     let chars: CharAttrs = attrs("style.paragraph.edit", "chars", p, |a: &mut CharAttrs, k, v| a.set_json(k, v))?;
@@ -869,6 +871,8 @@ pub(super) fn create_char(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `style.character.edit`: change a character style's attributes, based-on or name; a rename
+/// follows the style into every use.
 pub(super) fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("style.character.edit", "missing name"))?.to_string();
     if name == designcraft_doc::NO_CHAR_STYLE {
@@ -1124,6 +1128,10 @@ mod delete_tests {
         }
     }
 
+    /// A document whose character style `Emphasis` is used everywhere one can be: as a based-on
+    /// parent, on text, in a paragraph style's and a paragraph's nested, nested line, GREP, drop
+    /// cap, bullet and number styles, as the footnote reference style, the default character
+    /// style and a character Running Header. Returns the session and the text's story.
     fn char_doc() -> (Session, u64) {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
