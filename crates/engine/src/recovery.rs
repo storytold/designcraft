@@ -498,7 +498,14 @@ fn has_checkpoint(doc: &DocState, dir: &Path) -> bool {
 /// produce the same bytes. Recorded per folder: a checkpoint in one folder says nothing about
 /// another's.
 fn checkpoint_is_current(doc: &DocState, dir: &Path) -> bool {
-    has_checkpoint(doc, dir) && doc.recovery_revisions.iter().any(|(entry_dir, revision)| *revision == doc.revision && same_directory(entry_dir, dir))
+    // The record only says what was written; the files must still be there. Something outside
+    // this run (a cleanup, the user) may have removed them, and a skipped write would then leave
+    // the unsaved document with nothing to recover from.
+    let (document, metadata) = files(dir, doc.uid);
+    has_checkpoint(doc, dir)
+        && doc.recovery_revisions.iter().any(|(entry_dir, revision)| *revision == doc.revision && same_directory(entry_dir, dir))
+        && document.is_file()
+        && metadata.is_file()
 }
 
 /// Record that `dir`'s checkpoint now holds the document's current revision.
@@ -865,13 +872,15 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
                 Ok(()) => {
                     target.record(state.uid);
                     state.recovery_entries.push((destination.clone(), state.uid));
-                    // Just written from this very document: the next tick has nothing to redo.
-                    record_checkpoint_revision(state, &destination);
                     let meta = json!({"path": state.path, "title": state.title(), "saved": designcraft_doc::vars::now()});
                     match publish(&metadata, meta.to_string().as_bytes()) {
                         Ok(()) => {
                             discard(dir, uid);
                             state.recovery_entries = vec![(destination.clone(), state.uid)];
+                            // Both files written from this very document: the next tick has
+                            // nothing to redo. Not recorded when the metadata failed, so that tick
+                            // writes the entry again rather than leaving it without its path.
+                            record_checkpoint_revision(state, &destination);
                         }
                         Err(e) => log::warn!("recovery entry {uid} kept: {e}"),
                     }

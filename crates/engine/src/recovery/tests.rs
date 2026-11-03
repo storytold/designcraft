@@ -880,3 +880,48 @@ fn a_checkpoint_in_one_folder_does_not_stand_in_for_another() {
         "both folders now hold the same document"
     );
 }
+
+#[test]
+fn a_checkpoint_removed_from_disk_is_written_again() {
+    // Skipping an unchanged document trusts what was written, so it checks the files are still
+    // there: a recovery folder cleaned from outside must not leave the unsaved document with
+    // nothing to recover from until its next edit.
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("recovery");
+    let mut session = dirty_session();
+    let save_here = |s: &mut Session| s.execute("file.recovery.save", &json!({"dir": dir.to_string_lossy()})).unwrap()["saved"].clone();
+    assert_eq!(save_here(&mut session), json!(1));
+    let (document, metadata) = files(&dir, session.doc().unwrap().uid);
+    assert_eq!(save_here(&mut session), json!(0), "unchanged and on disk: skipped");
+
+    std::fs::remove_file(&document).unwrap();
+    assert_eq!(save_here(&mut session), json!(1), "the checkpoint is gone, so it is written again");
+    assert!(document.is_file() && metadata.is_file());
+
+    std::fs::remove_file(&metadata).unwrap();
+    assert_eq!(save_here(&mut session), json!(1), "a missing metadata file is rewritten too");
+    assert!(metadata.is_file());
+    assert_eq!(save_here(&mut session), json!(0), "and then it is current again");
+}
+
+#[test]
+fn a_reopened_checkpoint_whose_metadata_failed_is_written_on_the_next_tick() {
+    // Reopening republishes each entry under a new uid. If the primary file is written but the
+    // metadata isn't, the entry must not count as current, or the next tick would skip it and it
+    // would stay without its path and title.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(save(&unsaved("needs its metadata"), dir.path()).unwrap(), 1);
+    let mut reopened = Session::new();
+    let opened = open_with_publisher(&mut reopened, dir.path(), |path, bytes| {
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            return Err(EngineError::Other("metadata refused".into()));
+        }
+        publish_recovery_file(path, bytes, false)
+    })
+    .unwrap();
+    assert_eq!(opened.len(), 1);
+    let saved = reopened.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap();
+    assert_eq!(saved["saved"], json!(1), "the next tick writes the entry the failed metadata left incomplete");
+    let uid = reopened.doc().unwrap().uid;
+    assert!(files(dir.path(), uid).1.is_file(), "now with its metadata");
+}
