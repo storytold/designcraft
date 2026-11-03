@@ -276,10 +276,7 @@ fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError
         if !doc.assets.contains_key(&AssetId(id)) {
             continue;
         }
-        if let (Some(data), Some(a)) = (
-            read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left)?,
-            doc.assets.get_mut(&AssetId(id)),
-        ) {
+        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left)?, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
