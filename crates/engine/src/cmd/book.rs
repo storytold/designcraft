@@ -179,6 +179,15 @@ fn paginate(s: &Session) -> Result<Value> {
     Ok(json!({"pages": next - 1, "chapters": chapters}))
 }
 
+/// `list` with only the last entry of each name, in the order of those last entries.
+#[cfg(not(target_arch = "wasm32"))]
+fn keep_last<T>(list: &[T], name: impl Fn(&T) -> &str) -> Vec<&T> {
+    let mut seen = HashSet::new();
+    let mut out: Vec<&T> = list.iter().rev().filter(|x| seen.insert(name(x))).collect();
+    out.reverse();
+    out
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn sync_styles(s: &Session) -> Result<Value> {
     let b = s.book.as_ref().ok_or_else(no_book)?;
@@ -189,6 +198,11 @@ fn sync_styles(s: &Session) -> Result<Value> {
     let styles = src.styles.clone();
     let swatches = src.swatches.clone();
     drop(src);
+    // A name the source defines twice keeps its last definition, at its last position.
+    let paragraph = keep_last(&styles.paragraph, |x| x.name.as_str());
+    let character = keep_last(&styles.character, |x| x.name.as_str());
+    let (paragraph_names, character_names): (HashSet<&str>, HashSet<&str>) =
+        (paragraph.iter().map(|x| x.name.as_str()).collect(), character.iter().map(|x| x.name.as_str()).collect());
     let mut n = 0;
     for (i, path) in paths.iter().enumerate() {
         if i == b.style_source {
@@ -200,12 +214,10 @@ fn sync_styles(s: &Session) -> Result<Value> {
             // The source's styles replace the chapter's of the same names and go last, in the
             // source's order (one pass over each list, not one per style).
             let st = d.styles_mut();
-            let names: HashSet<&str> = styles.paragraph.iter().map(|x| x.name.as_str()).collect();
-            st.paragraph.retain(|x| !names.contains(x.name.as_str()));
-            st.paragraph.extend(styles.paragraph.iter().cloned());
-            let names: HashSet<&str> = styles.character.iter().map(|x| x.name.as_str()).collect();
-            st.character.retain(|x| !names.contains(x.name.as_str()));
-            st.character.extend(styles.character.iter().cloned());
+            st.paragraph.retain(|x| !paragraph_names.contains(x.name.as_str()));
+            st.paragraph.extend(paragraph.iter().map(|x| (*x).clone()));
+            st.character.retain(|x| !character_names.contains(x.name.as_str()));
+            st.character.extend(character.iter().map(|x| (*x).clone()));
         }
         // First index per name, as Document::swatch resolves colours.
         let mut at: HashMap<String, usize> = HashMap::new();
@@ -438,5 +450,13 @@ mod tests {
         let mut t = Session::new();
         assert_eq!(t.execute("book.open", &json!({"path": p("book.dcbook")})).unwrap()["documents"], 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_source_style_defined_twice_keeps_its_last_definition() {
+        let list = [("a", 1), ("b", 2), ("a", 3), ("c", 4)];
+        let kept: Vec<_> = super::keep_last(&list, |x| x.0).into_iter().copied().collect();
+        // As the one-style-at-a-time loop left them: each name once, at its last position.
+        assert_eq!(kept, [("b", 2), ("a", 3), ("c", 4)]);
     }
 }

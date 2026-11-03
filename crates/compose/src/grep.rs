@@ -406,15 +406,33 @@ impl Grep {
             .collect()
     }
 
-    /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see
-    /// [`translate_replacement`]). Stops after the first match when `first_only`.
-    pub fn replacements(&self, text: &str, template: &str, first_only: bool) -> Result<Vec<(Range<usize>, String)>, GrepError> {
+    /// Matches in `text` that `keep` accepts and their replacements, `template` expanded per match
+    /// (`$1`…; see [`translate_replacement`]). Stops after the first kept match when `first_only`,
+    /// and with an error once the expanded replacements pass `max_bytes` in all (before any more
+    /// are made).
+    pub fn replacements(
+        &self,
+        text: &str,
+        template: &str,
+        first_only: bool,
+        max_bytes: usize,
+        keep: impl Fn(&Range<usize>) -> bool,
+    ) -> Result<Vec<(Range<usize>, String)>, GrepError> {
         let exp = fancy_regex::Expander::default();
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         for caps in self.re.captures_iter(text) {
             let caps = caps.map_err(run_err)?;
             let Some(m) = caps.get(0) else { continue };
-            out.push((m.range(), exp.expansion(template, &caps)));
+            if !keep(&m.range()) {
+                continue;
+            }
+            let expanded = exp.expansion(template, &caps);
+            bytes = bytes.saturating_add(expanded.len());
+            if bytes > max_bytes {
+                return Err(err(format!("the replacements would put more than {max_bytes} bytes in")));
+            }
+            out.push((m.range(), expanded));
             if first_only {
                 break;
             }
@@ -494,7 +512,13 @@ mod tests {
         assert_eq!(g.find_all("axb A.B a.b", 1).unwrap().first(), Some(&(4..7)));
         let g = grep(r"(\d+)\h(\l+)");
         let tpl = translate_replacement(r"$2~S$1x\r\$$");
-        assert_eq!(g.replacements("5 kg", &tpl, false).unwrap(), [(0..4, "kg\u{A0}5x\n$$".to_string())]);
+        assert_eq!(g.replacements("5 kg", &tpl, false, usize::MAX, |_| true).unwrap(), [(0..4, "kg\u{A0}5x\n$$".to_string())]);
+        // The total expanded size is bounded while the replacements are made, over the matches kept.
+        let g = grep("a");
+        assert!(g.replacements("aaaa", "xxxx", false, 15, |_| true).is_err());
+        assert_eq!(g.replacements("aaaa", "xxxx", false, 16, |_| true).unwrap().len(), 4);
+        assert_eq!(g.replacements("aaaa", "xxxx", false, 8, |m| m.start < 2).unwrap().len(), 2);
+        assert_eq!(g.replacements("aaaa", "xxxx", true, 4, |m| m.start >= 2).unwrap(), [(2..3, "xxxx".to_string())]);
     }
 
     #[test]

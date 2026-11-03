@@ -316,14 +316,9 @@ impl Search {
     ) -> Result<Vec<(Range<usize>, String)>> {
         let limit = if first_only { 1 } else { usize::MAX };
         match (&self.re, self.spans(d, sid, cell, r)) {
-            (Some(re), None) if grep => re.replacements(text, rep, first_only).map_err(|e| bad("find.change", e)),
-            (Some(re), Some(spans)) if grep => Ok(re
-                .replacements(text, rep, false)
-                .map_err(|e| bad("find.change", e))?
-                .into_iter()
-                .filter(|(m, _)| within(&spans, m))
-                .take(limit)
-                .collect()),
+            (Some(re), spans) if grep => re
+                .replacements(text, rep, first_only, MAX_CHANGE_BYTES, |m| spans.as_ref().is_none_or(|s| within(s, m)))
+                .map_err(|e| bad("find.change", e)),
             _ => {
                 let found = self.find_all(d, sid, cell, r, text, limit)?;
                 // Every match gets its own copy of the change: bounded before any is made.

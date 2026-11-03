@@ -971,6 +971,9 @@ fn change_all_is_bounded_by_what_it_would_put_in() {
     let huge = "y".repeat(40_000);
     let e = s.execute("find.change", &json!({"find": "x", "change": huge})).unwrap_err().to_string();
     assert!(e.contains("would put more than"), "{e}");
+    // GREP replacements are held to the same total while they are made.
+    let e = s.execute("find.change", &json!({"find": "x", "change": huge, "grep": true})).unwrap_err().to_string();
+    assert!(e.contains("would put more than"), "{e}");
     let r = s.execute("find.change", &json!({"find": "x", "change": "yy"})).unwrap();
     assert_eq!(r["count"], 2048);
 }
