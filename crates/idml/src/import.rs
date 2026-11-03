@@ -195,6 +195,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
+    asset_index: designcraft_doc::AssetIndex,
     /// Assets read from a link path at a page and crop, so later placements of that path, page
     /// and crop reuse them unread.
     linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
@@ -277,6 +279,7 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            asset_index: designcraft_doc::AssetIndex::new(),
             linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),

@@ -4,6 +4,78 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     designcraft_render::Rendered { width: w, height: h, pixels: vec![200u8; (w * h * 4) as usize] }.to_png()
 }
 
+/// The Links panel polls `links.list` twice a second: a linked image whose file keeps its size
+/// and time is not read again (press-size images would otherwise be read whole on every poll).
+/// A new time is read once; changed bytes show as modified; an update is remembered.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn unchanged_linked_images_are_not_read_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("dc-image-link-poll-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.png");
+    // Two valid images of the same byte length (a uniform fill compresses to the same size
+    // whatever its value), so a change shows only in the bytes.
+    let a = png(40, 40);
+    let b = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![100u8; 40 * 40 * 4] }.to_png();
+    assert_eq!(a.len(), b.len(), "the test needs two files of one size");
+    assert_ne!(a, b);
+    std::fs::write(&path, &a).unwrap();
+    // Unreadable: a status that reads the file would say missing.
+    let readable = |on: bool| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(if on { 0o644 } else { 0o000 })).unwrap();
+    // A time `secs` ago (a file changed in the last two seconds is always read).
+    let touch = |secs: u64| {
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs)).unwrap();
+    };
+    touch(60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": path.to_string_lossy(), "link": true})).unwrap();
+    let status = |s: &mut Session| {
+        let l = s.execute("links.list", &json!({})).unwrap();
+        l.as_array().unwrap().iter().find(|r| r.get("asset").is_some()).unwrap()["status"].as_str().unwrap().to_string()
+    };
+
+    // First poll reads and remembers; the second doesn't read.
+    assert_eq!(status(&mut s), "ok");
+    readable(false);
+    if std::fs::read(&path).is_ok() {
+        // Running as root: permissions don't stop reads, so this can't be observed.
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    assert_eq!(status(&mut s), "ok", "same size and time: not read");
+    // Saved again unchanged (a new time): read once, then not again.
+    readable(true);
+    touch(30);
+    assert_eq!(status(&mut s), "ok");
+    readable(false);
+    assert_eq!(status(&mut s), "ok", "the second poll doesn't read it");
+    // Changed, same size, new time: modified — and remembered, not re-read.
+    readable(true);
+    std::fs::write(&path, &b).unwrap();
+    touch(20);
+    assert_eq!(status(&mut s), "modified");
+    readable(false);
+    assert_eq!(status(&mut s), "modified", "a modified answer is remembered too");
+    // Updated: the document's bytes are the file's, so the next poll reads once and says ok.
+    readable(true);
+    assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
+    assert_eq!(status(&mut s), "ok");
+    readable(false);
+    assert_eq!(status(&mut s), "ok", "remembered after the update");
+    // A different size needs no read at all.
+    readable(true);
+    std::fs::write(&path, png(41, 41)).unwrap();
+    touch(10);
+    readable(false);
+    assert_eq!(status(&mut s), "modified", "size differs: decided from metadata");
+    readable(true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A linked file's size is the document's choice, so a link is read under a cap (#1596).
 #[cfg(not(target_arch = "wasm32"))]
 #[test]

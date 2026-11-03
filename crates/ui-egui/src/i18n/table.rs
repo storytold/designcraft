@@ -4157,6 +4157,18 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Box", ["Box", "Boîte", "Box", "Box", "方框"]),
     ("Comb", ["Comb", "Peigne", "Comb", "Comb", "梳状"]),
     ("Cover", ["Cover", "Recouvrir", "Cover", "Cover", "覆盖"]),
+    ("Cover Image:", ["Titelbild:", "Image de couverture :", "Imagen de portada:", "表紙画像 :", "封面图像："]),
+    ("Choose…", ["Auswählen …", "Choisir…", "Elegir…", "選択…", "选择…"]),
+    (
+        "A PNG or JPEG file; left empty, the first page is the cover.",
+        [
+            "Eine PNG- oder JPEG-Datei; bleibt das Feld leer, ist die erste Seite das Titelbild.",
+            "Un fichier PNG ou JPEG ; laissé vide, la première page sert de couverture.",
+            "Un archivo PNG o JPEG; si se deja vacío, la primera página es la portada.",
+            "PNG または JPEG ファイル。空のままにすると最初のページが表紙になります。",
+            "PNG 或 JPEG 文件；留空时第一页即为封面。",
+        ],
+    ),
     ("Dissolve", ["Dissolve", "Dissolution", "Dissolve", "Dissolve", "溶解"]),
     ("Fade", ["Fade", "Fondu", "Fade", "Fade", "淡入淡出"]),
     ("Push", ["Push", "Pousser", "Push", "Push", "推入"]),

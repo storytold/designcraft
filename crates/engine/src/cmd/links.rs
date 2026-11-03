@@ -442,6 +442,7 @@ fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result
     Ok(Arc::new(a))
 }
 
+/// `links.relink`: a placed graphic or linked text file takes its bytes from `path` from now on.
 fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("links.relink", "missing path"))?.to_string();
     if let Some(sid) = story_param(p) {
@@ -463,6 +464,8 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `links.relinkFolder`: relink graphics to same-named files in a folder and/or with another
+/// extension (the missing ones by default).
 fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = str_param(p, "dir").map(std::path::PathBuf::from);
     if let Some(dir) = &dir {
@@ -534,6 +537,7 @@ fn relink_folder(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"relinked": n, "notFound": not_found}))
 }
 
+/// `links.update`: re-read the modified links (one, or every one) from where they resolve.
 fn update(s: &mut Session, p: &Value) -> Result<Value> {
     let (d, document) = {
         let st = s.doc()?;

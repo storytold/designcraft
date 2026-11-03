@@ -435,20 +435,28 @@ pub(crate) mod browser_import_tests {
                 ("Brochure.designcraft", "Brochure"),
                 ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
                 ("Brochure.v2.designcraft", "Brochure.v2"),
+                ("Brochure.indd", "Brochure.indd"),
+                ("Brochure.INDT", "Brochure.INDT"),
                 ("日本.DESIGNCRAFT", "日本"),
                 (".designcraft", ".designcraft"),
                 ("Brochure", "Brochure"),
             ] {
+                let before = app.session.documents().len();
                 let request = app.import_request(purpose);
                 deliver(&mut app, request, name, native.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
                 assert_eq!(app.session.doc().unwrap().doc.title, title, "{purpose}: {name}");
             }
         }
         let idml = designcraft_idml::export_idml(&app.session.doc().unwrap().doc);
         for purpose in ["open", "drop"] {
-            let request = app.import_request(purpose);
-            deliver(&mut app, request, "Brochure.idml", idml.clone());
-            assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: IDML");
+            for name in ["Brochure.idml", "Brochure.indd", "Brochure.INDT"] {
+                let before = app.session.documents().len();
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, idml.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
+                assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: {name}");
+            }
         }
     }
     fn image() -> Vec<u8> {

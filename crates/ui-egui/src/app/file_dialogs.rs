@@ -348,6 +348,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
         "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text or set file)", extensions: &["json", "txt", "indk"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
+        "coverImage" => &[OpenFilter { name: "Cover image (PNG, JPEG)", extensions: &["png", "jpg", "jpeg"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],

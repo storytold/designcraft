@@ -1907,6 +1907,141 @@ fn tab_leaders_fill_the_gap() {
 }
 
 #[test]
+fn indent_to_here_starts_the_paragraphs_later_lines_at_the_character() {
+    // "1.", Indent to Here, then text long enough to wrap: every line after the first starts
+    // where the character sits, in this frame and the next one (#2080).
+    let text = format!("1.\u{e005}{}", [LOREM; 3].join(" "));
+    let para = ParaAttrs { left_indent: Some(6.0), ..Default::default() };
+    let (mut d, sid, a) = doc_with(&text, Rect::new(72.0, 36.0, 272.0, 96.0), para.clone());
+    let lid = d.default_layer();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 200.0, 272.0, 800.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    let cs = compose_story(&d, sid, &Default::default());
+    assert!(!cs.is_overset());
+    assert!(cs.frames[0].lines.len() > 1 && !cs.frames[1].lines.is_empty(), "the text wraps into the second frame");
+    let lines = all_lines(&cs);
+    let here = lines[0].glyphs.iter().find(|g| g.byte == 2 && g.len > 0).unwrap().x;
+    assert!(here > 72.0 + 6.0 + 1.0, "the character follows the number");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - here).abs() < 0.01, "line {i} starts at {start}, not at the indent {here}");
+        assert!(line.end_x <= 272.0 + 0.01, "line {i} fits the narrower measure");
+    }
+    // Without the character the later lines keep the paragraph's own indent.
+    let (plain, psid, _) = doc_with(&text.replace('\u{e005}', " "), Rect::new(72.0, 36.0, 272.0, 400.0), para);
+    let pcs = compose_story(&plain, psid, &Default::default());
+    let start = pcs.frames[0].lines[1].glyphs.iter().find(|g| g.visible).unwrap().x;
+    assert!((start - 78.0).abs() < 0.01, "plain second line starts at {start}");
+}
+
+/// Where each line after the first starts, and the Indent to Here character's x on the first.
+fn indent_to_here_starts(text: &str, para: ParaAttrs) -> (f64, Vec<f64>) {
+    let (d, sid, _) = doc_with(text, Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 4, "the text wraps");
+    let byte = text.find('\u{e005}').unwrap();
+    let here = lines[0].glyphs.iter().find(|g| g.byte == byte && g.len > 0).unwrap().x;
+    let starts = lines.iter().skip(1).map(|l| l.glyphs.iter().find(|g| g.visible).unwrap().x).collect();
+    (here, starts)
+}
+
+#[test]
+fn indent_to_here_after_a_tab_hangs_the_text_after_the_number() {
+    // The usual hanging number: "1.", a tab to the next stop, then Indent to Here.
+    let tabs = vec![designcraft_doc::TabStop { position: 24.0, align: TabAlign::Left, leader: String::new(), align_on: String::new() }];
+    let (here, starts) = indent_to_here_starts(&format!("1.\t\u{e005}{LOREM}"), ParaAttrs { tabs: Some(tabs), ..Default::default() });
+    assert!((here - (72.0 + 24.0)).abs() < 0.01, "the character sits at the tab stop: {here}");
+    for (i, start) in starts.iter().enumerate() {
+        assert!((start - here).abs() < 0.01, "line {} starts at {start}, not at {here}", i + 1);
+    }
+}
+
+#[test]
+fn indent_to_here_beside_a_drop_cap_is_not_indented_by_the_drop_cap_again() {
+    // A three-line drop cap, then Indent to Here on the first line: the lines beside the drop
+    // cap and the lines below it all start at the character, none further in.
+    let (here, starts) = indent_to_here_starts(&format!("Drop \u{e005}{LOREM}"), drop_cap(3, 1));
+    for (i, start) in starts.iter().enumerate() {
+        assert!((start - here).abs() < 0.01, "line {} starts at {start}, not at {here}", i + 1);
+    }
+}
+
+#[test]
+fn indent_to_here_inside_the_drop_cap_indents_the_lines_below_it() {
+    // A two-character drop cap whose second character is Indent to Here: the lines beside the
+    // drop cap and the ones below it all start at the character, at the drop cap's edge.
+    let (here, starts) = indent_to_here_starts(&format!("A\u{e005}{LOREM}"), drop_cap(3, 2));
+    assert!(here > 72.0 + 10.0, "the character sits past the drop cap: {here}");
+    assert!(starts.len() > 3, "lines below the drop cap");
+    for (i, start) in starts.iter().enumerate() {
+        assert!((start - here).abs() < 0.01, "line {} starts at {start}, not at {here}", i + 1);
+    }
+}
+
+#[test]
+fn indent_to_here_in_a_list_number_indents_to_the_generated_character() {
+    // "^#.^i^t": the paragraph's later lines start where the number's Indent to Here sits,
+    // right after "1.", not at the text after the tab.
+    let mut para = numbered(designcraft_doc::NumberStyle::Arabic, "^#.^i^t");
+    para.list_tab = Some(Some(36.0));
+    let (d, sid, _) = doc_with(LOREM, Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 3, "the text wraps");
+    let label = |c: char| lines[0].glyphs.iter().find(|g| g.len == 0 && g.rendered_char == c).unwrap();
+    let (dot, here) = (label('.'), label('\u{e005}').x);
+    assert!((here - (dot.x + dot.adv)).abs() < 0.01, "the character follows the number: {here}");
+    let text = lines[0].glyphs.iter().find(|g| g.len > 0).unwrap().x;
+    assert!((text - (72.0 + 36.0)).abs() < 0.01 && here < text - 1.0, "the text after the tab is further in: {text}");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - here).abs() < 0.01, "line {i} starts at {start}, not at {here}");
+    }
+}
+
+#[test]
+fn indent_to_here_in_a_list_number_after_one_in_the_drop_cap_wins() {
+    // The drop cap "A^i" sits at the indent and the number "1.^i" follows it on the first line,
+    // so the number's character is the line's last one: the later lines start there, not at
+    // the drop cap's.
+    let mut para = ParaAttrs { drop_cap_lines: Some(3), drop_cap_chars: Some(2), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^i^t") };
+    para.list_tab = Some(Some(36.0));
+    let (d, sid, _) = doc_with(&format!("A\u{e005}{LOREM}"), Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 4, "the text wraps below the drop cap");
+    let marker = |label: bool| lines[0].glyphs.iter().find(|g| g.rendered_char == '\u{e005}' && (g.len == 0) == label).unwrap().x;
+    let (in_cap, in_label) = (marker(false), marker(true));
+    assert!(in_label > in_cap + 1.0, "the number follows the drop cap: {in_cap} then {in_label}");
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let start = line.glyphs.iter().find(|g| g.visible).unwrap().x;
+        assert!((start - in_label).abs() < 0.01, "line {i} starts at {start}, not at {in_label}");
+    }
+}
+
+#[test]
+fn indent_to_here_in_a_right_to_left_paragraph_indents_from_the_right() {
+    // Hebrew words (the bidi classes decide the order; no Hebrew font has to be present): the
+    // lines after the first end where the character sits, measured from the right edge.
+    let words = "שלום עולם ".repeat(40);
+    let text = format!("שלום \u{e005}{words}");
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..Default::default() };
+    let (d, sid, _) = doc_with(&text, Rect::new(72.0, 36.0, 272.0, 600.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 3, "the text wraps");
+    let byte = text.find('\u{e005}').unwrap();
+    let here = lines[0].glyphs.iter().find(|g| g.byte == byte && g.len > 0).unwrap().x;
+    assert!(here < 272.0 - 1.0, "the character follows the first word: {here}");
+    let right_edge = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        let end = right_edge(line);
+        assert!((end - here).abs() < 0.01, "line {i} ends at {end}, not at {here}");
+    }
+}
+
+#[test]
 fn right_indent_tab_leaders_follow_stop_precedence_without_moving_text() {
     let text = "Intro\u{e006}12";
     let cases = [

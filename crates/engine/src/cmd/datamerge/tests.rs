@@ -1180,6 +1180,14 @@ fn select_records_dedupes_large_ranges_in_first_seen_order() {
 }
 
 #[test]
+fn select_records_rejects_signed_record_numbers() {
+    for (tok, bad) in [("+2", "+2"), ("1-+3", "+3"), ("+1,+4", "+1")] {
+        let err = parse::select_records(5, "range", 1, tok, None).unwrap_err();
+        assert!(err.contains(&format!("bad record \"{bad}\"")), "{tok}: {err}");
+    }
+}
+
+#[test]
 fn oversized_data_file_is_refused_before_reading() {
     let dir = scratch("oversized");
     let path = dir.join("big.csv");
