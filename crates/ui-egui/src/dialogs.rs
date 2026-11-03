@@ -3038,9 +3038,16 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 result = Some(false);
             }
         }
-        // A centred window only offers its body last frame's height: let this one grow to its
-        // options' height (the screen still caps it).
-        let min_body = if side_actions { body_height.min(crate::section_options::BODY_H) } else { 1.0 };
+        // A centred window only offers its body last frame's height: let these grow to their
+        // content's height (the screen still caps it). Numbering & Section Options has its
+        // options beside its buttons; the Color Picker lays itself out on a fixed canvas, which
+        // otherwise shows only its top strip (the field cut off, no values, no hex) behind a
+        // scrollbar.
+        let min_body = match d.id.as_str() {
+            "numberingSection" => body_height.min(crate::section_options::BODY_H),
+            "colorPicker" => body_height.min(picker_layout::SIZE.y + 2.0 * ui.spacing().item_spacing.y),
+            _ => 1.0,
+        };
         egui::ScrollArea::both()
             .id_salt(("dialog_body", &d.id))
             .min_scrolled_width(1.0)
@@ -9047,6 +9054,8 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let old = d.s("hex");
     d.fields.entry("old").or_insert_with(|| json!(old));
+    // The component the picker was last left on, unless the opener chose one.
+    d.fields.entry("component").or_insert_with(|| json!(app.ui.color_picker_component));
     let comp = PickComp::from_key(&d.s("component"));
     let mut p = picked_of(d);
     let before = p;
@@ -9241,6 +9250,7 @@ fn color_picker(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     if comp_now != comp {
         d.fields.insert("component".into(), json!(comp_now.key()));
+        app.ui.color_picker_component = comp_now.key().to_string();
     }
     // The hex code, and the eyedropper beside it.
     let cy = area.min.y + at::ROWS[7];

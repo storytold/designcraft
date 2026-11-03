@@ -3739,6 +3739,42 @@ fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
     assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
 }
 
+/// The Color Picker reopens on the component it was left on, and the choice survives the
+/// preferences file; an opener that names a component still gets it.
+#[test]
+fn the_color_picker_remembers_its_component() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
+    assert_eq!(app.ui.color_picker_component, "r", "R at first, as before");
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "r");
+    h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "H:").click();
+    h.run_steps(2);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    assert_eq!(h.state().app.ui.color_picker_component, "h", "the choice is kept outside the dialog");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().app.ui.dialog.is_none());
+    // Reopened: H, not R.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    // An opener's own choice wins.
+    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
+    h.run_steps(3);
+    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "l");
+    // Saved with the preferences, and read back; a file without it is R.
+    let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
+    assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
+    assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
+}
+
 #[test]
 fn create_guides_dialog_covers_the_spread_in_view() {
     let mut app = facing_app(6);
@@ -4971,4 +5007,34 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     assert_eq!(added.len(), 1, "one frame");
     let b = added[0].bounds();
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
+}
+
+#[test]
+fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":400,"height":600,"pages":3,"facingPages":true})).unwrap();
+    app.run("layout.parents.new", json!({"prefix":"B"})).unwrap();
+    app.run("layout.parents.edit", json!({"on":true})).unwrap();
+    app.session.set_tool("page");
+    let before = app.session.doc().unwrap().doc.clone();
+    let sr = designcraft_doc::SpreadRef::Parent(1);
+    let p = app.session.layout().spread_page_rect(&before, sr, 1).unwrap().center();
+    app.session.pointer(&PointerEvent::new(PointerKind::DoubleClick, p.x, p.y), designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
+    let request = app.session.ui_requests.pop().unwrap();
+    let designcraft_engine::UiRequest::Dialog { id, params } = request else { panic!("expected exact-size dialog") };
+    app.ui.dialog = Some(Dialog::new(&id, params));
+    let d = app.ui.dialog.as_mut().unwrap();
+    d.fields.insert("width".into(), json!("530"));
+    d.fields.insert("height".into(), json!("710"));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.doc().unwrap().doc;
+    assert_eq!((doc.parents[1].pages[1].width, doc.parents[1].pages[1].height), (530.0, 710.0));
+    assert_eq!(doc.parents[0], before.parents[0]);
+    assert_eq!(doc.spreads, before.spreads);
+    let saved = doc.clone();
+    app.ui.dialog = Some(Dialog::new("cmd:layout.parentPageSize", json!({"parent":saved.parents[1].id.0,"page":1,"width":"NaN"})));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
