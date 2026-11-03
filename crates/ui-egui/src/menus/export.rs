@@ -67,6 +67,44 @@ pub(super) fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, Strin
     }
 }
 
+/// File › Export Scribus…: ask for a path, export through `file.exportScribus` and write the
+/// `.sla` and its linked images with the platform writer (a download on the web).
+pub(super) fn export_scribus(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        let name = format!("{}.sla", st.doc.title);
+        return ask_then_export(app, &name, p.clone(), export_scribus);
+    };
+    let r = app.run("file.exportScribus", json!({}))?;
+    let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
+    let dir = std::path::Path::new(&path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let images: Vec<(String, Vec<u8>)> = r["images"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    let rel = i["path"].as_str()?;
+                    let data = designcraft_engine::cmd::base64_decode(i["base64"].as_str().unwrap_or_default());
+                    Some((rel.to_string(), data))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let write = app.services.write.as_mut().ok_or("no writer")?;
+    write(&path, &bytes)?;
+    for (rel, data) in &images {
+        let dest = dir.join(rel);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            designcraft_engine::io::create_dir_all(parent)?;
+        }
+        write(&dest.to_string_lossy(), data)?;
+    }
+    Ok(json!({"path": path, "bytes": bytes.len(), "images": images.len()}))
+}
+
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 /// File › Export EPUB…: export through `file.exportEpub` (the first page as its cover) to `path`,

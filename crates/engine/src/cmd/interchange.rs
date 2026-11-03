@@ -19,6 +19,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "file.exportIdml", "Export IDML…", [], None,
             "{path?, embedImages?: true} — writes an IDML package to `path`, or returns {base64} without a path",
             has_doc, export_idml),
+        cmd!(query "file.exportScribus", "Export Scribus…", [], None,
+            "{path?, imageFolder?} — writes a Scribus 1.7 (.sla) document to `path` (placed images beside it, or in `imageFolder`), or returns {base64, images: [{path, base64}]} without a path",
+            has_doc, export_scribus),
+        cmd!(noundo "file.openScribus", "Open Scribus", [], None,
+            "{path | base64, name?} — opens a Scribus 1.7 (.sla) document as a new document (linked images are read beside the file; unsupported features join `warnings`) → {index, documentFonts, warnings}",
+            always, open_scribus),
         cmd!(noundo "file.openIdml", "Open IDML", [], None,
             "{path | base64, name?} — opens an IDML package, or an InDesign document or template (.indd, .indt: converted to IDML first; its conversion warnings join `warnings`), as a new document (linked images are read next to the file or from its Links/ folder; the fonts in a `Document Fonts` folder beside it load first) → {index, documentFonts, warnings: conversion warnings, package parts missing, font files skipped, GREP styles whose pattern can't compile}",
             always, open_idml),
@@ -384,6 +390,86 @@ fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(
     None
 }
 
+fn export_scribus(s: &mut Session, p: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let opts = designcraft_scribus::ExportOptions { image_folder: str_param(p, "imageFolder").map(str::to_string) };
+    let exported = designcraft_scribus::export_scribus_with(&st.doc, &opts);
+    match str_param(p, "path") {
+        Some(path) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                crate::io::write_file(path, &exported.data).map_err(EngineError::Other)?;
+                let base = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));
+                for image in &exported.images {
+                    let rel = std::path::Path::new(&image.path);
+                    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                        return Err(EngineError::Other(format!("{}: refusing to write an image outside the document's folder", image.path)));
+                    }
+                    let dest = base.join(rel);
+                    if let Some(dir) = dest.parent()
+                        && !dir.as_os_str().is_empty()
+                    {
+                        crate::io::create_dir_all(dir).map_err(EngineError::Other)?;
+                    }
+                    crate::io::write_file(&dest, &image.data).map_err(EngineError::Other)?;
+                }
+                Ok(json!({"path": path, "bytes": exported.data.len(), "images": exported.images.len()}))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (path, &exported);
+                Err(EngineError::Other("use file.exportScribus without a path on the web".into()))
+            }
+        }
+        None => {
+            let images: Vec<Value> = exported.images.iter().map(|i| json!({"path": i.path, "base64": base64_encode(&i.data)})).collect();
+            Ok(json!({"base64": base64_encode(&exported.data), "bytes": exported.data.len(), "images": images}))
+        }
+    }
+}
+
+pub(crate) fn open_scribus(s: &mut Session, p: &Value) -> Result<Value> {
+    let (bytes, package, title) = if let Some(b) = str_param(p, "base64") {
+        let name = str_param(p, "name").unwrap_or_default();
+        (base64_decode(b), None, without_document_extension(name).to_string())
+    } else if let Some(path) = str_param(p, "path") {
+        #[cfg(not(target_arch = "wasm32"))]
+        let b = crate::io::read_file(path).map_err(EngineError::Other)?;
+        #[cfg(target_arch = "wasm32")]
+        let b: Vec<u8> = Vec::new();
+        let pp = std::path::Path::new(path);
+        (b, Some(pp.to_path_buf()), pp.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+    } else {
+        return Err(bad("file.openScribus", "missing `path` or `base64`"));
+    };
+    let read = |link: &str| -> Option<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            read_packaged_link(link, package.as_deref()).map(|(_, data)| data)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (link, package.as_deref());
+            None
+        }
+    };
+    let mut imported = designcraft_scribus::import_scribus_report(&bytes, &read).map_err(|e| EngineError::Other(e.to_string()))?;
+    if !title.is_empty() {
+        imported.document.title = title;
+    }
+    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+        Some(path) => super::file::load_document_fonts(&mut imported.document, path),
+        None => (None, 0, Vec::new()),
+    };
+    let mut warnings = imported.warnings;
+    warnings.extend(font_warnings);
+    warnings.extend(super::style::grep_style_warnings(&imported.document));
+    let mut st = DocState::new(imported.document, None);
+    st.fonts = fonts;
+    let i = s.add_document(st);
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+}
+
 pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, package, file, title) = if let Some(b) = str_param(p, "base64") {
         let name = str_param(p, "name").unwrap_or_default();
@@ -470,7 +556,7 @@ pub(crate) fn has_indd_extension(name: &str) -> bool {
 /// `name` without a trailing .idml, .indd or .indt (any case).
 fn without_document_extension(name: &str) -> &str {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ["idml", "indd", "indt"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
+        Some((stem, ext)) if ["idml", "indd", "indt", "sla"].iter().any(|e| ext.eq_ignore_ascii_case(e)) => stem,
         _ => name,
     }
 }
@@ -982,5 +1068,24 @@ mod nested_layer_tests {
     #[test]
     fn nested_idml_endnote_external_choices_are_rejected() {
         external("endnote");
+    }
+
+    #[test]
+    fn scribus_export_writes_a_file_that_opens_again() {
+        let dir = std::env::temp_dir().join(format!("dc-scribus-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("roundtrip.sla");
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 240, 120], "content": "text", "text": "Scribus round trip"})).unwrap();
+        let r = s.execute("file.exportScribus", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(r["bytes"].as_u64().unwrap_or(0) > 1000, "{r}");
+        assert!(path.is_file());
+        let opened = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(opened["warnings"].as_array().map(Vec::len), Some(0), "{opened}");
+        let st = s.doc().unwrap();
+        let text = st.doc.stories.values().find(|story| story.text.contains("Scribus")).expect("text came back");
+        assert_eq!(text.text, "Scribus round trip");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -2177,6 +2177,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Export EPUB…", ["Export EPUB…", "Exporter en EPUB…", "Export EPUB…", "Export EPUB…", "导出 EPUB…"]),
     ("Export HTML…", ["Export HTML…", "Exporter en HTML…", "Export HTML…", "Export HTML…", "导出 HTML…"]),
     ("Export IDML…", ["Export IDML…", "Exporter en IDML…", "Export IDML…", "Export IDML…", "导出 IDML…"]),
+    ("Export Scribus…", ["Scribus exportieren …", "Exporter en Scribus…", "Exportar Scribus…", "Scribus を書き出し…", "导出 Scribus…"]),
     (
         "Export PDF (Interactive)…",
         [

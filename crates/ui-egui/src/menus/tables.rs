@@ -23,6 +23,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "ui:app.printBooklet",
             "ui:app.exportPng",
             "ui:app.exportIdml",
+            "ui:app.exportScribus",
             "ui:app.exportEpub",
             "ui:app.exportFixedEpub",
             "ui:app.exportInteractivePdf",

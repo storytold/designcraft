@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** Scribus 1.7 (.sla) import and export (`designcraft-scribus`: pages, masters, layers, colours, styles, text, images, groups, guides, sections; unsupported markers are reported and dropped); minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -22,6 +22,7 @@ score below).
 | InDesign document | `.indd` | read/write (native) | ✓ (converted to IDML in memory by [storytold/indd-utils](https://github.com/storytold/indd-utils), then the IDML importer; #21, #114) | ✗ | Converter warnings join the open result; unreadable files are open errors. Synthetic-bytes tests only; indd-utils reports 96.9% of IDML values reproduced on ~650 pairs. No real-file corpus test | 30% |
 | InDesign template | `.indt` | read/write | ✓ (as `.indd`) | ✗ | As `.indd` | 2% |
 | InDesign Markup | `.idml` | read/write | ✓ | ✓ | Synthetic fixtures in `crates/idml/src/tests.rs` (51 tests); exported files verified by opening in InDesign 2026 by hand; indd-utils' 98-document run imports 811 spreads / 2,866 stories / 5,812 items. Open: #193, #338, #339, #340, #211. No real-file corpus test | 20% |
+| Scribus | `.sla` | — (not an InDesign format) | ✓ (`designcraft-scribus`, Scribus 1.7.x XML) | ✓ | Synthetic `.sla` fixtures and round-trip tests in `crates/scribus/src/tests.rs`; exported files opened in Scribus 1.7.3 and re-imported. Images are written beside the file (or in `imageFolder`). Tables, footnotes, gradients/patterns, effects, text on a path, multi-state objects and named attributes are not imported; they are reported as warnings. | 3% |
 | DesignCraft native | `.designcraft` | — | ✓ | ✓ | zip + JSON, versioned; round-trip tests. Asset loading and compaction index by content hash, then confirm byte equality; equal-sized distinct files fall into separate search buckets (#727). Separate links, MIME types and PDF pages retain their identity | — |
 | InDesign book | `.indb` | read/write | ✗ (own `.dcbook`) | ✗ | Books are shallow (see gaps.md) | 2% |
 | InDesign library | `.indl`, `.inlx` | read/write | ✗ (own `.dclib`) | ✗ | | 1% |
@@ -30,6 +31,14 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+
+Scribus interchange is one XML file. A `.sla` export writes the document and its placed images;
+Scribus has no embedding, so the images live beside the file (or in the folder the caller names).
+The reader takes the 1.7 coordinate scheme (document-wide points, clockwise rotation) into
+DesignCraft spread space and the writer puts it back, so a round trip keeps item positions,
+thumbnail rotation, threaded stories and master-page items. Scribus' special text markers
+(footnote, table, anchor and break characters) have no `.sla` equivalent: the exporter drops them
+and reports that they are unsupported rather than writing an unreadable story.
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and

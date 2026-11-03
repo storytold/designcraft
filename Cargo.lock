@@ -1411,6 +1411,7 @@ dependencies = [
  "designcraft-pdf",
  "designcraft-pptx",
  "designcraft-render",
+ "designcraft-scribus",
  "designcraft-textimport",
  "designcraft-tools",
  "hayro-cmap",
@@ -1585,6 +1586,20 @@ dependencies = [
  "thiserror 2.0.21",
  "vello_common 0.2.0",
  "vello_cpu 0.2.0",
+]
+
+[[package]]
+name = "designcraft-scribus"
+version = "0.17.0"
+dependencies = [
+ "designcraft-color",
+ "designcraft-compose",
+ "designcraft-doc",
+ "designcraft-geom",
+ "designcraft-images",
+ "log",
+ "quick-xml 0.41.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

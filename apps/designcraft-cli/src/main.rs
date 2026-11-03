@@ -1,7 +1,7 @@
 //! Headless DesignCraft.
 //!
 //! ```text
-//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
+//! designcraft-cli run [--in FILE.designcraft|FILE.idml | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT.png|.jpg|.pdf|.designcraft|.idml|.sla|.epub|.pptx|.html|.rtf|.txt] [--all-pages DIR]
 //!                                      # --page, --scale and --pdf-options apply to the exports that follow them
 //!                                      # .rtf and .txt hold the story being edited or of the selected frame
 //! designcraft-cli commands [FILTER]   # list commands (JSON), optionally only ids/labels/menus containing FILTER
@@ -70,7 +70,7 @@ Most commands ignore parameters they do not know instead of rejecting them: chec
 with `designcraft-cli describe COMMAND`.
 
 Options:
-  --in FILE / --sample   open a document (.designcraft or .idml) or the sample first
+  --in FILE / --sample   open a document (.designcraft, .idml or .sla) or the sample first
   --save OUT             save as .designcraft after the script succeeds
   --export OUT           export after the script succeeds (.pdf, .idml, .epub, .pptx, .png, .jpg); repeatable
   --keep-going           run every step, recording failures as {"error": ...} results
@@ -445,6 +445,7 @@ impl Export {
             Some("pdf") => Export::Pdf,
             Some("designcraft") => Export::Document,
             Some("idml") => Export::Command("file.exportIdml"),
+            Some("sla") => Export::Command("file.exportScribus"),
             Some("epub") => Export::Command("file.exportEpub"),
             Some("pptx") => Export::Pptx,
             Some("html" | "htm") => Export::Command("file.exportHtml"),

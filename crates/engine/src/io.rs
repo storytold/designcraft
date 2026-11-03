@@ -115,6 +115,21 @@ pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), String> {
     written.map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Make `path` and its missing parents, inside the automation write root when there is one.
+pub fn create_dir_all(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    touch(path);
+    crate::file_access::check_write(path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(format!("{}: folders are not available on the web", path.display()))
+    }
+}
+
 /// Atomically replace the file at `path` with the contents of `staged`, a private temporary file
 /// the engine made itself (so it is not checked), inside the automation write root when there is
 /// one.

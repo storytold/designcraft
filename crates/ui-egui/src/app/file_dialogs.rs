@@ -367,6 +367,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
                     "md",
                     "xlsx",
                     "idml",
+                    "sla",
                     "designcraft",
                     "mp4",
                     "m4v",
@@ -383,8 +384,9 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
             OpenFilter { name: "Video and sound", extensions: &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "ogg"] },
         ],
         _ => &[
-            OpenFilter { name: "DesignCraft, IDML or InDesign", extensions: &["designcraft", "idml", "indd", "indt"] },
+            OpenFilter { name: "DesignCraft, Scribus, IDML or InDesign", extensions: &["designcraft", "sla", "idml", "indd", "indt"] },
             OpenFilter { name: "DesignCraft", extensions: &["designcraft"] },
+            OpenFilter { name: "Scribus (SLA)", extensions: &["sla"] },
             OpenFilter { name: "InDesign Markup (IDML)", extensions: &["idml"] },
             OpenFilter { name: "InDesign document or template (INDD, INDT)", extensions: &["indd", "indt"] },
             // Files saved without an extension; `file.open` tells the formats apart by content.
@@ -498,7 +500,7 @@ mod tests {
         for ext in ["png", "jpg", "tif", "psd", "svg", "pdf", "ai", "eps"] {
             assert!(exts.contains(&ext), "{ext} is missing from the relink dialog: {exts:?}");
         }
-        assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml"));
+        assert!(!exts.contains(&"designcraft") && !exts.contains(&"idml") && !exts.contains(&"sla"));
     }
 
     #[test]
@@ -507,12 +509,15 @@ mod tests {
         for ext in ["csv", "tsv", "tab", "txt", "xlsx"] {
             assert!(exts.contains(&ext), "{ext} is missing from the dataMerge dialog: {exts:?}");
         }
-        assert!(!exts.iter().any(|ext| *ext == "designcraft" || *ext == "idml"), "dataMerge must not fall through to the document filters: {exts:?}");
+        assert!(
+            !exts.iter().any(|ext| *ext == "designcraft" || *ext == "idml" || *ext == "sla"),
+            "dataMerge must not fall through to the document filters: {exts:?}"
+        );
         let place = open_filters("place");
         assert!(place.len() > 1, "the place dialog keeps a filter for each kind of file");
         assert!(place.iter().any(|filter| filter.extensions.contains(&"png")));
         let documents = open_filters("");
-        for ext in ["designcraft", "idml", "indd", "indt"] {
+        for ext in ["designcraft", "sla", "idml", "indd", "indt"] {
             assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
         }
         assert!(documents.last().is_some_and(|filter| filter.extensions == [ALL_FILES]), "files without an extension can be picked");
