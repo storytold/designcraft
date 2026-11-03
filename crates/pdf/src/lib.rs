@@ -51,7 +51,7 @@ mod transitions;
 pub use export::{
     BookletKind, BookletOptions, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, merge_pdfs, print_color, sheet_spreads,
 };
-pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4};
+pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
@@ -136,7 +136,8 @@ pub struct PdfOptions {
     /// Title for the metadata; `None` = the document title.
     pub title: Option<String>,
     pub author: Option<String>,
-    /// Creation date as Unix seconds (UTC); `None` = now (native) / omitted (wasm).
+    /// Creation date as Unix seconds (UTC). `None` takes `SOURCE_DATE_EPOCH` when it names a date
+    /// a PDF can hold, else the clock (native) / omitted (wasm).
     pub created: Option<i64>,
     /// Tagged PDF: stories become paragraphs in reading order, graphics figures with their alt
     /// text, parent-page items and printer's marks artifacts.

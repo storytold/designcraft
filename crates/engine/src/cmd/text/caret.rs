@@ -380,6 +380,8 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     s.typing_format = None;
     let stm = s.doc_mut()?;
     stm.selection.text = Some(if extend { TextSel { focus: new, ..t } } else { TextSel { anchor: new, focus: new, ..t } });
+    // Moving the caret leaves the selected cells, so typing inserts at the caret.
+    stm.selection.cells = None;
     stm.bump_revision();
     Ok(json!({"pos": new}))
 }

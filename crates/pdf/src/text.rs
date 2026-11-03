@@ -262,10 +262,23 @@ impl Exporter<'_> {
         }
     }
 
-    pub(crate) fn frame_text(&mut self, s: &mut Surface, cs: &ComposedStory, ft: &FrameText, story: &str) {
+    /// The frame's text. With `objects` (the frame text space → page transform and the page),
+    /// the frame's anchored objects are drawn too, over its paragraph shading and under its text;
+    /// returns whether they were.
+    pub(crate) fn frame_text(
+        &mut self,
+        s: &mut Surface,
+        cs: &ComposedStory,
+        ft: &FrameText,
+        story: &str,
+        objects: Option<(Affine, Option<usize>)>,
+    ) -> bool {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
             for d in ft.decos.iter().filter(|d| !d.nonprinting) {
+                if d.overprint {
+                    me.warn("overprint is not exported yet");
+                }
                 if let Some(c) = me.swatch_color(&d.color, d.tint) {
                     match &d.path {
                         Some(p) => me.fill_path(s, p, c),
@@ -277,6 +290,17 @@ impl Exporter<'_> {
                 me.tables(s, ft);
             }
         });
+        // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
+        // into the next line doesn't hide that line. Objects keep their page-space transforms.
+        let drawn = match objects {
+            Some((xf, page)) if xf.determinant().abs() > 1e-12 => {
+                s.push_transform(&tf(xf.inverse()));
+                self.frame_objects(s, ft, xf, page);
+                s.pop();
+                true
+            }
+            _ => false,
+        };
         // All underlines precede all glyph runs, including ink overlapping from another run.
         let underlines = text_rules(cs, ft, true);
         if !underlines.is_empty() {
@@ -301,12 +325,13 @@ impl Exporter<'_> {
                 if let Some(nft) = n.text.frames.first() {
                     s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
                     let area = std::mem::replace(&mut me.text_area, lines_area(nft));
-                    me.frame_text(s, &n.text, nft, &n.source);
+                    me.frame_text(s, &n.text, nft, &n.source, None);
                     me.text_area = area;
                     s.pop();
                 }
             }
         });
+        drawn
     }
 
     /// One table cell's graphic, or its text composed in the cell's own area.
@@ -322,7 +347,7 @@ impl Exporter<'_> {
         } else if let Some(cft) = c.text.frames.first() {
             s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
-            self.frame_text(s, &c.text, cft, &c.source);
+            self.frame_text(s, &c.text, cft, &c.source, None);
             self.text_area = area;
             s.pop();
         }

@@ -77,6 +77,28 @@ fn exports_valid_pdf_with_one_page_per_page() {
 }
 
 #[test]
+fn discretionary_hyphen_pdf_text_follows_visible_breaks() {
+    let text = "Wir möchten uns ganz besonders herzlich bei folgenden Personen bedanken, die auf unterschied\u{ad}lichste Weise zur Entstehung dieses Lehrbuches beigetragen haben:";
+    for composer in [designcraft_doc::Composer::SingleLine, designcraft_doc::Composer::Paragraph] {
+        for (width, expected) in [(430.0, "unterschied-lichste"), (540.0, "unterschiedlichste")] {
+            let mut d = Document::new(&NewDocument::default());
+            let lid = d.default_layer();
+            let para = designcraft_doc::ParaAttrs { composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+            let (_, sid) = d
+                .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 36.0 + width, 400.0), lid, text, ParaFormat { para, ..Default::default() })
+                .unwrap();
+            d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(9.5));
+            for tagged in [false, true] {
+                let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged, ..Default::default() }).unwrap();
+                let extracted = extract_text(&bytes).concat();
+                assert!(extracted.contains(expected), "{composer:?}, width={width}, tagged={tagged}: {extracted:?}");
+                assert!(!extracted.contains('\u{ad}'));
+            }
+        }
+    }
+}
+
+#[test]
 fn text_is_real_text() {
     let d = doc_with_text("Hello DesignCraft — efficient affine");
     let s = uncompressed(&d, PdfOptions::default());
@@ -257,6 +279,32 @@ fn cmyk_tiff() -> (Vec<u8>, Vec<u8>) {
     (b, px)
 }
 
+/// A black `side`² 1-bit grey PNG: well under 1 MB, it decodes to `side`² bytes.
+pub(crate) fn blank_png(side: u32) -> Vec<u8> {
+    use std::io::Write;
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend(kind);
+        out.extend(data);
+        out.extend(crc.sum().to_be_bytes());
+    };
+    let row = vec![0u8; 1 + side.div_ceil(8) as usize];
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    for _ in 0..side {
+        z.write_all(&row).unwrap();
+    }
+    let mut ihdr = [side.to_be_bytes(), side.to_be_bytes()].concat();
+    ihdr.extend([1, 0, 0, 0, 0]);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &z.finish().unwrap());
+    chunk(&mut png, b"IEND", &[]);
+    png
+}
+
 fn place(d: &mut Document, data: Vec<u8>, px: (u32, u32)) {
     let asset = designcraft_doc::AssetId(d.alloc());
     let mime = designcraft_images::mime(&data).into();
@@ -325,6 +373,19 @@ fn a_cut_off_image_is_skipped_not_fatal() {
         let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap();
         assert!(r.warnings.is_empty(), "{format:?}: {:?}", r.warnings);
         assert_eq!(image_xobjects(&r.bytes).len(), 1, "{format:?}");
+    }
+}
+
+/// A raster past the RGBA budget is skipped with a warning, also when images are recompressed (#1586).
+#[test]
+fn an_image_past_the_decode_budget_is_skipped_with_a_warning() {
+    let side = 16_385;
+    let mut d = doc_with_text("still here");
+    place(&mut d, blank_png(side), (side, side));
+    for compress_images in [false, true] {
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, ..Default::default() }).unwrap();
+        assert!(r.warnings.iter().any(|w| w.contains("could not be decoded and was skipped")), "compress_images {compress_images}: {:?}", r.warnings);
+        assert!(image_xobjects(&r.bytes).is_empty(), "compress_images {compress_images}");
     }
 }
 
@@ -473,13 +534,19 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
 
 /// The page's paint operations in order: `fill`/`stroke` + ` text`/` path` and the stroke width.
 fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
+    paint_events(bytes, false)
+}
+
+/// [`paint_order`], with transparency groups when `groups`: `group` (and its opacity) and
+/// `end group`.
+fn paint_events(bytes: &[u8], groups: bool) -> Vec<(String, f32)> {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
         interpret_page,
     };
     #[derive(Default)]
-    struct Rec(Vec<(String, f32)>);
+    struct Rec(Vec<(String, f32)>, bool);
     impl Device<'_> for Rec {
         fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
         fn set_blend_mode(&mut self, _: BlendMode) {}
@@ -490,7 +557,11 @@ fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
             });
         }
         fn push_clip_path(&mut self, _: &ClipPath) {}
-        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
+        fn push_transparency_group(&mut self, opacity: f32, _: Option<SoftMask<'_>>, _: BlendMode) {
+            if self.1 {
+                self.0.push(("group".into(), opacity));
+            }
+        }
         fn draw_glyph(&mut self, _: &Glyph<'_>, _: kurbo::Affine, _: kurbo::Affine, _: &Paint<'_>, m: &GlyphDrawMode) {
             self.0.push(match m {
                 GlyphDrawMode::Fill => ("fill text".into(), 0.0),
@@ -501,13 +572,17 @@ fn paint_order(bytes: &[u8]) -> Vec<(String, f32)> {
         }
         fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
         fn pop_clip_path(&mut self) {}
-        fn pop_transparency_group(&mut self) {}
+        fn pop_transparency_group(&mut self) {
+            if self.1 {
+                self.0.push(("end group".into(), 0.0));
+            }
+        }
     }
     let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
-    let mut rec = Rec::default();
+    let mut rec = Rec(Vec::new(), groups);
     interpret_page(page, &mut ctx, &mut rec);
     rec.0
 }
@@ -799,6 +874,36 @@ fn only_printed_fields_and_buttons_export() {
 }
 
 #[test]
+fn form_field_border_follows_the_item_stroke() {
+    use designcraft_doc::{FieldKind, FormField, Shape, Stroke};
+    use designcraft_geom::shapes::rectangle;
+    let export = |stroke: Stroke| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, rectangle(Rect::new(72.0, 72.0, 250.0, 96.0)));
+        it.stroke = stroke;
+        it.form_field = Some(FormField {
+            kind: FieldKind::TextField,
+            name: "name".into(),
+            value: String::new(),
+            options: Vec::new(),
+            multiline: false,
+            required: false,
+            font_size: 0.0,
+        });
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        uncompressed(&d, PdfOptions::default())
+    };
+    let none = export(Stroke { weight: 0.0, swatch: designcraft_color::swatch::NONE.into(), ..Stroke::default() });
+    assert!(none.contains("/Subtype/Widget"));
+    assert!(none.contains("/BS<</W 0>>"), "no border width");
+    assert!(!none.contains("/BC"), "no border colour");
+    let stroked = export(Stroke { weight: 1.0, ..Stroke::default() });
+    assert!(stroked.contains("/BS<</W 1"), "border width");
+    assert!(stroked.contains("/BC"), "border colour");
+}
+
+#[test]
 fn extreme_page_selection_is_a_page_error_without_overflow() {
     let doc = doc_with_text("Bounded page selection");
     let opts = PdfOptions { pages: Some(vec![usize::MAX]), ..Default::default() };
@@ -896,6 +1001,63 @@ fn a_swatch_colours_a_greyscale_image() {
     assert!(!gone.contains("/SMask"), "nothing painted through it");
     let (s, _) = export(&rgb, Some("PANTONE Test"));
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
+}
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture whose
+/// frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let mut d = doc_with_text("A\nWWWW");
+    let sid = *d.stories.keys().next().unwrap();
+    let mut item = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 30.0)),
+    );
+    item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -20.0 }));
+    let order = paint_order(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap());
+    let first_text = order.iter().position(|(op, _)| op.ends_with("text")).unwrap();
+    let the_box = order.iter().position(|(op, _)| op == "fill path").unwrap();
+    assert!(the_box < first_text, "{order:?}");
+}
+
+/// An anchored object is painted as part of its host frame, as the screen renderer paints it:
+/// inside the frame's transparency group (so a half-transparent frame shows its inline picture
+/// half-transparent too), after the frame's fill and before its text and stroke.
+#[test]
+fn inline_objects_share_their_frames_transparency() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject};
+    let mut d = doc_with_text("A\nWWWW");
+    let sid = *d.stories.keys().next().unwrap();
+    let fid = d.stories[&sid].frames[0];
+    {
+        let host = d.item_mut(fid).unwrap();
+        host.opacity = 0.5;
+        host.fill = Fill::swatch(designcraft_color::swatch::PAPER);
+        host.stroke.weight = 3.0;
+        host.stroke.swatch = designcraft_color::swatch::BLACK.into();
+    }
+    let mut item = Item::new(
+        ItemId(d.alloc()),
+        d.default_layer(),
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 200.0, 30.0)),
+    );
+    item.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -20.0 }));
+    let ev = paint_events(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap(), true);
+    let at = |op: &str| ev.iter().position(|(o, _)| o == op).unwrap_or_else(|| panic!("no {op}: {ev:?}"));
+    let group = ev.iter().position(|(o, a)| o == "group" && (*a - 0.5).abs() < 1e-3).unwrap_or_else(|| panic!("no half-opacity group: {ev:?}"));
+    let end = group + ev[group..].iter().position(|(o, _)| o == "end group").unwrap();
+    // Fills in order: the frame's, then the anchored box's.
+    let fills: Vec<usize> = ev.iter().enumerate().filter(|(_, (o, _))| o == "fill path").map(|(i, _)| i).collect();
+    assert!(fills.len() >= 2, "{ev:?}");
+    let the_box = fills[1];
+    assert!(group < the_box && the_box < end, "the box is inside the frame's group: {ev:?}");
+    assert!(the_box < at("fill text") && at("fill text") < at("stroke path") && at("stroke path") < end, "{ev:?}");
 }
 
 /// The export asks for each story's composition once per page it is shown on: a parent page's
