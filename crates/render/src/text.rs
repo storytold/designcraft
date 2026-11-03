@@ -387,6 +387,11 @@ impl Renderer {
         if !ft.tables.is_empty() {
             self.draw_tables(ctx, f, ft, xf);
         }
+        // Anchored objects ride on their lines, under the frame's text (as InDesign draws them):
+        // a picture whose frame reaches into the next line doesn't hide that line.
+        for o in &ft.objects {
+            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
+        }
         draw_text_indicators(ctx, f, cs, ft, m);
         let scale = m.determinant().abs().sqrt();
         let greek_px = f.opts.greek_below_px;
@@ -460,10 +465,6 @@ impl Renderer {
             if let Some(nft) = n.text.frames.first() {
                 self.draw_text(ctx, f, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()));
             }
-        }
-        // Anchored objects ride on their lines.
-        for o in &ft.objects {
-            self.draw_item(ctx, f, &o.object.item, xf * Affine::translate(o.origin.to_vec2()), ShownOn::Own);
         }
     }
 }
@@ -612,9 +613,7 @@ pub(crate) fn cell_stroke(kind: &designcraft_doc::StrokeType, weight: f64, lengt
         StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
             st.with_caps(kurbo::Cap::Butt).with_dashes(0.0, pattern.iter().copied())
         }
-        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => {
-            st.with_dashes(0.0, [0.0, weight * 2.0]).with_caps(kurbo::Cap::Round)
-        }
+        StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, weight * 2.0], length) => super::stroke::dotted(st, weight),
         _ => st,
     }
 }
