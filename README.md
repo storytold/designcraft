@@ -69,7 +69,7 @@
 ## The sample magazine
 
 Every page below was laid out by DesignCraft from code (`crates/engine/src/sample.rs`) and exported
-by its own renderer. Try it yourself with `File → New → Sample Document`, or start the app with
+by its own renderer. Try it yourself with `Help → Sample Document`, or start the app with
 `--sample`.
 
 <table>
