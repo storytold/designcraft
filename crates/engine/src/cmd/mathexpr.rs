@@ -35,6 +35,11 @@ fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: des
     it
 }
 
+/// The `size` parameter in points: 12 by default (also for non-finite values), clamped to 2..=400.
+fn size_param(p: &Value) -> f64 {
+    p.get("size").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(12.0).clamp(2.0, 400.0)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -48,7 +53,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(query "math.svg", "Math Expression SVG", [], None, "{latex, size?} → {svg, width, height} — typeset without placing", has_doc, |_s, p| {
             let latex = str_param(p, "latex").ok_or_else(|| bad("math.svg", "`latex` required"))?;
-            let (svg, (w, h)) = crate::math::to_svg(latex, p.get("size").and_then(Value::as_f64).unwrap_or(12.0));
+            let (svg, (w, h)) = crate::math::to_svg(latex, size_param(p));
             Ok(json!({"svg": String::from_utf8_lossy(&svg), "width": w, "height": h}))
         }),
     ]
@@ -56,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let latex = str_param(p, "latex").ok_or_else(|| bad("math.insert", "`latex` required"))?.to_string();
-    let size = p.get("size").and_then(Value::as_f64).unwrap_or(12.0).clamp(2.0, 400.0);
+    let size = size_param(p);
     let lid = s.doc()?.active_layer;
     // Edit an existing expression in place.
     if let Some(id) = super::id_param(p, "id") {
@@ -101,6 +106,24 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn math_svg_clamps_size_like_insert() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let dims = |s: &mut Session, size: f64| {
+            let r = s.execute("math.svg", &json!({"latex": "x", "size": size})).unwrap();
+            (r["width"].as_f64().unwrap(), r["height"].as_f64().unwrap())
+        };
+        let (w2, h2) = dims(&mut s, 2.0);
+        let (w400, h400) = dims(&mut s, 400.0);
+        for size in [0.0, -5.0, 1e-300] {
+            assert_eq!(dims(&mut s, size), (w2, h2), "size {size}");
+        }
+        for size in [1e9, 1e300] {
+            assert_eq!(dims(&mut s, size), (w400, h400), "size {size}");
+        }
+    }
 
     #[test]
     fn math_places_inline_and_as_frames() {

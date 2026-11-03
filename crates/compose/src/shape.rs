@@ -1201,7 +1201,12 @@ fn shape_segment(
     for (gi, sg) in shaped.iter().enumerate() {
         let up = upright.get(gi).copied().unwrap_or(false);
         let (byte, len, ch) = if replacement.is_some() {
-            (range.start, if gi == 0 { range.len() } else { 0 }, text[range.start..].chars().next().unwrap_or(' '))
+            let marker = text[range.start..].chars().next().unwrap_or(' ');
+            // A cross-reference's text is real text in InDesign: its spaces are word spaces the
+            // line may break at (text variables and page numbers stay whole). The first glyph
+            // keeps the marker, as it owns the marker's bytes.
+            let space = gi > 0 && marker == designcraft_doc::XREF_MARK && src.get(sg.cluster..).is_some_and(|t| t.starts_with(' '));
+            (range.start, if gi == 0 { range.len() } else { 0 }, if space { ' ' } else { marker })
         } else {
             let cl = range.start + sg.cluster;
             let end = shaped[gi + 1..].iter().map(|r| range.start + r.cluster).find(|&c| c > cl).unwrap_or(range.end);
