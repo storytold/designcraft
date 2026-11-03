@@ -137,11 +137,12 @@ end draw the caret there. WordCraft's two-position caret is not part of this cha
 
 ## Local CI baseline
 
-On macOS with the Khmer pack, `cargo xtask ci` passes formatting, PDF-dependency policy
-and Clippy; translation reporting, doctests, asset attribution, crate layering and the
-16-crate WASM check pass when run separately. All 3,814 other workspace tests pass,
-including every Khmer composition, proofreading and UI regression. 13 UI tests fail,
-involving navigation/paste shortcuts and missing Arabic or shortcut-symbol glyphs in test
-contexts. An untouched-main run at `f3e35af8` reproduces exactly the same 13 failures, so
-none are specific to this change, but this is not a clean full-CI result. The Khmer
-composition tests also pass without the data pack.
+On Linux (Docker, Debian bookworm on arm64) with CI's apt packages and `craft-fonts` pin,
+all workspace tests pass; with the Khmer pack added, the composition, engine and UI suites
+pass too. This is a local reproduction, not a GitHub CI result. Formatting, PDF-dependency
+policy, Clippy, translation reporting, doctests, asset attribution, crate layering and the
+16-crate WASM check pass on macOS, and a Windows MSVC `cargo check` passes without running
+the app. On macOS without `craft-fonts`, 13 UI tests fail on missing Arabic or
+shortcut-symbol glyphs and on navigation/paste shortcuts; an untouched-main run at
+`f3e35af8` fails exactly the same 13. The Khmer composition tests also pass without the
+data pack.
