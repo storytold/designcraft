@@ -70,25 +70,14 @@ drawing was omitted. These are parser/conversion limits, not a total process-mem
 
 ## Provenance
 
-- The importer was written without any other Publisher reader. Nobody working on it read
-  libmspub, Apache POI's Publisher code, or the source code of any other `.pub` reader or writer,
-  nor descriptions of how they behave.
-- The notes in [pub-format/](pub-format/README.md) were written from the bytes of the data files
-  listed there and from public specifications (MS-CFB, MS-ODRAW, MS-WMF, MS-EMF, and two ECMA-376
-  definition files for shape outlines only). The person writing the notes was allowed to read an
-  earlier reader of this project; the `Contents`, Quill and bounded-reader modules
-  (`contents.rs`, `quill.rs`, `read.rs`) were then rewritten from the notes alone by someone who
-  never saw that earlier code. The other modules were written and extended from the notes and the
-  public specifications.
-- `truth/*.json` exports that come with the controlled samples were used only to score imports,
-  never to work out how anything is encoded.
-- No Publisher-authored file is committed. The committed test files under
-  `crates/pub/tests/data/` are synthetic: the importer's tests write every byte of them from
-  scratch (`crates/pub/tests/support/mod.rs`), and a test checks that each committed file is
-  exactly that output. They are listed in `ASSETS.md`.
-- Some early observations of the compound-file container, cited in the notes as "the first
-  synthetic sample", came from a small test file written by a different tool. Only its bytes were
-  examined (data only, no code), and it is not committed.
+- **Who wrote it.** The importer, its tests and the format notes were written by AI coding assistants (Claude Code and Codex) working under the direction of the author, srt8hellcat2-ui. No other Publisher reader was used. Nobody working on it read libmspub, Apache POI's Publisher code, or the source code of any other `.pub` reader or writer, nor descriptions of how they behave. What the AI models saw in their own training cannot be audited, and this document makes no claim about it.
+- **Format notes.** The notes in [pub-format/](pub-format/README.md) were written by one assistant session (the describer, 2026-10-17) from the bytes of open sample `.pub` files, listed there. The describer named the public specifications MS-CFB and MS-ODRAW but did not open their text, so the notes are not a restatement of those specifications. The describer was allowed to read an earlier reader of this project, described next. The full record is `docs/pub-format/SOURCES.md` in srt8hellcat2-ui/niftydesign.
+- **Earlier reader.** A first `.pub` parser written for this project by AI assistants under the author's direction, from open sample files only: repository srt8hellcat2-ui/designcraft-pub-development, branch `feat/pub-import`, commit `93ee76e`. It is a development repository and is not part of this pull request. It contains no third-party code; its author and licence are the same as this pull request's (MIT OR Apache-2.0).
+- **Rewrite.** The `Contents`, Quill and bounded-reader modules (`contents.rs`, `quill.rs`, `read.rs`) were rewritten from the notes alone by a different assistant (the builder, Codex), in a repository where those original files had been deleted. The builder was allowed only the notes, the public specifications (MS-CFB, MS-ODRAW) and the sample files. The other modules were written and extended from the notes and the public specifications.
+- **ECMA-376.** The outline of the heart preset follows the definition in ECMA-376, 5th edition, Part 1 (Ecma International, 2016), `presetShapeDefinitions.xml`. The formulas are re-expressed in this project's own code and notes; no Ecma file or text is committed. The Ecma copyright permission has not been separately reviewed here; a maintainer should confirm that this attribution is sufficient.
+- **Samples.** Apache POI's `Sample2.pub` (SHA-256 `c87ea7cc5606023c5fa99376631bbd45a8e9bdaba34c958057995b0e7ac8cc86`) and 142 generated fixtures from the pubsmith project were used as input data only. None is committed, and no rights in them are claimed.
+- `truth/*.json` exports that come with the controlled samples were used only to score imports, never to work out how anything is encoded.
+- No Publisher-authored file is committed. The committed test files under `crates/pub/tests/data/` are synthetic: the importer's tests write every byte of them from scratch (`crates/pub/tests/support/mod.rs`), and a test checks that each committed file is exactly that output. They are listed in `ASSETS.md`.
 
 ## How it is checked
 
