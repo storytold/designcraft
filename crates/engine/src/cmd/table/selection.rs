@@ -98,11 +98,9 @@ pub(super) fn go_to_row(s: &mut Session, p: &Value) -> Result<Value> {
         Some(xf.transform_rect_bbox(designcraft_geom::Rect::new(across.x0, top, across.x1, bottom)))
     });
     let spread = on_spread.map(|(si, _)| si);
-    // The caret is shown in the frame that shows the row.
-    if let Some(f) = frame
-        && let Some(t) = s.doc_mut()?.selection.text.as_mut()
-    {
-        t.frame = Some(f);
+    // The caret is shown in the frame that shows the row, and in no frame when the row is overset.
+    if let Some(t) = s.doc_mut()?.selection.text.as_mut() {
+        t.frame = frame;
     }
     Ok(json!({
         "story": r["story"],
@@ -340,6 +338,24 @@ mod go_to_row_tests {
         assert!(at.len() == 4 && (at[3] - at[1] - 20.0).abs() < 1e-6 && at[0] >= 72.0 && at[2] <= 401.0 && at[1] >= 72.0 && at[3] <= 600.0, "{at:?}");
         // The header row repeats on page 2; the row itself is the one on page 1.
         assert_eq!(s.execute("table.goToRow", &json!({"row": 1, "section": "header"})).unwrap()["page"], 1);
+    }
+
+    #[test]
+    fn go_to_row_leaves_no_caret_frame_for_an_overset_row() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 20, "cols": 2})).unwrap();
+        for row in 0..20 {
+            s.execute("table.setRowHeight", &json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+        }
+        let frame = |s: &Session| s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
+        s.execute("table.goToRow", &json!({"row": 1})).unwrap();
+        assert_eq!(frame(&s), a["id"].as_u64());
+        let r = s.execute("table.goToRow", &json!({"row": 20})).unwrap();
+        assert_eq!((r["page"].clone(), r["spread"].clone()), (json!(null), json!(null)), "{r}");
+        assert_eq!(frame(&s), None, "no frame shows the overset row");
     }
 
     #[test]
