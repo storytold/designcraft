@@ -108,6 +108,11 @@ fn trace_counts(take: &[Vec<usize>], n: usize, m: usize) -> Option<Vec<usize>> {
     (s == m).then_some(counts)
 }
 
+/// Longest warichu run split exactly. The exact split tries every length for every line start, so
+/// its work grows with the square of the run's length; a longer run (from a document) is split by
+/// [`split_proportional`] in one pass instead.
+const MAX_EXACT_SPLIT_GLYPHS: usize = 512;
+
 /// Glyph counts for `n` lines. Minimises the widest line, and the first and last lines keep their
 /// break minimums. One line when no split satisfies them.
 fn split_even(advs: &[f64], n: usize, before: usize, after: usize) -> Vec<usize> {
@@ -120,6 +125,9 @@ fn split_even(advs: &[f64], n: usize, before: usize, after: usize) -> Vec<usize>
     let mut pref = vec![0.0_f64; m + 1];
     for (i, a) in advs.iter().enumerate() {
         pref[i + 1] = pref[i] + *a;
+    }
+    if m > MAX_EXACT_SPLIT_GLYPHS {
+        return split_proportional(&pref, n, before, after);
     }
     let mut best = vec![vec![f64::INFINITY; m + 1]; n + 1];
     let mut take = vec![vec![0_usize; m + 1]; n + 1];
@@ -158,6 +166,32 @@ fn split_even(advs: &[f64], n: usize, before: usize, after: usize) -> Vec<usize>
         return vec![m];
     }
     trace_counts(&take, n, m).unwrap_or_else(|| vec![m])
+}
+
+/// [`split_even`] for a long run: each line ends where the run's advance reaches its share of the
+/// total, moved where needed so every line keeps a glyph and the first and last lines their break
+/// minimums. `pref` holds the running advance (`pref[i]`: the first `i` glyphs). One line when the
+/// minimums can't all be kept.
+fn split_proportional(pref: &[f64], n: usize, before: usize, after: usize) -> Vec<usize> {
+    let m = pref.len() - 1;
+    if before.saturating_add(after).saturating_add(n - 2) > m {
+        return vec![m];
+    }
+    let total = pref[m];
+    let mut counts = Vec::with_capacity(n);
+    let mut prev = 0;
+    for k in 1..n {
+        let target = total * k as f64 / n as f64;
+        let at = pref.partition_point(|p| *p < target);
+        let lo = prev + if k == 1 { before } else { 1 };
+        // The lines after this one: one glyph each, the last its minimum.
+        let hi = m - after - (n - 1 - k);
+        let at = at.clamp(lo, hi);
+        counts.push(at - prev);
+        prev = at;
+    }
+    counts.push(m - prev);
+    counts
 }
 
 fn restore(line: &mut [PlacedGlyph], members: &[usize], saved: &[(f64, f64, f64, f64)]) {
@@ -283,7 +317,7 @@ fn shift_non_member_glyphs(line: &mut [PlacedGlyph], members: &[usize], old_xs: 
         if g.x >= old_right - 1e-6 {
             g.x += delta;
         } else if g.x >= old_x0 - 1e-6
-            && let Some(anchor) = placed.iter().rev().find(|p| p.0 <= g.x + 1e-6)
+            && let Some(anchor) = placed.partition_point(|p| p.0 <= g.x + 1e-6).checked_sub(1).map(|i| placed[i])
         {
             // A mark drawn with the run (a tab leader is not: it sits before old_x0) keeps its
             // offset from the glyph it was attached to, in the scaled line.
@@ -301,5 +335,35 @@ mod tests {
         assert_eq!(line_count(10, 2, usize::MAX, 1), 1);
         assert_eq!(line_count(10, 3, 1, usize::MAX), 1);
         assert_eq!(line_count(10, 2, 3, 3), 2);
+    }
+
+    /// A run longer than the exact split's limit is split in one pass: the lines cover the run,
+    /// keep their minimums and come out about even.
+    #[test]
+    fn a_long_run_is_split_in_one_pass() {
+        let m = 200_000;
+        let advs = vec![1.0; m];
+        let t = std::time::Instant::now();
+        let counts = split_even(&advs, 16, 3, 5);
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        assert_eq!(counts.len(), 16);
+        assert_eq!(counts.iter().sum::<usize>(), m);
+        assert!(counts.iter().all(|c| c.abs_diff(m / 16) <= 1), "{counts:?}");
+
+        // Minimums that the even shares don't meet move the breaks.
+        let mut advs = vec![0.0; MAX_EXACT_SPLIT_GLYPHS + 10];
+        advs[0] = 1000.0;
+        let counts = split_even(&advs, 3, 4, 7);
+        assert_eq!(counts.iter().sum::<usize>(), advs.len());
+        assert!(counts[0] >= 4 && counts[2] >= 7 && counts[1] >= 1, "{counts:?}");
+        // Minimums that can't all be kept leave one line.
+        assert_eq!(split_even(&advs, 3, advs.len(), 1), vec![advs.len()]);
+    }
+
+    /// Short runs keep the exact split that minimises the widest line.
+    #[test]
+    fn a_short_run_is_split_exactly() {
+        assert_eq!(split_even(&[1.0, 1.0, 1.0, 1.0, 4.0], 2, 1, 1), vec![4, 1]);
+        assert_eq!(split_even(&[1.0; 6], 3, 1, 1), vec![2, 2, 2]);
     }
 }
