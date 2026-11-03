@@ -1280,7 +1280,13 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
         }
         egui::Frame::NONE.inner_margin(egui::Margin::same(8)).show(ui, |ui| {
             if crate::dock::scrolls_itself(id) {
+                let height = ui.available_height();
                 crate::dock::panel_body(self.app, ui, id);
+                // Self-scrolling panels own the available height, including any slack below
+                // their footer. Do not let flyout content fitting shrink them every frame.
+                if height.is_finite() {
+                    ui.set_min_height(height);
+                }
                 return;
             }
             // Shrinking to the content's height lets craft-ui fit a float or flyout to it.
@@ -1298,7 +1304,14 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
         model_permissions(id)
     }
     fn limits(&self, id: &String) -> craft_ui::docking::PanelLimits {
-        let min = if id == CANVAS { egui::vec2(200.0, 120.0) } else { egui::vec2(220.0, 80.0) };
+        let min = if id == CANVAS {
+            egui::vec2(200.0, 120.0)
+        } else if id == "pages" {
+            // The Pages body has a minimum height; include the body's 8 pt margins.
+            egui::vec2(220.0, crate::panels::pages::MIN_PANEL_HEIGHT + 16.0)
+        } else {
+            egui::vec2(220.0, 80.0)
+        };
         craft_ui::docking::PanelLimits { min, ..Default::default() }
     }
     fn floating_size(&self, id: &String) -> Option<egui::Vec2> {

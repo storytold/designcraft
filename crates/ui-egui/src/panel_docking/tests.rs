@@ -1143,6 +1143,38 @@ fn clicking_an_iconic_column_icon_opens_its_flyout() {
     assert!(h.state().ui.docking_flyout.is_none());
 }
 
+/// #2131: the Pages flyout grows from its bottom edge without leaving the icon dock.
+#[test]
+fn pages_flyout_resizes_and_remembers_its_height() {
+    let mut app = app();
+    app.run("file.new", json!({"pages": 8})).unwrap();
+    app.ui.dock_expanded = false;
+    app.run("window.panel", json!({"panel": "pages"})).unwrap();
+    let mut h = harness(app, vec2(1280.0, 900.0));
+    let rect = |h: &Harness<'_, DesignApp>| h.ctx.memory(|m| m.area_rect(area_id().with("flyout"))).unwrap();
+    let before = rect(&h);
+    let bottom = before.center_bottom() - vec2(0.0, 2.0);
+    drag(&mut h, bottom, bottom + vec2(0.0, 120.0));
+    let after = rect(&h);
+    assert!((after.height() - before.height() - 120.0).abs() < 1.0, "{before:?} -> {after:?}");
+    assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("pages"));
+    assert!(in_iconic_column(&layout_of(h.state()), "pages"));
+    assert!(layout_of(h.state()).floating.is_empty());
+    h.state_mut().run("window.panel", json!({"panel": "pages"})).unwrap();
+    h.run_steps(3);
+    h.state_mut().run("window.panel", json!({"panel": "pages"})).unwrap();
+    h.run_steps(3);
+    assert_eq!(rect(&h).height(), after.height());
+    let saved = serde_json::to_vec(&h.state().ui).unwrap();
+    let restored = crate::UiState::from_preferences_json(&saved).unwrap();
+    assert_eq!(restored.docking, h.state().ui.docking, "the user's size survives preference serialization");
+    let bottom = rect(&h).center_bottom() - vec2(0.0, 2.0);
+    drag(&mut h, bottom, bottom - vec2(0.0, 1000.0));
+    let small = rect(&h);
+    assert!(small.height() >= crate::panels::pages::MIN_PANEL_HEIGHT + 16.0);
+    assert!(h.get_by_label("8 Pages in 5 Spreads").rect().bottom() <= small.bottom(), "the footer stays inside the resized panel");
+}
+
 /// Auto-Collapse Iconic Panels is off by default, also for preferences saved while it was on by
 /// default: working on the canvas leaves an open flyout open.
 #[test]

@@ -191,6 +191,8 @@ enum PageDrag {
 
 /// The footer: page count and buttons, always at the panel's bottom.
 const FOOTER_H: f32 = 28.0;
+/// Smallest body that keeps the parents, page list and footer usable.
+pub(crate) const MIN_PANEL_HEIGHT: f32 = 160.0;
 /// The draggable rule between the parents and the pages.
 const DIVIDER_H: f32 = 9.0;
 /// Parent rows shown at first; the divider shows more.
@@ -308,7 +310,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let h = ui.available_height();
         if h.is_finite() && h < 4000.0 { h } else { 480.0 }
     }
-    .max(160.0);
+    .max(MIN_PANEL_HEIGHT);
     let row_h = opts.parent_size.row_h();
     let icon_h = row_h - 5.0;
     // Extra Small has no room for a thumbnail; Show Thumbnails off draws blank pages.

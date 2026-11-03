@@ -1,6 +1,10 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+- **2026-11-03 · UI2131:** Self-scrolling panels keep their full allocated height,
+  preventing gradual shrinkage during flyout fitting. The Pages flyout resize test
+  covers reopening and saved preferences and requires the companion craft-ui fix.
+
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app

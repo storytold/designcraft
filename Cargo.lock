@@ -1038,7 +1038,30 @@ source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13af
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/markx77/craft-libs?rev=89d6b576731c39b27858b3632645d94c7cd213ce#89d6b576731c39b27858b3632645d94c7cd213ce"
+
+[[package]]
+name = "craft-i18n"
+version = "0.1.0"
+source = "git+https://github.com/markx77/craft-libs?rev=89d6b576731c39b27858b3632645d94c7cd213ce#89d6b576731c39b27858b3632645d94c7cd213ce"
+dependencies = [
+ "fixed_decimal",
+ "icu_decimal",
+ "icu_locale_core",
+ "icu_locale_fallback",
+ "icu_normalizer",
+ "icu_plurals",
+ "icu_properties",
+ "icu_provider",
+ "icu_provider_adapters",
+ "icu_provider_blob",
+ "log",
+ "objc2-foundation 0.3.2",
+ "sys-locale",
+ "unicode-bidi",
+ "windows-registry",
+ "writeable",
+]
 
 [[package]]
 name = "craft-i18n"
@@ -1068,7 +1091,7 @@ name = "craft-keymap"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
 dependencies = [
- "craft-i18n",
+ "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0)",
  "craft-ui",
  "egui",
  "serde",
@@ -1117,10 +1140,10 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/markx77/craft-libs?rev=89d6b576731c39b27858b3632645d94c7cd213ce#89d6b576731c39b27858b3632645d94c7cd213ce"
 dependencies = [
  "craft-fonts-build",
- "craft-i18n",
+ "craft-i18n 0.1.0 (git+https://github.com/markx77/craft-libs?rev=89d6b576731c39b27858b3632645d94c7cd213ce)",
  "egui",
  "epaint",
  "js-sys",
