@@ -205,12 +205,12 @@ pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
 
 /// Up to 6 suggestions at edit distance 1, ranked: transpositions, replacements, deletions, insertions.
 pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
-    let chars: Vec<char> = w.chars().collect();
     // Each candidate is a copy of the word: 53 per position, quadratic in its length. No word of
-    // a dictionary is this long, so no edit of such a "word" is one either.
-    if chars.len() > MAX_SUGGEST_CHARS {
+    // a dictionary is this long, so no edit of such a "word" is one either. Checked before collecting.
+    if w.chars().take(MAX_SUGGEST_CHARS + 1).count() > MAX_SUGGEST_CHARS {
         return Vec::new();
     }
+    let chars: Vec<char> = w.chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut push = |c: Vec<char>| {
         let c: String = c.into_iter().collect();

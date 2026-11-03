@@ -207,7 +207,11 @@ fn sync_styles(s: &Session) -> Result<Value> {
             st.character.retain(|x| !names.contains(x.name.as_str()));
             st.character.extend(styles.character.iter().cloned());
         }
-        let mut at: HashMap<String, usize> = d.swatches.iter().enumerate().map(|(i, w)| (w.name.clone(), i)).collect();
+        // First index per name, as Document::swatch resolves colours.
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for (i, w) in d.swatches.iter().enumerate() {
+            at.entry(w.name.clone()).or_insert(i);
+        }
         for sw in &swatches {
             match at.get(&sw.name).and_then(|i| d.swatches.get_mut(*i)) {
                 Some(w) if !w.locked => *w = sw.clone(),
