@@ -314,7 +314,7 @@ mod reader {
             return;
         }
         let Some(r) = reader(ctx) else { return };
-        let Ok(done) = r.done.lock() else { return };
+        let done = r.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         while let Ok((path, stat)) = done.try_recv() {
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("recent_stat", path.as_str())), stat));
         }
