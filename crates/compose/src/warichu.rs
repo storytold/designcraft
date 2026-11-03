@@ -186,7 +186,9 @@ fn split_proportional(pref: &[f64], n: usize, before: usize, after: usize) -> Ve
         let lo = prev + if k == 1 { before } else { 1 };
         // The lines after this one: one glyph each, the last its minimum.
         let hi = m - after - (n - 1 - k);
-        let at = at.clamp(lo, hi);
+        // A wide glyph can straddle the target: take whichever valid break is closer to it.
+        let (above, below) = (at.clamp(lo, hi), at.saturating_sub(1).clamp(lo, hi));
+        let at = if (target - pref[below]).abs() < (pref[above] - target).abs() { below } else { above };
         counts.push(at - prev);
         prev = at;
     }
@@ -361,6 +363,18 @@ mod tests {
     }
 
     /// Short runs keep the exact split that minimises the widest line.
+    #[test]
+    fn a_long_run_breaks_at_the_closer_side_of_a_wide_glyph() {
+        let mut advs = vec![1.0; 250];
+        advs.push(1000.0);
+        advs.extend([1.0; 262]);
+        let mut pref = vec![0.0];
+        for a in &advs {
+            pref.push(pref.last().unwrap() + a);
+        }
+        assert_eq!(split_proportional(&pref, 3, 1, 1), vec![250, 1, 262]);
+    }
+
     #[test]
     fn a_short_run_is_split_exactly() {
         assert_eq!(split_even(&[1.0, 1.0, 1.0, 1.0, 4.0], 2, 1, 1), vec![4, 1]);
