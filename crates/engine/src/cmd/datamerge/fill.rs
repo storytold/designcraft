@@ -4,7 +4,7 @@
 //! unfilled template. A placeholder whose frame or story is not in the map is left as it is.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use designcraft_doc::{
@@ -134,6 +134,44 @@ pub struct Sources<'a> {
     pub options: &'a MergeOptions,
     pub data_dir: Option<&'a Path>,
     pub doc_dir: Option<&'a Path>,
+    /// Images this merge has already read, by the path they resolved to.
+    ///
+    /// Every record used to stat and read its image again, so a 100,000-row sheet naming the same
+    /// file read it 100,000 times -- up to 256 MiB each, around 25 TB of I/O for one merge
+    /// (#1595). Shared by `&`, so the cache is behind a `RefCell`.
+    pub images: &'a ImageCache,
+}
+
+/// Image files read during one merge: the bytes by path, and the total read so far.
+#[derive(Default)]
+pub struct ImageCache {
+    inner: std::cell::RefCell<ImageCacheInner>,
+}
+
+#[derive(Default)]
+struct ImageCacheInner {
+    files: std::collections::HashMap<PathBuf, std::sync::Arc<Vec<u8>>>,
+    bytes: usize,
+}
+
+/// Bytes of distinct image files one merge keeps. Past this the cache stops growing and files are
+/// read as before, so a merge over many large images is slow rather than out of memory.
+const MAX_CACHED_IMAGE_BYTES: usize = 256 << 20;
+
+impl ImageCache {
+    /// The bytes of `path`, reading it once per merge. `read` is called only on a miss.
+    fn get_or_read(&self, path: &Path, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<std::sync::Arc<Vec<u8>>> {
+        if let Some(found) = self.inner.borrow().files.get(path) {
+            return Some(found.clone());
+        }
+        let bytes = std::sync::Arc::new(read()?);
+        let mut inner = self.inner.borrow_mut();
+        if inner.bytes.saturating_add(bytes.len()) <= MAX_CACHED_IMAGE_BYTES {
+            inner.bytes = inner.bytes.saturating_add(bytes.len());
+            inner.files.insert(path.to_path_buf(), bytes.clone());
+        }
+        Some(bytes)
+    }
 }
 
 /// Replacements and hyperlinks collected while walking the placeholders of one record.
@@ -360,15 +398,20 @@ fn create_link(doc: &mut designcraft_doc::Document, anchor: PlaceholderAnchor, d
 }
 
 fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell: &str, record: u32, sources: &Sources, report: &mut FillReport) {
-    let Sources { options, data_dir, doc_dir } = *sources;
+    let Sources { options, data_dir, doc_dir, images } = *sources;
     let cands = image_candidates(cell, data_dir, doc_dir);
     let found = cands.iter().find_map(|p| {
-        // Refuse huge files before reading them; a too-large image counts as missing.
-        let len = crate::io::metadata(p).ok()?.len();
-        if len == 0 || len > super::MAX_IMAGE_FILE_BYTES {
-            return None;
-        }
-        crate::io::read_file(p).ok().filter(|b| !b.is_empty()).map(|b| (p.clone(), b))
+        // Read once per merge: many records naming one file is the normal case, and reading it
+        // per record is the amplification (#1595).
+        let bytes = images.get_or_read(p, || {
+            // Refuse huge files before reading them; a too-large image counts as missing.
+            let len = crate::io::metadata(p).ok()?.len();
+            if len == 0 || len > super::MAX_IMAGE_FILE_BYTES {
+                return None;
+            }
+            crate::io::read_file(p).ok().filter(|b| !b.is_empty())
+        })?;
+        Some((p.clone(), bytes))
     });
     let Some((path, bytes)) = found else {
         if let Some(it) = doc.item_mut(item) {
@@ -430,7 +473,9 @@ fn place_image(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, c
         name,
         mime: designcraft_render::image_mime(&bytes).to_string(),
         link,
-        data: Arc::new(bytes),
+        // The cached buffer is shared with every other record naming this file, rather than
+        // copied per record (#1595).
+        data: bytes,
         pixels: Some((pw, ph)),
         ..Default::default()
     });
@@ -523,20 +568,56 @@ mod link_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod image_path_tests {
     use std::path::Path;
 
     use super::image_candidates;
 
+    /// A merge image field names a file, and a field that names **another computer** must resolve
+    /// to nothing: a UNC path is how a hostile data file turns a merge into an outbound SMB
+    /// connection, and on Windows that means handing over NTLM credentials. This ran only on
+    /// unix, so the refusal was unverified on the one platform where UNC means anything (#1601).
     #[test]
-    fn image_cells_resolve_beside_the_data_and_never_to_other_computers() {
+    fn an_image_cell_never_resolves_to_another_computer() {
         let (data, doc) = (Path::new("/work/data"), Path::new("/work/doc"));
         for cell in [r"\\192.0.2.1\share\x.png", "file://192.0.2.1/s/x.png", "//192.0.2.1/s/x.png", "https://example.com/x.png"] {
             assert!(image_candidates(cell, Some(data), Some(doc)).is_empty(), "{cell}");
         }
+        // A field naming nothing resolves to nothing, whatever the platform.
+        assert!(image_candidates("", Some(data), Some(doc)).is_empty(), "an empty cell");
+        assert!(image_candidates("img/x.png", None, None).is_empty(), "not beside the working directory");
+    }
+
+    /// The Windows shapes `craft-docpath` refuses, asserted where they have meaning: the extended
+    /// UNC prefix, a device namespace path, and a legacy device name (with an extension, since a
+    /// reserved name is reserved whatever follows it).
+    #[cfg(windows)]
+    #[test]
+    fn windows_device_and_network_paths_are_refused() {
+        let (data, doc) = (Path::new(r"C:\work\data"), Path::new(r"C:\work\doc"));
+        for cell in [r"\\?\UNC\192.0.2.1\share\x.png", r"\\.\pipe\x", r"\\?\GLOBALROOT\Device\HarddiskVolume1\x", "CON", "NUL.png"] {
+            assert!(image_candidates(cell, Some(data), Some(doc)).is_empty(), "{cell}");
+        }
+    }
+
+    /// An extended-length path is not one of them: `\\?\C:\x` names a local file, the same one
+    /// `C:\x` names, and `craft-docpath`'s own suite classifies it `PathKind::Local`. A data file
+    /// could already give the plain spelling, so refusing this one would shut out long paths
+    /// without shutting anything out (noted in review).
+    #[cfg(windows)]
+    #[test]
+    fn an_extended_length_drive_path_is_a_local_file() {
+        let (data, doc) = (Path::new(r"C:\work\data"), Path::new(r"C:\work\doc"));
+        assert!(!image_candidates(r"\\?\C:\secret\x.png", Some(data), Some(doc)).is_empty());
+    }
+
+    /// Resolution beside the data and the document, with absolute paths this platform means.
+    #[cfg(unix)]
+    #[test]
+    fn an_image_cell_resolves_beside_the_data_then_the_document() {
+        let (data, doc) = (Path::new("/work/data"), Path::new("/work/doc"));
         let found = image_candidates("img/x.png", Some(data), Some(doc));
         assert_eq!(found, [data.join("img").join("x.png"), doc.join("img").join("x.png")]);
-        assert!(image_candidates("img/x.png", None, None).is_empty(), "not beside the working directory");
     }
 }
