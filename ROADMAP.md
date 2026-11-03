@@ -391,7 +391,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 - **2026-11-03 · KM6:** The Story Editor counts Khmer words by their word boundaries, not real spaces. No readiness percentage change.
 - **2026-11-03 · KM4:** Dynamic Spelling proofs a story again only when its text, its styles or the user dictionary change, instead of every story on every edit. No readiness percentage change.
-- **2026-11-03 · KM3:** Justified Khmer fills lines through real word spaces and Glyph Scaling, as in InDesign: word boundaries open no gaps, and a line without a real space keeps its natural width. No readiness percentage change.
+- **2026-11-03 · KM3:** Justified Khmer fills lines through real word spaces and Glyph Scaling, the industry-standard behavior: word boundaries open no gaps, and a line without a real space keeps its natural width. No readiness percentage change.
 - **2026-11-03 · KM1:** Shared Khmer segmentation, authored ZWSP, cluster-safe composition in both composers, and native spelling/preferred-form review with undo. Data is an explicit optional build input; see [Khmer support](docs/khmer.md). No readiness percentage change.
 
 - **2026-11-02** · EPUB Export Options names a cover image file (PNG or JPEG, typed or chosen with Choose…) for the reflowable export; left empty, the first page stays the cover (#1934). No readiness percentage change.

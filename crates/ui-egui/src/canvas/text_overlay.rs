@@ -360,21 +360,22 @@ pub(super) fn dynamic_misspellings(
     story: &std::sync::Arc<designcraft_doc::Story>,
 ) -> std::sync::Arc<Vec<std::ops::Range<usize>>> {
     let key = egui::Id::unique(("dyn_spell", story.id));
-    let cached: Option<DynamicSpelling> = ctx.data(|d| d.get_temp(key));
+    // Shared, so a cache hit on every frame copies nothing.
+    let cached: Option<std::sync::Arc<DynamicSpelling>> = ctx.data(|d| d.get_temp(key));
     if let Some(c) = cached
         && c.story.as_ptr() == std::sync::Arc::as_ptr(story)
         && c.styles.as_ptr() == std::sync::Arc::as_ptr(&doc.styles)
         && c.user_words == doc.user_words
     {
-        return c.bad;
+        return c.bad.clone();
     }
     let bad = std::sync::Arc::new(designcraft_engine::cmd::spelling::misspellings(doc, story, &doc.user_words));
-    let entry = DynamicSpelling {
+    let entry = std::sync::Arc::new(DynamicSpelling {
         story: std::sync::Arc::downgrade(story),
         styles: std::sync::Arc::downgrade(&doc.styles),
         user_words: doc.user_words.clone(),
         bad: bad.clone(),
-    };
+    });
     ctx.data_mut(|d| d.insert_temp(key, entry));
     bad
 }

@@ -29,7 +29,7 @@ authored zero-width spaces separate words.
 
 ## Justification
 
-Justified Khmer follows the InDesign behavior:
+Justified Khmer follows the industry-standard behavior:
 
 - A Khmer word boundary, whether found by the model or authored as U+200B, only
   permits a line break. It has no width, so justification never opens a gap there.
@@ -73,8 +73,8 @@ compound is incorrectly segmented.
 The default build contains no Khmer dictionaries. It must not report Khmer text
 as checked when the data is absent; `spelling.status` exposes availability.
 There is no runtime pack downloader in this change. For an explicit build,
-check out craft-i18n revision `305a53fc197cce0e7b2c90b86c9c37083ae216bd` and stage
-its verified source pack:
+check out craft-i18n revision `305a53fc197cce0e7b2c90b86c9c37083ae216bd` beside this
+repository and, from this repository's root, stage its verified source pack:
 
 ```sh
 cargo run --manifest-path ../craft-i18n/Cargo.toml --bin language-packs -- stage --locale km --out ../khmer-pack
@@ -82,7 +82,17 @@ CRAFT_KHMER_DIR="$(cd ../khmer-pack && pwd)" CRAFT_KHMER_REQUIRED=1 cargo xtask 
 CRAFT_KHMER_DIR="$(cd ../khmer-pack && pwd)" CRAFT_KHMER_REQUIRED=1 cargo run --locked -p designcraft
 ```
 
-Use absolute paths. On Windows, set the same variables in PowerShell. Source
+In PowerShell:
+
+```powershell
+cargo run --manifest-path ..\craft-i18n\Cargo.toml --bin language-packs -- stage --locale km --out ..\khmer-pack
+$env:CRAFT_KHMER_DIR = (Resolve-Path ..\khmer-pack).Path
+$env:CRAFT_KHMER_REQUIRED = "1"
+cargo xtask ci
+cargo run --locked -p designcraft
+```
+
+`CRAFT_KHMER_DIR` must be an absolute path. Source
 hashes and the upstream MIT notice are checked during the offline build;
 `CRAFT_KHMER_REQUIRED=1` rejects missing data. The six losslessly compressed
 resources total 714,343 bytes, with no dictionary pruning or model quantization.
@@ -99,7 +109,7 @@ segmenter output. Targeted regressions cover authored boundaries, narrow columns
 formatting boundaries, repeated words, correction/undo and unchanged Latin text; the
 justification regressions use a synthetic font and authored boundaries, so they need
 neither the data pack nor a Khmer font.
-The local corpus comes from five real Khmer books authored in InDesign: 3,331
+The local corpus comes from five real, professionally typeset Khmer books: 3,331
 passages, with 302,429 model-counted word occurrences (302,022 after stripping
 authored zero-width spaces). Sixteen configurations cover both composers, 180/300 pt
 columns, authored separators retained/removed, and default Justification settings or
@@ -117,7 +127,7 @@ Justification. The substitute font lacked some Latin/punctuation glyphs, but no 
 
 These are layout measurements, not linguistic accuracy ratings. It is not a
 held-out linguistic gold standard, and model-counted word occurrences are not
-an accuracy score. Private book text, IDML files and reference PDFs stay outside
+an accuracy score. Private book text, source documents and reference PDFs stay outside
 the repository.
 
 Native macOS checks also verified readable Khmer suggestions, correction and undo.
@@ -125,7 +135,7 @@ The two supplied passages produced no spelling findings. The read-only
 `spelling.check {suggestions:false}` query avoids candidate generation for bulk
 review; `spelling.suggest {story,start,end}` revalidates and returns one issue.
 
-The local InDesign PDF and recovered IDML have different edition dates. Matched
+The local reference PDF and recovered source document have different edition dates. Matched
 passages can support visual comparison; exact pagination and pixel equality
 are not claimed. Missing source fonts or import differences must be distinguished
 from Khmer segmentation/justification failures. Windows runtime acceptance and

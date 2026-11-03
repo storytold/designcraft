@@ -5,8 +5,8 @@
 //! as in WordCraft, rather than the ICU4X segmenters proposed in that contribution.
 //!
 //! A boundary only permits a line break: it has no width, so justification never opens a gap
-//! there. As in InDesign, a line fills through its real word spaces and the paragraph's glyph
-//! scaling; a line without a real space keeps its natural width until the author adds one.
+//! there. As is standard in page layout, a line fills through its real word spaces and the
+//! paragraph's glyph scaling; a line without a real space keeps its natural width until the author adds one.
 use std::{
     collections::HashMap,
     ops::Range,

@@ -47,7 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
 | Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
-| Khmer horizontal justification | real word spaces and glyph scaling; lines without a real space stay natural | same, both composers; shared segmentation and authored ZWSP only choose line breaks; attached marks scale with their base | ~ | optional data pack; real IDML/PDF comparison, not exact pagination parity |
+| Khmer horizontal justification | real word spaces and glyph scaling; lines without a real space stay natural | same, both composers; shared segmentation and authored ZWSP only choose line breaks; attached marks scale with their base | ~ | optional data pack; real document/PDF comparison, not exact pagination parity |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |
