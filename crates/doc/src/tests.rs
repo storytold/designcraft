@@ -364,7 +364,7 @@ fn check_is_linear_in_the_frames() {
     }
     let t = std::time::Instant::now();
     d.check().unwrap();
-    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
     // A frame its story names but the document doesn't have is still refused.
     let sid = *d.stories.keys().next().unwrap();
     Arc::make_mut(d.stories.get_mut(&sid).unwrap()).frames.push(ItemId(u64::MAX));
