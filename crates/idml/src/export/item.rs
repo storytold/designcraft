@@ -268,9 +268,12 @@ impl<'a> Ex<'a> {
             el.set("FillColor", id.clone());
             el.set("FillTint", pct(g.fill.tint as f64));
         }
-        let embed = !asset.data.is_empty() && (self.opts.embed_images || asset.link.is_none());
+        let embed = !asset.data.is_empty()
+            && (self.opts.embed_images || asset.link.is_none())
+            && self.embedded.saturating_add(asset.data.len()) <= super::MAX_EMBEDDED_BYTES;
         let mut props = Vec::new();
         if embed {
+            self.embedded += asset.data.len();
             let mut c = El::new("Contents");
             c.children.push(Node::CData(base64_encode(&asset.data)));
             props.push(c);
