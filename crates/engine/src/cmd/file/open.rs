@@ -14,12 +14,12 @@ pub struct RecentPreview {
     pub rgba: Vec<u8>,
 }
 
-/// The picture a `.designcraft` file saved of its first page; None when the file is gone, isn't
-/// ours, or was saved before files had one (it gets one when saved again).
 /// The most pixels a recent file's preview may have to be shown (its PNG is bounded by
 /// `designcraft_format::MAX_PREVIEW_BYTES`, but a small PNG can claim a huge picture).
 const MAX_PREVIEW_PIXELS: u64 = 1 << 24;
 
+/// The picture a `.designcraft` file saved of its first page; None when the file is gone, isn't
+/// ours, or was saved before files had one (it gets one when saved again).
 pub fn recent_preview(path: &str) -> Option<RecentPreview> {
     #[cfg(not(target_arch = "wasm32"))]
     {
