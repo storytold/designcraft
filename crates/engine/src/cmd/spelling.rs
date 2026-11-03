@@ -265,6 +265,12 @@ pub fn has_khmer(text: &str) -> bool {
     text.chars().any(khmer::character)
 }
 
+/// Words in `text` for document statistics: Khmer counts by its word boundaries, not by the real
+/// spaces that justification uses; other text counts by whitespace.
+pub fn word_count(text: &str) -> usize {
+    if has_khmer(text) { khmer::words(text) } else { text.split_whitespace().count() }
+}
+
 /// A spelling or preferred-form finding; `range` always addresses original story UTF-8 bytes.
 #[derive(Clone, Debug)]
 pub struct ProofIssue {

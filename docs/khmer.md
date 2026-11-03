@@ -23,7 +23,9 @@ corrections use the existing undo history and document user dictionary.
 Authored U+200B zero-width spaces are optional wrap opportunities, not mandatory
 newlines. U+2060 word joiners and No Break formatting prevent wrapping. Shaped
 clusters, dependent vowels and repetition signs stay attached. Paragraph and
-single-line composers share the same boundary source.
+single-line composers share the same boundary source. The Story Editor's word count
+uses these word boundaries for Khmer, not real spaces; without the data, only real and
+authored zero-width spaces separate words.
 
 ## Justification
 
