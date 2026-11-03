@@ -280,7 +280,7 @@ Installers and executables are code-signed.
 
 | Build | File | Notes |
 |---|---|---|
-| App, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
+| App and bundled CLI, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
 | Command-line tool, universal | `designcraft-cli-<ver>-macos-universal.zip` | Signed and notarized |
 
 ### Linux
