@@ -30,6 +30,13 @@ fn magazine_round_trips_through_idml() {
     assert_eq!(back.page_count(), d.page_count());
     assert_eq!(back.spreads.len(), d.spreads.len());
     assert_eq!(back.parents.len(), d.parents.len());
+    assert_magazine_stories(&d, &back);
+    assert_magazine_styles(&d, &back);
+    assert_magazine_geometry(&d, &back);
+    assert_magazine_assets(&d, &back);
+}
+
+fn assert_magazine_stories(d: &Document, back: &Document) {
     // Stories: same text in the same order, same styles applied.
     let ta: Vec<&str> = d.stories.values().map(|s| s.text.as_str()).collect();
     let tb: Vec<&str> = back.stories.values().map(|s| s.text.as_str()).collect();
@@ -48,6 +55,9 @@ fn magazine_round_trips_through_idml() {
             assert_eq!(pa.para, pb.para);
         }
     }
+}
+
+fn assert_magazine_styles(d: &Document, back: &Document) {
     // Styles and swatches by name.
     for s in &d.styles.paragraph {
         let b = back.styles.para(&s.name).unwrap_or_else(|| panic!("paragraph style {}", s.name));
@@ -64,6 +74,9 @@ fn magazine_round_trips_through_idml() {
         let b = back.swatch(&s.name).unwrap_or_else(|| panic!("swatch {}", s.name));
         assert_eq!(b.value, s.value, "{}", s.name);
     }
+}
+
+fn assert_magazine_geometry(d: &Document, back: &Document) {
     // Frame geometry (document and parent spreads), pages.
     for (sa, sb) in [(&d.spreads, &back.spreads), (&d.parents, &back.parents)] {
         let (ia, ib) = (items(sa), items(sb));
@@ -78,8 +91,11 @@ fn magazine_round_trips_through_idml() {
         }
     }
     // Threads: the same frames in the same order.
-    assert_eq!(positions(&d), positions(&back));
+    assert_eq!(positions(d), positions(back));
     assert!(back.stories.values().any(|s| s.frames.len() == 2));
+}
+
+fn assert_magazine_assets(d: &Document, back: &Document) {
     // Images are embedded.
     assert_eq!(back.assets.len(), d.assets.len());
     for (a, b) in d.assets.values().zip(back.assets.values()) {
@@ -87,7 +103,7 @@ fn magazine_round_trips_through_idml() {
         assert_eq!(a.pixels, b.pixels);
     }
     // A second round trip is stable.
-    let again = designcraft_idml::import_idml(&designcraft_idml::export_idml(&back)).unwrap();
+    let again = designcraft_idml::import_idml(&designcraft_idml::export_idml(back)).unwrap();
     assert_eq!(items(&again.spreads).len(), items(&back.spreads).len());
 }
 
@@ -500,6 +516,7 @@ fn type_para_sets_a_drop_cap_that_survives_idml() {
     assert_eq!(p.nested_styles, Some(vec![designcraft_doc::NestedStyle::drop_cap("Initial")]));
 }
 
+/// Imported TOC definitions retain their settings and remain refreshable.
 #[test]
 fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let mut s = Session::new();
@@ -509,8 +526,8 @@ fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let basic = designcraft_doc::story::BASIC_PARAGRAPH;
     s.execute(
         "toc.generate",
-        &json!({"page": page, "title": "Inside", "titleStyle": basic, "entries": [
-            {"style": "Cover Title", "level": 1, "pageNumber": "before", "separator": " ^ "},
+        &json!({"page": page, "title": "Inside", "titleStyle": basic, "createBookmarks": true, "entries": [
+            {"style": "Cover Title", "level": 1, "pageNumber": "before", "separator": " ^ \u{E006} "},
             {"style": "Headline", "level": 2, "entryStyle": basic, "pageNumber": "none"},
         ]}),
     )
@@ -524,6 +541,7 @@ fn table_of_contents_definition_round_trips_through_idml_and_updates() {
     let b64 = s.execute("file.exportIdml", &json!({})).unwrap()["base64"].as_str().unwrap().to_string();
     s.execute("file.openIdml", &json!({"base64": b64, "name": "toc.idml"})).unwrap();
     let after = s.doc().unwrap().doc.toc.clone().expect("the TOC definition is imported");
+    assert!(after.create_bookmarks);
     assert_eq!((&after.title, &after.title_style, &after.entries), (&before.title, &before.title_style, &before.entries));
     assert_eq!(toc_text(&s), text);
     s.execute("toc.update", &json!({})).unwrap();

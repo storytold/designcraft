@@ -1,7 +1,7 @@
 use super::content::Content;
 use super::paint::Fill;
 use super::text_frame::TextWrap;
-use super::*;
+use super::{Affine, Arc, AssetId, Deserialize, Item, ItemId, PathData, Rect, Serialize};
 
 /// Frame fitting options (Object → Fitting → Frame Fitting Options).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

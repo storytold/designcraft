@@ -526,7 +526,9 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
         (items, ig) = self::items(glyphs, hyph_after, &emergency_after, sp);
     }
     for tolerance in [2.5, 12.0, f64::INFINITY] {
-        if let Some(b) = kp_pass(&items, &ig, glyphs, sp, width, tolerance, tolerance.is_infinite()) {
+        if let Some(b) =
+            kp_pass(PassInput { items: &items, item_glyphs: &ig, glyphs, spacing: sp, width, tolerance, emergency: tolerance.is_infinite() })
+        {
             return b;
         }
     }
@@ -603,22 +605,78 @@ fn overlong_words(items: &[Item], ig: &[usize], glyphs: &[Glyph], measure: f64) 
 /// Upper bound on the hyphen-count states tracked per breakpoint.
 const MAX_HYPHEN_STATES: usize = 8;
 
-#[allow(clippy::too_many_arguments)]
-fn kp_pass(
-    items: &[Item],
-    ig: &[usize],
-    glyphs: &[Glyph],
-    sp: &Spacing,
-    width: &dyn Fn(usize) -> f64,
-    tol: f64,
+struct PassInput<'a> {
+    items: &'a [Item],
+    item_glyphs: &'a [usize],
+    glyphs: &'a [Glyph],
+    spacing: &'a Spacing,
+    width: &'a dyn Fn(usize) -> f64,
+    tolerance: f64,
     emergency: bool,
-) -> Option<Vec<Break>> {
-    let m = items.len();
-    // Prefix sums (before item i).
-    let mut sw = vec![0.0; m + 1];
-    let mut sy = vec![[0.0; 3]; m + 1];
-    let mut sz = vec![[0.0; 3]; m + 1];
-    let mut so = vec![0.0; m + 1];
+}
+
+/// Enforce consecutive-hyphen limits and the unjustified hyphenation zone.
+fn hyphen_allowed(it: Item, n: Node, sp: &Spacing, widths: &[f64], items: &[Item], target: f64) -> bool {
+    let limit = sp.hyphen_limit as usize;
+    if limit > 0 && n.hyphens as usize >= limit {
+        return false;
+    }
+    if it.auto && !sp.justify && sp.hyph_zone > 0.0 && it.zone_from != NONE && it.zone_from > n.pos {
+        let before = widths[it.zone_from] - n.tw - items[it.zone_from].hang;
+        if target - before < sp.hyph_zone {
+            return false;
+        }
+    }
+    true
+}
+
+/// Fitness class and cumulative penalty for a candidate line break.
+fn break_demerits(n: Node, r: f64, pp: f64, flagged: bool, priority: u8) -> (usize, f64) {
+    let preference = match priority {
+        1 if r > 0.0 => 4.0,
+        2 if r < 0.0 => 4.0,
+        _ => 1.0,
+    };
+    let bad = preference * 100.0 * r.abs().powi(3);
+    let lp = 10.0 + bad;
+    let mut d = if pp >= 0.0 {
+        lp * lp + pp * pp
+    } else if pp > -INF {
+        lp * lp - pp * pp
+    } else {
+        lp * lp
+    };
+    if flagged && n.flagged {
+        d += 3000.0;
+    }
+    let fit = if r < -0.5 {
+        0
+    } else if r <= 0.5 {
+        1
+    } else if r <= 1.0 {
+        2
+    } else {
+        3
+    };
+    if (fit as i32 - n.fitness as i32).abs() > 1 {
+        d += 3000.0;
+    }
+    (fit, n.demerits + d)
+}
+
+/// Width, stretch, shrink and overhang totals before each item.
+struct PrefixSums {
+    sw: Vec<f64>,
+    sy: Vec<[f64; 3]>,
+    sz: Vec<[f64; 3]>,
+    so: Vec<f64>,
+}
+
+fn prefix_sums(items: &[Item]) -> PrefixSums {
+    let mut sw = vec![0.0; items.len() + 1];
+    let mut sy = vec![[0.0; 3]; items.len() + 1];
+    let mut sz = vec![[0.0; 3]; items.len() + 1];
+    let mut so = vec![0.0; items.len() + 1];
     for (i, it) in items.iter().enumerate() {
         let (w, y, z) = match it.kind {
             Kind::Box | Kind::Glue => (it.w, it.st, it.sh),
@@ -631,6 +689,13 @@ fn kp_pass(
             sz[i + 1][t] = sz[i][t] + z[t];
         }
     }
+    PrefixSums { sw, sy, sz, so }
+}
+
+fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
+    let PassInput { items, item_glyphs, glyphs, spacing: sp, width, tolerance: tol, emergency } = input;
+    let m = items.len();
+    let PrefixSums { sw, sy, sz, so } = prefix_sums(items);
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -695,51 +760,11 @@ fn kp_pass(
             if !feasible || (r > tol && !forced) {
                 continue;
             }
-            if flagged {
-                // Hyphen limit: a hard constraint.
-                if limit > 0 && n.hyphens as usize >= limit {
-                    continue;
-                }
-                // Hyphenation zone (unjustified): break before the word instead when that leaves
-                // less than the zone at the line end.
-                if it.auto && !sp.justify && sp.hyph_zone > 0.0 && it.zone_from != NONE && it.zone_from > n.pos {
-                    let before = sw[it.zone_from] - n.tw - items[it.zone_from].hang;
-                    if target - before < sp.hyph_zone {
-                        continue;
-                    }
-                }
+            if flagged && !hyphen_allowed(it, n, sp, &sw, items, target) {
+                continue;
             }
-            let preference = match sp.kinsoku_priority {
-                1 if r > 0.0 => 4.0,
-                2 if r < 0.0 => 4.0,
-                _ => 1.0,
-            };
-            let bad = preference * 100.0 * r.abs().powi(3);
-            let lp = 10.0 + bad;
-            let mut d = if pp >= 0.0 {
-                lp * lp + pp * pp
-            } else if pp > -INF {
-                lp * lp - pp * pp
-            } else {
-                lp * lp
-            };
-            if flagged && n.flagged {
-                d += 3000.0;
-            }
-            let fit = if r < -0.5 {
-                0
-            } else if r <= 0.5 {
-                1
-            } else if r <= 1.0 {
-                2
-            } else {
-                3
-            };
-            if (fit as i32 - n.fitness as i32).abs() > 1 {
-                d += 3000.0;
-            }
+            let (fit, total) = break_demerits(n, r, pp, flagged, sp.kinsoku_priority);
             let hs = if flagged { (n.hyphens as usize + 1).min(states - 1) } else { 0 };
-            let total = n.demerits + d;
             let slot = &mut best[fit * states + hs];
             if slot.is_none_or(|(bd, _)| total < bd) {
                 *slot = Some((total, a));
@@ -820,7 +845,7 @@ fn kp_pass(
         cur = arena[c].prev;
     }
     chain.reverse();
-    Some(breaks_from_positions(items, ig, glyphs, &chain))
+    Some(breaks_from_positions(items, item_glyphs, glyphs, &chain))
 }
 
 fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: &[usize]) -> Vec<Break> {
@@ -947,7 +972,15 @@ pub fn greedy(
             x += adv;
             shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
-                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                if g.ch == SOFT_HYPHEN {
+                    if may_hyphenate(hyphens) {
+                        let hw = hyphen_width(g, &mut hy_cache);
+                        let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                        if x + hy <= w + shrink + FIT_EPS {
+                            last_ok = Some((i + 1, true));
+                        }
+                    }
+                } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
