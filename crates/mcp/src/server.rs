@@ -59,10 +59,17 @@ impl Server {
 
     /// Serve newline-delimited JSON-RPC until `input` closes. Logs go to stderr only (stdout is
     /// the protocol stream).
-    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
-        for line in input.lines() {
-            let line = line?;
-            if let Some(reply) = self.handle_line(&line) {
+    pub fn serve(&mut self, mut input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            if input.read_until(b'\n', &mut buf)? == 0 {
+                break;
+            }
+            // Invalid UTF-8 becomes U+FFFD, so the line gets a parse error instead of ending the stream.
+            let line = String::from_utf8_lossy(&buf);
+            let line = line.trim_end_matches(['\r', '\n']);
+            if let Some(reply) = self.handle_line(line) {
                 output.write_all(reply.as_bytes())?;
                 output.write_all(b"\n")?;
                 output.flush()?;
@@ -149,6 +156,7 @@ impl Server {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing tool `name`".to_string()))?;
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                check_arguments(name, &args).map_err(|m| (INVALID_PARAMS, m))?;
                 Ok(call_tool(self.backend.as_mut(), name, &args).to_value())
             }
             "resources/list" => Ok(json!({"resources": [
@@ -168,5 +176,43 @@ impl Server {
             }
             other => Err((METHOD_NOT_FOUND, format!("method not found: {other}"))),
         }
+    }
+}
+
+/// Arguments a tool doesn't take, and command params a command doesn't take, are invalid params
+/// (#776): a misspelt key is refused instead of being ignored. `execute` and `batch` are checked
+/// against the params descriptions of the commands they run, every step before the first runs.
+fn check_arguments(name: &str, args: &Value) -> Result<(), String> {
+    let Some(arguments) = args.as_object() else { return Ok(()) };
+    if let Some(def) = tool_definitions().into_iter().find(|t| t.get("name").and_then(Value::as_str) == Some(name))
+        && let Some(properties) = def.get("inputSchema").and_then(|s| s.get("properties")).and_then(Value::as_object)
+        && let Some(key) = arguments.keys().find(|k| !properties.contains_key(*k))
+    {
+        return Err(format!("unknown argument `{key}` for `{name}`"));
+    }
+    let command = |step: &Value| -> Result<(), String> {
+        match (step.get("command").and_then(Value::as_str), step.get("params")) {
+            (Some(id), Some(params)) => designcraft_engine::check_params(id, params).map_err(|e| e.to_string()),
+            _ => Ok(()),
+        }
+    };
+    match name {
+        "execute" => command(args),
+        "batch" => {
+            let steps = match (arguments.get("commands").and_then(Value::as_array), arguments.get("script").and_then(Value::as_str)) {
+                (Some(steps), _) => steps.clone(),
+                // A script that doesn't parse is the tool's to report.
+                (None, Some(text)) => match designcraft_engine::script::parse(text) {
+                    Ok(steps) => steps.into_iter().map(|s| json!({"command": s.command, "params": s.params})).collect(),
+                    Err(_) => return Ok(()),
+                },
+                (None, None) => return Ok(()),
+            };
+            for (i, step) in steps.iter().enumerate() {
+                command(step).map_err(|e| format!("step {i}: {e}"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }

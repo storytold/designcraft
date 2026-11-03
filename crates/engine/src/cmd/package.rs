@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 
 const MAX_OUTPUT_COMPONENT_BYTES: usize = 200;
 
+/// The folder of a package that holds the files its document places.
+const LINKS_FOLDER: &str = "Links";
+
 fn path_error(path: &Path, message: impl std::fmt::Display) -> EngineError {
     EngineError::Other(format!("{}: {message}", path.display()))
 }
@@ -74,6 +77,8 @@ struct OutputRoot {
 
 impl OutputRoot {
     fn new(path: PathBuf) -> Result<Self> {
+        // Before anything is created: the folder must be inside the automation write root.
+        crate::file_access::check_write(&path).map_err(EngineError::Other)?;
         ensure_real_directory(&path, false)?;
         let canonical = std::fs::canonicalize(&path).map_err(|e| path_error(&path, e))?;
         Ok(Self { path, canonical })
@@ -130,8 +135,9 @@ impl OutputRoot {
         {
             use std::os::unix::fs::PermissionsExt;
 
-            // Match fs::write for a new output: 0666 restricted by the caller's umask.
-            builder.permissions(std::fs::Permissions::from_mode(0o666));
+            // Like fs::write for a new output: request 0666 and let the process umask decide the
+            // effective mode (0644 with the usual 022, 0664 with 002).
+            builder.permissions(std::fs::Permissions::from_mode(0o666)); // NOSONAR
         }
         let file = builder.tempfile_in(parent).map_err(|e| path_error(path, e))?;
         #[cfg(unix)]
@@ -197,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy, an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
             has_doc,
             package
         ),
@@ -280,7 +286,10 @@ fn unique_name(base: String, taken: &mut Vec<String>) -> String {
 }
 
 /// Write each asset's bytes into `dir`; returns the relinked document and the paths written.
-fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>) -> Result<(Document, Vec<PathBuf>)> {
+/// `relative_to` names the folder `dir` is, beside the saved document: the links then read
+/// `Links/logo.png`, so a package holds no path from the machine that made it (#340). `None` links
+/// the copies by their full paths (Links › Copy Link(s) To, which relinks the open document).
+fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>, relative_to: Option<&str>) -> Result<(Document, Vec<PathBuf>)> {
     root.validate_directory(dir)?;
     let mut out = d.clone();
     let mut taken = Vec::new();
@@ -292,11 +301,19 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
             continue;
         }
         let Some(a) = d.assets.get(&id) else { continue };
+        // A missing link has no bytes: an empty file under its name would read as present, so it
+        // keeps its old (missing) path instead.
+        if a.data.is_empty() {
+            continue;
+        }
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
         root.write(&path, a.data.as_slice())?;
         let mut na = (**a).clone();
-        na.link = Some(path.to_string_lossy().to_string());
+        na.link = Some(match relative_to {
+            Some(folder) => format!("{folder}/{name}"),
+            None => path.to_string_lossy().to_string(),
+        });
         out.assets.insert(id, Arc::new(na));
         written.push(path);
     }
@@ -319,7 +336,7 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
         return String::new();
     }
     let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
-    let to = dir.join(unique_name(name, taken));
+    let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
     match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
         Ok(()) => {
             copied.push(from.clone());
@@ -328,6 +345,24 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
         }
         Err(e) => format!(" — not copied: {e}"),
     }
+}
+
+/// `name` with a font extension when it has none: font services name their files as they like,
+/// and a package's `Document Fonts` load only .ttf, .otf, .ttc and .otc files. The extension
+/// comes from the file's first four bytes; a leading dot (a hidden file) is dropped.
+fn font_file_name(name: String, data: &[u8]) -> String {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
+        return name;
+    }
+    let add = match data.get(..4) {
+        Some(b"OTTO") => "otf",
+        Some(b"ttcf") => "ttc",
+        Some([0, 1, 0, 0] | b"true") => "ttf",
+        _ => return name,
+    };
+    let stem = name.trim_start_matches('.');
+    format!("{}.{add}", if stem.is_empty() { "font" } else { stem })
 }
 
 /// Add the faces that draw the visible glyphs of `cs` (table cells and footnotes included) to
@@ -355,6 +390,17 @@ fn drawn_faces(cs: &ComposedStory, depth: usize, out: &mut Vec<FaceRef>) {
 fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = PathBuf::from(str_param(p, "dir").ok_or_else(|| bad("file.package", "missing `dir`"))?);
     let st = s.doc()?;
+    // The PDF: with the default settings, or with the options of a PDF preset, made as
+    // file.exportPdf makes it. Read first, so that bad options write nothing.
+    let pdf = match p.get("pdf") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(json!({})),
+        Some(o @ Value::Object(_)) => {
+            super::export::check_pdf_options(o, st.doc.page_count())?;
+            Some(o.clone())
+        }
+        Some(v) => return Err(bad("file.package", format!("`pdf` is true, false or PDF export options, not {v}"))),
+    };
     let root = OutputRoot::new(dir.clone())?;
     let display_title = st.doc.title.clone();
     let title = safe_component(&display_title, "Untitled");
@@ -362,10 +408,10 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let links = s.execute("links.list", &json!({}))?;
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
     let d = s.doc()?.doc.clone();
-    let links_dir = root.child("Links")?;
-    let (packed, mut files) = write_links(&d, &root, &links_dir, None)?;
+    let links_dir = root.child(LINKS_FOLDER)?;
+    let (packed, mut files) = write_links(&d, &root, &links_dir, None, Some(LINKS_FOLDER))?;
     let doc_path = package_output_path(&dir, &title, "designcraft")?;
-    root.write(&doc_path, &super::to_bytes(&packed))?;
+    root.write(&doc_path, &super::to_bytes(&packed)?)?;
     files.insert(0, doc_path);
     // The font files, and what the report says about each font.
     let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
@@ -392,22 +438,32 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         .iter()
         .map(|f| format!("  {} {}{}\n", f.family, f.style, copy_font(&root, f, &fonts_dir, &mut copied, &mut taken, &mut files)))
         .collect();
+    // The IDML copy links the placed files, so a per-placement PDF layer choice cannot travel in
+    // it (an external-only IDML export rejects one for the same reason). Say so in the report
+    // instead of leaving a silent difference between the package's copies.
+    let mut idml_layer_note = "";
     if p.get("idml").and_then(Value::as_bool).unwrap_or(true) {
         let path = package_output_path(&dir, &title, "idml")?;
-        root.write(&path, &designcraft_idml::export_idml(&packed))?;
+        // The images are in Links/ beside it: link them there, without embedded copies.
+        let opts = designcraft_idml::ExportOptions { embed_images: false };
+        root.write(&path, &designcraft_idml::export_idml_with(&packed, &opts))?;
         files.push(path);
+        if super::interchange::has_applicable_pdf_layer_overrides(&packed) {
+            idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
+        }
     }
-    if p.get("pdf").and_then(Value::as_bool).unwrap_or(false) {
+    if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
-        let bytes = designcraft_pdf::export_pdf(&packed, &s.cache, &Default::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-        root.write(&path, &bytes)?;
+        root.write(&path, &super::export::pdf_report(&packed, &s.cache, &params)?.bytes)?;
         files.push(path);
     }
-    // The report: fonts (missing first), links, preflight, the user's instructions.
-    let mut r = format!("Package report: {display_title}\n\n");
+    // The printing instructions first, as the form gave them; then the report: fonts (missing
+    // first), links, preflight.
+    let mut r = String::new();
     if let Some(t) = str_param(p, "instructions").filter(|t| !t.trim().is_empty()) {
         r += &format!("Instructions\n{t}\n\n");
     }
+    r += &format!("Package report: {display_title}\n\n");
     r += "Fonts\n";
     r += &font_lines.concat();
     if !fallback_lines.is_empty() {
@@ -418,6 +474,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     for l in links.as_array().into_iter().flatten() {
         r += &format!("  {} ({})\n", l["name"].as_str().unwrap_or(""), l["status"].as_str().unwrap_or(""));
     }
+    r += idml_layer_note;
     if let Some(issues) = pre.get("issues").and_then(Value::as_array) {
         r += &format!("\nPreflight: {} issue(s)\n", issues.len());
         for i in issues {
@@ -435,7 +492,7 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
     let only: Option<Vec<AssetId>> = p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(AssetId).collect());
     let d = s.doc()?.doc.clone();
     let root = OutputRoot::new(dir.clone())?;
-    let (relinked, written) = write_links(&d, &root, &dir, only.as_deref())?;
+    let (relinked, written) = write_links(&d, &root, &dir, only.as_deref(), None)?;
     s.edit(|doc, _| {
         doc.assets = relinked.assets;
         Ok(())
@@ -444,308 +501,4 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relocated_packages_rebind_embedded_image_links_on_open() {
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir().join(format!("dc-package-relocation-{}-{nonce}", std::process::id()));
-        let original = dir.join("original");
-        let moved = dir.join("moved");
-        let png = designcraft_render::Rendered { width: 4, height: 3, pixels: [30, 90, 180, 255].repeat(12) }.to_png();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "OwnedPackage", "width": 72, "height": 72})).unwrap();
-        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "owned.png", "x": 5, "y": 5, "width": 16})).unwrap();
-        s.execute("file.package", &json!({"dir": original.to_string_lossy(), "idml": true, "pdf": false})).unwrap();
-        std::fs::rename(&original, &moved).unwrap();
-        let expected = std::path::absolute(moved.join("Links").join("owned.png")).unwrap();
-        for (command, extension) in [("file.open", "designcraft"), ("file.openIdml", "idml")] {
-            let mut opened = Session::new();
-            opened.execute(command, &json!({"path": moved.join(format!("OwnedPackage.{extension}")).to_string_lossy()})).unwrap();
-            let asset = opened.doc().unwrap().doc.assets.values().next().unwrap();
-            assert_eq!(*asset.data, png, "{extension}: preserve embedded pixels");
-            assert_eq!(asset.link.as_deref(), expected.to_str(), "{extension}: use the relocated Links file");
-            let links = opened.execute("links.list", &json!({})).unwrap();
-            assert_eq!(links[0]["status"], "ok", "{extension}");
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn package_writes_document_links_and_report() {
-        let dir = std::env::temp_dir().join(format!("dc-package-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let svg = dir.join("logo.svg");
-        std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>"##).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("file.place", &json!({"path": svg.to_string_lossy(), "x": 100, "y": 100})).unwrap();
-        s.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
-        let out = dir.join("Pkg");
-        let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "pdf": true, "instructions": "Print on matte."})).unwrap();
-        let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).collect();
-        assert!(files.iter().any(|f| f.ends_with(".designcraft")));
-        assert!(files.iter().any(|f| f.ends_with(".idml")));
-        assert!(files.iter().any(|f| f.ends_with(".pdf")));
-        assert!(out.join("Links").join("logo.svg").exists());
-        let report = std::fs::read_to_string(out.join("Instructions.txt")).unwrap();
-        assert!(report.contains("Print on matte.") && report.contains("logo.svg"), "{report}");
-        assert!(report.contains("Preflight:"), "{report}");
-        // The packaged document links to its Links folder.
-        let doc_file = files.iter().find(|f| f.ends_with(".designcraft")).unwrap();
-        let packed = super::super::from_bytes(&std::fs::read(doc_file).unwrap()).unwrap();
-        let link = packed.assets.values().next().unwrap().link.clone().unwrap();
-        assert!(link.contains("Links"), "{link}");
-        // Copy Links To relinks the open document.
-        let r = s.execute("links.copyTo", &json!({"dir": dir.join("Copies").to_string_lossy()})).unwrap();
-        assert_eq!(r["copied"], 1);
-        assert!(s.doc().unwrap().doc.assets.values().next().unwrap().link.as_deref().unwrap().contains("Copies"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn package_copies_the_fonts_their_licences_allow() {
-        use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        use designcraft_fonts::testing::{font_with, with_fs_type};
-        const FREE: &str = "DocFont Package Free";
-        const RESTRICTED: &str = "DocFont Package Restricted";
-        let dir = std::env::temp_dir().join(format!("dc-package-fonts-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let fonts = dir.join("src").join(DOCUMENT_FONTS_FOLDER);
-        std::fs::create_dir_all(&fonts).unwrap();
-        std::fs::write(fonts.join("free.ttf"), font_with(FREE, &['F']).unwrap()).unwrap();
-        std::fs::write(fonts.join("restricted.otf"), with_fs_type(font_with(RESTRICTED, &['R']).unwrap(), 0x0002).unwrap()).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            std::fs::set_permissions(fonts.join("free.ttf"), std::fs::Permissions::from_mode(0o640)).unwrap();
-        }
-        // Text in both fonts, and in the bundled default font.
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Free Restricted Default"})).unwrap();
-        for (a, b, family) in [(0, 4, FREE), (5, 15, RESTRICTED)] {
-            s.execute("text.select", &json!({"story": r["story"], "anchor": a, "focus": b})).unwrap();
-            s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
-        }
-        let src = dir.join("src").join("Fonts.designcraft");
-        s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
-        let mut s = Session::new();
-        assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 2);
-
-        let out = dir.join("Pkg");
-        let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).unwrap();
-        let packed_fonts = out.join(DOCUMENT_FONTS_FOLDER);
-        assert!(packed_fonts.join("free.ttf").exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            assert_eq!(
-                std::fs::metadata(packed_fonts.join("free.ttf")).unwrap().permissions().mode() & 0o777,
-                std::fs::metadata(fonts.join("free.ttf")).unwrap().permissions().mode() & 0o777
-            );
-        }
-        assert!(!packed_fonts.join("restricted.otf").exists(), "a restricted licence keeps the font out");
-        assert!(r["files"].to_string().contains("free.ttf"), "{}", r["files"]);
-        let report = r["report"].as_str().unwrap();
-        assert!(report.contains(&format!("{RESTRICTED} Regular — not copied: its licence doesn't allow it")), "{report}");
-        assert!(report.contains(&format!("{FREE} Regular\n")), "{report}");
-        assert!(report.contains(&format!("{} Regular — included with DesignCraft", designcraft_fonts::DEFAULT_FAMILY)), "{report}");
-        // The packaged document opens with its fonts.
-        let doc = r["files"][0].as_str().unwrap().to_string();
-        assert_eq!(Session::new().execute("file.open", &json!({"path": doc})).unwrap()["documentFonts"], 1);
-        // Packaging into the folder the fonts come from leaves them whole.
-        let len = std::fs::metadata(fonts.join("free.ttf")).unwrap().len();
-        s.execute("file.package", &json!({"dir": dir.join("src").to_string_lossy(), "idml": false})).unwrap();
-        assert_eq!(std::fs::metadata(fonts.join("free.ttf")).unwrap().len(), len);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn package_copies_the_fallback_fonts_that_draw_text() {
-        use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        use designcraft_fonts::testing::{font_with, with_fs_type};
-        const NAMED: &str = "DocFont Fallback Named";
-        const HELPER: &str = "DocFont Fallback Helper";
-        const RESTRICTED: &str = "DocFont Fallback Restricted";
-        // Characters no other font has: the named font lacks both, the document's other fonts
-        // draw them.
-        let (helped, restricted) = ('\u{F0A41}', '\u{F0A42}');
-        let dir = std::env::temp_dir().join(format!("dc-package-fallback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let fonts = dir.join("src").join(DOCUMENT_FONTS_FOLDER);
-        std::fs::create_dir_all(&fonts).unwrap();
-        std::fs::write(fonts.join("named.ttf"), font_with(NAMED, &['N']).unwrap()).unwrap();
-        std::fs::write(fonts.join("helper.ttf"), font_with(HELPER, &[helped]).unwrap()).unwrap();
-        std::fs::write(fonts.join("restricted.otf"), with_fs_type(font_with(RESTRICTED, &[restricted]).unwrap(), 0x0002).unwrap()).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("document.preferences", &json!({"glyphFallback": true})).unwrap();
-        let text = format!("N{helped}{restricted}");
-        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": text})).unwrap();
-        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": text.len()})).unwrap();
-        s.execute("type.char", &json!({"fontFamily": NAMED, "fontStyle": "Regular"})).unwrap();
-        let src = dir.join("src").join("Fallback.designcraft");
-        s.execute("file.save", &json!({"path": src.to_string_lossy()})).unwrap();
-        let mut s = Session::new();
-        assert_eq!(s.execute("file.open", &json!({"path": src.to_string_lossy()})).unwrap()["documentFonts"], 3);
-
-        let out = dir.join("Pkg");
-        let r = s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).unwrap();
-        let packed_fonts = out.join(DOCUMENT_FONTS_FOLDER);
-        assert!(packed_fonts.join("named.ttf").exists());
-        assert!(packed_fonts.join("helper.ttf").exists(), "the fallback font that draws text is copied");
-        assert!(!packed_fonts.join("restricted.otf").exists(), "a restricted licence keeps a fallback font out too");
-        let report = r["report"].as_str().unwrap();
-        let fallback = report.split("Fallback fonts").nth(1).unwrap_or_else(|| panic!("{report}"));
-        assert!(fallback.contains(&format!("{HELPER} Regular\n")), "{report}");
-        assert!(fallback.contains(&format!("{RESTRICTED} Regular — not copied: its licence doesn't allow it")), "{report}");
-        assert!(!fallback.contains(NAMED), "{report}");
-        // The packaged document draws the same text with its fonts.
-        let doc = r["files"][0].as_str().unwrap().to_string();
-        assert_eq!(Session::new().execute("file.open", &json!({"path": doc})).unwrap()["documentFonts"], 2);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn package_uses_portable_names_inside_the_selected_directory() {
-        assert_eq!(safe_component("Archive/Annual: Review", "Untitled"), "Annual_ Review");
-        assert_eq!(safe_component(".", "Untitled"), "Untitled");
-        assert_eq!(safe_component("CON", "Untitled"), "_CON");
-        assert_eq!(safe_component("COM¹.txt", "Untitled"), "_COM¹.txt");
-        assert_eq!(safe_component("LPT³", "Untitled"), "_LPT³");
-        for name in ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"] {
-            assert!(is_reserved_windows_name(name), "{name}");
-        }
-        let mut taken = Vec::new();
-        assert_eq!(unique_name("Logo.svg".into(), &mut taken), "Logo.svg");
-        assert_eq!(unique_name("logo.svg".into(), &mut taken), "logo 2.svg");
-        assert_eq!(unique_name("Résumé.pdf".into(), &mut taken), "Résumé.pdf");
-        assert_eq!(unique_name("Re\u{301}sume\u{301}.pdf".into(), &mut taken), "Re\u{301}sume\u{301} 2.pdf");
-        assert_eq!(unique_name("ΟΣ.txt".into(), &mut taken), "ΟΣ.txt");
-        assert_eq!(unique_name("ος.txt".into(), &mut taken), "ος 2.txt");
-
-        let dir = std::env::temp_dir().join(format!("dc-package-safe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "Archive/Annual: Review"})).unwrap();
-        let r = s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
-        let files = r["files"].as_array().unwrap();
-        assert!(files.iter().all(|path| Path::new(path.as_str().unwrap()).starts_with(&dir)));
-        assert!(dir.join("Annual_ Review.designcraft").is_file());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn package_overwrites_existing_regular_outputs() {
-        let dir = std::env::temp_dir().join(format!("dc-package-overwrite-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let document = dir.join("Annual.designcraft");
-        std::fs::write(&document, b"previous package").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o640)).unwrap();
-        }
-
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
-        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
-        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
-        assert!(super::super::from_bytes(&std::fs::read(&document).unwrap()).is_ok());
-        assert!(!dir.join(designcraft_fonts::DOCUMENT_FONTS_FOLDER).exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            assert_eq!(std::fs::metadata(&document).unwrap().permissions().mode() & 0o777, 0o640);
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn package_accepts_a_relative_destination() {
-        let dir = PathBuf::from(format!(".dc-package-relative-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "Relative"})).unwrap();
-        s.execute("file.package", &json!({"dir": dir.to_string_lossy(), "idml": false})).unwrap();
-        assert!(dir.join("Relative.designcraft").is_file());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn package_refuses_redirected_destinations() {
-        use std::os::unix::fs::symlink;
-
-        let base = std::env::temp_dir().join(format!("dc-package-redirects-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let outside = base.join("separate");
-        std::fs::create_dir_all(&outside).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
-
-        let redirected_root = base.join("redirected-package");
-        symlink(&outside, &redirected_root).unwrap();
-        assert!(s.execute("file.package", &json!({"dir": redirected_root.to_string_lossy(), "idml": false})).is_err());
-        assert!(!outside.join("Annual.designcraft").exists());
-        std::fs::remove_file(&redirected_root).unwrap();
-
-        // A linked folder above the package is followed, as `/tmp` is on macOS.
-        let linked_parent = base.join("linked-parent");
-        symlink(&outside, &linked_parent).unwrap();
-        let nested_package = linked_parent.join("nested").join("Package");
-        s.execute("file.package", &json!({"dir": nested_package.to_string_lossy(), "idml": false})).unwrap();
-        assert!(outside.join("nested").join("Package").join("Annual.designcraft").is_file());
-        std::fs::remove_file(&linked_parent).unwrap();
-
-        let package = base.join("Package");
-        std::fs::create_dir_all(&package).unwrap();
-        symlink(&outside, package.join("Links")).unwrap();
-        assert!(s.execute("file.package", &json!({"dir": package.to_string_lossy(), "idml": false})).is_err());
-        assert!(!outside.join("Annual.designcraft").exists());
-        std::fs::remove_file(package.join("Links")).unwrap();
-        std::fs::create_dir(package.join("Links")).unwrap();
-
-        let kept = outside.join("kept.designcraft");
-        std::fs::write(&kept, b"kept").unwrap();
-        symlink(&kept, package.join("Annual.designcraft")).unwrap();
-        assert!(s.execute("file.package", &json!({"dir": package.to_string_lossy(), "idml": false})).is_err());
-        assert_eq!(std::fs::read(&kept).unwrap(), b"kept");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn package_refuses_windows_directory_redirects() {
-        use std::os::windows::fs::symlink_dir;
-
-        let base = std::env::temp_dir().join(format!("dc-package-windows-redirect-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let outside = base.join("separate");
-        std::fs::create_dir_all(&outside).unwrap();
-        let redirected = base.join("Package");
-        match symlink_dir(&outside, &redirected) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                let _ = std::fs::remove_dir_all(&base);
-                return;
-            }
-            Err(e) => panic!("could not create directory redirect: {e}"),
-        }
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "Annual"})).unwrap();
-        assert!(s.execute("file.package", &json!({"dir": redirected.to_string_lossy(), "idml": false})).is_err());
-        assert!(!outside.join("Annual.designcraft").exists());
-        std::fs::remove_dir(&redirected).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
-    }
-}
+mod tests;

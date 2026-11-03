@@ -29,7 +29,7 @@ impl Library {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(p) = &self.path {
             let bytes = serde_json::to_vec_pretty(self).map_err(|e| crate::EngineError::Other(e.to_string()))?;
-            crate::atomic::write_file(p, &bytes)?;
+            crate::io::write_file(p, &bytes).map_err(crate::EngineError::Other)?;
         }
         Ok(())
     }
@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 (Some(j), _) => (j.to_string(), None),
                 (None, Some(path)) => {
                     #[cfg(not(target_arch = "wasm32"))]
-                    let t = std::fs::read_to_string(path).map_err(|e| crate::EngineError::Other(format!("{path}: {e}")))?;
+                    let t = crate::io::read_to_string(path).map_err(crate::EngineError::Other)?;
                     #[cfg(target_arch = "wasm32")]
                     let t = String::new();
                     (t, Some(path.to_string()))

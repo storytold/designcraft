@@ -67,7 +67,7 @@ fn image(d: &mut Document, name: &str, w: u32, h: u32, hue: f32) -> AssetId {
     let data = art_png(w, h, hue);
     d.assets.insert(
         id,
-        Arc::new(Asset { page: 0, id, name: name.into(), mime: "image/png".into(), link: None, data: Arc::new(data), pixels: Some((w, h)) }),
+        Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(data), pixels: Some((w, h)), ..Default::default() }),
     );
     id
 }
@@ -79,12 +79,16 @@ fn graphic_frame(d: &mut Document, sr: SpreadRef, r: Rect, asset: AssetId, px: (
     let (nw, nh) = (px.0 as f64, px.1 as f64);
     let k = (r.width() / nw).max(r.height() / nh);
     it.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset,
         size: (nw, nh),
         xf: Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k),
+        clip: None,
         auto_fit: designcraft_doc::Fitting::FillProportionally,
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
     });
     it.object_style = designcraft_doc::BASIC_GRAPHICS_FRAME.into();
     d.insert_item(sr, it, None)?;
@@ -125,8 +129,8 @@ fn build() -> designcraft_doc::Result<Document> {
             gradient: Gradient {
                 kind: GradientKind::Linear,
                 stops: vec![
-                    GradientStop { offset: 0.0, color: Color::cmyk(0.62, 0.95, 0.30, 0.25), opacity: 1.0, midpoint: 0.5 },
-                    GradientStop { offset: 1.0, color: Color::cmyk(0.0, 0.62, 0.78, 0.0), opacity: 1.0, midpoint: 0.5 },
+                    GradientStop { swatch: Some("Ink Plum".into()), ..GradientStop::new(0.0, Color::cmyk(0.62, 0.95, 0.30, 0.25)) },
+                    GradientStop { swatch: Some("Sunset".into()), ..GradientStop::new(1.0, Color::cmyk(0.0, 0.62, 0.78, 0.0)) },
                 ],
             },
         },

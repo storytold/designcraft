@@ -100,6 +100,25 @@ fn sort_key(s: &str) -> String {
     if k.is_empty() { s.to_lowercase() } else { k }
 }
 
+/// Record one reference's see-target or page on its topic node.
+fn record_ref(n: &mut Node, res: &Resolved) {
+    match &res.r.range {
+        IndexRange::See(t) => n.see.push(t.clone()),
+        IndexRange::SeeAlso(t) => {
+            n.see_also.push(t.clone());
+            if let Some(p) = res.pages {
+                n.pages.push(p);
+            }
+        }
+        IndexRange::SuppressPageRange => {}
+        _ => {
+            if let Some(p) = res.pages {
+                n.pages.push(p);
+            }
+        }
+    }
+}
+
 /// The index as paragraphs `(style, text)`; `page_name` formats an absolute page.
 pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> String) -> Vec<(String, String)> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
@@ -114,21 +133,7 @@ pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> S
             .map(|(i, t)| (format!("{}\u{0}{}", sort_key(res.r.sort.get(i).filter(|s| !s.is_empty()).unwrap_or(t)), t.trim()), t.trim().to_string()))
             .collect();
         let n = descend(&mut root, &keys);
-        match &res.r.range {
-            IndexRange::See(t) => n.see.push(t.clone()),
-            IndexRange::SeeAlso(t) => {
-                n.see_also.push(t.clone());
-                if let Some(p) = res.pages {
-                    n.pages.push(p);
-                }
-            }
-            IndexRange::SuppressPageRange => {}
-            _ => {
-                if let Some(p) = res.pages {
-                    n.pages.push(p);
-                }
-            }
-        }
+        record_ref(n, res);
     }
     let mut out = Vec::new();
     if !spec.title.is_empty() {
@@ -137,7 +142,12 @@ pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> S
     let mut heading: Option<char> = None;
     for (key, n) in &root {
         if spec.section_headings {
-            let c = key.chars().next().map(|c| if c.is_alphabetic() { c.to_uppercase().next().unwrap_or(c) } else { '#' });
+            // Georgian headings stay Mkhedruli (no capitals; Mtavruli is only for all-caps text).
+            let c = key.chars().next().map(|c| match c {
+                c if !c.is_alphabetic() => '#',
+                c if crate::capitalizes(c) => c.to_uppercase().next().unwrap_or(c),
+                c => c,
+            });
             if c != heading {
                 heading = c;
                 if let Some(c) = c {
@@ -184,10 +194,15 @@ fn entry_text(spec: &IndexSpec, n: &Node, page_name: &dyn Fn(usize) -> String) -
     t
 }
 
+// `build` limits topic paths to four levels, bounding this traversal.
+fn run_in_subtopics(spec: &IndexSpec, n: &Node, page_name: &dyn Fn(usize) -> String) -> Vec<String> {
+    n.children.values().flat_map(|c| [entry_text(spec, c, page_name)].into_iter().chain(run_in_subtopics(spec, c, page_name))).collect()
+}
+
 fn emit(spec: &IndexSpec, n: &Node, level: usize, page_name: &dyn Fn(usize) -> String, out: &mut Vec<(String, String)>) {
     if spec.run_in && level == 1 {
         let mut t = entry_text(spec, n, page_name);
-        let subs: Vec<String> = n.children.values().map(|c| entry_text(spec, c, page_name)).collect();
+        let subs = run_in_subtopics(spec, n, page_name);
         if !subs.is_empty() {
             t.push_str(": ");
             t.push_str(&subs.join(&spec.between_entries));
@@ -207,6 +222,19 @@ mod tests {
 
     fn r(topics: &[&str], range: IndexRange, pages: Option<(usize, usize)>) -> Resolved {
         Resolved { r: IndexRef { topics: topics.iter().map(|s| s.to_string()).collect(), sort: vec![], range }, pages }
+    }
+
+    #[test]
+    fn run_in_keeps_all_topic_levels_in_sort_order() {
+        let refs = vec![
+            r(&["Typography", "kerning", "pairs", "optical"], IndexRange::CurrentPage, Some((4, 4))),
+            r(&["Typography", "kerning", "pairs"], IndexRange::CurrentPage, Some((2, 2))),
+            r(&["Typography", "leading"], IndexRange::CurrentPage, Some((6, 6))),
+            r(&["Typography", "kerning", "adjustment"], IndexRange::See("Spacing".into()), None),
+        ];
+        let spec = IndexSpec { run_in: true, title: String::new(), section_headings: false, between_entries: " / ".into(), ..IndexSpec::default() };
+        let out = build(&spec, &refs, &|p| (p + 1).to_string());
+        assert_eq!(out, [("Index Level 1".into(), "Typography: kerning / adjustment  See Spacing / pairs  3 / optical  5 / leading  7".into())]);
     }
 
     #[test]
@@ -242,5 +270,13 @@ mod tests {
         );
         let run_in = build(&IndexSpec { run_in: true, section_headings: false, title: String::new(), ..spec }, &refs[..2], &|p| (p + 1).to_string());
         assert_eq!(run_in, [("Index Level 1".to_string(), "Typography  2\u{2013}4: kerning  5".to_string())]);
+    }
+    #[test]
+    fn georgian_section_heads_stay_mkhedruli() {
+        let refs = vec![r(&["ასო"], IndexRange::CurrentPage, Some((0, 0))), r(&["ბადე"], IndexRange::CurrentPage, Some((1, 1)))];
+        let out = build(&IndexSpec::default(), &refs, &|p| (p + 1).to_string());
+        let heads: Vec<&str> = out.iter().filter(|(s, _)| s == "Index Section Head").map(|(_, t)| t.as_str()).collect();
+        assert_eq!(heads, ["ა", "ბ"]);
+        assert!(crate::capitalizes('a') && !crate::capitalizes('ა') && !crate::capitalizes('Ა'));
     }
 }

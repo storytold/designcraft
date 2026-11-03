@@ -50,6 +50,47 @@ impl FrameTool {
     }
 }
 
+/// The rectangle a frame-drawing drag from `sa` to `end` (spread space) makes, snapped when
+/// snapping is on, and the snap guides to draw. Shift constrains the shape first; only the
+/// driving edge snaps, then the other follows. Alt draws from the centre.
+pub(crate) fn snapped_drag_rect(cx: &ToolContext, sr: SpreadRef, sa: Point, end: Point, mods: Mods) -> (Rect, Vec<crate::Overlay>) {
+    let r = drag_rect(sa, end, mods);
+    if !cx.snap.any() {
+        return (r, vec![]);
+    }
+    let (mut x_edges, mut y_edges) = moving_edges(sa, end, r, mods.alt);
+    let driver_x = (end.x - sa.x).abs() >= (end.y - sa.y).abs();
+    if mods.shift {
+        if driver_x {
+            y_edges = [false, false, false];
+        } else {
+            x_edges = [false, false, false];
+        }
+    }
+    let hit = crate::snap::snap(
+        cx,
+        SnapRequest {
+            spread: sr,
+            gesture: Gesture::Create,
+            rect: r,
+            x_edges,
+            y_edges,
+            exclude: &[],
+            exclude_guides: &[],
+            copying: false,
+            lengths: [length_on(x_edges, r.width()), length_on(y_edges, r.height())],
+            angle: None,
+            radius: 0.0,
+            pointer: end,
+        },
+    );
+    let mut r = crate::snap::nudge_edges(r, x_edges, y_edges, hit.delta);
+    if mods.shift {
+        r = restore_shift_frame(sa, end, r, driver_x, mods.alt);
+    }
+    (r, hit.guides)
+}
+
 pub fn drag_rect(a: Point, b: Point, m: Mods) -> Rect {
     let (mut dx, mut dy) = (b.x - a.x, b.y - a.y);
     if m.shift {
@@ -120,6 +161,7 @@ fn line_hit(cx: &ToolContext, spread: SpreadRef, point: Point, len: Option<f64>)
             x_edges: [true, true, true],
             y_edges: [true, true, true],
             exclude: &[],
+            exclude_guides: &[],
             copying: false,
             lengths: [len, None],
             angle: None,
@@ -363,43 +405,14 @@ impl Tool for FrameTool {
                             snap_free_line(cx, sr, sa, b, &mut self.guides)
                         };
                     }
+                    // The readout measures the line as drawn (Shift and snapping included), in
+                    // spread space.
+                    self.last = Some((spread_json(sr), Rect::from_points(sa, b)));
                     out.push(Action::Preview("line.create".into(), json!({"spread": spread_json(sr), "a": [sa.x, sa.y], "b": [b.x, b.y]})));
                 } else {
-                    // Shift constrains the shape first. Only the driving edge snaps, then the other follows.
                     let end = cx.layout.to_spread(sr, ev.pos);
-                    let mut r = drag_rect(sa, end, ev.mods);
-                    if cx.snap.any() {
-                        let (mut x_edges, mut y_edges) = moving_edges(sa, end, r, ev.mods.alt);
-                        let driver_x = (end.x - sa.x).abs() >= (end.y - sa.y).abs();
-                        if ev.mods.shift {
-                            if driver_x {
-                                y_edges = [false, false, false];
-                            } else {
-                                x_edges = [false, false, false];
-                            }
-                        }
-                        let hit = crate::snap::snap(
-                            cx,
-                            SnapRequest {
-                                spread: sr,
-                                gesture: Gesture::Create,
-                                rect: r,
-                                x_edges,
-                                y_edges,
-                                exclude: &[],
-                                copying: false,
-                                lengths: [length_on(x_edges, r.width()), length_on(y_edges, r.height())],
-                                angle: None,
-                                radius: 0.0,
-                                pointer: end,
-                            },
-                        );
-                        r = crate::snap::nudge_edges(r, x_edges, y_edges, hit.delta);
-                        if ev.mods.shift {
-                            r = restore_shift_frame(sa, end, r, driver_x, ev.mods.alt);
-                        }
-                        self.guides = hit.guides;
-                    }
+                    let (r, guides) = snapped_drag_rect(cx, sr, sa, end, ev.mods);
+                    self.guides = guides;
                     self.last = Some((spread_json(sr), r));
                     out.push(self.preview(spread_json(sr), r));
                 }
@@ -448,11 +461,18 @@ impl Tool for FrameTool {
     }
 
     fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
-        if let (true, Some(a)) = (self.active, self.start) {
-            let r = Rect::from_points(a, self.cur);
-            let _ = cx;
+        // The frame or line being drawn (Shift, Alt and snapping included, in spread space), in the
+        // document's units to two decimals, on two lines: InDesign's readout ("W: 3.13 cm",
+        // "H: 3.13 cm"). Nothing before the first drag step.
+        if self.active
+            && self.start.is_some()
+            && let Some((_, r)) = self.last.as_ref()
+        {
+            let units = &cx.doc.settings;
+            let w = designcraft_geom::units::format_measure_prec(r.width().abs(), units.horizontal_units, 2);
+            let h = designcraft_geom::units::format_measure_prec(r.height().abs(), units.vertical_units, 2);
             let mut v = self.guides.clone();
-            v.push(Overlay::Measure { p: self.cur, text: format!("W: {:.0} pt  H: {:.0} pt", r.width(), r.height()) });
+            v.push(Overlay::Measure { p: self.cur, text: format!("W: {w}\nH: {h}") });
             return v;
         }
         vec![]

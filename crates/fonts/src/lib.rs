@@ -7,16 +7,20 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod features;
 mod fontdb;
 mod group;
 mod kind;
+#[cfg(target_os = "macos")]
+mod mac_fonts;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod vertical;
 
+pub use features::{FontFeatures, font_features};
 pub use fontdb::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontDb, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, system_font_dirs,
+    MAX_DOCUMENT_FONTS_TOTAL, ReloadedFonts, ScopedFonts, base_style, bundled, same_style, system_font_dirs,
 };
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
@@ -80,6 +84,16 @@ pub struct ShapedGlyph {
     pub safe_tatweel_before: bool,
     /// Direction used for shaping, including Unicode mirroring.
     pub rtl: bool,
+}
+
+/// Line metrics of the font at `index` of `data`, in font units: (units per em, ascent, descent
+/// (negative below the baseline), line gap) — what text layouts such as egui's build lines from.
+/// `None` if the font can't be read.
+pub fn line_metrics(data: &[u8], index: u32) -> Option<(f32, f32, f32, f32)> {
+    use skrifa::MetadataProvider;
+    let f = skrifa::FontRef::from_index(data, index).ok()?;
+    let m = f.metrics(skrifa::instance::Size::unscaled(), skrifa::instance::LocationRef::default());
+    Some((f32::from(m.units_per_em.max(1)), m.ascent, m.descent, m.leading))
 }
 
 /// An OpenType feature setting: `"liga"`, `"-kern"`, `"ss01"`.
@@ -183,6 +197,20 @@ pub fn shape_with_context(
     out
 }
 
+/// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
+/// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
+/// Contextual Alternates off, so `calt` off is dropped there.
+fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
+    use unicode_script::Script;
+    let calt = Tag::new(b"calt");
+    let off = |f: &Feature| f.tag == calt && f.value == 0;
+    if script == Script::Arabic && features.iter().any(off) {
+        features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into()
+    } else {
+        features.into()
+    }
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -193,6 +221,8 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
+    let features = script_features(features, script);
+    let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
@@ -321,6 +351,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn arabic_keeps_contextual_alternates() {
+        use unicode_script::Script;
+        let off = feature("-calt").unwrap();
+        let liga = feature("-liga").unwrap();
+        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
+        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
+    }
+
+    #[test]
     fn arabic_script_runs_do_not_inherit_the_hebrew_shaper() {
         use unicode_script::Script;
         let text = "אב بب";
@@ -347,6 +387,22 @@ mod tests {
         for s in ["Regular", "Italic", "Bold", "Semibold"] {
             assert!(styles.iter().any(|x| x == s), "{s} in {styles:?}");
         }
+    }
+
+    #[test]
+    fn style_linking_finds_bold_and_italic_in_the_family() {
+        let db = FontDb::with_font_dirs(vec![]);
+        let link = |cur: &str, bold: Option<bool>, italic: Option<bool>| db.linked_style("Source Serif 4", cur, bold, italic);
+        assert_eq!(link("Regular", Some(true), None).as_deref(), Some("Bold"));
+        assert_eq!(link("Italic", Some(true), None).as_deref(), Some("Bold Italic"), "keeps the italic");
+        assert_eq!(link("Bold", None, Some(true)).as_deref(), Some("Bold Italic"), "keeps the weight");
+        assert_eq!(link("Bold Italic", Some(false), None).as_deref(), Some("Italic"));
+        assert_eq!(link("Bold Italic", None, Some(false)).as_deref(), Some("Bold"));
+        assert_eq!(link("Semibold", Some(false), None).as_deref(), Some("Regular"));
+        assert_eq!(db.traits_of("Source Serif 4", "Bold Italic"), (700.0, true));
+        // Source Sans 3 is bundled without a bold italic.
+        assert_eq!(db.linked_style("Source Sans 3", "Italic", Some(true), None), None);
+        assert_eq!(db.linked_style("No Such Family", "Regular", Some(true), None), None);
     }
 
     #[test]
@@ -437,6 +493,33 @@ mod tests {
         assert!(db.has_family(&format!("{DEFAULT_FAMILY} (T1)")));
         assert!(!db.has_family(&format!("{DEFAULT_FAMILY} (Bold)")));
         assert!(!db.has_family("DC Test Suffix"));
+    }
+
+    /// IDML files from InDesign can name a family with its `$ID/` prefix (`$ID/Arial`).
+    #[test]
+    fn an_indesign_id_prefix_names_the_plain_family() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        let prefixed = format!("$ID/{DEFAULT_FAMILY}");
+        assert_eq!(db.face(&prefixed, "Bold").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&prefixed));
+        assert_eq!(db.styles(&prefixed), db.styles(DEFAULT_FAMILY));
+        assert!(db.has_family(&format!("$ID/{DEFAULT_FAMILY} (OTF)")));
+        assert!(!db.has_family("$ID/"));
+        assert!(!db.has_family("$ID/DC No Such Family"));
+    }
+
+    #[test]
+    fn a_family_name_keeps_its_spaces_and_falls_back_to_the_trimmed_name() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.set_system_fallback(false);
+        db.add_font(testing::font_with("DC Test Space ", &['a']).unwrap());
+        db.add_font(testing::font_with("DC Test Space", &['a']).unwrap());
+        assert_eq!(db.face("DC Test Space ", "Regular").family, "DC Test Space ");
+        assert_eq!(db.face("DC Test Space", "Regular").family, "DC Test Space");
+        assert_eq!(db.face(&format!(" {DEFAULT_FAMILY}\n"), "Regular").family, DEFAULT_FAMILY);
+        assert!(db.has_family(&format!("{DEFAULT_FAMILY} ")));
+        assert_eq!(db.styles(&format!("{DEFAULT_FAMILY} ")), db.styles(DEFAULT_FAMILY));
     }
 
     #[test]
@@ -542,5 +625,83 @@ mod tests {
                 assert!(db.fallback_for('語', latin.id(), language).is_none(), "no bundled Japanese font: {language:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    #[test]
+    fn localized_family_and_style_names_resolve_without_false_missing_status() {
+        let bytes = testing::font_with("Alias Face", &['A']).unwrap();
+        let bytes = testing::with_names(
+            &bytes,
+            &[(3, 1, 0x409, 1, "Alias Face"), (3, 1, 0x804, 1, "别名字体"), (3, 1, 0x409, 2, "Regular"), (3, 1, 0x804, 2, "常规")],
+        )
+        .unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(bytes);
+        let scope = db.scoped(0);
+        assert!(scope.has_family("别名字体"));
+        assert_eq!(scope.face("别名字体", "常规").family, "Alias Face");
+        assert!(scope.has_style("别名字体", "常规"));
+        assert!(!scope.has_style("别名字体", "Unreal Style"));
+        assert_eq!(scope.styles("别名字体"), ["Regular"]);
+    }
+
+    #[test]
+    fn a_style_name_beats_another_face_s_legacy_subfamily() {
+        // Static families often name each weight's legacy (RIBBI) family "Legacy Sans Black" with
+        // subfamily "Regular": that alias must not shadow the face actually styled Regular.
+        let face =
+            |records: &[(u16, u16, u16, u16, &str)]| testing::with_names(&testing::font_with("Legacy Sans", &['A']).unwrap(), records).unwrap();
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(face(&[
+            (3, 1, 0x409, 1, "Legacy Sans Black"),
+            (3, 1, 0x409, 2, "Regular"),
+            (3, 1, 0x409, 16, "Legacy Sans"),
+            (3, 1, 0x409, 17, "Black"),
+        ]));
+        db.add_font(face(&[(3, 1, 0x409, 1, "Legacy Sans"), (3, 1, 0x409, 2, "Regular")]));
+        let scope = db.scoped(0);
+        assert_eq!(scope.face("Legacy Sans", "Regular").style, "Regular");
+        assert_eq!(scope.face("Legacy Sans", "Black").style, "Black");
+    }
+
+    #[test]
+    fn known_substitution_preserves_missing_original_status() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with("Carlito", &['A']).unwrap());
+        let scope = db.scoped(0);
+        assert_eq!(scope.substitute_family("Calibri"), "Carlito");
+        assert!(scope.canonical_family("An Unavailable Original Family").is_none());
+        assert_eq!(scope.face("An Unavailable Original Family", "Regular").family, FALLBACK_FAMILY);
+    }
+}
+
+#[cfg(test)]
+mod coverage_recommendation_tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_fonts_do_not_satisfy_glyph_coverage() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with(".LastResort", &['\u{10fffd}']).unwrap());
+        let face = db.face(".LastResort", "Regular");
+        assert!(face.is_placeholder());
+        assert!(!face.covers('\u{10fffd}'));
+        assert!(db.fallback_for('\u{10fffd}', u32::MAX, None).is_none());
+    }
+
+    #[test]
+    fn arabic_replacement_also_covers_surrounding_punctuation() {
+        let db = FontDb::with_font_dirs(Vec::new());
+        db.add_font(testing::font_with("Geeza Pro", &['ع']).unwrap());
+        db.add_font(testing::font_with("Al Bayan", &['ع', '“']).unwrap());
+        let scope = db.scoped(0);
+        assert_eq!(scope.face("Traditional Arabic", "Regular").family, "Geeza Pro");
+        assert_eq!(scope.replacement_face("Traditional Arabic", "Regular", &['ع', '“']).family, "Al Bayan");
+        assert!(!scope.has_family("Traditional Arabic"));
     }
 }

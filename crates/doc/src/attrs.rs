@@ -4,18 +4,27 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Preserve a present nullable override; a missing field still uses the sparse default.
+fn deserialize_explicit_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 macro_rules! attr_set {
     (
         $(#[$m:meta])*
         $attrs:ident / $props:ident {
-            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr ),* $(,)?
+            $( $(#[$fm:meta])* $field:ident : $ty:ty = $default:expr $(=> $deserialize:literal)? ),* $(,)?
         }
     ) => {
         $(#[$m])*
         #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
         #[serde(default, rename_all = "camelCase")]
         pub struct $attrs {
-            $( $(#[$fm])* #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
+            $( $(#[$fm])* $(#[serde(deserialize_with = $deserialize)])? #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
         }
 
         /// Fully resolved values.
@@ -43,6 +52,10 @@ macro_rules! attr_set {
             pub fn count(&self) -> usize {
                 0 $( + self.$field.is_some() as usize )*
             }
+            /// Remove local values already supplied by the applied style, keeping real differences.
+            pub fn retain_differences(&mut self, base: &$props) {
+                $( if self.$field.as_ref() == Some(&base.$field) { self.$field = None; } )*
+            }
             /// Field names that are set (camelCase).
             pub fn keys(&self) -> Vec<&'static str> {
                 let mut v = Vec::new();
@@ -62,7 +75,7 @@ macro_rules! attr_set {
                         return Ok(());
                     }
                 )*
-                Err(format!("unknown attribute `{key}`"))
+                Err(unknown_attribute(key, &[ $( stringify!($field), )* ]))
             }
             /// Fields where `self` differs from `base`'s resolved value (used for "clear overrides").
             pub fn diff_from(&self, base: &$props) -> $attrs {
@@ -100,1047 +113,86 @@ macro_rules! attr_set {
     };
 }
 
+mod enums;
+mod language;
+mod rules_lists;
+mod tabs;
+
+pub use enums::{
+    Align, Capitalization, ChangeMark, Composer, Digits, GrepStyle, GridAlign, Kerning, Leading, NestedLineStyle, NestedStyle, NestedUntil, Position,
+    SpanColumns, StartParagraph, TextDirection,
+};
+pub use language::{capitalizes, language_subtag, language_tag};
+use rules_lists::list_level_index;
+pub use rules_lists::{
+    BoxBottom, BoxTop, BoxWidth, LIST_LEVELS, ListAlign, ListCounter, ListType, NumberStyle, Rule, TEXT_COLOR, expand_list_levels, expand_list_text,
+};
+use tabs::sanitized_tabs;
+pub use tabs::{
+    MAX_MEASURE, MAX_TAB_LEADER, MAX_TAB_POSITION, MAX_TAB_STOPS, MAX_TYPE_SIZE, MIN_TYPE_SIZE, SAME_TAB_POSITION, TabAlign, TabStop,
+    imported_measure, imported_type_size,
+};
+
+mod char_attrs;
+mod para_attrs;
+
+pub use char_attrs::{CharAttrs, CharProps};
+pub use para_attrs::{ParaAttrs, ParaProps};
+
 fn attr_key(snake: &'static str) -> &'static str {
     snake
 }
 
-// ---------- value types ----------
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
-pub enum Leading {
-    /// Auto leading (percentage of the largest size on the line, Justification → Auto Leading).
-    #[default]
-    Auto,
-    Points(f64),
-}
-
-/// Paragraph direction.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TextDirection {
-    #[default]
-    LeftToRight,
-    RightToLeft,
-}
-
-/// Digits (World-Ready): the figures 0–9 are drawn as these.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Digits {
-    /// Contextual digits; composition selects the preceding strong script/language.
-    #[default]
-    Default,
-    /// European (0123).
-    Arabic,
-    /// Arabic-Indic (٠١٢٣).
-    Hindi,
-    /// Extended Arabic-Indic, as used for Persian and Urdu (۰۱۲۳).
-    Farsi,
-    /// Those of the text's language (Thai, Devanagari, Bengali, Arabic, Persian…); else as typed.
-    Native,
-}
-
-impl Digits {
-    /// The digit `c` (0–9) is drawn as, for text in `language`.
-    pub fn map(self, c: char, language: &str) -> char {
-        let d = match c {
-            '0'..='9' => c as u32 - '0' as u32,
-            '\u{0660}'..='\u{0669}' => c as u32 - 0x0660,
-            '\u{06F0}'..='\u{06F9}' => c as u32 - 0x06F0,
-            _ => return c,
-        };
-        let zero = match self {
-            Digits::Default => return c,
-            Digits::Arabic => 0x0030,
-            Digits::Hindi => 0x0660,
-            Digits::Farsi => 0x06F0,
-            Digits::Native => {
-                let l = language.to_ascii_lowercase();
-                match () {
-                    _ if l.starts_with("arabic") || l == "ar" || l.starts_with("ar-") => 0x0660,
-                    _ if l.starts_with("persian")
-                        || l.starts_with("farsi")
-                        || l.starts_with("urdu")
-                        || l == "fa"
-                        || l.starts_with("fa-")
-                        || l == "ur"
-                        || l.starts_with("ur-") =>
-                    {
-                        0x06F0
-                    }
-                    _ if l.starts_with("hindi") || l.starts_with("marathi") || l.starts_with("nepali") || l.starts_with("sanskrit") => 0x0966,
-                    _ if l.starts_with("bengali") => 0x09E6,
-                    _ if l.starts_with("gujarati") => 0x0AE6,
-                    _ if l.starts_with("punjabi") => 0x0A66,
-                    _ if l.starts_with("tamil") => 0x0BE6,
-                    _ if l.starts_with("telugu") => 0x0C66,
-                    _ if l.starts_with("kannada") => 0x0CE6,
-                    _ if l.starts_with("malayalam") => 0x0D66,
-                    _ if l.starts_with("thai") => 0x0E50,
-                    _ if l.starts_with("lao") => 0x0ED0,
-                    _ if l.starts_with("tibetan") => 0x0F20,
-                    _ if l.starts_with("burmese") => 0x1040,
-                    _ if l.starts_with("khmer") => 0x17E0,
-                    _ => return c,
-                }
-            }
-        };
-        char::from_u32(zero + d).unwrap_or(c)
-    }
-}
-
-/// The BCP 47 tag of a language name as InDesign and IDML write it ("English: USA", "Chinese:
-/// Simplified", or a locale code such as "de_DE_2006"), for the shaper's localized forms (`locl`)
-/// and everything that depends on the language (quotes, hyphenation and spelling, line breaking,
-/// fallback fonts). A variant we don't know falls back to its language ("English: Australian" →
-/// `en`); an unknown language (or "[No Language]") has none. Case, punctuation and IDML's `$ID/`
-/// don't matter. Locale codes (`ll`, `ll_CC`, `ll-CC`, with a reform year after them as in
-/// `de_DE_2006`) are their tag (`de-DE`), and Chinese also goes by its other common spellings
-/// ("Simplified Chinese", "Chinese (Traditional)", "zh_CN", "zh-Hant").
-pub fn language_tag(language: &str) -> Option<&'static str> {
-    let language = language.trim();
-    let language = language.strip_prefix("$ID/").unwrap_or(language);
-    let l = language.to_lowercase();
-    let words: Vec<&str> = l.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
-    let first = words.first().copied().unwrap_or("");
-    let has = |any: &[&str]| words.iter().any(|w| any.contains(w));
-    if first == "zh" || has(&["chinese"]) {
-        // The script decides; then the name; then the region.
-        return Some(if has(&["hans"]) {
-            "zh-Hans"
-        } else if has(&["hant"]) {
-            "zh-Hant"
-        } else if has(&["simplified", "cn", "sg"]) {
-            "zh-Hans"
-        } else if has(&["traditional", "tw", "hk", "mo"]) {
-            "zh-Hant"
+/// `snake_case` → `camelCase`, as commands name attributes.
+fn camel(snake: &str) -> String {
+    let mut out = String::with_capacity(snake.len());
+    let mut up = false;
+    for c in snake.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.push(c.to_ascii_uppercase());
+            up = false;
         } else {
-            "zh"
-        });
-    }
-    if let Some(tag) = locale_code(&words) {
-        return intern_tag(tag);
-    }
-    let variant = match words.join(" ").as_str() {
-        "english usa" => Some("en-US"),
-        "english uk" => Some("en-GB"),
-        "english canadian" => Some("en-CA"),
-        "german swiss 2006 reform" | "german swiss" => Some("de-CH"),
-        "french swiss" => Some("fr-CH"),
-        "italian swiss" => Some("it-CH"),
-        "spanish castilian" => Some("es-ES"),
-        "french canadian" => Some("fr-CA"),
-        "portuguese brazilian" => Some("pt-BR"),
-        "norwegian bokmål" | "norwegian bokmal" => Some("nb"),
-        "norwegian nynorsk" => Some("nn"),
-        _ => None,
-    };
-    if variant.is_some() {
-        return variant;
-    }
-    Some(match first {
-        "english" => "en",
-        "german" => "de",
-        "french" => "fr",
-        "spanish" => "es",
-        "catalan" => "ca",
-        "italian" => "it",
-        "portuguese" => "pt",
-        "dutch" => "nl",
-        "danish" => "da",
-        "swedish" => "sv",
-        "norwegian" => "no",
-        "finnish" => "fi",
-        "polish" => "pl",
-        "czech" => "cs",
-        "slovak" => "sk",
-        "hungarian" => "hu",
-        "romanian" => "ro",
-        "croatian" => "hr",
-        "lithuanian" => "lt",
-        "greek" => "el",
-        "russian" => "ru",
-        "ukrainian" => "uk",
-        "bulgarian" => "bg",
-        "serbian" => "sr",
-        "macedonian" => "mk",
-        "turkish" => "tr",
-        "japanese" => "ja",
-        "korean" => "ko",
-        "arabic" => "ar",
-        "persian" | "farsi" => "fa",
-        "urdu" => "ur",
-        "hebrew" => "he",
-        _ => return None,
-    })
-}
-
-/// The tag of a locale code split into lowercase `words`: a language (2 or 3 letters), then
-/// optionally a region (2 letters or 3 digits) and a reform year (4 digits) → `ll` or `ll-CC`.
-fn locale_code(words: &[&str]) -> Option<String> {
-    let letters = |w: &str, n: std::ops::RangeInclusive<usize>| n.contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase());
-    let digits = |w: &str, n: usize| w.len() == n && w.bytes().all(|b| b.is_ascii_digit());
-    match *words {
-        [lang] if letters(lang, 2..=3) => Some(lang.to_string()),
-        [lang, region] | [lang, region, _] if letters(lang, 2..=3) && (letters(region, 2..=2) || digits(region, 3)) => {
-            if let [_, _, year] = *words
-                && !digits(year, 4)
-            {
-                return None;
-            }
-            Some(format!("{lang}-{}", region.to_ascii_uppercase()))
+            out.push(c);
         }
-        _ => None,
-    }
-}
-
-/// `tag` as a `&'static str`: each distinct tag is kept once for the process. Language names come
-/// from documents, so at most [`MAX_TAGS`] are kept; past that a new tag is unknown (`None`).
-fn intern_tag(tag: String) -> Option<&'static str> {
-    const MAX_TAGS: usize = 512;
-    static TAGS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
-    let mut tags = TAGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(t) = tags.iter().find(|t| **t == tag) {
-        return Some(t);
-    }
-    if tags.len() >= MAX_TAGS {
-        return None;
-    }
-    let t: &'static str = Box::leak(tag.into_boxed_str());
-    tags.push(t);
-    Some(t)
-}
-
-/// The language subtag of a BCP 47 tag (`de-DE` → `de`, `zh-Hant` → `zh`).
-pub fn language_subtag(tag: &str) -> &str {
-    tag.split('-').next().unwrap_or(tag)
-}
-
-/// A tracked change on text.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ChangeMark {
-    #[default]
-    None,
-    Inserted,
-    Deleted,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
-pub enum Kerning {
-    #[default]
-    Metrics,
-    Optical,
-    /// Zero ("0" in the kerning menu).
-    None,
-    /// Manual pair kerning in 1/1000 em (applies after this character).
-    Manual(f64),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Capitalization {
-    #[default]
-    Normal,
-    AllCaps,
-    SmallCaps,
-    OpenTypeAllSmallCaps,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Position {
-    #[default]
-    Normal,
-    Superscript,
-    Subscript,
-    OtSuperscript,
-    OtSubscript,
-    OtNumerator,
-    OtDenominator,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Align {
-    #[default]
-    Left,
-    Center,
-    Right,
-    LeftJustified,
-    CenterJustified,
-    RightJustified,
-    FullyJustified,
-    TowardsSpine,
-    AwayFromSpine,
-}
-
-impl Align {
-    pub fn is_justified(self) -> bool {
-        matches!(self, Align::LeftJustified | Align::CenterJustified | Align::RightJustified | Align::FullyJustified)
-    }
-    pub const ALL: [Align; 9] = [
-        Align::Left,
-        Align::Center,
-        Align::Right,
-        Align::LeftJustified,
-        Align::CenterJustified,
-        Align::RightJustified,
-        Align::FullyJustified,
-        Align::TowardsSpine,
-        Align::AwayFromSpine,
-    ];
-    pub fn label(self) -> &'static str {
-        match self {
-            Align::Left => "Align left",
-            Align::Center => "Align center",
-            Align::Right => "Align right",
-            Align::LeftJustified => "Justify with last line aligned left",
-            Align::CenterJustified => "Justify with last line aligned center",
-            Align::RightJustified => "Justify with last line aligned right",
-            Align::FullyJustified => "Justify all lines",
-            Align::TowardsSpine => "Align towards spine",
-            Align::AwayFromSpine => "Align away from spine",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Composer {
-    /// Total-fit (Knuth–Plass) over the whole paragraph.
-    #[default]
-    Paragraph,
-    /// Greedy, line by line.
-    SingleLine,
-}
-
-/// What a nested style runs to (Drop Caps and Nested Styles).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "chars")]
-pub enum NestedUntil {
-    Sentences,
-    #[default]
-    Words,
-    Characters,
-    Letters,
-    Digits,
-    Tab,
-    ForcedLineBreak,
-    EmSpace,
-    EnSpace,
-    /// Any of these characters.
-    Chars(String),
-}
-
-/// A character style applied from the start of the paragraph through (or up to) the `count`-th
-/// delimiter; nested styles follow each other.
-/// A nested line style: `style` for the next `lines` lines.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NestedLineStyle {
-    pub style: String,
-    pub lines: u32,
-}
-
-impl Default for NestedLineStyle {
-    fn default() -> Self {
-        NestedLineStyle { style: String::new(), lines: 1 }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NestedStyle {
-    pub style: String,
-    /// Through (include the delimiter) or up to (stop before it).
-    pub through: bool,
-    pub count: u32,
-    pub until: NestedUntil,
-}
-
-impl Default for NestedStyle {
-    fn default() -> Self {
-        NestedStyle { style: String::new(), through: true, count: 1, until: NestedUntil::Words }
-    }
-}
-
-/// A character style applied to every match of a regular expression in the paragraph.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct GrepStyle {
-    pub style: String,
-    pub pattern: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum GridAlign {
-    #[default]
-    None,
-    AllLines,
-    FirstLineOnly,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StartParagraph {
-    #[default]
-    Anywhere,
-    NextColumn,
-    NextFrame,
-    NextPage,
-    NextOddPage,
-    NextEvenPage,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "columns")]
-pub enum SpanColumns {
-    #[default]
-    Single,
-    /// Span `n` columns (0 = all).
-    Span(u32),
-    /// Split into `n` sub-columns.
-    Split(u32),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TabAlign {
-    #[default]
-    Left,
-    Center,
-    Right,
-    /// Align on a character (default `.`).
-    Char,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TabStop {
-    pub position: f64,
-    #[serde(default)]
-    pub align: TabAlign,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub leader: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub align_on: String,
-}
-
-/// A paragraph rule (Rule Above / Rule Below).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Rule {
-    pub on: bool,
-    pub weight: f64,
-    pub color: String,
-    pub tint: f32,
-    /// Width: column (true) or text (false).
-    pub column_width: bool,
-    pub offset: f64,
-    pub left_indent: f64,
-    pub right_indent: f64,
-}
-
-impl Default for Rule {
-    fn default() -> Self {
-        Rule { on: false, weight: 1.0, color: "[Black]".into(), tint: 1.0, column_width: true, offset: 0.0, left_indent: 0.0, right_indent: 0.0 }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ListType {
-    #[default]
-    None,
-    Bullets,
-    Numbers,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum NumberStyle {
-    #[default]
-    Arabic,
-    UpperRoman,
-    LowerRoman,
-    UpperLetters,
-    LowerLetters,
-    /// 01, 02, …
-    ArabicLeadingZero,
-    /// 001, 002, …
-    ArabicThreeDigits,
-    /// 0001, 0002, …
-    ArabicFourDigits,
-    /// *, †, ‡, §, ¶, ‖, then doubled (**, ††, …): footnotes.
-    Symbols,
-}
-
-/// Numbers past this are written in Arabic digits by the styles that repeat characters (roman
-/// numerals, letters, symbols), so a hostile start number can't build a huge label.
-const MAX_REPEATED_FORM: u32 = 3999;
-
-impl NumberStyle {
-    pub fn format(self, n: u32) -> String {
-        if n > MAX_REPEATED_FORM
-            && matches!(
-                self,
-                NumberStyle::UpperRoman | NumberStyle::LowerRoman | NumberStyle::UpperLetters | NumberStyle::LowerLetters | NumberStyle::Symbols
-            )
-        {
-            return n.to_string();
-        }
-        match self {
-            NumberStyle::Arabic => n.to_string(),
-            NumberStyle::ArabicLeadingZero => format!("{n:02}"),
-            NumberStyle::ArabicThreeDigits => format!("{n:03}"),
-            NumberStyle::ArabicFourDigits => format!("{n:04}"),
-            NumberStyle::UpperRoman => roman(n),
-            NumberStyle::LowerRoman => roman(n).to_lowercase(),
-            NumberStyle::UpperLetters => letters(n),
-            NumberStyle::LowerLetters => letters(n).to_lowercase(),
-            NumberStyle::Symbols => {
-                const SYM: [char; 6] = ['*', '†', '‡', '§', '¶', '‖'];
-                let n = n.max(1) as usize - 1;
-                std::iter::repeat_n(SYM[n % SYM.len()], n / SYM.len() + 1).collect()
-            }
-        }
-    }
-}
-
-/// Expand the metacharacters of a list's label text (`^t` tab, `^>` en space, `^^` caret, …),
-/// putting `number` in for `^#`. Level placeholders (`^1`…`^9`) and metacharacters with no
-/// meaning in a label are dropped; a label never holds a paragraph break.
-pub fn expand_list_text(s: &str, number: &str) -> String {
-    let mut out = String::with_capacity(s.len() + number.len());
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c != '^' {
-            if c != '\n' && c != '\r' {
-                out.push(c);
-            }
-            continue;
-        }
-        let Some(m) = it.next() else {
-            out.push('^');
-            break;
-        };
-        let r = match m {
-            '#' => {
-                out.push_str(number);
-                continue;
-            }
-            '^' => '^',
-            't' => '\t',
-            'y' => crate::story::RIGHT_INDENT_TAB,
-            'i' => crate::story::INDENT_HERE,
-            'n' => crate::story::FORCED_LINE_BREAK,
-            'm' => '\u{2003}',
-            '>' => '\u{2002}',
-            'f' => '\u{2001}',
-            '|' => '\u{200A}',
-            '<' => '\u{2009}',
-            '/' => '\u{2007}',
-            '.' => '\u{2008}',
-            's' => '\u{A0}',
-            'S' => '\u{202F}',
-            '_' => '\u{2014}',
-            '=' => '\u{2013}',
-            '~' => '\u{2011}',
-            '{' => '\u{201C}',
-            '}' => '\u{201D}',
-            '[' => '\u{2018}',
-            ']' => '\u{2019}',
-            '"' => '"',
-            '\'' => '\'',
-            _ => continue,
-        };
-        out.push(r);
     }
     out
 }
 
-fn roman(mut n: u32) -> String {
-    if n == 0 {
-        return "0".into();
-    }
-    let t = [
-        (1000, "M"),
-        (900, "CM"),
-        (500, "D"),
-        (400, "CD"),
-        (100, "C"),
-        (90, "XC"),
-        (50, "L"),
-        (40, "XL"),
-        (10, "X"),
-        (9, "IX"),
-        (5, "V"),
-        (4, "IV"),
-        (1, "I"),
-    ];
-    let mut s = String::new();
-    for (v, r) in t {
-        while n >= v {
-            s.push_str(r);
-            n -= v;
+/// Edits (insert, delete, replace) that turn `a` into `b`, ignoring case and underscores.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let norm = |s: &str| s.chars().filter(|c| *c != '_').map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>();
+    let (a, b) = (norm(a), norm(b));
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let d = (prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(row[j] + 1);
+            row.push(d);
         }
+        prev = row;
     }
-    s
+    prev.last().copied().unwrap_or(0)
 }
 
-/// A, B, …, Z, AA, BB, … (InDesign's letter numbering repeats the letter).
-fn letters(n: u32) -> String {
-    if n == 0 {
-        return String::new();
-    }
-    let i = (n - 1) % 26;
-    let reps = (n - 1) / 26 + 1;
-    std::iter::repeat_n(char::from(b'A' + i as u8), reps as usize).collect()
-}
-
-attr_set! {
-    /// Character attributes (Character panel / character styles / the character part of paragraph styles).
-    CharAttrs / CharProps {
-        font_family: String = "Source Serif 4".into(),
-        font_style: String = "Regular".into(),
-        /// Point size.
-        size: f64 = 12.0,
-        leading: Leading = Leading::Auto,
-        kerning: Kerning = Kerning::Metrics,
-        /// Tracking in 1/1000 em.
-        tracking: f64 = 0.0,
-        /// Explicit CJK aki, in em; None restores automatic spacing.
-        leading_aki: Option<f64> = None,
-        trailing_aki: Option<f64> = None,
-        /// Proportional character compression, 0..1.
-        tsume: f64 = 0.0,
-        /// Target em cells for the contiguous formatted group (0 disables jidori).
-        jidori: u32 = 0,
-        character_alignment: crate::cjk::CharacterAlignment = crate::cjk::CharacterAlignment::Baseline,
-        leading_model: crate::cjk::LeadingModel = crate::cjk::LeadingModel::Roman,
-        /// Explicit emphasis character; empty uses the traditional sesame dot.
-        kenten_character: String = String::new(),
-        /// Horizontal / vertical scale, 1.0 = 100%.
-        h_scale: f64 = 1.0,
-        v_scale: f64 = 1.0,
-        baseline_shift: f64 = 0.0,
-        /// Skew (false italic), degrees.
-        skew: f64 = 0.0,
-        fill: String = "[Black]".into(),
-        fill_tint: f32 = 1.0,
-        stroke: String = "[None]".into(),
-        stroke_tint: f32 = 1.0,
-        stroke_weight: f64 = 1.0,
-        capitalization: Capitalization = Capitalization::Normal,
-        position: Position = Position::Normal,
-        underline: bool = false,
-        strikethrough: bool = false,
-        /// Underline Options: weight and offset below the baseline (`None` = from the size),
-        /// colour (empty = the text colour) and tint.
-        underline_weight: Option<f64> = None,
-        underline_offset: Option<f64> = None,
-        underline_color: String = String::new(),
-        underline_tint: f32 = 1.0,
-        /// Strikethrough Options: offset above the baseline.
-        strikethrough_weight: Option<f64> = None,
-        strikethrough_offset: Option<f64> = None,
-        strikethrough_color: String = String::new(),
-        strikethrough_tint: f32 = 1.0,
-        glyph_form: String = String::new(),
-        ligatures: bool = true,
-        no_break: bool = false,
-        /// Tate-chu-yoko: in vertical text, the run is set horizontally within one em of the line.
-        tate_chu_yoko: bool = false,
-        tate_chu_yoko_x_offset: f64 = 0.0,
-        tate_chu_yoko_y_offset: f64 = 0.0,
-        /// Ruby: the reading set small above the text (to its right in vertical text), one group
-        /// over each run that has it.
-        ruby: String = String::new(),
-        /// Kenten: an emphasis dot above each character.
-        kenten: bool = false,
-        /// Warichu: the run is set in smaller lines stacked inside one line height.
-        warichu: bool = false,
-        /// How many warichu lines (InDesign's minimum is 2).
-        warichu_lines: u32 = 2,
-        /// Warichu size as a percentage of the parent size.
-        warichu_size: f64 = 50.0,
-        /// Extra points between warichu baselines. 0 is automatic (one small em).
-        warichu_line_spacing: f64 = 0.0,
-        warichu_alignment: crate::cjk::WarichuAlignment = crate::cjk::WarichuAlignment::Auto,
-        /// Minimum characters on a warichu line before a break, and on the line after it.
-        warichu_chars_before_break: u32 = 1,
-        warichu_chars_after_break: u32 = 1,
-        /// Digits (World-Ready): how 0–9 are drawn.
-        digits: Digits = Digits::Default,
-        character_direction: crate::arabic::CharacterDirection = crate::arabic::CharacterDirection::Default,
-        /// Character-level permission, additionally gated by paragraph kashidas.
-        allow_kashidas: bool = true,
-        diacritic_position: crate::arabic::DiacriticPosition = crate::arabic::DiacriticPosition::Default,
-        /// Additional mark offsets, in thousandths of an em. Positive y is up.
-        diacritic_x_offset: f64 = 0.0,
-        diacritic_y_offset: f64 = 0.0,
-        /// IDML contextual-form request, separate from general OpenType features.
-        positional_form: String = String::new(),
-        language: String = "English: USA".into(),
-        /// Additional OpenType features, e.g. `["onum", "ss01"]`.
-        otf_features: Vec<String> = Vec::new(),
-        /// Conditional text: the conditions applied (Window › Type & Tables › Conditional Text).
-        conditions: Vec<String> = Vec::new(),
-        /// Track Changes: text added or deleted while tracking (deleted text isn't laid out).
-        change: ChangeMark = ChangeMark::None,
-        /// XML: the element this text is tagged with (Tags panel, inline).
-        xml_tag: String = String::new(),
-    }
-}
-
-attr_set! {
-    /// Paragraph attributes (Paragraph panel / paragraph styles).
-    ParaAttrs / ParaProps {
-        align: Align = Align::Left,
-        /// Paragraph Direction (World-Ready): the base direction lines are ordered in.
-        direction: TextDirection = TextDirection::LeftToRight,
-        left_indent: f64 = 0.0,
-        right_indent: f64 = 0.0,
-        first_line_indent: f64 = 0.0,
-        last_line_indent: f64 = 0.0,
-        space_before: f64 = 0.0,
-        space_after: f64 = 0.0,
-        drop_cap_lines: u32 = 0,
-        drop_cap_chars: u32 = 0,
-        /// Nested styles, in order from the paragraph start.
-        nested_styles: Vec<NestedStyle> = Vec::new(),
-        /// GREP styles: a character style for every match of a pattern (applied after nested).
-        grep_styles: Vec<GrepStyle> = Vec::new(),
-        /// Nested line styles: a character style for the paragraph's first lines, in order.
-        nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
-        grid_align: GridAlign = GridAlign::None,
-        composer: Composer = Composer::Paragraph,
-        // Hyphenation
-        hyphenate: bool = true,
-        hyph_min_word: u32 = 5,
-        hyph_after_first: u32 = 2,
-        hyph_before_last: u32 = 2,
-        /// Max consecutive hyphenated lines (0 = unlimited).
-        hyph_limit: u32 = 3,
-        hyph_zone: f64 = 36.0,
-        hyph_capitalized: bool = true,
-        hyph_last_word: bool = true,
-        hyph_across_column: bool = true,
-        /// Better spacing (0) ↔ fewer hyphens (1).
-        hyph_weight: f64 = 0.5,
-        // Justification (percent as fractions)
-        word_space_min: f64 = 0.8,
-        word_space_desired: f64 = 1.0,
-        word_space_max: f64 = 1.33,
-        letter_space_min: f64 = 0.0,
-        letter_space_desired: f64 = 0.0,
-        letter_space_max: f64 = 0.0,
-        glyph_scale_min: f64 = 1.0,
-        glyph_scale_desired: f64 = 1.0,
-        glyph_scale_max: f64 = 1.0,
-        auto_leading: f64 = 1.2,
-        single_word_justify: Align = Align::FullyJustified,
-        /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
-        kashidas: bool = true,
-        /// Preserved vendor policy; non-default policies require a dedicated composer.
-        arabic_justification: String = String::new(),
-        paragraph_kashida_width: Option<f64> = None,
-        /// Korean text breaks between any two syllables (character-based breaking); otherwise
-        /// it breaks at spaces, word by word.
-        korean_char_breaks: bool = false,
-        // Keeps
-        keep_with_next: u32 = 0,
-        keep_lines_together: bool = false,
-        keep_all_lines: bool = true,
-        keep_first: u32 = 2,
-        keep_last: u32 = 2,
-        start_paragraph: StartParagraph = StartParagraph::Anywhere,
-        span_columns: SpanColumns = SpanColumns::Single,
-        /// Split Columns: the space between sub-columns and the inset from the column's edges.
-        split_inside_gutter: f64 = 6.0,
-        split_outside_gutter: f64 = 0.0,
-        rule_above: Rule = Rule::default(),
-        rule_below: Rule = Rule::default(),
-        tabs: Vec<TabStop> = Vec::new(),
-        list_type: ListType = ListType::None,
-        /// Named list (Define Lists) the numbers belong to ("" = the story's own list).
-        list_name: String = String::new(),
-        /// Start At: restart the numbering at this number.
-        start_at: Option<u32> = None,
-        bullet_char: String = "\u{2022}".into(),
-        number_style: NumberStyle = NumberStyle::Arabic,
-        /// A numbered paragraph's label: `^#` is the number, other metacharacters expand as in
-        /// [`expand_list_text`].
-        number_expression: String = "^#.^t".into(),
-        /// Text after the bullet (metacharacters expand as in [`expand_list_text`]).
-        list_separator: String = "\t".into(),
-        balance_ragged: bool = false,
-        optical_margin: bool = false,
-        /// None uses the legacy built-in rules; an empty set explicitly disables kinsoku.
-        kinsoku: Option<crate::cjk::Kinsoku> = None,
-        /// Preserved spacing-table reference; compatibility audit reports unsupported composition.
-        mojikumi: String = String::new(),
-        /// Preserved priority policy; the current breaker does not implement these priorities.
-        kinsoku_type: String = String::new(),
-        kinsoku_hang: crate::cjk::KinsokuHang = crate::cjk::KinsokuHang::None,
-        bunri_kinshi: bool = false,
-        rensuuji: bool = true,
-        treat_ideographic_space_as_space: bool = false,
-        /// Paragraph shading, and how far it reaches past the text: top, left, bottom, right.
-        shading_on: bool = false,
-        shading_color: String = "[Black]".into(),
-        shading_tint: f32 = 0.2,
-        shading_offsets: [f64; 4] = [0.0; 4],
-        /// Paragraph border: stroke weights (top, left, bottom, right), colour, and offsets past the
-        /// text (top, left, bottom, right).
-        border_on: bool = false,
-        border_weights: [f64; 4] = [1.0; 4],
-        border_color: String = "[Black]".into(),
-        border_tint: f32 = 1.0,
-        border_offsets: [f64; 4] = [0.0; 4],
-    }
-}
-
-impl ParaAttrs {
-    /// [`set_json`](Self::set_json), except that a `ruleAbove` / `ruleBelow` object names only the
-    /// rule fields to change; the others keep their values in `current` (the resolved attributes
-    /// of the paragraph or style being edited).
-    pub fn set_json_over(&mut self, key: &str, value: &serde_json::Value, current: &ParaProps) -> Result<(), String> {
-        let rule = match key.chars().filter(|c| *c != '_').collect::<String>().to_ascii_lowercase().as_str() {
-            "ruleabove" => &current.rule_above,
-            "rulebelow" => &current.rule_below,
-            _ => return self.set_json(key, value),
-        };
-        let serde_json::Value::Object(patch) = value else { return self.set_json(key, value) };
-        let mut merged = serde_json::to_value(rule).map_err(|e| format!("{key}: {e}"))?;
-        let serde_json::Value::Object(fields) = &mut merged else { return Err(format!("{key}: not an object")) };
-        for (k, v) in patch {
-            if !fields.contains_key(k) {
-                return Err(format!("{key}: unknown rule field `{k}`"));
-            }
-            fields.insert(k.clone(), v.clone());
-        }
-        self.set_json(key, &merged)
-    }
-}
-
-impl ParaProps {
-    /// The label of a numbered paragraph with number `n`.
-    pub fn number_label(&self, n: u32) -> String {
-        expand_list_text(&self.number_expression, &self.number_style.format(n))
-    }
-
-    /// The label of a bulleted paragraph.
-    pub fn bullet_label(&self) -> String {
-        let mut s: String = self.bullet_char.chars().filter(|c| *c != '\n' && *c != '\r').collect();
-        s.push_str(&expand_list_text(&self.list_separator, ""));
-        s
+/// The error for an attribute `key` that isn't one of `fields` (snake_case): the nearest one
+/// (a typo, or a name it starts or ends: `font` → `fontFamily`), or else all of them.
+fn unknown_attribute(key: &str, fields: &[&str]) -> String {
+    let k = key.to_ascii_lowercase().replace('_', "");
+    let flat = |f: &str| f.replace('_', "");
+    let near = fields
+        .iter()
+        .map(|f| (edit_distance(key, f), *f))
+        .filter(|(d, _)| *d <= (k.len() / 3).max(1))
+        .min()
+        .map(|(_, f)| f)
+        .or_else(|| fields.iter().copied().find(|f| k.len() >= 3 && (flat(f).starts_with(&k) || flat(f).ends_with(&k))));
+    match near {
+        Some(f) => format!("unknown attribute `{key}`; did you mean `{}`?", camel(f)),
+        None => format!("unknown attribute `{key}`; the attributes are: {}", fields.iter().map(|f| camel(f)).collect::<Vec<_>>().join(", ")),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_partial_rule_keeps_the_other_fields() {
-        let current = ParaProps {
-            rule_below: Rule { on: true, weight: 3.0, color: "Red".into(), offset: 4.0, column_width: false, ..Rule::default() },
-            ..ParaProps::default()
-        };
-        let mut a = ParaAttrs::default();
-        a.set_json_over("ruleBelow", &serde_json::json!({"color": "Blue"}), &current).unwrap();
-        assert_eq!(a.rule_below, Some(Rule { color: "Blue".into(), ..current.rule_below.clone() }));
-        assert_eq!(a.rule_above, None);
-        assert!(a.set_json_over("ruleAbove", &serde_json::json!({"colour": "Blue"}), &current).is_err(), "unknown field");
-        a.set_json_over("ruleBelow", &serde_json::Value::Null, &current).unwrap();
-        assert_eq!(a.rule_below, None, "null clears the override");
-    }
-
-    #[test]
-    fn digits_map_to_their_script() {
-        assert_eq!(Digits::Default.map('7', "Arabic"), '7');
-        assert_eq!(Digits::Hindi.map('3', ""), '\u{0663}');
-        assert_eq!(Digits::Farsi.map('0', ""), '\u{06F0}');
-        assert_eq!(Digits::Native.map('5', "Thai"), '\u{0E55}');
-        assert_eq!(Digits::Native.map('5', "English: USA"), '5');
-        assert_eq!(Digits::Hindi.map('x', ""), 'x');
-    }
-
-    #[test]
-    fn language_names_map_to_bcp47_tags() {
-        assert_eq!(language_tag("English: USA"), Some("en-US"));
-        assert_eq!(language_tag("English: Australian"), Some("en"));
-        assert_eq!(language_tag("Turkish"), Some("tr"));
-        assert_eq!(language_tag("Japanese"), Some("ja"));
-        assert_eq!(language_tag("Korean"), Some("ko"));
-        assert_eq!(language_tag("Chinese"), Some("zh"));
-        assert_eq!(language_tag("Chinese: Simplified"), Some("zh-Hans"));
-        assert_eq!(language_tag("Chinese: Traditional"), Some("zh-Hant"));
-        assert_eq!(language_tag("Arabic"), Some("ar"));
-        assert_eq!(language_tag("Persian"), Some("fa"));
-        assert_eq!(language_tag("Farsi"), Some("fa"));
-        assert_eq!(language_tag("Urdu"), Some("ur"));
-        assert_eq!(language_tag("Hebrew"), Some("he"));
-        assert_eq!(language_tag("[No Language]"), None);
-        assert_eq!(language_tag("Klingon"), None);
-        assert_eq!(language_tag(""), None);
-    }
-
-    #[test]
-    fn chinese_japanese_and_korean_names_map_in_their_common_spellings() {
-        for (name, tag) in [
-            ("Chinese: Simplified", Some("zh-Hans")),
-            ("Simplified Chinese", Some("zh-Hans")),
-            ("Chinese Simplified", Some("zh-Hans")),
-            ("Chinese (Simplified)", Some("zh-Hans")),
-            ("  chinese:  SIMPLIFIED ", Some("zh-Hans")),
-            ("zh_CN", Some("zh-Hans")),
-            ("zh-CN", Some("zh-Hans")),
-            ("zh-Hans", Some("zh-Hans")),
-            ("zh-Hans-CN", Some("zh-Hans")),
-            ("Chinese: Traditional", Some("zh-Hant")),
-            ("Traditional Chinese", Some("zh-Hant")),
-            ("Chinese Traditional", Some("zh-Hant")),
-            ("Chinese (Traditional)", Some("zh-Hant")),
-            ("zh_TW", Some("zh-Hant")),
-            ("zh-TW", Some("zh-Hant")),
-            ("zh_HK", Some("zh-Hant")),
-            ("zh-HK", Some("zh-Hant")),
-            ("zh-Hant", Some("zh-Hant")),
-            ("Chinese", Some("zh")),
-            ("zh", Some("zh")),
-            ("Japanese", Some("ja")),
-            ("ja", Some("ja")),
-            ("ja_JP", Some("ja-JP")),
-            ("ja-JP", Some("ja-JP")),
-            ("Korean", Some("ko")),
-            ("ko_KR", Some("ko-KR")),
-            ("ko-KR", Some("ko-KR")),
-            ("English: USA", Some("en-US")),
-            ("German: Swiss 2006 Reform", Some("de-CH")),
-            ("Norwegian: Bokmål", Some("nb")),
-            ("[No Language]", None),
-        ] {
-            assert_eq!(language_tag(name), tag, "{name}");
-        }
-    }
-
-    #[test]
-    fn locale_codes_map_to_their_tags() {
-        for (name, tag) in [
-            // As InDesign-exported IDML writes them (AppliedLanguage).
-            ("$ID/de_DE_2006", Some("de-DE")),
-            ("$ID/nl_NL_2005", Some("nl-NL")),
-            ("$ID/English: USA", Some("en-US")),
-            ("$ID/English: UK", Some("en-GB")),
-            ("$ID/Spanish: Castilian", Some("es-ES")),
-            ("$ID/French", Some("fr")),
-            // As IDML import keeps them.
-            ("de_DE_2006", Some("de-DE")),
-            ("nl_NL_2005", Some("nl-NL")),
-            ("Spanish: Castilian", Some("es-ES")),
-            ("French", Some("fr")),
-            // Other locale codes.
-            ("de-DE", Some("de-DE")),
-            ("de_CH_2006", Some("de-CH")),
-            ("pt_BR", Some("pt-BR")),
-            ("en_us", Some("en-US")),
-            ("es_419", Some("es-419")),
-            ("fil_PH", Some("fil-PH")),
-            ("sv", Some("sv")),
-            ("ja", Some("ja")),
-            // Not codes.
-            ("de_DE_2006_x", None),
-            ("d_DE", None),
-            ("de_D", None),
-            ("de_DE_06", None),
-            ("1e_DE", None),
-            ("[No Language]", None),
-        ] {
-            assert_eq!(language_tag(name), tag, "{name}");
-        }
-        assert_eq!(language_subtag("de-DE"), "de");
-        assert_eq!(language_subtag("zh-Hant"), "zh");
-        assert_eq!(language_subtag("ko"), "ko");
-    }
-
-    #[test]
-    fn merge_and_resolve() {
-        let mut a = CharAttrs { size: Some(10.0), ..Default::default() };
-        a.merge(&CharAttrs { tracking: Some(20.0), size: Some(11.0), ..Default::default() });
-        assert_eq!(a.size, Some(11.0));
-        assert_eq!(a.count(), 2);
-        let mut p = CharProps::default();
-        p.apply(&a);
-        assert_eq!(p.size, 11.0);
-        assert_eq!(p.tracking, 20.0);
-        assert_eq!(p.font_family, "Source Serif 4");
-    }
-
-    #[test]
-    fn set_json_by_name() {
-        let mut a = ParaAttrs::default();
-        a.set_json("spaceBefore", &serde_json::json!(6.0)).unwrap();
-        a.set_json("align", &serde_json::json!("center")).unwrap();
-        a.set_json("left_indent", &serde_json::json!(12)).unwrap();
-        assert_eq!(a.space_before, Some(6.0));
-        assert_eq!(a.align, Some(Align::Center));
-        assert_eq!(a.left_indent, Some(12.0));
-        assert!(a.set_json("nope", &serde_json::json!(1)).is_err());
-        a.set_json("align", &serde_json::Value::Null).unwrap();
-        assert_eq!(a.align, None);
-    }
-
-    #[test]
-    fn delta_and_common() {
-        let a = CharProps::default();
-        let mut b = a.clone();
-        b.size = 18.0;
-        let d = a.delta(&b);
-        assert_eq!(d.count(), 1);
-        let c = CharProps::common([&a, &b]);
-        assert_eq!(c.size, None);
-        assert_eq!(c.font_family.as_deref(), Some("Source Serif 4"));
-    }
-
-    #[test]
-    fn serde_skips_unset() {
-        let a = CharAttrs { size: Some(9.0), ..Default::default() };
-        assert_eq!(serde_json::to_string(&a).unwrap(), r#"{"size":9.0}"#);
-        let p: ParaProps = serde_json::from_str(r#"{"align":"center"}"#).unwrap();
-        assert_eq!(p.align, Align::Center);
-        assert_eq!(p.word_space_max, 1.33);
-    }
-
-    #[test]
-    fn numbering_styles() {
-        assert_eq!(NumberStyle::UpperRoman.format(14), "XIV");
-        assert_eq!(NumberStyle::LowerRoman.format(9), "ix");
-        assert_eq!(NumberStyle::UpperLetters.format(1), "A");
-        assert_eq!(NumberStyle::UpperLetters.format(27), "AA");
-        assert_eq!(NumberStyle::LowerLetters.format(28), "bb");
-        assert_eq!(NumberStyle::ArabicLeadingZero.format(3), "03");
-        assert_eq!(NumberStyle::ArabicThreeDigits.format(7), "007");
-        assert_eq!(NumberStyle::ArabicFourDigits.format(12), "0012");
-        // Repeating forms stay small for huge numbers.
-        assert_eq!(NumberStyle::UpperRoman.format(u32::MAX), u32::MAX.to_string());
-        assert_eq!(NumberStyle::LowerLetters.format(u32::MAX), u32::MAX.to_string());
-        assert_eq!(NumberStyle::Symbols.format(u32::MAX), u32::MAX.to_string());
-    }
-
-    #[test]
-    fn list_labels_expand_metacharacters() {
-        let p = ParaProps { number_style: NumberStyle::UpperLetters, ..Default::default() };
-        assert_eq!(p.number_label(2), "B.\t");
-        let p = ParaProps { number_expression: "Tabel ^#^t".into(), ..Default::default() };
-        assert_eq!(p.number_label(3), "Tabel 3\t");
-        assert_eq!(expand_list_text("^2.^#.^>x^^^", "4"), ".4.\u{2002}x^^");
-        assert_eq!(expand_list_text("a\nb^p", "1"), "ab");
-        assert_eq!(ParaProps::default().bullet_label(), "\u{2022}\t");
-    }
-}
+mod tests;

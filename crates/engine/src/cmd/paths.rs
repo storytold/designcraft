@@ -35,7 +35,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Outlines",
             ["Type"],
             Some("Cmd+Shift+O"),
-            "{ids?} — text frames become compound paths of their glyphs (one per text colour, grouped when several) → {ids}",
+            "{ids?} — text frames become compound paths of their glyphs (one per line and text colour, grouped when several, so Ungroup separates the lines) → {ids}",
             has_selection,
             create_outlines
         ),
@@ -44,7 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Pathfinder",
             ["Object", "Pathfinder"],
             None,
-            "{op: add|subtract|intersect|exclude|minusBack, ids?} — combine the selected shapes into one (the backmost keeps its look; the frontmost for minusBack) → {id}",
+            "{op: add|subtract|intersect|exclude|minusBack, ids?} — combine the selected shapes into one, which keeps the frontmost object's look and content (a placed graphic stays in it); Subtract keeps the backmost → {id}",
             has_selection,
             pathfinder
         ),
@@ -145,7 +145,9 @@ fn pathfinder(s: &mut Session, p: &Value) -> Result<Value> {
         if order.len() < 2 {
             return Err(bad("object.pathfinder", "select two or more shapes on one spread (not text frames or groups)"));
         }
-        let keep = if op == Op::MinusBack { order[order.len() - 1] } else { order[0] };
+        // InDesign: the result takes the frontmost object's look and content (a photo placed over
+        // shapes shows through their intersection); Subtract keeps the backmost, the front cuts it.
+        let keep = if op == Op::Subtract { order[0] } else { order[order.len() - 1] };
         let shapes: Vec<PathData> =
             order.iter().filter_map(|id| spread_xf(d, *id).and_then(|(_, xf)| Some(d.item(*id)?.path.transformed(xf)))).collect();
         let Some(result) = combine(op, &shapes) else { return Err(bad("object.pathfinder", "the shapes don't overlap: nothing is left")) };
@@ -194,6 +196,7 @@ fn gradient_feather(s: &mut Session, p: &Value) -> Result<Value> {
                     gf.vector = Some([a.x, a.y, b.x, b.y]);
                 }
             }
+            it.effects = it.effects.clone().sanitized().map_err(|m| bad("object.gradientFeather", m))?;
         }
         Ok(json!({"changed": ids.len()}))
     })
@@ -245,9 +248,10 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
             };
             let cs = designcraft_compose::compose_story(d, tf.story, &Default::default());
             let Some(ft) = cs.frame(*id) else { continue };
-            // One path per text look (fill, stroke).
-            let mut runs: Vec<((String, f32, String, f32, f64), BezPath)> = Vec::new();
-            for l in &ft.lines {
+            // One compound path per line and text look (fill, stroke), grouped: as in InDesign,
+            // Ungroup then leaves each line on its own.
+            let mut runs: Vec<((usize, String, f32, String, f32, f64, bool), BezPath)> = Vec::new();
+            for (li, l) in ft.lines.iter().enumerate() {
                 for g in l.glyphs.iter().filter(|g| g.visible) {
                     let st = &cs.styles[g.style as usize];
                     let outline = db.outline(&g.face, g.gid);
@@ -255,8 +259,9 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                         continue;
                     }
                     let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let a = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
-                    let key = (st.fill.clone(), st.fill_tint, st.stroke.clone(), st.stroke_tint, st.stroke_weight);
+                    let shatai = st.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
+                    let a = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let key = (li, st.fill.clone(), st.fill_tint, st.stroke.clone(), st.stroke_tint, st.stroke_weight, st.stroke_behind_fill);
                     let k = match runs.iter().position(|r| r.0 == key) {
                         Some(k) => k,
                         None => {
@@ -274,14 +279,16 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
             let (sr, _) = spread_xf(d, *id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             let at = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| i.id == *id));
             let text_xf = d.text_xf(&it);
-            let make = |d: &mut Document, ((fill, ft, stroke, stt, sw), bp): ((String, f32, String, f32, f64), BezPath)| {
+            let make = |d: &mut Document, ((_, fill, ft, stroke, stt, sw, behind), bp): ((usize, String, f32, String, f32, f64, bool), BezPath)| {
                 let mut o = Item::new(ItemId(d.alloc()), it.layer, Shape::Path, PathData::from_bezpath(&bp));
                 o.xf = text_xf;
                 o.fill = Fill { swatch: fill, tint: ft, ..Fill::none() };
                 o.stroke = if stroke == designcraft_color::swatch::NONE {
                     Stroke::none()
                 } else {
-                    Stroke { swatch: stroke, tint: stt, weight: sw, ..Stroke::default() }
+                    // A stroke behind the fill lies wholly outside the letters, as an outside-aligned stroke.
+                    let align = if behind { designcraft_doc::StrokeAlign::Outside } else { designcraft_doc::StrokeAlign::Center };
+                    Stroke { swatch: stroke, tint: stt, weight: sw, align, ..Stroke::default() }
                 };
                 o
             };
@@ -312,6 +319,7 @@ fn split_path(s: &mut Session, p: &Value) -> Result<Value> {
     let id = super::id_param(p, "id").ok_or_else(|| bad("path.split", "missing id"))?;
     let at = point_param(p, "at").ok_or_else(|| bad("path.split", "missing at"))?;
     s.edit(|d, sel| {
+        super::object::path_editable(d, id, "path.split")?;
         let (sr, xf) = spread_xf(d, id).ok_or(designcraft_doc::DocError::NoItem(id))?;
         let it = d.item(id).cloned().ok_or(designcraft_doc::DocError::NoItem(id))?;
         if !matches!(it.content, Content::Unassigned) {
@@ -417,6 +425,55 @@ mod tests {
         assert!(s.execute("object.pathfinder", &json!({"op": "nope"})).is_err());
     }
 
+    /// The result keeps the frontmost object's look (Subtract: the backmost's), as InDesign's.
+    #[test]
+    fn pathfinder_keeps_the_frontmost_object() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Red", "color": [255, 0, 0]})).unwrap();
+        for op in ["add", "intersect", "exclude", "minusBack"] {
+            let a = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+            let b = s.execute("frame.create", &json!({"rect": [200, 100, 400, 300]})).unwrap()["id"].as_u64().unwrap();
+            s.execute("object.fill", &json!({"ids": [a], "swatch": "[Black]"})).unwrap();
+            s.execute("object.fill", &json!({"ids": [b], "swatch": "Red"})).unwrap();
+            let r = s.execute("object.pathfinder", &json!({"op": op, "ids": [a, b]})).unwrap();
+            assert_eq!(r["id"], b, "{op}: the front object stays");
+            let d = s.doc().unwrap().doc.clone();
+            assert!(d.item(ItemId(a)).is_none(), "{op}");
+            assert_eq!(d.item(ItemId(b)).unwrap().fill.swatch, "Red", "{op}");
+            s.execute("edit.clear", &json!({"ids": [b]})).unwrap();
+        }
+    }
+
+    /// A photo placed over strips and intersected with them shows through the strips (it was
+    /// dropped: the black strips were kept).
+    #[test]
+    fn pathfinder_intersect_keeps_a_placed_photo_in_front() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 300, 140]})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [100, 160, 300, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [a, b], "swatch": "[Black]"})).unwrap();
+        let strips = s.execute("object.pathfinder", &json!({"op": "add", "ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: [255u8, 255, 255, 255].repeat(400) }.to_png();
+        let photo = s.execute("frame.create", &json!({"rect": [80, 80, 320, 220], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::base64_encode(&png), "name": "white.png", "frame": photo})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fillProportionally", "ids": [photo]})).unwrap();
+        let r = s.execute("object.pathfinder", &json!({"op": "intersect", "ids": [strips, photo]})).unwrap();
+        assert_eq!(r["id"], photo);
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.item(ItemId(strips)).is_none());
+        let it = d.item(ItemId(photo)).unwrap();
+        assert!(matches!(it.content, Content::Graphic(_)), "the photo stays in the result");
+        assert_eq!(it.path.subpaths.len(), 2, "cut to the two strips");
+        let b = it.bounds();
+        assert!((b.x0 - 100.0).abs() < 0.5 && (b.y0 - 100.0).abs() < 0.5 && (b.x1 - 300.0).abs() < 0.5 && (b.y1 - 200.0).abs() < 0.5, "{b:?}");
+        let mut rr = designcraft_render::Renderer::new();
+        rr.threads = 0;
+        let img = rr.render_page(&d, &s.cache, 0, 1.0, false, &Default::default()).unwrap();
+        assert!(img.pixel(200, 120)[0] > 230, "the photo (white) shows in a strip: {:?}", img.pixel(200, 120));
+    }
+
     #[test]
     fn gradient_feather_fades_on_screen_and_in_pdf() {
         let mut s = Session::new();
@@ -436,6 +493,89 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_gradient_feather_fades_it_on_screen_and_in_pdf() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 400, "height": 300})).unwrap();
+        let mut ids = vec![];
+        for rect in [[100, 100, 200, 200], [200, 100, 300, 200]] {
+            let id = s.execute("frame.create", &json!({"rect": rect})).unwrap()["id"].as_u64().unwrap();
+            s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+            ids.push(id);
+        }
+        let g = s.execute("object.group", &json!({"ids": ids})).unwrap()["id"].as_u64().unwrap();
+        s.execute("transform.move", &json!({"ids": [g], "dx": 20, "dy": 30})).unwrap();
+        // The Gradient Feather tool's drag, then by angle (a group has no path of its own: the
+        // gradient spans its objects). The gradient still follows the translated group even
+        // though the mask geometry covers the whole output.
+        for p in [json!({"ids": [g], "from": [120, 180], "to": [320, 180]}), json!({"ids": [g], "angle": 0})] {
+            s.execute("object.gradientFeather", &p).unwrap();
+            let d = s.doc().unwrap().doc.clone();
+            let mut rr = designcraft_render::Renderer::new();
+            rr.threads = 0;
+            let img = rr.render_page(&d, &s.cache, 0, 1.0, false, &Default::default()).unwrap();
+            let (l, m, r) = (img.pixel(125, 180)[0], img.pixel(220, 180)[0], img.pixel(315, 180)[0]);
+            assert!(l < 60 && m > l + 40 && r > 220, "{p}: fades left to right on screen: {l} {m} {r}");
+            let pdf = designcraft_pdf::export_pdf(&d, &s.cache, &Default::default()).unwrap();
+            let pm = designcraft_render::render_pdf_page(&pdf, 0, 400).unwrap();
+            // Over white paper.
+            let at = |x: usize, y: usize| {
+                let c = pm.data()[y * pm.width() as usize + x];
+                c.r as u32 + 255 - c.a as u32
+            };
+            let (l, m, r) = (at(125, 180), at(220, 180), at(315, 180));
+            assert!(l < 60 && m > l + 40 && r > 220, "{p}: fades left to right in PDF: {l} {m} {r}");
+        }
+    }
+
+    #[test]
+    fn group_gradient_feather_keeps_distant_shadows_and_thick_strokes() {
+        for shadow in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"width": 400, "height": 400})).unwrap();
+            let mut ids = vec![];
+            for rect in [[120, 120, 170, 170], [175, 120, 225, 170]] {
+                let id = s.execute("frame.create", &json!({"rect": rect})).unwrap()["id"].as_u64().unwrap();
+                s.execute("object.fill", &json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+                if shadow {
+                    s.execute("object.dropShadow", &json!({"ids": [id], "on": true, "distance": 180, "angle": 90, "size": 0, "opacity": 1})).unwrap();
+                } else {
+                    s.execute("object.stroke", &json!({"ids": [id], "swatch": "[Black]", "weight": 180})).unwrap();
+                }
+                ids.push(id);
+            }
+            let g = s.execute("object.group", &json!({"ids": ids})).unwrap()["id"].as_u64().unwrap();
+            // Translate the group so mask geometry and gradient paint exercise distinct spaces.
+            s.execute("transform.move", &json!({"ids": [g], "dx": 30, "dy": 20})).unwrap();
+            let point = if shadow { (175, 345) } else { (175, 60) };
+            let sample = |s: &Session| {
+                let d = &s.doc().unwrap().doc;
+                let mut rr = designcraft_render::Renderer::new();
+                rr.threads = 0;
+                // Zoomed viewport: the mask must extend over every device pixel.
+                let img = rr.render_page(d, &s.cache, 0, 2.0, false, &Default::default()).unwrap();
+                let screen = img.pixel(point.0 * 2, point.1 * 2)[0];
+                let pdf = designcraft_pdf::export_pdf(d, &s.cache, &Default::default()).unwrap();
+                let pm = designcraft_render::render_pdf_page(&pdf, 0, 400).unwrap();
+                let c = pm.data()[point.1 as usize * pm.width() as usize + point.0 as usize];
+                [f32::from(screen), c.r as f32 + 255.0 - c.a as f32]
+            };
+            let before = sample(&s);
+            // The sample lies past either end of the gradient, and outside the old fixed padding.
+            s.execute("object.gradientFeather", &json!({"ids": [g], "from": [130, 120], "to": [130, 220], "start": 40, "end": 80})).unwrap();
+            let after = sample(&s);
+            let opacity = if shadow { 0.8 } else { 0.4 };
+            for (kind, (before, after)) in ["screen", "PDF"].into_iter().zip(before.into_iter().zip(after)) {
+                assert!(before < 120.0, "{kind}, shadow={shadow}: sample contains the effect before feathering: {before}");
+                let expected = 255.0 - (255.0 - before) * opacity;
+                assert!(
+                    (after - expected).abs() < 16.0,
+                    "{kind}, shadow={shadow}: end opacity continues past geometry: {after}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn create_outlines_turns_text_into_paths() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -452,6 +592,31 @@ mod tests {
         let b = it.bounds();
         assert!(b.x0 >= 72.0 && b.y0 >= 72.0 && b.x1 < 400.0, "{b:?}");
         assert!(d.stories.is_empty() || !d.stories.values().any(|st| st.frames.contains(&ItemId(id))));
+    }
+
+    #[test]
+    fn outlines_of_several_lines_ungroup_line_by_line() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "GOOD\nMORNING"})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+        let g = s.execute("type.createOutlines", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let group = d.item(ItemId(g)).unwrap();
+        assert!(group.is_group(), "a group of the lines");
+        let lines: Vec<_> = group.children().iter().map(|c| c.bounds()).collect();
+        assert_eq!(lines.len(), 2, "one compound path per line");
+        assert!(lines[0].y1 <= lines[1].y0 + 1.0, "GOOD above MORNING: {lines:?}");
+        // Ungroup: each line on its own, to space them and make one compound path again.
+        s.execute("object.ungroup", &json!({})).unwrap();
+        let sel = s.doc().unwrap().selection.items.clone();
+        assert_eq!(sel.len(), 2);
+        let d = s.doc().unwrap().doc.clone();
+        assert!(sel.iter().all(|i| d.item(*i).is_some_and(|it| it.shape == Shape::Path && it.path.subpaths.len() >= 4)));
+        s.execute("object.makeCompoundPath", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.items.len(), 1);
+        s.doc().unwrap().doc.check().unwrap();
     }
 
     #[test]
