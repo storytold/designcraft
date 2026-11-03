@@ -60,7 +60,12 @@ impl DesignApp {
                 self.ui.dialog = None;
             }
             match self.session.execute("font.list", &json!({})) {
-                Ok(fonts) if fonts.as_array().is_some_and(|fonts| fonts.iter().any(|f| f["missing"] == true || f["styleMissing"] == true)) => {
+                // A converted Publisher file asks for Publisher's fonts by name; their fallbacks
+                // are expected there, so the open doesn't stop on Find/Replace Font.
+                Ok(fonts)
+                    if self.session.active().is_none_or(|state| state.import_notice.is_none())
+                        && fonts.as_array().is_some_and(|fonts| fonts.iter().any(|f| f["missing"] == true || f["styleMissing"] == true)) =>
+                {
                     self.ui.dialog = Some(dialogs::Dialog::new("findFont", json!({"_fonts": fonts, "onOpen": true})));
                 }
                 Err(e) => self.status(e.to_string()),

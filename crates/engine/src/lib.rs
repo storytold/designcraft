@@ -91,6 +91,12 @@ pub struct DocState {
     pub selection: Selection,
     pub history: History,
     pub path: Option<String>,
+    /// A native Save As suggestion for an unsaved import; never an overwrite destination.
+    pub import_save_path: Option<String>,
+    /// Nonfatal import information, separate from actual feature-loss warnings.
+    pub import_notes: Vec<String>,
+    /// Conversion notice for this open document, not persisted into the native file.
+    pub import_notice: Option<&'static str>,
     /// Names the document state for caches keyed `(uid, revision)` (see
     /// [`DocState::bump_revision`]).
     pub revision: u64,
@@ -157,6 +163,9 @@ impl DocState {
             selection: Selection::default(),
             history: History { limit: 1000, ..Default::default() },
             path,
+            import_save_path: None,
+            import_notes: Vec::new(),
+            import_notice: None,
             revision,
             saved_revision: revision,
             active_layer,
@@ -169,6 +178,10 @@ impl DocState {
             preview_record: None,
             fonts: None,
         }
+    }
+    /// Default native save location, including the source folder for imported publications.
+    pub fn save_suggestion(&self) -> String {
+        self.path.clone().or_else(|| self.import_save_path.clone()).unwrap_or_else(|| format!("{}.designcraft", self.doc.title))
     }
     /// The document changed: it gets a revision no document state had before. A cancelled
     /// gesture puts back the revision it began at, so the numbers its previews used are never

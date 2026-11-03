@@ -79,8 +79,11 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         if designcraft_idml::is_idml(&bytes) || (!native && (crate::cmd::interchange::is_indd(path, &bytes) || ext == "idml")) {
             return crate::cmd::interchange::open_idml(s, p);
         }
+        if designcraft_pub::is_pub(&bytes) || (!native && ext == "pub") {
+            return crate::cmd::interchange::open_pub(s, p);
+        }
         if !native && ext != designcraft_format::EXTENSION {
-            return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+            return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML or Publisher file")));
         }
         let (mut d, mut warnings) = load_bytes(&bytes)?;
         crate::cmd::interchange::resolve_packaged_links(&mut d, Some(std::path::Path::new(path)));
@@ -142,10 +145,13 @@ fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
 
 pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let b = base64_decode(str_param(p, "base64").unwrap_or(""));
-    // IDML packages are recognised by their stored `mimetype` first entry, INDD files by their
-    // signature (or their name).
-    if designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b) {
+    // Content takes precedence over misleading import extensions, as it does in file.open.
+    let native = designcraft_format::is_designcraft(&b) || b.trim_ascii_start().starts_with(b"{");
+    if !native && (designcraft_idml::is_idml(&b) || crate::cmd::interchange::is_indd(str_param(p, "name").unwrap_or_default(), &b)) {
         return crate::cmd::interchange::open_idml(s, p);
+    }
+    if !native && (designcraft_pub::is_pub(&b) || str_param(p, "name").is_some_and(|n| n.to_ascii_lowercase().ends_with(".pub"))) {
+        return crate::cmd::interchange::open_pub(s, p);
     }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
@@ -237,6 +243,35 @@ mod document_fonts_tests {
         let f = font_entry(&mut s, FAMILY);
         assert_eq!((f["missing"].clone(), f["source"].clone()), (json!(false), json!("document")), "{f}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publisher_document_fonts_are_scoped_and_bytes_do_not_load_adjacent_fonts() {
+        const FAMILY: &str = "PubTst";
+        let dir = temp_dir("publisher");
+        let chars: Vec<_> = "Hello from DesignCraft".chars().collect();
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("pub.ttf"), font_with(FAMILY, &chars).unwrap()).unwrap();
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("bad.ttf"), b"not a font").unwrap();
+        let bytes = include_bytes!("../../../../pub/tests/data/hello.pub").to_vec();
+        let path = dir.join("Publication.pub");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut s = Session::new();
+        let result = open(&mut s, &path);
+        assert_eq!(result["documentFonts"], 1);
+        assert!(result["warnings"].to_string().contains("bad.ttf"));
+        assert!(s.doc().unwrap().fonts.is_some());
+        assert_ne!(s.doc().unwrap().doc.font_scope, 0);
+        let (&story, text) = s.doc().unwrap().doc.stories.iter().find(|(_, text)| !text.text.is_empty()).unwrap();
+        let end = text.text.len();
+        s.execute("text.select", &json!({"story": story.0, "anchor": 0, "focus": end})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": FAMILY, "fontStyle": "Regular"})).unwrap();
+        assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
+        assert!(glyph_faces(&s).iter().any(|(_, face)| face.family == FAMILY));
+        s.execute("file.openBytes", &json!({"name": path.to_string_lossy(), "base64": crate::cmd::base64_encode(&bytes)})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.font_scope, 0);
+        assert!(s.doc().unwrap().fonts.is_none());
+        assert!(glyph_faces(&s).iter().all(|(_, face)| face.family != FAMILY));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

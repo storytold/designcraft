@@ -12,6 +12,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-01** · Microsoft Publisher 2002–2021 files (`.pub`) open as an unsaved converted copy
+  through `file.open` / `file.openBytes`, the Open dialog and the web picker: pages, masters,
+  formatted text, shapes, pictures (WMF/EMF as SVG), WordArt and tables, with warnings for what
+  doesn't come over ([publisher-import.md](docs/publisher-import.md)). No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps

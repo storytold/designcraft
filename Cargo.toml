@@ -29,6 +29,7 @@ designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
+designcraft-pub = { path = "crates/pub" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
 designcraft-textimport = { path = "crates/textimport" }
@@ -42,6 +43,8 @@ designcraft-testkit = { path = "crates/testkit" }
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }
 thiserror = "2"
+# MS-CFB (OLE2 compound file) reader for Microsoft Publisher import (MIT).
+cfb = "0.15"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"

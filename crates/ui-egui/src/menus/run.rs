@@ -28,7 +28,9 @@ fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key:
 /// File › Save As: asks where, saves there, then runs `after`.
 #[track_caller]
 fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
-    let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
+    // An unsaved converted file (Publisher) suggests its own folder and name, as a .designcraft.
+    let name =
+        app.session.active().map(|d| if d.path.is_none() { d.save_suggestion() } else { format!("{}.designcraft", d.doc.title) }).unwrap_or_default();
     app.ask_save(&name, Bound::Document, move |app, path| {
         app.run("file.saveAs", json!({"path": path}))?;
         after(app)
