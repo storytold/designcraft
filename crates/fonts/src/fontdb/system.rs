@@ -41,16 +41,26 @@ fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
 /// The code points any face of a font file maps, as sorted inclusive ranges.
 #[cfg(not(target_arch = "wasm32"))]
 fn coverage_ranges(data: &[u8]) -> Vec<(u32, u32)> {
-    let mut cps: Vec<u32> = Vec::new();
+    // One bit per code point: memory stays fixed however many faces (or named instances of one face) map however much.
+    let mut bits = vec![0u64; 0x110000 / 64];
+    let mut last = None;
     for (i, _, _, _) in enumerate_faces(data) {
+        if last.replace(i) == Some(i) {
+            continue;
+        }
         if let Ok(f) = skrifa::FontRef::from_index(data, i) {
-            cps.extend(f.charmap().mappings().map(|(cp, _)| cp));
+            for (cp, _) in f.charmap().mappings() {
+                if let Some(w) = bits.get_mut((cp / 64) as usize) {
+                    *w |= 1u64 << (cp % 64);
+                }
+            }
         }
     }
-    cps.sort_unstable();
-    cps.dedup();
     let mut out: Vec<(u32, u32)> = Vec::new();
-    for cp in cps {
+    for cp in 0..0x110000u32 {
+        if ((bits[(cp / 64) as usize] >> (cp % 64)) & 1) == 0 {
+            continue;
+        }
         match out.last_mut() {
             Some(last) if last.1 + 1 == cp => last.1 = cp,
             _ => out.push((cp, cp)),
@@ -616,7 +626,9 @@ impl FontDb {
                     let mut sys = self.sys.lock().unwrap_or_else(PoisonError::into_inner);
                     if sys.coverage_ranges + r.len() <= super::fallback::MAX_COVERAGE_RANGES {
                         sys.coverage_ranges += r.len();
-                        sys.coverage.insert(p.clone(), (stamp, r.clone()));
+                        if let Some((_, old)) = sys.coverage.insert(p.clone(), (stamp, r.clone())) {
+                            sys.coverage_ranges -= old.len();
+                        }
                     }
                     data = Some(d);
                     r

@@ -17,7 +17,7 @@ fn capped(name: impl std::fmt::Display) -> String {
         fn write_str(&mut self, s: &str) -> std::fmt::Result {
             for c in s.chars() {
                 if *self.1 == 0 {
-                    return Ok(());
+                    return Err(std::fmt::Error);
                 }
                 *self.1 -= 1;
                 self.0.push(c);
