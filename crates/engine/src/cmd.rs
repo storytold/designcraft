@@ -263,6 +263,11 @@ pub(crate) fn bool_or(p: &Value, key: &str, default: bool) -> bool {
 pub(crate) fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
     p.get(key).and_then(Value::as_str)
 }
+/// A page range as Export and File › Place take one (`"1-3, 5, 8-"`, `"all"`): the 0-based pages
+/// of `count` it names, each once, in its order; or what's wrong with it.
+pub fn page_range(spec: &str, count: usize) -> std::result::Result<Vec<usize>, String> {
+    designcraft_pdf::parse_page_range(spec, count).map_err(|e| e.to_string())
+}
 /// Plain text from a parameter, with CR LF and lone CR (classic Mac and InDesign line ends) as
 /// `\n`, the paragraph separator, as edit.paste and text import already do. Kept as they were,
 /// the CRs joined the paragraphs into one. A vertical tab (Word's and PowerPoint's Shift+Enter,
@@ -350,10 +355,10 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
     file::from_bytes(b)
 }
 pub(crate) use datamerge::sync_placeholders;
-pub(crate) use file::load_document_fonts;
 pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
 };
+pub(crate) use file::{load_document_fonts, shown_size};
 pub use layout::chapter_numbering;
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;

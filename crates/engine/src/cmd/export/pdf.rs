@@ -4,21 +4,29 @@ use super::{EngineError, Marks, PdfOptions, Result, Session, Standard, Value, ba
 
 /// The `pages` parameter: a range string ("1-3,5"), a list or a number of 1-based positions.
 pub(super) fn pages_param(id: &str, p: &Value, page_count: usize) -> Result<Option<Vec<usize>>> {
-    Ok(match p.get("pages") {
+    page_list(id, p.get("pages"), page_count)
+}
+
+/// A list of pages, given as [`pages_param`] takes them: 0-based, each once, in the order named.
+pub(crate) fn page_list(id: &str, pages: Option<&Value>, page_count: usize) -> Result<Option<Vec<usize>>> {
+    Ok(match pages {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(designcraft_pdf::parse_page_range(s, page_count).map_err(|e| bad(id, e.to_string()))?),
         Some(Value::Array(a)) => {
             let mut v = Vec::new();
+            // Pages already listed: a membership test per page keeps a long list linear.
+            let mut seen = vec![false; page_count];
             for x in a {
-                let n = x
+                let (n, first) = x
                     .as_u64()
                     .and_then(|n| usize::try_from(n).ok())
-                    .filter(|n| *n >= 1 && *n <= page_count)
+                    .filter(|n| *n >= 1)
+                    .and_then(|n| seen.get_mut(n - 1).map(|first| (n, first)))
                     .ok_or_else(|| bad(id, format!("bad page {x}")))?;
                 // A page named twice is one page, as `"2,2"` already is: the list says which
                 // pages to export, not how many times. `[2, 2]` exported two copies of page 2
                 // while `"2,2"` exported one.
-                if !v.contains(&(n - 1)) {
+                if !std::mem::replace(first, true) {
                     v.push(n - 1);
                 }
             }

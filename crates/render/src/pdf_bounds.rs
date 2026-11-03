@@ -9,11 +9,9 @@ use craft_pdf::interpret::{
 };
 use vello_cpu::kurbo::{self, Affine, BezPath, Rect, Shape};
 
-/// The bounds of what PDF page `page` draws, as fractions of the page as rendered (its visible
+/// The bounds of what PDF page `p` draws, as fractions of the page as rendered (its visible
 /// crop box, rotated as it displays): left, top, right, bottom. `None` when it draws nothing.
-pub(crate) fn page_content_bounds(bytes: &[u8], page: usize) -> Option<[f64; 4]> {
-    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
-    let p = pdf.pages().get(page)?;
+pub(crate) fn content_bounds(p: &craft_pdf::syntax::page::Page<'_>) -> Option<[f64; 4]> {
     let (w, h) = p.render_dimensions();
     let (w, h) = (f64::from(w), f64::from(h));
     if !(w > 0.0 && h > 0.0) {

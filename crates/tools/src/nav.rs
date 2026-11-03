@@ -183,8 +183,9 @@ Y: {pct}"
     }
     fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
         match key {
-            // Escape unloads the place cursor.
-            crate::ToolKey::Escape => vec![Action::SwitchTool("selection".into())],
+            // Escape unloads the graphic in the place cursor: the next one waiting (another page
+            // of a PDF) takes its place, or with none the Selection tool comes back.
+            crate::ToolKey::Escape => vec![Action::Exec("place.unload".into(), json!({}))],
             _ => vec![],
         }
     }

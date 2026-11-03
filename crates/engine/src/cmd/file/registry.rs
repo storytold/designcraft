@@ -3,7 +3,7 @@ use super::EngineError;
 use super::bytes::{base64_encode, to_bytes, to_bytes_with_preview, with_document_extension};
 use super::new::{file_new, file_sample, save_preset};
 use super::open::{file_open, file_open_bytes, file_open_recent, has_recent, recent_entry};
-use super::place::{file_place, place_drop, place_load, read_source};
+use super::place::{file_place, place_drop, place_load, place_unload, read_source};
 use super::save::{FolderAccess, can_revert, file_revert, file_save, recovery_dir};
 use super::snippets::{snippet_export, snippet_place};
 use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, str_param};
@@ -127,13 +127,30 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             place_load
         ),
-        cmd!("place.drop", "Place Loaded Graphic", [], None, "{spread?, x, y, rect?: [x0,y0,x1,y1], frame?: id}", has_doc, place_drop),
+        cmd!(
+            "place.drop",
+            "Place Loaded Graphic",
+            [],
+            None,
+            "{spread?, x, y, rect?: [x0,y0,x1,y1], frame?: id} → {id, loaded: graphics still in the place cursor (the next PDF page is ready for the next click)}",
+            has_doc,
+            place_drop
+        ),
+        cmd!(noundo
+            "place.unload",
+            "Unload Place Cursor",
+            [],
+            None,
+            "{all?} → {loaded} — the graphic in the place cursor goes unplaced and the next one waiting takes its place (Escape); `all`: every one goes. With none left, the Selection tool",
+            always,
+            place_unload
+        ),
         cmd!(
             "file.place",
             "Place…",
             ["File"],
             Some("Cmd+D"),
-            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
+            "{path?|base64?, name?, frame?: id (place into), spread?, x?, y?, width?: finite number > 0 (null: absent), height? (video/audio), pdfPage?: n (1-based, Image Import Options), pdfCrop?: crop|art|trim|bleed|media|contentVisible|contentAll (the box the graphic shows; `width` is the whole page's), pdfCropInset?: n | [top, left, bottom, right] (points ≥ 0 the frame is cut into that box: a custom crop), pdfPages?: \"all\" | \"1-3, 5, 8-\" | [n…] | n (several PDF pages, in that order, each its own graphic; not with pdfPage), pdfPlace?: cursor|pages (where pdfPages go: the place cursor, each click placing the next, the default with loadCursor → {assets, loaded, id?: the frame the first filled}; or one per document page, as one undo step → {ids, assets, pages, pdfPages, added}), startPage?: n (pdfPlace pages: the first document page, 1-based, default 1; the page after the last appends), addPages? (pdfPlace pages: add pages at the end as needed; default true), fit?: none|page|margins|bleed (pdfPlace pages: centred at actual size, or scaled to fit that area of its page), loadCursor? (with no frame to fill and no x/y, an image loads into the place cursor, as File › Place), layoutPage?: n (IDML / .designcraft: that page's objects as a group), page?, rect?: [x0,y0,x1,y1] (text: a new frame there), autoflow? (threads one frame per page column from the first frame on, adding pages until the text fits), removeStyles?, styleMap?: {imported name: document style}, styleConflicts?: useExisting|redefine|autoRename, link? (keep the file linked in the Links panel; default: the linkTextFiles preference)} — places an image into `frame` when given; otherwise any explicit x/y/spread/width creates a new frame; otherwise uses the selected empty or graphic frame, or creates a new frame; text files (.txt, .docx, .rtf, .md) and Excel workbooks (.xlsx, as a table) go into the insertion point, the selected frame or a new frame on `page`/`rect`",
             has_doc,
             file_place
         ),

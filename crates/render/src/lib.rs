@@ -49,8 +49,8 @@ pub use decode::{decode_pixmap, decode_pixmap_page, image_mime, image_size, natu
 #[cfg(test)]
 use pdf_raster::PDF_RENDERS;
 pub use pdf_raster::{
-    PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png, pdf_page_png_checked,
-    pdf_page_png_options_checked, pdf_page_size, render_pdf_page, shown_box,
+    PdfPlacedPage, PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png,
+    pdf_page_png_checked, pdf_page_png_options_checked, pdf_page_size, pdf_placed_pages, render_pdf_page, shown_box,
 };
 pub(crate) use types::Frame;
 pub use types::{DisplayQuality, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads, effect_outset};
