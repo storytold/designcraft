@@ -106,7 +106,13 @@ struct Ex<'a> {
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Bytes of image data written into `<Contents>` so far (see [`MAX_EMBEDDED_BYTES`]).
+    embedded: usize,
 }
+
+/// Image bytes one export embeds, counting each placement (IDML holds a copy per placement): past
+/// it a graphic is written without its contents.
+const MAX_EMBEDDED_BYTES: usize = 512 * 1024 * 1024;
 
 impl<'a> Ex<'a> {
     fn new(d: &'a Document, opts: &'a ExportOptions) -> Self {
@@ -121,6 +127,7 @@ impl<'a> Ex<'a> {
             link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
+            embedded: 0,
         };
         ex.assign_swatch_ids();
         for s in d.stories.values() {
