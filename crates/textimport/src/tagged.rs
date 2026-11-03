@@ -37,7 +37,7 @@ fn escape_value(v: &str) -> String {
     out
 }
 
-/// A tag value with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
+/// A tag value (cut to [`crate::MAX_NAME_CHARS`]: style names are copied into every paragraph) with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
 /// backslash, including a trailing one, stays literal, as older files and InDesign's `\:` expect.
 fn unescape_value(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
@@ -53,7 +53,7 @@ fn unescape_value(v: &str) -> String {
             out.push(c);
         }
     }
-    out
+    crate::capped_name(out)
 }
 
 /// The first format version whose `cFont` and `cTypeface` values are escaped like style names.
@@ -442,5 +442,12 @@ mod tests {
             u16.extend(u.to_le_bytes());
         }
         assert_eq!(import(&u16).unwrap().story.text, "Hi");
+    }
+
+    #[test]
+    fn a_long_style_name_is_cut() {
+        let name = "N".repeat(100_000);
+        assert_eq!(unescape_value(&name).len(), crate::MAX_NAME_CHARS);
+        assert_eq!(unescape_value("Body"), "Body");
     }
 }
