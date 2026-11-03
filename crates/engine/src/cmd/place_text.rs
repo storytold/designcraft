@@ -1,4 +1,4 @@
-//! File › Place of text files (plain text, Word, RTF): into the text insertion point, the
+//! File › Place of text files (plain text, Word, RTF, InCopy stories): into the text insertion point, the
 //! selected frame, or a new frame on the page; with autoflow, pages and threaded frames are added
 //! until the whole story fits (InDesign's Shift-click with a loaded text cursor).
 
@@ -179,7 +179,8 @@ pub(crate) fn reimport(
     let link =
         d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))?;
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
-    let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
+    let icml::TextImport { mut imp, icml: resources } =
+        icml::import(&name, bytes, Some(std::path::Path::new(path))).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
     if link.remove_styles {
         strip(&mut imp.story);
         imp.para_styles.clear();
@@ -191,9 +192,15 @@ pub(crate) fn reimport(
         link.style_map.into_iter().filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some()).collect();
     let map = map_styles(d, &mut imp, &map, conflict);
     add_styles(d, &imp, conflict);
+    let src = icml::adopt(d, &imp, resources.as_ref(), &map);
+    let replaced = if resources.is_some() { icml::anchored_stories(d, sid) } else { Vec::new() };
     let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-    fill(story, &imp.story);
+    fill(story, &src);
+    if resources.is_some() {
+        icml::inserted(story, 0, &src, true);
+    }
     story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
+    icml::drop_detached(d, &replaced);
     Ok(imp.warnings)
 }
 
@@ -409,7 +416,8 @@ pub(super) fn place_text(
     path: Option<String>,
     before: Option<designcraft_doc::Fingerprint>,
 ) -> Result<Value> {
-    let mut imp = designcraft_textimport::import(name, bytes).map_err(|e| bad("file.place", e.to_string()))?;
+    let icml::TextImport { mut imp, icml: resources } =
+        icml::import(name, bytes, path.as_deref().map(std::path::Path::new)).map_err(|e| bad("file.place", e))?;
     let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(false);
     if remove {
         strip(&mut imp.story);
@@ -444,6 +452,7 @@ pub(super) fn place_text(
     }
     s.edit(|d, sel| {
         add_styles(d, &imp, conflict);
+        let src = icml::adopt(d, &imp, resources.as_ref(), &map);
         let sid = if let Some(t) = caret {
             // Into the text at the insertion point (replacing the selection).
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -453,9 +462,12 @@ pub(super) fn place_text(
             // (insert_story would keep the empty paragraph's own, losing the styleMap result).
             let p0 = story.para_at(r.start);
             let blank = story.para_ranges().get(p0).is_some_and(|x| x.is_empty());
-            let end = story.insert_story(r.start, &imp.story);
-            if blank && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0)) {
+            let end = story.insert_story(r.start, &src);
+            if blank && let (Some(first), Some(p)) = (src.paras.first(), story.paras.get_mut(p0)) {
                 *p = ParaFormat { table: p.table, ..first.clone() };
+            }
+            if resources.is_some() {
+                icml::inserted(story, r.start, &src, false);
             }
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             if link.is_some() {
@@ -491,9 +503,14 @@ pub(super) fn place_text(
                 }
                 None => return Err(bad("file.place", "no such frame")),
             };
+            let replaced = if resources.is_some() { icml::anchored_stories(d, sid) } else { Vec::new() };
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-            fill(story, &imp.story);
+            fill(story, &src);
+            if resources.is_some() {
+                icml::inserted(story, 0, &src, true);
+            }
             story.file_link = link.as_deref().map(|path| text_link(path, bytes, before, map.clone(), conflict, remove, story));
+            icml::drop_detached(d, &replaced);
             *sel = designcraft_doc::Selection::items(vec![fid]);
             sid
         };
@@ -503,6 +520,7 @@ pub(super) fn place_text(
     })
 }
 
+pub(crate) mod icml;
 #[cfg(test)]
 mod tests;
 
