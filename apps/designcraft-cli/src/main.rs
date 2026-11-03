@@ -533,7 +533,7 @@ fn script(args: &[String]) -> Result<(), String> {
         }
         for (kind, out) in &export {
             let p = json!({"path": out});
-            match kind {
+            let r = match kind {
                 // PNG / JPEG of the first page.
                 Export::Image => b.call("app.export", p)?,
                 Export::Pdf => exec(b, "file.exportPdf", p)?,
@@ -542,6 +542,11 @@ fn script(args: &[String]) -> Result<(), String> {
                 Export::Pptx => exec(b, "file.exportPptx", p)?,
                 Export::Command(cmd) => exec(b, cmd, p)?,
             };
+            // What the export itself reports (effects rasterised, transparency flattened…) goes
+            // to stderr, as `run --export` prints it: the report on stdout covers only the steps.
+            for w in r["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
         }
     }
     outln!("{}", serde_json::to_string_pretty(&report.to_json()).unwrap_or_default());
