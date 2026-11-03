@@ -14,6 +14,10 @@ pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 /// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
 pub type WindowFrameFn = Box<dyn FnMut()>;
 
+/// Where the pointer is on the screen now, in points from the top left of the main display (the
+/// coordinates of the window's `inner_rect`). `None` when the system doesn't say.
+pub type PointerFn = Box<dyn Fn() -> Option<egui::Pos2>>;
+
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -39,4 +43,9 @@ pub struct Services {
     /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
     /// needs no fixing.
     pub window_frame: Option<WindowFrameFn>,
+    /// The pointer's place on the screen, asked when a file is dropped: a file dragged in from
+    /// another application brings no pointer events with it (winit reports none during a drag on
+    /// macOS), so without it a drop can't tell which frame it landed on. `None`: a drop without
+    /// pointer events loads the place cursor.
+    pub pointer: Option<PointerFn>,
 }

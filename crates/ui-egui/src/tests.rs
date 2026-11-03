@@ -938,6 +938,34 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
 }
 
+/// A file dragged in from the Finder brings no pointer events (winit sends none during a drag on
+/// macOS): the drop asks the system where the pointer is, so one dropped on a frame fills it
+/// rather than loading the place cursor.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointer() {
+    let (mut app, frame, inside, _) = frame_drop_app();
+    // The window's content starts at (300, 200) on the screen.
+    let window = egui::vec2(300.0, 200.0);
+    app.services.pointer = Some(Box::new(move || Some(inside + window)));
+    let path = temporary_png("drop-system-pointer");
+    app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer: None, generation: app.input_generation() });
+    let ctx = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
+    let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
+    raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
+    ctx.run_ui(raw, |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+    let _ = std::fs::remove_file(&path);
+    assert!(app.pending_drops.is_empty());
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+        panic!("the frame under the pointer is filled")
+    };
+    assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
+}
+
 /// One image dropped where no frame can take it loads the place cursor instead of being placed:
 /// the next click places it. A frame selected doesn't take it, and another image dropped
 /// meanwhile queues after it.

@@ -143,6 +143,31 @@ impl DesignApp {
     }
 
     /// The current state an injected batch belongs to.
+    /// Open or place the files dropped since the last UI pass, at the pointer. Files dropped
+    /// without pointer events (dragged in from another application) are placed where the system
+    /// says the pointer is, so one dropped on a frame still fills it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_pending_drops(&mut self, ctx: &egui::Context) {
+        // Sample the generation once for the whole batch: placing the first valid file must not
+        // suppress later files that belong to the same captured batch.
+        let current = self.input_generation();
+        let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
+        let Some(first) = drops.first() else { return };
+        // Dropped together, they go together: several images load the place cursor at once.
+        let pointer = first.pointer.or_else(|| self.system_pointer(ctx));
+        self.open_dropped_batch(drops.into_iter().map(|d| d.path).collect(), pointer);
+    }
+
+    /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
+    /// for files dropped without pointer events: dragged in from another application, they bring
+    /// none. `None` when the system doesn't say or the window's place isn't known.
+    pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let at = (self.services.pointer.as_ref()?)()?;
+        let inner = ctx.input(|i| i.viewport().inner_rect)?;
+        let local = at - inner.min.to_vec2();
+        (local.x.is_finite() && local.y.is_finite()).then_some(local)
+    }
+
     pub(crate) fn input_generation(&self) -> InputGeneration {
         InputGeneration {
             document: self.active_document_epoch(),

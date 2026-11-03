@@ -206,15 +206,7 @@ impl DesignApp {
         // must not replay shortcuts or dropped files from stale input.
         if ctx.current_pass_index() == 0 {
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                // Sample the generation once for the whole batch: placing the first valid file
-                // must not suppress later files that belong to the same captured batch.
-                let current = self.input_generation();
-                let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
-                // Dropped together, they go together: several images load the place cursor at once.
-                let pointer = drops.first().and_then(|d| d.pointer);
-                self.open_dropped_batch(drops.into_iter().map(|d| d.path).collect(), pointer);
-            }
+            self.take_pending_drops(&ctx);
             menus::shortcuts(self, &ctx);
         }
         let t0 = now_ms();
