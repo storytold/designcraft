@@ -11,6 +11,9 @@ pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 
+/// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
+pub type WindowFrameFn = Box<dyn FnMut()>;
+
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -32,4 +35,8 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Keeps the undecorated window borderless, so the content and the pointer stay aligned
+    /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
+    /// needs no fixing.
+    pub window_frame: Option<WindowFrameFn>,
 }

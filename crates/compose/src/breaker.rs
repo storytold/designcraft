@@ -972,7 +972,15 @@ pub fn greedy(
             x += adv;
             shrink += sp.box_elastic(g).1.iter().sum::<f64>();
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
-                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                if g.ch == SOFT_HYPHEN {
+                    if may_hyphenate(hyphens) {
+                        let hw = hyphen_width(g, &mut hy_cache);
+                        let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                        if x + hy <= w + shrink + FIT_EPS {
+                            last_ok = Some((i + 1, true));
+                        }
+                    }
+                } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));

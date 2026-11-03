@@ -4,6 +4,7 @@
 //! own story is composed against that placement (page, page side, page rect, baseline grid), so
 //! the host story is composed first.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Document, Item, ItemId, SpreadRef, StoryId};
@@ -23,10 +24,12 @@ pub struct Placement {
     pub xf: Affine,
 }
 
-/// The placements of `sid`'s anchored frames, from their host stories composed by `host`.
+/// The placements of `sid`'s anchored frames, from their host stories composed by `host`. Each
+/// host is asked for once, however many of the frames it holds.
 pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>) -> Vec<(ItemId, Placement)> {
     let Some(st) = doc.story(sid) else { return Vec::new() };
     let mut anchored = None;
+    let mut hosts: HashMap<StoryId, Arc<ComposedStory>> = HashMap::new();
     let mut out = Vec::new();
     for &fid in &st.frames {
         if doc.find(fid).is_some() {
@@ -35,7 +38,8 @@ pub(crate) fn placements(doc: &Document, sid: StoryId, host: &mut dyn FnMut(Stor
         let items = anchored.get_or_insert_with(|| doc.anchored_items());
         // A frame anchored in its own story would need its own composition to place it.
         let Some(owner) = items.iter().find_map(|(owner, it)| (it.id == fid).then_some(*owner)).filter(|o| *o != sid) else { continue };
-        if let Some(p) = locate(doc, &host(owner), fid) {
+        let composed = hosts.entry(owner).or_insert_with(|| host(owner));
+        if let Some(p) = locate(doc, composed, fid) {
             out.push((fid, p));
         }
     }
