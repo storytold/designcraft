@@ -519,6 +519,7 @@ fn preflight_help(kind: &str) -> (&'static str, &'static str) {
         "missingFont" | "missingFontStyle" => ("The font isn't available.", "Install it, or choose another font in Type › Find Font."),
         "missingGlyphs" => ("Some characters have no glyph in their font.", "Choose a font that has them."),
         "emptyText" => ("A text frame holds no text.", "Add text, or delete the frame."),
-        _ => ("DesignCraft can't set some of this text yet.", "Check how it looks in Preview."),
+        "unsupportedTypography" => ("DesignCraft can't set some of this text yet.", "Check how it looks in Preview."),
+        _ => ("DesignCraft can't show or export some of this yet.", "Check how it looks in Preview."),
     }
 }
