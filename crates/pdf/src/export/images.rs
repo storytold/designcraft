@@ -282,8 +282,62 @@ mod image_content_cache_tests {
         assert_eq!(ex.variants.len(), 3);
         // a, b, and a with its layer hidden (a copy of its own).
         assert_eq!(ex.pdfs.len(), 3);
-        let variant = ex.variants.get(&(a, None)).unwrap();
+        let variant = ex.variants.get(&(Arc::as_ptr(&doc.assets[&a].data) as usize, None)).unwrap();
         assert!(Arc::ptr_eq(&variant.data, &doc.assets[&a].data));
+        surface.finish();
+        page.finish();
+        assert!(writer.finish().is_ok());
+    }
+    /// The pages of a multi-page placement are assets sharing one file's bytes: the file is read
+    /// once and its layers rewritten once, however many of its pages are drawn.
+    #[test]
+    fn pages_sharing_a_file_prepare_it_once() {
+        let mut doc = Document::new(&Default::default());
+        let cache = Cache::new();
+        let opts = PdfOptions::default();
+        let content = "/OC /a BDC 0 0 1 rg 0 0 100 100 re f EMC";
+        let source = Arc::new(registration_tests::assemble(&[
+            "<</Type/Catalog/Pages 2 0 R/OCProperties<</OCGs[6 0 R]>>>>".into(),
+            "<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>".into(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 6 0 R>>>>/Contents 5 0 R>>".into(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 6 0 R>>>>/Contents 5 0 R>>".into(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/OCG/Name(Hidden)>>".into(),
+        ]));
+        let pages: Vec<AssetId> = (0..2u32)
+            .map(|page| {
+                let id = AssetId(doc.alloc());
+                let a = Asset { id, name: "two.pdf".into(), mime: "application/pdf".into(), data: source.clone(), page, ..Default::default() };
+                doc.assets.insert(id, Arc::new(a));
+                id
+            })
+            .collect();
+        let mut ex = exporter(&doc, &cache, &opts);
+        let mut writer = Writer::new(Default::default(), Default::default());
+        let mut page = writer.document_mut().start_page_with(PageSettings::new(Size::from_wh(100.0, 100.0).unwrap()));
+        let mut surface = page.surface();
+        for hidden in [None, Some(vec!["Hidden".to_string()])] {
+            for &id in &pages {
+                let graphic = designcraft_doc::Graphic {
+                    asset: id,
+                    size: (100.0, 100.0),
+                    xf: Affine::IDENTITY,
+                    clip: None,
+                    auto_fit: Default::default(),
+                    fit_align: 4,
+                    crop: [0.0; 4],
+                    wrap: Default::default(),
+                    fill: Default::default(),
+                    layer_options: None,
+                };
+                ex.graphic_unclipped(&mut surface, &graphic, hidden.as_deref());
+                assert!(ex.layer_error.is_none());
+            }
+        }
+        // One preparation per layer choice, not per page.
+        assert_eq!(ex.pdf_preparations, 2);
+        assert_eq!(ex.variants.len(), 2);
+        assert_eq!(ex.pdfs.len(), 2);
         surface.finish();
         page.finish();
         assert!(writer.finish().is_ok());

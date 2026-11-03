@@ -164,10 +164,44 @@ pub fn pdf_page_box(bytes: &[u8], page: usize, kind: &str) -> Option<(f64, f64, 
 /// are the bounds of what the page draws, found from its drawing operations without rendering it
 /// (the whole page when it draws nothing).
 pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -> Option<([f64; 4], (f64, f64))> {
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    let placed = placed_page(&pdf, bytes, page, crop, &mut None)?;
+    Some((placed.frac, placed.box_size))
+}
+
+/// A PDF page as File › Place sizes it ([`pdf_placed_pages`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PdfPlacedPage {
+    /// The page as it displays (its visible crop box, rotated), in points.
+    pub size: (f64, f64),
+    /// [`pdf_crop_box`]'s box: left, top, right, bottom as fractions of `size`.
+    pub frac: [f64; 4],
+    /// That box's size in points.
+    pub box_size: (f64, f64),
+}
+
+/// [`pdf_crop_box`] for each of `pages` (0-based) of one file, opened once: placing a long
+/// document doesn't read and copy the file again for every page. `None` when the file can't be
+/// read; a page it doesn't have, or one with no usable size, is `None` in the list.
+pub fn pdf_placed_pages(bytes: &[u8], pages: &[usize], crop: designcraft_doc::PdfCrop) -> Option<Vec<Option<PdfPlacedPage>>> {
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    // Bounding Box (All Layers) measures a copy with every layer on: made once, for every page.
+    let mut all_on = None;
+    Some(pages.iter().map(|&page| placed_page(&pdf, bytes, page, crop, &mut all_on)).collect())
+}
+
+/// One page of [`pdf_placed_pages`]. `all_on` keeps the all-layers-on copy of the file (`None`
+/// inside when it can't be made) once a [`designcraft_doc::PdfCrop::ContentAll`] page needs it.
+fn placed_page(
+    pdf: &craft_pdf::syntax::Pdf,
+    bytes: &[u8],
+    page: usize,
+    crop: designcraft_doc::PdfCrop,
+    all_on: &mut Option<Option<craft_pdf::syntax::Pdf>>,
+) -> Option<PdfPlacedPage> {
     use craft_pdf::syntax::object::{Rect as PRect, dict::keys};
     use designcraft_doc::PdfCrop;
     const WHOLE: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
-    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let p = pdf.pages().get(page)?;
     let (w, h) = p.render_dimensions();
     let (w, h) = (f64::from(w), f64::from(h));
@@ -176,14 +210,15 @@ pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -
     }
     let frac = match crop {
         PdfCrop::Crop => WHOLE,
-        PdfCrop::ContentVisible => pdf_bounds::page_content_bounds(bytes, page).unwrap_or(WHOLE),
+        PdfCrop::ContentVisible => pdf_bounds::content_bounds(p).unwrap_or(WHOLE),
         PdfCrop::ContentAll => {
-            if pdf_layers::has_optional_content(&pdf) {
+            if pdf_layers::has_optional_content(pdf) {
                 // If all-on rewriting is unsupported, a visible-only box could cut
                 // off hidden content. Keep the entire page conservatively instead.
-                pdf_hide_layers(bytes, &[]).and_then(|all_on| pdf_bounds::page_content_bounds(&all_on, page)).unwrap_or(WHOLE)
+                let all_on = all_on.get_or_insert_with(|| pdf_hide_layers(bytes, &[]).and_then(|b| craft_pdf::open_slice(&b, None).ok()));
+                all_on.as_ref().and_then(|all_on| pdf_bounds::content_bounds(all_on.pages().get(page)?)).unwrap_or(WHOLE)
             } else {
-                pdf_bounds::page_content_bounds(bytes, page).unwrap_or(WHOLE)
+                pdf_bounds::content_bounds(p).unwrap_or(WHOLE)
             }
         }
         PdfCrop::Art | PdfCrop::Trim | PdfCrop::Bleed | PdfCrop::Media => {
@@ -205,7 +240,7 @@ pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -
         }
     };
     let size = ((frac[2] - frac[0]) * w, (frac[3] - frac[1]) * h);
-    (frac.iter().all(|v| v.is_finite()) && size.0 > 0.0 && size.1 > 0.0).then_some((frac, size))
+    (frac.iter().all(|v| v.is_finite()) && size.0 > 0.0 && size.1 > 0.0).then_some(PdfPlacedPage { size: (w, h), frac, box_size: size })
 }
 
 /// The part of the page a placed PDF shows ([`designcraft_doc::Asset::shown_box`]). A Bounding

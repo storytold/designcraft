@@ -129,6 +129,9 @@ pub struct LoadedGraphic {
     /// Natural size in points: the Image Import Options › Crop to box for a PDF page (the asset's
     /// `pdf_box`).
     pub size: (f64, f64),
+    /// How far the frame it lands in is cut into it from each side (top, left, bottom, right), in
+    /// points of `size`: the custom crop of a placed PDF (`file.place {pdfCropInset}`).
+    pub inset: [f64; 4],
 }
 
 impl Drop for FontScope {
@@ -411,6 +414,9 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// The graphics waiting in the place cursor after `loaded`, in the order they're placed (the
+    /// other pages of a multi-page PDF): each `place.drop` loads the next.
+    pub queued: std::collections::VecDeque<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -474,6 +480,7 @@ impl Session {
             image_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            queued: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,

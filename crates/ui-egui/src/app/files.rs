@@ -23,12 +23,14 @@ impl DesignApp {
 
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
     pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
-        // Image Import Options: a multi-page PDF asks which page.
+        // Image Import Options: a multi-page PDF asks which pages, and shows them.
         if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
             let target = self.session.active().map(|d| d.uid);
-            let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
+            let bytes = self.services.read.as_mut().and_then(|r| r(&path).ok());
+            let pages = bytes.as_deref().and_then(designcraft_render::pdf_page_count).unwrap_or(1);
             if pages > 1 {
-                self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
+                self.pdf_preview = bytes.map(std::sync::Arc::new);
+                self.ui.dialog = Some(self.pdf_import_dialog(json!({"path": path, "page": "1", "pages": pages, "target": target})));
                 return Ok(Value::Null);
             }
             return self.place_file(json!({"path": path}));
@@ -80,16 +82,37 @@ impl DesignApp {
         self.pending_pdf = None;
     }
 
-    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String) -> Result<Value, String> {
+    /// The Place PDF dialog for a file, its own `fields` (the file, its page count) with the
+    /// choices it starts with: pages placed onto document pages start at the page in view.
+    fn pdf_import_dialog(&self, fields: Value) -> dialogs::Dialog {
+        let mut d = dialogs::Dialog::new("pdfImport", fields);
+        let start = canvas::current_page(self).map_or(1, |page| page.saturating_add(1));
+        d.fields.insert("startPage".into(), json!(start.to_string()));
+        d
+    }
+
+    /// The bytes of the PDF the Place PDF dialog is open on, for its preview.
+    pub(crate) fn pdf_import_bytes(&self) -> Option<&[u8]> {
+        self.pending_pdf.as_ref().map(|f| f.bytes.as_slice()).or(self.pdf_preview.as_deref().map(Vec::as_slice))
+    }
+
+    /// Places the delivered PDF with the Place PDF dialog's `options` (the `file.place` PDF
+    /// parameters), in the document it was chosen for.
+    pub(crate) fn confirm_pdf_import(&mut self, options: Value) -> Result<Value, String> {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
         self.activate_import_target(&file.request)?;
-        let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop});
+        let mut params = options;
+        params["name"] = json!(file.name);
+        params["base64"] = json!(designcraft_engine::cmd::base64_encode(&file.bytes));
         if file.request.purpose == "place" { self.place_file(params) } else { self.open_file("file.place", params) }
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
     /// replacing its options. Cancellation, replacement and target closure release its payload.
     pub(super) fn drain_inbox(&mut self) {
+        if self.ui.dialog.as_ref().is_none_or(|d| d.id != "pdfImport") {
+            self.pdf_preview = None;
+        }
         if let Some(file) = &self.pending_pdf {
             let target_exists = self.session.documents().iter().any(|d| Some(d.uid) == file.request.target);
             let owns_dialog =
@@ -147,8 +170,7 @@ impl DesignApp {
         if place && lower.ends_with(".pdf") {
             let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
             if pages > 1 {
-                self.ui.dialog =
-                    Some(dialogs::Dialog::new("pdfImport", json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
+                self.ui.dialog = Some(self.pdf_import_dialog(json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
                 self.pending_pdf = Some(file);
                 return Ok(Value::Null);
             }
@@ -647,7 +669,7 @@ pub(crate) mod browser_import_tests {
             app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
             // The native dialog clamps zero to one; positive invalid pages must fail.
             if page == 0 {
-                assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
+                assert!(app.confirm_pdf_import(json!({"pdfPage": page, "pdfCrop": "crop"})).is_err());
             } else {
                 assert!(dialogs::confirm(&mut app).is_err());
             }
@@ -716,6 +738,136 @@ pub(crate) mod browser_import_tests {
         assert_eq!(app.session.active_index(), Some(0));
         assert_eq!(app.session.doc().unwrap().doc.assets.values().next().unwrap().page, 1);
         assert!(app.session.documents()[1].doc.assets.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Place PDF › Pages: All loads every page into the place cursor, in order; each click places
+    /// the next, and Escape skips one.
+    #[test]
+    fn pdf_options_load_all_pages_into_the_cursor() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "three.pdf", pdf());
+        assert_eq!(app.pdf_import_bytes().map(<[u8]>::len), Some(pdf().len()), "the dialog previews the delivered file");
+        app.ui.dialog.as_mut().unwrap().fields.insert("pageChoice".into(), json!("all"));
+        let r = dialogs::confirm(&mut app).unwrap();
+        assert_eq!(r["loaded"], 3);
+        assert!(app.pending_pdf.is_none());
+        assert_eq!(app.session.tool_id(), "placeGun");
+        let pages = |app: &DesignApp| -> Vec<u32> {
+            let d = &app.session.doc().unwrap().doc;
+            app.session.loaded.iter().chain(&app.session.queued).map(|l| d.assets[&l.asset].page).collect()
+        };
+        assert_eq!(pages(&app), [0, 1, 2]);
+        app.run("place.drop", json!({"x": 36, "y": 36})).unwrap();
+        assert_eq!(pages(&app), [1, 2]);
+        app.session
+            .tool_key(designcraft_tools::ToolKey::Escape, designcraft_tools::Mods::default(), designcraft_engine::ViewInfo::at_zoom(1.0))
+            .unwrap();
+        assert_eq!(pages(&app), [2], "Escape skips the page in the cursor");
+        app.run("place.drop", json!({"x": 300, "y": 36})).unwrap();
+        assert_eq!(app.session.tool_id(), "selection");
+        let d = &app.session.doc().unwrap().doc;
+        let placed: Vec<u32> = d.spreads[0].items.iter().filter_map(|it| it.graphic()).map(|g| d.assets[&g.asset].page).collect();
+        assert_eq!(placed, [0, 2]);
+    }
+
+    /// A range onto document pages from a starting page, fitted, with a crop amount: one undo
+    /// step, the pages added as needed.
+    #[test]
+    fn pdf_options_place_a_range_onto_pages_from_a_starting_page() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "three.pdf", pdf());
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.s("startPage"), "1", "pages go from the page in view");
+        for (k, v) in [
+            ("range", json!("3, 1")),
+            ("pageChoice", json!("range")),
+            ("placeOn", json!("pages")),
+            ("fit", json!("margins")),
+            ("insetLeft", json!("20")),
+        ] {
+            d.fields.insert(k.into(), v);
+        }
+        let r = dialogs::confirm(&mut app).unwrap();
+        assert_eq!(r["pages"], json!([1, 2]));
+        assert_eq!(r["pdfPages"], json!([3, 1]));
+        assert_eq!(r["added"], 1);
+        let d = app.session.doc().unwrap().doc.clone();
+        assert_eq!(d.page_count(), 2);
+        for id in r["ids"].as_array().unwrap() {
+            let it = d.item(designcraft_doc::ItemId(id.as_u64().unwrap())).unwrap();
+            let margins = d.page(d.page_of_item(it.id).unwrap()).unwrap().margin_rect();
+            let b = it.bounds();
+            // 180 × 200 (the page less 20 pt off its left) fitted into the 540 × 720 inside the
+            // margins: as wide as they are, centred.
+            assert!((b.width() - margins.width()).abs() < 1e-6 && (b.center() - margins.center()).hypot() < 1e-6, "{b:?} {margins:?}");
+            assert!((b.width() / b.height() - 0.9).abs() < 1e-9, "{b:?}");
+        }
+        assert_eq!(app.session.tool_id(), "selection", "nothing waits in the cursor");
+        app.run("edit.undo", json!({})).unwrap();
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.page_count(), 1);
+        assert!(d.assets.is_empty());
+    }
+
+    /// A choice the dialog can't place keeps it open, with the reason, and the file for another go.
+    #[test]
+    fn pdf_options_keep_the_dialog_and_file_after_a_bad_choice() {
+        for (key, value) in [("range", "5"), ("range", ""), ("insetTop", "-3"), ("insetRight", "300")] {
+            let mut app = app();
+            let request = app.import_request("place");
+            deliver(&mut app, request, "three.pdf", pdf());
+            let d = app.ui.dialog.as_mut().unwrap();
+            if key == "range" {
+                d.fields.insert("pageChoice".into(), json!("range"));
+            }
+            d.fields.insert(key.into(), json!(value));
+            assert!(dialogs::confirm(&mut app).is_err(), "{key}={value}");
+            assert!(app.session.doc().unwrap().doc.assets.is_empty(), "{key}={value}");
+            if key == "insetRight" {
+                // The engine refused it: the file had gone with the confirmation.
+                continue;
+            }
+            let d = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(d.id, "pdfImport", "{key}={value}");
+            assert!(!d.s("status").is_empty(), "{key}={value}");
+            assert!(app.pending_pdf.is_some(), "{key}={value}");
+        }
+    }
+
+    /// A PDF chosen in the native dialog stays linked; the preview's copy of it goes with the
+    /// dialog.
+    #[test]
+    fn native_pdf_dialog_places_linked_pages_and_releases_its_preview() {
+        let mut app = app();
+        let path = std::env::temp_dir().join(format!("designcraft-native-pages-{}-{}.pdf", std::process::id(), app.session.doc().unwrap().uid));
+        std::fs::write(&path, pdf()).unwrap();
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(path.to_string_lossy().to_string())));
+        app.services.read = Some(Box::new(|path| std::fs::read(path).map_err(|e| e.to_string())));
+        app.pick_and_open("place").unwrap();
+        app.settle_dialogs();
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfImport");
+        assert_eq!(app.pdf_import_bytes().map(<[u8]>::len), Some(pdf().len()));
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("pageChoice".into(), json!("all"));
+        d.fields.insert("placeOn".into(), json!("pages"));
+        dialogs::confirm(&mut app).unwrap();
+        app.drain_inbox();
+        assert!(app.pdf_import_bytes().is_none(), "released with the dialog");
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.page_count(), 3);
+        assert_eq!(d.assets.len(), 3);
+        assert!(d.assets.values().all(|a| a.link.as_deref() == Some(path.to_string_lossy().as_ref())));
+        // Cancelling releases it too.
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(path.to_string_lossy().to_string())));
+        app.pick_and_open("place").unwrap();
+        app.settle_dialogs();
+        assert!(app.pdf_import_bytes().is_some());
+        dialogs::cancel(&mut app);
+        app.drain_inbox();
+        assert!(app.pdf_import_bytes().is_none());
         std::fs::remove_file(path).unwrap();
     }
 

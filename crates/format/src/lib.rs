@@ -12,7 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
@@ -24,9 +24,10 @@ pub const MIME: &str = "application/vnd.designcraft+zip";
 /// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
 /// version 3 adds rendering of retained EPS source assets; version 4 is one capability covering both
 /// retained placed-graphic layer options and explicit all-on placed-PDF layer choices, so a version 4
-/// reader understands both. Any later capability needs version 5. [`required_version`] is the only
-/// place that picks a version.
-pub const VERSION: u32 = 4;
+/// reader understands both; version 5 lets one asset entry hold the bytes of several assets (the
+/// pages of a placed PDF), named in `meta.json`'s `sharedAssets`. Any later capability needs
+/// version 6. [`required_version`] is the only place that picks a version.
+pub const VERSION: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -73,6 +74,10 @@ const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 /// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
 /// keep their older requirement so existing readers still open them.
 fn required_version(doc: &Document) -> u32 {
+    // An older reader would find the bytes of the assets sharing another's entry missing.
+    if !shared_entries(doc).is_empty() {
+        return 5;
+    }
     // Version 4 covers both of these: older readers ignore the unknown fields, so they would
     // silently drop retained graphic layer choices, or read an explicit all-on PDF layer choice
     // (empty hidden list) as "use the file's defaults". A nonempty hidden list stays readable.
@@ -83,6 +88,28 @@ fn required_version(doc: &Document) -> u32 {
     // without EPS stay at 2 so their existing readers keep working; writing 1 would make a
     // reader re-run the version 2 paragraph upgrade over current defaults.
     if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { 3 } else { 2 }
+}
+
+/// The assets whose bytes another asset's entry holds, each with that asset (the first in id
+/// order with the same bytes): the pages of a placed PDF are assets of their own sharing one file,
+/// which the file holds once. Buffers are compared by address, and by content only between files
+/// of the same length.
+fn shared_entries(doc: &Document) -> BTreeMap<AssetId, AssetId> {
+    let mut written: HashMap<usize, Vec<(AssetId, &Arc<Vec<u8>>)>> = HashMap::new();
+    let mut shared = BTreeMap::new();
+    for (id, a) in &doc.assets {
+        if a.data.is_empty() {
+            continue;
+        }
+        let same_length = written.entry(a.data.len()).or_default();
+        match same_length.iter().find(|(_, data)| Arc::ptr_eq(data, &a.data) || data.as_slice() == a.data.as_slice()) {
+            Some((holder, _)) => {
+                shared.insert(*id, *holder);
+            }
+            None => same_length.push((*id, &a.data)),
+        }
+    }
+    shared
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
@@ -103,7 +130,11 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         z.write_all(MIME.as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         z.start_file("meta.json", deflate).map_err(io)?;
         let version = required_version(doc);
-        let meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
+        let mut meta = json!({"format": "designcraft", "version": version, "generator": concat!("DesignCraft ", env!("CARGO_PKG_VERSION"))});
+        let shared = shared_entries(doc);
+        if !shared.is_empty() {
+            meta["sharedAssets"] = shared.iter().map(|(id, holder)| (id.0.to_string(), json!(holder.0))).collect();
+        }
         z.write_all(meta.to_string().as_bytes()).map_err(|e| FormatError::Io(e.to_string()))?;
         if let Some(png) = preview {
             z.start_file(PREVIEW, stored).map_err(io)?;
@@ -113,7 +144,8 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
-            if a.data.is_empty() {
+            // Another entry holds the bytes of a shared one.
+            if a.data.is_empty() || shared.contains_key(id) {
                 continue;
             }
             // Already-compressed images are stored as-is.
@@ -212,10 +244,8 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
     }
     let mut left = MAX_TOTAL_BYTES;
-    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
-        .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
-        .and_then(|m| m.get("version").and_then(Value::as_u64))
-        .unwrap_or(1);
+    let meta = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?.and_then(|meta| serde_json::from_slice::<Value>(&meta).ok());
+    let version = meta.as_ref().and_then(|m| m.get("version").and_then(Value::as_u64)).unwrap_or(1);
     if version > u64::from(VERSION) {
         return Err(FormatError::TooNew(version));
     }
@@ -246,6 +276,17 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
                 }
             };
             Arc::make_mut(a).data = data;
+        }
+    }
+    // Assets whose bytes another's entry holds (version 5). One pass, from assets that have their
+    // bytes: a name that is no asset, or one without bytes, leaves the asset as it is.
+    if let Some(shared) = meta.as_ref().and_then(|m| m.get("sharedAssets")).and_then(Value::as_object) {
+        for (id, holder) in shared {
+            let (Ok(id), Some(holder)) = (id.parse::<u64>(), holder.as_u64()) else { continue };
+            let Some(data) = doc.assets.get(&AssetId(holder)).map(|a| a.data.clone()).filter(|d| !d.is_empty()) else { continue };
+            if let Some(a) = doc.assets.get_mut(&AssetId(id)).filter(|a| a.data.is_empty()) {
+                Arc::make_mut(a).data = data;
+            }
         }
     }
     upgrade(&mut doc, u32::try_from(version).unwrap_or(u32::MAX));

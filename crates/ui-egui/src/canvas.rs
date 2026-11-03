@@ -388,18 +388,25 @@ fn pointer_cursor(app: &mut DesignApp, ui: &egui::Ui, xf: &Xf, p: Pos2) -> Curso
 /// Longest side of the loaded place cursor's thumbnail, in points.
 const LOADED_THUMB: f32 = 128.0;
 
-/// The loaded place cursor's thumbnail, as InDesign shows it: the graphic, at most 128 pt on its
-/// longer side, hanging from the pointer, with an image badge in its corner.
+/// The loaded place cursor's thumbnail, as InDesign shows it: the part of the graphic its frame
+/// will show (a placed PDF's crop box, less its crop amount), at most 128 pt on its longer side,
+/// hanging from the pointer, with an image badge in its corner and, with more graphics loaded
+/// (the pages of a PDF), how many.
 fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &Tokens) {
     let (Some(l), Ok(st)) = (app.session.loaded.as_ref(), app.session.doc()) else { return };
-    let (w, h) = (l.size.0 as f32, l.size.1 as f32);
+    let [top, left, bottom, right] = l.inset;
+    let (w, h) = ((l.size.0 - left - right) as f32, (l.size.1 - top - bottom) as f32);
     if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
         return;
     }
     let k = LOADED_THUMB / w.max(h);
     let r = Rect::from_min_size(p + vec2(2.0, 2.0), vec2(w * k, h * k));
     if let Some(tex) = loaded_thumb_texture(painter.ctx(), &st.doc, l.asset, l.size) {
-        painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha(225));
+        // The texture is the whole page: show the part of it that lands.
+        let [bl, bt, br, bb] = st.doc.assets.get(&l.asset).and_then(|a| a.shown_box()).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let (fx, fy) = ((br - bl) / l.size.0, (bb - bt) / l.size.1);
+        let uv = Rect::from_min_max(pos2((bl + left * fx) as f32, (bt + top * fy) as f32), pos2((br - right * fx) as f32, (bb - bottom * fy) as f32));
+        painter.image(tex.id(), r, uv, Color32::from_white_alpha(225));
     } else {
         // Not drawable here (an unreadable file): its frame only.
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, t.measure_text), StrokeKind::Inside);
@@ -413,6 +420,13 @@ fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &
         vec![pos2(inner.min.x, inner.max.y), pos2(inner.min.x + 3.5, inner.min.y + 2.5), pos2(inner.max.x, inner.max.y)],
         ink,
     ));
+    let loaded = app.session.queued.len().saturating_add(1);
+    if loaded > 1 {
+        let text = painter.layout_no_wrap(loaded.to_string(), egui::FontId::proportional(10.0), t.measure_text);
+        let count = Rect::from_min_size(pos2(badge.max.x + 3.0, badge.min.y), vec2(text.size().x + 6.0, badge.height()));
+        painter.rect_filled(count, 2.0, t.measure_bg);
+        painter.galley(count.center() - text.size() / 2.0, text, t.measure_text);
+    }
 }
 
 /// The loaded graphic's thumbnail texture, cached per image data.

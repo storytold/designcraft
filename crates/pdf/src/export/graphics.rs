@@ -196,7 +196,9 @@ impl Exporter<'_> {
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let (page_w, page_h) = (g.size.0 / (r - l), g.size.1 / (b - t));
         let Some(size) = Size::from_wh(page_w.max(1e-3) as f32, page_h.max(1e-3) as f32) else { return true };
-        let request = (g.asset, hidden.map(<[String]>::to_vec));
+        // The file, not the asset: every page placed from one file shares its bytes.
+        let file = Arc::as_ptr(&asset.data) as usize;
+        let request = (file, hidden.map(<[String]>::to_vec));
         let variant = match self.variants.get(&request) {
             Some(variant) => variant.clone(),
             None => {
@@ -223,7 +225,7 @@ impl Exporter<'_> {
         if let Some(warning) = variant.warning {
             self.warn(format!("{}: {warning}", asset.name));
         }
-        let key = (g.asset, variant.hidden);
+        let key = (file, variant.hidden);
         let placed = match self.pdfs.get(&key) {
             Some(p) => p.clone(),
             None => {

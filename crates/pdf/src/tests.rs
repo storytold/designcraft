@@ -185,6 +185,28 @@ fn spreads_and_ranges() {
     assert_eq!(export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![9]), ..Default::default() }), Err(PdfError::BadPage(10)));
 }
 
+/// Ranges keep the order they're written in and name each page once; a page past the end is
+/// named in the error. A range over a long document stays linear (it was quadratic: each page
+/// was looked for in the list so far).
+#[test]
+fn page_ranges_keep_order_skip_repeats_and_stay_linear() {
+    assert_eq!(parse_page_range("5, 1-3, 2, 3-4", 6).unwrap(), vec![4, 0, 1, 2, 3]);
+    assert_eq!(parse_page_range("-2", 6).unwrap(), vec![0, 1]);
+    assert_eq!(parse_page_range(" ALL ", 3).unwrap(), vec![0, 1, 2]);
+    assert_eq!(parse_page_range("2-9", 4), Err(PdfError::BadPage(5)));
+    assert_eq!(parse_page_range("1-18446744073709551615", 4), Err(PdfError::BadPage(5)));
+    for bad in ["0", "3-1", "1--2", "1.5", "x-2"] {
+        assert!(parse_page_range(bad, 4).is_err(), "{bad}");
+    }
+    // An open range is every page; separators alone name none (callers refuse an empty list).
+    assert_eq!(parse_page_range("-", 3).unwrap(), vec![0, 1, 2]);
+    assert_eq!(parse_page_range(" , ", 3).unwrap(), Vec::<usize>::new());
+    let count = 300_000;
+    let pages = parse_page_range(&format!("1-{count}, 1-{count}"), count).unwrap();
+    assert_eq!(pages.len(), count);
+    assert!(pages.iter().enumerate().all(|(i, p)| i == *p));
+}
+
 #[test]
 fn pdfx4_xmp_has_metadata_date_and_version_id() {
     let d = doc_with_text("Print me");

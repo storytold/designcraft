@@ -17,7 +17,7 @@ use flatten::{rasterize_effects, shadow_coverage};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use pdf::pdf_export;
 pub(crate) use pdf::{check_pdf_options, pdf_report};
-pub(crate) use pdf::{flatten_ppi, options, print_pdf};
+pub(crate) use pdf::{flatten_ppi, options, page_list, print_pdf};
 pub use registry::specs;
 
 #[cfg(test)]

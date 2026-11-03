@@ -11,6 +11,7 @@ use crate::app::file_dialogs::{Bound, with_path};
 use crate::theme::semibold;
 
 mod options;
+mod pdf_import;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
 
@@ -45,6 +46,7 @@ impl Dialog {
             "insertXref" => json!({"linkTo": "paragraph", "style": "", "target": "", "format": ""}),
             "findChange" => json!({"find": "", "change": "", "grep": false, "caseSensitive": false, "wholeWord": false, "scope": "document"}),
             "documentSetup" => json!({}),
+            "pdfImport" => pdf_import::defaults(),
             "pdfExport" => {
                 json!({
                     "preset": "Desktop Printing",
@@ -3330,36 +3332,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
-                    "pdfImport" => {
-                        ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
-                        ui.horizontal(|ui| {
-                            crate::rtl::label(
-                                ui,
-                                crate::i18n::tr(&app.ui.language, "Page (1–{count}):").replace("{count}", &d.n("pages").unwrap_or(1.0).to_string()),
-                            );
-                            text_field(ui, &mut d, "page", 60.0);
-                        });
-                        ui.horizontal(|ui| {
-                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Crop to:"));
-                            let cur = d.s("crop");
-                            let label = |v: &str| match v {
-                                "contentVisible" => crate::i18n::tr(&app.ui.language, "Bounding Box (Visible Layers Only)"),
-                                "contentAll" => crate::i18n::tr(&app.ui.language, "Bounding Box (All Layers)"),
-                                "trim" => crate::i18n::tr(&app.ui.language, "Trim"),
-                                "bleed" => crate::i18n::tr(&app.ui.language, "Bleed"),
-                                "art" => crate::i18n::tr(&app.ui.language, "Art"),
-                                "media" => crate::i18n::tr(&app.ui.language, "Media"),
-                                _ => crate::i18n::tr(&app.ui.language, "Crop"),
-                            };
-                            craft_ui::ComboBox::from_id_salt("pdf_crop").selected_text(crate::rtl::widget(ui, label(&cur))).show_ui(ui, |ui| {
-                                for v in designcraft_doc::PdfCrop::ALL.map(designcraft_doc::PdfCrop::name) {
-                                    if ui.selectable_label(label(&cur) == label(v), label(v)).clicked() {
-                                        d.fields.insert("crop".into(), json!(v));
-                                    }
-                                }
-                            });
-                        });
-                    }
+                    "pdfImport" => pdf_import::show(app, ui, &mut d),
                     "layerOptions" => {
                         let mut layers = d.fields.get("layers").and_then(Value::as_array).cloned().unwrap_or_default();
                         if layers.is_empty() {
@@ -4612,30 +4585,24 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             Ok(r)
         }
         "pdfImport" => {
-            let crop = d.s("crop");
-            // One page number, 1 or more; a blank field is page 1. A range or list ("4-5", "2,5"), a
-            // fraction or a negative is refused rather than placing some other page.
-            let raw = if d.fields.get("page").is_none_or(Value::is_null) { String::new() } else { d.s("page") };
-            let page = match raw.trim() {
-                "" => 1,
-                t => match t.parse::<u64>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => {
-                        let e = "Enter a single page number; one page is placed at a time".to_string();
-                        let mut d = d;
-                        d.fields.insert("status".into(), json!(e));
-                        app.ui.dialog = Some(d);
-                        return Err(e);
-                    }
-                },
+            let options = match pdf_import::params(&d) {
+                Ok(options) => options,
+                Err(e) => {
+                    let mut d = d;
+                    d.fields.insert("status".into(), json!(&e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
             };
             if d.b("async") {
-                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
+                return app.confirm_pdf_import(options);
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
-            app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+            let mut params = options;
+            params["path"] = json!(d.s("path"));
+            app.place_file(params)
         }
         "print" => {
             let pages = if d.s("range") == "all" { Value::Null } else { json!(d.s("pages")) };

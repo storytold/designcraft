@@ -71,9 +71,10 @@ impl Session {
         if matches!(self.tool.id(), "selection" | "directSelection") {
             self.last_selection_tool = self.tool.id();
         }
-        // Any other tool unloads the place cursor.
+        // Any other tool unloads the place cursor, with every graphic waiting in it.
         if id != "placeGun" {
             self.loaded = None;
+            self.queued.clear();
         }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
@@ -110,7 +111,7 @@ impl Session {
             snap: view.snap,
             unit: view.unit,
             stroke_in_front: view.stroke_in_front,
-            loaded: self.loaded.map(|l| l.size),
+            loaded: self.loaded.map(|l| crate::cmd::shown_size(l.size, l.inset)),
         };
         Some(f(self, &cx))
     }

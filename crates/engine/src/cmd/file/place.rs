@@ -53,6 +53,10 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // Image Import Options: which page of a PDF (1-based).
     if designcraft_render::is_pdf(&bytes) {
         designcraft_render::check_pdf_input_size(bytes.len()).map_err(|e| bad("file.place", e.to_string()))?;
+        // Pages: All or a Range.
+        if p.get("pdfPages").is_some_and(|v| !v.is_null()) {
+            return super::place_pdf::place_pdf_pages(s, p, bytes, name, link);
+        }
     }
     let pdf_page = match p.get("pdfPage").and_then(Value::as_u64) {
         Some(n) if designcraft_render::is_pdf(&bytes) => {
@@ -78,11 +82,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let (nw, nh) = eps_size.or_else(|| designcraft_render::natural_size(&bytes, pdf_page as usize)).unwrap_or((pw as f64, ph as f64));
     // Image Import Options › Crop to: the graphic spans that box of the PDF page.
     let is_pdf = designcraft_render::is_pdf(&bytes);
-    let pdf_crop = match str_param(p, "pdfCrop") {
-        Some(k) if is_pdf => PdfCrop::from_name(k)
-            .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)")))?,
-        _ => PdfCrop::Crop,
-    };
+    let pdf_crop = if is_pdf { pdf_crop_param(p)? } else { PdfCrop::Crop };
     let mime = designcraft_render::image_mime(&bytes).to_string();
     let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
@@ -94,13 +94,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             (nw, nh)
         }
     };
-    let target_frame = crate::cmd::id_param(p, "frame").or_else(|| {
-        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
-            return None;
-        }
-        let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
-    });
+    // A custom crop: the frame cut into the box.
+    let inset = if is_pdf { super::place_pdf::crop_inset(p)? } else { [0.0; 4] };
+    super::place_pdf::check_inset(inset, (bw, bh), usize::try_from(pdf_page).unwrap_or(usize::MAX).saturating_add(1))?;
+    let [top, left, ..] = inset;
+    let (vw, vh) = shown_size((bw, bh), inset);
+    let target_frame = target_frame(s, p);
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
         Some(Value::Null) => designcraft_doc::SpreadRef::Doc(0),
@@ -110,7 +109,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
     if target_frame.is_none() && px.is_none() && py.is_none() && p.get("loadCursor").and_then(Value::as_bool) == Some(true) {
-        return load_cursor(s, asset, (bw, bh));
+        return load_cursor(s, asset, (bw, bh), inset);
     }
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
@@ -127,22 +126,9 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
             let r = it.inner_bounds();
             // Fill the frame proportionally once. Auto-Fit stays off, so resizing the frame crops.
-            let k = (r.width() / bw).max(r.height() / bh);
-            let (gw, gh) = (bw * k, bh * k);
-            let xf = Affine::translate((r.x0 + (r.width() - gw) / 2.0, r.y0 + (r.height() - gh) / 2.0)) * Affine::scale(k);
+            let xf = fill_xf(r, (bw, bh), inset);
             validate_placement((bw, bh), r, xf, "file.place")?;
-            it.content = Content::Graphic(Graphic {
-                layer_options: None,
-                asset: aid,
-                size: (bw, bh),
-                xf,
-                clip: None,
-                auto_fit: Default::default(),
-                fit_align: 4,
-                crop: [0.0; 4],
-                wrap: Default::default(),
-                fill: Default::default(),
-            });
+            it.content = Content::Graphic(graphic(aid, (bw, bh), xf));
             fid
         } else {
             let sp = d.spread(spread).ok_or_else(|| bad("file.place", "no such spread"))?;
@@ -150,32 +136,80 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             let (x, y) = (px.unwrap_or(pr.x0), py.unwrap_or(pr.y0));
             let id = ItemId(d.alloc());
             let k = w / nw;
-            let r = crate::cmd::finite_rect("file.place", Rect::new(x, y, x + bw * k, y + bh * k))?;
-            let xf = Affine::translate((x, y)) * Affine::scale(k);
+            let r = crate::cmd::finite_rect("file.place", Rect::new(x, y, x + vw * k, y + vh * k))?;
+            let xf = Affine::translate((x - left * k, y - top * k)) * Affine::scale(k);
             validate_placement((bw, bh), r, xf, "file.place")?;
-            let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
-            it.object_style = d.styles.default_graphic_frame.clone();
-            if let Some(e) = d.styles.object_effects(&it.object_style) {
-                it.effects = e.clone();
-            }
-            it.content = Content::Graphic(Graphic {
-                layer_options: None,
-                asset: aid,
-                size: (bw, bh),
-                xf,
-                clip: None,
-                auto_fit: Default::default(),
-                fit_align: 4,
-                crop: [0.0; 4],
-                wrap: Default::default(),
-                fill: Default::default(),
-            });
+            let it = graphic_frame(d, id, lid, r, graphic(aid, (bw, bh), xf));
             d.insert_item(spread, it, None)?;
             id
         };
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0, "asset": aid.0}))
     })
+}
+
+/// Image Import Options › Crop to (`pdfCrop`): the page box a placed PDF shows.
+pub(super) fn pdf_crop_param(p: &Value) -> Result<PdfCrop> {
+    match str_param(p, "pdfCrop") {
+        Some(k) => PdfCrop::from_name(k)
+            .ok_or_else(|| bad("file.place", format!("unknown pdfCrop `{k}` (crop, art, trim, bleed, media, contentVisible, contentAll)"))),
+        None => Ok(PdfCrop::Crop),
+    }
+}
+
+/// The frame File › Place fills: `frame` when given; otherwise, with no position or size asked
+/// for, the selected empty or graphic frame.
+pub(super) fn target_frame(s: &Session, p: &Value) -> Option<ItemId> {
+    crate::cmd::id_param(p, "frame").or_else(|| {
+        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
+            return None;
+        }
+        let st = s.active()?;
+        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
+    })
+}
+
+/// What a frame cut `inset` (top, left, bottom, right) into a graphic of natural `size` shows.
+pub(crate) fn shown_size(size: (f64, f64), inset: [f64; 4]) -> (f64, f64) {
+    let [top, left, bottom, right] = inset;
+    (size.0 - left - right, size.1 - top - bottom)
+}
+
+/// Where a graphic of natural `size` goes to fill the frame interior `r` proportionally, centred,
+/// its frame cut `inset` into it: the part the inset leaves fills `r`.
+pub(super) fn fill_xf(r: Rect, size: (f64, f64), inset: [f64; 4]) -> Affine {
+    let [top, left, ..] = inset;
+    let (vw, vh) = shown_size(size, inset);
+    let k = (r.width() / vw).max(r.height() / vh);
+    Affine::translate((r.x0 + (r.width() - vw * k) / 2.0 - left * k, r.y0 + (r.height() - vh * k) / 2.0 - top * k)) * Affine::scale(k)
+}
+
+/// A placed graphic of natural `size`, placed by `xf`, with the default fitting options.
+pub(super) fn graphic(asset: AssetId, size: (f64, f64), xf: Affine) -> Graphic {
+    Graphic {
+        layer_options: None,
+        asset,
+        size,
+        xf,
+        clip: None,
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
+    }
+}
+
+/// A new rectangle frame `r` on layer `layer` holding `g`, with the document's default graphic
+/// frame style and its effects.
+pub(super) fn graphic_frame(d: &designcraft_doc::Document, id: ItemId, layer: designcraft_doc::LayerId, r: Rect, g: Graphic) -> Item {
+    let mut it = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(r));
+    it.object_style = d.styles.default_graphic_frame.clone();
+    if let Some(e) = d.styles.object_effects(&it.object_style) {
+        it.effects = e.clone();
+    }
+    it.content = Content::Graphic(g);
+    it
 }
 
 /// Sets `a.pdf_box` to where its `pdf_crop` box sits on its page and returns the box's size in
@@ -235,29 +269,71 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
     let mime = designcraft_render::image_mime(&bytes).to_string();
     let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
-    load_cursor(s, asset, natural)
+    load_cursor(s, asset, natural, [0.0; 4])
 }
 
-/// Adds `asset` to the document (with a fresh id) and loads it into the place cursor.
-fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64)) -> Result<Value> {
+/// Adds `asset` to the document (with a fresh id) and loads it into the place cursor, its frame
+/// to be cut `inset` into it.
+fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64), inset: [f64; 4]) -> Result<Value> {
     let name = asset.name.clone();
     let (pw, ph) = asset.pixels.unwrap_or_default();
     let aid = s.edit(|d, _| {
         asset.id = AssetId(d.alloc());
         Ok(d.add_asset(asset))
     })?;
-    s.loaded = Some(crate::LoadedGraphic { asset: aid, size });
-    s.set_tool("placeGun");
+    load_queue(s, [crate::LoadedGraphic { asset: aid, size, inset }]);
     Ok(json!({"asset": aid.0, "name": name, "width": pw, "height": ph, "loaded": true}))
 }
 
+/// Loads `graphics` into the place cursor (their assets already in the document), replacing
+/// whatever it held: the first is ready to place, the rest wait their turn in order.
+pub(super) fn load_queue(s: &mut Session, graphics: impl IntoIterator<Item = crate::LoadedGraphic>) {
+    s.set_tool("placeGun");
+    s.queued = graphics.into_iter().collect();
+    s.loaded = s.queued.pop_front();
+}
+
+/// Moves the place cursor on to the next graphic waiting in it whose asset the document still
+/// has (undo can take them out). False when none is left: the cursor is empty.
+fn load_next(s: &mut Session) -> bool {
+    s.loaded = None;
+    while let Some(next) = s.queued.pop_front() {
+        if s.doc().is_ok_and(|st| st.doc.assets.contains_key(&next.asset)) {
+            s.loaded = Some(next);
+            return true;
+        }
+    }
+    false
+}
+
+/// How many graphics the place cursor holds: the one ready to place and those waiting.
+fn loaded_count(s: &Session) -> usize {
+    usize::from(s.loaded.is_some()).saturating_add(s.queued.len())
+}
+
+/// Escape with the place cursor loaded: the graphic in it goes, unplaced, and the next one
+/// waiting takes its place (`all`: they all go). With none left the Selection tool comes back.
+pub(super) fn place_unload(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.get("all").and_then(Value::as_bool) == Some(true) {
+        s.queued.clear();
+    }
+    if !load_next(s) {
+        s.set_tool("selection");
+    }
+    Ok(json!({"loaded": loaded_count(s)}))
+}
+
 pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
-    let crate::LoadedGraphic { asset: aid, size: (nw, nh) } = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
+    let loaded = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
+    let crate::LoadedGraphic { asset: aid, size: (nw, nh), inset } = loaded;
+    let [top, left, ..] = inset;
     // Undo can remove the loaded graphic's asset.
     if !s.doc()?.doc.assets.contains_key(&aid) {
-        s.loaded = None;
+        load_next(s);
         return Err(bad("place.drop", "the loaded graphic is no longer in the document"));
     }
+    // What the frame shows (the graphic less its crop inset) is what a click or drag sizes.
+    let (vw, vh) = shown_size((nw, nh), inset);
     let sr = crate::cmd::spread_param(p, "place.drop")?;
     let lid = s.doc()?.active_layer;
     let frame = crate::cmd::id_param(p, "frame");
@@ -266,10 +342,8 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
     let d = &s.doc()?.doc;
     let (frame_rect, xf, auto_fit) = if let Some(fid) = frame {
         let r = d.item(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.inner_bounds();
-        let k = (r.width() / nw).max(r.height() / nh);
-        let xf = Affine::translate((r.x0 + (r.width() - nw * k) / 2.0, r.y0 + (r.height() - nh * k) / 2.0)) * Affine::scale(k);
         // Fill the frame proportionally once. Auto-Fit stays off, so resizing the frame crops.
-        (r, xf, Default::default())
+        (r, fill_xf(r, (nw, nh), inset), Default::default())
     } else {
         if d.spread(sr).is_none() {
             return Err(bad("place.drop", "no such spread"));
@@ -277,12 +351,12 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         // Drag: fit proportionally; click: actual size at the point.
         let (r, k) = match rect {
             Some(r) if r.width() > designcraft_tools::PLACE_DRAG_MIN && r.height() > designcraft_tools::PLACE_DRAG_MIN => {
-                let k = (r.width() / nw).min(r.height() / nh);
-                (Rect::new(r.x0, r.y0, r.x0 + nw * k, r.y0 + nh * k), k)
+                let k = (r.width() / vw).min(r.height() / vh);
+                (Rect::new(r.x0, r.y0, r.x0 + vw * k, r.y0 + vh * k), k)
             }
-            _ => (Rect::new(x, y, x + nw, y + nh), 1.0),
+            _ => (Rect::new(x, y, x + vw, y + vh), 1.0),
         };
-        (r, Affine::translate((r.x0, r.y0)) * Affine::scale(k), Default::default())
+        (r, Affine::translate((r.x0 - left * k, r.y0 - top * k)) * Affine::scale(k), Default::default())
     };
     validate_placement((nw, nh), frame_rect, xf, "place.drop")?;
     let r = s.edit(|d, sel| {
@@ -315,9 +389,12 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })?;
-    s.loaded = None;
-    s.set_tool("selection");
-    Ok(r)
+    // The next page of a multi-page PDF is ready for the next click; after the last, the
+    // Selection tool.
+    if !load_next(s) {
+        s.set_tool("selection");
+    }
+    Ok(json!({"id": r["id"], "loaded": loaded_count(s)}))
 }
 
 /// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,

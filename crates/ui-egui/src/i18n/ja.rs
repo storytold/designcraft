@@ -2179,6 +2179,26 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Print Layer", "レイヤーをプリント"),
     ("Suppress Text Wrap When Layer is Hidden", "非表示レイヤーのテキストの回り込みを無視"),
     ("Justification…", "両端揃え…"),
+    ("No preview", "プレビューなし"),
+    ("Enter a page to preview", "プレビューするページを入力"),
+    ("Total pages: {count}", "総ページ数: {count}"),
+    ("Previewed Page", "プレビュー中のページ"),
+    ("For example 1-3, 5, 8- (1–{count})", "例: 1-3, 5, 8-（1–{count}）"),
+    ("In the Place Cursor (a page per click)", "配置カーソルに読み込む（クリックごとに 1 ページ）"),
+    ("On Document Pages, Starting at:", "ドキュメントのページに配置、開始ページ:"),
+    ("Fit:", "サイズ調整:"),
+    ("Fit to Page", "ページに合わせる"),
+    ("Fit to Margins", "マージンに合わせる"),
+    ("Fit to Bleed", "裁ち落としに合わせる"),
+    ("Actual Size, Centered", "実寸で中央に配置"),
+    ("Add Pages as Needed", "必要に応じてページを追加"),
+    ("Enter the pages to place, such as 1-3, 5", "配置するページを入力してください（例: 1-3, 5）"),
+    ("Enter each crop amount as a measurement of 0 or more", "切り抜き量はそれぞれ 0 以上の値で入力してください"),
+    ("Enter the document page the PDF starts on", "PDF を配置し始めるドキュメントのページを入力してください"),
+    (
+        "Enter one page number, or choose All or Range for several",
+        "ページ番号を 1 つ入力するか、複数のページには「すべて」または「範囲」を選択してください",
+    ),
 ];
 
 /// Captions whose Japanese depends on where they appear: (English, context, Japanese).
