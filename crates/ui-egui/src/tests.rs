@@ -78,26 +78,33 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
     let answer: Rc<RefCell<Option<String>>> = Rc::default();
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
     let (seen, reply) = (asked.clone(), answer.clone());
-    app.services.pick_save = Some(Box::new(move |name: &str| {
-        seen.borrow_mut().push(name.to_string());
-        reply.borrow().clone()
-    }));
+    app.answer_dialogs(move |request| {
+        let craft_dialogs::Request::File(dialog) = request else { return craft_dialogs::Answer::Cancelled };
+        let name = dialog.file_name.clone().unwrap_or_default();
+        seen.borrow_mut().push(dialog.directory.as_ref().map_or_else(|| name.clone(), |folder| folder.join(&name).to_string_lossy().to_string()));
+        reply.borrow().clone().map_or(craft_dialogs::Answer::Cancelled, |path| craft_dialogs::Answer::Paths(vec![path.into()]))
+    });
     app.services.write = Some(Box::new(|_: &str, _: &[u8]| Ok(())));
     let last = |asked: &Rc<RefCell<Vec<String>>>| asked.borrow().last().cloned().unwrap_or_default();
     let export_pdf = |app: &mut DesignApp| {
         app.ui.dialog = Some(dialogs::Dialog::new("pdfExport", json!({})));
         app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Report"));
         dialogs::confirm(app).unwrap();
+        app.settle_dialogs();
+    };
+    let save_dialog = |app: &mut DesignApp| {
+        app.run("app.saveDialog", json!({})).unwrap();
+        app.settle_dialogs();
     };
 
     app.run("file.new", json!({})).unwrap();
     let untitled = format!("{}.designcraft", app.session.active().unwrap().doc.title);
-    app.run("app.saveDialog", json!({})).unwrap();
+    save_dialog(&mut app);
     assert_eq!(last(&asked), untitled, "never saved, nothing remembered: the system's own folder");
 
     let saved = home.path().join("Brochure.designcraft");
     *answer.borrow_mut() = Some(saved.to_string_lossy().to_string());
-    app.run("app.saveDialog", json!({})).unwrap();
+    save_dialog(&mut app);
     assert_eq!(app.session.active().unwrap().path.as_deref(), Some(&*saved.to_string_lossy()));
     // An export into another folder becomes the last folder used.
     *answer.borrow_mut() = Some(elsewhere.path().join("Proof.pdf").to_string_lossy().to_string());
@@ -108,7 +115,7 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
 
     app.run("file.new", json!({})).unwrap();
     let untitled = format!("{}.designcraft", app.session.active().unwrap().doc.title);
-    app.run("app.saveDialog", json!({})).unwrap();
+    save_dialog(&mut app);
     assert_eq!(last(&asked), elsewhere.path().join(untitled).to_string_lossy(), "a new document starts in the last folder used");
 }
 
@@ -116,19 +123,11 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
 /// title with a slash moved the suggestion out of the document's folder.
 #[test]
 fn save_dialog_suggestions_keep_the_folder_and_only_a_file_name() {
-    use std::{cell::RefCell, rc::Rc};
     let folder = tempfile::tempdir().unwrap();
-    let asked: Rc<RefCell<Vec<String>>> = Rc::default();
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
-    let seen = asked.clone();
-    app.services.pick_save = Some(Box::new(move |name: &str| {
-        seen.borrow_mut().push(name.to_string());
-        None
-    }));
     app.ui.last_save_folder = Some(folder.path().join("Docs").to_string_lossy().to_string());
-    app.pick_save("");
-    app.pick_save("Q1/Q2.pdf");
-    assert_eq!(*asked.borrow(), ["".to_string(), folder.path().join("Docs").join("Q2.pdf").to_string_lossy().to_string()]);
+    assert_eq!(app.suggested_save_path(""), "");
+    assert_eq!(app.suggested_save_path("Q1/Q2.pdf"), folder.path().join("Docs").join("Q2.pdf").to_string_lossy());
 }
 
 /// An app with one document that has an unsaved edit.
@@ -379,12 +378,13 @@ fn repeated_native_quit_requests_save_and_discard_only_after_all_answers() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("saved.designcraft");
     let chosen = path.to_string_lossy().to_string();
-    app.services.pick_save = Some(Box::new(move |_| Some(chosen.clone())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(chosen.clone())));
     app.session.recovery_dir = Some(directory.path().join("recovery"));
     app.run("file.recovery.save", json!({})).unwrap();
     quit_frame(&mut app, &ctx, true);
     assert_eq!(dialog_uid(&app), Some(uids[0]));
     dialogs::confirm(&mut app).unwrap(); // Save the first document.
+    app.settle_dialogs();
     assert!(!app.session.documents()[0].is_dirty());
     quit_frame(&mut app, &ctx, false);
     assert_eq!(dialog_uid(&app), Some(uids[1]));
@@ -442,17 +442,50 @@ fn quitting_save_failure_after_discard_keeps_documents_and_can_retry() {
         .join("document.designcraft");
     assert!(!path.parent().unwrap().exists());
     let picked = path.to_string_lossy().to_string();
-    app.services.pick_save = Some(Box::new(move |_| Some(picked.clone())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked.clone())));
     quit_frame(&mut app, &ctx, true);
     discard_quit_dialog(&mut app);
     quit_frame(&mut app, &ctx, false);
-    assert!(dialogs::confirm(&mut app).is_err());
+    // The folder is missing: saving there fails and Quit stops.
+    dialogs::confirm(&mut app).unwrap();
+    app.settle_dialogs();
     assert!(!quit_frame(&mut app, &ctx, false).contains(&egui::ViewportCommand::Close));
     assert_eq!(app.session.documents().len(), 2);
     assert!(app.session.documents().iter().all(|d| d.is_dirty()));
     // Starting over must ask about the previously discarded first document again.
     quit_frame(&mut app, &ctx, true);
     assert_eq!(dialog_uid(&app), Some(app.session.documents()[0].uid));
+}
+
+/// Quit › Save on a document never saved, then Cancel in the save dialog: Quit stops and the
+/// document stays open with its changes.
+#[test]
+fn quit_save_cancelled_in_the_save_dialog_stops_quitting() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_unsaved_document();
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
+    quit_frame(&mut app, &ctx, true);
+    dialogs::confirm(&mut app).unwrap(); // Save
+    assert!(!quit_frame(&mut app, &ctx, false).contains(&egui::ViewportCommand::Close), "Quit waits for the save dialog");
+    assert!(app.quitting.is_some());
+    app.settle_dialogs();
+    assert!(!quit_frame(&mut app, &ctx, false).contains(&egui::ViewportCommand::Close));
+    assert!(app.quitting.is_none(), "Quit stopped");
+    assert_eq!(app.session.documents().len(), 1);
+    assert!(app.session.documents()[0].is_dirty());
+}
+
+/// Close › Save on a document never saved, then Cancel in the save dialog: the document stays
+/// open with its changes.
+#[test]
+fn close_save_cancelled_in_the_save_dialog_keeps_the_document_open() {
+    let mut app = app_with_unsaved_document();
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
+    crate::menus::close_document(&mut app, Some(0));
+    dialogs::confirm(&mut app).unwrap(); // Save
+    app.settle_dialogs();
+    assert_eq!(app.session.documents().len(), 1);
+    assert!(app.session.documents()[0].is_dirty());
 }
 
 #[test]
@@ -463,9 +496,10 @@ fn quitting_save_then_later_cancel_keeps_saved_document_open() {
     let first = app.session.documents()[0].uid;
     let path = std::env::temp_dir().join(format!("designcraft-quit-save-{}-{first}.designcraft", std::process::id()));
     let picked = path.to_string_lossy().to_string();
-    app.services.pick_save = Some(Box::new(move |_| Some(picked.clone())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked.clone())));
     quit_frame(&mut app, &ctx, true);
     dialogs::confirm(&mut app).unwrap();
+    app.settle_dialogs();
     quit_frame(&mut app, &ctx, false);
     assert_eq!(app.session.documents().len(), 2);
     assert!(!app.session.documents()[0].is_dirty());
@@ -516,10 +550,11 @@ fn quitting_pending_save_uses_dialog_uid_after_tab_switch() {
     let first = app.session.documents()[0].uid;
     let path = std::env::temp_dir().join(format!("designcraft-quit-uid-{}-{first}.designcraft", std::process::id()));
     let picked = path.to_string_lossy().to_string();
-    app.services.pick_save = Some(Box::new(move |_| Some(picked.clone())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked.clone())));
     quit_frame(&mut app, &ctx, true);
     app.run("file.activate", json!({"index": 1})).unwrap();
     dialogs::confirm(&mut app).unwrap();
+    app.settle_dialogs();
     assert_eq!(app.session.documents()[0].path.as_deref(), path.to_str());
     assert!(!app.session.documents()[0].is_dirty());
     assert!(app.session.documents()[1].is_dirty());
@@ -839,16 +874,19 @@ fn a_file_dropped_while_a_parent_is_open_lands_on_the_parent() {
 fn file_open_failures_show_an_alert() {
     let path = unreadable_file("open.designcraft");
     let picked = path.to_string_lossy().to_string();
-    let services = Services { pick_open: Some(Box::new(move |_| Some(picked.clone()))), ..Default::default() };
-    let mut app = DesignApp::new(Session::new(), services);
-    let e = app.run("app.openDialog", json!({})).unwrap_err();
-    assert_eq!(alert(&app), ("Can't Open the File".to_string(), e));
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
+    // The error comes with the dialog's answer, on a later frame: the alert and the status line.
+    app.run("app.openDialog", json!({})).unwrap();
+    app.settle_dialogs();
+    assert_eq!(alert(&app), ("Can't Open the File".to_string(), app.ui.status.clone()));
     // Placing it says so too.
     app.ui.dialog = None;
     app.run("file.new", json!({})).unwrap();
-    let e = app.run("app.placeDialog", json!({})).unwrap_err();
+    app.run("app.placeDialog", json!({})).unwrap();
+    app.settle_dialogs();
     let _ = std::fs::remove_file(&path);
-    assert_eq!(alert(&app), ("Can't Place the File".to_string(), e));
+    assert_eq!(alert(&app), ("Can't Place the File".to_string(), app.ui.status.clone()));
 }
 
 #[test]

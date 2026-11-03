@@ -1,11 +1,13 @@
 #[cfg(not(target_arch = "wasm32"))]
+use super::DocState;
+#[cfg(not(target_arch = "wasm32"))]
 use super::bytes::from_bytes;
 use super::bytes::{to_bytes_with_preview, with_document_extension};
 #[cfg(not(target_arch = "wasm32"))]
 use super::open::load_document_fonts;
 #[cfg(test)]
 use super::place::image_place_tests;
-use super::*;
+use super::{Arc, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc_mut()?;
@@ -118,6 +120,7 @@ mod save_tests {
     use serde_json::json;
 
     use crate::Session;
+    use crate::cmd::file::FAIL_TO_BYTES;
 
     /// Saving over an existing document replaces it whole and leaves nothing beside it.
     #[test]
@@ -161,12 +164,12 @@ mod save_tests {
         let checkpoint = recovery.join(format!("{}.designcraft", s.doc().unwrap().uid));
         assert!(checkpoint.exists());
 
-        super::FAIL_TO_BYTES.with(|f| f.set(true));
+        FAIL_TO_BYTES.with(|f| f.set(true));
         let save = s.execute("file.save", &json!({}));
         let copy = s.execute("file.saveACopy", &json!({"path": dir.join("copy.designcraft").to_string_lossy()}));
         let save_as = s.execute("file.saveAs", &json!({"path": dir.join("other.designcraft").to_string_lossy()}));
         let serialized = s.execute("file.serialize", &json!({}));
-        super::FAIL_TO_BYTES.with(|f| f.set(false));
+        FAIL_TO_BYTES.with(|f| f.set(false));
 
         let e = save.unwrap_err();
         assert!(e.to_string().contains("could not write the document"), "{e}");

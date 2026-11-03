@@ -1,5 +1,5 @@
 use super::tree::{menu_items, menu_tree};
-use super::*;
+use super::{DesignApp, Item};
 
 /// A menu button whose popup stays within the viewport and scrolls when needed.
 /// All menu buttons share this wrapper, including workspace, zoom and panel menus.
