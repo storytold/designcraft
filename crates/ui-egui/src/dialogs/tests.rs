@@ -2957,6 +2957,47 @@ fn epub_export_options_store_split_document() {
     assert_eq!(app.session.active().unwrap().doc.settings.epub_split, EpubSplit::ExportTags, "Cancel stores nothing");
 }
 
+/// EPUB Export Options › Cover Image: a PNG or JPEG file named there (typed, or picked with
+/// Choose…) is the cover; left empty, the first page is, as before (#1934).
+#[test]
+fn epub_export_options_take_a_cover_image_file() {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+    let mut app = test_app();
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("cover.png");
+    let bytes = b"\x89PNG\r\n\x1a\ncover".to_vec();
+    std::fs::write(&png, &bytes).unwrap();
+    let written: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = written.clone();
+    app.services.write = Some(Box::new(move |_: &str, b: &[u8]| {
+        *sink.lock().unwrap() = b.to_vec();
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.path().join("book.epub").to_string_lossy().into_owned())));
+    app.run("app.exportEpub", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "", "no file by default: the first page is the cover");
+    // Choose… puts the picked file into the field; OK passes it to the export.
+    let path = png.to_string_lossy().into_owned();
+    set_epub_cover(&mut app, path.clone()).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), path);
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    let out = written.lock().unwrap().clone();
+    assert!(!out.is_empty(), "the EPUB was written");
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(out)).unwrap();
+    let mut cover = Vec::new();
+    z.by_name("OEBPS/images/cover.png").unwrap().read_to_end(&mut cover).unwrap();
+    assert_eq!(cover, bytes, "the file is the cover image");
+    let mut opf = String::new();
+    z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+    assert!(opf.contains("properties=\"cover-image\""), "{opf}");
+    // The field is per export: the next dialog starts empty again.
+    app.run("app.exportEpub", json!({})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("coverImage"), "");
+    cancel(&mut app);
+}
+
 #[test]
 fn pdf_export_defaults() {
     let d = Dialog::new("pdfExport", json!({}));
