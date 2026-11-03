@@ -578,6 +578,24 @@ fn saved_tab_lists_load_sanitized() {
 }
 
 #[test]
+fn writing_to_a_stream_makes_the_same_file_as_saving_in_memory() {
+    // A save that streams needs no copy of the archive in RAM; it must write the same package.
+    let mut d = Document::new(&NewDocument::default());
+    let a = png_asset(&mut d, b"streamed bytes");
+    place(&mut d, a, 0.0);
+    let png = b"\x89PNG streamed".to_vec();
+    let saved = save_with_preview(&d, Some(&png)).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    write(&mut out, &d, Some(&png)).unwrap();
+    let streamed = out.into_inner();
+    assert_eq!(saved.len(), streamed.len());
+    assert_eq!(asset_entries(&streamed), 1);
+    let back = load(&streamed).unwrap();
+    assert_eq!(back.assets.len(), 1);
+    assert_eq!(read_preview(Cursor::new(&streamed)), Some(png));
+}
+
+#[test]
 fn the_preview_is_read_back_without_the_document() {
     let d = Document::new(&NewDocument::default());
     let png = b"\x89PNG fake".to_vec();

@@ -67,9 +67,19 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p, FolderAccess::Read)?;
             Ok(Value::Array(crate::recovery::list(&dir).into_iter().map(|(uid, mut m)| { m["uid"] = json!(uid); m }).collect()))
         }),
-        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None, "{dir?} — write every unsaved document to the recovery folder (the app does this on a timer)", always, |s, p| {
+        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None,
+            "{dir?, background?} — write every unsaved document to the recovery folder (the app does this on a timer; `background` queues the writes and returns at once) → {saved}` or {queued}",
+            always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Write)?;
+            if p.get("background").and_then(Value::as_bool).unwrap_or(false) {
+                return Ok(json!({"queued": crate::recovery::start_tracked(s, &dir)?}));
+            }
             Ok(json!({"saved": crate::recovery::save_tracked(s, &dir)?}))
+        }),
+        cmd!(query "file.recovery.progress", "Recovery Progress", [], None,
+            "{} → {written, busy, errors} recovery data queued in the background has been written", always, |s, _| {
+            let done = crate::recovery::finished(s);
+            Ok(json!({"written": done.written, "busy": done.busy, "errors": done.errors}))
         }),
         cmd!(noundo "file.recovery.open", "Recover Documents", [], None, "{dir?} — reopen documents left in the recovery folder (unsaved)", always, |s, p| {
             // Reopening removes the entries it read.
