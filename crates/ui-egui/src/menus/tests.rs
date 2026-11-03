@@ -3270,8 +3270,44 @@ fn forwarded_keys_run_shortcuts() {
 
 #[test]
 fn powerpoint_export_embeds_fonts_only_when_asked() {
-    // The menu's own call has no params: no embedding, as in PowerPoint's save.
-    // The text export's format still comes from the resolved path.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.newSample", json!({})).unwrap();
+    let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = written.clone();
+    app.services.write = Some(Box::new(move |_, bytes: &[u8]| {
+        sink.lock().unwrap().extend_from_slice(bytes);
+        Ok(())
+    }));
+    // The menu's own call has no params: no embedding, as in PowerPoint's save, and the engine's
+    // "fonts are not embedded" warning reaches the caller.
+    let r = run_ui(&mut app, "app.exportPptx", &json!({"path": "/tmp/default.pptx"})).unwrap().unwrap();
+    let warned =
+        |r: &Value| r["warnings"].as_array().is_some_and(|w| w.iter().any(|w| w.as_str().is_some_and(|w| w.contains("fonts are not embedded"))));
+    assert!(warned(&r), "the default export says the fonts are not embedded: {r}");
+    let presentation = |bytes: &[u8]| {
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut z.by_name("ppt/presentation.xml").unwrap(), &mut xml).unwrap();
+        xml
+    };
+    let default_pres = presentation(written.lock().unwrap().as_slice());
+    assert!(!default_pres.contains("<p:embeddedFontLst>") && !default_pres.contains("embedTrueTypeFonts=\"1\""), "{default_pres}");
+    written.lock().unwrap().clear();
+    // Asking for embedding writes the faces as parts of the presentation.
+    let r = run_ui(&mut app, "app.exportPptx", &json!({"path": "/tmp/asked.pptx", "embedFonts": true})).unwrap().unwrap();
+    assert!(!warned(&r), "nothing is left to say about the fonts: {r}");
+    let asked_pres = presentation(written.lock().unwrap().as_slice());
+    assert!(asked_pres.contains("embedTrueTypeFonts=\"1\"") && asked_pres.contains("<p:embeddedFontLst>"), "{asked_pres}");
+    assert!(!written.lock().unwrap().is_empty(), "the file is still written");
+}
+
+#[test]
+fn export_results_without_warnings_omit_the_key() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.services.write = Some(Box::new(|_, _| Ok(())));
+    let r = run_ui(&mut app, "app.exportXml", &json!({"path": "/tmp/no-warnings.xml"})).unwrap().unwrap();
+    assert!(r.get("warnings").is_none(), "a format with no warnings has no warnings key: {r}");
 }
 
 #[test]
