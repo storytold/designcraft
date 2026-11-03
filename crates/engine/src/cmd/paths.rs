@@ -77,7 +77,7 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
 
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
-fn orient_holes(path: &mut PathData) {
+pub(super) fn orient_holes(path: &mut PathData) {
     let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
     let n = path.subpaths.len();
     for i in 0..n {
