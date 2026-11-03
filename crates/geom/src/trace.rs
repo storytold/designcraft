@@ -119,15 +119,15 @@ fn rdp(p: &[Point], tol: f64) -> Vec<Point> {
 mod tests {
     use super::*;
 
-    /// A tolerance below zero or NaN ends (each split shrinks its span), and a path that splits
-    /// one point at a time, deeper than any call stack, simplifies without recursion.
+    /// A tolerance below zero or NaN ends (each split shrinks its span), and a 200,000-point
+    /// path simplifies to completion.
     #[test]
     fn simplification_ends_for_any_tolerance_and_depth() {
         let line: Vec<Point> = (0..10).map(|i| Point::new(f64::from(i), 0.0)).collect();
         for tol in [-1.0, f64::NAN, 0.0] {
             assert_eq!(rdp(&line, tol).len(), 2, "{tol}");
         }
-        // Each point a little further off the chord than the next: every split takes one point.
+        // A long convex curve simplifies to completion.
         let n = 200_000;
         let curve: Vec<Point> = (0..n).map(|i| Point::new(f64::from(i), (f64::from(i) * 1e-3).powi(3))).collect();
         assert!(rdp(&curve, 1e-12).len() > 2);
