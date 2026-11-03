@@ -236,7 +236,17 @@ struct Ctx {
     para_names: HashMap<String, String>,
     char_names: HashMap<String, String>,
     footnotes: HashMap<String, El>,
+    /// Footnote ids already imported, and how much note text has been built. A reference clones
+    /// its note and walks it again, so one 1 MB footnote referenced 100k times meant ~100 GB
+    /// (#1584). Word gives each note its own id and references it once; a second reference to the
+    /// same id gets the mark without the text.
+    notes_done: std::collections::HashSet<String>,
+    note_bytes: usize,
     warnings: Vec<String>,
+    /// What has already been said, so saying it again is a lookup rather than a scan of
+    /// everything said so far. A warning that names a footnote id is one per id, and the
+    /// document chooses how many ids it has (noted in review).
+    warned: std::collections::HashSet<String>,
     next_table: u64,
     numbering: Numbering,
     /// A paragraph style's list (`w:numPr` numId and ilvl, through `w:basedOn`), by style id.
@@ -249,7 +259,47 @@ struct Ctx {
     default_para: String,
 }
 
+/// A note's tables may hold tables of their own. The document model stops nesting at 64, so
+/// counting no deeper than that reaches every cell a note can actually have.
+const MAX_NOTE_DEPTH: usize = 64;
+
+/// The text `s` holds, including its tables' cell text. A table's cells each keep their text in
+/// a story of their own rather than in `s.text`, which holds only the anchor, so counting
+/// `s.text` scored a table of any size as a couple of bytes (noted in review).
+fn note_bytes(s: &Story, depth: usize) -> usize {
+    let mut n = s.text.len();
+    if depth == 0 {
+        return n;
+    }
+    for t in s.tables.values() {
+        for c in &t.cells {
+            n = n.saturating_add(note_bytes(&c.text, depth - 1));
+        }
+    }
+    n
+}
+
+/// Warnings one import reports. A document that earns more than this has earned the point.
+const MAX_WARNINGS: usize = 100;
+
 impl Ctx {
+    /// Report `message` once. Beyond [`MAX_WARNINGS`] distinct messages nothing further is kept,
+    /// not even in the set, so neither the report nor the memory behind it grows with the
+    /// document -- a footnote warning names an id, and a file can hold as many ids as it likes.
+    fn warn(&mut self, message: String) {
+        if self.warnings.len() > MAX_WARNINGS {
+            return;
+        }
+        if !self.warned.insert(message.clone()) {
+            return;
+        }
+        if self.warnings.len() == MAX_WARNINGS {
+            self.warnings.push(format!("The Word file has more than {MAX_WARNINGS} kinds of problem: the rest are not listed."));
+        } else {
+            self.warnings.push(message);
+        }
+    }
+
     fn para_style(&self, ppr: Option<&El>) -> String {
         ppr.and_then(|p| p.val("pStyle")).and_then(|id| self.para_names.get(&id).cloned()).unwrap_or_else(|| self.default_para.clone())
     }
@@ -412,11 +462,39 @@ impl Ctx {
                 "noBreakHyphen" => "\u{2011}".into(),
                 "softHyphen" => "\u{AD}".into(),
                 "footnoteReference" if allow_notes => {
+                    const MAX_NOTE_BYTES: usize = 8 << 20;
+                    let id = e.attr("id").unwrap_or_default().to_string();
+                    // The note's text is built once per id, and only while the budget lasts. A
+                    // repeat reference, or one past the budget, still gets its mark and its
+                    // number -- the reference is part of the text -- with an empty note (#1584).
+                    //
+                    // The id is recorded only once its text has actually been kept, further down:
+                    // recording it here meant a first reference arriving after the budget was
+                    // spent counted as "done" with an empty note, and the next reference to it
+                    // then claimed the text was kept at the first one (noted in review).
+                    let again = !id.is_empty() && self.notes_done.contains(&id);
+                    let spent = self.note_bytes >= MAX_NOTE_BYTES;
+                    if again || spent {
+                        let len = st.len();
+                        if st.insert_note(len, "", ParaFormat::default()).is_some() {
+                            let message = if again {
+                                format!("Footnote {id} is referenced more than once in the Word file: the text is kept at its first reference.")
+                            } else {
+                                format!("The Word file's footnotes are longer than {} MB: the rest were imported empty.", MAX_NOTE_BYTES / (1 << 20))
+                            };
+                            self.warn(message);
+                        }
+                        continue;
+                    }
                     if let Some(note) = e.attr("id").and_then(|id| self.footnotes.get(id).cloned()) {
                         let mut ns = Story::new(StoryId(0));
                         let counter = std::mem::take(&mut self.model_counter);
                         self.blocks(&note, &mut ns, false);
                         self.model_counter = counter;
+                        self.note_bytes = self.note_bytes.saturating_add(note_bytes(&ns, MAX_NOTE_DEPTH));
+                        if !id.is_empty() {
+                            self.notes_done.insert(id.clone());
+                        }
                         // Word puts the reference mark in the note text: we generate the number.
                         let len = st.len();
                         match st.insert_note(len, "", ParaFormat::default()) {
@@ -425,15 +503,13 @@ impl Ctx {
                                     n.text = ns;
                                 }
                             }
-                            None => self.warnings.push("A footnote in the Word file could not be imported.".into()),
+                            None => self.warn("A footnote in the Word file could not be imported.".into()),
                         }
                     }
                     continue;
                 }
                 "drawing" | "pict" | "object" => {
-                    if !self.warnings.iter().any(|w| w.starts_with("Images")) {
-                        self.warnings.push("Images and drawings in the Word file were not imported (place them separately).".into());
-                    }
+                    self.warn("Images and drawings in the Word file were not imported (place them separately).".into());
                     continue;
                 }
                 _ => continue,
@@ -485,7 +561,10 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         para_names: HashMap::new(),
         char_names: HashMap::new(),
         footnotes: HashMap::new(),
+        notes_done: std::collections::HashSet::new(),
+        note_bytes: 0,
         warnings: vec![],
+        warned: std::collections::HashSet::new(),
         next_table: 0,
         numbering: Numbering::default(),
         style_lists: HashMap::new(),

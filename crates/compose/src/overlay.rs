@@ -2,7 +2,7 @@
 //! through or up to a delimiter) and GREP styles (every match of a pattern).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use designcraft_doc::{GrepStyle, NestedStyle, NestedUntil};
@@ -47,7 +47,9 @@ fn with_pattern<R>(pattern: &str, f: impl FnOnce(&mut Option<Grep>) -> R) -> R {
     })
 }
 
-fn is_event(u: &NestedUntil, c: char, prev: Option<char>, next: Option<char>) -> bool {
+/// Whether `c` ends one unit of `u`. `delims` is the character set of a [`NestedUntil::Chars`]
+/// delimiter, indexed once per nested style.
+fn is_event(u: &NestedUntil, delims: &HashSet<char>, c: char, prev: Option<char>, next: Option<char>) -> bool {
     match u {
         NestedUntil::Sentences => matches!(c, '.' | '!' | '?') && next.is_none_or(char::is_whitespace),
         NestedUntil::Words => c.is_whitespace() && prev.is_some_and(|p| !p.is_whitespace()),
@@ -60,7 +62,7 @@ fn is_event(u: &NestedUntil, c: char, prev: Option<char>, next: Option<char>) ->
         NestedUntil::EnSpace => c == '\u{2002}',
         // Counted by position, not by character (see `overlays`).
         NestedUntil::Dropcap => false,
-        NestedUntil::Chars(s) => s.contains(c),
+        NestedUntil::Chars(_) => delims.contains(&c),
     }
 }
 
@@ -81,18 +83,25 @@ pub(crate) fn overlays(text: &str, range: Range<usize>, nested: &[NestedStyle], 
             // Through the drop cap runs to its end; up to it (it starts the paragraph) is nothing.
             stop = if ns.through { drop_end.max(pos).min(end) } else { pos };
         } else {
+            // Streamed up to the delimiter, with one character of lookahead: copying the rest of
+            // the paragraph for every nested style multiplied its length by the number of styles.
+            let delims: HashSet<char> = match &ns.until {
+                NestedUntil::Chars(s) => s.chars().collect(),
+                _ => HashSet::new(),
+            };
             let mut count = 0;
-            let chars: Vec<(usize, char)> = text[pos..end].char_indices().map(|(i, c)| (pos + i, c)).collect();
-            for (k, &(i, c)) in chars.iter().enumerate() {
-                let prev = if k > 0 { Some(chars[k - 1].1) } else { None };
-                let next = chars.get(k + 1).map(|x| x.1);
-                if is_event(&ns.until, c, prev, next) {
+            let mut prev = None;
+            let mut chars = text[pos..end].char_indices().map(|(i, c)| (pos + i, c)).peekable();
+            while let Some((i, c)) = chars.next() {
+                let next = chars.peek().map(|x| x.1);
+                if is_event(&ns.until, &delims, c, prev, next) {
                     count += 1;
                     if count >= ns.count.max(1) {
                         stop = if ns.through { i + c.len_utf8() } else { i };
                         break;
                     }
                 }
+                prev = Some(c);
             }
         }
         if stop > pos && !ns.style.is_empty() {
@@ -159,6 +168,19 @@ mod tests {
         });
         assert_eq!(len, MAX_CACHED_PATTERNS, "the cache is bounded");
         assert!(has_last, "the most recently used pattern is still cached");
+    }
+
+    /// Nested styles that stop where they start (up to a delimiter the paragraph starts with)
+    /// read one character each, not the rest of the paragraph.
+    #[test]
+    fn nested_styles_stopping_at_once_do_not_rescan_the_paragraph() {
+        let text = format!("x{}\n", "y".repeat(200_000));
+        let delim: String = ('a'..='z').chain('A'..='Z').filter(|c| *c != 'y').collect();
+        let rule = NestedStyle { style: "S".into(), through: false, count: 1, until: NestedUntil::Chars(delim) };
+        let nested = vec![rule; 5000];
+        let t = std::time::Instant::now();
+        assert!(overlays(&text, 0..text.len(), &nested, &[], 0).is_empty(), "each style styles nothing");
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 
     #[test]

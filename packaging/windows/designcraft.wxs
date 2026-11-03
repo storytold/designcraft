@@ -1,30 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  DesignCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
-
-    wix build designcraft.wxs installer-ui.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
-
-  Per-machine install into Program Files, a Start Menu shortcut, `.designcraft` owned by
-  DesignCraft, and DesignCraft offered under "Open with" for IDML (without taking over the user's
-  default app for it).
--->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <?ifndef HasCraftFontLicences ?>
   <?define HasCraftFontLicences=0 ?>
-  <?endif ?>
-  <Package
-      Name="DesignCraft"
-      Manufacturer="Learning Machines LLC"
-      Version="$(var.Version)"
-      UpgradeCode="49E87D30-BB68-4896-AA1D-F45C833CFC3C"
-      Scope="perMachine"
-      Compressed="yes"
-      Language="1033">
+  <?endif?>
+  <Package Name="DesignCraft" Manufacturer="Learning Machines LLC" Version="$(var.Version)" UpgradeCode="49E87D30-BB68-4896-AA1D-F45C833CFC3C" Scope="perUserOrMachine" Compressed="yes" Language="1033">
     <SummaryInformation Description="DesignCraft page layout and publishing" Manufacturer="Learning Machines LLC" />
+    <?include $(sys.SOURCEFILEDIR)install-policy.wxi?>
     <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
          (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
-        DowngradeErrorMessage="A newer version of DesignCraft is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of DesignCraft is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="DesigncraftIcon.ico" SourceFile="$(var.IconPath)" />
@@ -36,14 +20,16 @@
     <!-- Shared native setup UI, including install/uninstall completion. -->
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="INSTALLFOLDER" Name="DesignCraft" />
+      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
+        <Directory Id="INSTALLFOLDER" Name="DesignCraft" />
+      </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="Main" Title="DesignCraft" Level="1">
       <?if $(var.HasCraftFontLicences) = 1 ?>
       <ComponentGroupRef Id="CraftFontLicences" />
-      <?endif ?>
+      <?endif?>
       <ComponentGroupRef Id="DesigncraftFiles" />
       <ComponentGroupRef Id="CraftInstallerSettings" />
     </Feature>
@@ -56,16 +42,14 @@
     <ComponentGroup Id="CraftFontLicences" Directory="INSTALLFOLDER">
       <Files Include="$(var.DocsDir)\**" />
     </ComponentGroup>
-    <?endif ?>
+    <?endif?>
     <ComponentGroup Id="DesigncraftFiles" Directory="INSTALLFOLDER">
       <Component Id="DesigncraftNotice">
         <File Id="DesigncraftNoticeFile" Source="$(var.BinDir)\NOTICE" KeyPath="yes" />
       </Component>
       <Component Id="DesigncraftApp" Guid="DE018EF3-EE87-4E36-9F76-0B7B060A195E">
         <File Id="DesigncraftExe" Source="$(var.BinDir)\designcraft.exe" KeyPath="yes">
-          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="DesignCraft"
-              Description="DesignCraft page layout and publishing" WorkingDirectory="INSTALLFOLDER" Advertise="yes"
-              Icon="DesigncraftIcon.ico" IconIndex="0" />
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="DesignCraft" Description="DesignCraft page layout and publishing" WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="DesigncraftIcon.ico" IconIndex="0" />
         </File>
 
         <!-- .designcraft: DesignCraft's own format; DesignCraft is its default app. -->
@@ -76,15 +60,16 @@
         </ProgId>
         <!-- IDML: offered under "Open with", never forced as the default. -->
         <ProgId Id="Designcraft.Idml" Description="IDML Document" Icon="DesigncraftExe" IconIndex="0" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Designcraft.Idml\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\.idml\OpenWithProgids" Name="Designcraft.Idml" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Designcraft.Idml\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\.idml\OpenWithProgids" Name="Designcraft.Idml" Value="" Type="string" />
 
         <!-- "Open with" app list and the Run dialog (Win+R "designcraft"). -->
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe" Name="FriendlyAppName" Value="DesignCraft" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".designcraft" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".idml" Value="" Type="string" />
-        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\designcraft.exe" Value="[#DesigncraftExe]" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\designcraft.exe" Name="FriendlyAppName" Value="DesignCraft" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\designcraft.exe\shell\open\command" Value="&quot;[#DesigncraftExe]&quot; &quot;%1&quot;" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".designcraft" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Classes\Applications\designcraft.exe\SupportedTypes" Name=".idml" Value="" Type="string" />
+        <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\designcraft.exe" Value="[#DesigncraftExe]" Type="string" />
+      <RegistryValue Root="HKMU" Key="Software\DesignCraft" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
       </Component>
 
       <Component Id="DesigncraftCli">

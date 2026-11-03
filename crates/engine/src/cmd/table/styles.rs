@@ -1,6 +1,6 @@
 use super::cell::{StrokeEdit, first_baseline_params};
 use super::target::{color_param, edit_table, target};
-use super::*;
+use super::{CellStroke, Document, Result, Session, Value, bad, json, ok, str_param};
 
 // ---------- cell and table styles ----------
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Affine, Color, El, Point, lab};
 
 /// An XMP date property, written as an element or an attribute.
 pub(super) fn xmp_date(xmp: &str, key: &str) -> Option<i64> {

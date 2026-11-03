@@ -555,6 +555,14 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(Some(1.0)),
         strikethrough_weight: Some(Some(2.0)),
         strikethrough_offset: Some(Some(1.0)),
+        kenten_size: Some(Some(14.0)),
+        kenten_fill_tint: Some(Some(0.3)),
+        kenten_stroke_tint: Some(Some(0.4)),
+        kenten_stroke_weight: Some(Some(2.0)),
+        ruby_font_size: Some(Some(14.0)),
+        ruby_fill_tint: Some(Some(0.3)),
+        ruby_stroke_tint: Some(Some(0.4)),
+        ruby_stroke_weight: Some(Some(2.0)),
         ..Default::default()
     };
     // Legacy JSON loads as format 1, whose upgrade pins Keep Lines Together and Align Left
@@ -564,6 +572,7 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         start_at: Some(Some(7)),
         paragraph_kashida_width: Some(Some(0.5)),
         kinsoku: Some(Some(Default::default())),
+        list_tab: Some(Some(36.0)),
         keep_all_lines: Some(true),
         drop_cap_align_left: Some(true),
         ..Default::default()
@@ -578,9 +587,18 @@ fn r7a_nullable_document(local_clear: bool, style_clear: bool) -> Document {
         underline_offset: Some(None),
         strikethrough_weight: Some(None),
         strikethrough_offset: Some(None),
+        kenten_size: Some(None),
+        kenten_fill_tint: Some(None),
+        kenten_stroke_tint: Some(None),
+        kenten_stroke_weight: Some(None),
+        ruby_font_size: Some(None),
+        ruby_fill_tint: Some(None),
+        ruby_stroke_tint: Some(None),
+        ruby_stroke_weight: Some(None),
         ..Default::default()
     };
-    let clear_para = ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), ..Default::default() };
+    let clear_para =
+        ParaAttrs { start_at: Some(None), paragraph_kashida_width: Some(None), kinsoku: Some(None), list_tab: Some(None), ..Default::default() };
     let selected = if style_clear {
         std::sync::Arc::make_mut(&mut d.styles).paragraph.push(designcraft_doc::styles::ParagraphStyle {
             name: "Defaults".into(),
@@ -621,6 +639,15 @@ fn r7a_assert_nullable_defaults_survive(d: &Document) {
     assert_eq!(expected.0.paragraph_kashida_width, None);
     assert_eq!(expected.0.kinsoku, None);
     assert_eq!(expected.1.leading_aki, None);
+    assert_eq!(expected.0.list_tab, None);
+    assert_eq!(expected.1.kenten_size, None);
+    assert_eq!(expected.1.kenten_fill_tint, None);
+    assert_eq!(expected.1.kenten_stroke_tint, None);
+    assert_eq!(expected.1.kenten_stroke_weight, None);
+    assert_eq!(expected.1.ruby_font_size, None);
+    assert_eq!(expected.1.ruby_fill_tint, None);
+    assert_eq!(expected.1.ruby_stroke_tint, None);
+    assert_eq!(expected.1.ruby_stroke_weight, None);
     // Legacy JSON is format 1: its upgrade pins older defaults on the other styles, so only
     // the native ZIP compares as the whole document.
     for (bytes, native) in [(save(d).unwrap(), true), (serde_json::to_vec(d).unwrap(), false)] {
@@ -733,4 +760,106 @@ fn too_many_entries_are_refused() {
     }
     let Err(err) = load(&z.finish().unwrap().into_inner()) else { panic!("an archive with 100 001 entries loaded") };
     assert!(err.to_string().contains("entries"), "{err}");
+}
+
+/// Every item id in `d` (spreads, parents, anchored), in walk order.
+fn all_item_ids(d: &Document) -> Vec<u64> {
+    let mut ids = Vec::new();
+    for sp in d.spreads.iter().chain(d.parents.iter()) {
+        for it in &sp.items {
+            it.walk(&mut |i| ids.push(i.id.0));
+        }
+    }
+    ids.extend(d.anchored_items().iter().map(|(_, i)| i.id.0));
+    ids
+}
+
+fn set_item_id(d: &mut Document, index: usize, id: designcraft_doc::ItemId) {
+    let sp = Arc::make_mut(&mut d.spreads[0]);
+    Arc::make_mut(&mut sp.items[index]).id = id;
+}
+
+#[test]
+fn files_with_duplicate_item_ids_open_with_unique_ids() {
+    let mut d = Document::new(&NewDocument::default());
+    let one = png_asset(&mut d, &[1]);
+    let two = png_asset(&mut d, &[2]);
+    let a = place(&mut d, one, 0.0);
+    place(&mut d, two, 0.0);
+    set_item_id(&mut d, 1, a);
+    let back = load(&save(&d).unwrap()).unwrap();
+    back.check().unwrap();
+    let ids = all_item_ids(&back);
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    assert!(back.next_id >= ids[0].max(ids[1]));
+    let assets: Vec<_> = back.spreads[0].items.iter().map(|i| i.graphic().unwrap().asset).collect();
+    assert_eq!(assets, vec![one, two]);
+    assert_eq!(back.item(a).and_then(|i| i.graphic()).map(|g| g.asset), Some(one));
+}
+
+#[test]
+fn duplicate_text_frame_ids_keep_each_story_in_its_own_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "first", ParaFormat::default()).unwrap();
+    let (b, sb) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "second", ParaFormat::default()).unwrap();
+    let (c, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(210.0, 210.0, 400.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(b, c).unwrap();
+    // The second story's first frame carries the first frame's id.
+    set_item_id(&mut d, 1, a);
+    let st = d.story_mut(sb).unwrap();
+    assert_eq!(st.frames, vec![b, c]);
+    st.frames[0] = a;
+    let back = load(&save(&d).unwrap()).unwrap();
+    back.check().unwrap();
+    let ids = all_item_ids(&back);
+    let unique: HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), 3);
+    assert_eq!(back.stories[&sa].frames, vec![a]);
+    assert_eq!(back.stories[&sa].text, "first");
+    let frames = &back.stories[&sb].frames;
+    assert_eq!(frames.len(), 2);
+    assert_ne!(frames[0], a);
+    assert_eq!(frames[1], c);
+    assert_eq!(back.item(frames[0]).and_then(|i| i.text_frame()).map(|t| t.story), Some(sb));
+    assert_eq!(back.stories[&sb].text, "second");
+}
+
+#[test]
+fn duplicate_anchored_item_ids_are_renumbered() {
+    use designcraft_doc::anchored::{AnchorPosition, AnchoredObject};
+    use designcraft_doc::geom::shapes;
+    use designcraft_doc::{Item, Shape};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "ab", ParaFormat::default()).unwrap();
+    let asset = png_asset(&mut d, &[1]);
+    let g = place(&mut d, asset, 0.0);
+    let item = Item::new(g, lid, Shape::Oval, shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::default()));
+    let back = load(&save(&d).unwrap()).unwrap();
+    back.check().unwrap();
+    let ids = all_item_ids(&back);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 3);
+    assert_eq!(back.item(g).and_then(|i| i.graphic()).map(|g| g.asset), Some(asset));
+    let anchored = back.anchored_items();
+    assert_eq!(anchored.len(), 1);
+    assert_eq!(anchored[0].1.shape, Shape::Oval);
+    assert_ne!(anchored[0].1.id, g);
+}
+
+#[test]
+fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
+    let mut d = Document::new(&NewDocument::default());
+    let one = png_asset(&mut d, &[1]);
+    let two = png_asset(&mut d, &[2]);
+    place(&mut d, one, 0.0);
+    place(&mut d, two, 0.0);
+    set_item_id(&mut d, 0, designcraft_doc::ItemId(u64::MAX));
+    set_item_id(&mut d, 1, designcraft_doc::ItemId(u64::MAX));
+    d.renumber_duplicate_items();
+    assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
+    assert!(d.check().is_err());
 }

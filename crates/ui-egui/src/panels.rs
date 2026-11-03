@@ -3,7 +3,7 @@
 pub mod cell_stroke;
 pub mod conditions;
 mod font_menu;
-pub use font_menu::{FontPick, SAMPLES as FONT_SAMPLES, font_menu_body};
+pub use font_menu::{FONT_MENU_HEIGHT, FontMenu, FontPick, SAMPLES as FONT_SAMPLES, font_menu_header, font_menu_list};
 pub mod datamerge;
 pub mod glyphs;
 pub mod interactive;
@@ -36,6 +36,9 @@ use crate::theme::Tokens;
 pub struct SelInfo {
     /// Bounds measured from the rulers' zero point (as the X/Y fields show them).
     pub page_rect: Rect,
+    /// Width and height of the selected objects themselves (with points selected, `page_rect`
+    /// measures the points).
+    pub object_size: (f64, f64),
     pub count: usize,
     pub fill: String,
     pub stroke: String,
@@ -80,6 +83,19 @@ pub fn color_target(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
     }
     let i = sel_info(app)?;
     Some((i.fill, sel_tint(app, false), i.stroke, sel_tint(app, true)))
+}
+
+/// [`color_target`], or with nothing selected the colours new shapes get (the Color and Swatches
+/// panels then edit those, as InDesign's do).
+pub fn color_target_or_defaults(app: &mut DesignApp) -> Option<(String, f32, String, f32)> {
+    color_target(app).or_else(|| {
+        let state = app.session.active()?;
+        if !state.selection.items.is_empty() || state.selection.text.is_some() || state.selection.cells.is_some() {
+            return None;
+        }
+        let colors = &state.doc.settings.new_object;
+        Some((colors.fill.clone(), colors.fill_tint, colors.stroke.clone(), colors.stroke_tint))
+    })
 }
 
 /// Apply a swatch (and tint) to the fill or stroke of what colour edits apply to.
@@ -162,6 +178,22 @@ pub fn guide_field(app: &DesignApp) -> Option<GuideField> {
     value.is_finite().then_some(GuideField { guide: *g, orientation: guide.orientation, value, origin, unit })
 }
 
+/// The anchor points selected with Direct Selection, each with where it is in its spread.
+pub fn selected_anchor_points(app: &DesignApp) -> Vec<((designcraft_doc::ItemId, usize, usize), designcraft_geom::Point)> {
+    let Some(st) = app.session.active() else { return vec![] };
+    let d = &st.doc;
+    st.selection
+        .anchors
+        .iter()
+        .filter_map(|&(id, si, ai)| {
+            let loc = d.find(id)?;
+            let it = d.item(id)?;
+            let a = it.path.subpaths.get(si)?.anchors.get(ai)?;
+            Some(((id, si, ai), (d.parent_xf(&loc) * it.xf) * a.p))
+        })
+        .collect()
+}
+
 pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     let st = app.session.active()?;
     if st.selection.items.is_empty() {
@@ -183,7 +215,13 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         };
         b = Some(b.map_or(ib, |r| r.union(ib)));
     }
-    let b = b?;
+    let object_size = b.map_or((0.0, 0.0), |r| (r.width(), r.height()));
+    // Points selected with Direct Selection: Transform measures the points, not their paths.
+    let points = selected_anchor_points(app);
+    let b = match points.split_first() {
+        Some(((_, p0), rest)) => rest.iter().fold(Rect::from_points(*p0, *p0), |r, (_, p)| r.union_pt(*p)),
+        None => b?,
+    };
     let first = d.item(st.selection.items[0])?;
     let loc = d.find(first.id)?;
     let o = d.ruler_origin(loc.spread, b.center().x)?;
@@ -201,6 +239,7 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
     };
     Some(SelInfo {
         page_rect: Rect::new(b.x0 - o.x, b.y0 - o.y, b.x1 - o.x, b.y1 - o.y),
+        object_size,
         count: st.selection.items.len(),
         fill: first.fill.swatch.clone(),
         stroke: first.stroke.swatch.clone(),
@@ -383,7 +422,8 @@ pub fn swatch_picker(
     Some(resp)
 }
 
-/// A font family combo box showing `current` by its menu name, with [`font_menu_body`] as its menu.
+/// A font family combo box showing `current` by its menu name, with the Font menu
+/// ([`font_menu_header`]) as its menu.
 /// Returns the font picked.
 pub fn font_combo(
     app: &mut DesignApp,
@@ -394,15 +434,20 @@ pub fn font_combo(
 ) -> Option<FontPick> {
     let menu = font_menu(app);
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, &menu, current) };
-    // A field and a plain popup rather than egui's combo box: its own scroll area would keep the
-    // menu at the size it last had (a family opening, a filter clearing, wouldn't show).
     let field = ui.push_id(id_salt, |ui| crate::widgets::dropdown(ui, &shown, width)).inner;
-    font_popup(app, &field, &menu, current)
+    font_popup(app, ui, &field, &menu, current)
 }
 
-/// [`font_menu_body`] in a popup under `field` (a font field the caller draws), which screen
-/// readers hear as a combo box with the current family as its value. Returns the font picked.
-pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[designcraft_fonts::FamilyInfo], current: &str) -> Option<FontPick> {
+/// The Font menu ([`font_menu_header`]) in a menu under `field` (a font field the caller draws in
+/// `ui`), which screen readers hear as a combo box with the current family as its value. Returns
+/// the font picked.
+pub fn font_popup(
+    app: &mut DesignApp,
+    ui: &egui::Ui,
+    field: &egui::Response,
+    menu: &[designcraft_fonts::FamilyInfo],
+    current: &str,
+) -> Option<FontPick> {
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
     field.widget_info(|| {
         let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
@@ -411,10 +456,12 @@ pub fn font_popup(app: &mut DesignApp, field: &egui::Response, menu: &[designcra
         info.label = Some(crate::i18n::tr(&app.ui.language, "Font Family").to_owned());
         info
     });
-    egui::Popup::menu(field)
+    let width = field.rect.width();
+    craft_ui::combo::Menu::new(ui, field)
+        .height(FONT_MENU_HEIGHT)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| font_menu_body(app, ui, menu, current, field.rect.width()))
-        .and_then(|r| r.inner)
+        .show_ui_with_header(|ui| font_menu_header(app, ui, menu, current, width), font_menu_list)
+        .flatten()
 }
 
 /// The style a pick sets: the one picked, else the family's Regular (else its first).
@@ -454,7 +501,7 @@ pub fn style_shown(current: &str) -> String {
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
     let styles = fonts(app).styles(family);
     let mut pick = None;
-    let combo = egui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
         for s in &styles {
             if ui.selectable_label(s == current, s).clicked() {
                 pick = Some(s.clone());
@@ -472,7 +519,7 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
-    let combo = egui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());
