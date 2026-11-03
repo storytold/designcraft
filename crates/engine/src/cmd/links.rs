@@ -559,7 +559,12 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let document = document.as_deref().map(Path::new);
     let checks = &mut s.text_link_checks;
-    let (only_asset, only_story) = (p.get("asset").and_then(Value::as_u64), story_param(p));
+    // A selector that is there but isn't an id is an error, never "all of them".
+    let selector = |key: &str| match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad("links.update", format!("{key} must be a number"))),
+    };
+    let (only_asset, only_story) = (selector("asset")?, selector("story")?.map(StoryId));
     let only_assets: Option<Vec<u64>> = match p.get("assets") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
@@ -778,6 +783,11 @@ mod shared_asset_tests {
 
         // b.png changes on disk: updating it leaves a.png's placement alone.
         std::fs::write(&b, png(20, 10)).unwrap();
+        // A selector that isn't an id is an error, not "update them all".
+        for bad in [json!({"asset": "b"}), json!({"story": -1}), json!({"asset": 1.5})] {
+            assert!(s.execute("links.update", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(rows(&mut s), before, "nothing was updated");
         assert_eq!(s.execute("links.update", &json!({})).unwrap()["updated"], 1);
         let after = rows(&mut s);
         assert_eq!(paths(&after), paths(&before));

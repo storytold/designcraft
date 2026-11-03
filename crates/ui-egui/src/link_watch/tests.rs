@@ -312,3 +312,24 @@ fn clicking_a_missing_badge_relinks() {
     assert_eq!(pixels(app, asset), Some((6, 4)), "relinked to the file chosen");
     assert!(shown_badges(&h).is_empty());
 }
+
+/// A check that finishes after the document changed (an edit, a Revert) doesn't update from what
+/// it found: it shows the badges, and the next check, of the document as it is now, updates.
+#[test]
+fn a_check_of_an_older_revision_updates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let mut app = app();
+    let (_, asset) = place(&mut app, &file);
+    std::fs::write(&file, png(9)).unwrap();
+    let st = app.session.active().unwrap();
+    let stale = Done { token: (st.uid, st.revision.wrapping_sub(1)), states: vec![(asset, LinkState::Modified)], update: true };
+    let undo = undo_len(&app);
+    apply(&mut app, stale);
+    assert_eq!(state(&app, asset), Some(LinkState::Modified), "the badge shows");
+    assert_eq!((pixels(&app, asset), undo_len(&app)), (Some((4, 4)), undo), "nothing updated");
+    assert!(app.link_watch.again && app.link_watch.update, "checked again, to update");
+    tick(&mut app, 0.0, Some(true));
+    assert_eq!(pixels(&app, asset), Some((9, 4)), "updated from a check of this revision");
+}

@@ -284,6 +284,10 @@ fn parse_set_file(text: &str) -> Result<ParsedSet, String> {
                 let piece = t.decode().map_err(|e| format!("not a shortcut set file: {e}"))?;
                 push(&mut cur, &piece);
             }
+            Event::CData(c) => {
+                let piece = c.decode().map_err(|e| format!("not a shortcut set file: {e}"))?;
+                push(&mut cur, &piece);
+            }
             Event::GeneralRef(g) => {
                 let c = match g.resolve_char_ref().ok().flatten() {
                     Some(c) => Some(c),
@@ -676,6 +680,18 @@ mod tests {
         assert_eq!(without_mnemonics("&Save && Close & more&"), "Save & Close & more&");
         assert_eq!(set_file_context("DefaultContext"), "Default");
         assert_eq!(set_file_context("TextContext"), "Text");
+    }
+
+    /// A set file may keep its keys and contexts in CDATA sections: they read as text does.
+    #[test]
+    fn a_set_file_reads_keys_and_contexts_in_cdata() {
+        let mut app = app();
+        let set = SET_FILE
+            .replace("<string>Cmd+E</string>", "<string><![CDATA[Cmd+E]]></string>")
+            .replace("<context>DefaultContext</context>\n\t\t<string>Cmd+E", "<context><![CDATA[DefaultContext]]></context>\n\t\t<string>Cmd+E");
+        assert!(set.contains("<![CDATA[Cmd+E]]>"));
+        let r = menus::run_ui(&mut app, "window.importShortcuts", &json!({ "text": set })).unwrap().unwrap();
+        assert_eq!(menus::shortcut_of(&app, "links.editOriginal").as_deref(), Some("Cmd+E"), "{r}");
     }
 
     #[test]

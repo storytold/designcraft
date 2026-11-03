@@ -244,14 +244,21 @@ fn receive(app: &mut DesignApp) {
 /// A check's results: the badges, then the updates they call for.
 fn apply(app: &mut DesignApp, done: Done) {
     // A check of a document that is no longer active is stale.
-    if app.session.active().map(|st| st.uid) != Some(done.token.0) {
+    let Some(revision) = app.session.active().filter(|st| st.uid == done.token.0).map(|st| st.revision) else {
         return;
-    }
+    };
     let w = &mut app.link_watch;
     w.doc = done.token.0;
     w.states = done.states.iter().copied().collect();
     let modified: Vec<u64> = done.states.iter().filter(|(_, s)| *s == LinkState::Modified).map(|(id, _)| *id).collect();
     if modified.is_empty() {
+        return;
+    }
+    // The document changed while the check ran (an edit, a Revert): its badges still show, but
+    // updating from it could reload a graphic the change put back. Check again and update then.
+    if revision != done.token.1 {
+        app.link_watch.again = true;
+        app.link_watch.update |= done.update;
         return;
     }
     // An update made during a gesture would be undone by its next preview, which starts again
