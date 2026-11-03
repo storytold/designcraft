@@ -31,15 +31,14 @@ mod view;
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]
-use frames::{item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
+use frames::{frame_x, item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};
 #[cfg(test)]
 use guides::{guide_at, guide_drag_delta, guide_measure};
 use ime::ime_canvas_pass;
 pub(crate) use ime::{CanvasIme, ime_observe};
-pub use input::drop_frame;
 pub(crate) use input::forwarded_keys;
-pub use input::{begin_frame, context_menu_open};
+pub use input::{begin_frame, context_menu_open, drop_frame};
 use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};
 #[cfg(test)]
 use input::{press_count, release_clicks};

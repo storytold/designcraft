@@ -2257,3 +2257,48 @@ fn aligning_the_key_object_alone_takes_the_page() {
     let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
     assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
 }
+
+/// A document whose top layer is hidden and locked (a dieline) opens with new objects going to
+/// the topmost layer that is shown and unlocked, not where they couldn't be seen or selected.
+#[test]
+fn a_document_opens_on_its_topmost_visible_unlocked_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let mut d = (*s.doc().unwrap().doc).clone();
+    let top = d.layers.first().unwrap().id;
+    d.layers[0].visible = false;
+    d.layers[0].locked = true;
+    let artwork = d.layers[1].id;
+    assert_eq!(d.default_layer(), top);
+    let st = DocState::new(d, None);
+    assert_eq!(st.active_layer, artwork);
+}
+
+/// When every layer is hidden or locked, a document opens on its top layer, as before.
+#[test]
+fn a_document_with_no_usable_layer_opens_on_its_top_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let mut d = (*s.doc().unwrap().doc).clone();
+    for l in &mut d.layers {
+        l.locked = true;
+    }
+    let top = d.layers[0].id;
+    assert_eq!(DocState::new(d, None).active_layer, top);
+}
+
+/// Deleting the active layer moves new objects to the topmost layer that is shown and unlocked,
+/// not to a hidden, locked top layer.
+#[test]
+fn deleting_the_active_layer_moves_to_a_usable_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let ids: Vec<_> = s.doc().unwrap().doc.layers.iter().map(|l| l.id).collect();
+    let (dieline, artwork, bottom) = (ids[0], ids[1], ids[2]);
+    s.execute("layer.set", &json!({"id": dieline.0, "visible": false, "locked": true})).unwrap();
+    s.active_mut().unwrap().active_layer = bottom;
+    s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
+    assert_eq!(s.doc().unwrap().active_layer, artwork);
+}

@@ -287,13 +287,15 @@ impl DesignApp {
     /// pointer: click to place them one by one, drag with the arrow keys for a grid.
     pub fn open_dropped_batch(&mut self, paths: Vec<String>, pointer: Option<egui::Pos2>) {
         let (images, others): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| is_cursor_image(p));
+        // Only the first graphic of a drop fills the frame under the pointer.
+        let mut frame_free = true;
         for path in others {
-            let _ = self.open_dropped_at(&path, pointer);
+            let _ = self.place_dropped(&path, pointer, &mut frame_free);
         }
         match images.as_slice() {
             [] => {}
             [path] => {
-                let _ = self.open_dropped_at(path, pointer);
+                let _ = self.place_dropped(path, pointer, &mut frame_free);
             }
             _ => self.place_paths(images),
         }
@@ -303,6 +305,13 @@ impl DesignApp {
     /// it; elsewhere an image loads into the place cursor, and another graphic's top left lands
     /// where the file was dropped on the canvas; text goes to a new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
+        self.place_dropped(path, pointer, &mut true)
+    }
+
+    /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
+    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
+    /// the files after it land at the pointer instead of replacing that graphic.
+    pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
         }
@@ -313,11 +322,15 @@ impl DesignApp {
         if document {
             return self.open_file("file.open", json!({"path": path}));
         }
-        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // A graphic dropped on a frame that takes one fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
-        let frame = if designcraft_textimport::is_text_file(path) { None } else { canvas::drop_frame(self, pointer) };
+        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
         if let Some(frame) = frame {
-            return self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+            let placed = self.open_file("file.place", json!({"path": path, "frame": frame.0}));
+            if placed.is_ok() {
+                *frame_free = false;
+            }
+            return placed;
         }
         // An image dropped anywhere else waits in the place cursor, after any it already holds.
         if is_cursor_image(path) {
