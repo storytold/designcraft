@@ -714,6 +714,7 @@ fn link_reproduces(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool 
 /// Apply one finished background write: record the checkpoint of a document still open and
 /// unsaved, or drop the snapshot of one saved, reverted or closed while its write ran. Returns
 /// whether a checkpoint was recorded.
+#[cfg(not(target_arch = "wasm32"))]
 fn record_checkpoint(s: &mut Session, dir: PathBuf, uid: u64) -> bool {
     match s.docs.iter_mut().find(|doc| doc.uid == uid) {
         Some(doc) if doc.is_dirty() => {
