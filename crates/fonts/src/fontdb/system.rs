@@ -57,13 +57,19 @@ fn coverage_ranges(data: &[u8]) -> Vec<(u32, u32)> {
         }
     }
     let mut out: Vec<(u32, u32)> = Vec::new();
-    for cp in 0..0x110000u32 {
-        if ((bits[(cp / 64) as usize] >> (cp % 64)) & 1) == 0 {
+    for (wi, &w) in bits.iter().enumerate() {
+        if w == 0 {
             continue;
         }
-        match out.last_mut() {
-            Some(last) if last.1 + 1 == cp => last.1 = cp,
-            _ => out.push((cp, cp)),
+        for b in 0..64u32 {
+            if (w >> b) & 1 == 0 {
+                continue;
+            }
+            let cp = wi as u32 * 64 + b;
+            match out.last_mut() {
+                Some(last) if last.1 + 1 == cp => last.1 = cp,
+                _ => out.push((cp, cp)),
+            }
         }
     }
     out
