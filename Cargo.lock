@@ -1038,12 +1038,12 @@ source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13af
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/markx77/craft-libs?rev=c5622a1ea55df0c64dc0f77f88f49b098a06ff70#c5622a1ea55df0c64dc0f77f88f49b098a06ff70"
+source = "git+https://github.com/markx77/craft-libs?rev=911d4560552ffa184df109e4176227d44bdf1d05#911d4560552ffa184df109e4176227d44bdf1d05"
 
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/markx77/craft-libs?rev=911d4560552ffa184df109e4176227d44bdf1d05#911d4560552ffa184df109e4176227d44bdf1d05"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -1066,7 +1066,7 @@ dependencies = [
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+https://github.com/markx77/craft-libs?rev=c5622a1ea55df0c64dc0f77f88f49b098a06ff70#c5622a1ea55df0c64dc0f77f88f49b098a06ff70"
+source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -1140,10 +1140,10 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/markx77/craft-libs?rev=c5622a1ea55df0c64dc0f77f88f49b098a06ff70#c5622a1ea55df0c64dc0f77f88f49b098a06ff70"
+source = "git+https://github.com/markx77/craft-libs?rev=911d4560552ffa184df109e4176227d44bdf1d05#911d4560552ffa184df109e4176227d44bdf1d05"
 dependencies = [
  "craft-fonts-build",
- "craft-i18n 0.1.0 (git+https://github.com/markx77/craft-libs?rev=c5622a1ea55df0c64dc0f77f88f49b098a06ff70)",
+ "craft-i18n 0.1.0 (git+https://github.com/markx77/craft-libs?rev=911d4560552ffa184df109e4176227d44bdf1d05)",
  "egui",
  "epaint",
  "js-sys",

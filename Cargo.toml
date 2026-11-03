@@ -168,4 +168,4 @@ egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518f
 # Temporary until storytold/craft-libs#555 lands. Patch every craft-ui consumer so
 # docking and the shared frontend components use the same immutable implementation.
 [patch."https://github.com/storytold/craft-libs"]
-craft-ui = { git = "https://github.com/markx77/craft-libs", rev = "c5622a1ea55df0c64dc0f77f88f49b098a06ff70" }
+craft-ui = { git = "https://github.com/markx77/craft-libs", rev = "911d4560552ffa184df109e4176227d44bdf1d05" }
