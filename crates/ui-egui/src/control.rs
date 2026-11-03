@@ -391,6 +391,11 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             }
             let fields = p.get("fields").cloned().unwrap_or(Value::Null);
             let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
+            // Place PDF on a file named by its path previews its pages, as when File › Place chose it.
+            if id == "pdfImport" && !d.b("async") {
+                let path = d.s("path");
+                app.pdf_preview = app.services.read.as_mut().and_then(|read| read(&path).ok()).map(std::sync::Arc::new);
+            }
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)

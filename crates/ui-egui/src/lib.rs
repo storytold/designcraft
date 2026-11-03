@@ -130,6 +130,9 @@ struct ShotRequest {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    /// The file a Place PDF dialog opened on a path shows pages of (a delivered file is
+    /// `pending_pdf`); released once that dialog closes.
+    pdf_preview: Option<std::sync::Arc<Vec<u8>>>,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]
