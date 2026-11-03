@@ -108,6 +108,10 @@ pub struct DocState {
     /// Recovery entries this state actually opened or published, for repeated-open and cleanup.
     /// Bounded, deduplicated checkpoint addresses; never inferred from uid alone.
     pub(crate) recovery_entries: Vec<(std::path::PathBuf, u64)>,
+    /// The document revision the checkpoint in each recovery folder holds, so a document nobody
+    /// has touched since is not serialized and rewritten on every recovery tick. A revision names
+    /// a document state (see [`DocState::bump_revision`]), so an equal revision is equal content.
+    pub(crate) recovery_revisions: Vec<(std::path::PathBuf, u64)>,
     /// Unfilled document while data-merge preview is showing a record. Not saved.
     pub preview_stash: Option<Arc<Document>>,
     /// 1-based record currently previewed.
@@ -165,6 +169,7 @@ impl DocState {
             uid: identity_epoch,
             identity_epoch,
             recovery_entries: Vec::new(),
+            recovery_revisions: Vec::new(),
             preview_stash: None,
             preview_record: None,
             fonts: None,
