@@ -71,7 +71,17 @@ impl<'r> Importer<'r> {
 
     pub(super) fn graphics(&mut self, top: &[El]) {
         let mut order: Vec<(String, Swatch)> = Vec::new();
-        // Colours.
+        // Colours. The gradient tool writes a fresh, undocumented, machine-named swatch
+        // ("r204g51b51", a trailing " 2" when InDesign had to dedupe it against itself) for every
+        // process-colour stop it ever touched, so real files accumulate dozens of these; a later
+        // one with the same cleaned name AND the same value merges into the first swatch of that
+        // value instead of staying apart. A spot keeps its own name regardless (Ink Manager
+        // settings and ink aliases, read below, are matched by name, and a spot's identity is the
+        // ink it prints on, not its RGB preview). `auto_colors` maps the merge key to the kept
+        // swatch's id and value; `auto_color_dup` records every id a later duplicate skipped, so
+        // its name can be pointed at the kept swatch's own (possibly since-disambiguated) name.
+        let mut auto_colors: HashMap<String, (String, Color)> = HashMap::new();
+        let mut auto_color_dup: Vec<(String, String)> = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Color") {
             let Some(id) = e.get("Self") else { continue };
             let Some((c, ty)) = Self::color_of(e) else { continue };
@@ -90,6 +100,28 @@ impl<'r> Importer<'r> {
                 self.hidden_colors.insert(id.to_string(), c);
                 continue;
             }
+            let cleaned = if ty == ColorType::Process { clean_auto_rgb_name(name) } else { None };
+            let name = cleaned.as_deref().unwrap_or(name);
+            if cleaned.is_some() {
+                let key = format!("{ty:?}:{name}");
+                match auto_colors.get(&key) {
+                    Some((kept_id, kept_color)) if *kept_color == c => {
+                        // A same-value duplicate: this id resolves to the kept swatch, whatever
+                        // that swatch ends up named once disambiguation (below) settles it.
+                        self.swatch_names.insert(id.to_string(), name.to_string());
+                        auto_color_dup.push((id.to_string(), kept_id.clone()));
+                        continue;
+                    }
+                    // Same cleaned name, different value: not this one's duplicate either. Keeps
+                    // its own entry, disambiguated by name like any other collision, and leaves
+                    // the earlier candidate as the one later same-value duplicates still merge
+                    // into (replacing it here would lose that candidate for good).
+                    Some(_) => {}
+                    None => {
+                        auto_colors.insert(key, (id.to_string(), c));
+                    }
+                }
+            }
             let named = !name.starts_with("C=") && !name.starts_with("R=");
             self.swatch_names.insert(id.to_string(), name.to_string());
             order.push((
@@ -97,10 +129,17 @@ impl<'r> Importer<'r> {
                 Swatch { name: name.to_string(), value: SwatchValue::Color { color: c, color_type: ty }, locked: false, named, hidden: false },
             ));
         }
-        // Tints (after colours: they reference them).
+        // Tints (after colours: they reference them). A tint's base id, so its stored `base` name
+        // can be refreshed below if disambiguation (or an auto-named duplicate's merge) renames
+        // the colour it was resolved to here.
+        let mut tint_bases: Vec<(String, String)> = Vec::new();
         for e in top.iter().filter(|e| e.local() == "Tint") {
             let Some(id) = e.get("Self") else { continue };
-            let base = e.get("BaseColor").map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
+            let base_id = e.get("BaseColor");
+            let base = base_id.map(|b| self.swatch_ref(b)).unwrap_or_else(|| swatch::BLACK.to_string());
+            if let Some(base_id) = base_id {
+                tint_bases.push((id.to_string(), base_id.to_string()));
+            }
             let t = e.num("TintValue").unwrap_or(100.0);
             let name = match e.get("Name") {
                 Some(n) if !n.is_empty() && n != "$ID/" => n.to_string(),
@@ -119,7 +158,12 @@ impl<'r> Importer<'r> {
             let mut stops: Vec<GradientStop> = Vec::new();
             for s in e.find_all("GradientStop") {
                 let r = s.get("StopColor");
-                let c = r.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
+                // A merged duplicate's id has no `pending` entry of its own, and its name alone
+                // can't tell it apart from an unrelated swatch that happens to share it (still
+                // undisambiguated at this point) — resolve it to its kept swatch's id directly,
+                // rather than leaving it to color_for_ref's id-or-name fallback.
+                let resolved = r.map(|r| auto_color_dup.iter().find(|(dup, _)| dup.as_str() == r).map_or(r, |(_, kept)| kept.as_str()));
+                let c = resolved.map(|r| self.color_for_ref(r, &order)).unwrap_or(Color::BLACK);
                 // A stop on a named swatch (a spot, a tint, [Paper]) keeps it for its inks;
                 // unnamed colors stay plain. The id becomes the swatch's name below, once
                 // repeated names are numbered.
@@ -163,8 +207,47 @@ impl<'r> Importer<'r> {
             names.insert(s.name.clone());
             self.swatches.push(s);
         }
+        // A merged duplicate's id still named itself after its own (pre-disambiguation) cleaned
+        // name above; point it at the kept swatch's final one, in case disambiguation renamed it.
+        for (dup_id, kept_id) in auto_color_dup {
+            if let Some(final_name) = self.swatch_names.get(&kept_id).cloned() {
+                self.swatch_names.insert(dup_id, final_name);
+            }
+        }
+        // A tint's `base` above is the name its base colour had *then*; refresh it to that
+        // colour's final one, in case disambiguation (or an auto-named duplicate's merge, both
+        // above) renamed it since.
+        for (tint_id, base_id) in tint_bases {
+            let (Some(tint_name), Some(base_name)) = (self.swatch_names.get(&tint_id).cloned(), self.swatch_names.get(&base_id).cloned()) else {
+                continue;
+            };
+            if let Some(SwatchValue::Tint { base, .. }) = self.swatches.iter_mut().skip(first_new).find(|s| s.name == tint_name).map(|s| &mut s.value)
+            {
+                *base = base_name;
+            }
+        }
+        // A gradient stop's `color` was computed while its swatch (directly, or as a tint's base)
+        // could still share its pre-disambiguation name with another one — the same ambiguity
+        // `color_for_ref`'s `pending` lookup has, just reached through a swatch already pushed to
+        // `self.swatches` instead. Every name is unique now, so recompute each stop's colour
+        // against the final swatches before resolving `swatch` from an id to that final name (the
+        // id is still in `stop.swatch` at this point, exactly so this lookup can use it).
+        let final_swatches = self.swatches.clone();
+        let resolved_color = |raw_ref: &str, swatch_names: &HashMap<String, String>| {
+            let name = swatch_names.get(raw_ref)?;
+            match &final_swatches.iter().find(|s| &s.name == name)?.value {
+                SwatchValue::Color { color, .. } => Some(*color),
+                SwatchValue::Tint { base, tint } => designcraft_color::swatch::resolve(&final_swatches, base, *tint),
+                _ => None,
+            }
+        };
         let stop_names = |stops: &mut Vec<GradientStop>, ids: &HashMap<String, String>| {
             for stop in stops {
+                if let Some(raw_ref) = &stop.swatch
+                    && let Some(c) = resolved_color(raw_ref, ids)
+                {
+                    stop.color = c;
+                }
                 stop.swatch = stop.swatch.take().and_then(|id| ids.get(&id).cloned());
             }
         };
@@ -191,7 +274,13 @@ impl<'r> Importer<'r> {
             "Color/Registration" => return Color::cmyk(1.0, 1.0, 1.0, 1.0),
             _ => {}
         }
-        if let Some((_, s)) = pending.iter().find(|(id, _)| id == r) {
+        // An exact id match first: a colour's own entry, however many others share its (possibly
+        // still pre-disambiguation, so non-unique) name. Only once that fails — a merged
+        // auto-named duplicate's own id never got its own `pending` entry, since it shares the
+        // kept swatch's — fall back to resolving by name.
+        let name = self.swatch_names.get(r).map(String::as_str);
+        let found = pending.iter().find(|(id, _)| id == r).or_else(|| pending.iter().find(|(_, s)| name == Some(s.name.as_str())));
+        if let Some((_, s)) = found {
             match &s.value {
                 SwatchValue::Color { color, .. } => return *color,
                 SwatchValue::Tint { base, tint } => {
@@ -249,4 +338,24 @@ impl<'r> Importer<'r> {
         }
         swatch::NONE.into()
     }
+}
+
+/// `r204g51b51` or `r204g51b51 2` (InDesign's own undocumented naming for a colour the Gradient
+/// tool created, the trailing number from InDesign deduping its own name against itself): the
+/// same `"R=.. G=.. B=.."` format this importer already gives value-named colours elsewhere.
+/// `None` for anything else, including a real user name that happens to start with `r`.
+fn clean_auto_rgb_name(name: &str) -> Option<String> {
+    let rest = name.strip_prefix('r')?;
+    let (r, rest) = take_digits(rest)?;
+    let rest = rest.strip_prefix('g')?;
+    let (g, rest) = take_digits(rest)?;
+    let rest = rest.strip_prefix('b')?;
+    let (b, rest) = take_digits(rest)?;
+    let rest = rest.trim();
+    (rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit())).then(|| format!("R={r} G={g} B={b}"))
+}
+
+fn take_digits(s: &str) -> Option<(u16, &str)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (end > 0 && end <= 3).then(|| s[..end].parse().ok()).flatten().map(|n| (n, &s[end..]))
 }
