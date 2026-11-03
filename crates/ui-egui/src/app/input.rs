@@ -163,6 +163,10 @@ impl DesignApp {
     /// none. `None` when the system doesn't say or the window's place isn't known.
     pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
         let at = (self.services.pointer.as_ref()?)()?;
+        // The system's points are unscaled; egui's (the window's rect too) are divided by the
+        // UI scale.
+        let zoom = ctx.zoom_factor();
+        let at = if zoom.is_finite() && zoom > 0.0 { at / zoom } else { at };
         let inner = ctx.input(|i| i.viewport().inner_rect)?;
         let local = at - inner.min.to_vec2();
         (local.x.is_finite() && local.y.is_finite()).then_some(local)
