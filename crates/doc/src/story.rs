@@ -39,6 +39,35 @@ pub const FORCED_LINE_BREAK: char = '\u{2028}';
 pub const ODD_PAGE_BREAK: char = '\u{E011}';
 pub const EVEN_PAGE_BREAK: char = '\u{E012}';
 
+/// Encode a table-of-contents separator using InDesign's special-character notation.
+pub fn toc_separator_notation(text: &str) -> String {
+    text.replace('^', "^^").replace('\t', "^t").replace(RIGHT_INDENT_TAB, "^y").replace('\u{2003}', "^m").replace('\u{2002}', "^>")
+}
+
+/// Decode TOC notation, preserving unknown codes and an escaped literal caret.
+pub fn toc_separator_text(notation: &str) -> String {
+    let mut text = String::new();
+    let mut chars = notation.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '^' {
+            text.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('t') => text.push('\t'),
+            Some('y') => text.push(RIGHT_INDENT_TAB),
+            Some('m') => text.push('\u{2003}'),
+            Some('>') => text.push('\u{2002}'),
+            Some('^') | None => text.push('^'),
+            Some(other) => {
+                text.push('^');
+                text.push(other);
+            }
+        }
+    }
+    text
+}
+
 /// A column, frame or page break character. It ends its paragraph: the story stores it as the
 /// paragraph's last character, followed by the `\n` separator (also at the end of the story), and
 /// the next paragraph starts in the next column, frame or page. A break inside a paragraph (from
@@ -284,6 +313,24 @@ impl Story {
         }
         v.push(start..self.text.len());
         v
+    }
+
+    /// The paragraphs `r` touches (at least the one at `r.start`), as (index, byte range without
+    /// its return), found from `r` itself rather than by listing every paragraph of the story.
+    pub fn paras_touching(&self, r: std::ops::Range<usize>) -> Vec<(usize, std::ops::Range<usize>)> {
+        let start = floor_char_boundary(&self.text, r.start.min(self.text.len()));
+        let mut pi = self.para_at(start);
+        let mut a = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let mut out = Vec::new();
+        loop {
+            let b = self.text[a..].find('\n').map_or(self.text.len(), |i| a + i);
+            out.push((pi, a..b));
+            // The next paragraph starts after this one's return: is it still inside `r`?
+            if b >= self.text.len() || b + 1 >= r.end {
+                return out;
+            }
+            (a, pi) = (b + 1, pi + 1);
+        }
     }
 
     /// Index of the paragraph containing byte `pos`.
@@ -637,6 +684,27 @@ mod tests {
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    /// `paras_touching` gives the paragraphs a range reaches into (returns included), as listing
+    /// every paragraph would, for every range of a story with empty and multi-byte paragraphs.
+    #[test]
+    fn paras_touching_matches_the_full_listing() {
+        let s = st("ab
+
+çé
+last");
+        let all = s.para_ranges();
+        for a in 0..=s.len() {
+            for b in a..=s.len() {
+                if !s.text.is_char_boundary(a) || !s.text.is_char_boundary(b) {
+                    continue;
+                }
+                let want: Vec<(usize, std::ops::Range<usize>)> =
+                    all.iter().cloned().enumerate().filter(|(i, p)| *i == s.para_at(a) || (a < b && p.start < b && a <= p.end)).collect();
+                assert_eq!(s.paras_touching(a..b), want, "{a}..{b}");
+            }
+        }
     }
 
     #[test]
