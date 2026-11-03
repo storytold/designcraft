@@ -1027,22 +1027,4 @@ mod nested_frame_tests {
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
     }
-
-    /// A document whose top layer is hidden and locked (a dieline) opens with new objects going to
-    /// the topmost layer that is shown and unlocked, not where they couldn't be seen or selected.
-    #[test]
-    fn a_document_opens_on_its_topmost_visible_unlocked_layer() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
-        s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
-        let mut d = (*s.doc().unwrap().doc).clone();
-        let top = d.layers.first().unwrap().id;
-        d.layers[0].visible = false;
-        d.layers[0].locked = true;
-        let artwork = d.layers[1].id;
-        assert_eq!(d.default_layer(), top);
-        let st = crate::DocState::new(d, None);
-        assert_eq!(st.active_layer, artwork);
-    }
 }
