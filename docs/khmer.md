@@ -29,6 +29,12 @@ scaling still applies. A single word without a safe word gap keeps its natural
 width, including under Full Justify. Khmer letters are never spread to fill a line.
 Paragraph and single-line composers share the same boundary source.
 
+Imported Ligatures Off or tracking settings cannot disable required Khmer
+shaping: `clig` remains enabled, and legacy AAT fonts retain the `liga`
+substitutions they use to form subscripts. This preserves document settings
+while keeping coeng sequences shaped; Latin ligature controls are unchanged.
+See the [Khmer OpenType shaping specification](https://learn.microsoft.com/en-us/typography/script-development/khmer).
+
 ## Existing contributions
 
 [DesignCraft #516](https://github.com/storytold/designcraft/pull/516), by
