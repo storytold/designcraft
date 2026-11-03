@@ -105,14 +105,14 @@ pub(crate) fn content_aware(g: &Graphic, frame: Rect, map: Option<&(usize, usize
         let profile: Vec<f64> = (0..cols).map(|x| (0..rows).map(|y| f64::from(s[y * cols + x])).sum()).collect();
         if let Some(c) = centre_of(&profile) {
             let start = c * nw - area.width() / k / 2.0;
-            tx = area.x0 - start.clamp(0.0, nw - area.width() / k) * k;
+            tx = area.x0 - start.min(nw - area.width() / k).max(0.0) * k;
         }
     }
     if nh * k > area.height() + 1e-6 {
         let profile: Vec<f64> = (0..rows).map(|y| (0..cols).map(|x| f64::from(s[y * cols + x])).sum()).collect();
         if let Some(c) = centre_of(&profile) {
             let start = c * nh - area.height() / k / 2.0;
-            ty = area.y0 - start.clamp(0.0, nh - area.height() / k) * k;
+            ty = area.y0 - start.min(nh - area.height() / k).max(0.0) * k;
         }
     }
     Some(Affine::translate((tx, ty)) * Affine::scale(k))
