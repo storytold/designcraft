@@ -2868,3 +2868,35 @@ fn the_caret_blink_restarts_on_input_and_caret_changes() {
     assert!((caret::until_flip(0.96) - 0.025).abs() < 1e-9);
     assert!((caret::until_flip(1.0) - 0.625).abs() < 1e-9);
 }
+
+#[test]
+fn a_blurred_window_hides_the_caret_and_stops_repainting() {
+    let ctx = egui::Context::default();
+    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
+
+    let caret_causes = |ctx: &egui::Context| {
+        let causes = ctx.repaint_causes();
+        causes.iter().filter(|c| c.file.ends_with("canvas/caret.rs")).count()
+    };
+
+    // `repaint_causes` reports the pass before last, so each measured pass is followed by an empty one.
+    let mut visible = true;
+    let mut out = ctx.run_ui(egui::RawInput { focused: false, time: Some(10.0), ..Default::default() }, |_| {});
+    out.textures_delta.clear();
+    let mut out =
+        ctx.run_ui(egui::RawInput { focused: false, time: Some(10.1), ..Default::default() }, |ui| visible = caret::visible(ui.ctx(), caret));
+    out.textures_delta.clear();
+    let mut out = ctx.run_ui(egui::RawInput { focused: false, time: Some(10.2), ..Default::default() }, |_| {});
+    out.textures_delta.clear();
+    assert_eq!(caret_causes(&ctx), 0, "a blurred window schedules no blink repaint");
+    assert!(!visible, "and draws no caret");
+
+    // Positive control: the same assertion sees the repaint a focused window schedules.
+    let mut out =
+        ctx.run_ui(egui::RawInput { focused: true, time: Some(10.3), ..Default::default() }, |ui| visible = caret::visible(ui.ctx(), caret));
+    out.textures_delta.clear();
+    let mut out = ctx.run_ui(egui::RawInput { focused: true, time: Some(10.4), ..Default::default() }, |_| {});
+    out.textures_delta.clear();
+    assert!(visible, "a focused window draws the caret");
+    assert_eq!(caret_causes(&ctx), 1, "and schedules the next blink");
+}
