@@ -28,7 +28,11 @@ impl<'a> Ex<'a> {
                 }
                 self.char_attrs(&mut el, &mut props, &cs.chars);
             }
-            cg.insert(&cs.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = styles.export_tag(&cs.name, true) {
+                el.push(self.export_tag_map(t));
+            }
+            cg.insert(&cs.name, el);
         }
         let mut rc = El::new("RootCharacterStyleGroup").attr("Self", self.fresh());
         cg.emit(&mut rc, "CharacterStyleGroup", "");
@@ -65,10 +69,15 @@ impl<'a> Ex<'a> {
             let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent_props));
             self.para_attrs(&mut el, &mut props, &pa, parent);
             self.char_attrs(&mut el, &mut props, &ca);
-            if styles.export_tag(&ps.name, false).is_some_and(|t| t.split) {
+            let tag = styles.export_tag(&ps.name, false);
+            if tag.is_some_and(|t| t.split) {
                 el.set("SplitDocument", "true");
             }
-            pg.insert(&ps.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = tag {
+                el.push(self.export_tag_map(t));
+            }
+            pg.insert(&ps.name, el);
         }
         let mut rp = El::new("RootParagraphStyleGroup").attr("Self", self.fresh());
         pg.emit(&mut rp, "ParagraphStyleGroup", "");
@@ -157,6 +166,18 @@ impl<'a> Ex<'a> {
             root.push(self.toc_style_el(toc));
         }
         document(&root)
+    }
+
+    /// A style's Export Tagging as its EPUB export tag map.
+    fn export_tag_map(&mut self, t: &designcraft_doc::ExportTag) -> El {
+        El::new("StyleExportTagMap")
+            .attr("Self", self.fresh())
+            .attr("ExportType", "EPUB")
+            .attr("ExportTag", &t.tag)
+            .attr("ExportClass", &t.class)
+            .attr("ExportAttributes", "")
+            .attr("SplitDocument", bool_s(t.split))
+            .attr("EmitCss", "true")
     }
 
     fn append_cell_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
@@ -302,7 +323,7 @@ impl<'a> Ex<'a> {
             .attr("RunIn", "false")
             .attr("IncludeHidden", "false")
             .attr("IncludeBookDocuments", "false")
-            .attr("CreatePdfBookmarks", "false");
+            .attr("CreateBookmarks", if toc.create_bookmarks { "true" } else { "false" });
         for e in &toc.entries {
             let format = e.entry_style.clone().unwrap_or_else(|| format!("TOC Level {}", e.level));
             let position = match e.page_number {
@@ -335,6 +356,17 @@ impl<'a> Ex<'a> {
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
         el.set(&format!("{k}RightIndent"), num(r.right_indent));
+        el.set(&format!("{k}Type"), names::stroke_type_out(&r.kind));
+        // A gap in Text Color is a string property, as the rule's own colour is.
+        if r.gap_color == designcraft_doc::TEXT_COLOR {
+            props.push(p(&format!("{k}GapColor"), "string", designcraft_doc::TEXT_COLOR));
+        } else {
+            el.set(&format!("{k}GapColor"), self.sw(&r.gap_color));
+        }
+        el.set(&format!("{k}GapTint"), pct(r.gap_tint as f64));
+        if k == "RuleAbove" {
+            el.set("KeepRuleAboveInFrame", bool_s(r.keep_in_frame));
+        }
         props.push(if r.color == designcraft_doc::TEXT_COLOR {
             p(&format!("{k}Color"), "string", designcraft_doc::TEXT_COLOR)
         } else {
