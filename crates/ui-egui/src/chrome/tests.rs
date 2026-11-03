@@ -180,6 +180,51 @@ fn status_bar_error_count_opens_the_preflight_panel() {
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
 
+/// The course's chapter 25: while a parent is shown, the status bar's page box names it
+/// ("A-Parent"), as InDesign's. Its menu lists the pages, then the parents: a parent shows
+/// that parent, a page leaves the parents for that page.
+#[test]
+fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
+    use egui::accesskit::Role;
+    let mut app = app();
+    app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
+    app.run("layout.parents.new", serde_json::json!({"prefix": "B", "name": "Cover"})).unwrap();
+    app.ui.dock_tab = "properties".into();
+    let mut h = test_window::open(app, vec2(1200.0, 700.0));
+    let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+        let b = h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"));
+        b.value().unwrap_or_default()
+    };
+    assert_eq!(shown(&h), "1");
+    h.state_mut().app.run("layout.parents.edit", serde_json::json!({"on": true})).unwrap();
+    h.run_steps(6);
+    assert_eq!(shown(&h), "A-Parent");
+    // The menu: a parent.
+    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    h.run_steps(3);
+    for name in ["1", "2", "3", "4", "A-Parent"] {
+        // The canvas or a panel may show the name too: the menu lists it.
+        assert!(h.query_all_by_label(name).next().is_some(), "{name} is listed");
+    }
+    // The menu, drawn last, holds the last match.
+    h.get_all_by_label("B-Cover").last().unwrap().click();
+    h.run_steps(6);
+    assert_eq!(shown(&h), "B-Cover");
+    assert_eq!(crate::canvas::current_parent_page(&h.state().app).map(|(i, _)| i), Some(1));
+    // A page: the parents are left.
+    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    h.run_steps(3);
+    h.get_all_by_label("3").last().unwrap().click();
+    h.run_steps(6);
+    assert!(!h.state().app.session.active().unwrap().editing_parents);
+    assert_eq!(crate::canvas::current_page(&h.state().app), Some(2));
+    assert_eq!(shown(&h), "3");
+    // Its accessible name is in the interface's language.
+    h.state_mut().app.ui.language = "de".into();
+    h.run_steps(3);
+    assert!(h.query_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Seite")).is_some(), "the page box is Seite");
+}
+
 /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
 #[test]
 fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
@@ -470,7 +515,7 @@ fn the_page_tool_has_its_own_control_panel() {
     app.run("file.new", serde_json::json!({"width": 252, "height": 144, "facingPages": false})).unwrap();
     app.session.set_tool("page");
     let mut h = test_window::open(app, vec2(1800.0, 600.0));
-    let _ = h.get_by_label("Liquid Page Rule:");
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Liquid Page Rule:");
     // Pages don't move within their spread, so there is no "Objects Move with Page" option, and
     // no "Controlled by Parent" rule until parent pages have rules of their own.
     assert!(h.query_by_label("Objects Move with Page").is_none());
@@ -865,4 +910,145 @@ fn caption_buttons_fit_the_minimum_window_width() {
         let p = rect.center();
         assert!(!h.click(p).is_empty(), "{id} remains clickable");
     }
+}
+
+#[test]
+fn parent_resize_properties_keep_size_and_inline_parent_margins() {
+    parent_resize_panel(true);
+}
+
+#[test]
+fn parent_resize_control_changes_the_parent_not_document_page_zero() {
+    parent_resize_panel(false);
+}
+
+fn parent_resize_panel(properties: bool) {
+    use egui_kittest::Harness;
+    {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({"width": 400, "height": 600, "pages": 3, "facingPages": true})).unwrap();
+        app.run("layout.parents.new", serde_json::json!({"prefix": "B"})).unwrap();
+        app.run("layout.pages.applyParent", serde_json::json!({"pages": [0], "parent": "A"})).unwrap();
+        if properties {
+            app.run("layout.marginsAndColumns", json!({"parent": 1, "pages": [0], "margins": 24})).unwrap();
+            app.run(
+                "layout.marginsAndColumns",
+                json!({"parent": 1, "pages": [1], "margins": {"top": 36, "bottom": 48, "inside": 60, "outside": 72}}),
+            )
+            .unwrap();
+            app.run("layout.pages.applyParent", json!({"pages": [0, 1, 2], "parent": "B"})).unwrap();
+            app.run("layout.marginsAndColumns", json!({"pages": [0], "margins": 90})).unwrap();
+        }
+        app.run("layout.parents.edit", serde_json::json!({"on": true, "parent": "A"})).unwrap();
+        app.session.set_tool("page");
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
+        *app.view_mut().unwrap() = crate::View { zoom: 1.0, origin: designcraft_geom::Point::new(-600.0, 0.0), fitted: true, rotation: 0 };
+        let before = app.session.doc().unwrap().doc.clone();
+        let mut h = Harness::builder().with_size(vec2(1600.0, 900.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("parent_resize_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                if properties {
+                    panels::properties::show(app, ui);
+                } else {
+                    super::control_bar::control_page(app, ui);
+                }
+            },
+            app,
+        );
+        h.run_steps(3);
+        edit_parent_resize_field(&mut h, "33p4", "500 pt");
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.parents[0].pages[0].width, 500.0, "the parent page in view must change");
+        assert_eq!(d.spreads, before.spreads);
+        assert_eq!(d.parents[1], before.parents[1]);
+        let b = before.parents[1].id.0;
+        h.state_mut().run("layout.selectParentPage", json!({"parent": b, "page": 1})).unwrap();
+        h.run_steps(3);
+        assert_eq!(crate::canvas::current_parent_page(h.state()), Some((1, 1)));
+        if properties {
+            h.state_mut().session.set_tool("selection");
+        }
+        h.run_steps(3);
+        edit_parent_resize_field(&mut h, "50p0", "700 pt");
+        edit_parent_resize_field(&mut h, "33p4", "560 pt");
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!((d.parents[1].pages[1].width, d.parents[1].pages[1].height), (560.0, 700.0));
+        assert_eq!(d.parents[1].pages[0].width, 400.0);
+        assert_eq!(d.parents[0].pages[0].width, 500.0);
+        assert_eq!(d.spreads, before.spreads);
+        let parents = d.parents.clone();
+        if properties {
+            let saved = d.clone();
+            check_parent_margin_edits(&mut h);
+            h.get_by_label("Back").click();
+            h.run_steps(3);
+            assert!(!h.state().session.doc().unwrap().editing_parents, "Back returns to document properties");
+            assert_eq!(h.state().session.tool_id(), "selection");
+            assert!(h.query_by_label("Back").is_none(), "the next frame must leave the page properties screen");
+            assert!(std::sync::Arc::ptr_eq(&saved, &h.state().session.doc().unwrap().doc));
+        }
+        h.state_mut().run("layout.parents.edit", json!({"on": false})).unwrap();
+        h.state_mut().session.set_tool("page");
+        h.state_mut().run("layout.selectPage", json!({"page": 1})).unwrap();
+        h.run_steps(3);
+        edit_parent_resize_field(&mut h, "33p4", "530 pt");
+        let d = &h.state().session.doc().unwrap().doc;
+        assert_eq!(d.spreads[0].pages[0].width, 530.0);
+        assert_eq!(d.parents, parents);
+        if properties {
+            let saved = d.clone();
+            h.get_by_label("Back").click();
+            h.run_steps(3);
+            assert_eq!(h.state().session.tool_id(), "selection");
+            assert!(h.query_by_label("Back").is_none());
+            assert_eq!(h.state().session.doc().unwrap().selection.page, None);
+            assert!(std::sync::Arc::ptr_eq(&saved, &h.state().session.doc().unwrap().doc));
+        }
+    }
+}
+
+fn check_parent_margin_edits(h: &mut egui_kittest::Harness<'_, DesignApp>) {
+    let saved = h.state().session.doc().unwrap().doc.clone();
+    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Top").value().as_deref(), Some("3p0"));
+    edit_parent_resize_field(h, "3p0", "72 pt");
+    let edited = &h.state().session.doc().unwrap().doc;
+    assert_eq!(edited.parents[1].pages[1].margins, designcraft_doc::Margins::uniform(72.0));
+    assert_eq!(edited.parents[1].pages[0], saved.parents[1].pages[0]);
+    assert_eq!(edited.parents[0], saved.parents[0]);
+    assert_eq!(edited.page(0), saved.page(0), "local document margins stay unchanged");
+    assert_eq!(edited.page(1), saved.page(1), "the other parent page's inheritor stays unchanged");
+    assert_eq!(edited.page(2).unwrap().margins, designcraft_doc::Margins::uniform(72.0));
+    assert_eq!(edited.settings, saved.settings);
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().doc, saved);
+    h.get_by_label("Make all settings the same").click();
+    h.run_steps(3);
+    edit_parent_resize_field(h, "3p0", "84 pt");
+    let edited = &h.state().session.doc().unwrap().doc;
+    let margins = designcraft_doc::Margins { top: 84.0, bottom: 48.0, inside: 60.0, outside: 72.0 };
+    assert_eq!(edited.parents[1].pages[1].margins, margins);
+    assert_eq!(edited.parents[1].pages[0], saved.parents[1].pages[0]);
+    assert_eq!(edited.parents[0], saved.parents[0]);
+    assert_eq!(edited.page(0), saved.page(0));
+    assert_eq!(edited.page(1), saved.page(1));
+    assert_eq!(edited.page(2).unwrap().margins, margins);
+    assert_eq!(edited.settings, saved.settings);
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().session.doc().unwrap().doc, saved);
+}
+
+fn edit_parent_resize_field(h: &mut egui_kittest::Harness<'_, DesignApp>, value: &str, input: &str) {
+    h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(value)).next().expect("page size field").click();
+    h.run_steps(2);
+    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    h.event(egui::Event::Text(input.into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
 }

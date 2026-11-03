@@ -3,7 +3,7 @@ use super::face::{BUNDLED, FontSource, enumerate_faces};
 use super::face::{FALLBACK_FAMILY, FontFace, last_resort_face, make_face};
 use super::fallback::{cjk_chain, script_chain};
 use super::names::{alternate_names, base_style, has_wws_family, known_as, norm, style_italic, style_weight};
-use super::*;
+use super::{Arc, BezPath, FamilyInfo, FontDb, MetadataProvider, PoisonError};
 
 /// One document's view of the [`FontDb`] ([`FontDb::scoped`]): the fonts of its `Document Fonts`
 /// folder, then the shared fonts (bundled, installed, added). Other documents' fonts aren't in it.
@@ -447,53 +447,109 @@ mod native_gui_document_fonts_tests {
         db.set_system_fallback(false);
         let scope = db.scoped(0);
         let japanese = crate::japanese_document_fonts();
-        let previous: Vec<_> = BUNDLED
+        assert_existing_document_faces_keep_order(&db, &japanese);
+        assert_primary_bundled_faces(&db);
+        assert_japanese_fonts_keep_priority(&japanese);
+        let latin = db.face(crate::DEFAULT_FAMILY, "Regular");
+        assert_japanese_fallback_priority(&db, latin.id());
+        let admitted = assert_canonical_script_fonts(&db, &scope, latin.id());
+        let loaded = loaded_faces(&db);
+        let previous_len = canonical_bundled_faces(&japanese).len();
+        assert_eq!(&loaded[previous_len..], admitted.as_slice(), "only the two deliberate Regular tuples follow the existing document faces");
+        assert!(!scope.has_family("Unavailable Native GUI Family"));
+        assert_eq!(scope.face("Unavailable Native GUI Family", "Regular").family, FALLBACK_FAMILY);
+    }
+
+    fn canonical_bundled_faces(japanese: &[&crate::CraftFont]) -> Vec<(String, String)> {
+        BUNDLED
             .iter()
             .copied()
-            .chain(japanese.iter().map(|f| f.bytes))
+            .chain(japanese.iter().map(|font| font.bytes))
             .flat_map(enumerate_faces)
             .map(|(_, family, style, _)| (family, style))
-            .collect();
-        let loaded: Vec<_> = db.read_faces().iter().map(|f| (f.family.clone(), f.style.clone())).collect();
-        assert!(loaded.len() >= previous.len(), "existing bundled/Japanese faces disappeared");
-        assert_eq!(&loaded[..previous.len()], previous.as_slice(), "preserve all Latin and Japanese face ordering");
+            .collect()
+    }
+
+    fn loaded_faces(db: &FontDb) -> Vec<(String, String)> {
+        db.read_faces().iter().map(|face| (face.family.clone(), face.style.clone())).collect()
+    }
+
+    fn assert_existing_document_faces_keep_order(db: &FontDb, japanese: &[&crate::CraftFont]) {
+        let expected = canonical_bundled_faces(japanese);
+        let loaded = loaded_faces(db);
+        assert!(loaded.len() >= expected.len(), "existing bundled/Japanese faces disappeared");
+        assert_eq!(&loaded[..expected.len()], expected.as_slice(), "preserve all Latin and Japanese face ordering");
+    }
+
+    fn assert_primary_bundled_faces(db: &FontDb) {
         for family in ["Source Sans 3", "Source Serif 4", "Inter", "JetBrains Mono"] {
             let face = db.face(family, "Regular");
             assert_eq!((face.family.as_str(), face.style.as_str(), &face.source), (family, "Regular", &FontSource::Bundled));
         }
+    }
+
+    fn assert_japanese_fonts_keep_priority(japanese: &[&crate::CraftFont]) {
         assert!(!japanese.is_empty(), "the required central manifest includes the existing Japanese faces");
         assert!(japanese[0].family.contains("Mincho"));
         assert_eq!(crate::japanese_ui_fonts(false)[0].family, "BIZ UDPGothic");
         assert_eq!(crate::japanese_ui_fonts(true)[0].style, "Bold");
-        let latin = db.face(crate::DEFAULT_FAMILY, "Regular");
+    }
+
+    fn assert_japanese_fallback_priority(db: &FontDb, latin_face_id: u32) {
         for language in [Some("ja"), None] {
-            assert!(db.fallback_for('語', latin.id(), language).unwrap().family.contains("Mincho"), "Japanese fallback changed: {language:?}");
+            assert!(
+                db.fallback_for('語', latin_face_id, language).is_some_and(|face| face.family.contains("Mincho")),
+                "Japanese fallback changed: {language:?}"
+            );
         }
+    }
+
+    fn assert_canonical_script_fonts(db: &FontDb, scope: &ScopedFonts<'_>, latin_face_id: u32) -> Vec<(String, String)> {
         let mut admitted = Vec::new();
         for (family, text) in [("Noto Sans Hebrew", "שלום עולם"), ("Noto Sans Devanagari", "नमस्ते दुनिया")] {
-            let embedded: Vec<_> = crate::CRAFT_FONTS.iter().filter(|f| f.family == family && f.style == "Regular").collect();
+            let embedded: Vec<_> = crate::CRAFT_FONTS.iter().filter(|font| font.family == family && font.style == "Regular").collect();
             assert_eq!(embedded.len(), 1, "exactly one canonical {family} Regular input");
-            assert!(scope.has_family(family), "production database did not register {family}");
-            assert!(scope.has_style(family, "Regular"), "{family} Regular");
-            assert!(!scope.has_style(family, "Unavailable Native GUI Style"));
-            assert!(db.families().iter().any(|f| f == family), "family catalog omits {family}");
-            assert!(scope.family_infos().iter().any(|f| f.family == family), "menu catalog omits {family}");
+            assert_script_face_registered(db, scope, family, embedded[0].bytes);
             let face = scope.face(family, "Regular");
-            assert_eq!((face.family.as_str(), face.style.as_str(), &face.source), (family, "Regular", &FontSource::Bundled));
-            assert_eq!(face.data(), embedded[0].bytes, "neither OS discovery nor an injected face may satisfy this contract");
-            for c in text.chars().filter(|c| !c.is_whitespace()) {
-                assert_ne!(face.glyph_for(c), 0, "{family} lacks U+{:04X} ({c})", u32::from(c));
-                let fallback = db.fallback_for(c, latin.id(), None).unwrap();
-                assert_eq!((fallback.family.as_str(), fallback.style.as_str(), &fallback.source), (family, "Regular", &FontSource::Bundled));
-                assert_eq!(fallback.data(), embedded[0].bytes, "document fallback must use the canonical {family} face for {c}");
-                assert_ne!(fallback.glyph_for(c), 0);
-            }
-            let replacement = scope.face(family, "Unavailable Native GUI Style");
-            assert_eq!((replacement.family.as_str(), replacement.style.as_str()), (family, "Regular"), "nearest-style policy stays truthful");
+            assert_script_glyphs_have_document_fallback(db, latin_face_id, family, text, &face, embedded[0].bytes);
             admitted.push((family.to_string(), "Regular".to_string()));
         }
-        assert_eq!(&loaded[previous.len()..], admitted.as_slice(), "only the two deliberate Regular tuples follow the existing document faces");
-        assert!(!scope.has_family("Unavailable Native GUI Family"));
-        assert_eq!(scope.face("Unavailable Native GUI Family", "Regular").family, FALLBACK_FAMILY);
+        admitted
+    }
+
+    fn assert_script_face_registered(db: &FontDb, scope: &ScopedFonts<'_>, family: &str, expected_bytes: &[u8]) {
+        assert!(scope.has_family(family), "production database did not register {family}");
+        assert!(scope.has_style(family, "Regular"), "{family} Regular");
+        assert!(!scope.has_style(family, "Unavailable Native GUI Style"));
+        assert!(db.families().iter().any(|name| name == family), "family catalog omits {family}");
+        assert!(scope.family_infos().iter().any(|info| info.family == family), "menu catalog omits {family}");
+        let face = scope.face(family, "Regular");
+        assert_eq!((face.family.as_str(), face.style.as_str(), &face.source), (family, "Regular", &FontSource::Bundled));
+        assert_eq!(face.data(), expected_bytes, "neither OS discovery nor an injected face may satisfy this contract");
+        let replacement = scope.face(family, "Unavailable Native GUI Style");
+        assert_eq!((replacement.family.as_str(), replacement.style.as_str()), (family, "Regular"), "nearest-style policy stays truthful");
+    }
+
+    fn assert_script_glyphs_have_document_fallback(
+        db: &FontDb,
+        latin_face_id: u32,
+        family: &str,
+        text: &str,
+        face: &FontFace,
+        expected_bytes: &[u8],
+    ) {
+        for character in text.chars().filter(|character| !character.is_whitespace()) {
+            assert_ne!(face.glyph_for(character), 0, "{family} lacks U+{:04X} ({character})", u32::from(character));
+            assert!(
+                db.fallback_for(character, latin_face_id, None).is_some_and(|fallback| {
+                    fallback.family == family
+                        && fallback.style == "Regular"
+                        && fallback.source == FontSource::Bundled
+                        && fallback.data() == expected_bytes
+                        && fallback.glyph_for(character) != 0
+                }),
+                "document fallback must use the canonical {family} Regular face for {character}"
+            );
+        }
     }
 }

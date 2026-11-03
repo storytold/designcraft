@@ -60,6 +60,9 @@ pub(crate) struct Exporter<'a> {
     /// The document's inks with its Ink Manager settings.
     pub(crate) inks: craft_prepress::InkSet,
     pub cache: &'a Cache,
+    /// Each story's composition per page it is shown on, for this export: the document doesn't
+    /// change while it runs, and asking the cache checks every frame of the story again.
+    composed: HashMap<(designcraft_doc::StoryId, Option<usize>), Arc<designcraft_compose::ComposedStory>>,
     pub opts: &'a PdfOptions,
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,

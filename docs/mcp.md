@@ -73,13 +73,13 @@ The release packages ship `designcraft-cli` alongside the desktop app, so no bui
 
 | Install | CLI |
 |---|---|
-| Windows (MSI) | `C:\Program Files\DesignCraft\designcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\DesignCraft\designcraft-cli.exe` by default (`C:\Program Files\ArtCraft\DesignCraft\designcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/designcraft-cli` |
 | macOS | the separate `designcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
-# Windows, default install folder
-claude mcp add designcraft -- "C:\Program Files\DesignCraft\designcraft-cli.exe" mcp
+# Windows (PowerShell), default install folder
+claude mcp add designcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\DesignCraft\designcraft-cli.exe" mcp
 # Linux, or macOS with the CLI unzipped onto PATH
 claude mcp add designcraft -- designcraft-cli mcp
 ```

@@ -1,5 +1,8 @@
 use super::text::{half_field, half_field_or_clear, kerning_control, language_menu};
-use super::*;
+use super::{
+    Align, DesignApp, FIELD_H, NumField, Sense, Tokens, Ui, Value, block, caption, full_width, json, number, place, pos2, sub, text_attrs, units,
+    vec2, widgets,
+};
 
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {
@@ -16,7 +19,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let lang = c["language"].as_str().unwrap_or("English: USA").to_string();
     ui.horizontal(|ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Language"));
-        let combo = egui::ComboBox::from_id_salt("char_language")
+        let combo = craft_ui::ComboBox::from_id_salt("char_language")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &lang)))
             .width(170.0)
             .show_ui(ui, |ui| language_menu(app, ui, &lang));
@@ -30,7 +33,7 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             .iter()
             .find(|o| o.0 == digits)
             .map_or_else(|| digit_label(&app.ui.language, DIGIT_OPTIONS[0]), |o| digit_label(&app.ui.language, *o));
-        let combo = egui::ComboBox::from_id_salt("char_digits").selected_text(crate::rtl::widget(ui, cur)).width(150.0).show_ui(ui, |ui| {
+        let combo = craft_ui::ComboBox::from_id_salt("char_digits").selected_text(crate::rtl::widget(ui, cur)).width(150.0).show_ui(ui, |ui| {
             for o in DIGIT_OPTIONS {
                 if ui.selectable_label(o.0 == digits, crate::rtl::widget(ui, digit_label(&app.ui.language, o))).clicked() {
                     let _ = app.run("type.char", json!({"attrs": {"digits": o.0}}));
