@@ -149,13 +149,15 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 let next = chars.get(i + 1).copied().unwrap_or(' ');
                 if next == '\'' {
                     // \'hh: a Windows-1252 byte.
-                    let hex: String = chars.iter().skip(i + 2).take(2).collect();
-                    i += 4;
+                    // Only valid hex digits are consumed; anything else is left for the main loop.
+                    let hex: String = chars.iter().skip(i + 2).take(2).take_while(|c| c.is_ascii_hexdigit()).collect();
+                    i += 2 + hex.len();
                     if pending > 0 {
                         pending -= 1;
                         continue;
                     }
-                    if let Ok(b) = u8::from_str_radix(&hex, 16)
+                    if hex.len() == 2
+                        && let Ok(b) = u8::from_str_radix(&hex, 16)
                         && !stack.last().is_some_and(|s| s.skip)
                     {
                         units.reset();
@@ -312,6 +314,15 @@ mod tests {
     fn out_of_range_unicode_escape_is_dropped() {
         assert_eq!(import(br"{\rtf1 a\u4294967361?b}").unwrap().story.text, "ab");
         assert_eq!(import(br"{\rtf1 a\u-4294967231?b}").unwrap().story.text, "ab");
+    }
+
+    /// A short or invalid `\'hh` escape consumes only its valid hex digits.
+    #[test]
+    fn short_hex_escape_keeps_closing_brace() {
+        let i = import(br"{\rtf1 {\b A\'4}B}").unwrap();
+        assert_eq!(i.story.text, "AB");
+        assert_eq!(i.story.format_after(1).over.font_style, None);
+        assert_eq!(import(br"{\rtf1 a\'+fb}").unwrap().story.text, "a+fb");
     }
 
     #[test]

@@ -3,6 +3,57 @@ use egui_kittest::{Harness, kittest::Queryable};
 
 use super::*;
 
+/// A place-cursor drag past its 3-point threshold but short of egui's drag distance previews
+/// a frame, and the release places that frame: what's shown is what lands.
+#[test]
+fn a_short_place_cursor_drag_places_the_frame_it_previews() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    app.run("place.load", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(6);
+    let (from, slot) = {
+        let app = h.state();
+        let layout = CanvasLayout::new(&app.session.doc().unwrap().doc, false);
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        (xf.to_screen(layout.slots[0].xf * Point::new(200.0, 200.0)), layout.slots[0].xf)
+    };
+    // About 5.4 points: past the place cursor's 3, short of egui's 6.
+    let to = from + vec2(4.5, 3.0);
+    assert!((to - from).length() < h.ctx.options(|o| o.input_options.max_click_dist));
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerMoved(to));
+    h.run_steps(2);
+    let vi = h.state().view_info();
+    let preview = h
+        .state_mut()
+        .session
+        .overlays(vi)
+        .into_iter()
+        .find_map(|o| match o {
+            designcraft_tools::Overlay::Marquee(r) => Some(r),
+            _ => None,
+        })
+        .expect("the frame is previewed");
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let placed = h.state().session.doc().unwrap().doc.spreads[0].items.last().expect("placed").bounds();
+    let shown = slot.inverse().transform_rect_bbox(preview);
+    for (a, b) in [(placed.x0, shown.x0), (placed.y0, shown.y0), (placed.x1, shown.x1), (placed.y1, shown.y1)] {
+        assert!((a - b).abs() < 0.01, "placed {placed:?}, previewed {shown:?}");
+    }
+}
+
 #[test]
 fn a_press_after_a_drag_is_not_a_double_click() {
     let (delay, dist) = (0.3, 6.0);
@@ -953,6 +1004,31 @@ fn overset_frames_are_found_inside_groups() {
     assert!(out.is_empty());
 }
 
+/// While parents are edited, a document page's frames have no place on the canvas (they fell back
+/// to the identity transform and their ¶ marks and other overlays piled onto the right parent
+/// page), and the reverse.
+#[test]
+fn document_pages_have_no_place_on_the_parent_canvas() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2})).unwrap();
+    let s = &mut app.session;
+    let body =
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "one\ntwo"})).unwrap()["id"].as_u64().unwrap();
+    let head = s
+        .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [36, 10, 300, 30], "content": "text", "text": "head"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let (body, head) = (designcraft_doc::ItemId(body), designcraft_doc::ItemId(head));
+    let pages = CanvasLayout::new(&doc, false);
+    assert!(item_canvas_xf(&doc, &pages, body).is_some());
+    assert!(item_canvas_xf(&doc, &pages, head).is_none());
+    let parents = CanvasLayout::new(&doc, true);
+    assert!(item_canvas_xf(&doc, &parents, body).is_none(), "a page frame is not drawn over the parent");
+    assert!(item_canvas_xf(&doc, &parents, head).is_some());
+}
+
 /// The always-on overset mark sits at the frame's out port, a step along its own right edge
 /// (so a rotated frame gets it inside its edge, not straight up from the corner), and a
 /// selected overset frame gets only the mark its ports draw.
@@ -1772,6 +1848,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
         snap: SnapView { snap_to_document_grid: true, zone_px: 20.0, ..SnapView::OFF },
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     };
     let (snapped, _) = designcraft_tools::snap::snap_point(&cx, sr, Point::new(page.x0 + 31.3, page.y0 + 47.9));
     assert_eq!((snapped.x - page.x0, snapped.y - page.y0), (27.0, 45.0));
@@ -2836,4 +2913,50 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
         assert!(dots.iter().all(|&x| x > l.end_x && x < para_x), "{dots:?} then {mark} at {para_x}");
         assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
     }
+}
+
+/// As InDesign: an end-of-story # in every cell (after its text), a ¶ where a cell paragraph
+/// ends, and the table paragraph's ¶ just after the table's bottom right corner.
+#[test]
+fn table_cells_show_their_hidden_characters() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), DRect::new(0.0, 0.0, 300.0, 300.0), lid, "", Default::default()).unwrap();
+    let data = vec![vec!["Name:".to_string(), "".into()], vec!["a\nb".into(), "".into()]];
+    let t = designcraft_doc::Table::from_strings(d.alloc(), &data, 200.0, &Default::default(), &Default::default());
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let cs = compose::compose_story(&d, sid, &compose::ComposeOptions::default());
+    let frag = &cs.frames[0].tables[0];
+    // The whole frame: the table's own line adds no second ¶; the story's last paragraph
+    // (after the table) has its #.
+    let story = d.story(sid).unwrap().text.clone();
+    let all = frame_hidden_marks(&story, &cs.frames[0]);
+    let marks: Vec<_> = all.iter().filter(|m| frag.rect.inflate(2.0, 2.0).contains(m.0)).cloned().collect();
+    let ends = |m: &str| marks.iter().filter(|x| x.1 == m).count();
+    assert_eq!(ends("#"), 4, "one per cell: {marks:?}");
+    assert_eq!(ends("¶"), 2, "the cell's first paragraph and the table's, once: {marks:?}");
+    assert_eq!(all.iter().filter(|m| m.1 == "¶" && m.3 > 20.0).count(), 0, "no ¶ the size of the table: {all:?}");
+    // Each # is inside its cell, after the cell's text.
+    for c in &frag.cells {
+        let inside = marks.iter().filter(|m| m.1 == "#" && c.rect.contains(m.0)).count();
+        assert_eq!(inside, 1, "cell {},{}: {marks:?}", c.row, c.col);
+    }
+    let name = frag.cell(0, 0).unwrap();
+    assert!(marks.iter().any(|m| m.1 == "#" && name.rect.contains(m.0) && m.0.x > name.origin.x + 20.0), "after Name:");
+    let last = marks.last().unwrap();
+    assert_eq!((last.0, last.1), (designcraft_geom::Point::new(frag.rect.x1 + 1.0, frag.rect.y1), "¶"));
+}
+
+#[test]
+fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    let mut h = harness(app);
+    h.state_mut().run("layout.parents.edit", json!({"on": true, "parent": "A-Parent"})).unwrap();
+    h.run_steps(2);
+    let b = page_box(h.state()).unwrap();
+    // Page 2 is the left page of the second spread.
+    page_box_go(h.state_mut(), &b, 1);
+    h.run_steps(3);
+    assert_eq!(current_page(h.state()), Some(1));
 }
