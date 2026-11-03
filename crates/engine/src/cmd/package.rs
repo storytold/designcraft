@@ -1,11 +1,10 @@
 //! File › Package and Links › Copy Links To: gather a document with the files it uses.
 
+use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 
@@ -172,7 +171,10 @@ impl OutputRoot {
         }
     }
 
-    fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+    /// Write `bytes`, the contents of the file `from` as they were loaded, to `to` with the
+    /// permissions of `from`. The file isn't opened again: what is at its path now may be
+    /// something else (a link put there since), and the package must hold what the document used.
+    fn copy(&self, from: &Path, bytes: &[u8], to: &Path) -> Result<()> {
         if self.validate_file_entry(to)?
             && std::fs::canonicalize(to).is_ok_and(|target| std::fs::canonicalize(from).is_ok_and(|source| source == target))
         {
@@ -180,15 +182,14 @@ impl OutputRoot {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = from;
+            let _ = bytes;
             return Err(EngineError::Other("package files are unavailable on the web".into()));
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut source = File::open(from).map_err(|e| path_error(from, e))?;
-            let permissions = Some(source.metadata().map_err(|e| path_error(from, e))?.permissions());
+            let permissions = Some(std::fs::metadata(from).map_err(|e| path_error(from, e))?.permissions());
             let mut target = self.temporary_file(to, permissions)?;
-            std::io::copy(&mut source, &mut target).map_err(|e| path_error(to, e))?;
+            target.write_all(bytes).map_err(|e| path_error(to, e))?;
             self.validate_file_entry(to)?;
             target.persist(to).map_err(|e| path_error(to, e.error))?;
             Ok(())
@@ -263,25 +264,34 @@ fn package_output_path(dir: &Path, title: &str, extension: &str) -> Result<PathB
 }
 
 /// A file name for asset `a` in a Links folder, unique among `taken`.
-fn link_name(name: &str, id: AssetId, taken: &mut Vec<String>) -> String {
+fn link_name(name: &str, id: AssetId, taken: &mut Taken) -> String {
     let fallback = format!("asset-{}", id.0);
     unique_name(safe_component(name, &fallback), taken)
 }
 
+/// The names given out so far, and the next number to try for each base name (so a thousand
+/// `logo.png` don't try `logo 2.png` a thousand times each).
+#[derive(Default)]
+struct Taken {
+    names: Vec<String>,
+    next: HashMap<String, usize>,
+}
+
 /// `base`, or `base` numbered ("logo 2.png"), unique under portable Unicode normalization and
 /// case-insensitive comparison.
-fn unique_name(base: String, taken: &mut Vec<String>) -> String {
+fn unique_name(base: String, taken: &mut Taken) -> String {
     let (stem, ext) = match base.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{e}")),
         None => (base.clone(), String::new()),
     };
-    let mut n = base;
-    let mut k = 2;
-    while taken.iter().any(|t| portable_names_equal(t, &n)) {
+    let mut n = base.clone();
+    let mut k = taken.next.get(&base).copied().unwrap_or(2);
+    while taken.names.iter().any(|t| portable_names_equal(t, &n)) {
         n = format!("{stem} {k}{ext}");
         k += 1;
     }
-    taken.push(n.clone());
+    taken.next.insert(base, k);
+    taken.names.push(n.clone());
     n
 }
 
@@ -292,7 +302,7 @@ fn unique_name(base: String, taken: &mut Vec<String>) -> String {
 fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>, relative_to: Option<&str>) -> Result<(Document, Vec<PathBuf>)> {
     root.validate_directory(dir)?;
     let mut out = d.clone();
-    let mut taken = Vec::new();
+    let mut taken = Taken::default();
     let mut written = Vec::new();
     // Only files something places; the saved document leaves the others out.
     let ids = d.used_assets();
@@ -323,7 +333,7 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
 /// restricts it or it is already there (`copied`: the source files copied) → what the package
 /// report adds after the font's name (nothing when copied).
-fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Vec<String>, files: &mut Vec<PathBuf>) -> String {
+fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<PathBuf>, taken: &mut Taken, files: &mut Vec<PathBuf>) -> String {
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
@@ -335,9 +345,16 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
     if copied.contains(from) {
         return String::new();
     }
+    // A document's font file is read under the automation roots in force now; installed fonts
+    // are the system's, outside any root.
+    if matches!(face.source, FontSource::Document(_))
+        && let Err(e) = crate::file_access::check_read(from)
+    {
+        return format!(" — not copied: {e}");
+    }
     let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
     let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
-    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+    match root.validate_directory(dir).and_then(|_| root.copy(from, face.data(), &to)) {
         Ok(()) => {
             copied.push(from.clone());
             files.push(to);
@@ -416,7 +433,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     // The font files, and what the report says about each font.
     let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
     let fonts_dir = root.child(designcraft_fonts::DOCUMENT_FONTS_FOLDER)?;
-    let (mut copied, mut taken) = (Vec::new(), Vec::new());
+    let (mut copied, mut taken) = (Vec::new(), Taken::default());
     let (mut font_lines, mut named) = (Vec::new(), Vec::new());
     for f in fonts.as_array().into_iter().flatten() {
         let (family, style) = (f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));

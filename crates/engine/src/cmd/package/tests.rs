@@ -344,6 +344,32 @@ fn package_copies_the_fallback_fonts_that_draw_text() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The package holds the font as the document loaded it: a link put at its path since (to a
+/// private file, say) isn't followed, and its permissions are the file's.
+#[cfg(unix)]
+#[test]
+fn packaged_fonts_are_the_loaded_bytes_not_what_is_at_the_path_now() {
+    use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-swapped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Swapped", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    std::fs::remove_file(&from).unwrap();
+    std::fs::write(dir.join("secret"), b"private").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret"), &from).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&fonts).unwrap();
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
+    assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
+    assert_eq!(std::fs::read(fonts.join("loaded.ttf")).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn packaged_fonts_keep_a_font_extension() {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
@@ -360,7 +386,7 @@ fn packaged_fonts_keep_a_font_extension() {
     let root = OutputRoot::new(dir.clone()).unwrap();
     let fonts = dir.join("Pkg").join(DOCUMENT_FONTS_FOLDER);
     std::fs::create_dir_all(&fonts).unwrap();
-    let (mut copied, mut taken, mut files) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut copied, mut taken, mut files) = (Vec::new(), Taken::default(), Vec::new());
     assert_eq!(copy_font(&root, &face, &fonts, &mut copied, &mut taken, &mut files), "");
     assert_eq!(files, [fonts.join("12345.ttf")]);
     let db = designcraft_fonts::FontDb::global();
@@ -388,13 +414,20 @@ fn package_uses_portable_names_inside_the_selected_directory() {
     for name in ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"] {
         assert!(is_reserved_windows_name(name), "{name}");
     }
-    let mut taken = Vec::new();
+    let mut taken = Taken::default();
     assert_eq!(unique_name("Logo.svg".into(), &mut taken), "Logo.svg");
     assert_eq!(unique_name("logo.svg".into(), &mut taken), "logo 2.svg");
     assert_eq!(unique_name("Résumé.pdf".into(), &mut taken), "Résumé.pdf");
     assert_eq!(unique_name("Re\u{301}sume\u{301}.pdf".into(), &mut taken), "Re\u{301}sume\u{301} 2.pdf");
     assert_eq!(unique_name("ΟΣ.txt".into(), &mut taken), "ΟΣ.txt");
     assert_eq!(unique_name("ος.txt".into(), &mut taken), "ος 2.txt");
+    // Many files of one name are numbered in order, each without trying every earlier number.
+    let mut taken = Taken::default();
+    for k in 1..=2000 {
+        let expected = if k == 1 { "logo.png".to_string() } else { format!("logo {k}.png") };
+        assert_eq!(unique_name("logo.png".into(), &mut taken), expected);
+    }
+    assert_eq!(unique_name("logo 7.png".into(), &mut taken), "logo 7 2.png", "a name already given out is still numbered");
 
     let dir = std::env::temp_dir().join(format!("dc-package-safe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
