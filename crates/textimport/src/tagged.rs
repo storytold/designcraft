@@ -62,7 +62,7 @@ const ESCAPED_FONTS_VERSION: u32 = 8;
 
 /// A `cFont` or `cTypeface` value: decoded in files that escape it, literal in older ones.
 fn font_value(v: &str, escaped: bool) -> String {
-    if escaped { unescape_value(v) } else { v.to_string() }
+    if escaped { unescape_value(v) } else { crate::capped_name(v.to_string()) }
 }
 
 /// `story` as Tagged Text.
@@ -218,7 +218,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     // keeps its style's size (#1593).
                     "cSize" => fmt.over.size = value.trim().parse().ok().and_then(designcraft_doc::attrs::imported_type_size),
                     "DefineParaStyle" | "DefineCharStyle" => {
-                        let nm = value.split('=').next().unwrap_or("").to_string();
+                        let nm = crate::capped_name(value.split('=').next().unwrap_or("").to_string());
                         let list = if name == "DefineParaStyle" { &mut para_styles } else { &mut char_styles };
                         if !nm.is_empty() && !list.contains(&nm) {
                             list.push(nm);
