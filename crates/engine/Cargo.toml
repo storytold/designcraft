@@ -23,6 +23,7 @@ designcraft-epub = { workspace = true }
 designcraft-pptx = { workspace = true }
 designcraft-textimport = { workspace = true }
 designcraft-pdf = { workspace = true }
+craft-prepress = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-idml = { workspace = true }
 indd = { workspace = true }

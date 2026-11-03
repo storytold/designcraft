@@ -62,6 +62,35 @@ const SKIP: &[&str] = &[
     "object",
 ];
 
+struct ControlWord {
+    word: String,
+    parameter: Option<i64>,
+    next_index: usize,
+}
+
+fn read_control_word(chars: &[char], index: usize) -> ControlWord {
+    let mut word_end = index + 1;
+    while word_end < chars.len() && chars[word_end].is_ascii_alphabetic() {
+        word_end += 1;
+    }
+    let word = chars[index + 1..word_end].iter().collect();
+    let mut next_index = word_end;
+    // A '-' only starts the parameter when a digit follows; otherwise it is text.
+    let negative = chars.get(next_index) == Some(&'-') && chars.get(next_index + 1).is_some_and(char::is_ascii_digit);
+    let has_parameter = negative || chars.get(next_index).is_some_and(char::is_ascii_digit);
+    if has_parameter {
+        next_index += 1;
+        while next_index < chars.len() && chars[next_index].is_ascii_digit() {
+            next_index += 1;
+        }
+    }
+    let parameter = chars[word_end..next_index].iter().collect::<String>().parse().ok();
+    if chars.get(next_index) == Some(&' ') {
+        next_index += 1;
+    }
+    ControlWord { word, parameter, next_index }
+}
+
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let src = String::from_utf8_lossy(bytes);
     if !src.trim_start().starts_with("{\\rtf") {
@@ -95,6 +124,8 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     stack.push(top);
                 }
                 first = false;
+                // A group is not a character: the `\uN` fallback skip ends here too.
+                pending = 0;
                 // `{\*\dest …}`: an ignorable destination.
                 if chars.get(i + 1) == Some(&'\\')
                     && chars.get(i + 2) == Some(&'*')
@@ -118,13 +149,15 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 let next = chars.get(i + 1).copied().unwrap_or(' ');
                 if next == '\'' {
                     // \'hh: a Windows-1252 byte.
-                    let hex: String = chars.iter().skip(i + 2).take(2).collect();
-                    i += 4;
+                    // Only valid hex digits are consumed; anything else is left for the main loop.
+                    let hex: String = chars.iter().skip(i + 2).take(2).take_while(|c| c.is_ascii_hexdigit()).collect();
+                    i += 2 + hex.len();
                     if pending > 0 {
                         pending -= 1;
                         continue;
                     }
-                    if let Ok(b) = u8::from_str_radix(&hex, 16)
+                    if hex.len() == 2
+                        && let Ok(b) = u8::from_str_radix(&hex, 16)
                         && !stack.last().is_some_and(|s| s.skip)
                     {
                         units.reset();
@@ -134,6 +167,11 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                 }
                 if !next.is_ascii_alphabetic() {
                     // Control symbols: \\ \{ \} \~ (nbsp) \- (soft hyphen) \_ (nb hyphen).
+                    i += 2;
+                    if pending > 0 {
+                        pending -= 1;
+                        continue;
+                    }
                     let skip = stack.last().is_some_and(|s| s.skip);
                     if !skip {
                         match next {
@@ -149,29 +187,16 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                             _ => {}
                         }
                     }
-                    i += 2;
                     continue;
                 }
                 // A control word with an optional numeric parameter and one delimiting space.
-                let mut j = i + 1;
-                while j < chars.len() && chars[j].is_ascii_alphabetic() {
-                    j += 1;
+                let ControlWord { word, parameter: param, next_index } = read_control_word(&chars, i);
+                i = next_index;
+                // A control word is one character of the `\uN` fallback (a following `\u` is not).
+                if pending > 0 && word != "u" {
+                    pending -= 1;
+                    continue;
                 }
-                let word: String = chars[i + 1..j].iter().collect();
-                let mut k = j;
-                // A '-' only starts the parameter when a digit follows; otherwise it is text.
-                let negative = chars.get(k) == Some(&'-') && chars.get(k + 1).is_some_and(char::is_ascii_digit);
-                if negative || chars.get(k).is_some_and(char::is_ascii_digit) {
-                    k += 1;
-                    while k < chars.len() && chars[k].is_ascii_digit() {
-                        k += 1;
-                    }
-                }
-                let param: Option<i64> = chars[j..k].iter().collect::<String>().parse().ok();
-                if k < chars.len() && chars[k] == ' ' {
-                    k += 1;
-                }
-                i = k;
                 let skip = stack.last().is_some_and(|s| s.skip);
                 if SKIP.contains(&word.as_str()) {
                     flush(&mut st, &mut buf, &fmt);
@@ -218,7 +243,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     "strike" => restyle(&|s| s.strike = on),
                     // Half-points; sizes outside the engine's 0.1–1296 pt range fall back to the default.
                     "fs" => restyle(&|s| {
-                        s.size = param.map(|p| p as f64 / 2.0).filter(|pt| (0.1..=1296.0).contains(pt));
+                        s.size = param.map(|p| p as f64 / 2.0).and_then(designcraft_doc::attrs::imported_type_size);
                     }),
                     "plain" => restyle(&|s| {
                         s.bold = false;
@@ -234,9 +259,12 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     }
                     "u" => {
                         if let Some(n) = param {
-                            let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
-                            if let Some(ch) = units.push(unit) {
-                                buf.push(ch);
+                            // RTF allows -32768..=65535; anything else is dropped.
+                            if (-32768..=65535).contains(&n) {
+                                let unit = if n < 0 { (n + 65536) as u32 } else { n as u32 };
+                                if let Some(ch) = units.push(unit) {
+                                    buf.push(ch);
+                                }
                             }
                             pending = stack.last().map_or(1, |s| s.uc);
                         }
@@ -283,6 +311,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn out_of_range_unicode_escape_is_dropped() {
+        assert_eq!(import(br"{\rtf1 a\u4294967361?b}").unwrap().story.text, "ab");
+        assert_eq!(import(br"{\rtf1 a\u-4294967231?b}").unwrap().story.text, "ab");
+    }
+
+    /// A short or invalid `\'hh` escape consumes only its valid hex digits.
+    #[test]
+    fn short_hex_escape_keeps_closing_brace() {
+        let i = import(br"{\rtf1 {\b A\'4}B}").unwrap();
+        assert_eq!(i.story.text, "AB");
+        assert_eq!(i.story.format_after(1).over.font_style, None);
+        assert_eq!(import(br"{\rtf1 a\'+fb}").unwrap().story.text, "a+fb");
+    }
+
+    #[test]
     fn imports_rtf_text_and_formatting() {
         let rtf = br"{\rtf1\ansi{\fonttbl{\f0 Times;}}{\colortbl;\red0\green0\blue0;}{\*\generator Test;}
 \f0\fs24 Hello {\b bold} and {\i italic\i0  plain}\par
@@ -318,6 +361,18 @@ Caf\'e9 \u8364? price\tab tab\line next\par
     fn hyphen_after_control_word_without_digits_is_text() {
         let i = import(br"{\rtf1\ansi Rock\emdash-roll, x\tab-y, a\li-720 b}").unwrap();
         assert_eq!(i.story.text, "Rock\u{2014}-roll, x\t-y, ab");
+    }
+
+    /// A control word or control symbol is one character of the `\uN` fallback, so it is skipped
+    /// like a plain character and does not eat the text after it.
+    #[test]
+    fn control_fallback_after_unicode_is_skipped() {
+        let i = import(br"{\rtf1 \u8220\ldblquote Hi\u8221\rdblquote  x\u8212\emdash y}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi\u{201D} x\u{2014}y");
+        let i = import(br"{\rtf1 \u8220\{Hi}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi");
+        let i = import(br"{\rtf1 \u8220{\b Hi}}").unwrap();
+        assert_eq!(i.story.text, "\u{201C}Hi");
     }
 
     /// Characters past U+FFFF are written as two `\uN` words, a UTF-16 surrogate pair (the form

@@ -319,30 +319,50 @@ impl StyleTable<'_> {
 
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
-pub(crate) fn shape_para(
-    db: &ScopedFonts<'_>,
-    styles: &Styles,
-    story: &Story,
-    pi: usize,
-    range: std::ops::Range<usize>,
-    para_chars: &CharProps,
-    auto_leading: TypeEnv,
-    sub: &SubstCtx,
-    table: &mut StyleTable<'_>,
-    nested: &[designcraft_doc::NestedStyle],
-    grep: &[designcraft_doc::GrepStyle],
-    lines: &[(std::ops::Range<usize>, String)],
-    drop: (usize, &str),
-) -> ShapedPara {
-    let _ = pi;
-    let mut glyphs = Vec::with_capacity(range.len());
-    // Nested line styles lie under nested and GREP styles, and the drop cap's style over them all
-    // (later overlays win).
+pub(crate) struct ShapeInput<'a, 'font> {
+    pub(crate) db: &'a ScopedFonts<'font>,
+    pub(crate) styles: &'a Styles,
+    pub(crate) story: &'a Story,
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) para_chars: &'a CharProps,
+    pub(crate) auto_leading: TypeEnv,
+    pub(crate) sub: &'a SubstCtx,
+    pub(crate) nested: &'a [designcraft_doc::NestedStyle],
+    pub(crate) grep: &'a [designcraft_doc::GrepStyle],
+    pub(crate) lines: &'a [(std::ops::Range<usize>, String)],
+    pub(crate) drop_cap: (usize, &'a str),
+}
+
+pub(crate) fn shape_para(input: ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> ShapedPara {
+    let db = input.db;
+    let sub = input.sub;
+    let range = input.range.clone();
+    let auto_leading = input.auto_leading;
+    let (pieces, auto_tcy) = resolve_pieces(&input, table);
+    let mut glyphs = shape_pieces(&input, table, pieces);
+    fit_auto_tcy(&mut glyphs, &auto_tcy);
+    collapse_tcy(&mut glyphs, sub.vertical);
+    crate::ruby::reserve(db, table.styles, &mut glyphs, auto_leading.glyph_fallback, sub.vertical);
+    ShapedPara { glyphs, range }
+}
+
+fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Vec<Piece>, Vec<std::ops::Range<usize>>) {
+    let db = input.db;
+    let styles = input.styles;
+    let story = input.story;
+    let range = input.range.clone();
+    let para_chars = input.para_chars;
+    let auto_leading = input.auto_leading;
+    let sub = input.sub;
+    let nested = input.nested;
+    let grep = input.grep;
+    let lines = input.lines;
+    let drop_cap = input.drop_cap;
     let mut overlays: Vec<(std::ops::Range<usize>, String)> = lines.to_vec();
     // The drop cap's style is the nested styles' leading "through 1 Dropcap" entry (the form IDML
     // stores it in). Set (`[None]` included), it restyles that entry; a real one stands in for a
     // missing entry. Either way the nested styles after it start after the drop cap.
-    let set = Some(drop.1).filter(|s| !s.is_empty());
+    let set = Some(drop_cap.1).filter(|s| !s.is_empty());
     let cap_style = set.filter(|s| *s != designcraft_doc::NO_CHAR_STYLE);
     let with_cap: Vec<designcraft_doc::NestedStyle>;
     let nested = match set {
@@ -357,14 +377,15 @@ pub(crate) fn shape_para(
         _ => nested,
     };
     if !nested.is_empty() || !grep.is_empty() {
-        overlays.extend(crate::overlay::overlays(&story.text, range.clone(), nested, grep, drop.0));
+        overlays.extend(crate::overlay::overlays(&story.text, range.clone(), nested, grep, drop_cap.0));
     }
     if let Some(s) = cap_style
-        && drop.0 > range.start
+        && drop_cap.0 > range.start
     {
-        overlays.push((range.start..drop.0, s.to_string()));
+        overlays.push((range.start..drop_cap.0, s.to_string()));
     }
     // Each run, cut where nested / GREP styles start and end.
+    let bands = overlay_bands(&overlays);
     let mut segments: Vec<(usize, usize, Option<&str>, &designcraft_doc::CharFormat)> = Vec::new();
     for (rr, fmt) in story.runs() {
         let a = rr.start.max(range.start);
@@ -376,14 +397,16 @@ pub(crate) fn shape_para(
             segments.push((a, b, None, fmt));
             continue;
         }
-        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
-        cuts.push(a);
-        cuts.push(b);
-        cuts.sort_unstable();
-        cuts.dedup();
-        for w in cuts.windows(2) {
-            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
-            segments.push((w[0], w[1], top, fmt));
+        // The band holding `a`, then each following band up to `b`. Bands start at 0, so one
+        // holds `a`, and each ends where the next starts (the last one at `b`).
+        let mut k = bands.partition_point(|(at, _)| *at <= a).saturating_sub(1);
+        let mut at = a;
+        while at < b {
+            let to = bands.get(k + 1).map_or(b, |(next, _)| (*next).min(b));
+            let top = bands.get(k).and_then(|(_, top)| *top).map(|i| overlays[i].1.as_str());
+            segments.push((at, to, top, fmt));
+            at = to;
+            k += 1;
         }
     }
     // Resolve every segment, then shape runs of segments that differ only in how they are
@@ -474,6 +497,15 @@ pub(crate) fn shape_para(
             pieces.push(Piece { range: k..b, props, style, env: auto_leading, hidden: false, composite_note: false });
         }
     }
+    (pieces, auto_tcy)
+}
+
+fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: Vec<Piece>) -> Vec<Glyph> {
+    let db = input.db;
+    let styles = input.styles;
+    let story = input.story;
+    let sub = input.sub;
+    let mut glyphs = Vec::new();
     let mut i = 0;
     while i < pieces.len() {
         let first = &pieces[i];
@@ -562,10 +594,7 @@ pub(crate) fn shape_para(
         }
         i = j;
     }
-    fit_auto_tcy(&mut glyphs, &auto_tcy);
-    collapse_tcy(&mut glyphs, sub.vertical);
-    crate::ruby::reserve(db, table.styles, &mut glyphs, auto_leading.glyph_fallback, sub.vertical);
-    ShapedPara { glyphs, range }
+    glyphs
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
@@ -950,10 +979,10 @@ static WORD_CACHE: RwLock<Vec<(WordKey, Arc<RwLock<WordMap>>)>> = RwLock::new(Ve
 const WORD_CACHE_MAX: usize = 50_000;
 
 fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
-    if let Some((_, m)) = WORD_CACHE.read().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.0 == key) {
+    if let Some((_, m)) = WORD_CACHE.read().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == key) {
         return m.clone();
     }
-    let mut w = WORD_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    let mut w = WORD_CACHE.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_, m)) = w.iter().find(|e| e.0 == key) {
         return m.clone();
     }
@@ -1175,7 +1204,12 @@ fn shape_segment(
     for (gi, sg) in shaped.iter().enumerate() {
         let up = upright.get(gi).copied().unwrap_or(false);
         let (byte, len, ch) = if replacement.is_some() {
-            (range.start, if gi == 0 { range.len() } else { 0 }, text[range.start..].chars().next().unwrap_or(' '))
+            let marker = text[range.start..].chars().next().unwrap_or(' ');
+            // A cross-reference's text is real text in InDesign: its spaces are word spaces the
+            // line may break at (text variables and page numbers stay whole). The first glyph
+            // keeps the marker, as it owns the marker's bytes.
+            let space = gi > 0 && marker == designcraft_doc::XREF_MARK && src.get(sg.cluster..).is_some_and(|t| t.starts_with(' '));
+            (range.start, if gi == 0 { range.len() } else { 0 }, if space { ' ' } else { marker })
         } else {
             let cl = range.start + sg.cluster;
             let end = shaped[gi + 1..].iter().map(|r| range.start + r.cluster).find(|&c| c > cl).unwrap_or(range.end);
@@ -1393,5 +1427,71 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
         Some(false) => Digits::Arabic,
         Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
         _ => Digits::Native,
+    }
+}
+
+/// The stretches between `overlays`' boundaries, as `(start, overlay on top)` sorted by start:
+/// a stretch runs to the next one's start, and the one on top is the last overlay covering it
+/// (later ones win). One sweep over the boundaries; picking the top overlay by scanning them all
+/// for each stretch was quadratic when a GREP style matched every character.
+fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, Option<usize>)> {
+    let mut starts: Vec<(usize, usize)> = Vec::new();
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    for (i, (r, _)) in overlays.iter().enumerate().filter(|(_, (r, _))| r.start < r.end) {
+        starts.push((r.start, i));
+        ends.push((r.end, i));
+    }
+    starts.sort_unstable();
+    ends.sort_unstable();
+    let mut cuts: Vec<usize> = starts.iter().chain(&ends).map(|x| x.0).collect();
+    cuts.push(0);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut active = std::collections::BTreeSet::new();
+    let (mut s, mut e) = (0, 0);
+    let mut out = Vec::with_capacity(cuts.len());
+    for at in cuts {
+        while e < ends.len() && ends[e].0 <= at {
+            active.remove(&ends[e].1);
+            e += 1;
+        }
+        while s < starts.len() && starts[s].0 <= at {
+            active.insert(starts[s].1);
+            s += 1;
+        }
+        out.push((at, active.last().copied()));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_bands;
+
+    /// The band sweep picks the same top overlay as checking every overlay at each boundary.
+    #[test]
+    fn overlay_bands_match_the_last_covering_overlay() {
+        let overlays: Vec<(std::ops::Range<usize>, String)> = [(2..9, "a"), (0..4, "b"), (4..4, "empty"), (3..6, "c"), (8..12, "d"), (5..7, "e")]
+            .into_iter()
+            .map(|(r, s)| (r, s.to_string()))
+            .collect();
+        let bands = overlay_bands(&overlays);
+        for at in 0..14 {
+            let k = bands.partition_point(|(start, _)| *start <= at) - 1;
+            let want = overlays.iter().rposition(|(r, _)| r.start <= at && at < r.end);
+            assert_eq!(bands[k].1, want, "at {at}");
+        }
+    }
+
+    /// One overlay per character (a GREP style matching every character) sweeps in one pass.
+    #[test]
+    fn many_overlays_are_banded_quickly() {
+        let n = 200_000;
+        let overlays: Vec<(std::ops::Range<usize>, String)> = (0..n).map(|i| (i..i + 1, "s".to_string())).collect();
+        let t = std::time::Instant::now();
+        let bands = overlay_bands(&overlays);
+        assert_eq!(bands.len(), n + 1);
+        assert_eq!(bands[n / 2], (n / 2, Some(n / 2)));
+        assert!(t.elapsed().as_secs() < 5);
     }
 }

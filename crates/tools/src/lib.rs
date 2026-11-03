@@ -16,7 +16,7 @@ mod frame;
 mod gradient;
 pub mod layout;
 mod nav;
-pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX};
+pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX, PLACE_DRAG_MIN};
 mod pen;
 mod pencil;
 pub mod select;
@@ -31,9 +31,11 @@ use designcraft_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_for_shortcut, tool_info};
+pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_info};
 pub use layout::{CanvasLayout, SpreadSlot};
 pub use nav::ZoomTool;
+/// The exact text an IME commit types (see [`Tool::ime_commit`]).
+pub use text::ime_commit_text;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mods {
@@ -140,6 +142,9 @@ pub struct SnapView {
     pub smart_dimensions: bool,
     pub smart_spacing: bool,
     pub zone_px: f64,
+    /// View › Grids & Guides › Lock Guides: ruler guides can't be selected or moved.
+    #[serde(default)]
+    pub guides_locked: bool,
 }
 
 impl SnapView {
@@ -153,6 +158,7 @@ impl SnapView {
         smart_dimensions: true,
         smart_spacing: true,
         zone_px: 4.0,
+        guides_locked: false,
     };
     pub const OFF: Self = Self {
         snap_to_guides: false,
@@ -164,6 +170,7 @@ impl SnapView {
         smart_dimensions: false,
         smart_spacing: false,
         zone_px: 4.0,
+        guides_locked: false,
     };
 
     /// Guides, the document grid, or smart guides are on.
@@ -186,6 +193,9 @@ pub enum Gesture {
     Create,
     Rotate,
     Point,
+    /// A ruler guide being dragged: one line on one axis, with no size or spacing to match and
+    /// no pull from the baseline grid.
+    Guide,
 }
 
 pub struct SnapRequest<'a> {
@@ -197,6 +207,8 @@ pub struct SnapRequest<'a> {
     /// Top, center, bottom.
     pub y_edges: [bool; 3],
     pub exclude: &'a [ItemId],
+    /// Ruler guides that are not targets: the ones being dragged.
+    pub exclude_guides: &'a [designcraft_doc::GuideSel],
     pub copying: bool,
     /// Proposed width and height for the dimensions pass. None when that length is not being set.
     pub lengths: [Option<f64>; 2],
@@ -220,6 +232,8 @@ pub struct ToolContext<'a> {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
     pub stroke_in_front: bool,
+    /// Natural size, in points, of the graphic loaded in the place cursor.
+    pub loaded: Option<(f64, f64)>,
 }
 
 impl ToolContext<'_> {

@@ -1,6 +1,6 @@
 //! The About window's credits: every contributor (GitHub login always; display and real names only
 //! with recorded consent) and the AI models that helped. The tables are baked into the binary by
-//! build.rs from contributors/contributors.json (craftrules standards/contributors.md); nothing is
+//! build.rs from contributors/contributors.json; nothing is
 //! read at run time.
 
 use std::cmp::Ordering;
@@ -212,10 +212,8 @@ impl Default for View {
     }
 }
 
-/// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
-pub fn contributors_ui(ui: &mut egui::Ui, lang: &str) {
-    let id = egui::Id::new("credits_view");
-    let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
+/// The name toggle, sort and layout controls above the list.
+fn controls(ui: &mut egui::Ui, v: &mut View, lang: &str) {
     ui.horizontal_wrapped(|ui| {
         ui.label(tr(lang, "Show"));
         for m in NameMode::ALL {
@@ -225,7 +223,7 @@ pub fn contributors_ui(ui: &mut egui::Ui, lang: &str) {
         }
         ui.separator();
         ui.label(tr(lang, "Sort"));
-        egui::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, tr(lang, k.label().0)).clicked() {
                     v.key = k;
@@ -244,6 +242,13 @@ pub fn contributors_ui(ui: &mut egui::Ui, lang: &str) {
             v.table = true;
         }
     });
+}
+
+/// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
+pub fn contributors_ui(ui: &mut egui::Ui, lang: &str) {
+    let id = egui::Id::unique("credits_view");
+    let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
+    controls(ui, &mut v, lang);
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
     let totals = tr(lang, "{contributors} contributors · {commits} commits")
         .replace("{contributors}", &list.len().to_string())

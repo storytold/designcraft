@@ -10,11 +10,14 @@
 //!                                      # run a command script (crates/engine/src/script.rs): `$N.path` references
 //! designcraft-cli app [--port PORT] COMMAND [JSON]   # run a command in the running app (designcraft --control PORT)
 //! designcraft-cli app [--port PORT] --method METHOD [JSON]   # any control-channel method (ui.screenshot, ui.render, …)
-//! designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR]
+//! designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...
 //!                                      # MCP server over stdio (docs/mcp.md); the roots confine the files it reads and writes
 //! designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]  # budgets on a synthetic stress document
 //! designcraft-cli bench FILE [--runs N]  # the same measurements on one document
-//! designcraft-cli validate-pdf FILE.pdf    # run the built-in PDF/X-4 conformance checks
+//! designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]   # the built-in PDF/X-4 or PDF/X-1a checks (default: the
+//!                                      # file's own GTS_PDFXVersion)
+//! designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]   # the file's first-page preview, fitted to SIZE
+//!                                      # (the freedesktop thumbnailer for Linux file managers)
 //! designcraft-cli links                   # Discord, website, app page and GitHub links
 //! designcraft-cli --version               # print the version
 //! ```
@@ -39,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR]\n         the two roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. A root left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -122,9 +125,10 @@ fn main() -> ExitCode {
         Some("mcp") => report(mcp(&args[1..])),
         Some("perf") => report(perf::perf(&args[1..])),
         Some("bench") => report(perf::bench(&args[1..])),
-        Some("validate-pdf") => report(validate_pdf(args.get(1).map(String::as_str))),
+        Some("validate-pdf") => report(validate_pdf(args.get(1..).unwrap_or_default())),
+        Some("thumbnail") => report(thumbnail(&args[1..])),
         Some("links") => {
-            use designcraft_engine::links::*;
+            use designcraft_engine::links::{APP_PAGE, DISCORD, GITHUB, ISSUES, WEBSITE};
             outln!("Discord   {DISCORD}\nWebsite   {WEBSITE}\nApp page  {APP_PAGE}\nGitHub    {GITHUB}\nIssues    {ISSUES}");
             ExitCode::SUCCESS
         }
@@ -153,14 +157,92 @@ fn report(r: Result<(), String>) -> ExitCode {
     }
 }
 
-fn validate_pdf(path: Option<&str>) -> Result<(), String> {
-    let path = path.ok_or("usage: designcraft-cli validate-pdf FILE.pdf")?;
+fn validate_pdf(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]";
+    let mut path = None;
+    let mut standard = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--standard" => standard = Some(it.next().ok_or(USAGE)?.as_str()),
+            p if path.is_none() => path = Some(p),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let path = path.ok_or(USAGE)?;
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let issues = designcraft_pdf::check_pdfx4(&bytes);
+    let standard = match standard.map(designcraft_pdf::Standard::parse) {
+        Some(Some(s)) => s,
+        Some(None) => return Err(USAGE.into()),
+        None if designcraft_pdf::pdfx_version(&bytes).is_some_and(|v| v.starts_with("PDF/X-1:")) => designcraft_pdf::Standard::PdfX1a,
+        None => designcraft_pdf::Standard::PdfX4,
+    };
+    let (name, issues) = match standard {
+        designcraft_pdf::Standard::PdfX1a => ("PDF/X-1a:2003", designcraft_pdf::check_pdfx1a(&bytes)),
+        designcraft_pdf::Standard::PdfX4 => ("PDF/X-4", designcraft_pdf::check_pdfx4(&bytes)),
+        _ => return Err(USAGE.into()),
+    };
+    let (warnings, issues): (Vec<String>, Vec<String>) = issues.into_iter().partition(|i| i.starts_with("warning: "));
+    let warnings: Vec<&str> = warnings.iter().map(|w| w.trim_start_matches("warning: ")).collect();
     let valid = issues.is_empty();
-    let report = json!({"path": path, "standard": "PDF/X-4", "valid": valid, "issues": issues});
+    let report = json!({"path": path, "standard": name, "valid": valid, "issues": issues, "warnings": warnings});
     outln!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
-    if valid { Ok(()) } else { Err(format!("{path} failed PDF/X-4 validation")) }
+    if valid { Ok(()) } else { Err(format!("{path} failed {name} validation")) }
+}
+
+/// `thumbnail FILE OUT [SIZE]`: the first-page preview saved in a `.designcraft` file, as a PNG
+/// whose longer side is at most SIZE pixels (never enlarged). It is the freedesktop thumbnailer
+/// (`packaging/linux/ai.storyteller.designcraft.thumbnailer`), so it only reads the preview: a file
+/// without one fails, and the file manager keeps the file type's icon.
+fn thumbnail(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]";
+    let [input, out, rest @ ..] = args else { return Err(USAGE.into()) };
+    let size = match rest {
+        [] => None,
+        [s] => Some(s.parse::<u32>().ok().filter(|s| *s > 0).ok_or_else(|| format!("bad SIZE `{s}`: expected a positive number of pixels"))?),
+        _ => return Err(USAGE.into()),
+    };
+    if names_the_same_file(input.as_ref(), out.as_ref()) {
+        return Err(format!("{out} is the document {input}: the thumbnail would replace it"));
+    }
+    let file = std::fs::File::open(input).map_err(|e| format!("{input}: {e}"))?;
+    let preview = designcraft_format::read_preview(std::io::BufReader::new(file))
+        .ok_or_else(|| format!("{input} has no preview (a DesignCraft file saved before they had one, or not a DesignCraft file)"))?;
+    let png = fit_png(preview, size).map_err(|e| format!("{input}: the preview can't be read: {e}"))?;
+    designcraft_engine::atomic::write_atomic(std::path::Path::new(out), &png).map_err(|e| format!("{out}: {e}"))
+}
+
+/// Whether `out` is the file `input` names: the same path, a symlink to it or, on Unix, a hard
+/// link (the same device and inode). An `out` that doesn't exist yet can't be the input.
+fn names_the_same_file(input: &std::path::Path, out: &std::path::Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(out)) else { return false };
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(&a), std::fs::metadata(&b)) {
+            return (a.dev(), a.ino()) == (b.dev(), b.ino());
+        }
+    }
+    false
+}
+
+/// `png` with its longer side brought down to `size`. A picture already that small is returned
+/// as it is; it is decoded anyway, so a broken one is an error rather than an unreadable thumbnail.
+fn fit_png(png: Vec<u8>, size: Option<u32>) -> Result<Vec<u8>, String> {
+    // The preview comes from the file: it may claim any size.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| e.to_string())?;
+    let Some(size) = size.filter(|s| img.width().max(img.height()) > *s) else { return Ok(png) };
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.resize(size, size, image::imageops::FilterType::Triangle).write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 /// `mcp` (headless, in-process engine) or `mcp --connect PORT|HOST:PORT` (drive a running app
@@ -170,7 +252,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
     use designcraft_mcp::{Backend, Headless, Remote, Server, control_addr};
     let mut connect: Option<String> = None;
     let mut sample = false;
-    let mut roots_args = automation_args::AutomationArgs::new(None, None);
+    let mut roots_args = automation_args::AutomationArgs::default();
     let mut it = args.iter().cloned();
     while let Some(a) = it.next() {
         if roots_args.consume(&a, &mut it)? {
@@ -181,12 +263,14 @@ fn mcp(args: &[String]) -> Result<(), String> {
             "--sample" => sample = true,
             other => {
                 return Err(format!(
-                    "unknown mcp option `{other}` (usage: designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR])"
+                    "unknown mcp option `{other}` (usage: designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...)"
                 ));
             }
         }
     }
-    let roots = AutomationRoots::new(roots_args.read_root.as_deref(), roots_args.write_root.as_deref())?;
+    let read: Vec<&std::path::Path> = roots_args.read_roots.iter().map(std::path::PathBuf::as_path).collect();
+    let write: Vec<&std::path::Path> = roots_args.write_roots.iter().map(std::path::PathBuf::as_path).collect();
+    let roots = AutomationRoots::new(&read, &write)?;
     if roots.is_some() && connect.is_some() {
         return Err("--automation-read-root and --automation-write-root confine the in-process server; a running app is not confined by them, \
 so drop --connect (or use --connect without the roots)"
@@ -209,8 +293,7 @@ so drop --connect (or use --connect without the roots)"
             if let Some(roots) = roots {
                 // Every thread of this process, not only the server's: nothing reaches past the roots.
                 file_access::confine_process(roots.clone());
-                let show = |root: Option<&std::path::Path>| root.map_or_else(|| "none".to_string(), |r| r.display().to_string());
-                eprintln!("designcraft-cli: files confined: read root {}, write root {}", show(roots.read_root()), show(roots.write_root()));
+                eprintln!("designcraft-cli: files confined: {}", roots.describe());
                 h = h.with_automation_roots(Some(roots));
             }
             Box::new(h)
@@ -263,7 +346,7 @@ impl Export {
     /// A name with another extension is an error: it used to get a PNG of the page. One with no
     /// extension still does (`--export /dev/stdout`).
     fn of(out: &str) -> Result<Self, String> {
-        let ext = std::path::Path::new(out).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+        let ext = std::path::Path::new(out).extension().and_then(std::ffi::OsStr::to_str).map(str::to_lowercase);
         Ok(match ext.as_deref() {
             None | Some("png" | "jpg" | "jpeg") => Export::Image,
             Some("pdf") => Export::Pdf,
@@ -345,33 +428,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             "--export" => {
                 let out = val()?;
-                match Export::of(&out)? {
-                    Export::Image => export(&mut s, &out, page, scale)?,
-                    Export::Pdf => {
-                        let mut p = pdf_opts.clone();
-                        p["path"] = json!(out);
-                        let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
-                        eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
-                        for w in r["warnings"].as_array().into_iter().flatten() {
-                            eprintln!("warning: {}", w.as_str().unwrap_or_default());
-                        }
-                    }
-                    Export::Document => {
-                        s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
-                        eprintln!("saved {out}");
-                    }
-                    Export::Pptx => {
-                        let r = s.execute("file.exportPptx", &json!({"path": out})).map_err(|e| e.to_string())?;
-                        eprintln!("wrote {out} ({} slides, {} bytes)", r["slides"], r["bytes"]);
-                        for w in r["warnings"].as_array().into_iter().flatten() {
-                            eprintln!("warning: {}", w.as_str().unwrap_or_default());
-                        }
-                    }
-                    Export::Command(cmd) => {
-                        let r = s.execute(cmd, &json!({"path": out})).map_err(|e| e.to_string())?;
-                        eprintln!("wrote {out} ({} bytes)", r["bytes"]);
-                    }
-                }
+                handle_export(&mut s, &out, page, scale, &pdf_opts)?;
             }
             "--all-pages" => {
                 let dir = val()?;
@@ -382,6 +439,37 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
             }
             other => return Err(format!("unknown option {other}")),
+        }
+    }
+    Ok(())
+}
+
+fn handle_export(s: &mut Session, out: &str, page: usize, scale: f64, pdf_opts: &Value) -> Result<(), String> {
+    match Export::of(out)? {
+        Export::Image => export(s, out, page, scale)?,
+        Export::Pdf => {
+            let mut p = pdf_opts.clone();
+            p["path"] = json!(out);
+            let r = s.execute("file.exportPdf", &p).map_err(|e| e.to_string())?;
+            eprintln!("wrote {out} ({} pages, {} bytes)", r["pages"], r["bytes"]);
+            for w in r["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
+        }
+        Export::Document => {
+            s.execute("file.saveAs", &json!({"path": out})).map_err(|e| e.to_string())?;
+            eprintln!("saved {out}");
+        }
+        Export::Pptx => {
+            let r = s.execute("file.exportPptx", &json!({"path": out})).map_err(|e| e.to_string())?;
+            eprintln!("wrote {out} ({} slides, {} bytes)", r["slides"], r["bytes"]);
+            for w in r["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
+        }
+        Export::Command(cmd) => {
+            let r = s.execute(cmd, &json!({"path": out})).map_err(|e| e.to_string())?;
+            eprintln!("wrote {out} ({} bytes)", r["bytes"]);
         }
     }
     Ok(())
