@@ -342,10 +342,11 @@ pub(super) fn hidden_marks(text: &str, l: &compose::Line) -> Vec<(f64, &'static 
 }
 
 /// Edit › Spelling › Dynamic Spelling: red squiggles under misspelled words (checked once per
-/// story version).
+/// document/story version, including style-language and user-dictionary changes).
 pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+    let version = app.session.active().map(|st| (st.identity_epoch, st.revision));
     for story in doc.stories.values() {
-        let key = egui::Id::unique(("dyn_spell", std::sync::Arc::as_ptr(story) as usize, doc.user_words.len()));
+        let key = egui::Id::unique(("dyn_spell", version, std::sync::Arc::as_ptr(story) as usize));
         let bad: std::sync::Arc<Vec<std::ops::Range<usize>>> = match ctx.data(|d| d.get_temp(key)) {
             Some(v) => v,
             None => {

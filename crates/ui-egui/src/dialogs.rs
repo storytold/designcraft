@@ -26,6 +26,8 @@ pub struct Dialog {
     /// from when it opened, so a bare `50` means what it did then. `None` falls back to `unit`.
     #[serde(skip)]
     pub vertical_unit: Option<Unit>,
+    #[serde(skip)]
+    pub(crate) spelling: Option<crate::spelling_dialog::Review>,
 }
 
 impl Dialog {
@@ -85,12 +87,15 @@ impl Dialog {
         if id == "ruby" {
             fields.entry("section".to_string()).or_insert(json!("cjk.rubyPlacement"));
         }
-        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None }
+        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None, spelling: None }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
         let before =
             (self.id == "findChange" && matches!(key, "scope" | "story" | "objectMode")).then(|| (self.b("objectMode"), find_change_params(self)));
+        if self.id == crate::spelling_dialog::ID && key == "suggestion" {
+            crate::spelling_dialog::select(self, &value);
+        }
         self.fields.insert(key.into(), value);
         before.is_some_and(|(object_mode, params)| {
             object_mode != self.b("objectMode") || !designcraft_engine::cmd::same_find_domain(&params, &find_change_params(self))
@@ -2873,6 +2878,10 @@ fn alert_message(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 /// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    if app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::spelling_dialog::ID) {
+        crate::spelling_dialog::show(app, ctx);
+        return;
+    }
     let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
     if shortcuts {
         crate::shortcuts_dialog::show(app, ctx);
@@ -4147,6 +4156,7 @@ fn format_settings(app: &mut DesignApp, ctx: &egui::Context, d: &mut Dialog) {
     };
     let mut fd = Dialog {
         id: "changeFormat".into(),
+        spelling: None,
         fields: d.fields.get(FORMAT_EDIT).and_then(Value::as_object).cloned().unwrap_or_default(),
         unit: d.unit,
         vertical_unit: None,
@@ -4267,6 +4277,9 @@ fn format_style_options(lang: &str, ui: &mut egui::Ui, fd: &mut Dialog, styles: 
 /// Apply the open dialog.
 pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     let Some(d) = app.ui.dialog.take() else { return Err("no dialog open".into()) };
+    if d.id == crate::spelling_dialog::ID {
+        return crate::spelling_dialog::confirm(app, d);
+    }
     if d.id == crate::shortcuts_dialog::DIALOG_ID {
         return crate::shortcuts_dialog::close(app, true).map(|()| Value::Null);
     }

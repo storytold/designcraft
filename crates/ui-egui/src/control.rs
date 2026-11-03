@@ -383,6 +383,9 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         },
         "ui.dialog.open" => {
             let Some(id) = s("id") else { return err("missing `id`") };
+            if id == crate::spelling_dialog::ID {
+                return wrap(crate::spelling_dialog::open(app));
+            }
             // Replacing a modal cancels its transaction just like its Cancel button.
             // In particular, an uncommitted style preview must not leak into the new dialog.
             crate::dialogs::cancel(app);

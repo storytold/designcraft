@@ -57,6 +57,8 @@ pub struct Glyph {
     pub space: f64,
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
+    /// A safe Khmer word boundary (including an authored ZWSP), with zero natural width.
+    pub word_gap: bool,
     pub cjk_hang: f64,
     pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
@@ -846,29 +848,36 @@ fn shape_run_raw(
                 continue;
             }
         }
-        let special = matches!(
-            c,
-            '\t' | story::FORCED_LINE_BREAK
-                | story::PAGE_NUMBER
-                | story::NEXT_PAGE_NUMBER
-                | story::PREV_PAGE_NUMBER
-                | story::SECTION_MARKER
-                | story::COLUMN_BREAK
-                | story::FRAME_BREAK
-                | story::PAGE_BREAK
-                | story::ODD_PAGE_BREAK
-                | story::EVEN_PAGE_BREAK
-                | story::INDENT_HERE
-                | story::RIGHT_INDENT_TAB
-                | story::TABLE_ANCHOR
-                | designcraft_doc::FOOTNOTE_REF
-                | designcraft_doc::ENDNOTE_REF
-                | designcraft_doc::NOTE_MARK
-                | designcraft_doc::XREF_MARK
-                | designcraft_doc::ANCHOR_MARK
-                | designcraft_doc::INDEX_MARK
-                | designcraft_doc::OBJECT_MARK
-        ) || designcraft_doc::vars::var_index(c).is_some();
+        // Preserve joining context in other scripts (notably Arabic around WJ). Khmer
+        // needs standalone controls so an authored ZWSP can carry an exact line boundary.
+        let khmer_control = matches!(c, '\u{200b}' | '\u{2060}')
+            && (text.get(..i).and_then(|s| s.chars().next_back()).is_some_and(crate::khmer::character)
+                || text.get(i + c.len_utf8()..).and_then(|s| s.chars().next()).is_some_and(crate::khmer::character));
+        let special = khmer_control
+            || matches!(
+                c,
+                '\t' | story::FORCED_LINE_BREAK
+                    | story::PAGE_NUMBER
+                    | story::NEXT_PAGE_NUMBER
+                    | story::PREV_PAGE_NUMBER
+                    | story::SECTION_MARKER
+                    | story::COLUMN_BREAK
+                    | story::FRAME_BREAK
+                    | story::PAGE_BREAK
+                    | story::ODD_PAGE_BREAK
+                    | story::EVEN_PAGE_BREAK
+                    | story::INDENT_HERE
+                    | story::RIGHT_INDENT_TAB
+                    | story::TABLE_ANCHOR
+                    | designcraft_doc::FOOTNOTE_REF
+                    | designcraft_doc::ENDNOTE_REF
+                    | designcraft_doc::NOTE_MARK
+                    | designcraft_doc::XREF_MARK
+                    | designcraft_doc::ANCHOR_MARK
+                    | designcraft_doc::INDEX_MARK
+                    | designcraft_doc::OBJECT_MARK
+            )
+            || designcraft_doc::vars::var_index(c).is_some();
         if special {
             flush(seg_start, i, &seg_face, out);
             seg_start = i + c.len_utf8();
@@ -1107,6 +1116,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
+        word_gap: false,
         cjk_hang: 0.0,
         moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
@@ -1269,6 +1279,7 @@ fn shape_segment(
             tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
             space,
             break_after: None,
+            word_gap: false,
             cjk_hang: 0.0,
             moji: crate::mojikumi::Metrics {
                 body,
@@ -1410,6 +1421,7 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.byte = g.byte + g.len;
     h.len = 0;
     h.ch = '-';
+    h.word_gap = false;
     h.rendered_char = '-';
     h.moji = Default::default();
     h.generated_text = None;

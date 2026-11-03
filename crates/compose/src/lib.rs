@@ -17,6 +17,7 @@ pub mod grep;
 mod grid;
 pub mod hyphen;
 pub mod kenten;
+mod khmer;
 mod mojikumi;
 mod notes;
 pub mod optical;
@@ -1223,6 +1224,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
                 };
                 (col.width() - pp.left_indent - pp.right_indent - ind).max(1.0)
             };
+            khmer::apply(&mut gl, &story.text, prange.clone());
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -2452,6 +2454,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
             Some(if pp.direction == designcraft_doc::TextDirection::RightToLeft { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() }),
         ),
     );
+    khmer::apply(&mut glyphs, &story.text, prange.clone());
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
@@ -3457,6 +3460,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
                 }
             }
         }
+        g.word_gap &= g.break_after != Some(false);
     }
     let ws = pp.word_space_desired;
     let ls = pp.letter_space_desired;
@@ -3468,7 +3472,11 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
         if g.locked_advance {
             continue;
         }
-        if g.is_word_space() {
+        if khmer::character(g.ch) {
+            g.adv *= gs;
+            g.sx *= gs;
+            g.dx *= gs;
+        } else if g.is_word_space() {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
@@ -4658,7 +4666,13 @@ fn layout_line(
     let seg = last_tab.map_or(0, |(i, _)| i + 1);
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
     // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
-    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
+    let spaces: Vec<usize> = line
+        .iter()
+        .enumerate()
+        .skip(seg)
+        .filter(|&(i, g)| (g.is_justify_space() || (g.word_gap && i + 1 < line.len())) && !g.locked_advance)
+        .map(|(i, _)| i)
+        .collect();
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
@@ -4694,7 +4708,7 @@ fn layout_line(
                     .enumerate()
                     .take(line.len() - 1)
                     .skip(seg)
-                    .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
+                    .filter(|&(i, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)) && khmer::letter_gap(&line, i))
                     .map(|(i, _)| i)
                     .collect();
                 if !gaps.is_empty() {
@@ -4906,7 +4920,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .iter()
         .map(|&i| {
             let g = &line[i];
-            if !g.is_word_space() {
+            if g.word_gap {
+                if stretch { khmer::gap_stretch(g) } else { 0.0 }
+            } else if !g.is_word_space() {
                 0.0
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
@@ -4917,7 +4933,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .collect();
     // Letter gaps: between visible glyphs (not after the line's last glyph).
     let last_box = line.iter().rposition(|g| !g.is_justify_space() && g.adv > 0.0).unwrap_or(0);
-    let is_box = |i: usize, g: &Glyph| i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false));
+    let is_box = |i: usize, g: &Glyph| {
+        i < last_box && !g.is_justify_space() && g.adv > 0.0 && (!g.locked_advance || g.break_after != Some(false)) && khmer::letter_gap(line, i)
+    };
     let letter: Vec<f64> = line
         .iter()
         .enumerate()
@@ -4934,7 +4952,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let glyph: Vec<f64> = line
         .iter()
         .map(|g| {
-            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance {
+            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance || khmer::character(g.ch) {
                 0.0
             } else {
                 let natural = g.adv / sp.glyph_desired.max(0.01);
@@ -4954,7 +4972,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     // Stretch left over beyond every limit is shared equally by the word spaces (fixed-width spaces
     // keep their width), else by the letter gaps; shrink never goes past the minimums (that would
     // overlap glyphs), so an overfull line stays overfull.
-    let elastic = spaces.iter().filter(|&&i| line[i].is_word_space()).count();
+    let elastic = spaces.iter().filter(|&&i| line[i].is_word_space() || line[i].word_gap).count();
     let gaps = line.iter().enumerate().filter(|&(i, g)| is_box(i, g)).count();
     let (over, over_gap) = match (stretch && rem > 0.0, elastic, gaps) {
         (false, _, _) => (0.0, 0.0),
@@ -4964,7 +4982,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     };
     for (k, &i) in spaces.iter().enumerate() {
         let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        add[i] += sign * share + if line[i].is_word_space() { over } else { 0.0 };
+        add[i] += sign * share + if line[i].is_word_space() || line[i].word_gap { over } else { 0.0 };
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {
@@ -5023,6 +5041,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::INDENT_HERE
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
+        || g.ch == '\u{200b}'
         || g.ch == shape::SOFT_HYPHEN
         || g.ch == shape::HIDDEN);
     PlacedGlyph {

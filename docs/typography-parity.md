@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (optional Khmer composition and proofreading; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -37,7 +37,7 @@ Fidelity: **unmeasured** unless stated.
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531) |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Greek (hyph-el-monoton), German 2006 (hyph-de-1996), French (hyph-fr), Italian (hyph-it) and Dutch (Tutelaers); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
-| Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
+| Spelling | per-language dictionaries | English (Moby), optional Khmer (shared Aksara-derived core), document/user dictionary; native review and undo | ~ | Khmer preferred forms are limited rules, not general grammar; [build/data scope](khmer.md) |
 | Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: pairs pulled towards the font's stem gap, `crates/compose/src/optical.rs`), manual, none | ~ | Optical is an approximation of Adobe's algorithm (#181), not a match: imported display text can still break differently |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
 | Character fill and stroke | fill, stroke, tint, weight, stroke aligned to centre or outside | fill, stroke, tints, weight, stroke behind fill (screen, PNG, PDF, IDML `StrokeAlignment`) | ~ | text strokes have no join or miter limit settings (#619 for stroke behind fill) |
@@ -47,6 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
 | Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
+| Khmer horizontal justification | safe word gaps and attached marks | shared segmentation + word-gap glue, both composers; authored ZWSP and No Break | ~ | optional data pack; real IDML/PDF comparison, not exact pagination parity |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |

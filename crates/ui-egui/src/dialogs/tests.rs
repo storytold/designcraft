@@ -5038,3 +5038,57 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+/// The menu opens a native review while the read-only engine query remains safe for automation.
+/// Suggestion selection, correction, Skip and Dictionary actions all use the shared dialog path.
+#[test]
+fn spelling_review_selects_suggestion_corrects_undoes_and_rejects_stale_text() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.ui.language = "en".into();
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36,36,300,200], "content": "text", "text": "The jumpd fox. A jumpd dog."})).unwrap();
+    let sid = designcraft_doc::StoryId(frame["story"].as_u64().unwrap());
+    let findings = app.run("spelling.check", json!({"suggestions": false})).unwrap();
+    assert_eq!(findings.as_array().unwrap().len(), 2);
+    assert!(findings.as_array().unwrap().iter().all(|issue| issue["suggestions"] == json!([])));
+    assert!(app.ui.dialog.is_none(), "query must not open a modal");
+    crate::menus::activate(&mut app, "spelling.check", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().id, crate::spelling_dialog::ID);
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let issue = app.ui.dialog.as_ref().unwrap().fields["issue"].clone();
+    let suggestion = issue["suggestions"].as_array().unwrap().first().unwrap().as_str().unwrap().to_owned();
+    scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field":"to", "value":"different replacement"}));
+    scope_click(&mut app, &ctx, screen, &suggestion);
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("to"), suggestion);
+    scope_click(&mut app, &ctx, screen, "Change");
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, format!("The {suggestion} fox. A jumpd dog."));
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, "The jumpd fox. A jumpd dog.");
+    scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field":"action", "value":"refresh"}));
+    scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({}));
+    // Editing the story, even if the old word still occurs later, cannot apply stale offsets.
+    app.run("spelling.change", json!({"story":sid.0,"start":0,"end":0,"to":"A "})).unwrap();
+    let before = app.session.doc().unwrap().doc.story(sid).unwrap().text.clone();
+    assert!(confirm(&mut app).unwrap_err().contains("text changed"));
+    assert_eq!(app.session.doc().unwrap().doc.story(sid).unwrap().text, before);
+    assert!(app.ui.dialog.is_some(), "failed correction keeps a useful review open");
+    scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field":"action", "value":"refresh"}));
+    scope_control(&mut app, &ctx, "ui.dialog.confirm", json!({}));
+    scope_click(&mut app, &ctx, screen, "Skip");
+    let next = &app.ui.dialog.as_ref().unwrap().fields["issue"];
+    assert_eq!(next["word"], "jumpd");
+    assert!(!next["suggestions"].as_array().unwrap().is_empty(), "Skip fetches suggestions for the next issue");
+    scope_click(&mut app, &ctx, screen, "Skip");
+    assert!(app.ui.dialog.as_ref().unwrap().fields["issue"].is_null());
+    scope_click(&mut app, &ctx, screen, "Refresh");
+    assert_eq!(app.ui.dialog.as_ref().unwrap().fields["remaining"], 2, "Refresh reloads skipped issues");
+    scope_click(&mut app, &ctx, screen, "Add to Dictionary");
+    assert!(app.run("spelling.words", json!({})).unwrap().as_array().unwrap().contains(&json!("jumpd")));
+    app.run("file.new", json!({})).unwrap();
+    scope_control(&mut app, &ctx, "ui.dialog.set", json!({"field":"action", "value":"refresh"}));
+    assert!(confirm(&mut app).unwrap_err().contains("document changed"));
+}

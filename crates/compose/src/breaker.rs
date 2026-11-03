@@ -85,7 +85,7 @@ impl Default for Spacing {
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
-        if g.locked_advance {
+        if g.locked_advance || crate::khmer::character(g.ch) || matches!(g.ch, '\u{200b}' | '\u{2060}') {
             return ([0.0; 3], [0.0; 3]);
         }
         let moji_stretch = if self.justify { g.moji.stretch } else { 0.0 };
@@ -460,7 +460,16 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
         if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
-            if matches!(g.ch, '-' | '\u{2010}') {
+            if sp.justify && g.word_gap {
+                // Zero-width word-space glue, as proposed by DesignCraft #516. The next
+                // glyph starts the following line, so no source character is discarded.
+                let mut gl = Item::glue(0.0, crate::khmer::gap_stretch(g), 0.0);
+                gl.over = crate::khmer::gap_stretch(g);
+                gl.hang = right_hang(g, sp);
+                last_space = it.len();
+                it.push(gl);
+                ig.push(i + 1);
+            } else if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
                 p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
@@ -890,7 +899,7 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
 /// split: before `i`, or earlier where kinsoku forbids that (no line starts with closing
 /// punctuation).
 fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
-    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if kinsoku_allows(a.ch, b.ch));
+    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if a.break_after != Some(false) && !a.no_break && kinsoku_allows(a.ch, b.ch));
     (start + 1..=i).rev().find(|&j| allowed(j)).unwrap_or(i)
 }
 

@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 craft-print = { workspace = true }
 craft-docpath = { workspace = true }
+craft-khmer = { workspace = true }
 designcraft-images = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
