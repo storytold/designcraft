@@ -324,7 +324,7 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
     // part shorter than the ending). Prefix sums of vowels and UTF-8 lengths then answer "does the
     // core have a vowel" and "is it longer than one byte" without building each suffix, which was
     // quadratic in the word's length.
-    let ends = |s: &str| c.iter().rev().zip(s.chars().rev()).filter(|(a, b)| a == b).count() == s.chars().count();
+    let ends = |s: &str| c.ends_with(&s.chars().collect::<Vec<char>>());
     let silent = if ends("ed") || ends("es") {
         2
     } else if ends("e") {
