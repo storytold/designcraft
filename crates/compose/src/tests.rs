@@ -715,6 +715,12 @@ fn huge_contour_curves_flatten_in_bounded_work() {
     vast.curve_to((1.0e155, 0.0), (1.0e155, 1.0e155), (0.0, 1.0e155));
     vast.close_path();
     assert!(flatten_rings(&vast, Affine::IDENTITY).is_none());
+    // A non-finite point is unbounded, even beside finite ones.
+    let mut nan = BezPath::new();
+    nan.move_to((0.0, 0.0));
+    nan.line_to((f64::NAN, 1.0));
+    assert!(control_extent(&nan).is_infinite());
+    assert!(flatten_rings(&nan, Affine::IDENTITY).is_none());
     // Too many elements: given up at once.
     let mut many = BezPath::new();
     many.move_to(Point::ZERO);

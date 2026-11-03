@@ -477,14 +477,17 @@ fn flatten_rings(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::A
     (!too_many && !rings.is_empty()).then_some(rings)
 }
 
-/// The larger side of the box around `path`'s finite end and control points (0 without any).
+/// The larger side of the box around `path`'s end and control points (0 without any; infinite if any is not finite).
 fn control_extent(path: &designcraft_geom::BezPath) -> f64 {
     use designcraft_geom::PathEl;
     let (mut lo, mut hi) = (Point::new(f64::INFINITY, f64::INFINITY), Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    let mut all_finite = true;
     let mut add = |p: Point| {
         if p.x.is_finite() && p.y.is_finite() {
             lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
             hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+        } else {
+            all_finite = false;
         }
     };
     for el in path.elements() {
@@ -494,6 +497,10 @@ fn control_extent(path: &designcraft_geom::BezPath) -> f64 {
             PathEl::CurveTo(a, b, c) => [a, b, c].into_iter().for_each(&mut add),
             PathEl::ClosePath => {}
         }
+    }
+    // A non-finite point must not slip past the extent limit, so report it as unbounded.
+    if !all_finite {
+        return f64::INFINITY;
     }
     if lo.x > hi.x {
         return 0.0;
