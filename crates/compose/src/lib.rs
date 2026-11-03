@@ -393,6 +393,9 @@ const CONTOUR_TOLERANCE: f64 = 0.25;
 /// tolerance would cut its curves into millions of points: the points a curve is cut into grow with
 /// the square root of its size over the tolerance, so this bounds them however large it is.
 const CONTOUR_RELATIVE_TOLERANCE: f64 = 1e-4;
+/// Largest outline extent flattened at all: past this, kurbo's subdivision count (from squared
+/// distances) overflows to infinity and it tries to reserve that many pieces.
+const MAX_CONTOUR_EXTENT: f64 = 1e100;
 
 impl Contour {
     /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
@@ -446,7 +449,11 @@ fn flatten_rings(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::A
         return None;
     }
     let path = to_inner * path.clone();
-    let tolerance = (control_extent(&path) * CONTOUR_RELATIVE_TOLERANCE).max(CONTOUR_TOLERANCE);
+    let extent = control_extent(&path);
+    if extent > MAX_CONTOUR_EXTENT {
+        return None;
+    }
+    let tolerance = (extent * CONTOUR_RELATIVE_TOLERANCE).max(CONTOUR_TOLERANCE);
     let mut rings: Vec<Vec<Point>> = Vec::new();
     let mut n = 0usize;
     let mut too_many = false;

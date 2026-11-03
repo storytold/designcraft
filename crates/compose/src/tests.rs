@@ -709,6 +709,12 @@ fn huge_contour_curves_flatten_in_bounded_work() {
     small.move_to((0.0, 0.0));
     small.curve_to((100.0, 0.0), (100.0, 100.0), (0.0, 100.0));
     assert!(control_extent(&small) * CONTOUR_RELATIVE_TOLERANCE < CONTOUR_TOLERANCE);
+    // Past the extent kurbo can subdivide without overflowing: given up at once.
+    let mut vast = BezPath::new();
+    vast.move_to((0.0, 0.0));
+    vast.curve_to((1.0e155, 0.0), (1.0e155, 1.0e155), (0.0, 1.0e155));
+    vast.close_path();
+    assert!(flatten_rings(&vast, Affine::IDENTITY).is_none());
     // Too many elements: given up at once.
     let mut many = BezPath::new();
     many.move_to(Point::ZERO);
