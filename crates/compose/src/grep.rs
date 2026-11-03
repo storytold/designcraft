@@ -428,7 +428,7 @@ impl Grep {
                 out.push(r);
             }
         }
-        let more = out.len() < limit && it.next().is_some();
+        let more = out.len() < limit && it.next().transpose().map_err(run_err)?.is_some();
         Ok((out, more))
     }
 
