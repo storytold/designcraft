@@ -6,6 +6,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+/// DesignCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.designcraft.png")),
+    accent: Some([0x7b, 0xb5, 0x1c]),
+    ..craft_update::suite::DESIGNCRAFT
+};
+
 pub mod about;
 pub mod canvas;
 pub mod chrome;
@@ -22,6 +31,7 @@ pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
@@ -61,7 +71,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -303,6 +313,9 @@ pub fn cjk_features(app: &DesignApp) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod window_frame_tests;
 
 /// The whole window in a headless test harness, at a chosen window size.
 #[cfg(test)]

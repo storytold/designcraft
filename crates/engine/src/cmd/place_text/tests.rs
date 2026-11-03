@@ -307,3 +307,117 @@ fn autoflow_adds_the_pages_odd_and_even_page_breaks_ask_for() {
         assert_eq!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at, None, "{brk:?}");
     }
 }
+
+#[test]
+fn autoflow_sizes_no_frame_by_one_a_start_option_ends_early() {
+    // Regression (#1209): the title frame a start option ends early isn't a frame's worth of text.
+    use std::io::Write;
+    const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+    let para = |style: &str, text: &str| format!(r#"<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#);
+    let body = [para("Title", "Front"), para("Chapter", "Chapter one"), para("Body", "lorem ipsum dolor sit amet ".repeat(60).trim())].concat();
+    let styles: String = ["Title", "Chapter", "Body"]
+        .iter()
+        .map(|s| format!(r#"<w:style w:type="paragraph" w:styleId="{s}"><w:name w:val="{s}"/></w:style>"#))
+        .collect();
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let o = zip::write::SimpleFileOptions::default();
+    for (n, c) in [
+        ("word/document.xml", format!(r#"<w:document {W}><w:body>{body}</w:body></w:document>"#)),
+        ("word/styles.xml", format!(r#"<w:styles {W}>{styles}</w:styles>"#)),
+    ] {
+        w.start_file(n, o).unwrap();
+        w.write_all(c.as_bytes()).unwrap();
+    }
+    let docx = w.finish().unwrap().into_inner();
+    for (start, pages) in [("nextOddPage", 5), ("nextEvenPage", 4)] {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Chapter", "para": {"startParagraph": start}})).unwrap();
+        let ids = s.doc().unwrap().doc.next_id;
+        let r = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(&docx), "name": "front.docx", "page": 3, "autoflow": true}))
+            .unwrap();
+        assert_eq!(r["overset"], false, "{start}: {r}");
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page_count(), pages, "{start}: {r}");
+        // A few ids per page it keeps, not hundreds for pages it builds and removes.
+        assert!(d.next_id - ids < 100, "{start}: {} ids", d.next_id - ids);
+    }
+}
+
+#[test]
+fn autoflow_looks_past_a_deleted_paragraph_for_the_start_option() {
+    // The title frame ends before a tracked deletion; the chapter after it starts on an odd page.
+    use designcraft_doc::{ChangeMark, build::NewDocument};
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, primary_text_frame: true, ..Default::default() });
+    let sid = d.settings.primary_story.unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert(0, &format!("Front\nGone\nChapter one\n{}", "lorem ipsum dolor sit amet ".repeat(400).trim()));
+    st.paras[2].para.start_paragraph = Some(StartParagraph::NextOddPage);
+    st.format_chars(6..11, |f| f.over.change = Some(ChangeMark::Deleted));
+    let ids = d.next_id;
+    assert_eq!(autoflow(&mut d, sid, 2000, "file.place", false).unwrap(), 4);
+    assert_eq!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at, None);
+    assert!(d.next_id - ids < 100, "{} ids", d.next_id - ids);
+}
+
+#[test]
+fn autoflow_asks_for_every_frame_the_start_options_ask_for_at_once() {
+    // A paragraph per page: no frame sets a fill rate, yet one round shouldn't add one frame.
+    use designcraft_doc::build::NewDocument;
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, primary_text_frame: true, ..Default::default() });
+    let sid = d.settings.primary_story.unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert(0, (0..200).map(|i| format!("Chapter {i}\n")).collect::<String>().trim_end());
+    for p in &mut st.paras {
+        p.para.start_paragraph = Some(StartParagraph::NextPage);
+    }
+    let ids = d.next_id;
+    assert_eq!(autoflow(&mut d, sid, 2000, "file.place", false).unwrap(), 199);
+    assert_eq!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at, None);
+    assert!(d.next_id - ids < 2000, "{} ids", d.next_id - ids);
+}
+
+#[test]
+fn autoflow_asks_no_frame_for_a_deleted_or_hidden_break() {
+    // Composing skips breaks in the overset text that tracked changes delete or a condition hides.
+    use designcraft_doc::{ChangeMark, Condition, PAGE_BREAK, build::NewDocument};
+    for hide in [false, true] {
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, primary_text_frame: true, ..Default::default() });
+        d.conditions.push(Condition { name: "Hidden".into(), color: [0, 0, 0], visible: false });
+        let sid = d.settings.primary_story.unwrap();
+        let st = d.story_mut(sid).unwrap();
+        let body = "lorem ipsum dolor sit amet ".repeat(300);
+        let gone = format!("x{PAGE_BREAK}\n").repeat(200);
+        st.insert(0, &format!("{}\n{gone}{}", body.trim(), body.trim()));
+        let at = body.trim().len() + 1;
+        if hide {
+            for (i, _) in gone.match_indices(PAGE_BREAK) {
+                st.format_chars(at + i..at + i + PAGE_BREAK.len_utf8(), |f| f.over.conditions = Some(vec!["Hidden".into()]));
+            }
+        } else {
+            st.format_chars(at..at + gone.len(), |f| f.over.change = Some(ChangeMark::Deleted));
+        }
+        let ids = d.next_id;
+        autoflow(&mut d, sid, 2000, "file.place", false).unwrap();
+        assert_eq!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at, None, "hide {hide}");
+        assert!(d.next_id - ids < 100, "hide {hide}: {} pages, {} ids", d.page_count(), d.next_id - ids);
+    }
+}
+
+#[test]
+fn autoflow_counts_a_break_and_the_start_option_it_meets_once() {
+    // Each chapter ends in a page break and starts on the next page: one new page each, not two.
+    use designcraft_doc::{PAGE_BREAK, build::NewDocument};
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, primary_text_frame: true, ..Default::default() });
+    let sid = d.settings.primary_story.unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.insert(0, (0..200).map(|i| format!("Chapter {i}{PAGE_BREAK}\n")).collect::<String>().trim_end());
+    for p in &mut st.paras {
+        p.para.start_paragraph = Some(StartParagraph::NextPage);
+    }
+    let ids = d.next_id;
+    assert_eq!(autoflow(&mut d, sid, 2000, "file.place", false).unwrap(), 199);
+    assert_eq!(designcraft_compose::compose_story(&d, sid, &Default::default()).overset_at, None);
+    assert!(d.next_id - ids < 2000, "{} ids", d.next_id - ids);
+}
