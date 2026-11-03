@@ -1,4 +1,5 @@
 use super::frames::{item_canvas_xf, layer_color, path_screen};
+use super::caret;
 use super::{Affine, CanvasLayout, Color32, DesignApp, Document, Point, Pos2, Rect, Stroke, Xf, compose, pos2};
 
 pub(super) fn draw_text_selection(
