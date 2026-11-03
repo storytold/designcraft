@@ -99,7 +99,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             return None;
         }
         let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
+        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| it.takes_graphic()))
     });
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
@@ -979,5 +979,70 @@ mod layout_place_tests {
         assert!((bb.x0 - 100.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "page top-left at 0,0: {bb:?}");
         assert!(d.stories.values().any(|st| st.text == "From page one"), "stories come along");
         assert!(b.execute("file.place", &json!({"base64": b64, "name": "src.idml", "layoutPage": 2})).is_err(), "page 2 is empty");
+    }
+}
+
+#[cfg(test)]
+mod nested_frame_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{Content, Item, ItemId, Shape, SpreadRef};
+    use designcraft_geom::{Affine, Rect, shapes};
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn png(red: u8) -> String {
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 30, 255].repeat(800) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A graphic placed into a frame holding an image pasted into it (how a document from InDesign
+    /// keeps a photo) replaces the image and fills the frame, which keeps its size.
+    #[test]
+    fn placing_into_a_frame_with_a_nested_image_replaces_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("file.place", &json!({"base64": png(200), "name": "old.png", "x": 0, "y": 0})).unwrap();
+        let old = ItemId(first["id"].as_u64().unwrap());
+        let frame = s
+            .edit(|d, _| {
+                let mut image = (*d.item(old).unwrap()).clone();
+                d.remove_item(old)?;
+                image.xf = Affine::translate((-20.0, -20.0));
+                let id = ItemId(d.alloc());
+                let mut frame = Item::new(id, image.layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 90.0)));
+                frame.xf = Affine::translate((100.0, 100.0));
+                frame.content = Content::Group { items: vec![Arc::new(image)] };
+                d.insert_item(SpreadRef::Doc(0), frame, None)?;
+                Ok(id)
+            })
+            .unwrap();
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("file.place", &json!({"base64": png(20), "name": "new.png"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(frame).unwrap();
+        let Content::Graphic(g) = &it.content else { panic!("the frame holds the new graphic: {:?}", it.content) };
+        assert_eq!(d.assets[&g.asset].name, "new.png");
+        assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+
+    /// A document whose top layer is hidden and locked (a dieline) opens with new objects going to
+    /// the topmost layer that is shown and unlocked, not where they couldn't be seen or selected.
+    #[test]
+    fn a_document_opens_on_its_topmost_visible_unlocked_layer() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
+        s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+        let mut d = (*s.doc().unwrap().doc).clone();
+        let top = d.layers.first().unwrap().id;
+        d.layers[0].visible = false;
+        d.layers[0].locked = true;
+        let artwork = d.layers[1].id;
+        assert_eq!(d.default_layer(), top);
+        let st = crate::DocState::new(d, None);
+        assert_eq!(st.active_layer, artwork);
     }
 }
