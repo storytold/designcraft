@@ -397,7 +397,8 @@ pub(super) fn make_face(
     let ribbi_family_differs = name(&f, &[StringId::TYPOGRAPHIC_FAMILY_NAME])
         .zip(name(&f, &[StringId::FAMILY_NAME]))
         .is_some_and(|(typographic, legacy)| !typographic.eq_ignore_ascii_case(&legacy));
-    let style_ids: &[StringId] = if ribbi_family_differs && name(&f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME]).is_some() {
+    let has_typographic_subfamily = name(&f, &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME]).is_some();
+    let style_ids: &[StringId] = if ribbi_family_differs && has_typographic_subfamily {
         &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME]
     } else {
         &[StringId::TYPOGRAPHIC_SUBFAMILY_NAME, StringId::SUBFAMILY_NAME]
