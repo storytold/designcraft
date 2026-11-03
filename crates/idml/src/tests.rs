@@ -1306,7 +1306,7 @@ fn round_trips_cross_references() {
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results: found\nSee .", ParaFormat::default()).unwrap();
     let target = d.paragraph_anchor(sid, 0).unwrap();
     let at = d.story(sid).unwrap().text.find(" .").unwrap() + 1;
-    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into() });
+    d.story_mut(sid).unwrap().insert_xref(at, designcraft_doc::CrossRef { target, format: "Paragraph Text".into(), ..Default::default() });
     d.xref_formats.push(designcraft_doc::XrefFormat {
         name: "Mine".into(),
         definition: "(<partialPara delim=\":\" includeDelim=\"true\" />, p. <pageNum />)".into(),
@@ -1318,6 +1318,7 @@ fn round_trips_cross_references() {
     assert_eq!(s.text, d.story(sid).unwrap().text);
     assert_eq!(s.xrefs.len(), 1);
     assert_eq!(s.xrefs[0].format, "Paragraph Text");
+    assert_eq!(s.xrefs[0].text, None, "generated text reads back as generated");
     let (tsid, tpos) = back.find_anchor(s.xrefs[0].target).expect("target resolves");
     assert_eq!((tsid, tpos), (s.id, 0));
     let mine = back.xref_format("Mine").unwrap();
@@ -2985,6 +2986,38 @@ fn round_trips_the_zero_point_and_ruler_origin() {
     assert!(x.is_finite() && y.is_finite() && x < 1e4 && y > -1e4, "{x} {y}");
     assert_eq!(fixture("12").settings.zero_point, [0.0, 0.0]);
     assert_eq!(fixture("NaN 4").settings.zero_point, [0.0, 0.0]);
+}
+
+/// Q is `Q` in IDML, as InDesign writes it (`U` is another unit). Units DesignCraft lacks are
+/// read as points, and the import report says so.
+#[test]
+fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
+    use designcraft_geom::Unit;
+    let mut d = Document::new(&NewDocument::default());
+    for (h, v) in [(Unit::Q, Unit::Ha), (Unit::Ha, Unit::Q), (Unit::Millimeters, Unit::Points)] {
+        (d.settings.horizontal_units, d.settings.vertical_units) = (h, v);
+        let bytes = export_idml(&d);
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!((back.settings.horizontal_units, back.settings.vertical_units), (h, v));
+    }
+    d.settings.horizontal_units = Unit::Q;
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"HorizontalMeasurementUnits="Q""#), "{prefs}");
+
+    let prefs =
+        PREFS.replace("<MarginPreference", r#"<ViewPreference HorizontalMeasurementUnits="U" VerticalMeasurementUnits="Q"/><MarginPreference"#);
+    let zip = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", &prefs),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
+    assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
 }
 
 #[test]
@@ -4893,6 +4926,41 @@ fn split_document_round_trips() {
     assert!(split(&back, "Part") && split(&back, "Chapter") && !split(&back, "Body"));
 }
 
+/// Export Tagging (tag and class) of paragraph and character styles comes from the style's EPUB
+/// export tag map, not another export type's, and is written back.
+#[test]
+fn export_tags_round_trip() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootCharacterStyleGroup Self="rc">
+    <CharacterStyle Self="CharacterStyle/$ID/[No character style]" Name="$ID/[No character style]"/>
+    <CharacterStyle Self="CharacterStyle/Lead" Name="Lead">
+      <StyleExportTagMap Self="cs1" ExportType="PDF" ExportTag="Artifact" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="cs2" ExportType="EPUB" ExportTag="em" ExportClass="lead" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </CharacterStyle>
+  </RootCharacterStyleGroup>
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12"/>
+    <ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter" SplitDocument="false">
+      <StyleExportTagMap Self="ps1" ExportType="PDF" ExportTag="H1" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="ps2" ExportType="EPUB" ExportTag="h1" ExportClass="title" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Body" Name="Body"/>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(xml), &|_| None).unwrap();
+    let tag = |d: &designcraft_doc::Document, name: &str, character: bool| {
+        d.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone(), t.split))
+    };
+    let check = |d: &designcraft_doc::Document| {
+        assert_eq!(tag(d, "Chapter", false), Some(("h1".into(), "title".into(), false)));
+        assert_eq!(tag(d, "Lead", true), Some(("em".into(), "lead".into(), false)));
+        assert_eq!(tag(d, "Body", false), None);
+    };
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+
 /// EPUB Export Options › Split Document: off, one style (built in or not) or the styles' export
 /// tags, read from the file's `EPubExportPreference` and written back.
 #[test]
@@ -4923,4 +4991,56 @@ fn epub_split_document_round_trips() {
         assert_eq!(d.settings.epub_split, want, "{attrs}");
         assert_eq!(import_idml(&export_idml(&d)).unwrap().settings.epub_split, want, "{attrs}");
     }
+}
+
+/// Text typed over a cross-reference's generated text is kept as shown, its page number live
+/// (InDesign's cross-reference page number variable, found by its `AssociatedTextVariable`),
+/// tracked insertions in and deletions out. The edits survive export and import.
+#[test]
+fn keeps_edited_cross_reference_text() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Story Self="s1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+<CrossReferenceSource Self="x1" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>Page </Content></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><TextVariableInstance Self="v1" Name="Seitenzahl" ResultText="7" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>: Bove, Vinny. </Content><Change Self="c1" ChangeType="InsertedText"><Content>"Advent Horizon."</Content></Change><Change Self="c2" ChangeType="DeletedText"><Content> (draft)</Content></Change><Content> 1996.</Content></CharacterStyleRange></CrossReferenceSource>
+<CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content> and </Content></CharacterStyleRange>
+<CrossReferenceSource Self="x2" AppliedFormat="n"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>"Intro" on page </Content><TextVariableInstance Self="v2" Name="&lt;?AID 001b?&gt;TV XRefPageNumber" ResultText="3" AssociatedTextVariable="dTextVariablen&lt;?AID 001b?&gt;TV XRefPageNumber"/></CharacterStyleRange></CrossReferenceSource>
+</ParagraphStyleRange></Story></idPkg:Story>"#;
+    let d = import_idml(&fixture_with_story(story)).unwrap();
+    d.check().unwrap();
+    let s = d.stories.values().find(|s| !s.xrefs.is_empty()).expect("story with cross-references");
+    assert_eq!(s.xrefs.len(), 2);
+    assert_eq!(s.xrefs[0].text.as_deref(), Some("Page <pageNum />: Bove, Vinny. \"Advent Horizon.\" 1996."));
+    assert_eq!(s.xrefs[0].page.as_deref(), Some("7"));
+    // Its destination is gone: the text and page it last showed.
+    assert_eq!(designcraft_compose::xref::xref_text(&d, &s.xrefs[0], None), "Page 7: Bove, Vinny. \"Advent Horizon.\" 1996.");
+    assert_eq!(s.xrefs[1].text.as_deref(), Some("\"Intro\" on page <pageNum />"), "with no destination to generate from, the text as shown");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let b = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    assert_eq!(b.xrefs[0].text, s.xrefs[0].text);
+    assert_eq!(b.xrefs[0].page, s.xrefs[0].page);
+}
+
+/// Saved cross-reference text counts as generated only when it is exactly what its format
+/// generates for its destination: text added after it (or anywhere else) is an edit, and kept.
+#[test]
+fn only_exactly_generated_cross_reference_text_is_regenerated() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Results\nSee", ParaFormat::default()).unwrap();
+    let target = d.paragraph_anchor(sid, 0).unwrap();
+    d.xref_formats.push(designcraft_doc::XrefFormat { name: "Page".into(), definition: "Page <pageNum />".into() });
+    for t in ["Page <pageNum />, revised", "Page <pageNum />", "Seite <pageNum />"] {
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert(end, " ");
+        let x = designcraft_doc::CrossRef { target, format: "Page".into(), text: Some(t.into()), page: Some("1".into()) };
+        st.insert_xref(end + 1, x);
+    }
+    d.check().unwrap();
+    let back = import_idml(&export_idml(&d)).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| !s.xrefs.is_empty()).unwrap();
+    let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
+    assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }

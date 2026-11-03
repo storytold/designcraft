@@ -5,6 +5,7 @@
 //! cell (or its fixed height); rows that don't fit continue in the next column / frame, repeating
 //! header (and footer) rows. Rows tied together by row spans never split.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
@@ -140,6 +141,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         page_name: opts.page_name.clone(),
         section_marker: opts.section_marker.clone(),
         page: opts.page,
+        parent: false,
         grid: None,
         left_page,
         right_page,
@@ -411,7 +413,13 @@ fn emit(
     out: &mut ComposedStory,
 ) {
     let nc = table.ncols();
-    let ry = |r: usize| rows.iter().find(|x| x.0 == r).map(|x| x.1);
+    // Each row's top (its first occurrence in the fragment), indexed once: looking it up per cell
+    // by scanning the rows was quadratic in a fragment's row count.
+    let mut row_top: HashMap<usize, f64> = HashMap::with_capacity(rows.len());
+    for &(r, y, _) in rows {
+        row_top.entry(r).or_insert(y);
+    }
+    let ry = |r: usize| row_top.get(&r).copied();
     let header = table.header_rows();
     let body = table.body_rows();
     let nbody = body.len();

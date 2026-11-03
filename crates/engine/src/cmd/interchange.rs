@@ -74,7 +74,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
     }
     let mut out = doc.clone();
     let mut variants = std::collections::HashMap::new();
-    // Duplicated anchors can share an id. Reuse a variant only when source and choice agree.
+    // Ids should be unique (#1522); placements that still share one reuse a variant only when source and choice agree.
     let mut expected = std::collections::HashMap::new();
     for (id, asset, hidden, overridden) in choices {
         let signature = (asset.id, hidden.clone(), overridden);
@@ -160,7 +160,7 @@ pub fn import(bytes: &[u8], package: Option<&std::path::Path>) -> Result<Documen
 
 /// [`import`], with the problems that did not stop it (parts missing from the package, …).
 pub fn import_report(bytes: &[u8], package: Option<&std::path::Path>) -> Result<(Document, Vec<String>)> {
-    import_report_with_previews(bytes, package, &std::collections::HashMap::new())
+    import_report_with_previews(bytes, package, &std::collections::HashMap::new()).map(|(document, warnings, _)| (document, warnings))
 }
 
 /// [`import_report`], showing `previews` (graphic `Self` → image) for linked files that can't be read.
@@ -168,7 +168,7 @@ fn import_report_with_previews(
     bytes: &[u8],
     package: Option<&std::path::Path>,
     previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
-) -> Result<(Document, Vec<String>)> {
+) -> Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
     let read = |link: &str| -> Option<Vec<u8>> {
@@ -184,7 +184,7 @@ fn import_report_with_previews(
             None
         }
     };
-    let designcraft_idml::Imported { mut document, warnings } =
+    let designcraft_idml::Imported { mut document, warnings, story_ids } =
         designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
     resolve_pdf_crops(&mut document);
     #[cfg(not(target_arch = "wasm32"))]
@@ -199,7 +199,7 @@ fn import_report_with_previews(
         resolve_packaged_links(&mut document, package);
         document
     };
-    Ok((document, warnings))
+    Ok((document, warnings, story_ids))
 }
 
 /// Placed PDFs read from IDML name their crop (`PDFCrop`): find where each box sits on its page,
@@ -422,7 +422,7 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         bytes
     };
-    let (mut d, import_warnings) = import_report_with_previews(&bytes, package.as_deref(), &previews)?;
+    let (mut d, import_warnings, story_ids) = import_report_with_previews(&bytes, package.as_deref(), &previews)?;
     warnings.extend(import_warnings);
     if !title.is_empty() {
         d.title = title;
@@ -433,17 +433,33 @@ pub(crate) fn open_idml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     warnings.extend(font_warnings);
     warnings.extend(super::style::grep_style_warnings(&d));
+    let warning_items: Vec<Value> = warnings.iter().map(|w| warning_item(&d, &story_ids, w).map_or(Value::Null, |i| json!(i.0))).collect();
     // Never save over the .idml or .indd with the native format: the document starts unsaved.
     let mut st = DocState::new(d, None);
     st.fonts = fonts;
     let i = s.add_document(st);
-    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings}))
+    Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "warningItems": warning_items}))
+}
+
+/// The frame an import warning is about, so it can be shown: the first frame of the story a
+/// "story …: …" warning names, by the converter's INDD id (`story 30892`, which it writes to the
+/// IDML as `u78ac`) or by its IDML `Self` (`story u78ac`).
+fn warning_item(
+    d: &Document,
+    story_ids: &std::collections::HashMap<String, designcraft_doc::StoryId>,
+    warning: &str,
+) -> Option<designcraft_doc::ItemId> {
+    let name = warning.strip_prefix("story ")?.split([':', ' ']).next()?;
+    let self_id = name.parse::<u32>().map_or_else(|_| name.to_string(), |uid| format!("u{uid:x}"));
+    d.stories.get(story_ids.get(&self_id)?)?.frames.first().copied()
 }
 
 /// An InDesign document or template (.indd, .indt): known by its signature, or by its name when
-/// the bytes are something else (the converter then says why it can't read them).
+/// the bytes are neither a recognized DesignCraft document nor IDML. The converter explains
+/// unrecognized data with an InDesign extension.
 pub(crate) fn is_indd(name: &str, bytes: &[u8]) -> bool {
-    bytes.starts_with(&indd::header::SIGNATURE) || has_indd_extension(name)
+    bytes.starts_with(&indd::header::SIGNATURE)
+        || (has_indd_extension(name) && !super::file::is_document(bytes) && !bytes.trim_ascii_start().starts_with(b"{"))
 }
 
 pub(crate) fn has_indd_extension(name: &str) -> bool {
@@ -480,6 +496,24 @@ mod tests {
     }
 
     #[test]
+    fn story_warnings_point_at_the_story_frame() {
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        session.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+        let idml = designcraft_idml::export_idml_with(&session.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: true });
+        let (d, _, story_ids) = import_report_with_previews(&idml, None, &std::collections::HashMap::new()).unwrap();
+        let (self_id, sid) = story_ids.iter().find(|(_, sid)| d.stories.get(*sid).is_some_and(|s| !s.frames.is_empty())).unwrap();
+        let frame = d.stories[sid].frames[0];
+        assert_eq!(warning_item(&d, &story_ids, &format!("story {self_id}: something")), Some(frame));
+        // The INDD converter names stories by their number, which it writes as `u` + hex.
+        if let Some(uid) = self_id.strip_prefix('u').and_then(|h| u32::from_str_radix(h, 16).ok()) {
+            assert_eq!(warning_item(&d, &story_ids, &format!("story {uid}: text orientation of its frames is not known")), Some(frame));
+        }
+        assert_eq!(warning_item(&d, &story_ids, "story 999999999: unknown"), None);
+        assert_eq!(warning_item(&d, &story_ids, "a table of 2 rows was read as 1"), None);
+    }
+
+    #[test]
     fn opens_nested_packaged_links_from_a_different_computer() {
         let dir = std::env::temp_dir().join(format!("dc-idml-nested-links-{}", std::process::id()));
         let path = dir.join("Links").join("illustrations").join("logo.png");
@@ -493,7 +527,7 @@ mod tests {
         assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
-        assert_eq!(super::super::links::status(asset, None), "ok");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -510,7 +544,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(*asset.data, png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
-        assert_eq!(super::super::links::status(asset, None), "ok");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -526,7 +560,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(*asset.data, png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
-        assert_eq!(super::super::links::status(asset, None), "ok");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -546,7 +580,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "an existing original stays authoritative");
         assert_eq!(*asset.data, png);
-        assert_eq!(super::super::links::status(asset, None), "modified");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&original).unwrap();
         std::fs::write(&copy, b"modified packaged copy").unwrap();
@@ -554,7 +588,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), copy.to_str());
         assert_eq!(*asset.data, png, "rebinding must not replace embedded pixels");
-        assert_eq!(super::super::links::status(asset, None), "modified");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
 
         std::fs::remove_file(&copy).unwrap();
         let packaged = package.join("x.idml");
@@ -563,7 +597,7 @@ mod tests {
             let asset = doc.assets.values().next().unwrap();
             assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "keep a missing link when there is no candidate");
             assert_eq!(*asset.data, png);
-            assert_eq!(super::super::links::status(asset, None), "missing");
+            assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing");
         }
         let oversized = "a/".repeat(MAX_LINK_PATH_BYTES);
         assert!(packaged_link_candidates(&oversized, Some(&packaged)).is_empty());
@@ -611,7 +645,7 @@ mod tests {
             assert!(seen.iter().all(|p| p.starts_with(&dir) || itself.as_ref() == Some(p)), "{link}: {seen:?}");
             let asset = doc.assets.values().next().unwrap();
             assert!(asset.data.is_empty(), "{link}");
-            assert_eq!(super::super::links::status(asset, None), "missing", "{link}");
+            assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing", "{link}");
         }
         // An image elsewhere on this computer is read, and so is one beside the package.
         let away = outside.join("logo.png");
@@ -620,7 +654,7 @@ mod tests {
         let doc = import(&idml, Some(&package)).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!((&*asset.data, asset.link.as_deref()), (&png, away.to_str()));
-        assert_eq!(super::super::links::status(asset, None), "ok");
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
         std::fs::write(dir.join("Links").join("logo.png"), &png).unwrap();
         let (idml, _) = linked_idml("Links/logo.png", false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();
@@ -798,8 +832,8 @@ mod nested_layer_tests {
         session.execute("file.exportIdml", &json!({"embedImages": false})).unwrap();
     }
 
-    // Duplicating a text frame that holds an anchored placed PDF leaves two placements sharing
-    // one ItemId (renumber gap, tracked separately). Export must still apply the choice to both.
+    // Duplicating a text frame that holds an anchored placed PDF copies the placement under a
+    // fresh id (#1522). Export must apply the choice to both.
     #[test]
     fn duplicated_frame_keeps_its_anchored_pdf_choice_in_idml() {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
@@ -821,8 +855,9 @@ mod nested_layer_tests {
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
         let doc = s.doc().unwrap().doc.clone();
         let with_choice: Vec<_> = doc.placed_items().into_iter().filter(|i| i.has_pdf_layer_override()).map(|i| i.id).collect();
-        assert_eq!(with_choice, [chosen, chosen], "both placements share one id");
-        assert!(doc.check().unwrap_err().to_string().contains(&format!("duplicate item id {chosen}")));
+        assert_eq!(with_choice.len(), 2);
+        assert!(with_choice.contains(&chosen) && with_choice[0] != with_choice[1], "{with_choice:?}");
+        doc.check().unwrap();
         let result = s.execute("file.exportIdml", &json!({})).unwrap();
         let imported = designcraft_idml::import_idml(&base64_decode(result["base64"].as_str().unwrap())).unwrap();
         let mut layers: Vec<_> =
@@ -831,8 +866,8 @@ mod nested_layer_tests {
         assert_eq!(layers, vec![states(false, true), states(true, false)]);
     }
 
-    // Shared anchored ids are a pre-existing duplication gap. Conflicting choices must not
-    // silently select one variant; this fixture changes only the copied anchor's choice.
+    // Duplication no longer shares anchored ids (#1522), so this fixture forces the shared id.
+    // Conflicting choices must not silently select one variant; only the copy's choice changes.
     #[test]
     fn shared_id_with_divergent_pdf_choices_is_rejected() {
         let mut s = Session::new();
@@ -840,23 +875,25 @@ mod nested_layer_tests {
         let pdf = designcraft_render::pdf_hide_layers(&super::super::pdflayers::tests::two_layer_pdf(), &["Red".into()]).unwrap();
         let placed = s.execute("file.place", &json!({"base64": base64_encode(&pdf), "name": "layers.pdf"})).unwrap();
         let control = ItemId(placed["id"].as_u64().unwrap());
-        let frame = {
+        let (frame, anchored) = {
             let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
             let mut item = doc.item(control).unwrap().clone();
             item.id = ItemId(doc.alloc());
             item.pdf_hidden_layers = vec!["Blue".into()];
+            let anchored = item.id;
             let layer = doc.default_layer();
             let (frame, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 200.0), layer, "Body", Default::default()).unwrap();
             doc.story_mut(sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
-            frame
+            (frame, anchored)
         };
         s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
-        // Change ONLY the copy in the newest story to explicit all-on.
+        // Give ONLY the copy in the newest story the original's id and explicit all-on.
         {
             let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
             let (_, st) = doc.stories.iter_mut().filter(|(_, st)| !st.objects.is_empty()).last().unwrap();
             let o = &mut Arc::make_mut(st).objects[0];
             let it = &mut Arc::make_mut(o).item;
+            it.id = anchored;
             it.pdf_hidden_layers.clear();
             it.pdf_layer_override = true;
         }
@@ -871,8 +908,8 @@ mod nested_layer_tests {
         assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
     }
 
-    // Cross-document paste: the pasted frame's anchored placement keeps its source id,
-    // which can collide with an unrelated placement in the destination.
+    // Cross-document paste used to keep the anchored placement's source id (#1522), colliding
+    // with an unrelated placement in the destination. The fixture forces that collision.
     #[test]
     fn shared_id_with_different_pdf_assets_is_rejected() {
         let mut s = Session::new();
@@ -893,7 +930,13 @@ mod nested_layer_tests {
             .as_u64()
             .unwrap();
         s.execute("edit.paste", &json!({})).unwrap();
-        assert_eq!(a, b, "fresh documents allocate the same first placement id");
+        {
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let (_, st) = doc.stories.iter_mut().find(|(_, st)| !st.objects.is_empty()).unwrap();
+            let pasted = &mut Arc::make_mut(&mut Arc::make_mut(st).objects[0]).item;
+            assert_ne!(pasted.id.0, b, "paste gives the anchored placement a fresh id");
+            pasted.id = ItemId(b);
+        }
         let before = s.doc().unwrap().doc.clone();
         let graphics: Vec<_> = before.placed_items().into_iter().filter(|i| i.graphic().is_some()).collect();
         assert_eq!(graphics.len(), 2);

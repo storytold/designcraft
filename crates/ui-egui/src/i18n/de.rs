@@ -1447,6 +1447,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Box", "Rechteck"),
     ("Comb", "Kamm"),
     ("Cover", "Überdecken"),
+    ("Cover Image:", "Titelbild:"),
+    ("Choose…", "Auswählen …"),
+    (
+        "A PNG or JPEG file; left empty, the first page is the cover.",
+        "Eine PNG- oder JPEG-Datei; bleibt das Feld leer, ist die erste Seite das Titelbild.",
+    ),
     ("Dissolve", "Auflösen"),
     ("Fade", "Überblenden"),
     ("Push", "Schieben"),

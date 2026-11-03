@@ -463,7 +463,11 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.deletePage" | "app.duplicateSpread" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
-            let page = crate::canvas::current_page(app).unwrap_or(0);
+            let page = match crate::canvas::current_page(app) {
+                Some(page) => page,
+                None if !st.editing_parents => 0,
+                None => return Some(Err("select a document page".into())),
+            };
             let r = if id == "app.deletePage" {
                 crate::dialogs::delete_pages(app, vec![page])
             } else {
@@ -576,7 +580,14 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
     Some(match id {
         "view.zoomIn" | "view.zoomOut" => {
             if let Some(r) = rect {
-                crate::canvas::zoom_at(app, r.center(), if id == "view.zoomIn" { 1.5 } else { 1.0 / 1.5 });
+                // A keyboard zoom names the pointer ("at"); it counts only over the canvas.
+                let at = p
+                    .get("at")
+                    .and_then(Value::as_array)
+                    .filter(|a| a.len() == 2)
+                    .and_then(|a| Some(egui::pos2(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32)));
+                let at = at.filter(|at| r.contains(*at)).unwrap_or_else(|| r.center());
+                crate::canvas::zoom_at(app, at, if id == "view.zoomIn" { 1.5 } else { 1.0 / 1.5 });
             }
             Ok(Value::Null)
         }
