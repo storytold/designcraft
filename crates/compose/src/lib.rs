@@ -1817,6 +1817,8 @@ fn place_sub_objects(
     }
 }
 
+/// Sets one paragraph's lines, column after column and frame after frame. It stops when the
+/// paragraph ends, when the frames run out, or when an earlier paragraph has to be set again.
 fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLines<'_>) -> LinePlacement {
     let PlacementShared {
         doc,
@@ -1916,6 +1918,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             });
         }
         let pp = indented.as_ref().unwrap_or(para_props);
+        // The Indent to Here character sits past the drop cap, so the lines that start at it
+        // aren't indented by the drop cap again.
+        let beside_cap = drop_cap.filter(|_| indented.is_none());
         let f = &frames[cur.fi];
         let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
         let col = cur.clip(base);
@@ -1941,7 +1946,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             props: pp,
             slots: &slots,
             column: col,
-            drop_cap,
+            drop_cap: beside_cap,
             line_no,
             col_first_line,
             rtl,
@@ -2066,7 +2071,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
-            let beside = drop_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
+            let beside = beside_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
             let first_line = if line_no == 0 { pp.first_line_indent } else { 0.0 };
             let (ind_l, ind_r) = match beside {
                 Some(w) if rtl => (pp.left_indent, pp.right_indent + w),
@@ -4963,7 +4968,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
 
 /// The paragraph settings for the lines after `line` when it holds an Indent to Here character
 /// (the last one, if several): the start-side indent reaches the character, measured from the
-/// start edge of the line's segment `x0..x1`. `None` when there is none or the indent is unchanged.
+/// start edge of the line's segment `x0..x1`. Like the paragraph's own indents it then applies
+/// from each later line's segment, so beside a text wrap it starts at the wrap's edge. `None`
+/// when there is none or the indent is unchanged.
 fn indent_here(
     line: &[Glyph],
     placed: &[PlacedGlyph],
