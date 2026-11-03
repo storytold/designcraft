@@ -12,7 +12,7 @@ use crate::{
 
 use core::{marker::PhantomData, num::NonZeroU16, str::Chars};
 
-pub(crate) const HIDDEN_HOMONYM_FLAG: Flag = unsafe { Flag::new_unchecked(u16::MAX) };
+pub(crate) const HIDDEN_HOMONYM_FLAG: Flag = Flag::MAX;
 pub(crate) const MAX_SUGGESTIONS: usize = 16;
 
 macro_rules! has_flag {

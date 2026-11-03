@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-use spellbook::Dictionary;
+extern crate alloc;
+use spellbook::{DefaultHashBuilder, Dictionary};
+type Flag = core::num::NonZeroU16;
+#[allow(dead_code)]
+#[path = "../src/umbra_slice.rs"]
+mod safe_storage;
 
 #[test]
 fn compound_negative_syllable_modifier_respects_limit() {
@@ -155,5 +160,73 @@ fn simplified_triple_requires_two_equal_preceding_characters() {
         let negative_dic = format!("2\n{short_first}/B\n{second}/E\n");
         let negative = Dictionary::new(aff, &negative_dic).unwrap();
         assert!(!negative.check(invalid), "{invalid}");
+    }
+}
+
+#[test]
+fn review_compound_rules_try_each_first_part_homonym() {
+    let aff = "SET UTF-8\nCOMPOUNDMIN 1\nCOMPOUNDRULE 4\nCOMPOUNDRULE AB\nCOMPOUNDRULE CD\nCOMPOUNDRULE AEF\nCOMPOUNDRULE CGH\n";
+    for first in ["foo/A\nfoo/C", "foo/C\nfoo/A"] {
+        let dic = format!("8\n{first}\nbar/B\nbaz/D\nmid/E\nmid/G\nend/F\nfin/H\n");
+        let dict = Dictionary::new(aff, &dic).unwrap();
+        for word in ["foobar", "foobaz", "foomidend", "foomidfin"] {
+            assert!(dict.check(word), "{word}; {first}");
+        }
+        for word in ["fooend", "foofin", "foobarmid", "foomidbar"] {
+            assert!(!dict.check(word), "{word}; {first}");
+        }
+    }
+}
+
+#[test]
+fn review_rep_suggestions_validate_the_final_word() {
+    for (replacement, accepted) in [("foo_bogus", false), ("foo_bar", true), ("foo_bar_bogus", false), ("foo_bar_baz", true)] {
+        let aff = format!("SET UTF-8\nREP 1\nREP zz {replacement}\n");
+        let dict = Dictionary::new(&aff, "3\nfoo\nbar\nbaz\n").unwrap();
+        let mut suggestions = Vec::new();
+        dict.suggest("zz", &mut suggestions);
+        let expected = replacement.replace('_', " ");
+        assert_eq!(suggestions.contains(&expected), accepted, "{replacement}: {suggestions:?}");
+    }
+}
+
+#[test]
+fn review_add_rejects_oversized_utf8_entries_without_panicking() {
+    let mut dict = Dictionary::new("SET UTF-8\n", "1\nword\n").unwrap();
+    for entry in ["a".repeat(65_536), "é".repeat(32_768)] {
+        assert!(dict.add(&entry).is_err());
+        assert!(dict.check("word"));
+    }
+    assert!(dict.add(&"a".repeat(65_535)).is_ok());
+    assert!(dict.add(&format!("{}a", "é".repeat(32_767))).is_ok());
+}
+
+#[test]
+fn review_owned_storage_handles_unicode_lengths_and_threads() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Dictionary>();
+    for len in [0, 1, 3, 7, 8, 14, 15, 256, 65_535] {
+        let values: Vec<u16> = (0..len).map(|i| (i % 256) as u16).collect();
+        let slice = safe_storage::UmbraSlice::<u16, 3, 4>::try_from(values.as_slice()).unwrap();
+        assert_eq!(slice.as_slice(), values);
+        assert_eq!(slice.clone().as_slice(), values);
+    }
+    assert!(safe_storage::UmbraSlice::<u16, 3, 4>::try_from(vec![1u16; 65_536].as_slice()).is_err());
+    for text in ["", "őű", "aé中😀z", "árvíztűrő tükörfúrógép"] {
+        let stem = safe_storage::UmbraString::from(text);
+        assert_eq!(stem.as_str(), text);
+        assert_eq!(stem.as_bytes(), text.as_bytes());
+        assert_eq!(stem.clone(), stem);
+    }
+}
+#[test]
+fn review_unicode_suggestions_survive_swaps_moves_and_replacements() {
+    let aff = "SET UTF-8\nTRY aáéíóöőúüűzrvtk\n";
+    let dict = Dictionary::new(aff, "2\nárvíz\ntűz\n").unwrap();
+    for typo in ["rávíz", "árívz", "írváz", "árví", "árvízz", "tüz", "űtz"] {
+        let mut suggestions = Vec::new();
+        dict.suggest(typo, &mut suggestions);
+        assert!(!suggestions.is_empty(), "{typo}");
+        assert!(suggestions.iter().all(|s| dict.check(s)), "{typo}: {suggestions:?}");
     }
 }

@@ -294,27 +294,12 @@ impl<'a, S: BuildHasher> Checker<'a, S> {
             // byte index of the first 's'.
             let idx = position + idx;
 
-            // SAFETY: "ss" and "ß" are both two bytes long in UTF-8, so overwriting the bytes
-            // cannot produce invalid UTF-8.
-            unsafe {
-                // Replace the "ss" with "ß".
-                let bytes = word.as_mut_vec();
-                bytes[idx] = SHARP_S_BYTES[0];
-                bytes[idx + 1] = SHARP_S_BYTES[1];
-            }
+            word.replace_range(idx..idx + 2, "ß");
             // NOTE: we use `+ 2` here because "ss" (and "ß") is two bytes.
             if let Some(flags) = self.do_spell_sharps(word, idx + 2, depth + 1, replacements + 1) {
                 return Some(flags);
             }
-            // SAFETY: This is the opposite as above. They're both the same length so the bytes
-            // can be overwritten without producing invalid UTF-8.
-            unsafe {
-                // Replace the "ß" with "ss" and continue the recursion to try another
-                // permutation.
-                let bytes = word.as_mut_vec();
-                bytes[idx] = b's';
-                bytes[idx + 1] = b's';
-            }
+            word.replace_range(idx..idx + 2, "ss");
 
             if let Some(flags) = self.do_spell_sharps(word, idx + 2, depth + 1, replacements + 1) {
                 return Some(flags);
@@ -1773,49 +1758,48 @@ impl<'a, S: BuildHasher> Checker<'a, S> {
         debug_assert_ne!(min_chars, 0);
 
         for i in bytes_within(word, start_pos, min_chars) {
-            let Some((part1_stem, part1_flags)) = self
+            for (part1_stem, part1_flags) in self
                 .words
                 .get(&word[start_pos..i])
-                .find(|(_stem, flags)| !has_flag!(flags, self.aff.options.need_affix_flag) && self.aff.compound_rules.has_any_flags(flags))
-            else {
-                continue;
-            };
-            words_data.push(part1_flags);
+                .filter(|(_stem, flags)| !has_flag!(flags, self.aff.options.need_affix_flag) && self.aff.compound_rules.has_any_flags(flags))
+            {
+                words_data.push(part1_flags);
 
-            // Check whether the remainder of the word is a valid final part.
-            let mut matches_rule = |flags: &'a FlagSet| {
-                // A suffixed COMPOUNDRULE end is validated by its rule flags,
-                // as in Hunspell. Direct forbidden entries remain rejected below.
-                if !self.aff.compound_rules.has_any_flags(flags)
-                    || (forceucase.forbid() && has_flag!(flags, self.aff.options.compound_force_uppercase_flag))
-                {
-                    return false;
+                // Check whether the remainder of the word is a valid final part.
+                let mut matches_rule = |flags: &'a FlagSet| {
+                    // A suffixed COMPOUNDRULE end is validated by its rule flags,
+                    // as in Hunspell. Direct forbidden entries remain rejected below.
+                    if !self.aff.compound_rules.has_any_flags(flags)
+                        || (forceucase.forbid() && has_flag!(flags, self.aff.options.compound_force_uppercase_flag))
+                    {
+                        return false;
+                    }
+                    words_data.push(flags);
+                    let ok = self.aff.compound_rules.any_rule_matches(words_data);
+                    words_data.pop();
+                    ok
+                };
+                let direct_match = self.words.get(&word[i..]).any(|(_, flags)| {
+                    !flags.contains(&self.aff.options.forbidden_word_flag)
+                        && !has_flag!(flags, self.aff.options.need_affix_flag)
+                        && !flags.contains(&HIDDEN_HOMONYM_FLAG)
+                        && matches_rule(flags)
+                }) || self
+                    .strip_suffix_only_matching::<AT_COMPOUND_RULE_END>(&word[i..], HiddenHomonym::SkipHiddenHomonym, &mut matches_rule)
+                    .is_some();
+
+                if direct_match {
+                    words_data.pop();
+                    return Some(CompoundingResult::new(part1_stem, part1_flags));
                 }
-                words_data.push(flags);
-                let ok = self.aff.compound_rules.any_rule_matches(words_data);
-                words_data.pop();
-                ok
-            };
-            let direct_match = self.words.get(&word[i..]).any(|(_, flags)| {
-                !flags.contains(&self.aff.options.forbidden_word_flag)
-                    && !has_flag!(flags, self.aff.options.need_affix_flag)
-                    && !flags.contains(&HIDDEN_HOMONYM_FLAG)
-                    && matches_rule(flags)
-            }) || self
-                .strip_suffix_only_matching::<AT_COMPOUND_RULE_END>(&word[i..], HiddenHomonym::SkipHiddenHomonym, &mut matches_rule)
-                .is_some();
 
-            if direct_match {
+                // Recurse with part1 still in words_data, mirroring Nuspell's AT_SCOPE_EXIT
+                // which keeps part1 on the stack through the try_recursive label.
+                let result = self.check_compound_with_rules_impl(word, words_data, i, forceucase);
                 words_data.pop();
-                return Some(CompoundingResult::new(part1_stem, part1_flags));
-            }
-
-            // Recurse with part1 still in words_data, mirroring Nuspell's AT_SCOPE_EXIT
-            // which keeps part1 on the stack through the try_recursive label.
-            let result = self.check_compound_with_rules_impl(word, words_data, i, forceucase);
-            words_data.pop();
-            if let Some(r) = result {
-                return Some(r);
+                if let Some(r) = result {
+                    return Some(r);
+                }
             }
         }
 

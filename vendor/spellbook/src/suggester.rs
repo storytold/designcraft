@@ -417,21 +417,10 @@ impl<'a, S: BuildHasher> Suggester<'a, S> {
             return;
         }
 
-        // ?
-        let Some(mut j) = word.find(' ') else {
+        if !word.contains(' ')
+            || !word.split(' ').all(|part| self.checker.check_word(part, Forceucase::ForbidBadForceucase, HiddenHomonym::SkipHiddenHomonym).is_some())
+        {
             return;
-        };
-        let mut i = 0;
-        loop {
-            let part = &word[i..j];
-            if self.checker.check_word(part, Forceucase::ForbidBadForceucase, HiddenHomonym::SkipHiddenHomonym).is_none() {
-                return;
-            }
-            i = j + 1;
-            match word[i..].find(' ') {
-                Some(idx) => j = i + idx,
-                None => break,
-            }
         }
 
         out.push(String::from(word));
@@ -695,12 +684,9 @@ impl<'a, S: BuildHasher> Suggester<'a, S> {
             let mut cursor = swap_adjacent_chars(buffer, idx1, ch1, ch2);
 
             // Skip ch2.
-            for (swap_idx, swap_ch) in word[idx2..].char_indices().skip(1) {
+            for swap_ch in word[idx2..].chars().skip(1) {
                 if remaining_attempts == 0 {
-                    unsafe {
-                        let bytes = buffer.as_bytes_mut();
-                        bytes[idx1..swap_idx + idx2].rotate_right(ch1.len_utf8());
-                    }
+                    restore_moved_char(buffer, cursor, idx1);
                     debug_assert_eq!(word, &*buffer);
                     return;
                 }
@@ -710,11 +696,7 @@ impl<'a, S: BuildHasher> Suggester<'a, S> {
                 self.add_suggestion_if_correct(&*buffer, out);
             }
 
-            // Rotate the character back to the beginning of the slice to restore the word.
-            unsafe {
-                let bytes = buffer.as_bytes_mut();
-                bytes[idx1..].rotate_right(ch1.len_utf8());
-            }
+            restore_moved_char(buffer, cursor, idx1);
             debug_assert_eq!(word, &*buffer);
         }
         debug_assert_eq!(word, &*buffer);
@@ -723,25 +705,20 @@ impl<'a, S: BuildHasher> Suggester<'a, S> {
         // a word, for example suggesting "hello" for "ellho" by moving the 'h' to the beginning.
         let mut chars = word.char_indices().rev().peekable();
         while let Some(((idx1, ch1), (idx2, ch2))) = chars.next().zip(chars.peek().copied()) {
-            let end = idx1 + ch1.len_utf8();
             swap_adjacent_chars(buffer, idx2, ch2, ch1);
+            let mut cursor = idx2;
             for (swap_idx, swap_ch) in word[..idx2].char_indices().rev() {
                 if remaining_attempts == 0 {
-                    unsafe {
-                        let bytes = buffer.as_bytes_mut();
-                        bytes[swap_idx + swap_ch.len_utf8()..end].rotate_left(ch1.len_utf8());
-                    }
+                    restore_moved_char(buffer, cursor, idx1);
                     debug_assert_eq!(word, &*buffer);
                     return;
                 }
                 remaining_attempts -= 1;
                 swap_adjacent_chars(buffer, swap_idx, swap_ch, ch1);
+                cursor = swap_idx;
                 self.add_suggestion_if_correct(&*buffer, out);
             }
-            unsafe {
-                let bytes = buffer.as_bytes_mut();
-                bytes[..end].rotate_left(ch1.len_utf8());
-            }
+            restore_moved_char(buffer, cursor, idx1);
             debug_assert_eq!(word, &*buffer);
         }
         debug_assert_eq!(word, &*buffer);
@@ -842,12 +819,10 @@ impl<'a, S: BuildHasher> Suggester<'a, S> {
             // connected by a hyphen.
             let word2_has_more_than_1_char = word2.chars().nth(1).is_some();
             if n > 1 && word2_has_more_than_1_char && self.checker.aff.try_chars.contains(['a', '-']) {
-                let mut hyphen_suggestion = out.last().unwrap().clone();
-                unsafe {
-                    let bytes = hyphen_suggestion.as_bytes_mut();
-                    debug_assert_eq!(bytes[idx], b' ');
-                    bytes[idx] = b'-';
-                }
+                let mut hyphen_suggestion = String::with_capacity(word1.len() + word2.len() + 1);
+                hyphen_suggestion.push_str(word1);
+                hyphen_suggestion.push('-');
+                hyphen_suggestion.push_str(word2);
                 // Same here about deduplication and the if statement above:
                 out.push(hyphen_suggestion);
             }
@@ -910,140 +885,58 @@ fn deduplicate<T: Eq>(items: &mut Vec<T>) {
     items.truncate(last);
 }
 
-/// Swaps the two given characters in the given string assuming that they are adjacent.
-///
-/// Adjacency is asserted in debug builds.
-fn swap_adjacent_chars(string: &mut str, idx1: usize, ch1: char, ch2: char) -> usize {
-    debug_assert_eq!(string[idx1..].chars().next(), Some(ch1));
-    debug_assert_eq!(string[idx1..].chars().nth(1), Some(ch2));
-
-    // Because the characters are adjacent we can simply rewrite the bytes: this will not mess up
-    // any other indices into the string. The index of the second character may change if the
-    // UTF-8 length of the characters is unequal so we return that index.
-    unsafe {
-        // PERF: would it be smarter to rotate the slice by whichever is shorter like in
-        // `swap_distant_chars`? On the other hand UTF-8 encoding looks very fast.
-        let bytes = string.as_bytes_mut();
-        // The byte index of the start of the second character after swapping:
-        let new_idx2 = idx1 + ch2.len_utf8();
-        let end = new_idx2 + ch1.len_utf8();
-        ch2.encode_utf8(&mut bytes[idx1..new_idx2]);
-        ch1.encode_utf8(&mut bytes[new_idx2..end]);
-        new_idx2
-    }
+/// Restore a moved character without exposing a mutable UTF-8 byte buffer.
+fn restore_moved_char(string: &mut String, from: usize, to: usize) {
+    let Some(ch) = string.get(from..).and_then(|s| s.chars().next()) else {
+        return;
+    };
+    string.remove(from);
+    let target = if string.is_char_boundary(to) { to } else { from };
+    string.insert(target, ch);
 }
 
-/// Swaps the given characters at their given byte indices, returning the second character's
-/// updated byte index.
-///
-/// This is more general than `swap_adjacent_chars` which can be done more simply. To accommodate
-/// swapping characters of different UTF-8 lengths we need to rotate the bytes which is
-/// unnecessary when swapping adjacent chars.
-///
-/// `idx1` must not equal `idx2`. To eliminate duplicate work the caller passes in the chars at
-/// `idx1` and `idx2` but these values must be equivalent to `string[idx..].chars().next()` for
-/// `idx1` and `idx2`. These requirements are asserted in debug builds.
-fn swap_distant_chars(string: &mut str, idx1: usize, ch1: char, idx2: usize, ch2: char) -> usize {
-    use core::cmp::Ordering::*;
-
-    debug_assert_ne!(idx1, idx2);
-
-    let len1 = ch1.len_utf8();
-    let len2 = ch2.len_utf8();
-    let end = idx2 + len2;
-    match len1.cmp(&len2) {
-        Equal => {
-            // If the two characters have the same length then we don't need to move any
-            // characters that come in between. Simply swap the values:
-            unsafe {
-                let ptr = string.as_mut_ptr();
-                // This is essentially `core::mem::swap` of the two subslices containing the
-                // character bytes. (In fact `mem::swap` is implemented in terms of
-                // `ptr::swap_nonoverlapping`.)
-                core::ptr::swap_nonoverlapping(ptr.add(idx1), ptr.add(idx2), len1);
-            }
-            // Since the characters have the same lengths the indices don't change:
-            idx2
-        }
-        // For `Less` and `Greater` branches we want to rotate right or left depending on which
-        // character takes more bytes in UTF-8. This shifts the bytes of the characters between
-        // the ones we are swapping. It messes up the bytes of the characters we're swapping but
-        // we don't care because we overwrite them with `char::encode_utf8` anyways.
-        Less => {
-            // Guaranteed to not underflow because `len1 < len2`.
-            let rotation = len2 - len1;
-            unsafe {
-                let bytes = string.as_bytes_mut();
-                bytes[idx1..end].rotate_right(rotation);
-                let new_idx2 = idx2 + rotation;
-                ch2.encode_utf8(&mut bytes[idx1..idx1 + len2]);
-                ch1.encode_utf8(&mut bytes[new_idx2..new_idx2 + len1]);
-                new_idx2
-            }
-        }
-        Greater => {
-            // Guaranteed to not underflow because `len1 > len2`.
-            let rotation = len1 - len2;
-            unsafe {
-                let bytes = string.as_bytes_mut();
-                bytes[idx1..end].rotate_left(rotation);
-                let new_idx2 = idx2 - rotation;
-                ch2.encode_utf8(&mut bytes[idx1..idx1 + len2]);
-                ch1.encode_utf8(&mut bytes[new_idx2..new_idx2 + len1]);
-                new_idx2
-            }
-        }
+/// Swap adjacent characters, returning the first character's new byte index.
+fn swap_adjacent_chars(string: &mut String, idx: usize, ch1: char, ch2: char) -> usize {
+    let Some(rest) = string.get(idx..) else {
+        return idx;
+    };
+    let mut chars = rest.chars();
+    if chars.next() != Some(ch1) || chars.next() != Some(ch2) {
+        return idx;
     }
+    let Some(new_idx) = idx.checked_add(ch2.len_utf8()) else {
+        return idx;
+    };
+    string.remove(idx);
+    string.insert(new_idx, ch1);
+    new_idx
 }
 
-/// Replaces the given character in the given string with another `char`.
-///
-/// This function does not reallocate the string unless necessary.
+/// Swap two character positions, preserving UTF-8 and the total byte length.
+fn swap_distant_chars(string: &mut String, idx1: usize, ch1: char, idx2: usize, ch2: char) -> usize {
+    if idx1 >= idx2
+        || string.get(idx1..).and_then(|s| s.chars().next()) != Some(ch1)
+        || string.get(idx2..).and_then(|s| s.chars().next()) != Some(ch2)
+    {
+        return idx2;
+    }
+    let Some(new_idx2) = idx2.checked_sub(ch1.len_utf8()).and_then(|i| i.checked_add(ch2.len_utf8())) else {
+        return idx2;
+    };
+    string.remove(idx2);
+    string.remove(idx1);
+    string.insert(idx1, ch2);
+    string.insert(new_idx2, ch1);
+    new_idx2
+}
+
+/// Replace one known character through String's checked UTF-8 operations.
 fn replace_char_at(string: &mut String, idx: usize, ch1: char, ch2: char) {
-    use core::cmp::Ordering::*;
-    debug_assert!(idx < string.len());
-    debug_assert_eq!(string[idx..].chars().next(), Some(ch1));
-
-    let len1 = ch1.len_utf8();
-    let len2 = ch2.len_utf8();
-    match len1.cmp(&len2) {
-        Equal => unsafe {
-            // If both characters take the same number of bytes, overwrite the bytes.
-            let bytes = string.as_bytes_mut();
-            ch2.encode_utf8(&mut bytes[idx..]);
-        },
-        Less => unsafe {
-            // The new character takes more bytes than the old.
-            let difference = len2 - len1;
-            let new_len = string.len() + difference;
-            let bytes = string.as_mut_vec();
-            // Allocate extra bytes to accommodate the extra bytes in the new char.
-            bytes.resize(new_len, 0);
-            // Make space for the new char by moving the later characters in the string even
-            // further back.
-            bytes[idx..].rotate_right(difference);
-            ch2.encode_utf8(&mut bytes[idx..]);
-            debug_assert!(String::from_utf8(bytes.to_vec()).is_ok());
-        },
-        Greater => unsafe {
-            // The new character takes fewer bytes than the old.
-            // Shift the later characters in the
-            // string by how many fewer bytes the new character takes and then write the new
-            // character's bytes.
-            let difference = len1 - len2;
-            let new_len = string.len() - difference;
-            let bytes = string.as_mut_vec();
-            // Move the later characters in the string back to fit the new length of the new
-            // character.
-            bytes[idx..].rotate_left(difference);
-            ch2.encode_utf8(&mut bytes[idx..]);
-            // Chop off the unused bytes at the end.
-            bytes.truncate(new_len);
-            debug_assert!(String::from_utf8(bytes.to_vec()).is_ok());
-        },
+    if string.get(idx..).and_then(|s| s.chars().next()) != Some(ch1) {
+        return;
     }
-
-    debug_assert_eq!(string[idx..].chars().next(), Some(ch2));
+    string.remove(idx);
+    string.insert(idx, ch2);
 }
 
 #[cfg(test)]
@@ -1077,7 +970,7 @@ mod test {
             let mut chars = word[idx..].chars();
             let ch1 = chars.next().unwrap();
             let ch2 = chars.next().unwrap();
-            super::swap_adjacent_chars(buffer.as_mut_str(), idx, ch1, ch2);
+            super::swap_adjacent_chars(&mut buffer, idx, ch1, ch2);
             buffer
         }
 
@@ -1091,7 +984,7 @@ mod test {
             let mut buffer = String::from(word);
             let ch1 = word[idx1..].chars().next().unwrap();
             let ch2 = word[idx2..].chars().next().unwrap();
-            super::swap_distant_chars(buffer.as_mut_str(), idx1, ch1, idx2, ch2);
+            super::swap_distant_chars(&mut buffer, idx1, ch1, idx2, ch2);
             buffer
         }
 

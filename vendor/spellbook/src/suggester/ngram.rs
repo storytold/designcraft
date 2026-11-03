@@ -453,33 +453,28 @@ impl<'s, 'i> CharsStr<'s, 'i> {
     ///
     /// Note that this method takes character indices and not byte indices.
     fn char_slice(&self, char_range: core::ops::Range<usize>) -> &str {
-        let start_byte = self.char_indices[char_range.start] as usize;
-        let end_byte = self.char_indices[char_range.end] as usize;
-        // SAFETY: the caller is in charge of providing char indices that are in bounds of the
-        // `self.char_indices` array. (Those accesses are bounds checked.) All byte indices in
-        // `self.char_indices` are valid.
-        // Unfortunately the bounds checks cost a noticeable amount on a flamegraph, so we prefer
-        // the unsafe version to `&self.inner[start_byte..end_byte]`.
-        unsafe { self.inner.get_unchecked(start_byte..end_byte) }
+        let Some(start) = self.char_indices.get(char_range.start) else {
+            return "";
+        };
+        let Some(end) = self.char_indices.get(char_range.end) else {
+            return "";
+        };
+        self.inner.get(usize::from(*start)..usize::from(*end)).unwrap_or("")
     }
 
     fn char_at(&self, char_idx: usize) -> &str {
-        let start_byte = self.char_indices[char_idx] as usize;
-        let end_byte = self.char_indices[char_idx + 1] as usize;
-
-        // SAFETY: Same as above. All byte indices in `self.char_indices` are valid and the above
-        // accesses are checked.
-        unsafe { self.inner.get_unchecked(start_byte..end_byte) }
+        let Some(end) = char_idx.checked_add(1) else {
+            return "";
+        };
+        self.char_slice(char_idx..end)
     }
 
     fn char_iter(&self) -> impl Iterator<Item = &'s str> + '_ {
-        // SAFETY: as above, all byte indices in `self.char_indices` are valid. `slice::windows`
-        // always produces valid indices into the slice, so all of these accesses can be done
-        // unchecked safely.
-        self.char_indices.windows(2).map(|idxs| unsafe {
-            let start = *idxs.get_unchecked(0) as usize;
-            let end = *idxs.get_unchecked(1) as usize;
-            self.inner.get_unchecked(start..end)
+        self.char_indices.windows(2).filter_map(|idxs| {
+            let [start, end] = idxs else {
+                return None;
+            };
+            self.inner.get(usize::from(*start)..usize::from(*end))
         })
     }
 

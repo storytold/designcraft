@@ -201,6 +201,8 @@ fn suggestions_async(ctx: &egui::Context, key: SuggestionKey, doc: Arc<Document>
 }
 
 pub(crate) fn open(app: &mut DesignApp) -> Result<Value, String> {
+    app.session.active().ok_or("no document open")?;
+    crate::dialogs::cancel(app);
     let uid = app.session.active().ok_or("no document open")?.uid;
     app.ui.dialog = Some(crate::dialogs::Dialog::new("spelling", json!({"uid": uid, "index": 0})));
     Ok(Value::Null)
@@ -496,4 +498,58 @@ mod tests {
         assert_eq!(resume_index(&words, StoryId(11), 4), 3);
     }
     use designcraft_engine::Session as SessionForTest;
+
+    #[test]
+    fn parameterized_spelling_calls_return_reports_without_opening_a_dialog() {
+        for control in [false, true] {
+            let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect":[0,0,300,300],"content":"text","text":"qzxw"})).unwrap();
+            let sid = *app.session.doc().unwrap().doc.stories.keys().next().unwrap();
+            app.in_control = control;
+            let result = app.run("spelling.check", json!({"story":sid.0,"suggestions":false})).unwrap();
+            assert!(result.is_array());
+            assert_eq!(result[0]["word"], "qzxw");
+            assert_eq!(result[0]["suggestions"], json!([]));
+            assert!(app.ui.dialog.is_none());
+            app.in_control = false;
+            crate::menus::activate(&mut app, "spelling.check", &json!({"story":sid.0,"suggestions":false}));
+            assert!(app.ui.dialog.is_none());
+            app.run("spelling.check", json!({})).unwrap();
+            assert_eq!(app.ui.dialog.as_ref().unwrap().id, "spelling");
+        }
+    }
+
+    #[test]
+    fn opening_spelling_cancels_existing_dialog_previews_on_both_routes() {
+        for menu in [false, true] {
+            let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run("frame.create", json!({"rect":[0,0,300,300],"content":"text","text":"before"})).unwrap();
+            let sid = *app.session.doc().unwrap().doc.stories.keys().next().unwrap();
+            app.session.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":6})).unwrap();
+            let before = serde_json::to_value(app.session.doc().unwrap().doc.story(sid).unwrap()).unwrap();
+            app.session.begin_interaction("style preview").unwrap();
+            app.session.execute("type.char", &json!({"attrs":{"size":42.0}})).unwrap();
+            assert_ne!(serde_json::to_value(app.session.doc().unwrap().doc.story(sid).unwrap()).unwrap(), before);
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("paragraphStyleOptions", json!({"_previewed":true})));
+            if menu {
+                crate::menus::activate(&mut app, "spelling.check", &Value::Null);
+            } else {
+                app.run("spelling.check", json!({})).unwrap();
+            }
+            assert_eq!(serde_json::to_value(app.session.doc().unwrap().doc.story(sid).unwrap()).unwrap(), before);
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.id, "spelling");
+            assert_eq!(dialog.fields.get("uid"), Some(&json!(app.session.active().unwrap().uid)));
+        }
+    }
+
+    #[test]
+    fn opening_spelling_without_a_document_preserves_the_existing_dialog() {
+        let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("preferences", json!({})));
+        assert!(open(&mut app).is_err());
+        assert_eq!(app.ui.dialog.as_ref().unwrap().id, "preferences");
+    }
 }

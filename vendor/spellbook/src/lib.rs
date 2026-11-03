@@ -19,6 +19,7 @@
 // TODO: more.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 
@@ -232,6 +233,9 @@ impl<S: BuildHasher> Dictionary<S> {
     /// assert!(dict.check("foobarbazing"));
     /// ```
     pub fn add(&mut self, input: &str) -> Result<(), ParseFlagError> {
+        if input.len() > u16::MAX as usize {
+            return Err(ParseFlagError::WordTooLong);
+        }
         // This impl might be expanded in the future.
         // Can we do some clever storage in compound rules that lists the bytes/chars that might
         // start a compound (created by compound rules)? Then we might need to update that info
@@ -329,9 +333,7 @@ type Flag = core::num::NonZeroU16;
 /// representation for flags). Hunspell uses a sorted `unsigned short*` and searches it via
 /// `std::binary_search`.
 ///
-/// In Spellbook we use a sorted `UmbraSlice<Flag>` - a 16 byte type with a short-slice
-/// optimization enabling storing up to 7 flags inline. (Otherwise this type is basically a
-/// sorted `Box<[Flag]>`.)
+/// In Spellbook we use a sorted, safely owned flag slices behind the private UmbraSlice API.
 #[derive(Default, PartialEq, Eq, Clone)]
 struct FlagSet(umbra_slice::FlagSlice);
 
@@ -339,8 +341,7 @@ impl From<Vec<Flag>> for FlagSet {
     fn from(mut flags: Vec<Flag>) -> Self {
         flags.sort_unstable();
         flags.dedup();
-        assert!(flags.len() <= u16::MAX as usize);
-        Self(umbra_slice::UmbraSlice::try_from(flags.as_slice()).unwrap())
+        Self(umbra_slice::FlagSlice::from_vec(flags))
     }
 }
 

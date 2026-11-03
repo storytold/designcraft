@@ -1,4 +1,4 @@
-Spellbook 0.4.2 – DesignCraft Hungarian compatibility changes, 2026-10-22.
+Spellbook 0.4.2 – DesignCraft Hungarian compatibility changes, updated 2026-11-03.
 Copyright and MPL-2.0 notices of the original authors are retained in LICENSE and source.
 Provenance and per-source checksums: sources.json.
 
@@ -13,6 +13,13 @@ Runtime changes:
   Positive and negative synthetic cases for both directions agree with native Hunspell 1.7.5.
 - SIMPLIFIEDTRIPLE compares the two preceding codepoints before restoring a third.
   ASCII and multibyte positive/negative synthetic cases protect the guard.
+- COMPOUNDRULE searches every eligible first-part homonym, including recursive splits.
+- REP suggestions validate every word, including the final part.
+- Dictionary::add rejects oversized UTF-8 entries before parsing.
+- Safe owned strings and flag slices replace raw allocations and manual Send/Sync.
+  UTF-8 string edits and ngram views use checked standard operations; the crate
+  now forbids unsafe code. Existing storage tests are retained and executed by
+  the independent integration target. No dependency was added for this change.
 Some upstream source formatting differs due to the parent project's rustfmt settings.
 
 Vendoring:
@@ -24,8 +31,8 @@ The upstream English unit-test fixture has a separate GPL license and is not
 part of this distribution. Upstream fixture-dependent lib/doctests are disabled
 in this minimal manifest, rather than silently replacing their data. Upstream
 test modules remain in the preserved source but are not the default test target.
-The independent integration suite includes eight synthetic regressions, 550
-recorded Hunspell verdicts and ten expected Hungarian suggestions.
+The independent integration suite covers synthetic regressions, retained storage
+tests, recorded Hunspell verdicts and expected Hungarian suggestions.
 Run: cargo test --manifest-path vendor/spellbook/Cargo.toml --test hungarian_compatibility
 This target is explicitly invoked by cargo xtask ci.
 No C/C++ spellchecking library is linked into DesignCraft.

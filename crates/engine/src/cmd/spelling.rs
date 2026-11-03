@@ -7,6 +7,7 @@ pub use incremental::SpellingCursor;
 use designcraft_compose::hyphen::Dictionary;
 use designcraft_doc::StoryId;
 use serde_json::{Value, json};
+use unicode_normalization::UnicodeNormalization;
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{Result, Session};
@@ -277,7 +278,14 @@ fn valid_word(language: Language, word: &str, user: &[String]) -> bool {
             let acronym = word.chars().all(char::is_uppercase) && word.chars().count() <= 5;
             acronym || known(Dictionary::en_us(), user, &word.to_lowercase())
         }
-        Language::Hungarian => user.iter().any(|u| u == &word.to_lowercase()) || hungarian::known(word),
+        Language::Hungarian => {
+            if user.is_empty() {
+                return hungarian::known(word);
+            }
+            let canonical = |s: &str| s.nfc().collect::<String>().to_lowercase();
+            let key = canonical(word);
+            user.iter().any(|u| canonical(u) == key) || hungarian::known(word)
+        }
         Language::Unsupported => true,
     }
 }
@@ -723,5 +731,20 @@ mod hungarian_integration_tests {
     fn unsupported_languages_are_not_checked_with_a_hungarian_dictionary() {
         let (mut s, _) = document("qzxw hejesírás", "German");
         assert!(words(&mut s).is_empty());
+    }
+
+    #[test]
+    fn hungarian_user_words_match_both_unicode_forms_and_legacy_case() {
+        let composed = "qzxőr";
+        let decomposed = "qzxo\u{030b}r";
+        for text in [composed, decomposed] {
+            for user in [composed.to_string(), decomposed.to_string(), composed.to_uppercase(), decomposed.to_uppercase()] {
+                assert!(valid_word(Language::Hungarian, text, std::slice::from_ref(&user)), "{text:?}: {user:?}");
+                let (mut s, sid) = document(text, "hu");
+                s.execute("spelling.setWords", &json!({"words":[user]})).unwrap();
+                assert!(words(&mut s).is_empty());
+                assert_eq!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().text, text);
+            }
+        }
     }
 }

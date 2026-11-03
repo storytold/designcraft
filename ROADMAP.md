@@ -12,7 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
-- **2026-11-02** · HU2: Hungarian spelling with local Magyar Ispell/Spellbook and extended Huhyphn hyphenation (asz-szony, köny-nyen, hosz-szú), following text language independently of the interface. Keeps source/PDF text intact, suggestions and document dictionary, bounded web scanning, compatibility/layout regressions, pinned data and MPL notices. Updated against main after #1223 merged. See `docs/hungarian-language-support.md`. No readiness percentage change.
+- **2026-11-02** · HU2: Hungarian spelling with local Magyar Ispell/Spellbook and extended Huhyphn hyphenation (asz-szony, köny-nyen, hosz-szú), following text language independently of the interface. Keeps source/PDF text intact, suggestions and document dictionary, bounded web scanning, compatibility/layout regressions, pinned data and MPL notices. Updated against main after #1223 merged. Review corrections preserve parameterized queries and dialog previews, normalize personal-word comparisons, cover compound/REP/input boundaries, and forbid unsafe in the local spelling runtime. See `docs/hungarian-language-support.md`. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps

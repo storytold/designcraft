@@ -25,6 +25,10 @@ The original alternative-license notices are retained; this contribution selects
 
 Local Spellbook fixes cover signed syllable accounting, permitted suffix chains, COMPOUNDRULE endings (including numbers), compound-aware suggestions, ngram prefix/suffix expansion, restored-stem conditions in alternating three-affix chains, the SIMPLIFIEDTRIPLE look-behind guard, and forbidden-word/affix interactions. See the vendor modification notice and regression target.
 
+Review regressions also cover all first-part COMPOUNDRULE homonyms, every word in REP suggestions, oversized dictionary additions, and UTF-8 correction edits. The local Spellbook runtime forbids unsafe code and uses standard owned strings and flag slices; its original storage tests run in the independent integration target. Upstream provenance and MPL notices are retained.
+
+Hungarian personal words compare canonically across composed and decomposed Unicode, including existing entries, without rewriting document text. Parameterized spelling queries retain their engine results. Opening the spelling dialog cancels an existing preview before binding to the active document. Native interface-language names are excluded from translation reports; the small-caps regression uses the bundled Source Sans 3 face.
+
 ## Reproducing the data
 
 From the repository root, verify the spelling transformation against pinned original files:

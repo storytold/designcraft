@@ -987,11 +987,8 @@ pub(crate) fn parse_dic_line(
                 // pushed in order for `escaped` to be true.
                 let last_idx = word.len() - 1;
                 debug_assert_eq!(word.as_bytes()[last_idx], b'\\');
-                // SAFETY: both characters have a UTF-8 length of 1, so overwriting the byte
-                // cannot result in invalid UTF-8.
-                unsafe {
-                    word.as_bytes_mut()[last_idx] = b'/';
-                }
+                word.pop();
+                word.push('/');
             }
             // Note: '/' is allowed at the beginning of a dictionary word.
             '/' if idx != 0 => break,
@@ -1325,6 +1322,7 @@ impl fmt::Display for UnknownFlagTypeError {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ParseFlagError {
+    WordTooLong,
     NonAscii(char),
     MissingSecondChar,
     ParseIntError(core::num::ParseIntError),
@@ -1336,6 +1334,7 @@ pub enum ParseFlagError {
 impl fmt::Display for ParseFlagError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WordTooLong => f.write_str("word is too long (longer than u16::MAX bytes)"),
             Self::NonAscii(ch) => write!(f, "expected ascii char, found {}", ch),
             Self::MissingSecondChar => f.write_str("expected two chars, found one"),
             Self::ParseIntError(err) => err.fmt(f),

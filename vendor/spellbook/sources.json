@@ -7,15 +7,15 @@
   "files": {
     "src/aff/parser.rs": {
       "upstream_sha256": "11bc5c6e4e2ff57dc12cfbc262d323c9b4ea52ddefc9c64e053717f79b45ada4",
-      "local_sha256": "151f864e3010314e9b2cb56ba147f5da1decaf7cac3b0a1bc9faec379b8ac717"
+      "local_sha256": "63223cad16826f3912aa6914f9bfbed1cc0efdbc20df56250659193046ade9a6"
     },
     "src/aff.rs": {
       "upstream_sha256": "71bb404632272e306ef02b2dc6891d1c1a2b15dc1ae5496917cdc6b027516327",
-      "local_sha256": "2b09ed7adda8f403baa54d2a10f36e9b95b30c419417a63ed2cb754d2ef651fd"
+      "local_sha256": "5020ab9015686366daa8605191413b5facfbb997511bc901eb6ee5a02950be81"
     },
     "src/checker.rs": {
       "upstream_sha256": "161f12144e9cb92bf2da12ed0cb5f0f511237666dba95030d40c7c5efe754cd0",
-      "local_sha256": "3d8746854c549a6e927f2838c7899aa51d485e8f921522e02abacea08e29727b"
+      "local_sha256": "58684ee55534192ca284cade7a5e58245aad2e86d77d050097f8a4e065e3790a"
     },
     "src/hash_bag.rs": {
       "upstream_sha256": "354fb1240c4a3b25b26dfc81ff10d4765dd215fb18d7384ec04bc9423d08c0f7",
@@ -23,19 +23,19 @@
     },
     "src/lib.rs": {
       "upstream_sha256": "acef5a306193e7c952f7eb4aca1755bf8d8cff64dd0a87fa80ed99f22757fe8c",
-      "local_sha256": "bf34c617f2cc16ab4a6ff690dc7a93e3e77c50b12b70c07d4809eabbbcaf4e1f"
+      "local_sha256": "00ef8662aaba7652aa9712c7f6aded49b8a5ec49af52a310381209bc6bceeeb7"
     },
     "src/suggester/ngram.rs": {
       "upstream_sha256": "6dd40efdc52c0653f397288bca9c890282aa8664338c51daac3b8a9f78427ac6",
-      "local_sha256": "7e5ce35fea31f09b4fb82bcd9633a3d5c244b2f5bac19bb9f0230c4f84732aac"
+      "local_sha256": "57fc01e339e0ed6ebb1b812c26cc8942fabf3c233d94031f3c503669bc9c405e"
     },
     "src/suggester.rs": {
       "upstream_sha256": "26bd1c2ead5a93cd35dd868963e53e62d7386717bd8bafd6cb3014f105990caf",
-      "local_sha256": "89f99da552e3cf6cecf18824fd35d4e6f5b9948eba7c71ef29e19db4f3896cbb"
+      "local_sha256": "5cbb8e2e92fdb0278fc1f35d4c1a012d4ffcd215b8d014155c1643a42ae4c12e"
     },
     "src/umbra_slice.rs": {
       "upstream_sha256": "eec9db60c9c83bd9ec8757f6ba19c483b15a6ad8982fa25a66ef3ffa409ff0a9",
-      "local_sha256": "2327cadbb27a66d2c00f249a5ad2d88d58425b52cbe28ac6f27318911bce90d8"
+      "local_sha256": "2268e517e4828da508f99f851977a15e121f4c79b03f115dc3daf12304ec942b"
     }
   }
 }

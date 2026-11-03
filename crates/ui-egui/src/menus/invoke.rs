@@ -21,7 +21,7 @@ pub fn close_document(app: &mut DesignApp, index: Option<usize>) {
 /// opens a dialog built from its parameter documentation (see [`crate::dialogs::command_fields`]).
 pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     let was_find = app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
-    if id == "spelling.check" {
+    if id == "spelling.check" && (params.is_null() || params.as_object().is_some_and(|o| o.is_empty())) {
         if let Err(e) = crate::spelling_ui::open(app) {
             app.status(e);
         }

@@ -8321,8 +8321,9 @@ fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
 
 #[test]
 fn hungarian_small_caps_insertions_use_shaped_glyphs() {
+    // A bundled face keeps this regression independent of optional craft-fonts.
     let word = "asszony";
-    let face = designcraft_fonts::FontDb::global().face("Noto Sans", "Regular");
+    let face = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");
     let feature: Vec<_> = designcraft_fonts::feature("smcp").into_iter().collect();
     let shaped = designcraft_fonts::shape(&face, "z", &feature, |c| c);
     let expected = shaped.first().unwrap();
@@ -8336,7 +8337,7 @@ fn hungarian_small_caps_insertions_use_shaped_glyphs() {
         );
         d.story_mut(sid).unwrap().format_chars(0..word.len(), |f| {
             f.over.language = Some("Hungarian".into());
-            f.over.font_family = Some("Noto Sans".into());
+            f.over.font_family = Some("Source Sans 3".into());
             f.over.capitalization = Some(designcraft_doc::Capitalization::SmallCaps);
         });
         let cs = compose_story(&d, sid, &ComposeOptions::default());
