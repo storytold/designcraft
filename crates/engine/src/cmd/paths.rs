@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::{Content, Document, Fill, Item, ItemId, Selection, Shape, SpreadRef, Stroke};
-use designcraft_geom::{Affine, BezPath, PathData, SubPath};
+use designcraft_geom::{Affine, BezPath, PathData, Shape as _, SubPath};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_selection, point_param, targets};
@@ -75,14 +75,29 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
     Some((loc.spread, d.parent_xf(&loc) * d.item_at(&loc)?.xf))
 }
 
+/// Containment tests `orient_holes` makes at most (after the bounding-box filter). A compound path
+/// of thousands of nested contours would otherwise take quadratic time; past this the remaining
+/// subpaths keep their direction.
+const MAX_HOLE_TESTS: usize = 4_000_000;
+
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
 fn orient_holes(path: &mut PathData) {
     let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
+    // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
+    let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
     let n = path.subpaths.len();
+    let mut tests = 0usize;
     for i in 0..n {
         let Some(p) = path.subpaths[i].anchors.first().map(|a| a.p) else { continue };
-        let depth = (0..n).filter(|&j| j != i && designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p)).count();
+        let mut depth = 0;
+        for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
+            tests += 1;
+            if tests > MAX_HOLE_TESTS {
+                return;
+            }
+            depth += usize::from(designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p));
+        }
         let sp = &mut path.subpaths[i];
         let cw = sp.area() > 0.0;
         if cw == (depth % 2 == 1) {
@@ -407,6 +422,26 @@ mod tests {
         let r = s.execute("object.releaseCompoundPath", &json!({})).unwrap();
         assert_eq!(r["ids"].as_array().unwrap().len(), 2);
         s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn orient_holes_alternates_nested_contours_and_skips_distant_ones() {
+        use designcraft_geom::{Rect, shapes::rectangle};
+        let mut subs: Vec<SubPath> = Vec::new();
+        for k in 0..3 {
+            let o = 10.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(o, o, 100.0 - o, 100.0 - o)).subpaths);
+        }
+        // Thousands of separate contours cost no winding counts (their boxes miss each other).
+        for k in 0..3000 {
+            let x = 200.0 + 20.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths);
+        }
+        let mut path = PathData::new(subs);
+        orient_holes(&mut path);
+        let cw: Vec<bool> = path.subpaths.iter().map(|s| s.area() > 0.0).collect();
+        assert_eq!(cw[..3], [true, false, true]);
+        assert!(cw[3..].iter().all(|c| *c));
     }
 
     #[test]
