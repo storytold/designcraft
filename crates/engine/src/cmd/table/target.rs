@@ -45,6 +45,10 @@ fn find_table(doc: &Document, id: u64) -> Option<StoryId> {
     doc.stories.iter().find(|(_, s)| s.tables.contains_key(&id)).map(|(k, _)| *k)
 }
 
+fn first_table(doc: &Document, sid: StoryId) -> Option<u64> {
+    doc.story(sid).and_then(|x| x.paras.iter().find_map(|p| p.table))
+}
+
 fn pair(p: &Value, many: &str, one: &str) -> Option<(usize, usize)> {
     if let Some(a) = p.get(many).and_then(Value::as_array) {
         let a0 = a.first()?.as_u64()? as usize;
@@ -62,16 +66,20 @@ pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<Tgt> {
     let (story, table, range) = if let Some(tid) = explicit_table {
         let sid = explicit_story.or_else(|| find_table(doc, tid)).ok_or_else(|| bad(cmd, format!("no table {tid}")))?;
         (sid, tid, None)
-    } else if let Some(c) = st.selection.cells {
+    } else if let Some(c) = st.selection.cells.filter(|c| explicit_story.is_none_or(|e| e == c.story)) {
         (c.story, c.table, Some(c.range))
-    } else if let Some(t) = st.selection.text {
+    } else if let Some(t) = st.selection.text.filter(|t| explicit_story.is_none_or(|e| e == t.story)) {
         match t.cell {
             Some(c) => (t.story, c.table, Some(CellRange::cell(c.row, c.col))),
             None => {
-                let tid = doc.story(t.story).and_then(|x| x.table_at(t.focus)).ok_or_else(|| bad(cmd, "the insertion point is not in a table"))?;
-                (t.story, tid, None)
+                let at = doc.story(t.story).and_then(|x| x.table_at(t.focus));
+                let tid = at.or_else(|| explicit_story.and_then(|_| first_table(doc, t.story)));
+                (t.story, tid.ok_or_else(|| bad(cmd, "the insertion point is not in a table"))?, None)
             }
         }
+    } else if let Some(sid) = explicit_story {
+        let tid = first_table(doc, sid).ok_or_else(|| bad(cmd, format!("no table in story {}", sid.0)))?;
+        (sid, tid, None)
     } else {
         return Err(bad(cmd, "place the insertion point in a table"));
     };
