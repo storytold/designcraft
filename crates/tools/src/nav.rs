@@ -305,7 +305,9 @@ fn liquid_control_points(cx: &ToolContext, r: designcraft_geom::Rect) -> [(Liqui
 /// A page handle being dragged.
 #[derive(Clone, Copy, Debug)]
 struct PageDrag {
-    /// Absolute page index.
+    spread: designcraft_doc::SpreadRef,
+    parent: Option<designcraft_doc::SpreadId>,
+    /// Page index within the spread.
     page: usize,
     /// Reference-point index of the handle (0–8, row-major; 4 is the centre and has none).
     handle: usize,
@@ -353,6 +355,9 @@ impl PageTool {
     fn liquid_target(
         cx: &ToolContext,
     ) -> Option<(designcraft_doc::ItemId, designcraft_doc::ObjectLiquid, designcraft_geom::Rect, designcraft_geom::Rect)> {
+        if cx.layout.slots.first().is_some_and(|s| matches!(s.spread, designcraft_doc::SpreadRef::Parent(_))) {
+            return None;
+        }
         let page = cx.selection.page?;
         let [id] = cx.selection.items.as_slice() else { return None };
         let (si, _) = cx.doc.page_loc(page)?;
@@ -372,17 +377,16 @@ impl PageTool {
     }
 
     /// The selected page's handle under `p`.
-    fn handle_at(&self, cx: &ToolContext, p: Point) -> Option<(usize, usize)> {
-        let page = cx.selection.page?;
-        let r = cx.layout.page_rect(cx.doc, page)?;
-        page_handles(r).find(|(_, h)| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0)).map(|(i, _)| (page, i))
+    fn handle_at(&self, cx: &ToolContext, p: Point) -> Option<(designcraft_doc::SpreadRef, usize, usize)> {
+        let (sr, page) = cx.layout.selected_page(cx.doc, cx.selection)?;
+        let r = cx.layout.spread_page_rect(cx.doc, sr, page)?;
+        page_handles(r).find(|(_, h)| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0)).map(|(i, _)| (sr, page, i))
     }
 
     /// The new page size for the drag at `p`: the handle's edges follow the pointer (Shift: in
     /// proportion).
     fn size_at(cx: &ToolContext, d: &PageDrag, p: Point, shift: bool) -> (f64, f64) {
-        let si = cx.doc.page_loc(d.page).map_or(0, |l| l.0);
-        let v = cx.layout.delta_to_spread(designcraft_doc::SpreadRef::Doc(si), p - d.start);
+        let v = cx.layout.delta_to_spread(d.spread, p - d.start);
         let (col, row) = (d.handle % 3, d.handle / 3);
         let dx = match col {
             0 => -v.x,
@@ -417,10 +421,21 @@ impl Tool for PageTool {
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
             PointerKind::Down => {
-                if let Some((page, handle)) = self.handle_at(cx, ev.pos) {
-                    let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-                    let pg = &cx.doc.spreads[si].pages[pi];
-                    self.drag = Some(PageDrag { page, handle, start: ev.pos, cur: ev.pos, size: (pg.width, pg.height), alt: ev.mods.alt });
+                if let Some((spread, page, handle)) = self.handle_at(cx, ev.pos) {
+                    let Some(pg) = cx.doc.spread(spread).and_then(|sp| sp.pages.get(page)) else { return vec![] };
+                    self.drag = Some(PageDrag {
+                        spread,
+                        parent: match spread {
+                            designcraft_doc::SpreadRef::Parent(si) => cx.doc.parents.get(si).map(|sp| sp.id),
+                            _ => None,
+                        },
+                        page,
+                        handle,
+                        start: ev.pos,
+                        cur: ev.pos,
+                        size: (pg.width, pg.height),
+                        alt: ev.mods.alt,
+                    });
                     return vec![Action::Begin("Resize Page".into())];
                 }
                 // An object-based page's object: a click on a pin or lock toggles it.
@@ -429,7 +444,18 @@ impl Tool for PageTool {
                 }
                 // A click selects the page under the pointer (none on the pasteboard), and on an
                 // object-based page the object clicked too.
-                let page = (0..cx.doc.page_count()).find(|p| cx.layout.page_rect(cx.doc, *p).is_some_and(|r| r.contains(ev.pos)));
+                let target = cx.layout.page_at(cx.doc, ev.pos);
+                if let Some((designcraft_doc::SpreadRef::Parent(si), page)) = target {
+                    let Some(sp) = cx.doc.parents.get(si) else { return vec![] };
+                    return vec![Action::Exec("layout.selectParentPage".into(), json!({"parent": sp.id.0, "page": page}))];
+                }
+                if cx.layout.slots.first().is_some_and(|s| matches!(s.spread, designcraft_doc::SpreadRef::Parent(_))) {
+                    return vec![Action::Exec("layout.selectParentPage".into(), json!({"parent": null}))];
+                }
+                let page = target.and_then(|(sr, pi)| match sr {
+                    designcraft_doc::SpreadRef::Doc(si) => Some(cx.doc.first_page_of_spread(si) + pi),
+                    _ => None,
+                });
                 let object = page
                     .filter(|p| object_based(cx.doc, *p))
                     .and_then(|p| cx.hit(ev.pos).map(|(_, id)| id).filter(|id| cx.doc.page_of_item(*id) == Some(p)));
@@ -443,9 +469,21 @@ impl Tool for PageTool {
                 let Some(d) = self.drag.as_mut() else { return vec![] };
                 d.cur = ev.pos;
                 d.alt |= ev.mods.alt;
-                let d = *d;
+                let mut d = *d;
+                if let Some(id) = d.parent {
+                    let Some(si) = cx.doc.parent_index(id) else {
+                        self.drag = None;
+                        return vec![Action::Cancel];
+                    };
+                    d.spread = designcraft_doc::SpreadRef::Parent(si);
+                }
                 let (w, h) = Self::size_at(cx, &d, ev.pos, ev.mods.shift);
-                vec![Action::Preview("layout.pageSize".into(), json!({"pages": [d.page + 1], "width": w, "height": h, "anchor": 8 - d.handle}))]
+                let Some((cmd, params)) =
+                    crate::layout::page_size_command(cx.doc, d.spread, d.page, json!({"width": w, "height": h, "anchor": 8 - d.handle}))
+                else {
+                    return vec![];
+                };
+                vec![Action::Preview(cmd.into(), params)]
             }
             PointerKind::Up => match self.drag.take() {
                 // Alt-drag resizes; a plain drag previews the liquid rule and springs back.
@@ -455,12 +493,12 @@ impl Tool for PageTool {
             },
             PointerKind::DoubleClick => {
                 // Exact sizes: the Page Size dialog for the page.
-                let Some(page) = (0..cx.doc.page_count()).find(|p| cx.layout.page_rect(cx.doc, *p).is_some_and(|r| r.contains(ev.pos))) else {
+                let Some((sr, pi)) = cx.layout.page_at(cx.doc, ev.pos) else { return vec![] };
+                let Some(pg) = cx.doc.spread(sr).and_then(|sp| sp.pages.get(pi)) else { return vec![] };
+                let Some((cmd, params)) = crate::layout::page_size_command(cx.doc, sr, pi, json!({"width": pg.width, "height": pg.height})) else {
                     return vec![];
                 };
-                let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-                let pg = &cx.doc.spreads[si].pages[pi];
-                vec![Action::Dialog("cmd:layout.pageSize".into(), json!({"pages": [page + 1], "width": pg.width, "height": pg.height}))]
+                vec![Action::Dialog(format!("cmd:{cmd}"), params)]
             }
             PointerKind::Move => {
                 self.hover = Self::control_at(cx, ev.pos).map(|(_, _, c)| (c, ev.pos));
@@ -469,10 +507,9 @@ impl Tool for PageTool {
         }
     }
     fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
-        let Some(page) = cx.selection.page else { return vec![] };
-        let Some(r) = cx.layout.page_rect(cx.doc, page) else { return vec![] };
-        let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-        let pg = &cx.doc.spreads[si].pages[pi];
+        let Some((sr, pi)) = cx.layout.selected_page(cx.doc, cx.selection) else { return vec![] };
+        let Some(r) = cx.layout.spread_page_rect(cx.doc, sr, pi) else { return vec![] };
+        let Some(pg) = cx.doc.spread(sr).and_then(|sp| sp.pages.get(pi)) else { return vec![] };
         let mut v = vec![Overlay::PageHandles(r), Overlay::Tag { p: Point::new(r.x0, r.y0 - cx.tol(6.0)), text: rule_label(pg.liquid).into() }];
         if let Some((_, l, object, page)) = Self::liquid_target(cx) {
             v.push(Overlay::LiquidPins {
@@ -501,7 +538,7 @@ impl Tool for PageTool {
         if self.drag.is_none() && Self::control_at(cx, p).is_some() {
             return Cursor::Hand;
         }
-        let handle = self.drag.map(|d| d.handle).or_else(|| self.handle_at(cx, p).map(|(_, h)| h));
+        let handle = self.drag.map(|d| d.handle).or_else(|| self.handle_at(cx, p).map(|(_, _, h)| h));
         match handle {
             Some(1 | 7) => Cursor::ResizeV,
             Some(3 | 5) => Cursor::ResizeH,
