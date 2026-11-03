@@ -30,7 +30,7 @@ pub use original::{Original, Reveal, can_edit_original, originals, reveal_target
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
-        cmd!(query "links.list", "Links", [], None, "{metadataOnly?: bool (only the files' size and time are read: a graphic whose file is the copy's size but not yet compared since it last changed reads as ok, with unverified: true)} → [{asset, name, path, status: ok|modified|missing|embedded, unverified?, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), edited (the story was changed in the layout), uses: [{id, page}]}]. A file is read only when its size is the copy's and its size or time changed since it was last compared", has_doc, |s, p| {
+        cmd!(query "links.list", "Links", [], None, "{metadataOnly?: bool (only the files' size and time are read, never their contents, linked text files included: a graphic or text file that is the copy's size but not yet compared since it last changed reads as ok, with unverified: true)} → [{asset, name, path, status: ok|modified|missing|embedded, unverified?, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), unverified?, edited (the story was changed in the layout), uses: [{id, page}]}]. A file is read only when its size is the copy's and its size or time changed since it was last compared", has_doc, |s, p| {
             let read = p.get("metadataOnly").and_then(Value::as_bool) != Some(true);
             // Taken out for the call so the document needn't be cloned on every poll.
             let mut checks = std::mem::take(&mut s.text_link_checks);
@@ -204,25 +204,34 @@ pub(crate) type TextChecks = std::collections::HashMap<String, (Fingerprint, Str
 /// is the recorded one but its time isn't, and then once per new time (`checks`): a file saved
 /// or synced again without changes stays OK. `document` is the document's file.
 pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>) -> &'static str {
+    text_state(l, checks, document, true).0
+}
+
+/// [`text_status`], and whether it is unverified: with `read` false the file's contents are never
+/// read, and a file of the recorded size whose time changed since it was last compared reads as
+/// `ok`, unverified (as a graphic's [`LinkState::Unverified`]).
+fn text_state(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>, read: bool) -> (&'static str, bool) {
+    let status = |s: &'static str| (s, false);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let Ok(path) = crate::io::document_path(&l.path, document) else { return "missing" };
+        let Ok(path) = crate::io::document_path(&l.path, document) else { return status("missing") };
         if !crate::io::is_file(&path) {
-            return "missing";
+            return status("missing");
         }
         let now = match crate::io::metadata(&path) {
-            Err(_) => return "missing",
+            Err(_) => return status("missing"),
             Ok(m) => super::datamerge::fingerprint_from(&m),
         };
         if now.size != l.size {
-            return "modified";
+            return status("modified");
         }
         if l.mtime != 0 && now.mtime == l.mtime {
-            return "ok";
+            return status("ok");
         }
         let hash = match checks.get(&l.path) {
             Some((at, hash)) if *at == now => hash.clone(),
-            _ if now.size > MAX_TEXT_LINK_BYTES => return "tooLarge",
+            _ if now.size > MAX_TEXT_LINK_BYTES => return status("tooLarge"),
+            _ if !read => return ("ok", true),
             _ => match read_text(&path) {
                 Ok((b, at)) => {
                     let hash = fnv_hex(&b);
@@ -232,15 +241,15 @@ pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: O
                     }
                     hash
                 }
-                Err(_) => return "missing",
+                Err(_) => return status("missing"),
             },
         };
-        if hash == l.hash { "ok" } else { "modified" }
+        status(if hash == l.hash { "ok" } else { "modified" })
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (l, checks, document);
-        "ok"
+        let _ = (l, checks, document, read);
+        status("ok")
     }
 }
 
@@ -305,7 +314,12 @@ fn list(d: &Document, cache: &Cache, document: Option<&Path>, checks: &mut TextC
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        Some(json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": text_status(l, checks, document), "refused": refused(&l.path, document).map(|r| r.to_string()), "edited": story_hash(st) != l.story_hash, "uses": uses}))
+        let (status, unverified) = text_state(l, checks, document, read);
+        let mut row = json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": status, "refused": refused(&l.path, document).map(|r| r.to_string()), "edited": story_hash(st) != l.story_hash, "uses": uses});
+        if unverified {
+            row["unverified"] = json!(true);
+        }
+        Some(row)
     });
     let used = d.used_assets();
     d.assets
@@ -1158,7 +1172,7 @@ mod text_link_read_tests {
 
     use designcraft_doc::TextFileLink;
 
-    use super::{MAX_TEXT_LINK_BYTES, read_text, text_status};
+    use super::{MAX_TEXT_LINK_BYTES, read_text, text_state, text_status};
 
     /// `f` on another thread: a call that blocks fails the test instead of hanging it.
     fn promptly<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -1206,5 +1220,19 @@ mod text_link_read_tests {
         assert!(read(&big).unwrap_err().contains("larger than"));
         assert!(!super::checkable_size(MAX_TEXT_LINK_BYTES as usize + 1), "placing it doesn't link it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A metadata-only look (the Links panel's poll) never reads a linked text file: one of the
+    /// recorded size whose time changed is OK, unverified; a full look reads it and finds it
+    /// modified (the recorded hash isn't the contents').
+    #[test]
+    fn a_metadata_only_look_does_not_read_a_text_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("story.txt");
+        std::fs::write(&file, "Some text").unwrap();
+        let l = TextFileLink { path: file.to_string_lossy().to_string(), size: 9, mtime: 1, hash: "0".into(), ..Default::default() };
+        let mut checks = Default::default();
+        assert_eq!(text_state(&l, &mut checks, None, false), ("ok", true));
+        assert!(checks.is_empty(), "nothing was read");
+        assert_eq!(text_state(&l, &mut checks, None, true), ("modified", false));
     }
 }

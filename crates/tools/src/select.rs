@@ -429,6 +429,18 @@ pub fn holds_content(it: &Item) -> bool {
 /// graphic's linked file in its own application (Edit › Edit Original).
 pub const EDIT_ORIGINAL: &str = "editOriginal";
 
+/// The placed graphic under `p`: the item hit, its top-level frame, or (when the hit is a group)
+/// the frontmost graphic inside it under the pointer.
+fn graphic_at(cx: &ToolContext, p: Point) -> Option<ItemId> {
+    let is_graphic = |it: &Item| matches!(it.content, Content::Graphic(_));
+    let (_, id) = cx.hit(p)?;
+    if let Some(g) = [Some(id), cx.doc.top_level_of(id)].into_iter().flatten().find(|i| cx.doc.item(*i).is_some_and(is_graphic)) {
+        return Some(g);
+    }
+    let (_, sp) = cx.layout.spread_at(p)?;
+    designcraft_doc::hit_descendant(cx.doc.item(id)?, sp, cx.tol(4.0), &is_graphic)
+}
+
 /// Grab radius of the content grabber, in screen pixels.
 const GRABBER_PX: f64 = 9.0;
 
@@ -1303,11 +1315,7 @@ impl Tool for SelectionTool {
         if ev.mods.alt
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
-            && let Some(id) = cx.hit(p).map(|(_, id)| id)
-            && let Some(id) = [Some(id), cx.doc.top_level_of(id)]
-                .into_iter()
-                .flatten()
-                .find(|i| cx.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Graphic(_))))
+            && let Some(id) = graphic_at(cx, p)
         {
             self.drag = Drag::None;
             return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0]})), Action::Dialog(EDIT_ORIGINAL.into(), json!({"ids": [id.0]}))];

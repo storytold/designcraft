@@ -133,6 +133,48 @@ fn an_edit_original_file_is_updated_without_a_focus_change() {
     assert_eq!(pixels(&app, asset), Some((7, 4)));
 }
 
+/// During a gesture nothing is updated (its next preview would put the old copy back) and the
+/// Edit Original file isn't marked as seen: the update comes once the gesture ends.
+#[test]
+fn updates_wait_for_a_gesture_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let mut app = app();
+    let (frame, asset) = place(&mut app, &file);
+    app.run("selection.set", json!({"ids": [frame]})).unwrap();
+    app.run(crate::edit_original::EDIT_ORIGINAL, json!({})).unwrap();
+    tick(&mut app, 0.0, Some(true));
+    std::fs::write(&file, png(7)).unwrap();
+    app.session.begin_interaction("Move").unwrap();
+    assert_eq!(crate::edit_original::refresh_edited(&mut app), 0);
+    tick(&mut app, CHECK_EVERY, Some(true));
+    assert_eq!(pixels(&app, asset), Some((4, 4)), "not during the gesture");
+    app.session.commit_interaction().unwrap();
+    tick(&mut app, CHECK_EVERY + 0.1, Some(true));
+    assert_eq!(pixels(&app, asset), Some((7, 4)), "after it");
+}
+
+/// A worker whose thread has ended doesn't stop the checks: the check runs here and the worker is
+/// dropped, for the next frame to start another.
+#[test]
+fn a_dead_worker_is_replaced_and_the_check_runs_here() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let mut app = app();
+    let (_, asset) = place(&mut app, &file);
+    let (tx, jobs) = std::sync::mpsc::channel();
+    drop(jobs);
+    let (_, rx) = std::sync::mpsc::channel();
+    app.link_watch.inline = false;
+    app.link_watch.worker = Some(Worker { tx, rx });
+    tick(&mut app, 0.0, Some(true));
+    assert!(app.link_watch.worker.is_none());
+    assert!(!app.link_watch.busy);
+    assert_eq!(state(&app, asset), Some(LinkState::Ok));
+}
+
 // ---- Canvas badges ----
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {

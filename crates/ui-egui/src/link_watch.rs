@@ -159,6 +159,10 @@ pub(crate) fn tick(app: &mut DesignApp, now: f64, focused: Option<bool>) {
         app.link_watch.states.clear();
         return;
     };
+    // No check during a gesture: what it found would wait for the gesture to end anyway.
+    if st.interaction.is_some() {
+        return;
+    }
     let token = (st.uid, st.revision);
     let w = &app.link_watch;
     let since = w.last.map_or(f64::INFINITY, |t| now - t);
@@ -198,15 +202,22 @@ fn job(app: &DesignApp, token: (u64, u64)) -> Job {
 
 fn submit(app: &mut DesignApp, job: Job) {
     #[cfg(not(target_arch = "wasm32"))]
-    if !app.link_watch.inline
-        && let Some(w) = &app.link_watch.worker
-    {
-        if w.tx.send(job).is_ok() {
-            app.link_watch.busy = true;
-        }
-        return;
-    }
-    // Tests (and a host whose worker couldn't start) check here.
+    let job = match &app.link_watch.worker {
+        Some(w) if !app.link_watch.inline => match w.tx.send(job) {
+            Ok(()) => {
+                app.link_watch.busy = true;
+                return;
+            }
+            // The worker is gone (its thread ended): the next frame starts another, and this
+            // check runs here.
+            Err(std::sync::mpsc::SendError(job)) => {
+                app.link_watch.worker = None;
+                job
+            }
+        },
+        _ => job,
+    };
+    // Tests (and a host whose worker couldn't start or has gone) check here.
     let done = run(job);
     apply(app, done);
 }
@@ -243,12 +254,24 @@ fn apply(app: &mut DesignApp, done: Done) {
     if modified.is_empty() {
         return;
     }
+    // An update made during a gesture would be undone by its next preview, which starts again
+    // from the document as the gesture found it: check again (and update) once it ends.
+    if interacting(app) {
+        app.link_watch.again = true;
+        app.link_watch.update |= done.update;
+        return;
+    }
     if done.update {
         update(app, &modified);
     } else if app.link_watch.focused != Some(false) {
         // Files opened with Edit Original are updated once they changed, the window in front.
         crate::edit_original::refresh_edited(app);
     }
+}
+
+/// A canvas gesture (or another interaction) is under way in the active document.
+pub(crate) fn interacting(app: &DesignApp) -> bool {
+    app.session.active().is_some_and(|st| st.interaction.is_some())
 }
 
 /// Update `assets` in one step (`links.update {assets}`).

@@ -106,7 +106,8 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
 fn link_badges(app: &DesignApp) -> Value {
     let (Some(rect), Some(v)) = (app.canvas_rect, app.view()) else { return json!([]) };
     let xf = crate::canvas::Xf::new(rect, v);
-    let badges = crate::canvas::link_badges::badges(app, &xf, rect);
+    // `rect` is the unrotated view; at 90° and 270° the canvas on screen is its transpose.
+    let badges = crate::canvas::link_badges::badges(app, &xf, crate::canvas::view_rect(rect, xf.rot));
     Value::Array(
         badges
             .iter()

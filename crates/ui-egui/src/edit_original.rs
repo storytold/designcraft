@@ -250,6 +250,10 @@ pub(crate) fn refresh_edited(app: &mut DesignApp) -> u64 {
     let open: Vec<u64> = app.session.documents().iter().map(|d| d.uid).collect();
     app.edit_original.edited.retain(|e| open.contains(&e.doc));
     let Some(active) = app.session.active().map(|d| d.uid) else { return 0 };
+    // During a gesture its next preview would undo the update: the link watch asks again after.
+    if crate::link_watch::interacting(app) {
+        return 0;
+    }
     let mut edited = std::mem::take(&mut app.edit_original.edited);
     let mut updated = 0;
     for e in edited.iter_mut().filter(|e| e.doc == active) {

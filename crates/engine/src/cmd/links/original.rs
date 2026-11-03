@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Original Files",
         [],
         None,
-        "{asset? (a Links panel row) | ids?: [frame ids]} (default: the selected graphic frames) → {files: [{asset, name, path}]} — the linked files Edit Original opens; error when none is linked to a file on disk (embedded, missing, nothing placed selected)",
+        "{asset? (a Links panel row) | ids?: [frame ids]} (default: the selected graphic frames) → {files: [{asset, name, path}]} — the linked files Edit Original opens; error when none is linked to a file on disk (embedded, missing, nothing placed selected) of a type DesignCraft places (graphic, video, sound: never a program, script or shortcut)",
         has_doc,
         |s, p| {
             let files = originals(s, p)?;
@@ -89,7 +89,7 @@ pub fn originals(s: &Session, p: &Value) -> Result<Vec<Original>> {
     let mut why = None;
     for aid in assets {
         let Some(a) = st.doc.assets.get(&aid) else { continue };
-        match on_disk(a, document) {
+        match on_disk(a, document).and_then(|path| openable(a, path)) {
             Ok(path) => out.push(Original { asset: aid, name: a.name.clone(), path }),
             Err(e) => {
                 why.get_or_insert(e);
@@ -165,6 +165,18 @@ fn missing_folder(a: &designcraft_doc::Asset, document: Option<&Path>) -> Option
     {
         let _ = (link, document);
         None
+    }
+}
+
+/// `path` when it is a kind of file DesignCraft places (by its extension): the host opens it with
+/// the system's opener, which runs a program, a script or a shortcut, and the link comes from the
+/// document. Revealing it in its folder runs nothing, so [`reveal_target`] doesn't ask.
+fn openable(a: &designcraft_doc::Asset, path: PathBuf) -> std::result::Result<PathBuf, String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if designcraft_doc::placeable_graphic_name(&name) {
+        Ok(path)
+    } else {
+        Err(format!("{}: {name} isn't a graphic, video or sound file, so it isn't opened", a.name))
     }
 }
 
@@ -262,6 +274,31 @@ mod tests {
         let r = s.execute(COMMAND, &json!({})).unwrap();
         assert_eq!(r["files"].as_array().unwrap().len(), 1);
         assert_eq!(r["files"][0]["name"], "linked.png");
+    }
+
+    /// The opener runs programs and scripts, so only a file named as a graphic, video or sound
+    /// is offered, whatever its contents; revealing it is fine.
+    #[test]
+    fn only_graphic_video_and_sound_files_are_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for name in ["tool.command", "setup.exe", "photo.png.", "photo.png ", "noextension"] {
+            let file = dir.path().join(name);
+            std::fs::write(&file, png()).unwrap();
+            s.doc_mut().unwrap().selection = Default::default();
+            let id = s.execute("file.place", &json!({"path": file.to_string_lossy()})).unwrap()["id"].as_u64().unwrap();
+            select(&mut s, &[id]);
+            assert!(!can_edit_original(&s), "{name}");
+            assert!(s.execute(COMMAND, &json!({})).unwrap_err().to_string().contains("isn't a graphic"), "{name}");
+            assert!(matches!(reveal_target(&s, &Value::Null), Ok(Reveal::File(_))), "{name}");
+        }
+        for name in ["a.png", "B.JPG", "c.tiff", "d.psd", "e.ai", "f.eps", "g.pdf", "h.svg", "clip.mp4", "song.MP3"] {
+            assert!(designcraft_doc::placeable_graphic_name(name), "{name}");
+        }
+        for name in ["a.exe", "a.bat", "a.lnk", "a.sh", "a.command", "a.app", "a.png.exe", "a.exe.", "a.png.", "a"] {
+            assert!(!designcraft_doc::placeable_graphic_name(name), "{name}");
+        }
     }
 
     #[test]

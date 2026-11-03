@@ -1439,6 +1439,31 @@ fn alt_double_click_on_a_graphic_asks_for_edit_original() {
     assert!(!a.iter().any(|a| matches!(a, Action::Dialog(..))), "{a:?}");
 }
 
+/// Alt and a double click on a graphic inside a group open that graphic, not the group.
+#[test]
+fn alt_double_click_finds_a_graphic_inside_a_group() {
+    let mut d = Document::new(&NewDocument::default());
+    let f = graphic_frame(&mut d);
+    let frame = d.item(f).cloned().unwrap();
+    d.remove_item(f).unwrap();
+    let gid = ItemId(d.alloc());
+    let mut group = Item::new(gid, d.default_layer(), Shape::Group, shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)));
+    group.content = designcraft_doc::Content::Group { items: vec![Arc::new(frame)] };
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let at = spread_pt(&l, 120.0, 180.0);
+    assert_eq!(ctx(&d, &Selection::default(), &c, &l).hit(at).map(|(_, i)| i), Some(gid), "the hit stops at the group");
+    let mut t = create("selection");
+    let dbl = PointerEvent::new(PointerKind::DoubleClick, at.x, at.y).with_mods(Mods { alt: true, ..Mods::default() });
+    assert_eq!(
+        t.pointer(&ctx(&d, &Selection::items(vec![gid]), &c, &l), &dbl),
+        vec![
+            Action::Exec("selection.set".into(), serde_json::json!({"ids": [f.0]})),
+            Action::Dialog(crate::select::EDIT_ORIGINAL.into(), serde_json::json!({"ids": [f.0]})),
+        ]
+    );
+}
+
 /// A 200 × 150 pt rectangle frame, selected.
 fn live_corner_doc() -> (Document, ItemId) {
     let mut d = Document::new(&NewDocument::default());
