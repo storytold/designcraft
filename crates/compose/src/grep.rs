@@ -411,10 +411,18 @@ impl Grep {
     pub fn replacements(&self, text: &str, template: &str, first_only: bool) -> Result<Vec<(Range<usize>, String)>, GrepError> {
         let exp = fancy_regex::Expander::default();
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         for caps in self.re.captures_iter(text) {
             let caps = caps.map_err(run_err)?;
             let Some(m) = caps.get(0) else { continue };
-            out.push((m.range(), exp.expansion(template, &caps)));
+            // Captures can overlap (zero-width matches capturing the rest of the text): the expanded
+            // texts can add up to far more than the text searched.
+            let expanded = exp.expansion(template, &caps);
+            bytes = bytes.saturating_add(expanded.len());
+            if bytes > MAX_REPLACEMENT_BYTES {
+                return Err(err(format!("GREP replacement stopped: the replacement text would pass {MAX_REPLACEMENT_BYTES} bytes")));
+            }
+            out.push((m.range(), expanded));
             if first_only {
                 break;
             }
@@ -423,6 +431,9 @@ impl Grep {
     }
 }
 
+/// Bytes of replacement text one Find/Change may build, all matches together.
+const MAX_REPLACEMENT_BYTES: usize = 64 * 1024 * 1024;
+
 fn run_err(e: fancy_regex::Error) -> GrepError {
     err(format!("GREP search stopped: {e}"))
 }
@@ -430,6 +441,16 @@ fn run_err(e: fancy_regex::Error) -> GrepError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_text_is_bounded() {
+        let g = grep(r"(?=(.*))");
+        // Every position captures the rest of the text: quadratic output without a budget.
+        let text = "x".repeat(20_000);
+        let e = g.replacements(&text, "$1", false).unwrap_err();
+        assert!(e.to_string().contains("replacement"), "{e}");
+        assert_eq!(g.replacements("abc", "$1", false).unwrap().len(), 4);
+    }
 
     fn grep(p: &str) -> Grep {
         Grep::new(p, GrepOptions::default()).unwrap()

@@ -1201,6 +1201,9 @@ fn shape_segment(
     let k_v = k * p.v_scale;
     let n = shaped.len();
     let fref = FaceRef::of(face);
+    // The next cluster offset greater than each glyph's, for all glyphs at once (a scan of the later
+    // glyphs per glyph made a long cluster of many marks quadratic).
+    let next_cluster = next_greater(&shaped.iter().map(|g| g.cluster).collect::<Vec<_>>());
     for (gi, sg) in shaped.iter().enumerate() {
         let up = upright.get(gi).copied().unwrap_or(false);
         let (byte, len, ch) = if replacement.is_some() {
@@ -1212,7 +1215,7 @@ fn shape_segment(
             (range.start, if gi == 0 { range.len() } else { 0 }, if space { ' ' } else { marker })
         } else {
             let cl = range.start + sg.cluster;
-            let end = shaped[gi + 1..].iter().map(|r| range.start + r.cluster).find(|&c| c > cl).unwrap_or(range.end);
+            let end = next_cluster.get(gi).copied().flatten().map_or(range.end, |c| range.start + c);
             (cl, end.saturating_sub(cl), text[cl..].chars().next().unwrap_or(' '))
         };
         let last_in_cluster = gi + 1 == n || shaped[gi + 1].cluster != sg.cluster;
@@ -1222,7 +1225,7 @@ fn shape_segment(
             if !first_in_cluster {
                 return Box::from("");
             }
-            let end = shaped[gi + 1..].iter().map(|r| r.cluster).find(|&c| c > sg.cluster).unwrap_or(src.len());
+            let end = next_cluster.get(gi).copied().flatten().unwrap_or(src.len());
             Box::from(src.get(sg.cluster..end).unwrap_or(""))
         });
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
@@ -1363,7 +1366,8 @@ fn split_auto_tcy<'f>(
             continue;
         }
         let mut at = a;
-        for r in auto.iter().filter(|r| r.start < b && r.end > a) {
+        // `auto` ascends and doesn't overlap: the first range reaching into this run is a search away.
+        for r in auto[auto.partition_point(|r| r.end <= a)..].iter().take_while(|r| r.start < b) {
             let (s, e) = (r.start.max(a), r.end.min(b));
             if at < s {
                 out.push((at, s, props.clone(), fmt, base.clone()));
@@ -1380,10 +1384,41 @@ fn split_auto_tcy<'f>(
     out
 }
 
+/// For each value, the first later value that is greater than it (a monotonic stack: one pass).
+fn next_greater(values: &[usize]) -> Vec<Option<usize>> {
+    let mut out = vec![None; values.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        while let Some(&top) = stack.last()
+            && values.get(top).is_some_and(|t| t < v)
+        {
+            if let Some(slot) = out.get_mut(top) {
+                *slot = Some(*v);
+            }
+            stack.pop();
+        }
+        stack.push(i);
+    }
+    out
+}
+
 /// Auto tate-chu-yoko groups wider than their em are scaled across to fit it.
 fn fit_auto_tcy(glyphs: &mut [Glyph], auto: &[std::ops::Range<usize>]) {
-    for r in auto {
-        let group: Vec<usize> = glyphs.iter().enumerate().filter(|(_, g)| g.tcy.is_some() && r.contains(&g.byte)).map(|(i, _)| i).collect();
+    // The glyphs of each group, in one pass (a scan of every glyph per group made many groups
+    // quadratic). `auto` ascends and doesn't overlap, so a glyph's group is a search.
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); auto.len()];
+    for (i, g) in glyphs.iter().enumerate() {
+        if g.tcy.is_none() {
+            continue;
+        }
+        let at = auto.partition_point(|r| r.end <= g.byte);
+        if let (Some(r), Some(group)) = (auto.get(at), groups.get_mut(at))
+            && r.contains(&g.byte)
+        {
+            group.push(i);
+        }
+    }
+    for group in groups {
         let width: f64 = group.iter().filter_map(|&i| glyphs.get(i)).map(|g| g.adv).sum();
         let em = group.iter().filter_map(|&i| glyphs.get(i)).map(|g| g.size).fold(0.0, f64::max);
         let k = if width > 0.0 { em / width } else { 1.0 };
