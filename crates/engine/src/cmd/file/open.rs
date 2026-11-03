@@ -420,6 +420,29 @@ mod open_bytes_tests {
 
     use crate::Session;
 
+    #[test]
+    fn legacy_and_idml_bytes_named_as_indesign_files_open_without_conversion() {
+        let mut maker = Session::new();
+        maker.execute("file.new", &json!({})).unwrap();
+        let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
+        let base64 = super::super::bytes::base64_encode(&idml);
+        let legacy = super::super::bytes::base64_encode(&serde_json::to_vec(&maker.doc().unwrap().doc).unwrap());
+        for name in ["Brochure.indd", "Brochure.INDT"] {
+            let mut s = Session::new();
+            s.execute("file.openBytes", &json!({"name": name, "base64": legacy})).unwrap();
+            assert_eq!(s.documents().len(), 1, "legacy: {name}");
+            assert_eq!(s.doc().unwrap().doc.title, name, "legacy: {name}");
+        }
+        for command in ["file.openBytes", "file.openIdml"] {
+            for name in ["Brochure.indd", "Brochure.INDT"] {
+                let mut s = Session::new();
+                s.execute(command, &json!({"name": name, "base64": base64})).unwrap();
+                assert_eq!(s.documents().len(), 1, "{command}: {name}");
+                assert_eq!(s.doc().unwrap().doc.title, "Brochure", "{command}: {name}");
+            }
+        }
+    }
+
     /// A `.designcraft` file opened from bytes under its file name (a browser or host passes the
     /// name it has) is titled without the extension, as an IDML file is, so saving it gives
     /// `Brochure.designcraft` and not `Brochure.designcraft.designcraft`.
@@ -433,6 +456,8 @@ mod open_bytes_tests {
             ("Brochure.DesignCraft", "Brochure"),
             ("Brochure", "Brochure"),
             ("Brochure.v2", "Brochure.v2"),
+            ("Brochure.indd", "Brochure.indd"),
+            ("Brochure.INDT", "Brochure.INDT"),
             ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
             (".designcraft", ".designcraft"),
             // Names that aren't ASCII: cutting the extension's length off the end of the last one
