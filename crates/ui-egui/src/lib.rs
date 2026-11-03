@@ -71,7 +71,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -313,6 +313,9 @@ pub fn cjk_features(app: &DesignApp) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod window_frame_tests;
 
 /// The whole window in a headless test harness, at a chosen window size.
 #[cfg(test)]
