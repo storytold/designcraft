@@ -21,6 +21,9 @@ mod file_info;
 pub(crate) mod find;
 pub use edit::copied_objects_text;
 pub use find::same_find_domain;
+/// A linked asset's Links panel status ("ok", "modified", "missing", "embedded"), as `links.list`
+/// reports it; it reads the linked file, so callers may run it off the UI thread.
+pub use links::status as link_status;
 pub(crate) mod flex;
 mod fonts;
 pub(crate) mod guides;
