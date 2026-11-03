@@ -105,6 +105,7 @@ impl DesignApp {
         let dir = self.session.recovery_dir.clone()?;
         let interval = (self.session.prefs.recovery_minutes * 60.0).max(5.0);
         let mut since = now - self.last_recovery;
+        let mut failed = false;
         if since > interval {
             self.last_recovery = now;
             since = 0.0;
@@ -112,10 +113,11 @@ impl DesignApp {
                 && let Err(e) = self.session.execute("file.recovery.save", &json!({"changedOnly": true}))
             {
                 self.status(crate::i18n::tr(&self.ui.language, "Couldn't write recovery data: {error}").replace("{error}", &e.to_string()));
+                failed = true;
             }
         }
         // A write that failed leaves its changes due at the next tick.
-        designcraft_engine::recovery::has_changes_to_checkpoint(&self.session, &dir).then_some(interval - since + 0.1)
+        (failed || designcraft_engine::recovery::has_changes_to_checkpoint(&self.session, &dir)).then_some(interval - since + 0.1)
     }
 
     /// The document area: the start screen, or the document tabs over one or two canvas panes.
