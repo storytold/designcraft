@@ -437,7 +437,8 @@ pub struct Session {
     pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
     /// Linked images checked against their files this session (`links.list` polls twice a second):
     /// a file of the recorded size and time isn't read again.
-    pub(crate) image_link_checks: std::collections::HashMap<(designcraft_doc::AssetId, usize, String), (designcraft_doc::Fingerprint, bool)>,
+    pub(crate) image_link_checks:
+        std::collections::HashMap<(designcraft_doc::AssetId, usize, std::path::PathBuf), (designcraft_doc::Fingerprint, bool)>,
 }
 
 impl Default for Session {

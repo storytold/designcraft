@@ -155,13 +155,13 @@ pub fn link_missing(a: &designcraft_doc::Asset, document: Option<&Path>) -> bool
     }
 }
 
-/// Link status of an asset in the document at `document`. Only a regular file is compared, so a
-/// link to a device (`/dev/zero`) or a FIFO is missing rather than read.
-/// Linked images checked this session: (asset, the identity of its bytes, link) → (the file's size
-/// and time when it was read, whether it matched the bytes). The bytes' identity (their `Arc`'s
-/// address, as the render cache keys them) changes with every relink, update or undo, so a
-/// remembered answer can never describe other bytes.
-pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, usize, String), (Fingerprint, bool)>;
+/// Linked images checked this session: (asset, the identity of its bytes, the file its link
+/// resolves to) → (the file's size and time when it was read, whether it matched the bytes). The
+/// resolved file, not the link text, is the key: a relative link names another file once the
+/// document is saved elsewhere. The bytes' identity (their `Arc`'s address, as the render cache
+/// keys them) changes with every relink, update or undo, so a remembered answer can never
+/// describe other bytes.
+pub(crate) type ImageChecks = std::collections::HashMap<(AssetId, usize, std::path::PathBuf), (Fingerprint, bool)>;
 
 /// Link status of a placed graphic (`ok`, `modified`, `missing`, `embedded`), reading the file
 /// only when its size is the asset's and its time isn't the one remembered from the last read
@@ -188,7 +188,7 @@ pub(crate) fn status_cached(a: &designcraft_doc::Asset, document: Option<&Path>,
         if now.size != a.data.len() as u64 {
             return "modified";
         }
-        let key = (a.id, Arc::as_ptr(&a.data) as usize, link.clone());
+        let key = (a.id, Arc::as_ptr(&a.data) as usize, path.clone());
         if let Some((at, same)) = checks.get(&key)
             && *at == now
         {
