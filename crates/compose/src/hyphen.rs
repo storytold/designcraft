@@ -320,36 +320,38 @@ pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
     hangul > 0 && hangul >= latin
 }
 
-/// [`mostly_hangul`] over a paragraph's set glyphs, given as `(source byte, character,
-/// generated)` so it can be tested without a font.
+/// [`mostly_hangul`] over the visible characters of a paragraph: its source `text` up to `end`,
+/// as its set glyphs show it. The glyphs are given as `(source byte, character, generated)` so
+/// this can be tested without a font.
 ///
-/// One vote per set character, not per glyph. Shaping makes a cluster several glyphs over one
-/// character and each repeats that character, so a syllable shaped into three glyphs voted three
-/// times -- and since the test is `hangul >= latin`, that can turn hyphenation off for a
-/// paragraph that is mostly Latin. Consecutive glyphs on one source byte are one character.
+/// Each visible glyph stands for the source characters from its byte to the next glyph's, so
+/// every visible character votes once however shaping set it: a syllable shaped into three glyphs
+/// is one character, and so is each letter of a ligature. Counting glyph records instead
+/// under-counted ligatures, which could turn hyphenation off: 16 Hangul with `office
+/// hyphenation` is 17 Latin letters, but a font that shapes `fi` gave at most 16 votes, and a tie
+/// is Korean (#2195).
 ///
-/// Generated glyphs do not vote: a list bullet or number, or a footnote label, is not the
-/// paragraph's own text, and `prepend_label` gives it the paragraph's *first* byte -- so counting
-/// it would also swallow the real first character in the deduplication (noted in review).
+/// The next glyph, not the glyph's own length, ends its characters: hidden conditional text
+/// shapes to a placeholder glyph per character ([`crate::shape::HIDDEN`]), so a run of it bounds
+/// the visible glyph before it and none of its characters vote. A glyph's length can span that
+/// run, which is why it is not used.
 ///
-/// **Approximation.** A ligature is one glyph over several characters, so those characters vote
-/// once between them and Latin is under-counted. That can change the answer: 16 Hangul with
-/// `office hyphenation` is 17 Latin letters, and a font that shapes `fi` counts at most 16, so
-/// the paragraph classifies as Korean and loses its hyphens (review's example). Fixing it needs
-/// the visible source characters each cluster stands for; `byte..byte + len` is not that, because
-/// the glyph after a hidden run spans it -- measured, every byte of the paragraph came out
-/// covered -- which would revive the hidden-text bug this function was changed to avoid.
-pub fn korean_paragraph(glyphs: impl Iterator<Item = (usize, char, bool)>) -> bool {
+/// Generated glyphs neither vote nor bound: a list bullet or number, or a footnote label, is not
+/// the paragraph's own text, and `prepend_label` gives it the paragraph's *first* byte.
+pub fn korean_paragraph(text: &str, end: usize, glyphs: impl Iterator<Item = (usize, char, bool)>) -> bool {
+    let own: Vec<(usize, char)> = glyphs.filter(|(_, _, generated)| !generated).map(|(byte, ch, _)| (byte, ch)).collect();
+    let mut bounds: Vec<usize> = own.iter().map(|(byte, _)| *byte).collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut counted: Vec<usize> = Vec::new();
     let mut chars: Vec<char> = Vec::new();
-    let mut last: Option<usize> = None;
-    for (byte, ch, generated) in glyphs {
-        if generated {
+    for (byte, ch) in own {
+        if ch == crate::shape::HIDDEN || counted.contains(&byte) {
             continue;
         }
-        if last != Some(byte) {
-            chars.push(ch);
-        }
-        last = Some(byte);
+        counted.push(byte);
+        let next = bounds.iter().copied().find(|b| *b > byte).unwrap_or(end).min(end);
+        chars.extend(text.get(byte..next).into_iter().flat_map(str::chars).filter(|c| *c != '\n'));
     }
     mostly_hangul_chars(chars.into_iter())
 }
@@ -801,10 +803,11 @@ mod tests {
 mod korean_paragraph_tests {
     use super::korean_paragraph;
 
-    /// `(byte, ch, generated)` per glyph, which is all the classification reads -- so these cases
-    /// need no font and state the counting rules directly (review's suggestion).
-    fn k(glyphs: &[(usize, char, bool)]) -> bool {
-        korean_paragraph(glyphs.iter().copied())
+    /// The paragraph's source text and `(byte, ch, generated)` per glyph, which is all the
+    /// classification reads -- so these cases need no font and state the counting rules directly
+    /// (review's suggestion).
+    fn k(text: &str, glyphs: &[(usize, char, bool)]) -> bool {
+        korean_paragraph(text, text.len(), glyphs.iter().copied())
     }
 
     /// One character per source byte, however many glyphs shaping made of it. A syllable shaped
@@ -822,7 +825,7 @@ mod korean_paragraph_tests {
             (7, 'b', false),
             (8, 'c', false),
         ];
-        assert!(!k(&clustered), "two Hangul against three Latin is not Korean");
+        assert!(!k("\u{AC00}\u{B098}abc", &clustered), "two Hangul against three Latin is not Korean");
         // Counting each glyph instead gives four Hangul against three, which flips it -- so the
         // deduplication is what decides this case.
         let per_glyph: Vec<char> = clustered.iter().map(|(_, c, _)| *c).collect();
@@ -838,7 +841,7 @@ mod korean_paragraph_tests {
         // two Latin letters. Two against two is Korean, since the test is `hangul >= latin` --
         // and losing one Hangul character to the label makes it one against two, which is not.
         let labelled = [(0, '1', true), (0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'a', false), (7, 'b', false)];
-        assert!(k(&labelled), "two Hangul against two Latin is Korean");
+        assert!(k("\u{AC00}\u{B098}ab", &labelled), "two Hangul against two Latin is Korean");
         // Without the exclusion the label takes byte 0, the Hangul character there is deduplicated
         // away, and one Hangul against two Latin is no longer Korean.
         let counted: Vec<char> = {
@@ -855,16 +858,51 @@ mod korean_paragraph_tests {
         assert!(!super::mostly_hangul_chars(counted.into_iter()), "counting the label loses the first character");
     }
 
-    /// The remaining approximation, pinned so it is visible rather than surprising: a ligature is
-    /// one glyph over several characters, so Latin is under-counted and this paragraph classifies
-    /// as Korean although it has more Latin letters (review's example).
+    /// A ligature is one glyph over several letters, and each letter votes: counting the glyph
+    /// once under-counted Latin, and this paragraph classified as Korean although it has more
+    /// Latin letters (#2195).
     #[test]
-    fn a_ligature_under_counts_latin_which_is_a_known_approximation() {
+    fn every_letter_of_a_ligature_votes() {
         // Two Hangul characters against three Latin letters shaped as one `ffi` glyph.
         let ligated = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, '\u{FB03}', false)];
-        assert!(k(&ligated), "the ligature counts as one character, so this reads as Korean");
-        // Spelled out, the same text is not Korean -- which is the error the approximation makes.
+        assert!(!k("\u{AC00}\u{B098}ffi", &ligated), "three Latin letters, though one glyph");
+        // The same text unligated reads the same.
         let spelled = [(0, '\u{AC00}', false), (3, '\u{B098}', false), (6, 'f', false), (7, 'f', false), (8, 'i', false)];
-        assert!(!k(&spelled), "the same characters unligated are not Korean");
+        assert!(!k("\u{AC00}\u{B098}ffi", &spelled), "and unligated");
+
+        // The review's example: 16 Hangul with `office hyphenation`, 17 Latin letters, with the
+        // font shaping `fi` into one glyph.
+        let hangul = "\u{D55C}".repeat(16);
+        let text = format!("{hangul} office hyphenation");
+        let mut glyphs: Vec<(usize, char, bool)> = Vec::new();
+        let mut skip = 0;
+        for (byte, ch) in text.char_indices() {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            if text[byte..].starts_with("fi") {
+                glyphs.push((byte, '\u{FB01}', false));
+                skip = 1;
+            } else {
+                glyphs.push((byte, ch, false));
+            }
+        }
+        assert!(!k(&text, &glyphs), "17 Latin letters outvote 16 Hangul, ligature or not");
+    }
+
+    /// Hidden conditional text is a placeholder glyph per character: it neither votes nor lets the
+    /// visible glyph before it claim its characters.
+    #[test]
+    fn hidden_text_does_not_vote() {
+        // `가abcd나` with `abcd` hidden: two Hangul against no visible Latin. Four letters, so that
+        // a glyph claiming the hidden run (or more) cannot tie its way back to Korean.
+        let hidden = crate::shape::HIDDEN;
+        let text = "\u{AC00}abcd\u{B098}";
+        let glyphs = [(0, '\u{AC00}', false), (3, hidden, false), (4, hidden, false), (5, hidden, false), (6, hidden, false), (7, '\u{B098}', false)];
+        assert!(k(text, &glyphs), "the hidden letters do not count");
+        // Shown, the same letters outvote the Hangul.
+        let shown = [(0, '\u{AC00}', false), (3, 'a', false), (4, 'b', false), (5, 'c', false), (6, 'd', false), (7, '\u{B098}', false)];
+        assert!(!k(text, &shown));
     }
 }

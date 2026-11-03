@@ -1201,7 +1201,8 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             let mut gl = sp.glyphs.clone();
             // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
             // of the vector, and the drop cap's character still votes (#1688).
-            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
+            let korean =
+                hyphen::korean_paragraph(&story.text, prange.end, gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
             let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
             let width = |j: usize| {
                 let ind = match &dc {
@@ -2354,7 +2355,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
     // Classified before the drop cap is split off (see the same call in the measuring loop above).
-    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
+    let korean =
+        hyphen::korean_paragraph(&story.text, prange.end, sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
