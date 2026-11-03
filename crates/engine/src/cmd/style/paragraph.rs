@@ -587,7 +587,7 @@ pub(super) fn edit_para(s: &mut Session, p: &Value) -> Result<Value> {
             _ => {}
         }
         if let Some(n) = rename.clone() {
-            // Every use: other styles, stories, table cells, footnotes, object styles.
+            // Every use: other styles, stories, table cells, footnotes, object styles, running headers.
             rename_style(d, true, &name, &n);
         }
         ok()
@@ -705,14 +705,30 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
             st.rev = st.rev.wrapping_add(1);
         });
     }
+    rename_running_headers(d, para, from, to);
 }
 
-/// Point the nested, nested line and GREP styles, and the drop cap style, of paragraph
-/// attributes at a renamed (or deleted, pointed at its replacement) character style.
+/// Point the Running Header variables that pick up paragraph (`para`) or character style `from`
+/// at `to`. A variable of the other kind keeps its style, even under the same name.
+fn rename_running_headers(d: &mut designcraft_doc::Document, para: bool, from: &str, to: &str) {
+    for v in &mut d.text_variables {
+        if let designcraft_doc::vars::VarKind::RunningHeader { style, character, .. } = &mut v.kind
+            && *character != para
+            && style == from
+        {
+            *style = to.to_string();
+        }
+    }
+}
+
+/// Point the nested, nested line and GREP styles, the drop cap style, and the bullet and number
+/// character styles, of paragraph attributes at a renamed (or deleted, pointed at its
+/// replacement) character style.
 fn rename_char_refs(p: &mut ParaAttrs, from: &str, to: &str) {
     let names = p.nested_styles.iter_mut().flatten().map(|n| &mut n.style);
     let names = names.chain(p.nested_line_styles.iter_mut().flatten().map(|n| &mut n.style));
     let names = names.chain(p.drop_cap_style.iter_mut());
+    let names = names.chain(p.bullet_char_style.iter_mut().chain(p.number_char_style.iter_mut()));
     for n in names.chain(p.grep_styles.iter_mut().flatten().map(|g| &mut g.style)) {
         if n == from {
             *n = to.to_string();
@@ -811,7 +827,7 @@ fn delete_style(s: &mut Session, p: &Value, para: bool) -> Result<Value> {
         }
         // The replacement keeps its own Export Tagging.
         st.export_tags.remove(&export_tag_key(para, &name));
-        // Every other use: styles, stories, table cells, nested and GREP styles, notes, defaults.
+        // Every other use: styles, stories, table cells, nested and GREP styles, notes, defaults, list labels, running headers.
         redirect_style_refs(d, para, &name, &repl);
         ok()
     })
@@ -900,7 +916,7 @@ pub(super) fn edit_char(s: &mut Session, p: &Value) -> Result<Value> {
             st.based_on = b;
         }
         if let Some(n) = &rename {
-            // Every use: other styles, stories, table cells, nested and GREP styles, footnotes.
+            // Every use: other styles, stories, table cells, nested and GREP styles, list labels, footnotes, running headers.
             rename_style(d, false, &name, n);
         }
         ok()
@@ -1088,6 +1104,7 @@ mod cjk_tests {
 
 #[cfg(test)]
 mod delete_tests {
+    use designcraft_doc::vars::{TextVariable, VarKind};
     use designcraft_doc::{CellStyle, ObjectStyle, StoryId, Toc, TocEntry};
     use serde_json::json;
 
@@ -1096,6 +1113,15 @@ mod delete_tests {
     /// Is `name` still named anywhere in the document?
     fn named(s: &Session, name: &str) -> bool {
         serde_json::to_string(&*s.doc().unwrap().doc).unwrap().contains(&format!("\"{name}\""))
+    }
+
+    /// The style the Running Header variable `name` picks up, and whether it's a character style.
+    fn header(s: &Session, name: &str) -> (String, bool) {
+        let d = &s.doc().unwrap().doc;
+        match &d.text_variables[d.variable(name).unwrap()].kind {
+            VarKind::RunningHeader { style, character, .. } => (style.clone(), *character),
+            k => panic!("`{name}` is {k:?}"),
+        }
     }
 
     fn char_doc() -> (Session, u64) {
@@ -1109,9 +1135,11 @@ mod delete_tests {
             "nestedStyles": [{"style": "Emphasis", "through": true, "count": 1, "until": {"kind": "words"}}],
             "grepStyles": [{"style": "Emphasis", "pattern": "\\d+"}],
             "nestedLineStyles": [{"style": "Emphasis", "lines": 1}],
-            "dropCapLines": 2, "dropCapChars": 1, "dropCapStyle": "Emphasis"});
+            "dropCapLines": 2, "dropCapChars": 1, "dropCapStyle": "Emphasis",
+            "listType": "bullets", "bulletCharStyle": "Emphasis", "numberCharStyle": "Emphasis"});
         s.execute("style.paragraph.create", &json!({"name": "Lead", "para": refs})).unwrap();
         s.execute("footnote.options", &json!({"refCharStyle": "Emphasis"})).unwrap();
+        s.execute("variables.define", &json!({"name": "Term", "type": "runningHeader", "style": "Emphasis", "character": true})).unwrap();
         let sid = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hi there"})).unwrap()["story"]
             .as_u64()
             .unwrap();
@@ -1142,6 +1170,10 @@ mod delete_tests {
         assert_eq!(lead.grep_styles.as_ref().unwrap()[0].style, "Strong");
         assert_eq!(lead.nested_line_styles.as_ref().unwrap()[0].style, "Strong");
         assert_eq!(lead.drop_cap_style.as_deref(), Some("Strong"));
+        assert_eq!((lead.bullet_char_style.as_deref(), lead.number_char_style.as_deref()), (Some("Strong"), Some("Strong")));
+        let local = &d.story(StoryId(sid)).unwrap().paras[0].para;
+        assert_eq!((local.bullet_char_style.as_deref(), local.number_char_style.as_deref()), (Some("Strong"), Some("Strong")));
+        assert_eq!(header(&s, "Term"), ("Strong".into(), true));
         assert_eq!(d.footnote_options.ref_char_style, "Strong");
         assert_eq!(d.styles.default_character, "Strong");
         // One undo step brings the style and every use back.
@@ -1149,6 +1181,8 @@ mod delete_tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert!(s.doc().unwrap().doc.styles.char_style("Emphasis").is_some());
         assert_eq!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().chars[0].format.style, "Emphasis");
+        assert_eq!(header(&s, "Term"), ("Emphasis".into(), true));
+        assert_eq!(s.doc().unwrap().doc.styles.para("Lead").unwrap().para.bullet_char_style.as_deref(), Some("Emphasis"));
     }
 
     #[test]
@@ -1159,6 +1193,9 @@ mod delete_tests {
         let d = s.doc().unwrap().doc.clone();
         assert_eq!(d.styles.char_style("Child").unwrap().based_on, None);
         assert_eq!(d.footnote_options.ref_char_style, designcraft_doc::NO_CHAR_STYLE);
+        let lead = &d.styles.para("Lead").unwrap().para;
+        assert_eq!(lead.bullet_char_style.as_deref(), Some(designcraft_doc::NO_CHAR_STYLE));
+        assert_eq!(header(&s, "Term"), (designcraft_doc::NO_CHAR_STYLE.into(), true));
     }
 
     /// Replacing a style with its own descendant rebases the deleted style's children on its
@@ -1216,6 +1253,8 @@ mod delete_tests {
             d.endnote_options.para_style = "Table Body".into();
             d.endnote_options.heading_style = "Table Body".into();
             d.settings.epub_split = designcraft_doc::EpubSplit::Style("Table Body".into());
+            let kind = VarKind::RunningHeader { style: "Table Body".into(), use_: Default::default(), character: false };
+            d.text_variables.push(TextVariable::new("Section", kind));
             d.toc = Some(Toc {
                 story,
                 title: "Contents".into(),
@@ -1236,8 +1275,70 @@ mod delete_tests {
         assert_eq!(d.styles.default_paragraph, "Body");
         assert_eq!(d.endnote_options.heading_style, "Body");
         assert_eq!(d.settings.epub_split, designcraft_doc::EpubSplit::Style("Body".into()), "EPUB Split Document follows the replacement");
+        assert_eq!(header(&s, "Section"), ("Body".into(), false));
         let after = s.execute("preflight.run", &json!({})).unwrap();
         assert!(!after.to_string().contains("Table Body"), "{after}");
+    }
+
+    /// #1794: a rename moves the Running Headers of the style's kind (only those: a paragraph and a
+    /// character style can share a name) and the bullet and number character styles, of styles
+    /// and of local paragraph formatting. The headers still show their text on the page and the
+    /// labels keep their style's size; one undo each puts the old names back.
+    #[test]
+    fn renaming_a_style_moves_running_headers_and_list_label_styles() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Chapter"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "Dot", "chars": {"size": 30}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Item", "para": {"listType": "bullets", "bulletCharStyle": "Dot"}})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Origins\nFirst\nSecond"})).unwrap();
+        let sid = r["story"].as_u64().unwrap();
+        let select = |s: &mut Session, anchor: usize, focus: usize| {
+            s.execute("text.select", &json!({"story": sid, "anchor": anchor, "focus": focus})).unwrap();
+        };
+        select(&mut s, 0, 0);
+        s.execute("style.paragraph.apply", &json!({"name": "Chapter"})).unwrap();
+        select(&mut s, 8, 8);
+        s.execute("style.paragraph.apply", &json!({"name": "Item"})).unwrap();
+        select(&mut s, 14, 14);
+        s.execute("type.para", &json!({"attrs": {"listType": "numbers", "numberCharStyle": "Dot"}})).unwrap();
+        select(&mut s, 14, 17);
+        s.execute("style.character.apply", &json!({"name": "Dot"})).unwrap();
+        let vars = [("Chapter Head", "Chapter", false), ("Dot Head", "Dot", true), ("Para Dot", "Dot", false), ("Char Chapter", "Chapter", true)];
+        for (name, style, character) in vars {
+            s.execute("variables.define", &json!({"name": name, "type": "runningHeader", "style": style, "character": character})).unwrap();
+        }
+        // What the four headers show on page 1, and the list labels' (character, size).
+        let shown = |s: &Session| {
+            let d = s.doc().unwrap().doc.clone();
+            let values = designcraft_compose::vars::values(&d, Some(0), Some(&s.cache.running_index(&d)));
+            let values: Vec<String> = vars.iter().map(|(name, ..)| values[d.variable(name).unwrap()].clone()).collect();
+            let cs = s.cache.get(&d, StoryId(sid), Some(0));
+            let glyphs = cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs);
+            let labels = glyphs.filter(|g| g.generated_text.is_some() && g.rendered_char != '\t');
+            let labels: Vec<(char, f64)> = labels.map(|g| (g.rendered_char, cs.styles[g.style as usize].size)).collect();
+            (values, labels)
+        };
+        let before = shown(&s);
+        assert_eq!(before.0, ["Origins", "Sec", "", ""]);
+        assert_eq!(before.1, [('\u{2022}', 30.0), ('1', 30.0), ('.', 30.0)], "the labels are set in Dot");
+
+        s.execute("style.paragraph.edit", &json!({"name": "Chapter", "rename": "Title"})).unwrap();
+        s.execute("style.character.edit", &json!({"name": "Dot", "rename": "Marker"})).unwrap();
+        let headers: Vec<_> = vars.iter().map(|(name, ..)| header(&s, name)).collect();
+        let expect = [("Title", false), ("Marker", true), ("Dot", false), ("Chapter", true)];
+        assert_eq!(headers, expect.map(|(n, c)| (n.to_string(), c)));
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.styles.para("Item").unwrap().para.bullet_char_style.as_deref(), Some("Marker"));
+        assert_eq!(d.story(StoryId(sid)).unwrap().paras[2].para.number_char_style.as_deref(), Some("Marker"));
+        assert_eq!(shown(&s), before, "the headers and labels look as they did");
+
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let headers: Vec<_> = vars.iter().map(|(name, ..)| header(&s, name)).collect();
+        assert_eq!(headers, vars.map(|(_, style, c)| (style.to_string(), c)));
+        assert_eq!(s.doc().unwrap().doc.styles.para("Item").unwrap().para.bullet_char_style.as_deref(), Some("Dot"));
+        assert_eq!(shown(&s), before);
     }
 }
 
