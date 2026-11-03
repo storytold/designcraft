@@ -86,7 +86,15 @@ mod tests {
         } else {
             assert_eq!(
                 command,
-                ["xps-print", "printer=Office", "copies=2", "collate=true", "duplex=(queue default)", "scaling=shrink-to-fit", "color=color"]
+                [
+                    "xps-print",
+                    "printer=Office",
+                    "copies=2",
+                    "collate=true",
+                    "duplex=(queue default)",
+                    "scaling=shrink-to-fit",
+                    "color=(driver default)"
+                ]
             );
         }
         assert!(r["bytes"].as_u64().unwrap() > 500);
@@ -108,6 +116,7 @@ mod tests {
             assert_eq!(job.printer.as_deref(), Some("Office (east)"));
             assert_eq!(job.copies, 2);
             assert_eq!(job.duplex, None);
+            assert!(!job.grayscale);
             assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit);
             assert!(!job.title.is_empty());
             Ok("request id is Office-1".into())

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Result, SpreadId, Value, bad, json};
 
 /// A parent spread named by prefix, label (`A-Parent`) or index.
 pub(super) fn parent_spread_index(d: &designcraft_doc::Document, v: &Value) -> Option<usize> {
@@ -65,6 +65,43 @@ pub(super) fn parent_options(s: &mut crate::Session, p: &Value) -> Result<Value>
     })
 }
 
+pub(super) fn parent_page_target(d: &designcraft_doc::Document, p: &Value, cmd: &str) -> Result<(usize, usize)> {
+    let parent = p.get("parent").and_then(Value::as_u64).map(SpreadId).ok_or_else(|| bad(cmd, "give a parent spread id"))?;
+    let si = d.parent_index(parent).ok_or_else(|| bad(cmd, "no such parent"))?;
+    let pi = p
+        .get("page")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|i| *i < d.parents[si].pages.len())
+        .ok_or_else(|| bad(cmd, "no such parent page"))?;
+    Ok((si, pi))
+}
+
+pub(super) fn parent_page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const ID: &str = "layout.parentPageSize";
+    let (si, pi) = parent_page_target(&s.doc()?.doc, p, ID)?;
+    let size = |key| {
+        p.get(key)
+            .map(|v| {
+                v.as_f64().filter(|v| v.is_finite() && *v > 0.0 && *v <= 15552.0).ok_or_else(|| bad(ID, "page size out of range (0 < size ≤ 216 in)"))
+            })
+            .transpose()
+    };
+    let (w, h) = (size("width")?, size("height")?);
+    if w.is_none() && h.is_none() {
+        return Err(bad(ID, "give width or height"));
+    }
+    let anchor = match p.get("anchor") {
+        None => 0,
+        Some(v) => v.as_u64().filter(|n| *n <= 8).ok_or_else(|| bad(ID, "anchor: 0–8"))? as usize,
+    };
+    s.edit(|d, _| {
+        super::pages::resize_spread_page(d, designcraft_doc::SpreadRef::Parent(si), pi, w, h, anchor);
+        d.sync_parent_margins();
+        Ok(json!({"parent": d.parents[si].id.0, "page": pi}))
+    })
+}
+
 #[cfg(test)]
 mod parent_margin_tests {
     use designcraft_doc::{Document, Margins};
@@ -115,6 +152,52 @@ mod parent_margin_tests {
         assert_eq!(m[2], (Margins::uniform(50.0), 1, false), "old page 2, now a right page");
         assert_eq!(m[3], (Margins::uniform(100.0), 1, true));
         assert!(s.execute("layout.marginsAndColumns", &json!({"parent": "Z", "margins": 10})).is_err());
+    }
+
+    /// Insert Pages before a page, or at the start of the document (`before: 0`), as InDesign's
+    /// dialog offers; `after` and `before` together are refused without an undo step.
+    #[test]
+    fn pages_go_in_before_a_page_or_at_the_start() {
+        let mut s = Session::new();
+        // Facing: [1] [2 3].
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let ids = |s: &Session| -> Vec<u64> {
+            let d = &s.doc().unwrap().doc;
+            (0..d.page_count()).map(|i| d.page(i).unwrap().id.0).collect()
+        };
+        let parent = |s: &Session, i: usize| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0);
+        let old = ids(&s);
+        s.execute("layout.pages.insert", &json!({"before": 0, "parent": "B"})).unwrap();
+        let now = ids(&s);
+        assert_eq!(now.len(), 4);
+        assert_eq!(now[1..], old[..], "the old pages follow the new first page");
+        assert_eq!(parent(&s, 0), Some(b));
+        // Before page 4 (index 3, the old page 3): two pages without a parent.
+        s.execute("layout.pages.insert", &json!({"before": 3, "count": 2, "parent": null})).unwrap();
+        let then = ids(&s);
+        assert_eq!(then.len(), 6);
+        assert_eq!(then[..3], now[..3]);
+        assert_eq!(then[5], old[2]);
+        assert_eq!((parent(&s, 3), parent(&s, 4)), (None, None));
+        // Refused without a change or an undo step: both placements, even one of them null, and a
+        // placement that isn't a page index.
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in [
+            json!({"after": 0, "before": 1}),
+            json!({"after": 0, "before": null}),
+            json!({"after": null, "before": 1}),
+            json!({"before": -1}),
+            json!({"before": "0"}),
+            json!({"before": null}),
+            json!({"after": 1.5}),
+            json!({"before": 6}),
+            json!({"before": 99}),
+        ] {
+            assert!(s.execute("layout.pages.insert", &bad).is_err(), "{bad}");
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo, "{bad}");
+            assert_eq!(ids(&s), then, "{bad}");
+        }
     }
 
     #[test]
@@ -399,7 +482,7 @@ mod parent_base_tests {
         rr.threads = 0;
         let placed = [designcraft_render::Placed { spread: designcraft_doc::SpreadRef::Parent(1), xf: designcraft_geom::Affine::IDENTITY }];
         let opts = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-        let img = rr.render(&s.doc().unwrap().doc, &s.cache, &placed, 400, 400, designcraft_geom::Affine::IDENTITY, &opts);
+        let img = rr.render(&s.doc().unwrap().doc, &s.cache, &placed, (400, 400), designcraft_geom::Affine::IDENTITY, &opts);
         assert!(black(img.pixel(50, 100)) && cyan(img.pixel(150, 150)), "{:?} {:?}", img.pixel(50, 100), img.pixel(150, 150));
         let inspect = s.execute("document.inspect", &json!({})).unwrap();
         assert_eq!(inspect["parents"][1]["basedOn"], "A-Parent");
