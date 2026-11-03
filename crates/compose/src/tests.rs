@@ -8457,6 +8457,41 @@ fn an_rtl_first_line_indent_is_at_the_right_edge() {
     assert!((left_edge(lines[1]) - (rect.x0 + 10.0 * MM)).abs() < 1.0, "left to right, wrapped line indented: {}", left_edge(lines[1]));
 }
 
+/// A story threaded through several frames anchored in one host story asks for the host's
+/// composition once, not once per frame.
+#[test]
+fn anchored_frames_in_one_host_compose_it_once() {
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let lid = d.default_layer();
+    let body = "One.\nTwo.\nThree.\nFour.";
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 400.0), lid, body, ParaFormat::default()).unwrap();
+    let nsid = StoryId(d.alloc());
+    let ids: Vec<ItemId> = (0..3).map(|_| ItemId(d.alloc())).collect();
+    let mut story = Story::with_text(nsid, "Note", ParaFormat::default());
+    story.frames.extend(&ids);
+    d.stories.insert(nsid, Arc::new(story));
+    for (k, &nid) in ids.iter().enumerate() {
+        let mut note = designcraft_doc::Item::new(
+            nid,
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)),
+        );
+        note.content = Content::Text(designcraft_doc::TextFrame { story: nsid, options: Default::default() });
+        let at = body.find(["Two", "Three", "Four"][k]).unwrap();
+        d.story_mut(sid).unwrap().insert_object(at, designcraft_doc::AnchoredObject::new(note, Default::default()));
+    }
+    let mut asked = 0;
+    let placed = placed::placements(&d, nsid, &mut |h| {
+        asked += 1;
+        Arc::new(compose_story(&d, h, &ComposeOptions::default()))
+    });
+    assert_eq!(asked, 1, "the host is composed once");
+    assert_eq!(placed.len(), 3, "{placed:?}");
+    // The cache and the uncached path agree on where the frames go.
+    assert_eq!(Cache::new().get(&d, nsid, None).frames.len(), compose_story(&d, nsid, &ComposeOptions::default()).frames.len());
+}
+
 /// A marginal note (an anchored text frame, Only Align First Line to Grid, 9/10) hangs 15 pt
 /// above its anchor's baseline on a right-hand page. It composes against the document grid where
 /// it is placed: its first line moves down onto the grid line, the second follows 10 pt below,
