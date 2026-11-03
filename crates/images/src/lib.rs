@@ -87,6 +87,7 @@ fn svg_options() -> &'static usvg::Options<'static> {
                 );
                 if mime == "image/svg+xml" || (mime == "text/plain" && !raster) {
                     let xml = svg_data(&data)?;
+                    charge_nested_svg(xml.len())?;
                     svg_preflight(&xml)?;
                     default_data(mime, Arc::new(xml.into_owned()), options)
                 } else {
@@ -280,6 +281,22 @@ const MAX_SVG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SVG_EVENTS: usize = 100_000;
 const MAX_SVG_DEPTH: usize = 64;
 
+/// SVG bytes the data images of one document may add up to, all levels together: each nested
+/// document gets the per-document limits, so without this one outer file could hold many of them.
+const MAX_NESTED_SVG_BYTES: usize = 32 * 1024 * 1024;
+
+thread_local! {
+    /// Nested SVG bytes taken so far by the parse running on this thread (see [`svg_tree`]).
+    static NESTED_SVG_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Take `n` bytes of the running parse's nested-SVG budget; `None` when they don't fit.
+fn charge_nested_svg(n: usize) -> Option<()> {
+    let used = NESTED_SVG_BYTES.get().checked_add(n).filter(|u| *u <= MAX_NESTED_SVG_BYTES)?;
+    NESTED_SVG_BYTES.set(used);
+    Some(())
+}
+
 /// Enforce the encoded-size cap, gunzip SVGZ data with that bound, and return the decoded content within the cap as an owned or borrowed `Cow`.
 fn svg_data(bytes: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
     use std::io::Read;
@@ -337,6 +354,7 @@ fn svg_preflight(bytes: &[u8]) -> Option<()> {
 pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let xml = svg_data(bytes)?;
     svg_preflight(&xml)?;
+    NESTED_SVG_BYTES.set(0);
     usvg::Tree::from_data(&xml, svg_options()).ok()
 }
 
