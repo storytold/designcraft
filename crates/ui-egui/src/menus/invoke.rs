@@ -147,8 +147,8 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
         return;
     }
     // The menu bar takes ⇧⌘M before the window: with a field focused (Story Editor, Find/Change)
-    // the character would land at the canvas caret, not where the person is typing.
-    if params.is_null() && ctx.text_edit_focused() && TEXT_INSERTS.contains(&id) {
+    // or a dialog open, the character would land at the canvas caret behind it.
+    if params.is_null() && (ctx.text_edit_focused() || app.ui.dialog.is_some()) && TEXT_INSERTS.contains(&id) {
         return;
     }
     // The canvas text editor is not an egui TextEdit, so its clipboard events must pass through
