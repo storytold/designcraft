@@ -2876,7 +2876,7 @@ fn a_blurred_window_hides_the_caret_and_stops_repainting() {
 
     let caret_causes = |ctx: &egui::Context| {
         let causes = ctx.repaint_causes();
-        causes.iter().filter(|c| c.file.ends_with("canvas/caret.rs")).count()
+        causes.iter().filter(|c| c.file.replace('\\', "/").ends_with("canvas/caret.rs")).count()
     };
 
     // `repaint_causes` reports the pass before last, so each measured pass is followed by an empty one.
