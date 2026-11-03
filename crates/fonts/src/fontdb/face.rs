@@ -280,7 +280,7 @@ impl FontFace {
     }
     /// The PostScript name of this face as an instance of its variable font (Adobe TN #5902): a
     /// named instance's name, or one built from the axis values for a point between them. `None`
-    /// for a static face and for the default instance, which [`Self::postscript_name`] names.
+    /// for a static face; the default point gets the file's `name` ID 6.
     ///
     /// [`Self::postscript_name`] is the file's own `name` ID 6, which names the font's default
     /// instance: embedding by it put every weight of a variable font into a PDF under one name

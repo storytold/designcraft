@@ -17,8 +17,8 @@ const MAX_LEN: usize = 63;
 /// Axis values count as the same instance within this much (user units).
 const AXIS_EPSILON: f32 = 1e-4;
 
-/// The PostScript name for the instance of `font` at `coords`, or `None` for a static font and for
-/// the default instance, which `name` ID 6 already names.
+/// The PostScript name for the instance of `font` at `coords`, or `None` for a static font; the
+/// default point gets the file's `name` ID 6.
 ///
 /// TN #5902: a named instance's own `postScriptNameID` wins; otherwise the name is the family
 /// prefix (`name` ID 25, else the typographic family, else the family -- OpenType reads a missing
@@ -36,9 +36,7 @@ pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -
     let at = |tolerance: f32| {
         let axes = &axes;
         move |ni: &skrifa::NamedInstance<'_>| {
-            let mut values = axes.iter().zip(ni.user_coords());
-            coords.len() == axes.len()
-                && values.all(|(axis, value)| coords.iter().any(|(tag, want)| *tag == axis.tag().to_be_bytes() && (want - value).abs() <= tolerance))
+            axes.iter().zip(ni.user_coords()).all(|(axis, value)| (effective(&axis, coords) - value).abs() <= tolerance)
         }
     };
     let exact = at(0.0);
@@ -68,15 +66,28 @@ pub fn instance_postscript_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -
 fn family_prefix(font: &FontRef<'_>) -> Option<String> {
     [NameId::VARIATIONS_POSTSCRIPT_NAME_PREFIX, NameId::TYPOGRAPHIC_FAMILY_NAME, NameId::FAMILY_NAME]
         .into_iter()
-        .find_map(|id| string(font, id))
-        .map(|s| keep(&s))
-        .filter(|s| !s.is_empty())
+        .find_map(|id| string(font, id).map(|s| keep(&s)).filter(|s| !s.is_empty()))
+}
+
+/// The value of `axis` at `coords` (its default when absent), inside the axis. Compared, not
+/// `clamp`ed -- `fvar` is font data, and `f32::clamp` panics on a range whose minimum is past
+/// its maximum.
+fn effective(axis: &skrifa::Axis, coords: &[([u8; 4], f32)]) -> f32 {
+    let tag = axis.tag().to_be_bytes();
+    let asked = coords.iter().find(|(t, _)| *t == tag).map_or(axis.default_value(), |(_, v)| *v);
+    if asked < axis.min_value() {
+        axis.min_value()
+    } else if asked > axis.max_value() {
+        axis.max_value()
+    } else {
+        asked
+    }
 }
 
 /// TN #5902's name for a point no named instance covers: the family prefix, then `_<value><tag>`
 /// for each axis away from its default, in `fvar` order -- `AndreVar_900wght_5.5wdth`. Axes at
 /// their default are left out, as the note allows, so the default point itself has no
-/// descriptors and gets `None`: `name` ID 6 is its name.
+/// descriptors and gets the file's `name` ID 6.
 ///
 /// Returning `None` for every such point, which this did first, left all of them embedding under
 /// the default instance's name -- the bug this module is for, at any weight that is not a named
@@ -90,17 +101,7 @@ fn arbitrary_instance_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -> Opt
     let mut name = prefix.clone();
     for axis in axes.iter() {
         let tag = axis.tag().to_be_bytes();
-        let asked = coords.iter().find(|(t, _)| *t == tag).map_or(axis.default_value(), |(_, v)| *v);
-        // Where the font draws it: inside the axis. Compared, not `clamp`ed -- `fvar` is font data,
-        // and `f32::clamp` panics on a range whose minimum is past its maximum.
-        let (min, max) = (axis.min_value(), axis.max_value());
-        let value = if asked < min {
-            min
-        } else if asked > max {
-            max
-        } else {
-            asked
-        };
+        let value = effective(&axis, coords);
         let fixed = to_fixed(value);
         if fixed == to_fixed(axis.default_value()) {
             continue;
@@ -112,7 +113,7 @@ fn arbitrary_instance_name(font: &FontRef<'_>, coords: &[([u8; 4], f32)]) -> Opt
         name.push_str(&keep(&String::from_utf8_lossy(&tag)));
     }
     if name == prefix {
-        return None;
+        return string(font, NameId::POSTSCRIPT_NAME).map(|s| truncate(legal(&s))).filter(|s| !s.is_empty());
     }
     if name.chars().count() <= MAX_LEN {
         return Some(name);
