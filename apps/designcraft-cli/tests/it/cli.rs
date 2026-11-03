@@ -556,3 +556,110 @@ fn usage_lists_the_automation_root_flags() {
     let usage = String::from_utf8_lossy(&out.stdout);
     assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
 }
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let be = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    (be(16), be(20))
+}
+
+/// Linux file managers (Dolphin, Nautilus, Thunar) draw a `.designcraft` file's icon through the
+/// freedesktop thumbnailer, which runs `designcraft-cli thumbnail %i %o %s` (#1782). The picture is
+/// the first-page preview the file already holds, fitted to the size asked for and never enlarged.
+#[test]
+fn thumbnail_writes_the_saved_preview_fitted_to_the_size() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let preview = designcraft_format::read_preview(std::fs::File::open(&doc).unwrap()).unwrap();
+    let (pw, ph) = png_size(&preview);
+    assert!(pw.max(ph) > 128, "the saved preview is {pw}×{ph}");
+
+    let small = dir.join("small.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&small).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&small).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h} from a {pw}×{ph} preview");
+    // The page's proportions stay.
+    let ratio = |a: u32, b: u32| f64::from(a) / f64::from(b);
+    assert!((ratio(w, h) - ratio(pw, ph)).abs() < 0.02, "{w}×{h} from a {pw}×{ph} preview");
+
+    let large = dir.join("large.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&large).arg("1024").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read(&large).unwrap(), preview, "a preview smaller than the size is written as saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file saved without a preview (by an older version, or not by DesignCraft) has no picture: the
+/// thumbnailer fails and writes nothing, so the file manager keeps the file type's icon.
+#[test]
+fn thumbnail_of_a_file_without_a_preview_fails_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-none-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let with = dir.join("with.designcraft");
+    make_document(&with);
+    let doc = designcraft_format::load(&std::fs::read(&with).unwrap()).unwrap();
+    let without = dir.join("without.designcraft");
+    std::fs::write(&without, designcraft_format::save(&doc).unwrap()).unwrap();
+    let text = dir.join("notes.designcraft");
+    std::fs::write(&text, "not a document").unwrap();
+    for input in [&without, &text] {
+        let png = dir.join("out.png");
+        let out = cli().arg("thumbnail").arg(input).arg(&png).arg("256").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{}", input.display());
+        assert!(err.contains("no preview"), "{}: {err}", input.display());
+        assert!(!png.exists(), "{}", input.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `thumbnail a.designcraft a.designcraft` would replace the document with a PNG. An output that
+/// names the input, by the same path, through a symlink or (on Unix) as a hard link, is refused
+/// before anything is read or written, and the document keeps its bytes.
+#[test]
+fn thumbnail_refuses_an_output_that_names_the_input() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-self-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let saved = std::fs::read(&doc).unwrap();
+    let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        outs.push(link);
+        let hard = dir.join("hard.png");
+        std::fs::hard_link(&doc, &hard).unwrap();
+        outs.push(hard);
+    }
+    for out_path in &outs {
+        let out = cli().arg("thumbnail").arg(&doc).arg(out_path).arg("128").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{}: {err}", out_path.display());
+        assert!(err.contains("is the document"), "{}: {err}", out_path.display());
+        assert!(std::fs::read(&doc).unwrap() == saved, "{} changed the document", out_path.display());
+        assert!(std::fs::read(out_path).unwrap() == saved, "{} was written", out_path.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Another existing file at the output path is still replaced by the thumbnail.
+#[test]
+fn thumbnail_replaces_another_existing_file() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let png = dir.join("old.png");
+    std::fs::write(&png, b"an older thumbnail").unwrap();
+    let out = cli().arg("thumbnail").arg(&doc).arg(&png).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&png).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

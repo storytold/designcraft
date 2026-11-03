@@ -342,13 +342,21 @@ impl PathData {
         if self.is_empty() {
             return None;
         }
-        let bp = self.to_bezpath();
-        if self.anchor_count() == 1
-            && let Some(a) = self.subpaths.iter().find_map(|s| s.anchors.first())
-        {
-            return Some(Rect::from_points(a.p, a.p));
+        // `bounding_box` skips a lone MoveTo, so single-anchor subpaths are folded in by point.
+        let mut bp = BezPath::new();
+        let mut lone: Option<Rect> = None;
+        for sp in &self.subpaths {
+            if let [a] = sp.anchors.as_slice() {
+                lone = Some(lone.map_or(Rect::from_points(a.p, a.p), |r| r.union_pt(a.p)));
+            } else {
+                sp.to_bezpath_into(&mut bp);
+            }
         }
-        Some(bp.bounding_box())
+        if bp.elements().is_empty() {
+            return lone;
+        }
+        let bb = bp.bounding_box();
+        Some(lone.map_or(bb, |r| r.union(bb)))
     }
     /// Bounds including control handles (used for quick culling).
     pub fn control_bounds(&self) -> Option<Rect> {
@@ -419,6 +427,17 @@ mod tests {
 
     fn square() -> PathData {
         PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)], true))
+    }
+
+    #[test]
+    fn bounds_cover_single_anchor_subpaths() {
+        let mut pd = PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0)], true));
+        pd.subpaths.push(SubPath::polyline(&[Point::new(50.0, 50.0)], false));
+        assert_eq!(pd.bounds(), Some(Rect::new(0.0, 0.0, 50.0, 50.0)));
+
+        let mut two = PathData::single(SubPath::polyline(&[Point::new(5.0, 7.0)], false));
+        two.subpaths.push(SubPath::polyline(&[Point::new(50.0, 50.0)], false));
+        assert_eq!(two.bounds(), Some(Rect::new(5.0, 7.0, 50.0, 50.0)));
     }
 
     #[test]

@@ -63,6 +63,11 @@ real_name = "Marco Arnulfo"
 display_name = "Marco Arnulfo"
 sync_github_name = false
 
+[people.macrobi]
+real_name = "Veress Róbert"
+display_name = "Veress Róbert"
+sync_github_name = false
+
 [people.makesomethingshit]
 sync_github_name = true
 
@@ -72,5 +77,16 @@ real_name = "Paul Gemignani"
 [people.skylartaylor]
 display_name = "skylartaylor"
 
+[people.y-az]
+real_name = "Youssef Azriouil"
+display_name = "youssef"
+
 [people.dylanmtaylor]
 sync_github_name = true
+
+[people.Tom-R-Main]
+sync_github_name = true
+
+[people.JonRC]
+real_name = "Jonathan Cardoso"
+display_name = "Jonathan Cardoso"
