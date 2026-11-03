@@ -1171,8 +1171,9 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
 }
 
 /// Give the text anchors and tables of `st`, a new copy of a story of `src`, ids of their own (anchors from the story's
-/// id, tables from `dst`). Cross-references in `st` and in the copies `stories` already lists point at the copies of
-/// their destinations where those are copied, and the copy's paragraphs follow its tables.
+/// id, tables from `dst`), as do the tables in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`]
+/// levels. Cross-references in `st` and in the copies `stories` already lists point at the copies of their
+/// destinations where those are copied, and the copy's paragraphs follow its tables.
 fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, st: &mut Story) {
     let base = st.id.0 << 24;
     let mut anchors = HashMap::new();
@@ -1192,6 +1193,13 @@ fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId,
         }
     }
     remap_xrefs(st, &anchors, 0);
+    renumber_tables(dst, st, 0);
+}
+
+/// Give the tables of `st`, and those in the stories of their cells and of the notes of `st` down to
+/// [`MAX_COPY_DEPTH`] levels, new ids from `dst`, each story's in the order of their old ids, and point the stories'
+/// paragraphs at them.
+fn renumber_tables(dst: &mut Document, st: &mut Story, depth: usize) {
     let mut tables = HashMap::new();
     for (old, mut table) in std::mem::take(&mut st.tables) {
         let id = dst.alloc();
@@ -1201,6 +1209,17 @@ fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId,
     }
     for pf in &mut st.paras {
         pf.table = pf.table.map(|t| tables.get(&t).copied().unwrap_or(t));
+    }
+    if depth >= MAX_COPY_DEPTH {
+        return;
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            renumber_tables(dst, &mut c.text, depth + 1);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        renumber_tables(dst, &mut Arc::make_mut(n).text, depth + 1);
     }
 }
 
@@ -5469,6 +5488,50 @@ mod copy_ids_tests {
         let copy = d.spreads[1].items.iter().find(|i| i.text_frame().is_some()).unwrap().id.0;
         assert_ne!(copy, f);
         assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn copied_text_gives_tables_in_its_cells_ids_of_their_own() {
+        use std::sync::Arc;
+
+        fn table_ids(st: &designcraft_doc::Story, out: &mut Vec<u64>) {
+            for (id, t) in &st.tables {
+                out.push(*id);
+                for c in &t.cells {
+                    table_ids(&c.text, out);
+                }
+            }
+        }
+        let cell = |st: &designcraft_doc::Story| st.tables.values().next().unwrap().cells[0].text.clone();
+        let mut s = crate::Session::new();
+        let (f, sid) = marked_frame(&mut s);
+        // The table's first cell holds a table.
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let inner = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+        let st = d.story_mut(sid).unwrap();
+        let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+        text.insert_table(text.len(), inner);
+        for copy_cmd in ["edit.duplicate", "edit.paste"] {
+            if copy_cmd == "edit.paste" {
+                s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+                s.execute("edit.copy", &json!({})).unwrap();
+            }
+            let copy = s.execute(copy_cmd, &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+            let d = &s.doc().unwrap().doc;
+            let csid = d.item(designcraft_doc::ItemId(copy)).unwrap().text_frame().unwrap().story;
+            let (o, c) = (d.story(sid).unwrap(), d.story(csid).unwrap());
+            let (oc, cc) = (cell(o), cell(c));
+            let (oi, ci) = (*oc.tables.keys().next().unwrap(), *cc.tables.keys().next().unwrap());
+            assert_ne!(oi, ci, "{copy_cmd}: the copied cell's table has an id of its own");
+            assert_eq!(cc.tables[&ci].id, ci);
+            assert_eq!(cc.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [ci], "the cell's paragraph holds the copied table");
+            let mut ids = Vec::new();
+            for st in d.stories.values() {
+                table_ids(st, &mut ids);
+            }
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(unique.len(), ids.len(), "{copy_cmd}: no two tables share an id: {ids:?}");
+        }
     }
 
     #[test]
