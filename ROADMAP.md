@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-03** · HU1: fill 23 Hungarian caption gaps in recent files, native/dock menus, unit preferences and separations; route the start-screen project link and translated macOS built-ins through the catalog. Preserve OS titles when untranslated. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
