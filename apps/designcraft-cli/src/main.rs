@@ -345,7 +345,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             continue;
         }
         match a.as_str() {
-            "--connect" => connect = Some(it.next().ok_or("--connect needs a port or host:port")?),
+            "--connect" => connect = Some(value(&a, it.next().as_ref())?),
             "--sample" => sample = true,
             other => {
                 return Err(format!(
