@@ -1817,6 +1817,8 @@ fn place_sub_objects(
     }
 }
 
+/// Sets one paragraph's lines, column after column and frame after frame. It stops when the
+/// paragraph ends, when the frames run out, or when an earlier paragraph has to be set again.
 fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLines<'_>) -> LinePlacement {
     let PlacementShared {
         doc,
@@ -1849,7 +1851,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let ParagraphLines {
         paragraph: pi,
         range: prange,
-        props: pp,
+        props: para_props,
         glyphs,
         hyph_after,
         drop_cap,
@@ -1878,7 +1880,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
     let mut hyphen_at: Option<usize> = None;
     let has_tabs = glyphs.iter().any(|g| g.ch == '\t');
     let mut first_line_rect: Option<(usize, f64, f64, f64)> = None; // frame, baseline, ascent, x-span
-    let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+    let rtl = para_props.direction == designcraft_doc::TextDirection::RightToLeft;
+    // The paragraph's settings with the start-side indent an Indent to Here character set for
+    // the lines after it (InDesign's ^i): those lines start where the character sits.
+    let mut indented: Option<designcraft_doc::ParaProps> = None;
     // Paragraph gyoudori: the (frame, column) of the block and the grid line after it.
     let mut para_block: Option<((usize, usize), f64)> = None;
     // Segments of a line already placed (beside an object with text on both sides) that the
@@ -1912,6 +1917,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 no_hyph,
             });
         }
+        let pp = indented.as_ref().unwrap_or(para_props);
+        // The Indent to Here character sits past the drop cap, so the lines that start at it
+        // aren't indented by the drop cap again.
+        let beside_cap = drop_cap.filter(|_| indented.is_none());
         let f = &frames[cur.fi];
         let base = cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)];
         let col = cur.clip(base);
@@ -1937,7 +1946,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             props: pp,
             slots: &slots,
             column: col,
-            drop_cap,
+            drop_cap: beside_cap,
             line_no,
             col_first_line,
             rtl,
@@ -1945,6 +1954,8 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             spacing,
         });
         let mut moved = false;
+        // Set by a line with an Indent to Here character, for the lines broken again after it.
+        let mut reindented = None;
         for (k, b) in breaks.iter().enumerate() {
             let (s, e) = (g0 + b.start, g0 + b.end);
             let line_glyphs = &glyphs[s..e.max(s)];
@@ -2060,7 +2071,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
-            let beside = drop_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
+            let beside = beside_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
             let first_line = if line_no == 0 { pp.first_line_indent } else { 0.0 };
             let (ind_l, ind_r) = match beside {
                 Some(w) if rtl => (pp.left_indent, pp.right_indent + w),
@@ -2112,6 +2123,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             }
             ruby::annotate(db, styles_tab, &story.text, &mut placed, doc.settings.glyph_fallback, f.vertical);
             kenten::annotate(db, styles_tab, &mut placed, doc.settings.glyph_fallback);
+            let here_props = indent_here(&placed, pp, x0, x1, rtl);
             let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
             let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
@@ -2170,6 +2182,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             hyphen_at =
                 e.checked_sub(1).filter(|&i| b.hyphen && hyph_after.get(i) == Some(&true)).and_then(|i| glyphs.get(i)).map(|g| g.byte + g.len);
             line_no += 1;
+            // An Indent to Here character in this line moves the start of the lines after it:
+            // break them again with that indent (it holds into the next columns too).
+            let reindent = here_props.is_some();
+            reindented = here_props.or(reindented);
             // A column / frame / page break inside the paragraph: the rest of it continues in the
             // new column/frame/page, re-broken there. (A break that ends the paragraph moves the
             // next paragraph instead.)
@@ -2183,12 +2199,13 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             }
             // An own-story anchored object anchored in this line wraps the lines after it,
             // which were broken without it: break them again.
-            if k + 1 < breaks.len() && line_has_wrapping_exclusion(f, range_start..range_end, col, baseline) {
+            if k + 1 < breaks.len() && (reindent || line_has_wrapping_exclusion(f, range_start..range_end, col, baseline)) {
                 g0 += b.next;
                 moved = true;
                 break;
             }
         }
+        indented = reindented.or(indented);
         if !moved {
             break;
         }
@@ -4947,6 +4964,34 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             }
         }
     }
+}
+
+/// The paragraph settings for the lines after the `placed` line when it holds an Indent to Here
+/// character (the last one, if several): the start-side indent reaches the character, measured
+/// from the start edge of the line's segment `x0..x1`. Like the paragraph's own indents it then
+/// applies from each later line's segment, so beside a text wrap it starts at the wrap's edge.
+/// `None` when there is none or the indent is unchanged.
+fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64, x1: f64, rtl: bool) -> Option<designcraft_doc::ParaProps> {
+    // The placed glyphs are in the line's order (bidi only moves them): the drop cap's, then a
+    // list label's, which is set beside the drop cap, then the text's. A character in the drop
+    // cap or the label counts too, and one in the label comes after one in the drop cap.
+    let x = placed.iter().rev().find(|g| g.rendered_char == story::INDENT_HERE)?.x;
+    let indent = if rtl { x1 - x } else { x - x0 };
+    if !indent.is_finite() {
+        return None;
+    }
+    let indent = indent.max(0.0);
+    let current = if rtl { pp.right_indent } else { pp.left_indent };
+    if (indent - current).abs() < 0.01 {
+        return None;
+    }
+    let mut props = pp.clone();
+    if rtl {
+        props.right_indent = indent;
+    } else {
+        props.left_indent = indent;
+    }
+    Some(props)
 }
 
 fn place(g: &Glyph, x: f64) -> PlacedGlyph {
