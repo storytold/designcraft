@@ -74,9 +74,12 @@ pub(crate) struct Exporter<'a> {
     images_by_content: ImageContentCache,
     #[cfg(test)]
     image_conversions: usize,
-    /// Placed PDFs (embedded as vector pages) and their page counts.
-    pdfs: HashMap<(AssetId, Vec<hayro_syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
-    variants: HashMap<(AssetId, Option<Vec<String>>), crate::optional_content::Variant>,
+    /// Placed PDFs (embedded as vector pages) and their page counts, by file and hidden layers. A
+    /// file is the address of its bytes, which the document holds for the whole export: the pages
+    /// of a multi-page placement share them, so the file is read and its layers rewritten once,
+    /// not once per page.
+    pdfs: HashMap<(usize, Vec<hayro_syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
+    variants: HashMap<(usize, Option<Vec<String>>), crate::optional_content::Variant>,
     has_optional_content: bool,
     #[cfg(test)]
     pdf_preparations: usize,

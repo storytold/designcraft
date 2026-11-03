@@ -215,6 +215,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     let bad = || PdfError::BadRange(s.to_string());
     let num = |v: &str| v.trim().parse::<usize>().map_err(|_| bad());
     let mut out = Vec::new();
+    // Pages already listed: a membership test per page keeps a long range linear.
+    let mut seen = vec![false; count];
     for part in t.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (a, b) = match part.split_once('-') {
             Some((a, b)) => {
@@ -231,10 +233,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
             return Err(bad());
         }
         for p in a..=b {
-            if p > count {
-                return Err(PdfError::BadPage(p));
-            }
-            if !out.contains(&(p - 1)) {
+            let Some(first) = seen.get_mut(p - 1) else { return Err(PdfError::BadPage(p)) };
+            if !std::mem::replace(first, true) {
                 out.push(p - 1);
             }
         }
