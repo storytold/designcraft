@@ -31,7 +31,7 @@ pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
 /// (a corrupt or hostile value falls back to 72 ppi at the call site).
 pub fn sane_resolution(dpi: (f64, f64)) -> bool {
     let (dx, dy) = dpi;
-    dx.is_finite() && dy.is_finite() && dx > 0.0 && dy > 0.0 && dx <= 100_000.0 && dy <= 100_000.0
+    dx.is_finite() && dy.is_finite() && dx >= 1.0 && dy >= 1.0 && dx <= 100_000.0 && dy <= 100_000.0
 }
 
 fn is_classic_tiff(bytes: &[u8]) -> bool {
@@ -115,17 +115,17 @@ fn exif_resolution(payload: &[u8]) -> Option<(f64, f64)> {
 /// Classic TIFF resolution tags of the first IFD: XResolution/YResolution rationals scaled by
 /// ResolutionUnit (2 = inch, 3 = cm; a missing unit defaults to inch per the spec).
 pub fn tiff_resolution(tiff: &[u8]) -> Option<(f64, f64)> {
-    let le = match &tiff[..2] {
+    let le = match tiff.get(..2)? {
         b"II" => true,
         b"MM" => false,
         _ => return None,
     };
     let u16at = |i: usize| -> Option<u16> {
-        let b: [u8; 2] = tiff.get(i..i + 2)?.try_into().ok()?;
+        let b: [u8; 2] = tiff.get(i..i.checked_add(2)?)?.try_into().ok()?;
         Some(if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
     };
     let u32at = |i: usize| -> Option<u32> {
-        let b: [u8; 4] = tiff.get(i..i + 4)?.try_into().ok()?;
+        let b: [u8; 4] = tiff.get(i..i.checked_add(4)?)?.try_into().ok()?;
         Some(if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
     };
     let ifd = u32at(4)? as usize;
@@ -212,8 +212,12 @@ fn webp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
         if data.checked_add(size)? > end {
             return None;
         }
-        if kind == b"EXIF" && is_classic_tiff(bytes.get(data..data + size.min(4)).unwrap_or_default()) {
-            return tiff_resolution(&bytes[data..(data + size).min(bytes.len())]);
+        if kind == b"EXIF" {
+            let exif = bytes.get(data..data + size)?;
+            let tiff = exif.strip_prefix(b"Exif\x00\x00").unwrap_or(exif);
+            if is_classic_tiff(tiff) {
+                return tiff_resolution(tiff);
+            }
         }
         pos = data.checked_add(size.checked_add(size & 1)?)?;
     }
