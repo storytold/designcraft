@@ -57,10 +57,18 @@ fn offset_subpath(bp: &BezPath, d: f64, tol: f64, out: &mut BezPath) {
 /// Bands (start, width) across a stroke, as fractions of the weight from its left edge.
 pub type Bands = [(f64, f64)];
 
+/// Most bands of a striped stroke that are drawn, and most path elements its fill may have:
+/// every band strokes the whole path again, so both multiply the path's size.
+pub const MAX_STRIPE_BANDS: usize = 64;
+const MAX_STRIPE_ELEMENTS: usize = 2_000_000;
+
 /// The filled area of a striped stroke of `weight` along `bp`.
 pub fn stripes(bp: &BezPath, weight: f64, bands: &Bands, tol: f64) -> BezPath {
     let mut out = BezPath::new();
-    for &(start, width) in bands {
+    for &(start, width) in bands.iter().take(MAX_STRIPE_BANDS) {
+        if out.elements().len() > MAX_STRIPE_ELEMENTS {
+            break;
+        }
         if width <= 0.0 {
             continue;
         }
@@ -183,5 +191,16 @@ mod tests {
         let w = wavy(&b, 4.0, 0.01);
         let bridged = (0..=2000).map(|i| f64::from(i) * 0.05).filter(|&x| w.contains(Point::new(x, 25.0))).count();
         assert_eq!(bridged, 0, "wavy bridges the subpaths: {:?}", w.bounding_box());
+    }
+
+    #[test]
+    fn stripes_draw_at_most_the_band_cap() {
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((100.0, 0.0));
+        let one = stripes(&line, 4.0, &[(0.0, 0.1)], 0.1).elements().len();
+        let many = vec![(0.0, 0.1); 100_000];
+        let all = stripes(&line, 4.0, &many, 0.1).elements().len();
+        assert_eq!(all, one * MAX_STRIPE_BANDS);
     }
 }
