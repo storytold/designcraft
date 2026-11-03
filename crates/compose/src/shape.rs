@@ -319,30 +319,50 @@ impl StyleTable<'_> {
 
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
-pub(crate) fn shape_para(
-    db: &ScopedFonts<'_>,
-    styles: &Styles,
-    story: &Story,
-    pi: usize,
-    range: std::ops::Range<usize>,
-    para_chars: &CharProps,
-    auto_leading: TypeEnv,
-    sub: &SubstCtx,
-    table: &mut StyleTable<'_>,
-    nested: &[designcraft_doc::NestedStyle],
-    grep: &[designcraft_doc::GrepStyle],
-    lines: &[(std::ops::Range<usize>, String)],
-    drop: (usize, &str),
-) -> ShapedPara {
-    let _ = pi;
-    let mut glyphs = Vec::with_capacity(range.len());
-    // Nested line styles lie under nested and GREP styles, and the drop cap's style over them all
-    // (later overlays win).
+pub(crate) struct ShapeInput<'a, 'font> {
+    pub(crate) db: &'a ScopedFonts<'font>,
+    pub(crate) styles: &'a Styles,
+    pub(crate) story: &'a Story,
+    pub(crate) range: std::ops::Range<usize>,
+    pub(crate) para_chars: &'a CharProps,
+    pub(crate) auto_leading: TypeEnv,
+    pub(crate) sub: &'a SubstCtx,
+    pub(crate) nested: &'a [designcraft_doc::NestedStyle],
+    pub(crate) grep: &'a [designcraft_doc::GrepStyle],
+    pub(crate) lines: &'a [(std::ops::Range<usize>, String)],
+    pub(crate) drop_cap: (usize, &'a str),
+}
+
+pub(crate) fn shape_para(input: ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> ShapedPara {
+    let db = input.db;
+    let sub = input.sub;
+    let range = input.range.clone();
+    let auto_leading = input.auto_leading;
+    let (pieces, auto_tcy) = resolve_pieces(&input, table);
+    let mut glyphs = shape_pieces(&input, table, pieces);
+    fit_auto_tcy(&mut glyphs, &auto_tcy);
+    collapse_tcy(&mut glyphs, sub.vertical);
+    crate::ruby::reserve(db, table.styles, &mut glyphs, auto_leading.glyph_fallback, sub.vertical);
+    ShapedPara { glyphs, range }
+}
+
+fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Vec<Piece>, Vec<std::ops::Range<usize>>) {
+    let db = input.db;
+    let styles = input.styles;
+    let story = input.story;
+    let range = input.range.clone();
+    let para_chars = input.para_chars;
+    let auto_leading = input.auto_leading;
+    let sub = input.sub;
+    let nested = input.nested;
+    let grep = input.grep;
+    let lines = input.lines;
+    let drop_cap = input.drop_cap;
     let mut overlays: Vec<(std::ops::Range<usize>, String)> = lines.to_vec();
     // The drop cap's style is the nested styles' leading "through 1 Dropcap" entry (the form IDML
     // stores it in). Set (`[None]` included), it restyles that entry; a real one stands in for a
     // missing entry. Either way the nested styles after it start after the drop cap.
-    let set = Some(drop.1).filter(|s| !s.is_empty());
+    let set = Some(drop_cap.1).filter(|s| !s.is_empty());
     let cap_style = set.filter(|s| *s != designcraft_doc::NO_CHAR_STYLE);
     let with_cap: Vec<designcraft_doc::NestedStyle>;
     let nested = match set {
@@ -357,12 +377,12 @@ pub(crate) fn shape_para(
         _ => nested,
     };
     if !nested.is_empty() || !grep.is_empty() {
-        overlays.extend(crate::overlay::overlays(&story.text, range.clone(), nested, grep, drop.0));
+        overlays.extend(crate::overlay::overlays(&story.text, range.clone(), nested, grep, drop_cap.0));
     }
     if let Some(s) = cap_style
-        && drop.0 > range.start
+        && drop_cap.0 > range.start
     {
-        overlays.push((range.start..drop.0, s.to_string()));
+        overlays.push((range.start..drop_cap.0, s.to_string()));
     }
     // Each run, cut where nested / GREP styles start and end.
     let mut segments: Vec<(usize, usize, Option<&str>, &designcraft_doc::CharFormat)> = Vec::new();
@@ -474,6 +494,15 @@ pub(crate) fn shape_para(
             pieces.push(Piece { range: k..b, props, style, env: auto_leading, hidden: false, composite_note: false });
         }
     }
+    (pieces, auto_tcy)
+}
+
+fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: Vec<Piece>) -> Vec<Glyph> {
+    let db = input.db;
+    let styles = input.styles;
+    let story = input.story;
+    let sub = input.sub;
+    let mut glyphs = Vec::new();
     let mut i = 0;
     while i < pieces.len() {
         let first = &pieces[i];
@@ -562,10 +591,7 @@ pub(crate) fn shape_para(
         }
         i = j;
     }
-    fit_auto_tcy(&mut glyphs, &auto_tcy);
-    collapse_tcy(&mut glyphs, sub.vertical);
-    crate::ruby::reserve(db, table.styles, &mut glyphs, auto_leading.glyph_fallback, sub.vertical);
-    ShapedPara { glyphs, range }
+    glyphs
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
@@ -1175,7 +1201,12 @@ fn shape_segment(
     for (gi, sg) in shaped.iter().enumerate() {
         let up = upright.get(gi).copied().unwrap_or(false);
         let (byte, len, ch) = if replacement.is_some() {
-            (range.start, if gi == 0 { range.len() } else { 0 }, text[range.start..].chars().next().unwrap_or(' '))
+            let marker = text[range.start..].chars().next().unwrap_or(' ');
+            // A cross-reference's text is real text in InDesign: its spaces are word spaces the
+            // line may break at (text variables and page numbers stay whole). The first glyph
+            // keeps the marker, as it owns the marker's bytes.
+            let space = gi > 0 && marker == designcraft_doc::XREF_MARK && src.get(sg.cluster..).is_some_and(|t| t.starts_with(' '));
+            (range.start, if gi == 0 { range.len() } else { 0 }, if space { ' ' } else { marker })
         } else {
             let cl = range.start + sg.cluster;
             let end = shaped[gi + 1..].iter().map(|r| range.start + r.cluster).find(|&c| c > cl).unwrap_or(range.end);

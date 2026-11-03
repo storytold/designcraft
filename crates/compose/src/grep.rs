@@ -385,6 +385,16 @@ impl Grep {
         self.re.find_iter(text).take(limit).map(|m| m.map(|m| m.range()).map_err(run_err)).collect()
     }
 
+    /// The first match starting at or after byte `start`, with its replacement: `template`
+    /// expanded as [`Self::replacements`] does.
+    pub fn replacement_at(&self, text: &str, start: usize, template: &str) -> Result<Option<(Range<usize>, String)>, GrepError> {
+        if start > text.len() || !text.is_char_boundary(start) {
+            return Ok(None);
+        }
+        let Some(caps) = self.re.captures_from_pos(text, start).map_err(run_err)? else { return Ok(None) };
+        Ok(caps.get(0).map(|m| (m.range(), fancy_regex::Expander::default().expansion(template, &caps))))
+    }
+
     /// Non-empty matches in `text`, at most `limit` of them: an empty match styles nothing, so it
     /// doesn't count toward a GREP style's cap.
     pub fn find_nonempty(&self, text: &str, limit: usize) -> Result<Vec<Range<usize>>, GrepError> {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, Document, Styles};
 
 /// A font file packaged with an EPUB: the face of `family` in `style` (`Bold Italic`…).
 #[derive(Clone, Debug)]

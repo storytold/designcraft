@@ -318,3 +318,13 @@ fn x1a_dropped_inks_warning_says_they_wont_print() {
     assert!(warnings.iter().any(|w| w.contains("3 tint(s)") && w.contains("dropped and won't print")), "{warnings:?}");
     assert!(warnings.iter().all(|w| !w.contains("converted to process")), "{warnings:?}");
 }
+
+/// The output intent and the identification are read as objects: whitespace between tokens (as
+/// qpdf and Ghostscript write them) doesn't hide them.
+#[test]
+fn x1a_checks_ignore_whitespace_between_tokens() {
+    let mut objects = tiny_objects("/Resources<<>>", "0 0 0 1 k", "/OutputConditionIdentifier(Custom)/DestOutputProfile 4 0 R", &icc_header(2));
+    objects[5] = b"<< /GTS_PDFXVersion (PDF/X-1:2003) /GTS_PDFXConformance (PDF/X-1a:2003) /Trapped /False >>".to_vec();
+    objects[6] = b"<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (Custom) /DestOutputProfile 4 0 R >>".to_vec();
+    assert_eq!(check_pdfx1a(&assemble(&objects)), Vec::<String>::new());
+}

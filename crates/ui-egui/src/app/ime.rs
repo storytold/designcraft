@@ -1,4 +1,4 @@
-use super::*;
+use super::DesignApp;
 
 impl DesignApp {
     /// Did an IME composition end outside the IME this frame (a click, a tool switch)? egui's
