@@ -380,16 +380,17 @@ pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     };
     // The document's multi-state objects (id, name, states) and text anchors (id, name).
     let (msos, anchors): (Vec<(u64, String, Vec<String>)>, Vec<(u64, String)>) = app.session.active().map_or((vec![], vec![]), |d| {
-        let msos = d
-            .doc
-            .all_items()
-            .into_iter()
-            .filter_map(|i| {
-                let it = d.doc.item(i)?;
-                let name = if it.name.is_empty() { format!("Multi-state object {}", i.0) } else { it.name.clone() };
-                (!it.states.is_empty()).then(|| (i.0, name, it.states.clone()))
-            })
-            .collect();
+        // One walk of the spreads: `all_items` plus `item(id)` per id would read the document
+        // once per item, every frame the panel shows.
+        let mut msos = Vec::new();
+        for it in d.doc.spreads.iter().flat_map(|sp| &sp.items) {
+            it.walk(&mut |it| {
+                if !it.states.is_empty() {
+                    let name = if it.name.is_empty() { format!("Multi-state object {}", it.id.0) } else { it.name.clone() };
+                    msos.push((it.id.0, name, it.states.clone()));
+                }
+            });
+        }
         let anchors = d.doc.stories.values().flat_map(|st| st.anchors.iter().map(|a| (a.id, a.name.clone()))).collect();
         (msos, anchors)
     });
