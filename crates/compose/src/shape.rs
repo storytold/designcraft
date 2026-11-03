@@ -57,8 +57,6 @@ pub struct Glyph {
     pub space: f64,
     /// Resolved CJK boundary constraint, independent of glyph outlines.
     pub break_after: Option<bool>,
-    /// A safe Khmer word boundary (including an authored ZWSP), with zero natural width.
-    pub word_gap: bool,
     pub cjk_hang: f64,
     pub moji: crate::mojikumi::Metrics,
     pub ideographic_space_elastic: bool,
@@ -1116,7 +1114,6 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
         space: face.advance(face.glyph_for(' ')) * k * p.h_scale,
         break_after: None,
-        word_gap: false,
         cjk_hang: 0.0,
         moji: crate::mojikumi::Metrics { explicit_before: p.leading_aki.is_some(), explicit_after: p.trailing_aki.is_some(), ..Default::default() },
         ideographic_space_elastic: false,
@@ -1279,7 +1276,6 @@ fn shape_segment(
             tcy_offset: [p.tate_chu_yoko_x_offset, p.tate_chu_yoko_y_offset],
             space,
             break_after: None,
-            word_gap: false,
             cjk_hang: 0.0,
             moji: crate::mojikumi::Metrics {
                 body,
@@ -1421,7 +1417,6 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h.byte = g.byte + g.len;
     h.len = 0;
     h.ch = '-';
-    h.word_gap = false;
     h.rendered_char = '-';
     h.moji = Default::default();
     h.generated_text = None;

@@ -85,7 +85,7 @@ impl Default for Spacing {
 impl Spacing {
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
-        if g.locked_advance || crate::khmer::character(g.ch) || matches!(g.ch, '\u{200b}' | '\u{2060}') {
+        if g.locked_advance {
             return ([0.0; 3], [0.0; 3]);
         }
         let moji_stretch = if self.justify { g.moji.stretch } else { 0.0 };
@@ -99,9 +99,11 @@ impl Spacing {
             return ([moji_stretch + st, 0.0, 0.0], [moji_shrink + sh, 0.0, 0.0]);
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
+        // Khmer letters take glyph scaling but no letter spacing (see `khmer::letter_gap`).
+        let letter = if crate::khmer::character(g.ch) { 0.0 } else { g.space };
         (
-            [moji_stretch, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [moji_shrink, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [moji_stretch, letter * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
+            [moji_shrink, letter * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
         )
     }
     /// Word-space stretch and shrink of space glyph `g` (see [`Glyph::is_word_space`]); none
@@ -187,7 +189,8 @@ struct Item {
     zone_from: usize,
     /// An emergency break inside a word wider than the measure.
     emergency: bool,
-    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
+    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]). A justified
+    /// Khmer box: its share of the line's slack rating ([`crate::khmer::slack_unit`]).
     over: f64,
 }
 
@@ -456,20 +459,14 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         let mut bx = Item::boxed(g.adv, st, sh);
         bx.hang = hang_left(g, sp) - g.moji.start;
         bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        if sp.justify {
+            bx.over = crate::khmer::slack_unit(g);
+        }
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
         if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
-            if sp.justify && g.word_gap {
-                // Zero-width word-space glue, as proposed by DesignCraft #516. The next
-                // glyph starts the following line, so no source character is discarded.
-                let mut gl = Item::glue(0.0, crate::khmer::gap_stretch(g), 0.0);
-                gl.over = crate::khmer::gap_stretch(g);
-                gl.hang = right_hang(g, sp);
-                last_space = it.len();
-                it.push(gl);
-                ig.push(i + 1);
-            } else if matches!(g.ch, '-' | '\u{2010}') {
+            if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
                 p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);

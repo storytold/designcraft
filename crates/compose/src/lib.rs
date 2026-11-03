@@ -3460,7 +3460,6 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
                 }
             }
         }
-        g.word_gap &= g.break_after != Some(false);
     }
     let ws = pp.word_space_desired;
     let ls = pp.letter_space_desired;
@@ -4666,13 +4665,12 @@ fn layout_line(
     let seg = last_tab.map_or(0, |(i, _)| i + 1);
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
     // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
-    let spaces: Vec<usize> = line
-        .iter()
-        .enumerate()
-        .skip(seg)
-        .filter(|&(i, g)| (g.is_justify_space() || (g.word_gap && i + 1 < line.len())) && !g.locked_advance)
-        .map(|(i, _)| i)
-        .collect();
+    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
+    // A Khmer line stretches only with a real word space to take the length: its word boundaries
+    // have no width. Without one it keeps its natural width (the author adds a space where it
+    // belongs), though it still shrinks to fit, as far as glyph scaling allows.
+    let khmer_line = line.get(seg..).is_some_and(|text| text.iter().any(|g| khmer::character(g.ch)));
+    let khmer_natural = khmer_line && extra >= 0.0 && !spaces.iter().any(|&i| line[i].is_word_space());
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
@@ -4689,26 +4687,28 @@ fn layout_line(
     if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
-    if (justify_this || squeeze_last) && !spaces.is_empty() {
+    if (justify_this || squeeze_last) && !spaces.is_empty() && !khmer_natural {
         let rebased: Vec<usize> = spaces.iter().map(|&i| i - seg).collect();
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
+    } else if ((justify_this && !last) || (khmer_line && (justify_this || squeeze_last))) && spaces.is_empty() && line.len() > seg + 1 && extra < 0.0
+    {
         // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &[], extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last {
+    } else if justify_this && (spaces.is_empty() || khmer_natural) && line.len() > seg + 1 && !last {
         // Single word: Single Word Justification.
         match pp.single_word_justify {
+            Align::FullyJustified if khmer_line => {}
             Align::FullyJustified => {
                 let gaps: Vec<_> = line
                     .iter()
                     .enumerate()
                     .take(line.len() - 1)
                     .skip(seg)
-                    .filter(|&(i, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)) && khmer::letter_gap(&line, i))
+                    .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
                     .map(|(i, _)| i)
                     .collect();
                 if !gaps.is_empty() {
@@ -4920,9 +4920,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
         .iter()
         .map(|&i| {
             let g = &line[i];
-            if g.word_gap {
-                if stretch { khmer::gap_stretch(g) } else { 0.0 }
-            } else if !g.is_word_space() {
+            if !g.is_word_space() {
                 0.0
             } else if stretch {
                 g.space * (sp.word_max - sp.word_desired).max(0.0)
@@ -4952,7 +4950,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     let glyph: Vec<f64> = line
         .iter()
         .map(|g| {
-            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance || khmer::character(g.ch) {
+            if g.is_justify_space() || g.adv <= 0.0 || g.locked_advance {
                 0.0
             } else {
                 let natural = g.adv / sp.glyph_desired.max(0.01);
@@ -4972,7 +4970,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     // Stretch left over beyond every limit is shared equally by the word spaces (fixed-width spaces
     // keep their width), else by the letter gaps; shrink never goes past the minimums (that would
     // overlap glyphs), so an overfull line stays overfull.
-    let elastic = spaces.iter().filter(|&&i| line[i].is_word_space() || line[i].word_gap).count();
+    let elastic = spaces.iter().filter(|&&i| line[i].is_word_space()).count();
     let gaps = line.iter().enumerate().filter(|&(i, g)| is_box(i, g)).count();
     let (over, over_gap) = match (stretch && rem > 0.0, elastic, gaps) {
         (false, _, _) => (0.0, 0.0),
@@ -4982,7 +4980,7 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
     };
     for (k, &i) in spaces.iter().enumerate() {
         let share = if yw > 1e-9 { tw * word[k] / yw } else { 0.0 };
-        add[i] += sign * share + if line[i].is_word_space() || line[i].word_gap { over } else { 0.0 };
+        add[i] += sign * share + if line[i].is_word_space() { over } else { 0.0 };
     }
     if yl > 1e-9 && tl > 0.0 {
         for (i, l) in letter.iter().enumerate() {
@@ -5001,6 +4999,14 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             if *gcap > 0.0 {
                 let w = line[i].adv;
                 scale[i] = (w + sign * tg * gcap / yg) / w;
+            }
+        }
+        // The attached (zero-advance) glyphs of a Khmer cluster scale with their base.
+        if let Some(factor) = scale.iter().copied().find(|s| *s != 1.0) {
+            for (i, g) in line.iter().enumerate() {
+                if g.adv <= 0.0 && !g.locked_advance && khmer::character(g.ch) {
+                    scale[i] = factor;
+                }
             }
         }
     }

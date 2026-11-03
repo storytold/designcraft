@@ -1,8 +1,12 @@
 //! Khmer lexical boundaries from the shared Aksara-derived core. The composer owns shaped
-//! cluster safety and justification. The zero-width word glue and attached-glyph protection
-//! adapt ideas from @visarutforthaipbs's DesignCraft PR #516:
+//! cluster safety and justification. The attached-glyph protection adapts ideas from
+//! @visarutforthaipbs's DesignCraft PR #516:
 //! https://github.com/storytold/designcraft/pull/516. Khmer lexical decisions use craft-khmer,
 //! as in WordCraft, rather than the ICU4X segmenters proposed in that contribution.
+//!
+//! A boundary only permits a line break: it has no width, so justification never opens a gap
+//! there. As in InDesign, a line fills through its real word spaces and the paragraph's glyph
+//! scaling; a line without a real space keeps its natural width until the author adds one.
 use std::{
     collections::HashMap,
     ops::Range,
@@ -56,15 +60,18 @@ fn boundaries(text: &str) -> Arc<[usize]> {
     breaks
 }
 
-/// Never expand within a Khmer word or between glyphs of its shaped cluster. A
-/// single word without a safe word gap stays intact instead of being letter-spaced.
+/// Letter spacing never reaches Khmer letters or the glyphs of a shaped cluster, including across
+/// an authored control between another script and Khmer. Other text is not affected.
 pub(crate) fn letter_gap(line: &[Glyph], i: usize) -> bool {
-    let Some(g) = line.get(i) else { return false };
-    let Some(next) = line.get(i + 1) else { return false };
-    !character(g.ch) && !character(next.ch) && !matches!(g.ch, '\u{200b}' | '\u{2060}') && !matches!(next.ch, '\u{200b}' | '\u{2060}')
+    let khmer_at = |j: usize| line.get(j).is_some_and(|g| character(g.ch));
+    let (Some(_), Some(next)) = (line.get(i), line.get(i + 1)) else { return false };
+    !khmer_at(i) && !khmer_at(i + 1) && !(matches!(next.ch, '\u{200b}' | '\u{2060}') && khmer_at(i + 2))
 }
-pub(crate) fn gap_stretch(g: &Glyph) -> f64 {
-    g.space * 0.5
+/// How the breaker rates slack on a justified Khmer line: lines without a real space stay short,
+/// so a short line costs in proportion to its text rather than being impossible to rate. This is
+/// never applied to a glyph's width.
+pub(crate) fn slack_unit(g: &Glyph) -> f64 {
+    if character(g.ch) { g.adv * 0.05 } else { 0.0 }
 }
 
 /// Model and authored opportunities must also be source-grapheme and shaped-cluster edges.
@@ -80,13 +87,16 @@ pub(crate) fn apply(glyphs: &mut [Glyph], text: &str, range: Range<usize>) {
     for i in 0..glyphs.len().saturating_sub(1) {
         let (left, right) = glyphs.split_at_mut(i + 1);
         let (Some(g), Some(next)) = (left.last_mut(), right.first()) else { continue };
+        // An authored control has no width, so letter spacing has nothing to work with.
+        if matches!(g.ch, '\u{200b}' | '\u{2060}') {
+            g.space = 0.0;
+        }
         if next.byte < range.start || next.byte >= range.end || g.list_label || next.list_label {
             continue;
         }
         if next.byte == g.byte {
             if character(g.ch) || character(next.ch) {
                 g.break_after = Some(false);
-                g.word_gap = false;
             }
             continue;
         }
@@ -109,12 +119,8 @@ pub(crate) fn apply(glyphs: &mut [Glyph], text: &str, range: Range<usize>) {
             || matches!(before, '(' | '[' | '{' | '«' | '“');
         if forbidden {
             g.break_after = Some(false);
-            g.word_gap = false;
         } else if g.break_after != Some(false) && !g.no_break && !next.no_break && !g.locked_advance && breaks.binary_search(&at).is_ok() {
             g.break_after = Some(true);
-            // Existing spaces keep their normal stretch/shrink; the extra glue is
-            // only for boundaries whose source has no visible separator.
-            g.word_gap = !g.is_space();
         }
     }
 }
