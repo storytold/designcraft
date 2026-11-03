@@ -20,33 +20,35 @@ fn plain_char(c: char) -> Option<&'static str> {
     }
 }
 
-fn table_text(story: &Story, id: u64, nl: &str) -> String {
+/// Cells of table `id` as rows of tab-separated cell text (the cells' visible text, nested
+/// tables and notes left out), `nl` between rows.
+fn table_text(doc: &Document, story: &Story, id: u64, nl: &str) -> String {
     let Some(t) = story.tables.get(&id) else { return String::new() };
     (0..t.nrows())
-        .map(|r| (0..t.ncols()).map(|c| t.cell(r, c).map(|x| x.text.text.replace('\n', " ")).unwrap_or_default()).collect::<Vec<_>>().join("\t"))
+        .map(|r| {
+            (0..t.ncols())
+                .map(|c| t.cell(r, c).map(|x| plain_text(doc, &x.text).replace("\r\n", " ").replace('\n', " ")).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
         .collect::<Vec<_>>()
         .join(nl)
 }
 
-/// Text Only: the story's text, CRLF between paragraphs.
-pub fn plain_text(story: &Story) -> String {
-    // Tracked deletions aren't part of the text.
-    let deleted: Vec<std::ops::Range<usize>> =
-        story.runs().filter(|(_, f)| f.over.change == Some(designcraft_doc::ChangeMark::Deleted)).map(|(r, _)| r).collect();
+/// Text Only: the story's text as it shows (hidden conditional text and tracked deletions left
+/// out), CRLF between paragraphs.
+pub fn plain_text(doc: &Document, story: &Story) -> String {
     let mut out = String::with_capacity(story.text.len() + 16);
+    let spans = doc.visible_spans(story);
     for (i, r) in story.para_ranges().into_iter().enumerate() {
         if i > 0 {
             out.push_str("\r\n");
         }
-        let start = r.start;
-        for (ci, c) in story.text[r].char_indices() {
-            if deleted.iter().any(|d| d.contains(&(start + ci))) {
-                continue;
-            }
+        for c in Document::visible_text(story, &spans, r).chars() {
             match (c, plain_char(c)) {
                 (TABLE_ANCHOR, _) => {
                     if let Some(id) = story.paras.get(i).and_then(|p| p.table) {
-                        out.push_str(&table_text(story, id, "\r\n"));
+                        out.push_str(&table_text(doc, story, id, "\r\n"));
                     }
                 }
                 (_, Some("")) => out.push(c),
@@ -168,7 +170,7 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
                 match c {
                     TABLE_ANCHOR => {
                         if let Some(id) = table {
-                            for ch in table_text(story, *id, "\u{2028}").chars() {
+                            for ch in table_text(doc, story, *id, "\u{2028}").chars() {
                                 rtf_escape(&mut out, ch);
                             }
                         }
@@ -204,14 +206,42 @@ mod tests {
     #[test]
     fn text_variable_markers_are_dropped() {
         let st = Story::with_text(StoryId(1), "Page \u{E100} of", Default::default());
-        assert_eq!(plain_text(&st), "Page  of");
+        assert_eq!(plain_text(&Document::new(&NewDocument::default()), &st), "Page  of");
         let r = rtf(&Document::new(&NewDocument::default()), &st);
         assert!(!r.contains("\\u-7936") && r.contains("Page  of"), "{r}");
     }
 
     #[test]
     fn text_only() {
-        assert_eq!(plain_text(&story()), "Plain bold {x}\r\nCafé\ntwo");
+        assert_eq!(plain_text(&Document::new(&NewDocument::default()), &story()), "Plain bold {x}\r\nCafé\ntwo");
+    }
+
+    /// Text hidden by a condition set on the paragraph style, and text marked deleted, don't
+    /// reach Text Only: not in the story and not in a table cell.
+    #[test]
+    fn text_only_leaves_out_hidden_and_deleted_text() {
+        let mut doc = Document::new(&NewDocument::default());
+        doc.conditions.push(designcraft_doc::Condition { name: "Secret".into(), color: [0, 0, 0], visible: false });
+        doc.styles_mut().paragraph.push(designcraft_doc::ParagraphStyle {
+            name: "Hidden".into(),
+            based_on: None,
+            next_style: None,
+            para: Default::default(),
+            chars: CharAttrs { conditions: Some(vec!["Secret".into()]), ..Default::default() },
+            shortcut: String::new(),
+        });
+        let mut st = Story::with_text(StoryId(1), "shown\nhidden by style\nkept gone", Default::default());
+        let h = st.text.find("hidden").unwrap();
+        st.format_paras(h..h + 1, |p| p.style = "Hidden".into());
+        let g = st.text.find(" gone").unwrap();
+        st.format_chars(g..g + 5, |f| f.over = CharAttrs { change: Some(designcraft_doc::ChangeMark::Deleted), ..Default::default() });
+        assert_eq!(plain_text(&doc, &st), "shown\r\n\r\nkept");
+        let mut outer = Story::with_text(StoryId(2), &TABLE_ANCHOR.to_string(), Default::default());
+        let mut t = designcraft_doc::Table::new(7, 1, 1, 0, 0, 100.0);
+        t.cells[0].text = st.clone();
+        outer.tables.insert(7, std::sync::Arc::new(t));
+        outer.paras[0].table = Some(7);
+        assert_eq!(plain_text(&doc, &outer), "shown  kept");
     }
 
     #[test]

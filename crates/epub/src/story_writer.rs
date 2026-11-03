@@ -98,9 +98,15 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let mut lead = lead;
         let mut list: Option<&str> = None;
         let mut pre: Option<(String, bool)> = None;
+        let runs: Vec<(std::ops::Range<usize>, &story::CharFormat)> = st.runs().collect();
         for (pi, (r, pf)) in st.para_ranges().into_iter().zip(&st.paras).enumerate() {
             let Some(text) = st.text.get(r.clone()) else { continue };
-            let table = pf.table.and_then(|id| st.tables.get(&id)).filter(|_| text.contains(story::TABLE_ANCHOR));
+            let base = doc.styles.resolve_para(pf).1;
+            // A table whose anchor is hidden or deleted is off the page, so it stays out.
+            let table = pf
+                .table
+                .and_then(|id| st.tables.get(&id))
+                .filter(|_| text.find(story::TABLE_ANCHOR).is_some_and(|at| !doc.hides_run(&base, st.char_format_at(r.start + at))));
             let only_table = table.is_some() && text.chars().all(|c| c == story::TABLE_ANCHOR || c.is_whitespace());
             if !only_table || !lead.is_empty() {
                 // Export Tagging: the style's element and class.
@@ -145,7 +151,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 lead = "";
                 let mut after = String::new();
                 if !only_table {
-                    self.runs(st, r, depth, out, &mut after);
+                    self.runs(st, &runs, r, &base, depth, out, &mut after);
                 }
                 if tag == "pre" {
                     // Closed when the next paragraph isn't a line of the same block.
@@ -202,17 +208,29 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         t
     }
 
-    /// The runs of paragraph `para` of `st`; footnotes go to `after`.
-    fn runs(&mut self, st: &Story, para: std::ops::Range<usize>, depth: usize, out: &mut String, after: &mut String) {
+    /// The runs of paragraph `para` of `st` (`runs`: the story's, collected once; `base`: the
+    /// paragraph's base character attributes); footnotes go to `after`.
+    #[allow(clippy::too_many_arguments)]
+    fn runs(
+        &mut self,
+        st: &Story,
+        runs: &[(std::ops::Range<usize>, &story::CharFormat)],
+        para: std::ops::Range<usize>,
+        base: &designcraft_doc::CharProps,
+        depth: usize,
+        out: &mut String,
+        after: &mut String,
+    ) {
         let doc = self.doc;
-        for (rr, f) in st.runs() {
+        let first = runs.partition_point(|(rr, _)| rr.end <= para.start);
+        for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < para.end).map(|(rr, f)| (rr.clone(), *f)) {
             let a = rr.start.max(para.start);
             let b = rr.end.min(para.end);
             if a >= b {
                 continue;
             }
-            // Hidden conditional text isn't exported.
-            if f.over.conditions.as_deref().is_some_and(|c| doc.conditions_hide(c)) || f.over.change == Some(designcraft_doc::ChangeMark::Deleted) {
+            // Hidden conditional text (the styles' conditions included) and deletions aren't exported.
+            if doc.hides_run(base, f) {
                 continue;
             }
             let Some(raw) = st.text.get(a..b) else { continue };

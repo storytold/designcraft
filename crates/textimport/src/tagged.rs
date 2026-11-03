@@ -74,13 +74,15 @@ pub fn tagged_text(doc: &Document, story: &Story) -> String {
             out.push_str("\r\n");
         }
         let pf = story.paras.get(i).cloned().unwrap_or_default();
+        let base = doc.styles.resolve_para(&pf).1;
         let _ = write!(out, "<ParaStyle:{}>", escape_value(&pf.style));
         for (rr, f) in story.runs() {
             let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
             if a >= b {
                 continue;
             }
-            if doc.conditions_hide(f.over.conditions.as_deref().unwrap_or(&[])) || f.over.change == Some(designcraft_doc::ChangeMark::Deleted) {
+            // Hidden conditional text (the styles' conditions included) and deletions aren't exported.
+            if doc.hides_run(&base, f) {
                 continue;
             }
             let mut open = Vec::new();

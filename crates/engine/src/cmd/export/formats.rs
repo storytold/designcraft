@@ -140,7 +140,7 @@ pub(super) fn export_text(s: &mut Session, p: &Value) -> Result<Value> {
     let text = match format {
         "rtf" => designcraft_textimport::export::rtf(doc, story),
         "tagged" => designcraft_textimport::tagged::tagged_text(doc, story),
-        _ => designcraft_textimport::export::plain_text(story),
+        _ => designcraft_textimport::export::plain_text(doc, story),
     };
     match path {
         Some(path) => {
@@ -157,13 +157,16 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
     let mut out = String::new();
     for st in d.stories.values() {
         let cs = cache.get(d, st.id, None);
+        let spans = d.visible_spans(st);
         for ft in &cs.frames {
             if d.page_of_item(ft.frame) != Some(abs) {
                 continue;
             }
             for l in &ft.lines {
                 let r = l.range.start.min(st.text.len())..l.range.end.min(st.text.len());
-                let t: String = st.text[r].chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).collect();
+                // The line's text as it shows: hidden conditional text and deletions left out.
+                let t: String =
+                    designcraft_doc::Document::visible_text(st, &spans, r).chars().filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c)).collect();
                 if !t.trim().is_empty() {
                     out.push_str(t.trim_end_matches('\n'));
                     out.push('\n');

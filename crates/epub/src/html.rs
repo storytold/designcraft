@@ -32,6 +32,7 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
         }
         return out;
     }
+    let hidden_layers: Vec<_> = doc.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
     let mut keyed: Vec<((usize, i64, i64), Block)> = Vec::new();
     let mut seen_stories = Vec::new();
     for (si, sp) in doc.spreads.iter().enumerate() {
@@ -45,7 +46,8 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
-            if it.hidden {
+            // Hidden items and items on hidden layers (with everything in them) aren't on the page.
+            if it.hidden || hidden_layers.contains(&it.layer) {
                 continue;
             }
             let children = it.children();

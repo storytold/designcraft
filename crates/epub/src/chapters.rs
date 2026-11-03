@@ -99,7 +99,8 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
             continue;
         }
         let Some(st) = doc.story(*sid) else { continue };
-        let first = label(st.text.split('\n').next().unwrap_or(""));
+        let spans = doc.visible_spans(st);
+        let first = label(&Document::visible_text(st, &spans, 0..st.text.find('\n').unwrap_or(st.text.len())));
         if !first.is_empty() {
             firsts.push((format!("s{k}"), first, 1));
         }
@@ -107,7 +108,7 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
             let Some(pf) = st.paras.get(pi) else { continue };
             let (tag, _) = export_mapping(&doc.styles, &pf.style, false, &pc);
             let Some(level) = heading_level(tag).filter(|l| *l <= 3) else { continue };
-            let text = label(st.text.get(r.clone()).unwrap_or(""));
+            let text = label(&Document::visible_text(st, &spans, r.clone()));
             if !text.is_empty() {
                 headings.push((format!("s{k}-p{pi}"), text, level));
             }
