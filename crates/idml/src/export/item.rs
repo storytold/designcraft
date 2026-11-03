@@ -1,5 +1,8 @@
 use super::common::{affine_s, bool_s, p, pct, uid, with_props};
-use super::*;
+use super::{
+    Affine, ColumnsKind, Content, El, Ex, HashSet, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, escape_id, names,
+    num, pt,
+};
 
 impl<'a> Ex<'a> {
     pub(super) fn item_el(&mut self, it: &Item, xf: Affine) -> El {
@@ -99,54 +102,7 @@ impl<'a> Ex<'a> {
             props.push(path_geometry(&it.path));
         }
         let mut el = with_props(el, props);
-        // Transparency.
-        // An item whose style sets effects writes the effects it has turned off too, so that on
-        // import it doesn't take the style's.
-        let styled = self.d.styles.object_effects(os).is_some();
-        let ds = &it.effects.drop_shadow;
-        let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
-        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
-            let mut t = El::new("TransparencySetting");
-            t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
-            for c in self.effect_els(&it.effects, styled) {
-                t.push(c);
-            }
-            if df.on {
-                let [top, left, bottom, right] = df.widths;
-                t.push(
-                    El::new("DirectionalFeatherSetting")
-                        .attr("Applied", "true")
-                        .attr("LeftWidth", num(left))
-                        .attr("RightWidth", num(right))
-                        .attr("TopWidth", num(top))
-                        .attr("BottomWidth", num(bottom)),
-                );
-            }
-            if gf.on {
-                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
-                if let Some([x0, y0, x1, y1]) = gf.vector {
-                    // Gradient Feather tool vector: start, length and angle in the item's space.
-                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
-                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
-                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
-                } else {
-                    g.set("Angle", num(gf.angle));
-                }
-                let id = uid(it.id.0);
-                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
-                    let mut s = El::new("OpacityGradientStop")
-                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
-                        .attr("Opacity", pct(opacity as f64))
-                        .attr("Location", num(location));
-                    if i > 0 {
-                        s.set("Midpoint", "50");
-                    }
-                    g.push(s);
-                }
-                t.push(g);
-            }
-            el.push(t);
-        }
+        self.append_transparency(&mut el, it, os);
         if let Content::Text(t) = &it.content {
             el.push(text_frame_pref(&t.options, &self.sw(&t.options.column_rule_color)));
             if let Some(g) = t.options.baseline_grid {
@@ -198,6 +154,57 @@ impl<'a> Ex<'a> {
         el
     }
 
+    fn append_transparency(&self, el: &mut El, it: &Item, os: &str) {
+        // Transparency.
+        // An item whose style sets effects writes the effects it has turned off too, so that on
+        // import it doesn't take the style's.
+        let styled = self.d.styles.object_effects(os).is_some();
+        let ds = &it.effects.drop_shadow;
+        let (gf, df) = (&it.effects.gradient_feather, &it.effects.directional_feather);
+        if it.opacity < 1.0 || it.blend != designcraft_color::BlendMode::Normal || ds.on || it.effects.feather > 0.0 || gf.on || df.on || styled {
+            let mut t = El::new("TransparencySetting");
+            t.push(El::new("BlendingSetting").attr("BlendMode", names::blend_out(it.blend)).attr("Opacity", pct(it.opacity as f64)));
+            for c in self.effect_els(&it.effects, styled) {
+                t.push(c);
+            }
+            if df.on {
+                let [top, left, bottom, right] = df.widths;
+                t.push(
+                    El::new("DirectionalFeatherSetting")
+                        .attr("Applied", "true")
+                        .attr("LeftWidth", num(left))
+                        .attr("RightWidth", num(right))
+                        .attr("TopWidth", num(top))
+                        .attr("BottomWidth", num(bottom)),
+                );
+            }
+            if gf.on {
+                let mut g = El::new("GradientFeatherSetting").attr("Applied", "true").attr("Type", if gf.radial { "Radial" } else { "Linear" });
+                if let Some([x0, y0, x1, y1]) = gf.vector {
+                    // Gradient Feather tool vector: start, length and angle in the item's space.
+                    g.set("Angle", num((-(y1 - y0)).atan2(x1 - x0).to_degrees()));
+                    g.set("Length", num((x1 - x0).hypot(y1 - y0)));
+                    g.set("GradientStart", format!("{} {}", num(x0), num(y0)));
+                } else {
+                    g.set("Angle", num(gf.angle));
+                }
+                let id = uid(it.id.0);
+                for (i, (opacity, location)) in [(gf.start, 0.0), (gf.end, 100.0)].into_iter().enumerate() {
+                    let mut s = El::new("OpacityGradientStop")
+                        .attr("Self", format!("{id}TransparencySetting1GradientFeatherSetting1OpacityGradientStop{i}"))
+                        .attr("Opacity", pct(opacity as f64))
+                        .attr("Location", num(location));
+                    if i > 0 {
+                        s.set("Midpoint", "50");
+                    }
+                    g.push(s);
+                }
+                t.push(g);
+            }
+            el.push(t);
+        }
+    }
+
     /// The `TransparencySetting` children for `e`'s drop shadow and feather; `all` also writes the
     /// effects that are off (`Mode="None"`), as an object style that sets effects does.
     pub(super) fn effect_els(&self, e: &designcraft_doc::Effects, all: bool) -> Vec<El> {
@@ -213,6 +220,7 @@ impl<'a> Ex<'a> {
                     .attr("Size", num(ds.size))
                     .attr("Spread", num(ds.spread))
                     .attr("Opacity", pct(ds.opacity as f64))
+                    .attr("BlendMode", names::blend_out(ds.mode))
                     .attr("EffectColor", self.sw(&ds.color)),
             );
         }

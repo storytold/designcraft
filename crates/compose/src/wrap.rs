@@ -12,16 +12,27 @@
 //!   that come after the line holding its anchor; that line and the lines before it are never
 //!   wrapped by it (an inline object sits in its line and wraps none of its own story). The story
 //!   is composed again with the objects where the previous pass placed them until they stop
-//!   moving, at most [`MAX_PASSES`] more times.
+//!   moving. An object's wrap can push the anchors of the objects after it, so a chain of n such
+//!   objects needs n + 1 more compositions: the k-th pass places the (k + 1)-th object where the
+//!   wraps before it leave its anchor, and the last pass wraps around the last object. The story
+//!   is composed at most that many more times (at least [`MIN_PASSES`]), and never more than
+//!   [`MAX_PASSES`].
 
 use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, OBJECT_MARK, PageSide, SpreadRef, Story, StoryId, WrapMode};
 use designcraft_geom::Affine;
 
 use crate::{ComposeOptions, ComposedStory, Exclusion, FrameSpec};
 
-/// Extra compositions of a story with its own anchored objects' wrap; a layout that keeps moving
-/// its objects (keep options, vertical justification) stops here.
-pub(crate) const MAX_PASSES: usize = 4;
+/// Most extra compositions of a story with its own anchored objects' wrap, however many objects
+/// it has; a layout that keeps moving its objects (keep options, vertical justification) stops
+/// sooner, after one per object and one more (but never fewer than [`MIN_PASSES`]).
+pub(crate) const MAX_PASSES: usize = 64;
+
+/// Fewest extra compositions allowed before giving up on a layout that keeps moving: a single
+/// object that keep options or vertical justification move still gets the room it had before.
+const MIN_PASSES: usize = 4;
+// `clamp` needs min <= max.
+const _: () = assert!(MIN_PASSES <= MAX_PASSES);
 
 /// How far an obstacle may move between passes and still count as settled (points).
 const SETTLED: f64 = 0.01;
@@ -199,8 +210,9 @@ pub(crate) fn compose_among(doc: &Document, sid: StoryId, opts: &ComposeOptions,
     if !has_wrapping_objects(st) {
         return out;
     }
+    let own = st.objects.iter().filter(|o| wraps(o) && !matches!(o.position, AnchorPosition::Inline { .. })).count();
     let mut prev = vec![Vec::new(); specs.len()];
-    for _ in 0..MAX_PASSES {
+    for _ in 0..(own + 1).clamp(MIN_PASSES, MAX_PASSES) {
         let added = exclusions(doc, &specs, &obstacles(doc, st, &out, true));
         if settled(&added, &prev) {
             break;

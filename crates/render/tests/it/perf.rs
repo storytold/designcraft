@@ -61,22 +61,22 @@ fn glyph_paths_are_cached_and_offscreen_text_is_skipped() {
     // 200% view of the top-left of the first spread: only a few frames are visible.
     let view = Affine::scale(2.0);
     let opts = RenderOptions::default();
-    let a = r.render(&d, &cache, &all, 800, 600, view, &opts);
+    let a = r.render(&d, &cache, &all, (800, 600), view, &opts);
     let drawn = r.stats.glyphs;
     assert!(drawn > 100, "glyphs drawn: {drawn}");
     assert!(r.cached_frames() <= 4, "only visible frames get glyph paths: {}", r.cached_frames());
     // Same pixels from the cache.
-    let b = r.render(&d, &cache, &all, 800, 600, view, &opts);
+    let b = r.render(&d, &cache, &all, (800, 600), view, &opts);
     assert!(a.pixels == b.pixels);
     // Culling: far fewer glyphs than the visible frames hold.
-    let whole = r.render(&d, &cache, &all, 2400, 1600, Affine::scale(1.0), &opts);
+    let whole = r.render(&d, &cache, &all, (2400, 1600), Affine::scale(1.0), &opts);
     assert!(r.stats.glyphs > drawn * 2, "{} vs {drawn}", r.stats.glyphs);
     drop(whole);
     // A new composition (edited story) gets fresh paths.
     let mut d2 = d.clone();
     let sid = *d2.stories.keys().next().unwrap();
     d2.set_story_text(sid, "Edited").unwrap();
-    let c = r.render(&d2, &cache, &all, 800, 600, view, &opts);
+    let c = r.render(&d2, &cache, &all, (800, 600), view, &opts);
     assert!(r.stats.glyphs < 10);
     assert!(c.pixels != a.pixels);
 }
@@ -88,7 +88,7 @@ fn greeked_text_builds_no_glyph_paths() {
     let mut r = Renderer::new();
     r.threads = 0;
     let opts = RenderOptions { greek_below_px: 6.0, ..Default::default() };
-    let img = r.render(&d, &cache, &placed(&d), 400, 300, Affine::scale(0.3), &opts);
+    let img = r.render(&d, &cache, &placed(&d), (400, 300), Affine::scale(0.3), &opts);
     assert_eq!(r.stats.glyphs, 0);
     assert_eq!(r.cached_frames(), 0);
     // The grey bars are drawn.
@@ -106,11 +106,11 @@ fn render_text_heavy_spread_at_100_percent_within_budget() {
     // 100% on a HiDPI 2880×1800 canvas = 2 px/pt, centred on the second spread.
     let view = Affine::scale(2.0) * Affine::translate((0.0, -828.0));
     let opts = RenderOptions { greek_below_px: 6.0, ..Default::default() };
-    r.render(&d, &cache, &all, 2880, 1800, view, &opts);
+    r.render(&d, &cache, &all, (2880, 1800), view, &opts);
     let mut v: Vec<f64> = (0..9)
         .map(|_| {
             let t = Instant::now();
-            drop(r.render(&d, &cache, &all, 2880, 1800, view, &opts));
+            drop(r.render(&d, &cache, &all, (2880, 1800), view, &opts));
             t.elapsed().as_secs_f64() * 1000.0
         })
         .collect();

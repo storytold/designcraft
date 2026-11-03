@@ -1,5 +1,5 @@
-use super::invoke::activate;
-use super::*;
+use super::invoke::{activate, pointer_zoom_params};
+use super::{DesignApp, ScreenMode, Value, json};
 
 /// The command a paste event stands for besides plain Paste. egui-winit turns every ⌘+V chord into
 /// `Event::Paste` with the clipboard's text and drops the key press, and the keymap reads the chord
@@ -39,7 +39,7 @@ pub fn shortcuts(app: &mut DesignApp, ctx: &egui::Context) {
     }
     let typing = app.session.wants_text();
     let keys = ctx.input_mut(|i| take_keys(app, i, typing));
-    run_keys(app, keys, typing);
+    run_keys(app, ctx, keys, typing);
 }
 
 /// Keys that a floating panel in its own OS window left over (craft-ui's
@@ -59,7 +59,7 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
     input.events = events;
     input.modifiers = modifiers;
     let keys = take_keys(app, &mut input, typing);
-    run_keys(app, keys, typing);
+    run_keys(app, ctx, keys, typing);
     crate::canvas::forwarded_keys(app, input.events, modifiers);
 }
 
@@ -112,7 +112,7 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
 }
 
 /// Runs what [`take_keys`] took, then Esc's return to the Selection tool.
-fn run_keys(app: &mut DesignApp, keys: Keys, typing: bool) {
+fn run_keys(app: &mut DesignApp, ctx: &egui::Context, keys: Keys, typing: bool) {
     for step in keys.presentation {
         match step {
             None => {
@@ -138,7 +138,11 @@ fn run_keys(app: &mut DesignApp, keys: Keys, typing: bool) {
             app.select_tool(&tool);
         } else {
             // Like choosing the menu item: "…" commands open their dialog.
-            activate(app, &hit.command.id, &hit.command.params);
+            // Zoom In/Out by key zoom around the pointer while it is over the canvas.
+            match pointer_zoom_params(ctx, &hit.command.id) {
+                Some(p) => activate(app, &hit.command.id, &p),
+                None => activate(app, &hit.command.id, &hit.command.params),
+            }
         }
     }
     // Esc with no shortcut of its own goes back to the Selection tool.

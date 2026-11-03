@@ -1,4 +1,6 @@
-use super::*;
+#[cfg(test)]
+use super::FAIL_TO_BYTES;
+use super::{Document, EngineError, Result};
 
 /// The document as `.designcraft` bytes, or an error when it can't be written; never an empty file.
 pub fn to_bytes(d: &Document) -> Result<Vec<u8>> {
@@ -23,6 +25,16 @@ pub fn with_document_extension(path: &str) -> String {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
+}
+
+/// `name` without a trailing `.designcraft` (any case): the title of a document opened from bytes
+/// under its file name. Save, Save As and the File Name variable add the extension back, so a title
+/// that kept it would name the file `Brochure.designcraft.designcraft`. A bare `.designcraft` stays.
+pub(super) fn without_native_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.eq_ignore_ascii_case(designcraft_format::EXTENSION) => stem,
+        _ => name,
+    }
 }
 
 /// Whether `bytes` are a document `file.open` reads: a DesignCraft package or an IDML package.

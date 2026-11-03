@@ -8,7 +8,7 @@ use designcraft_geom::{Affine, BezPath, PathData, Point, Rect};
 use designcraft_images::usvg;
 use serde_json::{Value, json};
 
-use super::*;
+use super::{CommandSpec, Result, Session, bad, cmd, has_doc, spread_param, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(
