@@ -55,6 +55,18 @@ pub(crate) struct Preview {
     pub preparing_frames: u64,
 }
 
+/// The view and cache state used to prepare retained layers for this frame.
+pub(crate) struct Update {
+    pub placed: Vec<Placed>,
+    pub viewport: Rect,
+    pub scale: f64,
+    pub opts: RenderOptions,
+    pub cache: Arc<designcraft_compose::Cache>,
+    pub warm: bool,
+    pub hold: bool,
+    pub enabled: bool,
+}
+
 fn ordinary(it: &Item, depth: usize) -> bool {
     depth <= 64 && it.blend == Default::default() && !it.knockout && !it.effects.any() && it.children().iter().all(|c| ordinary(c, depth + 1))
 }
@@ -106,19 +118,8 @@ impl Preview {
         self.layers.clear();
     }
     /// `hold` keeps the last correctly stacked preview until the final canvas job arrives.
-    pub fn update(
-        &mut self,
-        st: &DocState,
-        ctx: &egui::Context,
-        placed: Vec<Placed>,
-        viewport: Rect,
-        scale: f64,
-        opts: RenderOptions,
-        cache: Arc<designcraft_compose::Cache>,
-        warm: bool,
-        hold: bool,
-        enabled: bool,
-    ) -> bool {
+    pub fn update(&mut self, st: &DocState, ctx: &egui::Context, update: Update) -> bool {
+        let Update { placed, viewport, scale, opts, cache, warm, hold, enabled } = update;
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (st, ctx, placed, viewport, scale, opts, cache, warm, hold, enabled);
@@ -298,7 +299,7 @@ impl Worker {
                         if part != SlicePart::Before {
                             opts.background = None;
                         }
-                        let image = renderer.render(&job.key.doc, &job.cache, &job.placed, w, h, view, &opts);
+                        let image = renderer.render(&job.key.doc, &job.cache, &job.placed, (w, h), view, &opts);
                         if image.width == 0 || cancellation.cancelled() {
                             break;
                         }

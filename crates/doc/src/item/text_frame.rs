@@ -1,4 +1,4 @@
-use super::*;
+use super::{Affine, Deserialize, PathData, Rect, Serialize, StoryId, is_default};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

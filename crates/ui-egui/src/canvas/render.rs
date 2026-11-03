@@ -1,7 +1,28 @@
-use super::*;
+use super::{Affine, CanvasLayout, Color32, DRect, DesignApp, Document, Point, Pos2, Rect, ScreenMode, Xf, pos2, vec2};
 
 pub(super) fn c32(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// Queue visible spreads first, followed by at most one neighbour on either side.
+pub(super) fn request_page_previews(
+    previews: &mut crate::canvas_preview::Previews,
+    cache: std::sync::Arc<designcraft_compose::Cache>,
+    ctx: &egui::Context,
+    layout: &CanvasLayout,
+    xf: &Xf,
+    screen: Rect,
+) {
+    let visible: Vec<_> = layout.slots.iter().enumerate().filter(|(_, s)| xf.rect(s.bounds).intersects(screen)).map(|(i, _)| i).take(32).collect();
+    let mut candidates: Vec<_> = visible.iter().filter_map(|i| layout.slots.get(*i)).copied().collect();
+    if let Some(first) = visible.first().and_then(|i| i.checked_sub(1)).and_then(|i| layout.slots.get(i)) {
+        candidates.push(*first);
+    }
+    if let Some(last) = visible.last().and_then(|i| i.checked_add(1)).and_then(|i| layout.slots.get(i)) {
+        candidates.push(*last);
+    }
+    candidates.truncate(32);
+    previews.request(candidates, cache, ctx);
 }
 
 pub(super) fn paint_page_previews(
@@ -43,6 +64,37 @@ pub(super) fn paint_page_previews(
             }
         }
     }
+}
+
+/// The colour the canvas shows at screen point `pos` (the Color Picker's eyedropper): one device
+/// pixel rendered as the page is, over its paper. None off the pages.
+pub fn color_at(app: &mut DesignApp, ctx: &egui::Context, pos: Pos2) -> Option<[u8; 3]> {
+    let rect = app.canvas_rect.filter(|r| r.contains(pos))?;
+    let v = *app.view()?;
+    let xf = Xf::new(rect, &v);
+    let at = xf.to_canvas(pos);
+    let st = app.session.active()?;
+    let doc = st.doc.clone();
+    let layout = CanvasLayout::new(&doc, st.editing_parents);
+    let on_page = layout
+        .slots
+        .iter()
+        .any(|slot| doc.spread(slot.spread).is_some_and(|sp| sp.pages.iter().any(|page| slot.xf.transform_rect_bbox(page.bounds()).contains(at))));
+    if !on_page {
+        return None;
+    }
+    let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
+    let ppp = ctx.pixels_per_point() as f64;
+    let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-at.x, -at.y));
+    let opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    let mut img = app.canvas.patcher.render(&doc, &app.session.cache, &placed, (1, 1), view, &opts);
+    // The colour as the canvas shows it (proofed).
+    screen_post(app, &mut img);
+    let [r, g, b, a] = <[u8; 4]>::try_from(img.pixels.get(..4)?).ok()?;
+    // Premultiplied over the paper.
+    let paper = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
+    let over = |c: u8, p: u8| (u32::from(c) + u32::from(p) * (255 - u32::from(a)) / 255).min(255) as u8;
+    Some([over(r, paper[0]), over(g, paper[1]), over(b, paper[2])])
 }
 
 /// Render options for the canvas texture.
@@ -230,7 +282,7 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
     if !has_worker || app.canvas.shown.is_none() || mode_changed || app.canvas.drag_active || (doc_changed && zoom_same && !app.canvas.defer_full) {
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
-        let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, w, h, view, &opts);
+        let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, (w, h), view, &opts);
         designcraft_render::images::trim_originals();
         upload(app, ctx, img);
         app.canvas.shown = Some(target);
@@ -324,7 +376,7 @@ pub(super) fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64
         * Affine::scale(sh.zoom)
         * Affine::translate((-sh.origin.x, -sh.origin.y));
     let opts = screen_options(app, layout, preview, ppp);
-    let mut img = app.canvas.patcher.render(&new, &app.session.cache, &placed, (x1 - x0) as u32, (y1 - y0) as u32, view, &opts);
+    let mut img = app.canvas.patcher.render(&new, &app.session.cache, &placed, ((x1 - x0) as u32, (y1 - y0) as u32), view, &opts);
     process_canvas_colors(app, &mut img);
     let Some(tex) = app.canvas.texture.as_mut() else { return false };
     let size = tex.size();
@@ -349,8 +401,14 @@ fn render_worker_spawn(ctx: &egui::Context) -> Option<crate::render_worker::Work
     crate::render_worker::Worker::spawn(ctx.clone())
 }
 
+/// What the canvas does to a render before showing it: Proof Colors. The texture and the
+/// eyedropper's sample both go through it.
+fn screen_post(app: &DesignApp, img: &mut designcraft_render::Rendered) {
+    process_canvas_colors(app, img);
+}
+
 fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render::Rendered) {
-    process_canvas_colors(app, &mut img);
+    screen_post(app, &mut img);
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let ci = crate::widgets::fit_texture(ci, ctx.input(|i| i.max_texture_side));
     match &mut app.canvas.texture {

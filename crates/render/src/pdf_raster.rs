@@ -1,5 +1,5 @@
 use super::types::Rendered;
-use super::*;
+use super::{Affine, Arc, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
 
 /// MIME type guess for encoded image bytes.
 /// Is this a PDF file (placed PDFs are graphics)?

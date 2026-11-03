@@ -1,4 +1,8 @@
-use super::*;
+use super::{Affine, Cache, Document, Item, Rect, SpreadRef, fx};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// How far (points) an object's soft effects reach outside its geometry.
 pub fn effect_outset(it: &Item) -> f64 {

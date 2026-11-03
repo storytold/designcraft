@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, Story, StoryId, TABLE_ANCHOR, Table};
 
 /// Append `other` to `s` as new paragraphs.
 pub(super) fn append_story(s: &mut Story, other: &Story) {

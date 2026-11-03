@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use designcraft_color::BlendMode as DcBlend;
 use designcraft_compose::{Cache, ComposedStory, ShownOn};

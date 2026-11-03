@@ -30,8 +30,7 @@ fn render_with(path: PathData, fill: bool, stroke: Stroke, xf: Affine, threads: 
         &d,
         &Cache::new(),
         &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
-        96,
-        96,
+        (96, 96),
         Affine::IDENTITY,
         &RenderOptions { paper: false, background, ..Default::default() },
     )

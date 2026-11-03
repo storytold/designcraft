@@ -1,6 +1,6 @@
 use super::graphic::Graphic;
 use super::text_frame::TextFrame;
-use super::*;
+use super::{Arc, Deserialize, Item, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]

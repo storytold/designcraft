@@ -1,6 +1,7 @@
 use super::*;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Fill, ParaFormat};
+use std::sync::atomic::AtomicU64;
 
 #[test]
 fn retained_layers_preserve_stacking_opacity_and_moved_foreground_occlusion() {
@@ -33,15 +34,14 @@ fn retained_layers_preserve_stacking_opacity_and_moved_foreground_occlusion() {
                 &d,
                 &cache,
                 &placed,
-                120,
-                100,
+                (120, 100),
                 Affine::IDENTITY,
                 &RenderOptions { slice: Some(DrawSlice { item: id, part }), ..Default::default() },
             )
         })
         .collect();
     d.item_mut(id).unwrap().xf = Affine::translate((12.0, 6.0));
-    let full = r.render(&d, &cache, &placed, 120, 100, Affine::IDENTITY, &RenderOptions::default());
+    let full = r.render(&d, &cache, &placed, (120, 100), Affine::IDENTITY, &RenderOptions::default());
     for y in 0..100usize {
         for x in 0..120usize {
             let mut px = [0u8; 4];
@@ -105,15 +105,14 @@ fn retained_grid_layers_match_a_moved_full_redraw_in_rgb_and_cmyk() {
                         &doc,
                         &cache,
                         &placed,
-                        96,
-                        80,
+                        (96, 80),
                         Affine::IDENTITY,
                         &RenderOptions { slice: Some(DrawSlice { item, part }), ..options.clone() },
                     )
                 })
                 .collect();
             doc.item_mut(item).unwrap().xf = Affine::translate((7.0, 5.0));
-            let full = renderer.render(&doc, &cache, &placed, 96, 80, Affine::IDENTITY, &options);
+            let full = renderer.render(&doc, &cache, &placed, (96, 80), Affine::IDENTITY, &options);
             for y in 0..80usize {
                 for x in 0..96usize {
                     let mut pixel = [0u8; 4];
@@ -145,11 +144,11 @@ fn cancelled_background_render_does_not_publish_partial_pixels_or_poison_next_re
     let generation = Arc::new(AtomicU64::new(2));
     let opts = RenderOptions { cancellation: Some(Cancellation { generation, expected: 1 }), ..Default::default() };
     let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
-    let cancelled = r.render(&doc, &cache, &placed, 64, 64, Affine::IDENTITY, &opts);
+    let cancelled = r.render(&doc, &cache, &placed, (64, 64), Affine::IDENTITY, &opts);
     assert!(cancelled.pixels.is_empty());
     assert_eq!(cancelled.width, 0);
     assert!(r.cmyk_view.is_none(), "a cancelled result must not enter the view cache");
-    let good = r.render(&doc, &cache, &placed, 64, 64, Affine::IDENTITY, &RenderOptions::default());
+    let good = r.render(&doc, &cache, &placed, (64, 64), Affine::IDENTITY, &RenderOptions::default());
     assert_eq!(good.pixel(20, 20), [255, 255, 255, 255]);
 }
 
@@ -162,7 +161,7 @@ fn cancelled_render_clears_a_completed_cmyk_pass_before_returning() {
     // Model cancellation after a spread's ink pass has marked the frame cacheable.
     renderer.cmyk_ran = true;
     let opts = RenderOptions { cancellation: Some(Cancellation { generation: Arc::new(AtomicU64::new(2)), expected: 1 }), ..Default::default() };
-    let image = renderer.render_uncached(&doc, &cache, &[], 64, 64, Affine::IDENTITY, &opts);
+    let image = renderer.render_uncached(&doc, &cache, &[], (64, 64), Affine::IDENTITY, &opts);
     assert!(image.pixels.is_empty());
     assert!(!renderer.cmyk_ran, "an aborted frame must clear its completed ink-pass state");
     assert!(renderer.cmyk_view.is_none());
@@ -229,11 +228,11 @@ fn very_wide_renders_do_not_panic() {
     let doc = Document::new(&NewDocument::default());
     let cache = Cache::new();
     let mut r = Renderer::new();
-    let img = r.render(&doc, &cache, &[], 70_000, 4, Affine::IDENTITY, &RenderOptions::default());
+    let img = r.render(&doc, &cache, &[], (70_000, 4), Affine::IDENTITY, &RenderOptions::default());
     assert_eq!(img.width, MAX_SIDE);
     let page = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-    let img = r.render(&doc, &cache, &page, 70_000, 64, Affine::scale(120.0), &opts);
+    let img = r.render(&doc, &cache, &page, (70_000, 64), Affine::scale(120.0), &opts);
     assert_eq!(img.width, MAX_SIDE);
     assert!(r.render_page(&doc, &cache, 0, 500.0, true, &RenderOptions::default()).is_none());
 }
@@ -847,4 +846,64 @@ fn content_crop_box_is_measured_without_rendering_the_page() {
     let want = [100.0 / 612.0, 200.0 / 792.0, 500.0 / 612.0, 697.0 / 792.0];
     assert!(frac.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{frac:?} vs {want:?}");
     assert!((size.0 - 400.0).abs() < 1e-3 && (size.1 - 497.0).abs() < 1e-3, "{size:?}");
+}
+
+/// An inline object is painted under its frame's text, as InDesign draws it: a picture
+/// whose frame reaches down into the next line (a negative Y offset) doesn't hide that line.
+#[test]
+fn inline_objects_are_painted_under_the_text() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, Shape, SpreadRef};
+    let mut d = Document::new(&NewDocument::default());
+    let (fid, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 20.0, 300.0, 300.0), d.default_layer(), "A\nWWWW", ParaFormat::default()).unwrap();
+    let mut item =
+        Item::new(ItemId(d.alloc()), d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 250.0, 60.0)));
+    item.fill = Fill::swatch(designcraft_color::swatch::PAPER);
+    d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: -40.0 }));
+    let cache = Cache::new();
+    let cs = cache.get(&d, sid, None);
+    let (ft, obj) = (&cs.frames[0], &cs.frames[0].objects[0]);
+    let l = ft.lines.iter().find(|l| l.range.start > 1).unwrap();
+    // The second line lies inside the white box.
+    assert!(obj.origin.y + obj.size.1 > l.baseline && obj.origin.y < l.baseline - l.ascent, "{:?} {}", obj.origin, l.baseline);
+    let m = d.text_xf(d.item(fid).unwrap());
+    let image = Renderer::new().render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    let (a, b) = (m * designcraft_geom::Point::new(l.x0, l.baseline - l.ascent), m * designcraft_geom::Point::new(l.end_x, l.baseline));
+    let dark =
+        (a.y as u32..b.y as u32).flat_map(|y| (a.x as u32..b.x as u32).map(move |x| (x, y))).filter(|&(x, y)| image.pixel(x, y)[0] < 100).count();
+    assert!(dark > 20, "the line's glyphs show over the box: {dark} dark pixels");
+}
+
+#[test]
+fn dotted_strokes_draw_every_dot() {
+    // A 4 pt dotted line 96 pt long: dots every 8 pt, 13 of them.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let path = designcraft_geom::shapes::line(designcraft_geom::Point::new(100.0, 400.0), designcraft_geom::Point::new(196.0, 400.0));
+    let mut line = Item::new(id, lid, designcraft_doc::Shape::GraphicLine, path);
+    line.stroke = designcraft_doc::Stroke {
+        swatch: designcraft_color::swatch::BLACK.into(),
+        weight: 4.0,
+        kind: designcraft_doc::StrokeType::Dotted,
+        ..Default::default()
+    };
+    d.insert_item(SpreadRef::Doc(0), line, None).unwrap();
+    let cache = Cache::new();
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    for i in 0..13 {
+        let x = 100 + i * 8;
+        assert!(img.pixel(x, 400)[0] < 128, "dot {i} at x={x}: {:?}", img.pixel(x, 400));
+        if i < 12 {
+            assert_eq!(img.pixel(x + 4, 400), [255, 255, 255, 255], "gap after dot {i}");
+        }
+    }
+    // Table and paragraph rules: one round dot per period.
+    let stroke = text::cell_stroke(&designcraft_doc::StrokeType::Dotted, 4.0, 96.0);
+    let edge = kurbo::Line::new((0.0, 0.0), (96.0, 0.0));
+    let outline = kurbo::stroke(kurbo::Shape::path_elements(&edge, 0.01), &stroke, &kurbo::StrokeOpts::default(), 0.01);
+    let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
+    assert_eq!(dots, 13);
 }

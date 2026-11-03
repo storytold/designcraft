@@ -1,7 +1,9 @@
 use super::asian::bool_param;
 use super::caret::hit_byte_with;
 use super::story::selection_attrs;
-use super::*;
+use super::{
+    CellAddr, CharAttrs, ParaAttrs, Result, Session, StoryId, TextSel, Value, bad, compose, floor_char_boundary, id_param, json, ok, point_param,
+};
 
 /// The Eyedropper with text selected: the formatting of the text under `point` in `frame` goes to
 /// the selection, as InDesign's does (character style and overrides on the selected characters,
@@ -160,6 +162,8 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
         }
     }
     validate_char_fill(&s.doc()?.doc, &a, "type.char")?;
+    let warnings = missing_font_warnings(&s.doc()?.doc, &a);
+    let result = if warnings.is_empty() { Value::Null } else { json!({ "warnings": warnings }) };
     let cleared: Vec<String> = attrs.as_object().map(|o| o.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect()).unwrap_or_default();
     let targets = format_targets(s);
     // A caret in text: the format is for the next typing. On an empty paragraph's hidden mark it
@@ -183,12 +187,31 @@ pub(crate) fn format_chars(s: &mut Session, attrs: &Value) -> Result<Value> {
             })?;
         }
         s.typing_format = Some(f);
-        return ok();
+        return Ok(result);
     }
     s.edit(|d, _| {
         apply_char_attrs(d, &targets, &a, &cleared);
-        ok()
+        Ok(result)
     })
+}
+
+/// A font family or style the app doesn't have is still applied, so the document keeps its name
+/// and preflight and Find Font list it, but a substitute draws the text. Say so, in preflight's
+/// words, instead of succeeding silently.
+fn missing_font_warnings(document: &designcraft_doc::Document, attrs: &CharAttrs) -> Vec<String> {
+    let Some(family) = attrs.font_family.as_deref().filter(|f| !f.trim().is_empty()) else {
+        return vec![];
+    };
+    let db = designcraft_fonts::FontDb::global().scoped(document.font_scope);
+    let style = attrs.font_style.as_deref().unwrap_or("Regular");
+    let face = db.face(family, style);
+    if !db.has_family(family) {
+        vec![format!("Missing font: {family} (using {})", face.family)]
+    } else if attrs.font_style.is_some() && !db.has_style(family, style) {
+        vec![format!("Missing font style: {family} {style} (using {} {})", face.family, face.style)]
+    } else {
+        vec![]
+    }
 }
 
 /// Kerning spaces a character from the next one, so the pair at a caret is kerned through the
@@ -1069,5 +1092,39 @@ mod size_bounds_tests {
             let e = s.execute(command, &params).expect_err("refused").to_string();
             assert!(e.contains("0.1 to 1296 pt"), "{command}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod missing_font_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// A font the app doesn't have was applied with no word about it, so a script that asked for
+    /// Courier Prime exported a PDF in the substitute and exited 0. It is still applied (preflight
+    /// and Find Font list it), and the command now says which font is missing.
+    #[test]
+    fn a_font_that_is_not_available_is_applied_with_a_warning() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
+        for (attrs, warning) in [
+            (json!({"fontFamily": "Source Serif 4", "fontStyle": "Bold"}), None),
+            (json!({"fontFamily": "Nonexistent Sans"}), Some("Missing font: Nonexistent Sans (using ")),
+            (json!({"fontFamily": "Source Serif 4", "fontStyle": "Nope"}), Some("Missing font style: Source Serif 4 Nope (using Source Serif 4 ")),
+        ] {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+            let r = s.execute("type.char", &json!({"attrs": attrs})).unwrap();
+            match warning {
+                None => assert_eq!(r, json!(null), "{attrs}"),
+                Some(w) => assert!(r["warnings"][0].as_str().is_some_and(|m| m.starts_with(w)), "{attrs}: {r}"),
+            }
+            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontFamily"], attrs["fontFamily"], "{attrs}");
+        }
+        // At a caret the font is for the next typing, and the warning is the same.
+        s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 5, "focus": 5})).unwrap();
+        let r = s.execute("type.char", &json!({"attrs": {"fontFamily": "Nonexistent Sans"}})).unwrap();
+        assert!(r["warnings"][0].as_str().is_some_and(|m| m.starts_with("Missing font: Nonexistent Sans")), "{r}");
     }
 }

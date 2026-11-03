@@ -450,8 +450,7 @@ mod tests {
             doc,
             &Cache::new(),
             &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
-            200,
-            140,
+            (200, 140),
             Affine::translate((30.0, 10.0)),
             &RenderOptions { blend_space_view: true, background: Some([180, 180, 180, 255]), ..Default::default() },
         )
@@ -597,14 +596,13 @@ mod tests {
                     &doc,
                     &cache,
                     &placed,
-                    160,
-                    120,
+                    (160, 120),
                     Affine::IDENTITY,
                     &RenderOptions { slice: Some(DrawSlice { item: selected, part }), ..opts.clone() },
                 );
                 let mut isolated = doc.clone();
                 Arc::make_mut(&mut isolated.spreads[0]).items.retain(|item| item.id == id);
-                let expected = renderer.render(&isolated, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+                let expected = renderer.render(&isolated, &cache, &placed, (160, 120), Affine::IDENTITY, &opts);
                 assert!(
                     image.pixels.iter().zip(&expected.pixels).all(|(a, b)| a.abs_diff(*b) <= 2),
                     "inconsistent CMYK {part:?} slice, full area={fill_view}"
@@ -630,26 +628,26 @@ mod tests {
             cancellation: Some(Cancellation { generation: generation.clone(), expected: 1 }),
             ..Default::default()
         };
-        let first = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        let first = renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts);
         assert_eq!(renderer.cmyk_passes, 2);
         assert!(renderer.cmyk_view.as_ref().unwrap().opts.cancellation.is_none(), "the snapshot must not retain job state");
         generation.store(2, Ordering::Relaxed);
         opts.cancellation = Some(Cancellation { generation: generation.clone(), expected: 2 });
-        assert_eq!(renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts).pixels, first.pixels);
+        assert_eq!(renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts).pixels, first.pixels);
         assert_eq!(renderer.cmyk_passes, 2, "a new live job generation reuses the same visual result");
         opts.cancellation = Some(Cancellation { generation: Arc::new(AtomicU64::new(7)), expected: 7 });
-        assert_eq!(renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts).pixels, first.pixels);
+        assert_eq!(renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts).pixels, first.pixels);
         assert_eq!(renderer.cmyk_passes, 2, "a different job owner also reuses the same visual result");
         opts.rich_black = !opts.rich_black;
-        let _ = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        let _ = renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts);
         assert_eq!(renderer.cmyk_passes, 4, "visual options still invalidate the cache");
         opts.cancellation = Some(Cancellation { generation, expected: 1 });
-        let cancelled = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        let cancelled = renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts);
         assert!(cancelled.pixels.is_empty(), "a cancelled request must not return a matching cached view");
         assert_eq!(renderer.cmyk_passes, 4);
         assert!(!renderer.cmyk_ran);
         opts.cancellation = None;
-        let _ = renderer.render(&doc, &cache, &placed, 160, 120, Affine::IDENTITY, &opts);
+        let _ = renderer.render(&doc, &cache, &placed, (160, 120), Affine::IDENTITY, &opts);
         assert_eq!(renderer.cmyk_passes, 6, "a live render still works after cancellation");
     }
 
@@ -670,8 +668,7 @@ mod tests {
             &doc,
             &Cache::new(),
             &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
-            200,
-            140,
+            (200, 140),
             Affine::translate((30.0, 10.0)),
             &cyan,
         );
@@ -730,10 +727,11 @@ mod tests {
         renderer.threads = 0;
         let placements = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
         let options = RenderOptions { paper: false, blend_space_view: true, ..Default::default() };
-        let out = renderer.render(&doc, &Cache::new(), &placements, 160, 120, Affine::IDENTITY, &options);
+        let out = renderer.render(&doc, &Cache::new(), &placements, (160, 120), Affine::IDENTITY, &options);
         assert!(out.pixel(30, 40)[3].abs_diff(64) <= 1, "half-opacity object inside a half-opacity group is quarter opaque");
-        let cmy = renderer.render(&doc, &Cache::new(), &placements, 160, 120, Affine::IDENTITY, &RenderOptions { plate: Some(4), ..options.clone() });
-        let k = renderer.render(&doc, &Cache::new(), &placements, 160, 120, Affine::IDENTITY, &RenderOptions { plate: Some(3), ..options });
+        let cmy =
+            renderer.render(&doc, &Cache::new(), &placements, (160, 120), Affine::IDENTITY, &RenderOptions { plate: Some(4), ..options.clone() });
+        let k = renderer.render(&doc, &Cache::new(), &placements, (160, 120), Affine::IDENTITY, &RenderOptions { plate: Some(3), ..options });
         for ((out, cmy), k) in out.pixels.as_chunks::<4>().0.iter().zip(cmy.pixels.as_chunks::<4>().0).zip(k.pixels.as_chunks::<4>().0) {
             assert_eq!(cmy[3], k[3], "all ink passes have the same coverage");
             assert_eq!(out[3], cmy[3], "conversion preserves coverage");

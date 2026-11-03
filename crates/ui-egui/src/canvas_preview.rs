@@ -60,7 +60,7 @@ fn render(job: Job) -> Done {
         let mut renderer = designcraft_render::Renderer::new();
         renderer.threads = 0;
         let mut image =
-            renderer.render(&job.doc, &job.cache, &[Placed { spread: job.slot.spread, xf: job.slot.xf }], w, h, view, &job.settings.options);
+            renderer.render(&job.doc, &job.cache, &[Placed { spread: job.slot.spread, xf: job.slot.xf }], (w, h), view, &job.settings.options);
         if image.width == 0 || job.settings.options.cancellation.as_ref().is_some_and(designcraft_render::Cancellation::cancelled) {
             return None;
         }

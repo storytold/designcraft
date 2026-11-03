@@ -343,7 +343,7 @@ fn the_panel_menu_follows_indesigns_order() {
     assert_eq!(h.state().session.doc().unwrap().doc.page_count(), 3);
     h.get_by_label("Insert Pages…").click();
     h.run_steps(3);
-    assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:layout.pages.insert"));
+    assert!(h.state().ui.dialog.as_ref().is_some_and(|d| d.id == "insertPages"));
 }
 
 #[test]
