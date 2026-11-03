@@ -122,7 +122,7 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
                 // Saving here would write the document without this image, losing it for good.
                 // The file it came from is still intact, so refusing leaves the user something to
                 // recover from (#1592).
-                return Err(FormatError::Io(format!(
+                return Err(FormatError::Unsaveable(format!(
                     "`{}` could not be read when this document was opened; saving would lose it. Relink or replace it first.",
                     a.name
                 )));
@@ -198,7 +198,8 @@ const MAX_ASSET_BYTES: u64 = 1 << 30;
 /// Most bytes all the entries read from one archive may expand to together.
 const MAX_TOTAL_BYTES: u64 = 4 << 30;
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses an entry that
+/// Read entry `name` of `z`, or `None` when it is missing; [`FormatError::Unreadable`] when it is
+/// present but cannot be read. Refuses an entry that
 /// expands past `limit` bytes or past what is `left` of the archive's budget, without
 /// decompressing more than that: the sizes the archive claims are not trusted.
 fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
