@@ -231,7 +231,7 @@ pub fn tool_definitions() -> Vec<Value> {
              also write it to `path`.",
             obj(
                 json!({
-                    "page": {"type": "integer", "minimum": 0, "description": "Page index, 0-based (default 0; in the desktop app default = the current page)"},
+                    "page": {"type": "integer", "minimum": 0, "description": "Page index, 0-based: page 0 renders the first page (the same page is position 1 in file.exportPdf's pages; default 0; in the desktop app default = the current page)"},
                     "scale": num("Pixels per point (default 1 = 72 ppi)"),
                     "bleed": boolean("Include the bleed area"),
                     "path": string("Also write the PNG here"),
@@ -245,7 +245,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "Export PNG",
             "Export one page as a PNG (or JPEG if the path ends in .jpg) file. Returns the path and pixel size.",
             obj(
-                json!({"path": string("Destination file"), "page": {"type": "integer", "minimum": 0, "description": "Page index, 0-based (default 0; in the desktop app default = the current page)"}, "scale": num("Pixels per point (default 2)")}),
+                json!({"path": string("Destination file"), "page": {"type": "integer", "minimum": 0, "description": "Page index, 0-based: page 0 exports the first page (the same page is position 1 in file.exportPdf's pages; default 0; in the desktop app default = the current page)"}, "scale": num("Pixels per point (default 2)")}),
                 &["path"],
             ),
             false,
