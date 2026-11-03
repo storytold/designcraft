@@ -304,6 +304,7 @@ impl<'r> Importer<'r> {
             a.shading_color = Some(self.swatch_ref(c.trim()));
         }
         a.shading_tint = tint(e.num("ParagraphShadingTint"));
+        a.shading_overprint = e.boolean("ParagraphShadingOverprint");
         let sides = |f: &dyn Fn(&str) -> String| -> Option<[f64; 4]> {
             let v = ["Top", "Left", "Bottom", "Right"].map(|s| e.num(&f(s)));
             v.iter().any(Option::is_some).then(|| v.map(|x| x.unwrap_or(0.0)))
@@ -314,6 +315,7 @@ impl<'r> Importer<'r> {
             a.border_color = Some(self.swatch_ref(c.trim()));
         }
         a.border_tint = tint(e.num("ParagraphBorderTint"));
+        a.border_overprint = e.boolean("ParagraphBorderOverprint");
         a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
         a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
         a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
@@ -329,6 +331,7 @@ impl<'r> Importer<'r> {
             a.border_gap_color = Some(self.swatch_ref(c.trim()));
         }
         a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
+        a.border_gap_overprint = e.boolean("ParagraphBorderGapOverprint");
         a.shading_corners = corners(e, "ParagraphShading");
         a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
         a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
