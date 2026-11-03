@@ -4894,6 +4894,41 @@ fn split_document_round_trips() {
     assert!(split(&back, "Part") && split(&back, "Chapter") && !split(&back, "Body"));
 }
 
+/// Export Tagging (tag and class) of paragraph and character styles comes from the style's EPUB
+/// export tag map, not another export type's, and is written back.
+#[test]
+fn export_tags_round_trip() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootCharacterStyleGroup Self="rc">
+    <CharacterStyle Self="CharacterStyle/$ID/[No character style]" Name="$ID/[No character style]"/>
+    <CharacterStyle Self="CharacterStyle/Lead" Name="Lead">
+      <StyleExportTagMap Self="cs1" ExportType="PDF" ExportTag="Artifact" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="cs2" ExportType="EPUB" ExportTag="em" ExportClass="lead" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </CharacterStyle>
+  </RootCharacterStyleGroup>
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12"/>
+    <ParagraphStyle Self="ParagraphStyle/Chapter" Name="Chapter" SplitDocument="false">
+      <StyleExportTagMap Self="ps1" ExportType="PDF" ExportTag="H1" ExportClass="" ExportAttributes=""/>
+      <StyleExportTagMap Self="ps2" ExportType="EPUB" ExportTag="h1" ExportClass="title" ExportAttributes="" SplitDocument="false" EmitCss="true"/>
+    </ParagraphStyle>
+    <ParagraphStyle Self="ParagraphStyle/Body" Name="Body"/>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(xml), &|_| None).unwrap();
+    let tag = |d: &designcraft_doc::Document, name: &str, character: bool| {
+        d.styles.export_tag(name, character).map(|t| (t.tag.clone(), t.class.clone(), t.split))
+    };
+    let check = |d: &designcraft_doc::Document| {
+        assert_eq!(tag(d, "Chapter", false), Some(("h1".into(), "title".into(), false)));
+        assert_eq!(tag(d, "Lead", true), Some(("em".into(), "lead".into(), false)));
+        assert_eq!(tag(d, "Body", false), None);
+    };
+    check(&d);
+    check(&import_idml(&export_idml(&d)).unwrap());
+}
+
 /// EPUB Export Options › Split Document: off, one style (built in or not) or the styles' export
 /// tags, read from the file's `EPubExportPreference` and written back.
 #[test]
