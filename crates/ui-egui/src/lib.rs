@@ -113,6 +113,7 @@ struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
     generation: InputGeneration,
+    starts_batch: bool,
 }
 
 /// One admitted `ui.screenshot` request. The token, path, deadline and epoch are app-owned; the

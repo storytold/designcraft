@@ -59,10 +59,12 @@ impl DesignApp {
                 _ => None,
             });
             let generation = self.input_generation();
+            let mut starts_batch = true;
             for file in std::mem::take(&mut raw.dropped_files) {
                 let path = file.path().to_string_lossy().to_string();
                 if !path.is_empty() {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation });
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch });
+                    starts_batch = false;
                 }
             }
         }

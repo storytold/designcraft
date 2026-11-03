@@ -397,7 +397,12 @@ mod tests {
         .unwrap();
         let (tx, rx) = mpsc::sync_channel(1);
         app.pdf_export.pending = Some(rx);
-        app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer, generation: app.input_generation() });
+        app.pending_drops.push(crate::PendingDrop {
+            path: path.to_string_lossy().into_owned(),
+            pointer,
+            generation: app.input_generation(),
+            starts_batch: true,
+        });
         logic_frame(&mut app, &ctx, false);
         assert_eq!(app.pending_drops.len(), 1);
         assert!(app.session.doc().unwrap().doc.spreads[0].items.is_empty());
@@ -412,6 +417,76 @@ mod tests {
         assert!((bounds.x0 - expected.x).abs() < 0.01 && (bounds.y0 - expected.y).abs() < 0.01, "{bounds:?} vs {expected:?}");
         logic_frame(&mut app, &ctx, false);
         assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1);
+    }
+
+    #[test]
+    fn pdf_export_preserves_first_frame_placement_for_each_deferred_drop_batch() {
+        #[derive(Debug)]
+        struct DroppedGraphic(std::path::PathBuf);
+        impl egui::DroppedFile for DroppedGraphic {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                std::fs::read(&self.0).map_err(|error| error.to_string())
+            }
+        }
+        for floating in [false, true] {
+            for separate_batches in [false, true] {
+                let ctx = egui::Context::default();
+                let mut app = ready_app(&ctx).unwrap();
+                let frame = app.run("frame.create", json!({"rect":[10,10,40,40]})).unwrap()["id"].as_u64().unwrap();
+                app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+                *app.view_mut().unwrap() = crate::View { zoom: 1.0, origin: designcraft_geom::Point::new(-200.0, -200.0), fitted: true, rotation: 0 };
+                let layout = designcraft_tools::CanvasLayout::new(&app.session.doc().unwrap().doc, false);
+                let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+                let point = slot.to_canvas(designcraft_geom::Point::new(20.0, 20.0));
+                let pointer = crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(point);
+                assert_eq!(crate::canvas::drop_frame(&app, Some(pointer)), Some(designcraft_doc::ItemId(frame)));
+                let dir = tempfile::tempdir().unwrap();
+                let mut files = Vec::new();
+                for name in ["first.svg", "second.svg"] {
+                    let path = dir.path().join(name);
+                    std::fs::write(
+                        &path,
+                        br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##,
+                    )
+                    .unwrap();
+                    files.push(Arc::new(DroppedGraphic(path)) as egui::DroppedFileHandle);
+                }
+                let (tx, rx) = mpsc::sync_channel(1);
+                app.pdf_export.pending = Some(rx);
+                let mut capture = |files: &[egui::DroppedFileHandle]| {
+                    if floating {
+                        app.open_dropped_files(files, Some(pointer));
+                    } else {
+                        let mut raw = egui::RawInput::default();
+                        raw.events.push(egui::Event::PointerMoved(pointer));
+                        raw.dropped_files.extend_from_slice(files);
+                        app.raw_input_hook(&ctx, &mut raw);
+                    }
+                };
+                if separate_batches {
+                    for file in &files {
+                        capture(std::slice::from_ref(file));
+                    }
+                } else {
+                    capture(&files);
+                }
+                app.replay_dropped_files();
+                assert_eq!(app.pending_drops.len(), 2, "busy export retains both drops");
+                assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1);
+                tx.send(Err("synthetic export failure".into())).unwrap();
+                app.logic(&ctx);
+                app.replay_dropped_files();
+                assert!(app.pending_drops.is_empty());
+                let doc = &app.session.doc().unwrap().doc;
+                assert_eq!(doc.spreads[0].items.len(), if separate_batches { 1 } else { 2 }, "floating={floating}, separate={separate_batches}");
+                assert!(matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+                app.replay_dropped_files();
+                assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), if separate_batches { 1 } else { 2 }, "replayed exactly once");
+            }
+        }
     }
 
     #[test]

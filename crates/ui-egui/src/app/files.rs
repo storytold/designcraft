@@ -181,13 +181,16 @@ impl DesignApp {
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
         let defer = self.pdf_export.busy();
         let generation = self.input_generation();
+        let mut starts_batch = true;
+        let mut frame_free = true;
         for f in files {
             let path = f.path().to_string_lossy().to_string();
             if !path.is_empty() {
                 if defer {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation });
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch });
+                    starts_batch = false;
                 } else {
-                    let _ = self.open_dropped_at(&path, pointer);
+                    let _ = self.place_dropped(&path, pointer, &mut frame_free);
                 }
             }
         }
@@ -199,9 +202,36 @@ impl DesignApp {
         }
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// Replay settled native drops after export, retaining each captured batch's first-frame rule.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn replay_dropped_files(&mut self) {
+        if self.pdf_export.busy() {
+            return;
+        }
+        // Placing one valid file must not invalidate later files from the captured generation.
+        let current = self.input_generation();
+        let mut frame_free = true;
+        for drop in std::mem::take(&mut self.pending_drops) {
+            if drop.starts_batch {
+                frame_free = true;
+            }
+            if drop.generation == current {
+                let _ = self.place_dropped(&drop.path, drop.pointer, &mut frame_free);
+            }
+        }
+    }
+
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
+    /// new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
+        self.place_dropped(path, pointer, &mut true)
+    }
+
+    /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
+    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
+    /// the files after it land at the pointer instead of replacing that graphic.
+    pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
         }
@@ -213,6 +243,12 @@ impl DesignApp {
             return self.open_file("file.open", json!({"path": path}));
         }
         let mut params = json!({"path": path});
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
+        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
+            o.insert("frame".into(), json!(frame.0));
+        }
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -222,7 +258,11 @@ impl DesignApp {
                 o.insert("page".into(), json!(st.doc.first_page_of_spread(si) + pi + 1));
             }
         }
-        self.open_file("file.place", params)
+        let placed = self.open_file("file.place", params);
+        if frame.is_some() && placed.is_ok() {
+            *frame_free = false;
+        }
+        placed
     }
 
     /// Queue files the operating system asked the app to open. They can arrive before the window
