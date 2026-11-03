@@ -124,8 +124,6 @@ fn can_be_value(v: &str) -> bool {
     !(v.starts_with('-') && v.len() > 1 && v.parse::<f64>().is_err())
 }
 
-/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
-/// subcommand, and the indented lines after it belong to it.
 /// Whether `sub` is a subcommand [`USAGE`] lists. Read from the usage text rather than written
 /// out again, so a subcommand added there cannot be missing here.
 fn is_subcommand(sub: &str) -> bool {
@@ -141,6 +139,8 @@ fn usage_subcommand(line: &str) -> Option<&str> {
         .and_then(|rest| rest.split_whitespace().next())
 }
 
+/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
+/// subcommand, and the indented lines after it belong to it.
 fn usage_for(sub: &str) -> String {
     let mut out = Vec::new();
     let mut keep = false;
