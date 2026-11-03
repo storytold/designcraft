@@ -13,9 +13,9 @@
 //! - Lookahead, lookbehind, atomic groups, possessive quantifiers, backreferences and `\K` are
 //!   supported. Backtracking is capped ([`BACKTRACK_LIMIT`]), so a pathological pattern stops
 //!   with an error instead of hanging.
-//! - Subroutine calls and recursion (`(?1)`, `(?R)`, `\g<name>`, `(?&name)`) are not part of the
-//!   dialect and are refused: the regex engine inlines each call while compiling, so a short
-//!   pattern whose groups call each other more than once expands exponentially.
+//! - Subroutine calls and recursion (`\g<name>`, `\g<1>`, `\g<-1>`) are not part of the dialect
+//!   and are refused: the regex engine inlines each call while compiling, so a short pattern whose
+//!   groups call each other more than once expands exponentially.
 
 use std::fmt;
 use std::ops::Range;
@@ -373,7 +373,7 @@ impl Grep {
         };
         let pat = format!("{flags}{pat}");
         // Refused before compiling: the compiler inlines every subroutine call (to a fixed depth),
-        // so `(a(?1)(?1))` costs time and memory exponential in that depth.
+        // so `(a\g<1>\g<1>)` costs time and memory exponential in that depth.
         if fancy_regex::Expr::parse_tree(&pat).is_ok_and(|t| t.contains_subroutines) {
             return Err(err("GREP: subroutine calls and recursion are not supported"));
         }
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn subroutine_calls_are_refused() {
         // Each group calls itself twice: compiling inlines 2^depth copies.
-        for p in [r"(a(?1)(?1))", r"(?<x>a\g<x>\g<x>)", r"(a|(?R))", r"(?<x>a)(?&x)", r"(a)\g<1>"] {
+        for p in [r"(a\g<1>\g<1>)", r"(?<x>a\g<x>\g<x>)", r"(?<x>a|b\g<x>)", r"(a)(b)\g<-1>", r"(a)\g<1>"] {
             let t = std::time::Instant::now();
             let e = Grep::new(p, GrepOptions::default()).unwrap_err();
             assert!(e.0.contains("subroutine"), "{p}: {e}");
