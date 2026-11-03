@@ -863,3 +863,112 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
 }
+
+/// The pages of one placed PDF: assets of their own, sharing the file's bytes.
+fn pdf_pages(d: &mut Document, data: &Arc<Vec<u8>>, pages: u32) -> Vec<AssetId> {
+    (0..pages)
+        .map(|page| {
+            let aid = AssetId(d.alloc());
+            let a = Asset { id: aid, name: "pages.pdf".into(), mime: "application/pdf".into(), data: data.clone(), page, ..Default::default() };
+            d.assets.insert(aid, Arc::new(a));
+            place(d, aid, 0.0);
+            aid
+        })
+        .collect()
+}
+
+fn meta(bytes: &[u8]) -> Value {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut s = String::new();
+    z.by_name("meta.json").unwrap().read_to_string(&mut s).unwrap();
+    serde_json::from_str(&s).unwrap()
+}
+
+/// A file placed as several pages is written once, not once per page, and its pages share one
+/// buffer again when the document is read.
+#[test]
+fn the_pages_of_a_placed_pdf_are_written_once() {
+    let mut d = Document::new(&NewDocument::default());
+    let data = Arc::new(b"%PDF-1.4 three pages".repeat(1000));
+    let pages = pdf_pages(&mut d, &data, 3);
+    assert_eq!(required_version(&d), 5);
+    let bytes = save(&d).unwrap();
+    assert_eq!(asset_entries(&bytes), 1);
+    let m = meta(&bytes);
+    assert_eq!(m["version"], 5);
+    assert_eq!(m["sharedAssets"], json!({pages[1].0.to_string(): pages[0].0, pages[2].0.to_string(): pages[0].0}));
+    let back = load(&bytes).unwrap();
+    let assets: Vec<_> = pages.iter().map(|id| back.assets[id].clone()).collect();
+    assert!(assets.iter().all(|a| *a.data == *data && Arc::ptr_eq(&a.data, &assets[0].data)));
+    assert_eq!(assets.iter().map(|a| a.page).collect::<Vec<_>>(), [0, 1, 2]);
+    // Saved again, still once.
+    assert_eq!(asset_entries(&save(&back).unwrap()), 1);
+}
+
+/// The same bytes in buffers of their own (two placements of one file read separately) are
+/// written once too; files that merely have the same length are not.
+#[test]
+fn equal_bytes_share_an_entry_and_equal_lengths_do_not() {
+    let mut d = Document::new(&NewDocument::default());
+    let one = pdf_pages(&mut d, &Arc::new(b"%PDF-1.4 aaaa".to_vec()), 1);
+    let again = pdf_pages(&mut d, &Arc::new(b"%PDF-1.4 aaaa".to_vec()), 2);
+    let other = pdf_pages(&mut d, &Arc::new(b"%PDF-1.4 bbbb".to_vec()), 1);
+    let bytes = save(&d).unwrap();
+    assert_eq!(asset_entries(&bytes), 2, "aaaa once, bbbb once");
+    let back = load(&bytes).unwrap();
+    assert_eq!(*back.assets[&again[1]].data, b"%PDF-1.4 aaaa");
+    assert_eq!(*back.assets[&other[0]].data, b"%PDF-1.4 bbbb");
+    assert!(back.assets.contains_key(&one[0]) || back.assets.contains_key(&again[0]));
+}
+
+/// A document without shared files keeps the reader it needed before, and names no shared assets.
+#[test]
+fn documents_without_shared_files_keep_their_version() {
+    let mut d = Document::new(&NewDocument::default());
+    for data in [&b"one"[..], b"three"] {
+        let aid = png_asset(&mut d, data);
+        place(&mut d, aid, 0.0);
+    }
+    assert_eq!(required_version(&d), 2);
+    let bytes = save(&d).unwrap();
+    assert_eq!(asset_entries(&bytes), 2);
+    assert_eq!(meta(&bytes)["version"], 2);
+    assert!(meta(&bytes).get("sharedAssets").is_none());
+}
+
+/// `sharedAssets` naming assets that aren't there, ones without bytes, itself, or not numbers
+/// opens the document without them, never with another file's bytes.
+#[test]
+fn hostile_shared_asset_names_are_ignored() {
+    let mut d = Document::new(&NewDocument::default());
+    let data = Arc::new(b"%PDF-1.4 x".to_vec());
+    let pages = pdf_pages(&mut d, &data, 4);
+    let bytes = save(&d).unwrap();
+    // Rewrite meta.json: page 2 from a missing asset, page 3 from itself, page 4 from page 2 (no
+    // bytes of its own), plus names that aren't asset ids.
+    let mut z = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut w = zip::ZipWriter::new(&mut out);
+        for i in 0..z.len() {
+            let mut f = z.by_index(i).unwrap();
+            let name = f.name().to_string();
+            w.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+            if name == "meta.json" {
+                let shared = json!({
+                    pages[1].0.to_string(): 999_999, pages[2].0.to_string(): pages[2].0, pages[3].0.to_string(): pages[1].0,
+                    "x": pages[0].0, "-1": pages[0].0, pages[0].0.to_string(): "first"
+                });
+                w.write_all(json!({"version": 5, "sharedAssets": shared}).to_string().as_bytes()).unwrap();
+            } else {
+                std::io::copy(&mut f, &mut w).unwrap();
+            }
+        }
+        w.finish().unwrap();
+    }
+    let back = load(&out.into_inner()).unwrap();
+    assert_eq!(*back.assets[&pages[0]].data, *data);
+    for id in &pages[1..] {
+        assert!(back.assets.get(id).is_none_or(|a| a.data.is_empty()), "{id:?}");
+    }
+}
