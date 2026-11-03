@@ -5326,6 +5326,40 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     }
 }
 
+/// Hyphenation points of `word`, remembered per set of limits: words repeat a lot. The points of
+/// a word not seen yet are worked out without holding the cache's lock, so a long word in one
+/// paragraph doesn't hold up hyphenation in others.
+fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) -> Arc<[usize]> {
+    type Words = HashMap<(hyphen::Lang, Box<str>), Arc<[usize]>>;
+    static CACHE: Mutex<Vec<(LimitsKey, Words)>> = Mutex::new(Vec::new());
+    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
+    let word_key = (lang, Box::<str>::from(word));
+    {
+        let guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pts) = guard.iter().find(|e| e.0 == key).and_then(|e| e.1.get(&word_key)) {
+            return pts.clone();
+        }
+    }
+    let pts: Arc<[usize]> = hyphen::hyphen_points_in(word, lim, lang).into();
+    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let idx = match guard.iter().position(|e| e.0 == key) {
+        Some(i) => i,
+        None => {
+            if guard.len() > 32 {
+                guard.clear();
+            }
+            guard.push((key, HashMap::new()));
+            guard.len() - 1
+        }
+    };
+    let cache = &mut guard[idx].1;
+    if cache.len() > 100_000 {
+        cache.clear();
+    }
+    cache.insert(word_key, pts.clone());
+    pts
+}
+
 fn hyphenation_points(
     text: &str,
     glyphs: &[Glyph],
@@ -5343,24 +5377,6 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
-    // Words repeat a lot: remember their points per set of limits.
-    static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
-    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
-    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let idx = match guard.iter().position(|e| e.0 == key) {
-        Some(i) => i,
-        None => {
-            if guard.len() > 32 {
-                guard.clear();
-            }
-            guard.push((key, HashMap::new()));
-            guard.len() - 1
-        }
-    };
-    let cache = &mut guard[idx].1;
-    if cache.len() > 100_000 {
-        cache.clear();
-    }
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5386,16 +5402,29 @@ fn hyphenation_points(
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
             if !is_last_word && let Some(lang) = lang {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
+                let cached;
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry((lang, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, lang).into_boxed_slice()),
+                    None => {
+                        cached = cached_hyphen_points(&lim, lang, word);
+                        &cached
+                    }
                 };
-                for &p in pts.iter() {
-                    // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
-                    if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
-                        out[k] = true;
+                if !pts.is_empty() {
+                    // char index p → byte → the first glyph whose cluster ends at that byte. Both
+                    // indexed once per word: looking each point up by scanning was quadratic in
+                    // a long word's length.
+                    let char_bytes: Vec<usize> = word.char_indices().map(|(bi, _)| bi).collect();
+                    let mut glyph_ending_at: HashMap<usize, usize> = HashMap::new();
+                    for k in (i..j).filter(|&k| glyphs[k].len > 0) {
+                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(k);
+                    }
+                    for &p in pts.iter() {
+                        let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                        if let Some(&k) = glyph_ending_at.get(&byte) {
+                            out[k] = true;
+                        }
                     }
                 }
             }
