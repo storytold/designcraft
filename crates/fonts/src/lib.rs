@@ -479,6 +479,12 @@ mod tests {
         let custom = db.face(&fam, &format!("{} {{wght:{mid}}}", light.style));
         assert!(custom.is_variable() && custom.coords.iter().any(|(t, v)| t == b"wght" && *v == mid));
         assert!(!db.styles(&fam).iter().any(|s| s.contains('{')), "instances aren't listed");
+        // Settings for axes the font hasn't got are dropped, however many a style string names.
+        let bogus: Vec<String> = (0..20_000).map(|i| format!("q{:03}:1", i % 1000)).collect();
+        let t = std::time::Instant::now();
+        let odd = db.face(&fam, &format!("{} {{wght:{mid},{}}}", light.style, bogus.join(",")));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(odd.coords.len(), custom.coords.len(), "only the font's own axes are kept");
         let static_face = db.face(DEFAULT_FAMILY, "Regular {wght:700}");
         assert_eq!(static_face.style, "Regular", "static fonts ignore axis settings");
     }
