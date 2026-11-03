@@ -96,6 +96,10 @@ impl<'a> Rules<'a> {
                 leading(right) - before_right
             } else if right == 22 {
                 trailing(left) - after_left
+            } else if self.base != Base::Chinese && closing_bracket(left) && middle_dot(right) {
+                leading(right) - before_right
+            } else if self.base != Base::Chinese && middle_dot(left) && opening(right) {
+                trailing(left) - after_left
             } else {
                 trailing(left).max(leading(right)) - after_left.max(before_right)
             }
@@ -131,10 +135,7 @@ impl<'a> Rules<'a> {
         // a closing bracket or before an opening one keeps only its own quarter em. Other
         // neighbours keep the larger blank, so a closing bracket and an opening one are half an
         // em apart. The Chinese sets keep the larger blank throughout.
-        let opening = |c| matches!(c, 1 | 26 | 27);
         let closing = |c| matches!(c, 2 | 6 | 21 | 28..=31);
-        let closing_bracket = |c| matches!(c, 2 | 28 | 29);
-        let middle_dot = |c| matches!(c, 5 | 32);
         if self.base != Base::Chinese {
             if (opening(left) && opening(right)) || (closing(left) && closing(right)) {
                 return Aki::default();
@@ -157,6 +158,16 @@ impl<'a> Rules<'a> {
         }
         Aki::default()
     }
+}
+
+fn opening(c: i16) -> bool {
+    matches!(c, 1 | 26 | 27)
+}
+fn closing_bracket(c: i16) -> bool {
+    matches!(c, 2 | 28 | 29)
+}
+fn middle_dot(c: i16) -> bool {
+    matches!(c, 5 | 32)
 }
 
 pub fn valid_class(c: i16) -> bool {
