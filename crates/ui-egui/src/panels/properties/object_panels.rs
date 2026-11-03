@@ -1,6 +1,7 @@
+use super::object::{anchor_transform_section, appearance_section};
 use super::{
-    Arrowhead, Cap, DesignApp, Join, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, icon_toggle, icons, json, measure,
-    number, pos2, sel_info, text_attrs, units, vec2, widgets,
+    Arrowhead, Cap, DesignApp, Join, SelInfo, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, full_width, icon_toggle,
+    icons, json, measure, number, outline_button, pos2, rule, section, section_row, sel_info, text_attrs, units, vec2, widgets,
 };
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
@@ -363,6 +364,37 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
     ("shape-line", "line", "Line"),
     ("shape-orthogonal", "orthogonalLine", "Orthogonal Line"),
 ];
+
+/// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
+/// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
+pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
+    anchor_transform_section(app, ui, i);
+    divider(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
+    appearance_section(app, ui, i);
+    divider(ui);
+    let mut kind = None;
+    let lang = app.ui.language.clone();
+    section_row(ui, crate::i18n::tr(&lang, "Convert Points"), |ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        // Laid out from the right: last first, so the row reads Plain … Symmetrical.
+        for (icon, k, tip) in CONVERT_POINT.iter().rev() {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
+                kind = Some(k);
+            }
+        }
+    });
+    if let Some(k) = kind {
+        let _ = app.run("path.convertPoints", json!({"kind": k}));
+    }
+    rule(ui);
+    section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
+    let fw = full_width(ui);
+    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Delete Point(s)"), fw).clicked() {
+        let _ = app.run("path.deletePoints", json!({}));
+    }
+}
 
 /// Pathfinder panel › Convert Point: (icon, kind, tooltip).
 const CONVERT_POINT: [(&str, &str, &str); 4] = [

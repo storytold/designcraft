@@ -474,3 +474,12 @@ fn deep_nodes_drop_when_replaced_or_owned_by_unwinding_continuations() {
     });
     assert!(result.is_err(), "the intentional panic must actually unwind the owned frames");
 }
+
+#[test]
+fn svg_drops_control_characters_forbidden_by_xml() {
+    let (svg, _) = to_svg("a\u{1}b\u{c}", 12.0);
+    let svg = String::from_utf8(svg).unwrap();
+    assert!(!svg.chars().any(|c| c < ' ' && !matches!(c, '\t' | '\n' | '\r')), "control character in SVG: {svg:?}");
+    // The dropped characters take no width either.
+    assert_eq!(to_svg("a\u{1}b\u{c}", 12.0).1, to_svg("ab", 12.0).1);
+}
