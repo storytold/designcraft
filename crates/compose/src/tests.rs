@@ -1051,6 +1051,47 @@ fn hidden_text_does_not_decide_whether_a_paragraph_hyphenates() {
     assert!(hyphens(true) > 0, "hidden Korean does not turn hyphenation off for the visible English");
 }
 
+/// `split_drop_cap` takes the drop cap's glyphs out of the vector, so classifying the paragraph
+/// after it ran lost that character's vote: with the Hangul and Latin counts level, dropping one
+/// Hangul character made the paragraph read as Latin and its English words took automatic hyphens
+/// (noted in review). The classification is made before the split.
+#[test]
+fn a_drop_cap_still_counts_when_a_paragraph_is_judged_korean() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    // English long enough that it really does hyphenate in a 90 pt column -- the run
+    // `hidden_text_does_not_decide_whether_a_paragraph_hyphenates` uses for the same reason. A
+    // short run leaves no hyphens whichever way the paragraph is classified, so the test would
+    // pass without testing anything (measured: it did).
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let letters = english.chars().filter(char::is_ascii_alphabetic).count();
+    // One Hangul syllable per Latin letter, so the counts are level -- which `hangul >= latin`
+    // calls Korean, and one character either way decides it.
+    let korean: String = "\u{AC00}\u{B098}\u{B2E4}\u{B77C}\u{B9C8}".chars().cycle().take(letters).collect();
+    assert_eq!(korean.chars().count(), letters, "the two counts are level at {letters}");
+    let text = format!("{korean} {english}");
+
+    let hyphens = |para: ParaAttrs| {
+        let (d, sid, _) = doc_with(&text, rect, para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+    let base = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+
+    // Level counts read as Korean, so nothing hyphenates.
+    assert_eq!(hyphens(base.clone()), 0, "level counts read as Korean");
+    // The paragraph opens on a Hangul character, so that character is the drop cap. It is still
+    // set, just larger, so the answer must not change.
+    let with_cap = ParaAttrs { drop_cap_lines: Some(2), drop_cap_chars: Some(1), ..base.clone() };
+    assert_eq!(hyphens(with_cap), 0, "a drop cap does not turn the paragraph Latin");
+
+    // And the fixture really is poised on the boundary: one Latin letter more and the English
+    // hyphenates, so the assertions above are not passing for want of any hyphen at all.
+    let tipped = format!("{korean} {english}x");
+    let (d, sid, _) = doc_with(&tipped, rect, base);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&cs).iter().any(|l| l.hyphenated), "one more Latin letter tips it and hyphens appear");
+}
+
 /// A Korean notice leaves its paragraphs at the default English language, so English
 /// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
 /// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --
