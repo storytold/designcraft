@@ -833,16 +833,31 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
 /// objects ([`wrap`]).
 /// Anchored frames are composed where their host story places them (unless `opts` places them).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
-    compose_story_at(doc, sid, opts, 0)
+    compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
-/// [`compose_story`] for a story `depth` hosts down from the story asked for.
-fn compose_story_at(doc: &Document, sid: StoryId, opts: &ComposeOptions, depth: usize) -> ComposedStory {
+/// [`compose_story`] for a story `depth` hosts down from the story asked for. `hosts` holds the
+/// hosts already composed (by story and depth) while composing the story asked for, so a host
+/// that many anchored frames lead to is composed once.
+fn compose_story_at(
+    doc: &Document,
+    sid: StoryId,
+    opts: &ComposeOptions,
+    depth: usize,
+    hosts: &mut HashMap<(StoryId, usize), Arc<ComposedStory>>,
+) -> ComposedStory {
     let others: Vec<ComposedStory> =
         wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
     let others: Vec<&ComposedStory> = others.iter().collect();
     if opts.placed.is_empty() && depth < placed::MAX_DEPTH {
-        let placed = placed::placements(doc, sid, &mut |host| Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1)));
+        let placed = placed::placements(doc, sid, &mut |host| {
+            if let Some(c) = hosts.get(&(host, depth + 1)) {
+                return c.clone();
+            }
+            let c = Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1, hosts));
+            hosts.insert((host, depth + 1), c.clone());
+            c
+        });
         if !placed.is_empty() {
             return wrap::compose_among(doc, sid, &ComposeOptions { placed, ..opts.clone() }, &others);
         }
