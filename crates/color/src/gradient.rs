@@ -276,7 +276,9 @@ mod tests {
             let g = Gradient { kind: GradientKind::Linear, stops: stops[..n].to_vec() };
             for t in [-1.0, 0.0, 0.1, 0.2, 0.25, 0.3, 0.6, 0.9, 0.93, 1.0, 2.0, f32::NAN, f32::INFINITY] {
                 // Compared as printed: a NaN offset gives NaN components on both sides.
-                let (a, b) = (format!("{:?}", g.sample(t)), format!("{:?}", sample_by_scan(&g, t)));
+                let a = format!("{:?}", g.sample_in(Some(&g.window_ends()), t));
+                let b = format!("{:?}", sample_by_scan(&g, t));
+                assert_eq!(format!("{:?}", g.sample(t)), b, "{n} stops at {t} (scan)");
                 assert_eq!(a, b, "{n} stops at {t}");
             }
         }
