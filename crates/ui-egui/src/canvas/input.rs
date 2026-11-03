@@ -1,10 +1,10 @@
+use super::caret;
 use super::column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_drag};
 use super::guides::guide_drag;
 use super::ime::{finish_pending_ime_delete, ime_event};
 use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
-use super::caret;
 use super::{
     CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Item, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, SpreadRef, Stroke,
     StrokeKind, Tokens, ToolKey, Xf, json, pos2, vec2,
