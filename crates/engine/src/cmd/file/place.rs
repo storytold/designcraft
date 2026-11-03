@@ -25,6 +25,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
     };
+    // A frame named outright is not replaced while it is locked (the selected frame is the user's own choice).
+    if let Some(fid) = crate::cmd::id_param(p, "frame")
+        && s.doc()?.doc.item(fid).is_some_and(|it| it.locked)
+    {
+        return Err(bad("file.place", "the frame is locked"));
+    }
     // A page of another layout (IDML or DesignCraft): its objects, as one group.
     let lname = name.to_lowercase();
     if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
@@ -101,12 +107,6 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         let st = s.active()?;
         st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
     });
-    // A frame named outright is not replaced while it is locked (the selected frame is the user's own choice).
-    if let Some(fid) = crate::cmd::id_param(p, "frame")
-        && s.doc()?.doc.item(fid).is_some_and(|it| it.locked)
-    {
-        return Err(bad("file.place", "the frame is locked"));
-    }
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
         Some(Value::Null) => designcraft_doc::SpreadRef::Doc(0),
