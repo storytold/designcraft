@@ -215,7 +215,8 @@ pub fn mip(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -> Op
 pub enum Mip {
     /// The level asked for.
     Ready(Arc<Pixmap>),
-    /// Still decoding; a coarser level to stretch in its place, if one is cached.
+    /// Still decoding; another cached level to draw in its place (the nearest coarser one,
+    /// else the nearest finer one), if any.
     Pending(Option<Arc<Pixmap>>),
     /// The image can't be decoded.
     Failed,
@@ -230,15 +231,17 @@ pub fn mip_now(bytes: &Arc<Vec<u8>>, page: u32, width_pt: f64, on_screen: f64) -
         return Mip::Failed;
     }
     let level = dims_of(bytes, page).map(|size| level_for(size, width_pt, on_screen));
-    if let Some(pm) = level.and_then(|l| cached_level(bytes, page, l)) {
+    // Only the exact level: building it from a finer one is left to the decode thread too.
+    if let Some(pm) = level.and_then(|l| lookup((id, page, l))) {
         return Mip::Ready(pm);
     }
     if !background::queue(bytes, page, level, width_pt, on_screen) {
         return mip(bytes, page, width_pt, on_screen).map_or(Mip::Failed, Mip::Ready);
     }
     DEFERRED.with(|d| d.set(true));
-    let coarser = level.and_then(|l| (l + 1..=MAX_LEVEL).find_map(|c| lookup((id, page, c))));
-    Mip::Pending(coarser)
+    let stand_in =
+        level.and_then(|l| (l + 1..=MAX_LEVEL).find_map(|c| lookup((id, page, c))).or_else(|| (0..l).rev().find_map(|f| lookup((id, page, f)))));
+    Mip::Pending(stand_in)
 }
 
 /// Advances each time a background decode queued by [`mip_now`] finishes.
@@ -458,6 +461,32 @@ mod tests {
         }
         assert_eq!(ready.map(|pm| pm.width()), Some(512));
         assert!(generation() > before);
+    }
+
+    #[test]
+    fn mip_now_leaves_building_a_coarser_level_to_the_decode_thread() {
+        let bytes = png(512, 512);
+        let id = Arc::as_ptr(&bytes) as usize;
+        // 512 px across 256 pt at 1 px/pt: level 0.
+        assert_eq!(mip(&bytes, 0, 256.0, 1.0).map(|pm| pm.width()), Some(512));
+        // Zoomed out to 0.25 px/pt: level 2 (128 px), not cached yet. The finer level stands in
+        // while it is built off this thread.
+        match mip_now(&bytes, 0, 256.0, 0.25) {
+            Mip::Pending(Some(pm)) => assert_eq!(pm.width(), 512),
+            Mip::Pending(None) => panic!("the cached finer level should stand in"),
+            Mip::Ready(_) => panic!("the coarser level was built on the drawing thread"),
+            Mip::Failed => panic!("decodable bytes reported as failed"),
+        }
+        let mut ready = None;
+        for _ in 0..500 {
+            if let Mip::Ready(pm) = mip_now(&bytes, 0, 256.0, 0.25) {
+                ready = Some(pm);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(ready.map(|pm| pm.width()), Some(128));
+        assert!(lookup((id, 0, 2)).is_some());
     }
 
     #[test]
