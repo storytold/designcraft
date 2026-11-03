@@ -220,6 +220,7 @@ impl<'a> Ex<'a> {
                     .attr("Size", num(ds.size))
                     .attr("Spread", num(ds.spread))
                     .attr("Opacity", pct(ds.opacity as f64))
+                    .attr("BlendMode", names::blend_out(ds.mode))
                     .attr("EffectColor", self.sw(&ds.color)),
             );
         }
