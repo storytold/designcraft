@@ -1,7 +1,18 @@
 use super::color::{HIDDEN_LAYERS, PLATE, color_of, overprints, plate_pixmap, screen_color, set_fill_paint};
 use super::pdf_raster::{is_pdf, shown_box};
 use super::types::{DisplayQuality, Frame};
-use super::*;
+use super::{
+    Affine, BezPath, BlendMode, Compose, Item, Mix, Rect, RenderContext, Renderer, Shape, StrokeAlign, StrokeType, colorize, images, kurbo,
+    pdf_layers, peniko, vello_cpu,
+};
+
+/// `stroke` as round dots `weight` wide, one every `2 × weight`. Kurbo's stroker drops
+/// zero-length dashes, so each dot is a dash a hair long, centred where the zero-length dash
+/// would be (so the path's ends get dots too).
+pub(crate) fn dotted(stroke: kurbo::Stroke, weight: f64) -> kurbo::Stroke {
+    let dot = weight * 1e-3;
+    stroke.with_dashes(dot / 2.0, [dot, weight * 2.0 - dot]).with_caps(kurbo::Cap::Round)
+}
 
 impl Renderer {
     pub(crate) fn draw_stroke(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
@@ -36,9 +47,7 @@ impl Renderer {
                     stroke = stroke.with_dashes(0.0, p);
                 }
             }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
-            }
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => stroke = dotted(stroke, st.weight),
             _ => {}
         }
         ctx.set_transform(f.view * xf);

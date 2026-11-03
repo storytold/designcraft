@@ -1,5 +1,8 @@
 use super::text::{half_field, half_field_or_clear, kerning_control, language_menu};
-use super::*;
+use super::{
+    Align, DesignApp, FIELD_H, NumField, Sense, Tokens, Ui, Value, block, caption, full_width, json, number, place, pos2, sub, text_attrs, units,
+    vec2, widgets,
+};
 
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(a) = text_attrs(app) else {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Deserialize, Point, Rect, Serialize};
 
 /// Fill: a swatch reference and tint (InDesign fills always go through swatches or unnamed colours).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
