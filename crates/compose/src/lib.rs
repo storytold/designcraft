@@ -3407,24 +3407,25 @@ fn paragraph_is_cjk(glyphs: &[Glyph]) -> bool {
 /// Is `c` CJK text (the scripts the 禁則 line-start/line-end rules are about): ideographs, kana,
 /// CJK punctuation and full/half-width forms, bopomofo, Hangul.
 fn is_cjk_char(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x1100..=0x11FF
-            | 0x2E80..=0x2FFF
-            | 0x3000..=0x30FF
-            | 0x3100..=0x318F
-            | 0x3190..=0x33FF
-            | 0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xA000..=0xA4CF
-            | 0xAC00..=0xD7AF
-            | 0xF900..=0xFAFF
-            | 0xFE30..=0xFE4F
-            | 0xFF00..=0xFFEF
-            // Extension B 以降 (U+20000..)。breaker の Han の判定と同じ範囲にして、
-            // 補助面だけの段落でも禁則の指定が効くようにする
-            | 0x20000..=0x3FFFF
-    )
+    // Hangul comes from the breaker's classification (Jamo including Extended-A/B, syllables),
+    // so the two sets agree. Bopomofo is 0x3100..=0x312F; 0x3130..=0x318F is Hangul.
+    breaker::is_hangul(c)
+        || matches!(
+            c as u32,
+            0x2E80..=0x2FFF
+                | 0x3000..=0x30FF
+                | 0x3100..=0x312F
+                | 0x3190..=0x33FF
+                | 0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xA000..=0xA4CF
+                | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE4F
+                | 0xFF00..=0xFFEF
+                // Extension B and later (U+20000..): the same range as the breaker's Han check,
+                // so the kinsoku settings apply to a paragraph of supplementary-plane text alone.
+                | 0x20000..=0x3FFFF
+        )
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).

@@ -5888,6 +5888,16 @@ fn supplementary_ideograph_paragraph_keeps_the_kinsoku_gate() {
     assert!(!is_cjk_char('A'));
 }
 
+#[test]
+fn hangul_jamo_extended_blocks_count_as_cjk() {
+    // `is_cjk_char` takes Hangul from the breaker's classification, so the syllables and the
+    // Jamo Extended-A/B blocks count as well: a Hangul-only paragraph keeps its 禁則 priority.
+    for c in ['\u{A960}', '\u{A97F}', '\u{D7B0}', '\u{D7FF}'] {
+        assert!(is_cjk_char(c), "U+{:04X} is Hangul", c as u32);
+    }
+    assert!(is_cjk_char('\u{3105}'), "bopomofo is still CJK");
+}
+
 /// Shape `text` as a one-paragraph story with the default font and styles: the glyph list the
 /// composition classifies before `split_drop_cap` and `prepend_label`.
 fn shape_for_script_test(text: &str) -> Vec<Glyph> {
