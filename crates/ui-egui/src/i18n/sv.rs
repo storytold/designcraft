@@ -2494,7 +2494,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Dismiss", "Stäng"),
     ("Show/Hide Depth Ruler", "Visa/dölj djuplinjal"),
     ("Show/Hide Paragraph Break Marks", "Visa/dölj styckeslutstecken"),
-    ("Show/Hide Style Name Column", "Visa/dölj kolumnen med formatnamn"),
+    ("Show/Hide Style Name Column", "Visa/dölj kolumnen med stilnamn"),
     ("Split Note", "Dela anteckning"),
     ("Arrangement", "Arrangemang"),
     ("All Inks", "Alla tryckfärger"),

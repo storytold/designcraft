@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::render_worker;
-use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, theme};
+use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, story_editor, theme};
 
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
@@ -410,7 +410,7 @@ impl Default for UiState {
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
             story_editor_style_column: true,
-            story_editor_style_width: crate::story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
             story_editor_paragraph_marks: false,
             color_picker_component: "r".into(),
             scripts: vec![
