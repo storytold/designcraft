@@ -64,9 +64,16 @@ pub const MAX_FILE_BYTES: u64 = 4 << 30;
 /// The whole of the regular file at `path`, at most [`MAX_FILE_BYTES`] (the path checked already).
 fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let file = std::fs::File::open(path)?;
-    if !file.metadata()?.is_file() {
+    if !std::fs::metadata(path)?.is_file() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("longer than {} bytes", MAX_FILE_BYTES)));
     }
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
