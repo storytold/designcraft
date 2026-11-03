@@ -27,6 +27,11 @@ fn story(id: &str, text: &str) -> String {
 /// right page a guide at 300 and a "Right head". Three pages: 1 alone, then 2–3. Rulers measure
 /// from each page.
 fn left_to_right_fixture() -> Vec<u8> {
+    fixture(true)
+}
+
+/// [`left_to_right_fixture`], with facing pages on or off.
+fn fixture(facing: bool) -> Vec<u8> {
     let margins = r#"<MarginPreference ColumnCount="1" ColumnGutter="12" Top="36" Bottom="36" Left="36" Right="120"/>"#;
     let page = |id: &str, x: f64, applied: bool, guide: Option<f64>| {
         let applied = if applied { r#" AppliedMaster="m1""# } else { "" };
@@ -48,7 +53,7 @@ fn left_to_right_fixture() -> Vec<u8> {
         r#"<Document {NS} Self="d" StoryList="sl sr"><idPkg:Preferences src="Resources/Preferences.xml"/><Layer Self="L1" Name="Layer 1"/><idPkg:MasterSpread src="MasterSpreads/m1.xml"/><idPkg:Spread src="Spreads/sp0.xml"/><idPkg:Spread src="Spreads/sp1.xml"/><idPkg:Story src="Stories/sl.xml"/><idPkg:Story src="Stories/sr.xml"/></Document>"#
     );
     let prefs = format!(
-        r#"<idPkg:Preferences {NS}><DocumentPreference PageWidth="400" PageHeight="600" FacingPages="true" PageBinding="LeftToRight"/><ViewPreference RulerOrigin="PageOrigin"/></idPkg:Preferences>"#
+        r#"<idPkg:Preferences {NS}><DocumentPreference PageWidth="400" PageHeight="600" FacingPages="{facing}" PageBinding="LeftToRight"/><ViewPreference RulerOrigin="PageOrigin"/></idPkg:Preferences>"#
     );
     zip_files(&[
         ("designmap.xml", &map),
@@ -108,4 +113,20 @@ fn left_to_right_right_pages_take_mirrored_margins_and_the_right_parent_page() {
     assert_right_pages_mirror_left_pages(&d);
     let again = import_idml(&export_idml(&d)).unwrap();
     assert_right_pages_mirror_left_pages(&again);
+}
+
+/// Without facing pages, a page of a two-page spread shows the parent page in its place, as in
+/// InDesign: page 3, the second page of its spread, shows the parent's second page, not the
+/// first page's items again.
+#[test]
+fn single_sided_pages_show_the_parent_page_in_their_place() {
+    let d = import_idml(&fixture(false)).unwrap();
+    assert!(d.spreads.iter().flat_map(|s| &s.pages).all(|p| p.side == PageSide::Single));
+    assert_eq!(shown_heads(&d, 0), ["Left head"], "a page alone shows the parent's first page");
+    assert_eq!(shown_heads(&d, 1), ["Left head"]);
+    assert_eq!(shown_heads(&d, 2), ["Right head"]);
+    // What the renderer draws behind each page of the second spread.
+    let (ppi, _) = d.parent_page_for(1).unwrap();
+    assert_eq!(d.shown_parent_pages(designcraft_doc::SpreadRef::Doc(1), 0), [(ppi, 0)]);
+    assert_eq!(d.shown_parent_pages(designcraft_doc::SpreadRef::Doc(1), 1), [(ppi, 1)]);
 }

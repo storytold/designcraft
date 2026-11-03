@@ -1,5 +1,5 @@
 use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::*;
+use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, document_with_pi, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -278,10 +278,10 @@ fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
     };
     let mut rest = f.definition.as_str();
     while let Some(a) = rest.find('<') {
+        let Some(b) = rest[a..].find('>') else { break };
         if a > 0 {
             block(&mut el, "CustomStringBuildingBlock", &rest[..a], "", false);
         }
-        let Some(b) = rest[a..].find('>') else { break };
         let tag = rest[a + 1..a + b].trim().trim_end_matches('/').trim();
         let attr = |k: &str| tag.find(&format!("{k}=\"")).and_then(|i| tag[i + k.len() + 2..].split('"').next()).unwrap_or("").to_string();
         match tag.split_whitespace().next().unwrap_or("") {
@@ -448,5 +448,33 @@ fn fnv(s: &str) -> u64 {
 /// Whether `root` already holds an element of this name with this `Self`. IDML references name
 /// one element, so a `Self` written twice is a broken file.
 fn has_self(root: &El, name: &str, me: &str) -> bool {
-    root.children.iter().any(|n| matches!(n, Node::El(e) if e.name == name && e.get("Self") == Some(me)))
+    root.children.iter().any(|n| matches!(n, crate::xml::Node::El(e) if e.name == name && e.get("Self") == Some(me)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xml::Node;
+
+    fn custom_text(definition: &str) -> String {
+        let f = designcraft_doc::XrefFormat { name: "x".into(), definition: definition.into() };
+        xref_format_el(0, &f)
+            .children
+            .iter()
+            .filter_map(|n| match n {
+                Node::El(e) if e.get("BlockType") == Some("CustomStringBuildingBlock") => e.get("CustomText").map(str::to_string),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn xref_format_unclosed_angle_bracket_keeps_text_once() {
+        assert_eq!(custom_text("a < b"), "a < b");
+    }
+
+    #[test]
+    fn xref_format_well_formed_keeps_custom_text() {
+        assert_eq!(custom_text("p <pageNum /> of <chapNum />"), "p  of ");
+    }
 }

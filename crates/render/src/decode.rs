@@ -1,5 +1,5 @@
 use super::pdf_raster::{is_pdf, pdf_page_size, render_pdf_page};
-use super::*;
+use super::{Pixmap, vello_cpu};
 
 /// Decode encoded image bytes into a premultiplied pixmap.
 pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {

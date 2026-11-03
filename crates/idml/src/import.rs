@@ -60,6 +60,9 @@ pub struct Imported {
     /// One line per problem that did not stop the import (a part listed in `designmap.xml` but
     /// absent from the package, …).
     pub warnings: Vec<String>,
+    /// Each story's IDML `Self` → its id in `document`, so a warning that names a story can
+    /// point at it.
+    pub story_ids: HashMap<String, StoryId>,
 }
 
 /// Import with a custom reader for linked files, reporting the problems that did not stop it.
@@ -119,6 +122,7 @@ pub fn import_idml_report_with_previews(
         ));
     }
     warnings.append(&mut im.warnings);
+    let story_ids = im.story_ids.clone();
     // `finish` resolves what needs the whole document (hyperlinks, #1446) and so reports its own
     // warnings; it is called after this append, so they come back with the document.
     let (mut document, finishing) = im.finish(&root).map_err(|e| match e {
@@ -129,7 +133,7 @@ pub fn import_idml_report_with_previews(
     warnings.extend(finishing);
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
-    Ok(Imported { document, warnings })
+    Ok(Imported { document, warnings, story_ids })
 }
 
 struct ItemCtx {
@@ -158,6 +162,14 @@ struct Importer<'r> {
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
     next_id: u64,
+    /// Cells every table in this import has reserved. One table is capped, but a file chooses
+    /// how many tables it has, so the cap has to be document-wide as well (noted in review).
+    table_cells: usize,
+    /// Tables whose size the file claimed and did not get, warned about so far. A file chooses
+    /// how many tables it has, so a line each is its own flood (noted in review).
+    table_warnings: usize,
+    /// Whether the file has already been told its tables ran out of cells between them.
+    table_budget_spent: bool,
     settings: DocSettings,
     default_margins: Option<(Margins, Columns)>,
     swatches: Vec<Swatch>,
@@ -202,6 +214,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
+    asset_index: designcraft_doc::AssetIndex,
     /// Assets read from a link path at a page and crop, so later placements of that path, page
     /// and crop reuse them unread.
     linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
@@ -239,6 +253,8 @@ struct Importer<'r> {
     /// The file's text variables (`None`: it defines none) and their Self → index.
     text_vars: Option<Vec<designcraft_doc::vars::TextVariable>>,
     text_var_ids: HashMap<String, usize>,
+    /// The Self of each cross-reference page number variable (`XrefPageNumberType`).
+    xref_page_vars: HashSet<String>,
     /// Creation and modification times (Unix seconds) from the package metadata.
     created: Option<i64>,
     modified: Option<i64>,
@@ -262,6 +278,9 @@ impl<'r> Importer<'r> {
             read_link,
             previews,
             next_id: 0,
+            table_cells: 0,
+            table_warnings: 0,
+            table_budget_spent: false,
             settings: DocSettings::default(),
             default_margins: None,
             swatches: specials,
@@ -297,6 +316,7 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            asset_index: designcraft_doc::AssetIndex::new(),
             linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
@@ -316,6 +336,7 @@ impl<'r> Importer<'r> {
             index_xrefs: Vec::new(),
             text_vars: None,
             text_var_ids: HashMap::new(),
+            xref_page_vars: HashSet::new(),
             created: None,
             modified: None,
             repaired_tab_lists: 0,
@@ -328,7 +349,7 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
-    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+    fn read_preferences(&mut self, top: &[El]) {
         // Preferences first (page size, facing pages).
         for e in top {
             match e.local() {
@@ -385,6 +406,9 @@ impl<'r> Importer<'r> {
                 _ => {}
             }
         }
+    }
+
+    fn read_composite_fonts(&mut self, top: &[El]) {
         for e in top.iter().filter(|e| e.local() == "CompositeFont") {
             let name =
                 e.get("Name").map(str::to_string).unwrap_or_else(|| unescape_id(e.get("Self").unwrap_or("").trim_start_matches("CompositeFont/")));
@@ -409,6 +433,9 @@ impl<'r> Importer<'r> {
                 .collect();
             self.styles.composite_fonts.push(designcraft_doc::cjk::CompositeFont { name, entries });
         }
+    }
+
+    fn read_cjk_tables(&mut self, top: &[El]) -> Result<()> {
         for e in top.iter().filter(|e| e.local() == "KinsokuTable") {
             if e.get("CantBeginLineChars").is_some() || e.get("CantEndLineChars").is_some() {
                 self.kinsoku.insert(
@@ -438,6 +465,13 @@ impl<'r> Importer<'r> {
                 overrides,
             });
         }
+        Ok(())
+    }
+
+    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+        self.read_preferences(top);
+        self.read_composite_fonts(top);
+        self.read_cjk_tables(top)?;
         self.graphics(top);
         self.styles(top);
         if let Some(e) = top.iter().find(|e| e.local() == "FootnoteOption") {
@@ -757,6 +791,9 @@ impl<'r> Importer<'r> {
         {
             d.settings.zero_point = zp;
         }
+        // Cross-reference text the format generates exactly is generated again; any other was
+        // typed over it and is kept (needs the destinations, resolved above).
+        d.drop_generated_xref_text();
         Ok((d, std::mem::take(&mut self.warnings)))
     }
 }
