@@ -1,5 +1,5 @@
 use super::face::FontFace;
-use super::*;
+use super::{BezPath, DrawSettings, GlyphId, MetadataProvider, Size};
 
 /// Does the face's "l" (else "I") have serifs: much wider at its foot than mid-stem? `None` when
 /// it has neither letter.

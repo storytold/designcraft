@@ -1,6 +1,6 @@
 use super::common::{bool_s, p, pct, pkg_root};
 use super::spread::margin_el;
-use super::*;
+use super::{El, Ex, PARA_BUILTINS, document, escape_id, names, num, pt, st};
 
 impl<'a> Ex<'a> {
     // ---------- Fonts.xml ----------
@@ -168,6 +168,16 @@ impl<'a> Ex<'a> {
                 .attr("SuperscriptPosition", num(a.superscript_position))
                 .attr("SubscriptSize", num(a.subscript_size))
                 .attr("SubscriptPosition", num(a.subscript_position)),
+        );
+        // InDesign always writes the document's default story preference; readers such as Okapi's IDML
+        // filter take the spread reading order from it and fail without it.
+        root.push(
+            El::new("StoryPreference")
+                .attr("OpticalMarginAlignment", "false")
+                .attr("OpticalMarginSize", "12")
+                .attr("FrameType", "TextFrameType")
+                .attr("StoryOrientation", "Horizontal")
+                .attr("StoryDirection", "LeftToRightDirection"),
         );
         document(&root)
     }

@@ -1,7 +1,10 @@
 use super::object_style::corners;
 use super::story::MAX_STORY_NESTING;
 use super::values::tint;
-use super::*;
+use super::{
+    Arc, CharAttrs, El, GridAlign, HashSet, IdmlError, Importer, Kerning, ListType, ParaAttrs, Result, SpanColumns, Story, Styles, TabStop, names,
+    st, unescape_id,
+};
 
 /// Whether sanitizing a file's tab list dropped, moved or shortened a stop. Sorting, and the `.`
 /// a char stop with no character aligns on, change nothing.
@@ -213,49 +216,7 @@ impl<'r> Importer<'r> {
             Some("true") => a.start_at = Some(None),
             _ => {}
         }
-        // Nested and GREP styles.
-        if let Some(l) = e.prop_el("AllNestedStyles") {
-            let v: Vec<designcraft_doc::NestedStyle> = l
-                .find_all("ListItem")
-                .map(|it| {
-                    let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
-                    let d = it.find("Delimiter");
-                    designcraft_doc::NestedStyle {
-                        style: self.listed_char_style_ref(&t("AppliedCharacterStyle")),
-                        through: t("Inclusive").trim() != "false",
-                        count: t("Repetition").trim().parse().unwrap_or(1),
-                        until: names::nested_until_in(d.and_then(|d| d.get("type")).unwrap_or("enumeration"), &t("Delimiter")),
-                    }
-                })
-                .collect();
-            // IDML has no drop cap style attribute: the drop cap's character style is the list's
-            // leading "through 1 Dropcap" nested style.
-            a.drop_cap_style = v.first().filter(|ns| ns.is_drop_cap()).map(|ns| ns.style.clone());
-            a.nested_styles = Some(v);
-        }
-        if let Some(l) = e.prop_el("AllNestedLineStyles") {
-            let v: Vec<designcraft_doc::NestedLineStyle> = l
-                .find_all("ListItem")
-                .map(|it| {
-                    let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
-                    designcraft_doc::NestedLineStyle {
-                        style: self.listed_char_style_ref(&t("AppliedCharacterStyle")),
-                        lines: t("LineCount").trim().parse().unwrap_or(1),
-                    }
-                })
-                .collect();
-            a.nested_line_styles = Some(v);
-        }
-        if let Some(l) = e.prop_el("AllGREPStyles") {
-            let v: Vec<designcraft_doc::GrepStyle> = l
-                .find_all("ListItem")
-                .map(|it| {
-                    let t = |k: &str| it.find(k).map(|x| x.text_content()).unwrap_or_default();
-                    designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&t("AppliedCharacterStyle")), pattern: t("GrepExpression") }
-                })
-                .collect();
-            a.grep_styles = Some(v);
-        }
+        self.read_nested_styles(e, &mut a);
         a.space_after = e.num("SpaceAfter");
         // A number, or an enumeration (Ignore) that turns it off even over a based-on style's value.
         a.same_para_style_spacing = e.prop("SameParaStyleSpacing").map(|v| v.trim().parse::<f64>().ok().filter(|v| v.is_finite()));
@@ -320,23 +281,7 @@ impl<'r> Importer<'r> {
         a.split_outside_gutter = e.num("SplitColumnOutsideGutter").filter(|v| v.is_finite());
         a.rule_above = self.rule(e, "RuleAbove");
         a.rule_below = self.rule(e, "RuleBelow");
-        if let Some(tl) = e.prop_el("TabList") {
-            let mut tabs = Vec::new();
-            for li in tl.find_all("ListItem") {
-                let get = |k: &str| li.find(k).map(|x| x.text_content());
-                tabs.push(TabStop {
-                    position: get("Position").and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0),
-                    align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
-                    leader: get("Leader").unwrap_or_default(),
-                    align_on: get("AlignmentCharacter").filter(|c| c != ".").unwrap_or_default(),
-                });
-            }
-            let sanitized = TabStop::sanitized_list(tabs.clone());
-            if tab_list_repaired(&tabs, &sanitized) {
-                self.repaired_tab_lists = self.repaired_tab_lists.saturating_add(1);
-            }
-            a.tabs = Some(sanitized);
-        }
+        a.tabs = self.read_tabs(e);
         a.list_type = e.prop("BulletsAndNumberingListType").map(|v| match v.trim() {
             "BulletList" => ListType::Bullets,
             "NumberedList" => ListType::Numbers,
@@ -359,6 +304,7 @@ impl<'r> Importer<'r> {
             a.shading_color = Some(self.swatch_ref(c.trim()));
         }
         a.shading_tint = tint(e.num("ParagraphShadingTint"));
+        a.shading_overprint = e.boolean("ParagraphShadingOverprint");
         let sides = |f: &dyn Fn(&str) -> String| -> Option<[f64; 4]> {
             let v = ["Top", "Left", "Bottom", "Right"].map(|s| e.num(&f(s)));
             v.iter().any(Option::is_some).then(|| v.map(|x| x.unwrap_or(0.0)))
@@ -369,6 +315,7 @@ impl<'r> Importer<'r> {
             a.border_color = Some(self.swatch_ref(c.trim()));
         }
         a.border_tint = tint(e.num("ParagraphBorderTint"));
+        a.border_overprint = e.boolean("ParagraphBorderOverprint");
         a.border_weights = sides(&|s| format!("ParagraphBorder{s}LineWeight"));
         a.border_offsets = sides(&|s| format!("ParagraphBorder{s}Offset"));
         a.border_type = e.prop("ParagraphBorderType").map(|v| names::stroke_type_in(v.trim()));
@@ -384,6 +331,7 @@ impl<'r> Importer<'r> {
             a.border_gap_color = Some(self.swatch_ref(c.trim()));
         }
         a.border_gap_tint = tint(e.num("ParagraphBorderGapTint"));
+        a.border_gap_overprint = e.boolean("ParagraphBorderGapOverprint");
         a.shading_corners = corners(e, "ParagraphShading");
         a.shading_width = e.prop("ParagraphShadingWidth").map(|v| names::box_width_in(v.trim()));
         a.shading_top = e.prop("ParagraphShadingTopOrigin").map(|v| names::box_top_in(v.trim()));
@@ -416,6 +364,72 @@ impl<'r> Importer<'r> {
             a.bullet_font_style = Some(if f == "Nothing" || f == "$ID/" { String::new() } else { f.trim_start_matches("$ID/").to_string() });
         }
         a
+    }
+
+    fn read_nested_styles(&self, e: &El, attrs: &mut ParaAttrs) {
+        if let Some(list) = e.prop_el("AllNestedStyles") {
+            let styles: Vec<designcraft_doc::NestedStyle> = list
+                .find_all("ListItem")
+                .map(|item| {
+                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
+                    let delimiter = item.find("Delimiter");
+                    designcraft_doc::NestedStyle {
+                        style: self.listed_char_style_ref(&text("AppliedCharacterStyle")),
+                        through: text("Inclusive").trim() != "false",
+                        count: text("Repetition").trim().parse().unwrap_or(1),
+                        until: names::nested_until_in(delimiter.and_then(|element| element.get("type")).unwrap_or("enumeration"), &text("Delimiter")),
+                    }
+                })
+                .collect();
+            // IDML has no drop cap style attribute: the drop cap's character style is the list's
+            // leading "through 1 Dropcap" nested style.
+            attrs.drop_cap_style = styles.first().filter(|style| style.is_drop_cap()).map(|style| style.style.clone());
+            attrs.nested_styles = Some(styles);
+        }
+        if let Some(list) = e.prop_el("AllNestedLineStyles") {
+            let styles = list
+                .find_all("ListItem")
+                .map(|item| {
+                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
+                    designcraft_doc::NestedLineStyle {
+                        style: self.listed_char_style_ref(&text("AppliedCharacterStyle")),
+                        lines: text("LineCount").trim().parse().unwrap_or(1),
+                    }
+                })
+                .collect();
+            attrs.nested_line_styles = Some(styles);
+        }
+        if let Some(list) = e.prop_el("AllGREPStyles") {
+            let styles = list
+                .find_all("ListItem")
+                .map(|item| {
+                    let text = |key: &str| item.find(key).map(|element| element.text_content()).unwrap_or_default();
+                    designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&text("AppliedCharacterStyle")), pattern: text("GrepExpression") }
+                })
+                .collect();
+            attrs.grep_styles = Some(styles);
+        }
+    }
+
+    fn read_tabs(&mut self, e: &El) -> Option<Vec<TabStop>> {
+        let list = e.prop_el("TabList")?;
+        let tabs: Vec<_> = list
+            .find_all("ListItem")
+            .map(|item| {
+                let get = |key: &str| item.find(key).map(|element| element.text_content());
+                TabStop {
+                    position: get("Position").and_then(|value| value.trim().parse::<f64>().ok()).filter(|value| value.is_finite()).unwrap_or(0.0),
+                    align: names::tab_align_in(get("Alignment").unwrap_or_default().trim()),
+                    leader: get("Leader").unwrap_or_default(),
+                    align_on: get("AlignmentCharacter").filter(|character| character != ".").unwrap_or_default(),
+                }
+            })
+            .collect();
+        let sanitized = TabStop::sanitized_list(tabs.clone());
+        if tab_list_repaired(&tabs, &sanitized) {
+            self.repaired_tab_lists = self.repaired_tab_lists.saturating_add(1);
+        }
+        Some(sanitized)
     }
 }
 
