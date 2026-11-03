@@ -28,6 +28,36 @@ fn exports_valid_package_in_reading_order() {
 
 /// #766: anchored graphics are exported where they are anchored (inline in the text, an
 /// above-line object as a block of its own), and their images go into the package.
+/// Many footnotes and endnotes each export with their own text, in reference order.
+#[test]
+fn many_notes_keep_their_own_text() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 400.0), lid, "x", ParaFormat::default()).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    for i in 0..300 {
+        let end = st.len();
+        st.insert_note(end, &format!("foot{i}z"), ParaFormat::default());
+        let end = st.len();
+        st.insert_endnote(end, &format!("end{i}z"), ParaFormat::default());
+    }
+    let html = export_html(&d, &HtmlOptions::default());
+    let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert!(at("foot0z") < at("foot1z") && at("foot298z") < at("foot299z"));
+    assert!(at("end0z") < at("end1z") && at("end298z") < at("end299z"));
+}
+
+/// A huge title is cut before it is copied into every content file.
+#[test]
+fn a_huge_title_is_capped() {
+    let d = tables_and_notes();
+    let opts = EpubOptions { title: Some("T".repeat(5000)), ..EpubOptions::default() };
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(&d, &opts).unwrap())).unwrap();
+    let mut s = String::new();
+    z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut s).unwrap();
+    assert!(s.contains(&"T".repeat(1024)) && !s.contains(&"T".repeat(1025)), "{}", s.len());
+}
+
 #[test]
 fn anchored_objects_are_exported_in_place() {
     let mut d = Document::new(&NewDocument::default());
