@@ -172,9 +172,6 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if matches!(id, "app.cellOptionsDialog" | "app.diagonalLinesDialog") {
         return enabled(app, "table.setCell");
     }
-    if id == "app.graphicCell" {
-        return enabled(app, "table.placeGraphic");
-    }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
     }

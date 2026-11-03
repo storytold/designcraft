@@ -486,7 +486,7 @@ fn cell_options_menu_items_need_a_table_target() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
-    let items = ["app.cellOptionsDialog", "app.diagonalLinesDialog", "app.graphicCell"];
+    let items = ["app.cellOptionsDialog", "app.diagonalLinesDialog"];
     for id in items {
         assert!(!crate::menus::menu_enabled(&app, id), "{id} without a table");
     }
