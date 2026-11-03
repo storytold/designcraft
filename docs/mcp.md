@@ -117,6 +117,10 @@ config works across the suite) keep the agent to the folders you give it:
   `file.package`, `links.copyTo` and `file.recovery.save` / `file.recovery.open` with a `dir`
   (reopening removes the entries it read). `file.package` and `links.copyTo` check their folder
   before they create anything.
+- `book.paginate` and `book.syncStyles` rewrite a book's chapters, so they also refuse, before
+  writing anything, while a chapter they would rewrite lies outside the book's own folder (links
+  resolved), unless given `{"allowOutside": true}`. `book.outsideFolder` lists those chapters to
+  ask about first (#1597). Consent covers the book's folder only: it never gets past a write root.
 - Each flag may be given more than once (#1552): a path inside any of the read roots may be read,
   one inside any of the write roots written, so one session can read a project folder and a shared
   assets folder, or write to an output folder and a scratch folder, without widening a root to
