@@ -3325,15 +3325,22 @@ pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptio
             continue;
         }
         // Vertical bands of the paragraphs whose lines cross this gutter.
+        // Grouped by paragraph through an index, in first-seen order: searching the bands for
+        // each line was quadratic in the number of paragraphs.
         let mut spans: Vec<(usize, f64, f64)> = Vec::new();
+        let mut band_of: HashMap<usize, usize> = HashMap::new();
         for l in lines.iter().filter(|l| l.x0 < cx && l.x1 > cx) {
             let (t, z) = (l.baseline - l.ascent, l.baseline + l.descent);
-            match spans.iter_mut().find(|s| s.0 == l.para) {
-                Some(s) => {
+            match band_of.get(&l.para) {
+                Some(&k) => {
+                    let s = &mut spans[k];
                     s.1 = s.1.min(t);
                     s.2 = s.2.max(z);
                 }
-                None => spans.push((l.para, t, z)),
+                None => {
+                    band_of.insert(l.para, spans.len());
+                    spans.push((l.para, t, z));
+                }
             }
         }
         spans.sort_by(|p, q| p.1.total_cmp(&q.1));
