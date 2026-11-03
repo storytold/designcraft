@@ -315,7 +315,8 @@ fn fit_widths(natural: &[f32], grow: &[f32], room: f32) -> Vec<f32> {
 }
 
 /// A striped table whose columns open at [`fit_widths`], so it fills the width and nothing scrolls
-/// sideways. Each column can be dragged wider or narrower at its edge. The last column fills
+/// sideways. Each column but the last can be dragged wider or narrower at its right edge; the last
+/// is resized by dragging the edge before it. The last column fills
 /// whatever width is left but never shrinks below its opening width, so widening a column grows
 /// the table, as in a spreadsheet, instead of crushing the last one: only a table dragged wider
 /// than the window scrolls sideways. Text too long for its column is clipped.
