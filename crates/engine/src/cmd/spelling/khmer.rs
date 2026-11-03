@@ -1,5 +1,5 @@
 //! Engine adapter for craft-khmer. Repetition and honorific handling adapted from
-//! craft-libs crates/proof/src/km.rs (MIT), revision 6be86aa0f8f7183a01d238a225e77221ce9111ea.
+//! craft-libs crates/proof/src/km.rs (MIT), revision 2322f68f2e24bebb6e89e8333de3bbb7d02d1704.
 //! The shared library owns segmentation, dictionaries and preferred-form rules.
 
 use super::ProofIssue;

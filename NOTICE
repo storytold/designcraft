@@ -227,12 +227,19 @@ Khmer language engine and optional language data
 Shared craft-khmer is adapted from SBBIC Khmer’s Aksara at
 31740e9d51d38171ae6119fc2d18a4a18fbfb2f1. The unchanged data is an optional,
 hash-verified build input; no publisher documents or additional fonts are bundled.
-The boundary-aware justification design was informed by visarutforthaipbs’s
+SBBIC identifies internal work, the SEAlang frequency lists
+(http://sealang.net/project/list/) and SIL NRSI’s Khmer line-breaking dictionary
+(https://github.com/silnrsi/khmerlbdict) as sources. These materials are MIT
+licensed; their copyright and permission notices follow. Builds without
+CRAFT_KHMER_DIR omit this data. See docs/khmer.md for provenance and its limits.
+The attached-glyph protection in composition was informed by visarutforthaipbs’s
 DesignCraft #516. Shared-core contributions are credited in craft-khmer.
 
 MIT License
 
 Copyright (c) 2025 SBBIC Khmer
+Copyright (c) 2015 SIL NRSI
+Copyright (c) 2010, Doug Cooper
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

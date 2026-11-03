@@ -1078,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "craft-khmer"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6be86aa0f8f7183a01d238a225e77221ce9111ea#6be86aa0f8f7183a01d238a225e77221ce9111ea"
+source = "git+https://github.com/storytold/craft-libs?rev=2322f68f2e24bebb6e89e8333de3bbb7d02d1704#2322f68f2e24bebb6e89e8333de3bbb7d02d1704"
 dependencies = [
  "brotli",
  "brotli-decompressor",

@@ -205,7 +205,8 @@ fn apply(app: &mut DesignApp, d: &mut Dialog) -> Result<Value, String> {
 }
 
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
-    let Some(mut d) = app.ui.dialog.clone() else { return };
+    // Taken, not cloned: a book's findings would otherwise be copied on every frame.
+    let Some(mut d) = app.ui.dialog.take() else { return };
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
     let mut action = None;
@@ -321,16 +322,14 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
             close = true;
         }
     });
+    if let Some(action) = action.filter(|_| !close) {
+        d.fields.insert("action".into(), json!(action));
+    }
+    app.ui.dialog = Some(d);
     if close {
         crate::dialogs::cancel(app);
-    } else {
-        if let Some(action) = action {
-            d.fields.insert("action".into(), json!(action));
-        }
-        app.ui.dialog = Some(d);
-        if action.is_some() {
-            let _ = crate::dialogs::confirm(app);
-        }
+    } else if action.is_some() {
+        let _ = crate::dialogs::confirm(app);
     }
 }
 

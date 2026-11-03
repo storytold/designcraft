@@ -53,6 +53,8 @@ pub(crate) use rulers::fmt_tick;
 use rulers::ruler_pieces;
 use rulers::{draw_rulers, ruler_units_menus};
 use scroll::{mods, navigation_space, scrollbars, spring_zoom_mode};
+#[cfg(test)]
+use text_overlay::dynamic_misspellings;
 pub use text_overlay::selected_text;
 use text_overlay::{draw_dynamic_spelling, draw_hidden_characters};
 #[cfg(test)]
