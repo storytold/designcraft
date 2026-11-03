@@ -65,11 +65,30 @@ fn outside_book_folder(b: &Book) -> Vec<String> {
     let Some(folder) = chapter(b, "-").ok().and_then(|p| std::path::Path::new(&p).parent().map(std::path::Path::to_path_buf)) else {
         return b.documents.clone();
     };
+    let folder = real_location(&folder);
     b.documents
         .iter()
-        .filter(|named| chapter(b, named).map(|resolved| !std::path::Path::new(&resolved).starts_with(&folder)).unwrap_or(true))
+        .filter(|named| chapter(b, named).map(|resolved| !real_location(std::path::Path::new(&resolved)).starts_with(&folder)).unwrap_or(true))
         .cloned()
         .collect()
+}
+
+/// Where a write to `path` lands, with links resolved: the file's own if it exists, else its
+/// folder's with the name joined, else `path` as written.
+///
+/// Names alone are not where an update writes. A chapter named `chapters/x.designcraft` inside the
+/// book's folder, where `chapters` is a link to `~/Documents`, is the user's own file, and so is
+/// a chapter file that is itself a link out; both read as inside by name (noted in review). The
+/// book's folder is resolved the same way, since it can sit behind a link too (`/tmp` is one on
+/// macOS).
+#[cfg(not(target_arch = "wasm32"))]
+fn real_location(path: &std::path::Path) -> std::path::PathBuf {
+    crate::io::canonicalize(path)
+        .or_else(|_| match (path.parent(), path.file_name()) {
+            (Some(dir), Some(name)) => crate::io::canonicalize(dir).map(|d| d.join(name)),
+            _ => Err(std::io::Error::other("no folder to resolve")),
+        })
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Every chapter's file ([`chapter`]), in order.
@@ -101,7 +120,6 @@ const MAX_BATCH_CHAPTERS: usize = 4096;
 /// only the peak that budget is a third of. A chapter is also generated in full before it is
 /// weighed, so a single chapter larger than this is built and only then refused -- the peak is
 /// not bounded before generation (noted in review).
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_BOOK_PDF_BYTES: usize = 512 << 20;
 
 /// What the retained chapters may add up to: a third of [`MAX_BOOK_PDF_BYTES`], because three
@@ -115,7 +133,6 @@ const MAX_BOOK_PDF_BYTES: usize = 512 << 20;
 /// and chapters that share nothing have no reason to dedupe at all, so the assumption is not
 /// established in general. This is a retained-chapter byte limit, not a guaranteed peak (noted in
 /// review).
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_BOOK_CHAPTER_BYTES: usize = MAX_BOOK_PDF_BYTES / 3;
 
 /// The two figures have to move together: if the chapters' budget is ever raised without the peak
@@ -125,7 +142,6 @@ const MAX_BOOK_CHAPTER_BYTES: usize = MAX_BOOK_PDF_BYTES / 3;
 /// Checked here rather than in a test: `assertions_on_constants` refuses these in a test body
 /// (the gate runs clippy with `-D warnings`), and a `const` block evaluates them in every build
 /// instead of only under `cargo test` (noted in review).
-#[cfg(not(target_arch = "wasm32"))]
 const _: () = {
     assert!(MAX_BOOK_CHAPTER_BYTES * 3 <= MAX_BOOK_PDF_BYTES, "three times the chapter budget is within the peak");
     assert!((MAX_BOOK_CHAPTER_BYTES + 1) * 3 > MAX_BOOK_PDF_BYTES, "and it is as much as a third allows, not less");

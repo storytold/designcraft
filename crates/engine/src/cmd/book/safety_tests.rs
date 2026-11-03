@@ -89,3 +89,37 @@ fn a_relative_book_path_still_knows_which_chapters_are_beside_it() {
     let b = Book { path: "../dc-book-away/Guide.dcbook".into(), documents: vec![beside.clone(), away], style_source: 0 };
     assert_eq!(outside_book_folder(&b), vec![beside], "the book's own folder is what counts");
 }
+
+/// A chapter is judged by where a write to it lands, not by its name: a folder inside the book's
+/// that is a link out, or a chapter file that is one, is reported, and a link that stays inside
+/// the book's folder is not (noted in review).
+#[cfg(unix)]
+#[test]
+fn a_chapter_reached_through_a_link_is_judged_by_where_the_link_goes() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let (book, outside) = (root.path().join("book"), root.path().join("outside"));
+    std::fs::create_dir_all(book.join("sub")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    for f in [book.join("ch1.designcraft"), book.join("sub").join("ch2.designcraft"), outside.join("mine.designcraft")] {
+        std::fs::write(f, b"").unwrap();
+    }
+    symlink(&outside, book.join("linked")).unwrap(); // a folder that leads out
+    symlink(outside.join("mine.designcraft"), book.join("alias.designcraft")).unwrap(); // a file that does
+    symlink(book.join("sub"), book.join("inner")).unwrap(); // a folder that stays in
+
+    let named = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+    let (linked, alias) = (named(book.join("linked").join("mine.designcraft")), named(book.join("alias.designcraft")));
+    let b = Book {
+        path: named(book.join("Guide.dcbook")),
+        documents: vec![
+            named(book.join("ch1.designcraft")),
+            linked.clone(),
+            alias.clone(),
+            named(book.join("inner").join("ch2.designcraft")),
+            named(book.join("sub").join("not-yet.designcraft")),
+        ],
+        style_source: 0,
+    };
+    assert_eq!(outside_book_folder(&b), vec![linked, alias], "the two links out, and nothing that stays inside");
+}
