@@ -1976,7 +1976,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("% of all commits", "% de todos os commits"),
     ("(any)", "(qualquer)"),
     ("(unchanged)", "(inalterado)"),
-    ("/1000 em", "/1000 eme"),
     ("1 Parent Character", "1 caractere base"),
     ("1 Ruby Character", "1 caractere ruby"),
     ("1 Ruby Character Aki", "Aki de 1 caractere ruby"),
@@ -2635,7 +2634,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("“{}” has changes that are not saved. Save them before closing?", "“{}” tem alterações não salvas. Salvá-las antes de fechar?"),
     ("Close Window", "Fechar janela"),
     ("Deselect Guides", "Desmarcar guias"),
-    ("Import InDesign Set…", "Importar conjunto do InDesign…"),
     ("Import InDesign Shortcut Set", "Importar conjunto de atalhos do InDesign"),
     (
         "Imported {count} shortcuts from “{set}”; {unmatched} items not matched, {unreadable} unreadable.",

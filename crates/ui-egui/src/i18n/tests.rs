@@ -470,6 +470,14 @@ fn interface_strings() -> HashSet<&'static str> {
     keys.extend(crate::new_document::NEW_DOCUMENT_UNITS.map(|unit| unit.label()));
     // UI labels passed to `tr` that no other catalog has yet.
     keys.extend([
+        "Auto-Sizing",
+        "Color Theme",
+        "Imported {count} shortcuts from “{set}”; {unmatched} items not matched, {unreadable} unreadable.",
+        "Minimum Height",
+        "Minimum Width",
+        "No Line Breaks",
+        "Reference Point",
+        "This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts.",
         "180°",
         "Create Links When Placing Text Files",
         "Delete Character Style…",

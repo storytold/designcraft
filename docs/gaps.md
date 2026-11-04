@@ -275,7 +275,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,574 of 2,941 strings (61% → 88%) |
+| 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,572 of 2,939 strings (61% → 88%) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
 | 2026-10-19 | minor | Gap 28 added for remaining placed-PDF font embedding, substitution or outlining; visible unembedded font detection now ships in PDF/X-4 export and `validate-pdf`, with invisible text exempt and operation- or depth-limited checks reported incomplete (#909) |
 | 2026-10-16 | minor | Gap 27 closed: the loaded text cursor threads into a text frame inside a group (#1075) |
