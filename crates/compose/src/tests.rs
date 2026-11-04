@@ -5237,6 +5237,26 @@ fn arabic_explicit_isolated_forms_disable_contextual_joining() {
     }
 }
 
+/// A custom glyph keeps the glyph its name picks in right-to-left text, also when the character
+/// it draws is one bidi mirrors (a single guillemet): mirroring used to swap in the font's glyph
+/// for the mirrored character.
+#[test]
+fn right_to_left_text_does_not_mirror_a_custom_glyph() {
+    use designcraft_doc::arabic::CharacterDirection as D;
+    let glyph = designcraft_doc::story::CUSTOM_GLYPH;
+    let text = format!("{glyph}123");
+    let gs = custom_glyph_glyphs(&text, Some((0, "guilsinglleft")), |d, sid| {
+        let len = d.story(sid).unwrap().text.len();
+        d.story_mut(sid).unwrap().format_chars(0..len, |f| f.over.character_direction = Some(D::RightToLeft));
+    });
+    let g = gs.iter().find(|g| g.byte == 0).unwrap();
+    let face = g.face.get();
+    let named = face.glyph_by_name("guilsinglleft");
+    assert_ne!(named, 0, "the font names its single guillemet");
+    assert_eq!(face.char_for_glyph(named), Some('\u{2039}'), "it draws a mirrored character");
+    assert_eq!(g.gid, named, "{g:?}");
+}
+
 #[test]
 fn arabic_character_overrides_mirror_brackets_using_final_levels() {
     use designcraft_doc::arabic::CharacterDirection as D;
