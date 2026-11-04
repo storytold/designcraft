@@ -1197,10 +1197,26 @@ fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId,
         anchors.insert(a.id, base + k);
         Arc::make_mut(a).id = base + k;
     }
-    anchors.extend(copied_anchors(dst, src, stories));
-    retarget_copies(dst, src, stories, &anchors);
-    remap_xrefs(st, &anchors, 0);
+    // Earlier copies change only when this story brings anchors, and this story only when it holds cross-references.
+    let own = !anchors.is_empty();
+    if own || has_xrefs(st, 0) {
+        anchors.extend(copied_anchors(dst, src, stories));
+        if own {
+            retarget_copies(dst, src, stories, &anchors);
+        }
+        remap_xrefs(st, &anchors, 0);
+    }
     renumber_tables(dst, st, 0)
+}
+
+/// Whether `st`, or a story of its table cells and notes down to [`MAX_COPY_DEPTH`] levels, holds a cross-reference.
+fn has_xrefs(st: &Story, depth: usize) -> bool {
+    if !st.xrefs.is_empty() {
+        return true;
+    }
+    depth < MAX_COPY_DEPTH
+        && (st.tables.values().any(|t| t.cells.iter().any(|c| has_xrefs(&c.text, depth + 1)))
+            || st.notes.iter().chain(&st.endnotes).any(|n| has_xrefs(&n.text, depth + 1)))
 }
 
 /// The anchor ids of the stories of `src` that `stories` maps, each to the id of its copy's anchor in `dst`.
