@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (the overset rule matches InDesign: the last line's baseline must fit (#180); German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -45,7 +45,7 @@ Fidelity: **unmeasured** unless stated.
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
-| Frame fit / overset | baseline of the last line must fit | baseline of the last line must fit | ✓ | same (#180) |
+| Frame fit / overset | baseline of the last line must fit | baseline of the last line must fit | ✓ | same (#180) for rectangular horizontal frames; shaped and vertical frames, frames with footnotes and lines with inline anchored objects still need the descenders to fit |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
@@ -92,3 +92,4 @@ Measured from the table above (2026-10-29): 37 rows, 19 ✓, 18 ~, 0 ✗, scorin
 |---|---|---|
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
+| 2026-11-04 | minor | Frame fit: the last line's baseline must fit, as in InDesign (#180); checklist recount |
