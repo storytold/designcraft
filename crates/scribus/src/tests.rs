@@ -299,3 +299,102 @@ fn hostile_numbers_are_ignored_rather_than_corrupting_the_document() {
     assert_eq!(rot.xf.as_coeffs()[1], 0.0, "inf rotation reads as 0");
     assert_eq!(rot.xf.as_coeffs()[4], -100.0, "1e999 is absent; 0 - 100 remains");
 }
+
+#[test]
+fn story_and_paragraph_alignment_overrides_are_imported() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <ParagraphStyle Name="pBody" Alignment="3" LineSpacing="16"/>
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="10" YPosition="10" OwnPage="0" ItemID="1" ItemType="4" Width="80" Height="40" FrameType="0"
+        AutoName="numbers" Columns="1" ColumnGap="0" TextToFrameDistanceLeft="0" TextToFrameDistanceTop="0"
+        TextToFrameDistanceBottom="0" TextToFrameDistanceRight="0" VerticalAlignment="0" TextPathType="0" TextPathFlipped="0"
+        Path="M0 0 L80 0 L80 40 L0 40 L0 0 Z" ContourLinePath="M0 0 L80 0 L80 40 L0 40 L0 0 Z" Layer="0" NextItem="-1" BackItem="-1">
+        <StoryText>
+          <DefaultStyle Parent="pBody" Alignment="2"/>
+          <Content Chars="12"/>
+          <trail Parent="pBody" Alignment="2"/>
+        </StoryText>
+      </PageObject>
+      <PageObject XPosition="10" YPosition="60" OwnPage="0" ItemID="2" ItemType="4" Width="80" Height="40" FrameType="0"
+        AutoName="signature" Columns="1" ColumnGap="0" TextToFrameDistanceLeft="0" TextToFrameDistanceTop="0"
+        TextToFrameDistanceBottom="0" TextToFrameDistanceRight="0" VerticalAlignment="0" TextPathType="0" TextPathFlipped="0"
+        Path="M0 0 L80 0 L80 40 L0 40 L0 0 Z" ContourLinePath="M0 0 L80 0 L80 40 L0 40 L0 0 Z" Layer="0" NextItem="-1" BackItem="-1">
+        <StoryText>
+          <DefaultStyle Parent="pBody"/>
+          <Content Chars="Name"/>
+          <para Parent="pBody" Alignment="2"/>
+          <Content Chars="Place"/>
+          <trail Parent="pBody"/>
+        </StoryText>
+      </PageObject>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    let story = |text: &str| d.stories.values().find(|s| s.text.starts_with(text)).unwrap_or_else(|| panic!("{text} story"));
+    let numbers = story("12");
+    assert_eq!(
+        d.styles.resolve_para(&numbers.paras[0]).0.align,
+        designcraft_doc::Align::Right,
+        "the story DefaultStyle carries the alignment (page-number masters)"
+    );
+    let signature = story("Name");
+    assert_eq!(
+        d.styles.resolve_para(&signature.paras[0]).0.align,
+        designcraft_doc::Align::Right,
+        "a trailing <para> names the paragraph before it and its overrides"
+    );
+    assert_eq!(d.styles.resolve_para(&signature.paras[1]).0.align, designcraft_doc::Align::LeftJustified, "pBody is block");
+}
+
+#[test]
+fn image_rotation_turns_counter_clockwise() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="0" YPosition="0" OwnPage="0" ItemID="1" ItemType="2" Width="50" Height="50" FrameType="0"
+        ImageScaleX="1" ImageScaleY="1" ImageOffsetX="0" ImageOffsetY="0" ImageRotation="90" ImageFileName="pic.png"
+        Path="M0 0 L50 0 L50 50 L0 50 L0 0 Z" ContourLinePath="M0 0 L50 0 L50 50 L0 50 L0 0 Z" Layer="0"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus_with(xml.as_bytes(), &|_| Some(vec![0u8])).expect("imports");
+    let g = d.spreads[0].items[0].graphic().expect("graphic");
+    let c = g.xf.as_coeffs();
+    // In the y-down page space a counter-clockwise quarter turn maps (1, 0) to (0, -1).
+    assert!((c[1] + 1.0).abs() < 1e-9, "rotation turns counter-clockwise: {c:?}");
+    assert!((c[2] - 1.0).abs() < 1e-9, "{c:?}");
+}
+
+/// A JPEG carrying only an APP1 `Exif` segment with the given orientation tag.
+fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+    let mut tiff = Vec::new();
+    tiff.extend(b"II");
+    tiff.extend(42u16.to_le_bytes());
+    tiff.extend(8u32.to_le_bytes());
+    tiff.extend(1u16.to_le_bytes());
+    tiff.extend(0x0112u16.to_le_bytes());
+    tiff.extend(3u16.to_le_bytes());
+    tiff.extend(1u32.to_le_bytes());
+    tiff.extend(orientation.to_le_bytes());
+    tiff.extend([0u8; 2]);
+    tiff.extend(0u32.to_le_bytes());
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    let len = (2 + 6 + tiff.len()) as u16;
+    jpeg.extend(len.to_be_bytes());
+    jpeg.extend(b"Exif\0\0");
+    jpeg.extend(tiff);
+    jpeg.extend([0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn exif_orientation_turns_the_picture_upright() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="0" YPosition="0" OwnPage="0" ItemID="1" ItemType="2" Width="80" Height="50" FrameType="0"
+        ImageScaleX="1" ImageScaleY="1" ImageOffsetX="0" ImageOffsetY="0" ImageRotation="0" ImageFileName="pic.jpg"
+        Path="M0 0 L80 0 L80 50 L0 50 L0 0 Z" ContourLinePath="M0 0 L80 0 L80 50 L0 50 L0 0 Z" Layer="0"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let jpeg = jpeg_with_orientation(6);
+    let d = import_scribus_with(xml.as_bytes(), &|_| Some(jpeg.clone())).expect("imports");
+    let g = d.spreads[0].items[0].graphic().expect("graphic");
+    // Orientation 6 is a quarter turn clockwise: the raw top-left goes to the top right, so the
+    // image takes the frame's 80x50 fallback size for the 50x80 upright one.
+    assert_eq!(g.xf.as_coeffs(), [0.0, 1.0, -1.0, 0.0, 50.0, 0.0]);
+}

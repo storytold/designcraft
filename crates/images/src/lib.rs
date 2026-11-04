@@ -392,6 +392,91 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         .or_else(|| tiff_decoder(bytes)?.dimensions().ok())
 }
 
+/// EXIF orientation (1–8) of a JPEG or TIFF, 1 when the file has none or the tag can't be read.
+/// The decoded pixels are always stored as the file has them; this says how to turn them upright.
+pub fn exif_orientation(bytes: &[u8]) -> u8 {
+    if bytes.starts_with(b"II") || bytes.starts_with(b"MM") {
+        return tiff_orientation(bytes).unwrap_or(1);
+    }
+    jpeg_orientation(bytes).unwrap_or(1)
+}
+
+/// The orientation tag (0x0112) of the first APP1 `Exif` segment of a JPEG.
+fn jpeg_orientation(b: &[u8]) -> Option<u8> {
+    if b.len() < 4 || b[0] != 0xFF || b[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= b.len() {
+        if b[i] != 0xFF {
+            return None;
+        }
+        let marker = b[i + 1];
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        // Stand-alone markers: no length field.
+        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        // Start of scan: the metadata segments are behind us.
+        if marker == 0xDA {
+            return None;
+        }
+        let len = usize::from(u16::from_be_bytes([b[i + 2], b[i + 3]]));
+        if len < 2 || i + 2 + len > b.len() {
+            return None;
+        }
+        let segment = &b[i + 4..i + 2 + len];
+        if marker == 0xE1
+            && let Some(tiff) = segment.strip_prefix(b"Exif\0\0")
+        {
+            return tiff_orientation(tiff);
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// The orientation tag of a TIFF/EXIF IFD0.
+fn tiff_orientation(t: &[u8]) -> Option<u8> {
+    if t.len() < 8 {
+        return None;
+    }
+    let big = match &t[0..2] {
+        b"II" => false,
+        b"MM" => true,
+        _ => return None,
+    };
+    let u16_at = |o: usize| -> Option<u16> {
+        let b = t.get(o..o + 2)?;
+        Some(if big { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) })
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        let b = t.get(o..o + 4)?;
+        Some(if big { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) })
+    };
+    if u16_at(2)? != 42 {
+        return None;
+    }
+    let ifd = u32_at(4)? as usize;
+    let count = u16_at(ifd)? as usize;
+    for k in 0..count {
+        let entry = ifd.checked_add(2 + k.checked_mul(12)?)?;
+        if u16_at(entry)? != 0x0112 {
+            continue;
+        }
+        // SHORT, one value: the value itself sits in the entry's last two bytes.
+        if u16_at(entry + 2)? != 3 || u32_at(entry + 4)? != 1 {
+            return None;
+        }
+        return u8::try_from(u16_at(entry + 8)?).ok().filter(|v| (1..=8).contains(v));
+    }
+    None
+}
+
 /// The largest decoded raster, in RGBA bytes: 256 Mpx, a 300 ppi scan of an A0 sheet fits.
 const MAX_RGBA_BYTES: u64 = 1 << 30;
 
