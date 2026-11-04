@@ -2083,3 +2083,26 @@ fn design_generation_native_drop_batch_without_a_change_still_places_every_file(
     let _ = std::fs::remove_file(first);
     let _ = std::fs::remove_file(second);
 }
+
+/// The eyedropper samples an image that hasn't been decoded yet as it is, not the placeholder
+/// the canvas shows while it decodes in the background.
+#[test]
+fn the_eyedropper_samples_an_image_still_decoding() {
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let red = designcraft_render::Rendered { width: 40, height: 40, pixels: [255u8, 0, 0, 255].repeat(1600) }.to_png();
+    let b64 = designcraft_engine::cmd::base64_encode(&red);
+    app.run("file.place", json!({"base64": b64, "name": "red.png", "x": 100, "y": 100, "width": 200})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let _ = app.view_mut();
+    let at = {
+        let (view, rect) = (*app.view().unwrap(), app.canvas_rect.unwrap());
+        let st = app.session.active().unwrap();
+        let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+        canvas::Xf::new(rect, &view).to_screen(layout.slots[0].xf * designcraft_geom::Point::new(200.0, 200.0))
+    };
+    // Nothing decoded: the canvas would draw the grey placeholder here.
+    designcraft_render::images::clear();
+    let ctx = egui::Context::default();
+    assert_eq!(canvas::color_at(&mut app, &ctx, at), Some([255, 0, 0]));
+}

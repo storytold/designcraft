@@ -24,7 +24,10 @@ pub fn color_at(app: &mut DesignApp, ctx: &egui::Context, pos: Pos2) -> Option<[
     let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let ppp = ctx.pixels_per_point() as f64;
     let view = Affine::scale(ppp) * Affine::scale(xf.zoom) * Affine::translate((-at.x, -at.y));
-    let opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    let mut opts = screen_options(app, &layout, app.ui.screen_mode != ScreenMode::Normal, ppp);
+    // The colour picked is applied: an image still decoding is decoded for it here, rather than
+    // sampling the placeholder or a coarser stand-in the canvas shows meanwhile.
+    opts.defer_images = false;
     let mut img = app.canvas.patcher.render(&doc, &app.session.cache, &placed, (1, 1), view, &opts);
     // The colour as the canvas shows it (proofed).
     screen_post(app, &mut img);
