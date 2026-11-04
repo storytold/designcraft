@@ -14,9 +14,12 @@ const FIXTURE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <CharacterStyle Name="Default Character Style" DefaultStyle="1" Font="Test Font Regular" FontSize="12" FontColor="Black" ScaleHorizontal="100" ScaleVertical="100" BaselineOffset="0" Kerning="0"/>
     <CharacterStyle Name="cBig" Font="Test Font Bold" FontSize="18" FontColor="Ink" FillShade="50" ScaleHorizontal="90" ScaleVertical="80" BaselineOffset="25" Kerning="120"/>
     <ParagraphStyle Name="Default Paragraph Style" DefaultStyle="1" Alignment="0" LineSpacing="14" LeftMargin="0" RightMargin="0" FirstIndent="0" GapBefore="0" GapAfter="0" HasDropCap="0"/>
-    <ParagraphStyle Name="pBody" Alignment="3" LineSpacing="16" LeftMargin="4" RightMargin="5" FirstIndent="6" GapBefore="7" GapAfter="8" HasDropCap="1" DropCapLines="3" CParent="cBig"/>
+    <ParagraphStyle Name="pBody" Alignment="3" LineSpacing="16" LeftMargin="4" RightMargin="5" FirstIndent="6" GapBefore="7" GapAfter="8" HasDropCap="1" DropCapLines="3" CParent="cBig" Language="it"/>
+    <ParagraphStyle Name="pForced" Alignment="4" LineSpacing="16" Language="it"/>
+    <ParagraphStyle Name="pAuto" LineSpacingMode="1" LineSpacing="16" Language="it"/>
     <ParagraphStyle Name="pHead" Alignment="1" LineSpacing="20" LeftMargin="0" RightMargin="0" FirstIndent="0" GapBefore="0" GapAfter="12" HasDropCap="0"/>
     <Layers Number="0" Level="0" Name="Main" IsViewable="1" IsPrintable="1" IsEditable="1" LayerColor="#ff0000"/>
+    <Layers Number="1" Level="1" Name="Top" IsViewable="1" IsPrintable="1" IsEditable="1" LayerColor="#00ff00"/>
     <Sections>
       <Section Number="0" Name="Front" From="0" To="1" Type="Type_1_2_3" Start="1" Reversed="0" Active="1"/>
     </Sections>
@@ -147,7 +150,11 @@ fn imports_pages_styles_guides_and_sections() {
     assert_eq!(d.parents.len(), 1);
     assert_eq!(d.parents[0].parent.as_ref().map(|p| p.name.as_str()), Some("Master A"));
     assert_eq!(d.parents[0].items.len(), 1, "master footer imported");
-    assert_eq!(d.layers.len(), 1);
+    assert_eq!(d.layers.len(), 2);
+    assert_eq!(d.layers[0].name, "Top", "DesignCraft lists the frontmost layer first");
+    assert_eq!(d.layers[1].name, "Main");
+    let body_layer = d.spreads[0].items.iter().find(|i| i.name == "body").map(|i| i.layer).expect("body");
+    assert_eq!(body_layer, d.layers[1].id, "Scribus layer 0 is the bottom one");
     assert_eq!(im.warnings.len(), 0, "{:?}", im.warnings);
 }
 
@@ -193,8 +200,10 @@ fn imports_items_in_spread_coordinates() {
     assert_eq!(graphic.size, (80.0, 50.0), "no pixel size for synthetic bytes");
     assert_eq!(graphic.xf.as_coeffs()[0], 0.5);
     assert_eq!(graphic.xf.as_coeffs()[3], 0.25);
-    assert_eq!(graphic.xf.as_coeffs()[4], -2.0);
-    assert_eq!(graphic.xf.as_coeffs()[5], 4.0);
+    // Scribus stores the image offset in image pixels, before the scale, and a positive
+    // offset moves the picture right and down: +2 * 0.5 and -4 * 0.25 become points here.
+    assert_eq!(graphic.xf.as_coeffs()[4], 1.0);
+    assert_eq!(graphic.xf.as_coeffs()[5], -1.0);
 }
 
 #[test]
@@ -223,8 +232,11 @@ fn imports_threaded_stories_and_character_overrides() {
     assert_eq!(body_para.left_indent, 4.0);
     assert_eq!(body_para.first_line_indent, 6.0);
     assert_eq!(body_para.drop_cap_lines, 3);
-    assert_eq!(body_para.align, designcraft_doc::Align::FullyJustified);
+    assert_eq!(body_para.align, designcraft_doc::Align::LeftJustified, "Scribus 3 = block: the last line stays left");
+    assert_eq!(body_para.auto_leading, 1.2, "automatic line spacing is the font leading, not the stored value as a percentage");
+    assert_eq!(d.styles.resolve_para_style("pForced").0.align, designcraft_doc::Align::FullyJustified, "Scribus 4 = forced");
     assert_eq!(d.styles.resolve_para(&story.paras[1]).1.leading, designcraft_doc::Leading::Points(16.0), "Scribus line spacing becomes leading");
+    assert_eq!(d.styles.resolve_para(&story.paras[1]).1.language, "it", "the paragraph language drives hyphenation");
 }
 
 #[test]

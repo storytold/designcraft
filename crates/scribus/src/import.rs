@@ -225,6 +225,9 @@ impl<'r> Importer<'r> {
             });
             self.layer_ids.push(id);
         }
+        // DesignCraft lists the frontmost layer first; Scribus numbers them bottom to top, so the
+        // sorted list above is back to front and the document keeps it the other way round.
+        self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.doc.alloc());
             self.layers.push(Layer {
@@ -267,24 +270,25 @@ impl<'r> Importer<'r> {
             attrs.merge(&self.char_attrs(e));
             // Scribus keeps line spacing on the paragraph style; DesignCraft's leading is a
             // character attribute, so it travels with the style's character part.
-            let mut auto_leading = None;
             let mut grid_align = None;
             if let Some(v) = e.num("LineSpacing").filter(|v| *v > 0.0) {
                 match int_attr(e, "LineSpacingMode", 0) {
                     0 => attrs.leading = Some(Leading::Points(v)),
-                    1 => {
-                        attrs.leading = Some(Leading::Auto);
-                        auto_leading = Some(v / 100.0);
-                    }
+                    // Automatic line spacing is the font's own leading: Scribus computes it from
+                    // the metrics, so the stored value is not a usable measure. DesignCraft's
+                    // `Leading::Auto` with its default multiplier is the closest match.
+                    1 => attrs.leading = Some(Leading::Auto),
                     2 => grid_align = Some(GridAlign::AllLines),
                     _ => {}
                 }
             }
             let para = ParaAttrs {
+                // Scribus: 3 = block (last line left), 4 = forced (last line justified too).
                 align: match int_attr(e, "Alignment", 0) {
                     1 => designcraft_doc::Align::Center,
                     2 => designcraft_doc::Align::Right,
-                    3 | 4 => designcraft_doc::Align::FullyJustified,
+                    3 => designcraft_doc::Align::LeftJustified,
+                    4 => designcraft_doc::Align::FullyJustified,
                     5 => designcraft_doc::Align::LeftJustified,
                     6 => designcraft_doc::Align::CenterJustified,
                     7 => designcraft_doc::Align::RightJustified,
@@ -297,7 +301,6 @@ impl<'r> Importer<'r> {
                 space_before: e.num("GapBefore"),
                 space_after: e.num("GapAfter"),
                 drop_cap_lines: if bool_attr(e, "HasDropCap", false) { Some(int_attr(e, "DropCapLines", 0).clamp(0, 60) as u32) } else { None },
-                auto_leading,
                 grid_align,
                 ..Default::default()
             };
@@ -361,6 +364,10 @@ impl<'r> Importer<'r> {
         }
         if let Some(v) = e.num("ScaleVertical").filter(|v| *v > 0.0) {
             a.v_scale = Some(v / 100.0);
+        }
+        // Scribus writes an ISO tag ("it") or a locale; `language_tag` reads both forms.
+        if let Some(v) = e.get("Language").filter(|v| !v.is_empty()) {
+            a.language = Some(v.to_string());
         }
         if let Some(v) = e.num("Kerning") {
             a.tracking = Some(v);
@@ -647,7 +654,10 @@ impl<'r> Importer<'r> {
         let sy = e.num("ImageScaleY").filter(|v| v.is_finite()).unwrap_or(1.0);
         let ox = e.num("ImageOffsetX").unwrap_or(0.0);
         let oy = e.num("ImageOffsetY").unwrap_or(0.0);
-        let mut xf = Affine::translate((-ox, -oy)) * Affine::scale_non_uniform(sx, sy);
+        // Scribus keeps `ImageOffsetX/Y` in image pixels, before the scale is applied, and a
+        // positive offset moves the picture right and down. `getImageOffset` reports the same
+        // offset in points (the stored value times the scale), which is what this maps to.
+        let mut xf = Affine::scale_non_uniform(sx, sy) * Affine::translate((ox, oy));
         if let Some(rot) = e.num("ImageRotation").filter(|v| v.abs() > 1e-9) {
             let c = Point::new(width / 2.0, height / 2.0);
             xf = Affine::translate(c.to_vec2()) * Affine::rotate(rot.to_radians()) * Affine::translate(-c.to_vec2()) * xf;

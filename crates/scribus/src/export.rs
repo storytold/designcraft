@@ -625,8 +625,8 @@ impl<'a> Ex<'a> {
         let px_to_frame_y = if iy > 0.0 { ph / iy } else { 1.0 };
         let sx = scale_x * px_to_frame_x;
         let sy = scale_y * px_to_frame_y;
-        let ox = if sx.abs() > 1e-12 { -c[4] / sx } else { 0.0 };
-        let oy = if sy.abs() > 1e-12 { -c[5] / sy } else { 0.0 };
+        let ox = if sx.abs() > 1e-12 { c[4] / sx } else { 0.0 };
+        let oy = if sy.abs() > 1e-12 { c[5] / sy } else { 0.0 };
         let rot = c[1].atan2(c[0]).to_degrees();
         let _ = item;
         el.set("ImageScaleX", num(sx.max(1e-9)));
