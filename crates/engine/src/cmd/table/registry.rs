@@ -1,6 +1,7 @@
 use super::cell::{get_cell_stroke, set_cell};
 use super::content::{drop_cells, place_graphic, sort_rows};
 use super::options::{get, options};
+use super::scripting::{list, paragraph_style, set_width};
 use super::selection::{move_rc, select, step_cell, toggle_selection};
 use super::sizing::{distribute_cols, distribute_rows, resize_border, set_col_width, set_row_height};
 use super::structure::{
@@ -61,7 +62,7 @@ fn style_specs() -> Vec<CommandSpec> {
             [],
             None,
             "{name, story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?}",
-            in_table,
+            in_table_or_ids,
             table_style_apply
         ),
         cmd!(
@@ -311,7 +312,7 @@ fn table_specs() -> Vec<CommandSpec> {
             [],
             None,
             "{height, mode?: atLeast|exactly, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
-            in_table,
+            in_table_or_ids,
             set_row_height
         ),
         cmd!(
@@ -320,7 +321,7 @@ fn table_specs() -> Vec<CommandSpec> {
             [],
             None,
             "{width, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
-            in_table,
+            in_table_or_ids,
             set_col_width
         ),
         cmd!(
@@ -408,5 +409,32 @@ fn table_specs() -> Vec<CommandSpec> {
             |s, _| toggle_selection(s)
         ),
         cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
+        cmd!(
+            query "table.list",
+            "List Tables",
+            [],
+            None,
+            "{story?, frame?} → [{story, table, rows, columns, width, style, anchor, frame, column}]: the document's tables (a story's, or those set in a text frame, as InDesign's textFrame.tables). frame and column are where a table starts, from composition (null while overset): a table that runs on into further frames is listed for the frame it starts in only",
+            has_doc,
+            list
+        ),
+        cmd!(
+            "table.setWidth",
+            "Table Width",
+            [],
+            None,
+            "{width, story?, table?} — scales every column so the table is `width` points wide (InDesign's table.width); the columns keep their shares, so each stays within the 3 to 10000 points a column may be",
+            in_table_or_ids,
+            set_width
+        ),
+        cmd!(
+            "table.paragraphStyle",
+            "Apply Paragraph Style to Table",
+            [],
+            None,
+            "{name, clearOverrides?, story?, table?} — applies a paragraph style to every paragraph of every cell",
+            in_table_or_ids,
+            paragraph_style
+        ),
     ]
 }

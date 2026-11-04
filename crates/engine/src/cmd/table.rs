@@ -21,6 +21,7 @@ mod cell;
 mod content;
 mod options;
 mod registry;
+mod scripting;
 mod selection;
 mod sizing;
 mod structure;

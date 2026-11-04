@@ -38,9 +38,10 @@ pub(super) fn set_col_width(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Smallest column width and row height a border drag leaves.
-const MIN_TRACK: f64 = 3.0;
+pub(super) const MIN_TRACK: f64 = 3.0;
 
-const MAX_TRACK: f64 = 10000.0;
+/// Largest column width and row height (as table.setColumnWidth and table.setRowHeight allow).
+pub(super) const MAX_TRACK: f64 = 10000.0;
 
 /// Composed height of `row` (laid out from cells that span only that row), else its model height.
 fn composed_row_height(cs: &compose::ComposedStory, t: &Table, row: usize) -> Option<f64> {
