@@ -379,7 +379,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 //
                 // An entry is a path, or a record that carries one along with what the command
                 // knows about it. Reading only the string form let a record-shaped list go by
-                // without a single line (noted in review).
+                // without a single line.
                 for file in r.get("files").and_then(Value::as_array).into_iter().flatten() {
                     let path = match file {
                         Value::String(path) => path.as_str(),

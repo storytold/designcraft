@@ -628,7 +628,7 @@ fn files_written_are_reported_on_stdout_as_json() {
     // A command that writes several files reports each of them. `file.package` writes a folder
     // and answers with a list of paths, `links.copyTo` now names the files it copied as well --
     // the run reports every file it writes, and a command the run cannot see the paths of is a
-    // command whose files go unreported (noted in review).
+    // command whose files go unreported.
     for (cmd, dirname) in [("file.package", "pkg"), ("links.copyTo", "copied")] {
         let target = dir.join(dirname);
         let out = cli().args(["run", "--sample", "--cmd", &format!("{cmd}={{\"dir\": {:?}}}", target.to_string_lossy())]).output().unwrap();
@@ -650,7 +650,7 @@ fn files_written_are_reported_on_stdout_as_json() {
 
     // The last line shape: an export that runs a command for the file type (.html, .rtf, .txt,
     // .idml, .epub). Those report bytes and the warnings the export gives -- an EPUB or HTML
-    // export says what it left out -- and nothing else (#1304 review).
+    // export says what it left out -- and nothing else.
     // `.rtf` and `.txt` go through `file.exportText`, which needs a text target ("edit text or
     // select a text frame"), so they are not reachable from a bare `run --sample`.
     for name in ["out.html", "out.idml", "out.epub"] {
@@ -672,7 +672,7 @@ fn files_written_are_reported_on_stdout_as_json() {
     }
 
     // A command that writes a whole folder answers with the files it wrote, not one path, and
-    // every one of them is reported (#1304 review).
+    // every one of them is reported.
     let pkg = dir.join("pkg");
     let out = cli().args(["run", "--sample", "--cmd", &format!("file.package={{\"dir\": {:?}}}", pkg.to_string_lossy())]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -689,7 +689,7 @@ fn files_written_are_reported_on_stdout_as_json() {
     }
 
     // An EPUB or HTML export goes through its command, whose result can carry warnings: the line
-    // keeps them, as the PDF and deck lines do (#1304 review).
+    // keeps them, as the PDF and deck lines do.
     let epub = dir.join("out.epub");
     let out = cli().args(["run", "--sample", "--export", epub.to_str().unwrap()]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

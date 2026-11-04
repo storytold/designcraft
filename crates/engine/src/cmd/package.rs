@@ -487,8 +487,7 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     // The paths as well as the count: a caller that reports every file a run writes cannot
-    // report files the command does not name, and `write_links` already knows them (noted in
-    // review of #1214).
+    // report files the command does not name, and `write_links` already knows them (#1214).
     Ok(json!({"copied": written.len(), "files": written.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>()}))
 }
 
