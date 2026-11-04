@@ -19,8 +19,18 @@ fn edges(mut v: Vec<f64>) -> Vec<f64> {
     v
 }
 
+/// The grid line nearest `x` (the first of two equally near).
 fn index(edges: &[f64], x: f64) -> usize {
-    edges.iter().enumerate().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(0, |(i, _)| i)
+    if !x.is_finite() {
+        return edges.iter().enumerate().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(0, |(i, _)| i);
+    }
+    // `edges` is sorted: the nearest is one of the two around `x`.
+    let at = edges.partition_point(|e| *e < x);
+    match (at.checked_sub(1).and_then(|i| edges.get(i)), edges.get(at)) {
+        (Some(lo), Some(hi)) if x - lo > hi - x => at,
+        (Some(_), _) => at - 1,
+        _ => at.min(edges.len().saturating_sub(1)),
+    }
 }
 
 pub fn tables(ex: &mut Exporter, ft: &FrameText, m: Affine, k: f64, opacity: f32) {
@@ -29,26 +39,51 @@ pub fn tables(ex: &mut Exporter, ft: &FrameText, m: Affine, k: f64, opacity: f32
     }
 }
 
-/// The stroke along one side of a cell (`a`–`b`), if the segments on that line cover most of it
-/// (a merged cell's side is drawn in pieces, one per grid cell).
-fn edge_stroke(strokes: &[StrokeSeg], a: (f64, f64), b: (f64, f64)) -> Option<&StrokeSeg> {
-    let vertical = (a.0 - b.0).abs() < 0.25;
-    let (lo, hi) = if vertical { (a.1, b.1) } else { (a.0, b.0) };
-    let mut covered = 0.0;
-    let mut first = None;
-    for s in strokes {
-        let (on, s0, s1) = if vertical {
-            ((s.a.x - a.0).abs() < 0.75 && (s.b.x - a.0).abs() < 0.75, s.a.y.min(s.b.y), s.a.y.max(s.b.y))
-        } else {
-            ((s.a.y - a.1).abs() < 0.75 && (s.b.y - a.1).abs() < 0.75, s.a.x.min(s.b.x), s.a.x.max(s.b.x))
-        };
-        let overlap = s1.min(hi) - s0.max(lo);
-        if on && overlap > 0.0 {
-            covered += overlap;
-            first.get_or_insert(s);
-        }
+/// A table's stroke segments by where they lie, so the sides of each cell don't search them all.
+struct EdgeIndex<'a> {
+    strokes: &'a [StrokeSeg],
+    /// (x of the first end, index), for segments whose first end is finite; sorted by x.
+    by_x: Vec<(f64, usize)>,
+    by_y: Vec<(f64, usize)>,
+}
+
+impl<'a> EdgeIndex<'a> {
+    fn new(strokes: &'a [StrokeSeg]) -> Self {
+        let mut by_x: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| s.a.x.is_finite()).map(|(i, s)| (s.a.x, i)).collect();
+        let mut by_y: Vec<(f64, usize)> = strokes.iter().enumerate().filter(|(_, s)| s.a.y.is_finite()).map(|(i, s)| (s.a.y, i)).collect();
+        by_x.sort_by(|p, q| p.0.total_cmp(&q.0));
+        by_y.sort_by(|p, q| p.0.total_cmp(&q.0));
+        EdgeIndex { strokes, by_x, by_y }
     }
-    first.filter(|_| covered > 0.5 * (hi - lo))
+
+    /// The stroke along one side of a cell (`a`-`b`), if the segments on that line cover most of it
+    /// (a merged cell's side is drawn in pieces, one per grid cell).
+    fn stroke(&self, a: (f64, f64), b: (f64, f64)) -> Option<&'a StrokeSeg> {
+        let vertical = (a.0 - b.0).abs() < 0.25;
+        let (lo, hi) = if vertical { (a.1, b.1) } else { (a.0, b.0) };
+        let (list, line) = if vertical { (&self.by_x, a.0) } else { (&self.by_y, a.1) };
+        // Segments whose first end is within 0.75 of the line: the only ones that can be on it.
+        let from = list.partition_point(|(v, _)| line - *v >= 0.75);
+        let to = list.partition_point(|(v, _)| *v - line < 0.75);
+        let mut near: Vec<usize> = list.get(from..to).unwrap_or_default().iter().map(|(_, i)| *i).collect();
+        // Back in the segments' own order: the first one on the line is the one that shows.
+        near.sort_unstable();
+        let mut covered = 0.0;
+        let mut first = None;
+        for s in near.into_iter().filter_map(|i| self.strokes.get(i)) {
+            let (on, s0, s1) = if vertical {
+                ((s.a.x - a.0).abs() < 0.75 && (s.b.x - a.0).abs() < 0.75, s.a.y.min(s.b.y), s.a.y.max(s.b.y))
+            } else {
+                ((s.a.y - a.1).abs() < 0.75 && (s.b.y - a.1).abs() < 0.75, s.a.x.min(s.b.x), s.a.x.max(s.b.x))
+            };
+            let overlap = s1.min(hi) - s0.max(lo);
+            if on && overlap > 0.0 {
+                covered += overlap;
+                first.get_or_insert(s);
+            }
+        }
+        first.filter(|_| covered > 0.5 * (hi - lo))
+    }
 }
 
 fn border(ex: &mut Exporter, tag: &str, s: Option<&StrokeSeg>, k: f64, opacity: f32) -> String {
@@ -108,6 +143,7 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
     if t.cells.iter().any(|c| c.graphic.is_some()) {
         ex.warn("graphic cells are exported empty");
     }
+    let edges_of = EdgeIndex::new(&t.strokes);
     let id = ex.id();
     let mut s = format!(
         "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>\
@@ -151,7 +187,7 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
                 );
                 continue;
             };
-            s.push_str(&cell(ex, c, &attrs, t, k, opacity));
+            s.push_str(&cell(ex, c, &attrs, &edges_of, k, opacity));
         }
         s.push_str("</a:tr>");
     }
@@ -159,7 +195,7 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
     ex.out.push_str(&s);
 }
 
-fn cell(ex: &mut Exporter, c: &PlacedCell, attrs: &str, t: &TableFrag, k: f64, opacity: f32) -> String {
+fn cell(ex: &mut Exporter, c: &PlacedCell, attrs: &str, edges: &EdgeIndex, k: f64, opacity: f32) -> String {
     let rc = c.rect;
     let mut body = String::new();
     let mut margins = [0.0f64; 4];
@@ -194,7 +230,7 @@ fn cell(ex: &mut Exporter, c: &PlacedCell, attrs: &str, t: &TableFrag, k: f64, o
     let mut pr = format!("<a:tcPr marL=\"{l}\" marR=\"{r}\" marT=\"{tp}\" marB=\"{b}\">");
     for (tag, side) in [("lnL", 'L'), ("lnR", 'R'), ("lnT", 'T'), ("lnB", 'B')] {
         let (a, bb) = ln(side);
-        let seg = edge_stroke(&t.strokes, a, bb);
+        let seg = edges.stroke(a, bb);
         pr.push_str(&border(ex, tag, seg, k, opacity));
     }
     match c.fill.as_ref().and_then(|(sw, tint)| ex.color(sw, *tint, opacity)) {

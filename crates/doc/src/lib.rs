@@ -216,17 +216,23 @@ impl Document {
             .iter()
             .map(|e| {
                 let mut word = String::new();
+                // The word's length in chars, kept as it grows (counting it again at every `~`
+                // was quadratic in the exception's length).
+                let mut len = 0;
                 let mut breaks = Vec::new();
                 for c in e.trim().chars() {
                     if c == '~' {
-                        if breaks.last() != Some(&word.chars().count()) && !word.is_empty() {
-                            breaks.push(word.chars().count());
+                        if breaks.last() != Some(&len) && len > 0 {
+                            breaks.push(len);
                         }
                     } else {
-                        word.extend(c.to_lowercase());
+                        for l in c.to_lowercase() {
+                            word.push(l);
+                            len += 1;
+                        }
                     }
                 }
-                breaks.retain(|b| *b < word.chars().count());
+                breaks.retain(|b| *b < len);
                 (word, breaks)
             })
             .collect()
@@ -957,6 +963,12 @@ impl Document {
     }
     pub fn default_layer(&self) -> LayerId {
         self.layers.first().map(|l| l.id).unwrap_or_default()
+    }
+    /// The layer new objects go to when a document opens: the topmost one shown and unlocked, so
+    /// a document whose top layer is a hidden, locked dieline doesn't put what is placed or drawn
+    /// where it can't be seen or selected. The top layer when every layer is hidden or locked.
+    pub fn working_layer(&self) -> LayerId {
+        self.layers.iter().find(|l| l.visible && !l.locked).map_or_else(|| self.default_layer(), |l| l.id)
     }
 
     pub fn story(&self, id: StoryId) -> Option<&Story> {
