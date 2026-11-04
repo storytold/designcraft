@@ -291,15 +291,15 @@ fn file_name(path: &str) -> String {
 
 /// A graphic showing an asset: the item, its page, and the transform from its parent's space to
 /// the spread.
-struct Shown<'a> {
-    item: &'a Item,
-    page: Option<usize>,
-    parent_xf: Affine,
+pub(crate) struct Shown<'a> {
+    pub(crate) item: &'a Item,
+    pub(crate) page: Option<usize>,
+    pub(crate) parent_xf: Affine,
 }
 
 /// Where an asset shows: frames on spreads (see [`uses`]) and anchored or inline objects, whose
 /// page and position come from the frame their story lays them out in.
-fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
+pub(crate) fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
     fn walk<'a>(it: &'a Item, xf: Affine, aid: AssetId, page: Option<usize>, out: &mut Vec<Shown<'a>>) {
         if let Content::Graphic(g) = &it.content
             && g.asset == aid

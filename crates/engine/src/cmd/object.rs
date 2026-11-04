@@ -956,6 +956,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            query "object.graphic",
+            "Placed Graphic",
+            [],
+            None,
+            "{id?} → {kind: image|pdf|eps|svg|psd, mime, name, link, pixels, page, size, bounds, spreadBounds, scale, ppi}: the graphic placed in a frame. size is its natural size (pt); bounds are its corners in the frame's space and spreadBounds on the spread (null for an anchored frame); kind comes from the file's content, or from the name when the linked file wasn't read; ppi is its effective resolution as Links reports it (through the frame, its groups and, anchored, the text frame), null for PDF and SVG. Anchored frames included.",
+            has_doc,
+            graphic_info
+        ),
+        cmd!(
             query "object.labels",
             "Script Labels",
             [],
@@ -2483,6 +2492,75 @@ fn insert_label(s: &mut Session, p: &Value) -> Result<Value> {
         let changed = d.update_placed_items(|it| wanted.contains(&it.id), |it| it.set_script_label(&key, &value));
         Ok(json!({"changed": changed}))
     })
+}
+
+/// What `object.graphic` tells about the graphic in a frame.
+fn graphic_info(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.graphic";
+    let id = one_target(s, p, ID)?;
+    let d = &s.doc()?.doc;
+    let it = d.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+    let Content::Graphic(g) = &it.content else { return Err(bad(ID, "that frame holds no placed graphic")) };
+    let asset = d.assets.get(&g.asset);
+    let (mime, name) = asset.map_or(("", ""), |a| (a.mime.as_str(), a.name.as_str()));
+    let kind = graphic_kind(mime, name, asset.is_some_and(|a| !a.data.is_empty()));
+    let natural = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+    let local = g.xf.transform_rect_bbox(natural);
+    // On a spread: through the frame and the groups it sits in.
+    let spread = d.find(id).map(|loc| (d.parent_xf(&loc) * it.xf * g.xf).transform_rect_bbox(natural));
+    let [a, b, c, dd, ..] = g.xf.as_coeffs();
+    let (sx, sy) = (a.hypot(b), c.hypot(dd));
+    let pixels = asset.and_then(|a| a.pixels);
+    // Effective resolution as the Links panel has it: pixels over the size shown, through the
+    // groups, the frame and, for an anchored frame, the text frame it is laid out in. A vector
+    // graphic has none.
+    let ppi = (|| {
+        if matches!(kind, "pdf" | "svg") {
+            return None;
+        }
+        let (w, h) = pixels?;
+        let shown = super::links::shown(d, &s.cache, g.asset).into_iter().find(|u| u.item.id == id)?;
+        let [a, b, c, dd, ..] = (shown.parent_xf * it.xf * g.xf).as_coeffs();
+        let (shown_w, shown_h) = (g.size.0 * a.hypot(b), g.size.1 * c.hypot(dd));
+        (shown_w > 0.0 && shown_h > 0.0).then(|| [f64::from(w) * 72.0 / shown_w, f64::from(h) * 72.0 / shown_h])
+    })();
+    Ok(json!({
+        "kind": kind,
+        "mime": mime,
+        "name": name,
+        "link": asset.and_then(|a| a.link.clone()),
+        "pixels": pixels,
+        "page": asset.map_or(0, |a| a.page.saturating_add(1)),
+        "size": [g.size.0, g.size.1],
+        "bounds": [local.x0, local.y0, local.x1, local.y1],
+        "spreadBounds": spread.map(|r| [r.x0, r.y0, r.x1, r.y1]),
+        "scale": [sx, sy],
+        "ppi": ppi,
+    }))
+}
+
+/// The kind of graphic `object.graphic` reports. The type found in the file's content decides
+/// when the content was `read`; a link whose file wasn't read goes by its name's extension (its
+/// type then is only a guess, `image/png` from an IDML import). Illustrator files are
+/// PDF-compatible unless they are PostScript, which their content then says.
+fn graphic_kind(mime: &str, name: &str, read: bool) -> &'static str {
+    let by_name = match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
+        Some("eps" | "ps") => Some("eps"),
+        Some("pdf" | "ai") => Some("pdf"),
+        Some("svg") => Some("svg"),
+        Some("psd") => Some("psd"),
+        _ => None,
+    };
+    let by_content = match mime {
+        "application/postscript" => Some("eps"),
+        "application/pdf" => Some("pdf"),
+        "image/svg+xml" => Some("svg"),
+        "image/vnd.adobe.photoshop" => Some("psd"),
+        "" | "application/octet-stream" => None,
+        _ => Some("image"),
+    };
+    let (first, then) = if read { (by_content, by_name) } else { (by_name, by_content) };
+    first.or(then).unwrap_or("image")
 }
 
 /// The one object a query is about: `id`, or the single selected object.
@@ -6284,5 +6362,91 @@ mod script_label_tests {
         // One missing object changes none.
         assert!(s.execute("object.insertLabel", &json!({"key": "fit", "value": "x", "ids": [in_cell, 999_999]})).is_err());
         assert_eq!(s.execute("object.extractLabel", &json!({"id": in_cell, "key": "fit"})).unwrap()["value"], "fill");
+    }
+}
+
+#[cfg(test)]
+mod graphic_info_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn a_frames_graphic_reports_its_kind_size_bounds_and_resolution() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // A 20 × 10 pixel PNG: 20 × 10 points at 72 ppi.
+        let png = designcraft_render::Rendered { width: 20, height: 10, pixels: vec![255; 20 * 10 * 4] }.to_png();
+        let r = s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "logo.png", "x": 100, "y": 200})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        assert_eq!(g["kind"], "image");
+        assert_eq!(g["name"], "logo.png");
+        assert_eq!(g["pixels"], json!([20, 10]));
+        assert_eq!(g["size"], json!([20.0, 10.0]));
+        assert_eq!(g["ppi"], json!([72.0, 72.0]));
+        let sb: Vec<f64> = g["spreadBounds"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!((sb[2] - sb[0] - 20.0).abs() < 1e-6 && (sb[3] - sb[1] - 10.0).abs() < 1e-6, "{sb:?}");
+
+        // Half size: twice the resolution.
+        s.execute("object.fit", &json!({"mode": "fitContentToFrame", "ids": [id]})).unwrap();
+        s.execute("transform.set", &json!({"width": 10, "height": 5, "ids": [id]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitContentToFrame", "ids": [id]})).unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        let ppi: Vec<f64> = g["ppi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!((ppi[0] - 144.0).abs() < 1e-6 && (ppi[1] - 144.0).abs() < 1e-6, "{g}");
+
+        // Anchored in text: no spread bounds, the rest the same.
+        let t = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Picture: here"})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [id], "story": t["story"], "pos": 9})).unwrap();
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        assert!(g["spreadBounds"].is_null() && g["kind"] == "image", "{g}");
+
+        // A frame without a graphic, or no frame: errors.
+        assert!(s.execute("object.graphic", &json!({"id": t["id"]})).is_err());
+        assert!(s.execute("object.graphic", &json!({"id": 999_999})).is_err());
+    }
+
+    #[test]
+    fn the_kind_comes_from_the_content_and_the_name_only_without_it() {
+        use super::graphic_kind;
+        // A PDF-compatible Illustrator file is a PDF; a PostScript one is EPS.
+        assert_eq!(graphic_kind("application/pdf", "art.ai", true), "pdf");
+        assert_eq!(graphic_kind("application/postscript", "old.ai", true), "eps");
+        assert_eq!(graphic_kind("image/png", "mislabelled.eps", true), "image");
+        // A link whose file wasn't read: the extension, whatever type the import guessed.
+        assert_eq!(graphic_kind("image/png", "cover.psd", false), "psd");
+        assert_eq!(graphic_kind("image/png", "logo.svg", false), "svg");
+        assert_eq!(graphic_kind("", "art.AI", false), "pdf");
+        assert_eq!(graphic_kind("application/postscript", "noextension", false), "eps");
+        assert_eq!(graphic_kind("", "noextension", false), "image");
+    }
+
+    #[test]
+    fn the_resolution_counts_the_frame_and_group_scale_and_a_page_number_cannot_overflow() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 10, pixels: vec![255; 20 * 10 * 4] }.to_png();
+        let r = s.execute("file.place", &json!({"base64": crate::cmd::file::base64_encode(&png), "name": "logo.png", "x": 100, "y": 200})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        let other = s.execute("frame.create", &json!({"rect": [300, 300, 340, 340]})).unwrap()["id"].as_u64().unwrap();
+        let group = s.execute("object.group", &json!({"ids": [id, other]})).unwrap()["id"].as_u64().unwrap();
+        // The group at twice its size shows the image at half the resolution, as Links says.
+        {
+            let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            d.item_mut(designcraft_doc::ItemId(group)).unwrap().xf *= designcraft_geom::Affine::scale(2.0);
+        }
+        let g = s.execute("object.graphic", &json!({"id": id})).unwrap();
+        let ppi: Vec<f64> = g["ppi"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!((ppi[0] - 36.0).abs() < 1e-6 && (ppi[1] - 36.0).abs() < 1e-6, "{g}");
+        let links = s.execute("links.list", &json!({})).unwrap();
+        assert_eq!(links[0]["uses"][0]["ppi"], json!(36.0), "{links}");
+        // A hostile page number (an IDML PageNumber can give u32::MAX) doesn't overflow.
+        {
+            let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let aid = d.placed_items().into_iter().find_map(|it| it.graphic().map(|g| g.asset)).unwrap();
+            std::sync::Arc::make_mut(d.assets.get_mut(&aid).unwrap()).page = u32::MAX;
+        }
+        assert_eq!(s.execute("object.graphic", &json!({"id": id})).unwrap()["page"], json!(u32::MAX));
     }
 }
