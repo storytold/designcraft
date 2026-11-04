@@ -1,9 +1,10 @@
 //! Table layout: a table anchored in a story is laid out at its anchor paragraph.
 //!
-//! Column widths are scaled down to fit the text column; each cell's story is composed into its
-//! cell (insets applied) with the regular composer; a row is as tall as its tallest single-row
-//! cell (or its fixed height); rows that don't fit continue in the next column / frame, repeating
-//! header (and footer) rows. Rows tied together by row spans never split.
+//! Columns keep their widths, and a table wider than the text column overflows it on the far
+//! side, as in InDesign; each cell's story is composed into its cell (insets applied) with the
+//! regular composer; a row is as tall as its tallest single-row cell (or its fixed height); rows
+//! that don't fit continue in the next column / frame, repeating header (and footer) rows. Rows
+//! tied together by row spans never split.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -193,11 +194,11 @@ pub(crate) fn place_table(
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
     let mut col = col_rect(cur);
-    // Column widths: scaled to fit the measure.
+    // Column widths as set: a table wider than the measure overflows it, as in InDesign, instead
+    // of being scaled down to fit, which wrapped text that fits its column, and in a row of fixed
+    // height clipped it (#2171). The alignment below then starts it at the left indent.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
-    let natural = table.width();
-    let k = if natural > avail && natural > 0.0 { avail / natural } else { 1.0 };
-    let widths: Vec<f64> = table.columns.iter().map(|c| c.width * k).collect();
+    let widths: Vec<f64> = table.columns.iter().map(|c| c.width).collect();
     let total_w: f64 = widths.iter().sum();
     let x_off = pp.left_indent
         + match pp.align {
@@ -1119,6 +1120,34 @@ mod height_tests {
             assert!(placed.text.frames[0].objects.is_empty());
             assert!(placed.text.frames[0].tables.is_empty());
         }
+    }
+
+    /// A table wider than its frame keeps its column widths and overflows the frame, as in
+    /// InDesign. It used to be scaled down to the frame, so a number that fits its column wrapped,
+    /// and in a row of fixed height all but its first line was clipped: `-33.859.395` became `-`
+    /// in the PDF (#2171).
+    #[test]
+    fn a_table_wider_than_its_frame_keeps_its_column_widths() {
+        let number = "-1.234.567.890";
+        let cell = text_cell(number, 8.5);
+        let one_line = measure(&cell, 112.0);
+        assert_eq!(one_line.text.frames[0].lines.len(), 1, "the number fits its 120 pt column");
+        assert!(measure(&cell, 200.0 / 3.0 - 8.0).text.frames[0].lines.len() > 1, "and not a third of the 200 pt frame");
+        let mut table = Table::new(77, 1, 3, 0, 0, 360.0);
+        table.rows[0].mode = RowHeightMode::Exactly;
+        table.rows[0].height = one_line.content_h + 17.0;
+        table.cells[2] = cell;
+        let composed = compose_table(table, 200.0);
+        let frag = &composed.frames[0].tables[0];
+        for c in 0..3 {
+            let rect = frag.cell(0, c).unwrap().rect;
+            assert!((rect.width() - 120.0).abs() < 1e-6, "column {c} keeps its width: {rect:?}");
+            assert!((rect.x0 - 120.0 * c as f64).abs() < 1e-6, "column {c} starts after the others: {rect:?}");
+        }
+        assert!(frag.cell(0, 2).unwrap().rect.x1 > 200.0, "the table overflows the 200 pt frame");
+        let placed = frag.cell(0, 2).unwrap();
+        assert!(!placed.overset, "the number is not clipped");
+        assert_eq!(placed.text.frames[0].lines.len(), 1, "the number is on one line");
     }
 }
 
