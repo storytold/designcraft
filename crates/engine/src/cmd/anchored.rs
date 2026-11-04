@@ -40,6 +40,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             release
         ),
+        cmd!(
+            query "anchored.frame",
+            "Anchored Object's Text Frame",
+            [],
+            None,
+            "{id} or {story, index} → {story, index, frame, frameBounds, column, columns, columnWidth, columnRect}: the text frame and column an anchored object is set in (InDesign's parentTextFrames). frameBounds and columnRect are on the spread, columnWidth in the frame's text; all but story and index are null while the object is overset. `id` may be an item inside an anchored group in the story's own text.",
+            has_doc,
+            frame_of
+        ),
         cmd!(query "anchored.list", "Anchored Objects", [], None, "{story?} → [{story, index, pos, position, size}]", has_doc, |s, p| {
             let d = &s.doc()?.doc;
             let only = p.get("story").and_then(Value::as_u64).map(StoryId);
@@ -203,6 +212,49 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn frame_of(s: &mut Session, p: &Value) -> Result<Value> {
+    let (sid, k) = match p.get("id").and_then(Value::as_u64) {
+        Some(id) => s.doc()?.doc.anchored_of(ItemId(id)).ok_or_else(|| bad("anchored.frame", "that object isn't anchored in text"))?,
+        None => object_ref(s, p, "anchored.frame")?,
+    };
+    let d = s.doc()?.doc.clone();
+    if d.story(sid).and_then(|st| st.objects.get(k)).is_none() {
+        return Err(bad("anchored.frame", "no such anchored object"));
+    }
+    let cs = s.cache.get(&d, sid, None);
+    let placed = cs.frames.iter().find_map(|ft| ft.objects.iter().find(|o| o.index == k).map(|o| (ft, o.line)));
+    let Some((ft, line)) = placed else {
+        return Ok(json!({
+            "story": sid.0, "index": k, "frame": null, "frameBounds": null, "column": null,
+            "columns": null, "columnWidth": null, "columnRect": null,
+        }));
+    };
+    let column = ft.lines.get(line).map_or(0, |l| l.column as usize);
+    let rect = ft.columns.get(column).copied();
+    // Columns are in the frame's text space; the reply gives both rectangles on the spread.
+    let parent = d.find(ft.frame).map_or(Affine::IDENTITY, |l| d.parent_xf(&l));
+    let frame = d.item(ft.frame);
+    let bounds = frame.map(|it| {
+        let b = parent.transform_rect_bbox(it.bounds());
+        [b.x0, b.y0, b.x1, b.y1]
+    });
+    let text_xf = parent * frame.map_or(Affine::IDENTITY, |it| d.text_xf(it));
+    let column_rect = rect.map(|r| {
+        let b = text_xf.transform_rect_bbox(r);
+        [b.x0, b.y0, b.x1, b.y1]
+    });
+    Ok(json!({
+        "story": sid.0,
+        "index": k,
+        "frame": ft.frame.0,
+        "frameBounds": bounds,
+        "column": column,
+        "columns": ft.columns.len().max(1),
+        "columnWidth": rect.map(|r| r.width()),
+        "columnRect": column_rect,
+    }))
+}
+
 fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.release")?;
     let d0 = s.doc()?.doc.clone();
@@ -331,5 +383,59 @@ mod custom_tests {
             st.objects[0].position,
             designcraft_doc::AnchorPosition::Custom { spine_relative: true, x_offset, object_point: 2, .. } if x_offset == -6.0
         ));
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn an_anchored_object_knows_its_text_frame_and_column() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // Two columns, 100 pt high: enough text pushes the last words into the second column.
+        let text = "word ".repeat(40) + "end";
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 372, 172], "content": "text", "text": text})).unwrap();
+        let (frame, story) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("object.textFrameOptions", &json!({"columns": 2, "gutter": 20, "ids": [frame]})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let b = s.execute("frame.create", &json!({"rect": [0, 20, 10, 30], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        let len = text.len();
+        s.execute("anchored.insert", &json!({"ids": [g], "story": story, "pos": len - 3})).unwrap();
+        // Asked by a child of the anchored group.
+        let r = s.execute("anchored.frame", &json!({"id": a})).unwrap();
+        assert_eq!(r["frame"], frame, "{r}");
+        assert_eq!(r["columns"], 2);
+        assert_eq!(r["column"], 1, "the second column: {r}");
+        let w = r["columnWidth"].as_f64().unwrap();
+        assert!((w - 140.0).abs() < 1.0, "(300 − 20) / 2: {w}");
+        let fb: Vec<f64> = r["frameBounds"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert_eq!(fb, [72.0, 72.0, 372.0, 172.0]);
+        // The column on the spread too: inside the frame, in its right half.
+        let cr: Vec<f64> = r["columnRect"].as_array().unwrap().iter().filter_map(|v| v.as_f64()).collect();
+        assert!(cr[0] > 72.0 + 150.0 && cr[2] <= 372.0 + 1e-6 && cr[1] >= 72.0 - 1e-6 && cr[3] <= 172.0 + 1e-6, "{cr:?}");
+        assert!((cr[2] - cr[0] - w).abs() < 1e-6, "{cr:?}");
+        // By story and index too.
+        assert_eq!(s.execute("anchored.frame", &json!({"story": story, "index": 0})).unwrap()["column"], 1);
+
+        // Overset: no frame.
+        s.execute("frame.create", &json!({"rect": [400, 72, 500, 172], "content": "unassigned"})).unwrap();
+        let more = "x ".repeat(2000);
+        s.execute("frame.create", &json!({"rect": [72, 200, 200, 220], "content": "text", "text": more})).unwrap();
+        let st2 = s.doc().unwrap().doc.stories.keys().map(|k| k.0).max().unwrap();
+        let c = s.execute("frame.create", &json!({"rect": [0, 0, 5, 5], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("anchored.insert", &json!({"ids": [c], "story": st2, "pos": 3900})).unwrap();
+        let r = s.execute("anchored.frame", &json!({"id": c})).unwrap();
+        for k in ["frame", "frameBounds", "column", "columns", "columnWidth", "columnRect"] {
+            assert!(r[k].is_null(), "{k}: {r}");
+        }
+
+        // Not anchored, or nothing there: an error.
+        assert!(s.execute("anchored.frame", &json!({"id": frame})).is_err());
+        assert!(s.execute("anchored.frame", &json!({"story": story, "index": 7})).is_err());
     }
 }
