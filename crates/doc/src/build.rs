@@ -339,7 +339,7 @@ impl Document {
     /// number is a right page (a left page bound right to left), so a section that starts at 1 on
     /// a left page moves it to the right and the pages after it follow.
     pub fn repaginate(&mut self) {
-        let odd: Vec<bool> = (0..self.page_count()).map(|i| self.page_number(i) % 2 == 1).collect();
+        let odd: Vec<bool> = self.page_numbers(self.page_count()).into_iter().map(|n| n % 2 == 1).collect();
         // Collect pages with their items (items in page-relative coordinates) and their numbers' parity.
         let mut pages: Vec<(Page, Vec<Arc<Item>>)> = Vec::new();
         let mut parity: Vec<bool> = Vec::new();
