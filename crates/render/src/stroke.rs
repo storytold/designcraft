@@ -6,6 +6,14 @@ use super::{
     pdf_layers, peniko, vello_cpu,
 };
 
+/// `stroke` as round dots `weight` wide, one every `2 × weight`. Kurbo's stroker drops
+/// zero-length dashes, so each dot is a dash a hair long, centred where the zero-length dash
+/// would be (so the path's ends get dots too).
+pub(crate) fn dotted(stroke: kurbo::Stroke, weight: f64) -> kurbo::Stroke {
+    let dot = weight * 1e-3;
+    stroke.with_dashes(dot / 2.0, [dot, weight * 2.0 - dot]).with_caps(kurbo::Cap::Round)
+}
+
 impl Renderer {
     pub(crate) fn draw_stroke(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
         self.draw_stroke_painted(ctx, f, it, bp, xf);
@@ -37,9 +45,7 @@ impl Renderer {
             StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, length) => {
                 stroke = stroke.with_dashes(0.0, pattern.iter().copied())
             }
-            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => {
-                stroke = stroke.with_dashes(0.0, [0.0, st.weight * 2.0]).with_caps(kurbo::Cap::Round)
-            }
+            StrokeType::Dotted if StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length) => stroke = dotted(stroke, st.weight),
             _ => {}
         }
         ctx.set_transform(f.view * xf);

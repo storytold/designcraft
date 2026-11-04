@@ -83,6 +83,7 @@ impl DesignApp {
             let was_find = self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange");
             match r {
                 UiRequest::Dialog { id, params } if id == "colorTheme" => dialogs::open_color_theme(self, params),
+                UiRequest::Dialog { id, params } if id == "frameSize" => self.ui.dialog = Some(dialogs::frame_size_dialog(self, params)),
                 UiRequest::Dialog { id, params } => self.ui.dialog = Some(dialogs::Dialog::new(&id, params)),
                 UiRequest::View { params } => canvas::apply_view_request(self, &params),
                 UiRequest::Pick { purpose, params } => {

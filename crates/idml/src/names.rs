@@ -655,6 +655,8 @@ pub fn number_style_in(s: &str) -> NumberStyle {
     }
 }
 
+/// IDML `MeasurementUnits` of a unit. Q is `Q`; `U` is a different unit, which DesignCraft
+/// doesn't have.
 pub fn unit_out(u: Unit) -> &'static str {
     match u {
         Unit::Points => "Points",
@@ -666,27 +668,14 @@ pub fn unit_out(u: Unit) -> &'static str {
         Unit::Ciceros => "Ciceros",
         Unit::Agates => "Agates",
         Unit::Pixels => "Pixels",
-        Unit::Q => "U",
+        Unit::Q => "Q",
         Unit::Ha => "Ha",
     }
 }
-pub fn unit_in(s: &str) -> Unit {
-    [
-        Unit::Points,
-        Unit::Picas,
-        Unit::Inches,
-        Unit::InchesDecimal,
-        Unit::Millimeters,
-        Unit::Centimeters,
-        Unit::Ciceros,
-        Unit::Agates,
-        Unit::Pixels,
-        Unit::Q,
-        Unit::Ha,
-    ]
-    .into_iter()
-    .find(|u| unit_out(*u) == s)
-    .unwrap_or(Unit::Points)
+/// The unit an IDML `MeasurementUnits` value names, if DesignCraft has it (not `U`, `Bai`,
+/// `Mils`, `AmericanPoints` or `Custom`).
+pub fn unit_in(s: &str) -> Option<Unit> {
+    Unit::ALL.into_iter().find(|u| unit_out(*u) == s)
 }
 
 /// IDML layer colour enumeration names for our layer colour table.
@@ -858,28 +847,25 @@ pub fn digits_in(s: &str) -> Option<designcraft_doc::Digits> {
     [Digits::Default, Digits::Arabic, Digits::Hindi, Digits::Farsi, Digits::Native].into_iter().find(|d| digits_out(*d) == s)
 }
 
-/// A TOC separator in IDML's special-character notation: `^t` is a tab, `^^` a caret.
+/// A TOC separator in IDML's special-character notation.
 pub fn toc_separator_out(s: &str) -> String {
-    s.replace('^', "^^").replace('\t', "^t")
+    designcraft_doc::story::toc_separator_notation(s)
 }
-/// IDML TOC separator → text (`^t` and `^y`, the right indent tab, are tabs; other codes stay).
+/// IDML may prefix a separator with its localized-string marker.
 pub fn toc_separator_in(s: &str) -> String {
-    let mut out = String::new();
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c != '^' {
-            out.push(c);
-            continue;
-        }
-        match it.next() {
-            Some('t' | 'y') => out.push('\t'),
-            Some('^') => out.push('^'),
-            Some(o) => {
-                out.push('^');
-                out.push(o);
-            }
-            None => out.push('^'),
-        }
+    designcraft_doc::story::toc_separator_text(s.strip_prefix("$ID/").unwrap_or(s))
+}
+
+#[cfg(test)]
+mod toc_separator_tests {
+    use super::*;
+
+    #[test]
+    fn localized_right_indent_tab_is_not_an_ordinary_tab() {
+        assert_eq!(toc_separator_in("$ID/^y"), "\u{E006}");
+        assert_eq!(toc_separator_in("$ID/ ^y "), " \u{E006} ");
+        assert_eq!(toc_separator_in("^t"), "\t");
+        assert_eq!(toc_separator_out("\u{E006}"), "^y");
+        assert_eq!(toc_separator_in("^^y ^q ^"), "^y ^q ^");
     }
-    out
 }

@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (Links panel laid out as InDesign's; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (Links panel laid out as InDesign's; the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -29,7 +29,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Chrome: app bar, Control panel, Tools panel, dock, doc tabs, status bar | Medium Dark, measured sizes | measured look; the text Control panel switches between Character (A) and Paragraph (¶) Formatting Controls (¶ with the Bulleted and Numbered List buttons, Shading and Border), and Escape in a field reverts what was typed | ✓ | 11-observed-ui.md; Learn Skills Daily course, chapter 16 |
 | Properties panel and Contextual Task Bar | per selection | ✓, task bar movable (#143); ••• expands Character (scales, baseline shift, skew, language, case and position buttons) and Paragraph (indents, spacing, drop cap, baseline grid, hyphenation) in place | ✓ | Learn Skills Daily course, chapter 16; `properties.rs` `more_options_expand_character_and_paragraph_in_place` |
 | Selection tool: click, marquee, move, Alt-duplicate, resize handles, rotate from corners | ✓ | ✓ | ✓ | Cmd/Ctrl held with another tool borrows the selection tool used last (Selection or Direct Selection) for one gesture, #919 |
-| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | moving reference point "0" fails (#337) |
+| Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | the Pen previews the segment while a smooth point is dragged out and curves the rubber band out of a smooth point's direction line (`pen_previews_the_curve_while_dragging_and_after_a_smooth_point`, #1438); moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
 | Links panel: rows with thumbnail, status and page; Relink / Go To Link / Update Link footer; Link Info | ✓ | ✓ the same layout; Embed Link, Relink to Folder and Update All Links behind the footer's last button; no Relink from CC Libraries or Edit Original | ~ | Learn Skills Daily course, chapter 13 |
@@ -49,7 +49,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Numeric fields: units, arithmetic, scrubbing | ✓ | 21 pt spinner fields with arithmetic | ✓ | |
 | Colour fields: hex, picker from any swatch field | ✓ | ✓ | ~ | hex entry and picker issues (#323, #190) |
 | Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs, Story | ✓ | all present | ~ | Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
-| Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | generated command dialogs fill the long tail; depth varies |
+| Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | a Custom text variable whose text is typed as a number shows its digits (`variables.define` takes a string, a number or a boolean for `text` and refuses anything else; #2093); generated command dialogs fill the long tail; depth varies |
 | Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
 | Story Editor | ✓ | ✓ | ~ | depth ruler and View › Story Editor › Show/Hide Depth Ruler (`story_editor.rs` `depth_ruler_shows_and_hides_from_the_view_menu`); hiding or resizing the style-name column missing |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |
@@ -69,7 +69,19 @@ focused text field, and does not interrupt an existing tool drag. Synthetic canv
 cover the cursors, click anchors, scrub/release ownership, restoration, typing guards and undo
 history (DC-1).
 
+The Table of Contents title field reserves its edit width inside the title/style row. The
+default Contents title is fully visible instead of being clipped to its first few characters.
+
+The Table of Contents dialog can collapse to its entry-style controls or expand to show page
+number, separator, sorting and level controls. Toggling visibility preserves their settings.
+
 ## Remaining effort
+
+The Table of Contents separator field accepts `^y` (Right Indent Tab), with a special-character
+picker alongside it. Literal carets use `^^`; ordinary tabs, em/en spaces and surrounding spaces
+survive reopening. IDML preserves right-indent separators, including `$ID/^y`, so updating an
+imported TOC keeps page numbers at the right edge and inherits paragraph tab leaders. This covers
+10:54–16:08 of [Michael Bullo's TOC tutorial](https://www.youtube.com/watch?v=m4y2tm6LH_c).
 
 Applying a paragraph or character style now removes local values equal to the applied style,
 so text used to capture a style follows later edits to that style. Different local formatting
@@ -124,9 +136,15 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-21 | minor | Added the Links panel row (~: InDesign's layout, no CC Libraries relink or Edit Original); recounted the checklist |
+| 2026-11-02 | patch | Pen: while a smooth point's direction line is dragged out, the segment it shapes (from the previous anchor's out handle to the new anchor's in handle) shows live under the pointer; after a smooth point the rubber band to the pointer curves out of its direction line, a corner's stays straight (#1438, first item; the Option/Alt handle split is the other). Test: `pen_previews_the_curve_while_dragging_and_after_a_smooth_point` |
+| 2026-11-02 | patch | Text variables: a Custom variable defined with a number (a typed `2026` reaches `variables.define` as one) shows its digits instead of nothing (#2093, first item); `text` takes a string, a number or a boolean. Test: `variables::tests::a_custom_variable_defined_with_a_number_shows_its_digits` |
+| 2026-10-30 | minor | Dialogs: Table of Contents title field keeps its edit width; More Options toggles without losing hidden settings |
 | 2026-10-24 | minor | Panels row: Story panel (Optical Margin Alignment and its size) |
 | 2026-10-21 | minor | Chrome row: the text Control panel's A/¶ modes; Properties row: ••• expands Character and Paragraph in place |
 | 2026-10-11 | minor | Live corners row to ✓: widget, diamonds, drag, Shift-drag, Alt-click shape cycling (#186) |
 | 2026-10-11 | minor | Added held Cmd+Space / Cmd+Alt+Space Zoom navigation and canvas input regression tests |
 | 2026-10-10 | minor | Threading row corrected to ✗ after checking the code (no out-port interaction, no thread command) |
 | 2026-10-10 | major | Created: measured menu coverage, 27-row interaction checklist from the code and issues |
+
+Double-clicking a section triangle in the Pages panel opens Numbering & Section Options for
+that section’s first page. It leaves parent-page editing and does not edit section data until confirmed.
