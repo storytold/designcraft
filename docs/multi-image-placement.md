@@ -5,7 +5,7 @@ Choose **File > Place** (Cmd+D on macOS) and select several images. They load in
 - Click to place the next image at its natural size.
 - Drag to draw its frame: it keeps the image's proportions, and shows the scale beside the pointer.
 - Click an existing graphic frame to replace its contents.
-- While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames.
+- While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames. A drag too small for the grid's cells shows and places one frame instead, as an ordinary drag does.
 - Press Escape or select another tool to cancel the remaining placement.
 
 A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. Image batches support up to 1000 images. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid area also leaves the document and queue unchanged.
