@@ -4,7 +4,6 @@
 use std::fmt::Write as _;
 
 use designcraft_compose::{FrameText, PlacedCell, StrokeSeg, TableFrag};
-use designcraft_doc::StrokeType;
 use designcraft_geom::{Affine, Rect};
 
 use crate::slide::{Exporter, box_of};
@@ -55,15 +54,9 @@ fn border(ex: &mut Exporter, tag: &str, s: Option<&StrokeSeg>, k: f64, opacity: 
     let Some(s) = s.filter(|s| s.stroke.weight > 0.0) else { return format!("<a:{tag} w=\"0\"><a:noFill/></a:{tag}>") };
     let st = &s.stroke;
     let Some(c) = ex.color(&st.color, st.tint, opacity) else { return format!("<a:{tag} w=\"0\"><a:noFill/></a:{tag}>") };
-    let dash = match st.kind {
-        StrokeType::Dashed { .. } => "dash",
-        StrokeType::Dotted => "sysDot",
-        _ => "solid",
-    };
-    format!(
-        "<a:{tag} w=\"{}\" cap=\"flat\" cmpd=\"sng\"><a:solidFill>{c}</a:solidFill><a:prstDash val=\"{dash}\"/></a:{tag}>",
-        emu_len(st.weight * k)
-    )
+    // The pattern items use, not the fixed `dash` preset, so a dashed edge matches the PDF.
+    let dash = crate::slide::line_dash(&st.kind, st.weight);
+    format!("<a:{tag} w=\"{}\" cap=\"flat\" cmpd=\"sng\"><a:solidFill>{c}</a:solidFill>{dash}</a:{tag}>", emu_len(st.weight * k))
 }
 
 fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
