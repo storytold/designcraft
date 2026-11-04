@@ -41,7 +41,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Basic Attributes", "Основні атрибути"),
     ("Stroke & Corner Options", "Параметри обведення й кутів"),
     ("Effects for:", "Ефекти для:"),
-    ("Apply Style to Selection", "Застосувати стиль до виділеного"),
     ("Create New Style", "Створити новий стиль"),
     ("Clear Overrides", "Очистити перевизначення"),
     ("Shape:", "Форма:"),

@@ -40,7 +40,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Basic Attributes", "Základní atributy"),
     ("Stroke & Corner Options", "Možnosti tahu a rohů"),
     ("Effects for:", "Efekty pro:"),
-    ("Apply Style to Selection", "Použít styl na výběr"),
     ("Create New Style", "Vytvořit nový styl"),
     ("Clear Overrides", "Zrušit přepsání"),
     ("Shape:", "Tvar:"),

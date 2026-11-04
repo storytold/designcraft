@@ -43,7 +43,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Basic Attributes", "Atributos básicos"),
     ("Stroke & Corner Options", "Opções de traçado e canto"),
     ("Effects for:", "Efeitos para:"),
-    ("Apply Style to Selection", "Aplicar estilo à seleção"),
     ("Create New Style", "Criar novo estilo"),
     ("Clear Overrides", "Limpar substituições"),
     ("Shape:", "Forma:"),

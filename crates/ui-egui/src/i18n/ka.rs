@@ -39,7 +39,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Basic Attributes", "ძირითადი ატრიბუტები"),
     ("Stroke & Corner Options", "კონტურისა და კუთხეების პარამეტრები"),
     ("Effects for:", "ეფექტები:"),
-    ("Apply Style to Selection", "სტილის გამოყენება მონიშნულზე"),
     ("Create New Style", "ახალი სტილის შექმნა"),
     ("Clear Overrides", "გადაფარვების გასუფთავება"),
     ("Shape:", "ფორმა:"),
