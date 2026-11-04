@@ -21,6 +21,20 @@ pub fn pdf_page_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
+/// Sizes of every page of a PDF, as [`pdf_page_size`] gives each: the file is opened once.
+pub fn pdf_page_sizes(bytes: &[u8]) -> Option<Vec<(f64, f64)>> {
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    Some(
+        pdf.pages()
+            .iter()
+            .map(|p| {
+                let (w, h) = p.render_dimensions();
+                (w as f64, h as f64)
+            })
+            .collect(),
+    )
+}
+
 /// A placed page could not be rasterized completely for export.
 #[derive(Debug, thiserror::Error)]
 pub enum PdfRasterError {
@@ -251,6 +265,11 @@ pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
         return None;
     }
     let (w, h) = (w as u16, h as u16);
+    // A box reaching far outside the page would mostly be transparent padding: it gets no more
+    // pixels than a page raster may have.
+    if u64::from(w) * u64::from(h) > crate::MAX_PAGE_PIXELS {
+        return None;
+    }
     let mut out = Pixmap::new(w, h);
     let src = pm.data();
     let dst = out.data_mut();
@@ -271,4 +290,18 @@ pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+
+    /// A crop box reaching far outside the page gets no bigger a pixmap than a page may have.
+    #[test]
+    fn crop_outside_the_page_is_bounded() {
+        let pm = Pixmap::new(10, 10);
+        assert!(crop_pixmap(&pm, [-0.5, -0.5, 1.5, 1.5]).is_some_and(|c| (c.width(), c.height()) == (20, 20)));
+        // 60,000 × 60,000 pixels: within u16 each way, far past the page raster budget.
+        assert!(crop_pixmap(&pm, [-3000.0, -3000.0, 3000.0, 3000.0]).is_none());
+    }
 }
