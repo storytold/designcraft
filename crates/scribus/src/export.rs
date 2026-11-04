@@ -1032,8 +1032,10 @@ fn page_origin_x(side: PageSide, width: f64, facing: bool) -> f64 {
     if facing && side != PageSide::Left { 100.0 + width } else { 100.0 }
 }
 
-fn margin_sides(m: designcraft_doc::Margins, side: PageSide) -> (f64, f64) {
-    if side == PageSide::Left { (m.outside, m.inside) } else { (m.inside, m.outside) }
+fn margin_sides(m: designcraft_doc::Margins, _side: PageSide) -> (f64, f64) {
+    // Scribus writes the inside (gutter) margin as `BorderLeft` and the outside one as
+    // `BorderRight`, for every page: it mirrors them for left pages itself.
+    (m.inside, m.outside)
 }
 
 fn guide_list(guides: &[designcraft_doc::Guide], vertical: bool, page_x: f64) -> String {

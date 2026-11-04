@@ -923,15 +923,16 @@ fn page(e: &El, width: f64, height: f64, x: f64, margins: Margins, side: PageSid
     }
 }
 
-fn margins_of(e: &El, side: PageSide) -> Margins {
+fn margins_of(e: &El, _side: PageSide) -> Margins {
     let left = e.num("BorderLeft").unwrap_or(0.0).max(0.0);
     let right = e.num("BorderRight").unwrap_or(0.0).max(0.0);
     let top = e.num("BorderTop").unwrap_or(0.0).max(0.0);
     let bottom = e.num("BorderBottom").unwrap_or(0.0).max(0.0);
-    match side {
-        PageSide::Left => Margins { top, bottom, inside: right, outside: left },
-        _ => Margins { top, bottom, inside: left, outside: right },
-    }
+    // Scribus writes `BorderLeft` as the inside (gutter) margin and `BorderRight` as the outside
+    // one for every page, and mirrors them for left pages itself (a left page's inside edge is
+    // its right edge). DesignCraft stores inside/outside and mirrors by page side, so the values
+    // must not be swapped here.
+    Margins { top, bottom, inside: left, outside: right }
 }
 
 fn text_options(e: &El) -> TextFrameOptions {

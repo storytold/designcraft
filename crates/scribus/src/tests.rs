@@ -141,8 +141,11 @@ fn imports_pages_styles_guides_and_sections() {
     assert_eq!(spread.pages[1].side, designcraft_doc::PageSide::Right);
     assert_eq!(spread.pages[1].x, 300.0);
     assert!(spread.pages[0].parent.is_some(), "master page applied");
-    assert_eq!(spread.pages[0].margins.inside, 20.0, "left page: inside is the right margin");
-    assert_eq!(spread.pages[0].margins.outside, 10.0);
+    // Scribus stores BorderLeft as the inside (gutter) margin for every page, left or right.
+    assert_eq!(spread.pages[0].margins.inside, 10.0, "left page: BorderLeft is the gutter margin");
+    assert_eq!(spread.pages[0].margins.outside, 20.0);
+    assert_eq!(spread.pages[1].margins.inside, 10.0, "right page: the same gutter margin");
+    assert_eq!(spread.pages[1].margins.outside, 20.0);
     let vertical = spread.pages[0].guides.iter().find(|g| g.orientation == designcraft_doc::Orientation::Vertical).expect("vertical guide");
     assert_eq!(vertical.position, 50.0);
     assert_eq!(d.sections[0].marker, "Front");
@@ -260,6 +263,8 @@ fn exports_a_document_scribus_can_read_back() {
     assert_eq!(d2.styles.paragraph.len(), d.styles.paragraph.len());
     assert_eq!(d2.styles.character.len(), d.styles.character.len());
     assert_eq!(d2.spreads[0].pages.len(), 2);
+    assert_eq!(d2.spreads[0].pages[0].margins, d.spreads[0].pages[0].margins, "page margins survive the round trip");
+    assert_eq!(d2.parents[0].pages[0].margins, d.parents[0].pages[0].margins, "master margins survive the round trip");
     assert_eq!(d2.spreads[0].items.len(), d.spreads[0].items.len());
     let text = d2.stories.values().find(|s| s.text.starts_with("Hello")).expect("body story");
     assert_eq!(text.text, "Hello\nWorld");
