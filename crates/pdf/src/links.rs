@@ -49,7 +49,11 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                     // covered text outside the link. So `list_label` glyphs are left out, and so are the zero-length glyphs that are not
                     // generated text (kenten marks, ruby, kashidas, tab leaders, a cluster's later glyphs): they
                     // sit over or inside text that is counted already (noted in review).
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| (g.len > 0 || g.generated_text.is_some()) && !g.list_label && g.byte >= *start && g.byte < *end).collect();
+                    let gs: Vec<_> = l
+                        .glyphs
+                        .iter()
+                        .filter(|g| (g.len > 0 || g.generated_text.is_some()) && !g.list_label && g.byte >= *start && g.byte < *end)
+                        .collect();
                     if gs.is_empty() {
                         continue;
                     }
