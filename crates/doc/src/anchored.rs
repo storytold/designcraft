@@ -332,6 +332,39 @@ impl Document {
         }
     }
 
+    /// Could the edit from `old` to this document have left anchored items for
+    /// [`Document::fix_anchored_text_frames`] to repair? Only a story that was added, removed or
+    /// changed can: one that holds anchored items whose ids or stories changed, or whose thread
+    /// changed (a frame deleted or copied). Typing, formatting and moving frames don't, so the
+    /// repair, which walks every story, doesn't run for them. Story by story: unchanged stories
+    /// share their allocation.
+    pub fn anchored_items_changed_since(&self, old: &Document) -> bool {
+        // The anchored items of `st` that the repair looks at: their ids and the stories they show.
+        let anchored = |st: &Story| {
+            let mut out = Vec::new();
+            items(st, 0, &mut |i| out.push((i.id, i.text_frame().map(|t| t.story))));
+            out
+        };
+        for (id, st) in &self.stories {
+            match old.stories.get(id) {
+                Some(before) if Arc::ptr_eq(before, st) => {}
+                Some(before) => {
+                    if before.frames != st.frames || anchored(before) != anchored(st) {
+                        return true;
+                    }
+                }
+                None => {
+                    if has_items(st) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // A removed story: its anchored items went with it, or an anchored frame may show it.
+        let removed = old.stories.iter().filter(|(id, _)| !self.stories.contains_key(id));
+        removed.into_iter().any(|(_, st)| has_items(st) || self.has_anchored_items())
+    }
+
     /// Ids of the items on spreads and parents, and of the items anchored in stories.
     fn live_items(&self) -> HashSet<ItemId> {
         let mut live = HashSet::new();
@@ -557,6 +590,52 @@ mod tests {
         let threads: Vec<usize> = added.iter().map(|id| d.story(*id).unwrap().frames.len()).collect();
         assert_eq!(threads.iter().filter(|&&n| n == 2).count(), 2 * (LAYERS - 1), "{threads:?}");
         assert_eq!(threads.iter().filter(|&&n| n == 1).count(), 2, "{threads:?}");
+    }
+
+    /// The repair's trigger: typing in a story with anchored frames (or in theirs) and moving
+    /// frames leave nothing to repair; copying text with anchored frames, deleting them with
+    /// their text or their host frame, and removing a story they show do.
+    #[test]
+    fn only_edits_that_copy_or_remove_anchored_items_trigger_the_repair() {
+        let (mut d, host) = doc();
+        let (inner, _) = anchor(&mut d, host, "Inner ");
+        let old = d.clone();
+        assert!(!d.anchored_items_changed_since(&old), "nothing changed");
+        // Typing in the host and in the anchored frame's story; moving the host frame.
+        d.story_mut(host).unwrap().insert(0, "Typed ");
+        d.story_mut(inner).unwrap().insert(0, "Typed ");
+        let frame = d.story(host).unwrap().frames[0];
+        d.item_mut(frame).unwrap().xf = designcraft_geom::Affine::translate((10.0, 0.0));
+        assert!(!d.anchored_items_changed_since(&old), "typing and moving");
+        d.check().unwrap();
+        // Text with the anchored frame copied in the document.
+        let mut copied = d.clone();
+        let st = copied.story(host).unwrap();
+        let slice = st.extract(0..st.len());
+        let h = copied.story_mut(host).unwrap();
+        let n = h.len();
+        h.insert_story(n, &slice);
+        assert!(copied.anchored_items_changed_since(&d), "copied");
+        // Deleted with its text, or with the story it is anchored in.
+        let mut deleted = d.clone();
+        let h = deleted.story_mut(host).unwrap();
+        let n = h.len();
+        h.delete(0..n);
+        assert!(deleted.anchored_items_changed_since(&d), "deleted with its text");
+        let mut gone = d.clone();
+        gone.stories.remove(&host);
+        assert!(gone.anchored_items_changed_since(&d), "deleted with its host's story");
+        // The story it shows removed: the frame needs one.
+        let mut lost = d.clone();
+        lost.stories.remove(&inner);
+        assert!(lost.anchored_items_changed_since(&d), "its story removed");
+        // An ordinary text frame added, or text typed in a document without anchored items.
+        let (mut plain, sid) = doc();
+        let before = plain.clone();
+        plain.story_mut(sid).unwrap().insert(0, "Typed ");
+        let lid = plain.default_layer();
+        plain.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "New", ParaFormat::default()).unwrap();
+        assert!(!plain.anchored_items_changed_since(&before));
     }
 
     #[test]

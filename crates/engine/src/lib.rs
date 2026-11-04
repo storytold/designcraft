@@ -817,7 +817,7 @@ impl Session {
         doc.sync_endnote_story();
         // Text and frames copied or deleted: anchored items keep ids and stories of their own. The
         // repair copies and removes stories with their endnotes, so the endnotes follow it.
-        if (st.doc.has_anchored_items() || doc.has_anchored_items()) && doc.fix_anchored_text_frames() > 0 {
+        if doc.anchored_items_changed_since(&st.doc) && doc.fix_anchored_text_frames() > 0 {
             doc.sync_endnote_story();
         }
         st.doc = Arc::new(doc);
