@@ -559,7 +559,7 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
         }
         let Some(document) = s.docs.get_mut(index) else { continue };
         let (doc, meta) = files(dir, document.uid);
-        let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
+        let bytes = designcraft_format::save_checkpoint(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()), None)
             .map_err(|e| EngineError::Other(e.to_string()))?;
         // An entry this run did not write is never replaced, even one made since it checked.
         let replace = access.owns(document.uid);
@@ -579,7 +579,8 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
 /// Publish a document's recovery entry before its optional metadata.
 fn write_entry(access: &Access, dir: &Path, d: &DocState) -> Result<()> {
     let (doc, meta) = files(dir, d.uid);
-    let bytes = designcraft_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = designcraft_format::save_checkpoint(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref()), None)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
     let replace = access.owns(d.uid);
     publish_recovery_file(&doc, &bytes, replace)?;
     access.record(d.uid);
@@ -834,7 +835,7 @@ fn open_with_publisher(s: &mut Session, dir: &Path, mut publish: impl FnMut(&Pat
         // clean up every snapshot this document actually owns rather than an unrelated same uid.
         if let Some(state) = s.docs.get_mut(index) {
             let (document, metadata) = files(&destination, state.uid);
-            let published = designcraft_format::save(state.doc.as_ref())
+            let published = designcraft_format::save_checkpoint(state.doc.as_ref(), None)
                 .map_err(|e| EngineError::Other(e.to_string()))
                 .and_then(|bytes| publish(&document, &bytes));
             match published {

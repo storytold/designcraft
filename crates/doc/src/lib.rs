@@ -557,8 +557,9 @@ pub struct Asset {
     pub data: Arc<Vec<u8>>,
     /// The asset's bytes are in the file but could not be read (a bad CRC, a truncated archive).
     /// Set when the document is opened; saving refuses rather than writing the document without
-    /// the image and losing it (#1592).
-    #[serde(skip)]
+    /// the image and losing it (#1592). Only a crash-recovery checkpoint writes it, so that the
+    /// recovered document is refused in the same way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
     /// Pixel size for raster images.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -71,6 +71,13 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
     save_with_large_entries_from(doc, preview, LARGE_ENTRY)
 }
 
+/// [`save`] for a crash-recovery checkpoint. An asset that could not be read when the document
+/// was opened has no bytes to write, and refusing would leave every later edit uncovered; the
+/// checkpoint lists it, still marked, so the recovered document refuses a save the same way.
+pub fn save_checkpoint(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    write_archive(doc, preview, LARGE_ENTRY, true)
+}
+
 /// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
 /// 4 GiB written without them; the margin covers deflate output that is larger than its input.
 const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
@@ -91,6 +98,10 @@ fn required_version(doc: &Document) -> u32 {
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    write_archive(doc, preview, large_entry, false)
+}
+
+fn write_archive(doc: &Document, preview: Option<&[u8]>, large_entry: usize, checkpoint: bool) -> Result<Vec<u8>, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -118,7 +129,7 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
-            if a.unreadable {
+            if a.unreadable && !checkpoint {
                 // Saving here would write the document without this image, losing it for good.
                 // The file it came from is still intact, so refusing leaves the user something to
                 // recover from (#1592).
@@ -204,7 +215,13 @@ const MAX_TOTAL_BYTES: u64 = 4 << 30;
 /// decompressing more than that: the sizes the archive claims are not trusted.
 fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
     let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
-    let Ok(f) = z.by_name(name) else { return Ok(None) };
+    let f = match z.by_name(name) {
+        Ok(f) => f,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        // Listed but not openable (encrypted, an unsupported compression method): absent would
+        // have the caller carry on without it, as for a bad CRC below.
+        Err(e) => return Err(FormatError::Unreadable(format!("{name} is in the file but could not be opened: {e}"))),
+    };
     let limit = limit.min(*left);
     if f.size() > limit {
         return Err(too_big());
@@ -213,7 +230,9 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
     if let Err(e) = f.take(limit.saturating_add(1)).read_to_end(&mut v) {
         // The entry is there and cannot be read: a bad CRC, a truncated archive. Reporting it as
         // absent made the caller carry on with nothing, which for an asset meant the image opened
-        // empty and the next save dropped it (#1592).
+        // empty and the next save dropped it (#1592). What was decompressed before the failure
+        // still counts, or every damaged entry could expand to the per-entry limit.
+        *left = left.saturating_sub(v.len() as u64);
         return Err(FormatError::Unreadable(format!("{name} is in the file but could not be read: {e}")));
     }
     let n = v.len() as u64;
