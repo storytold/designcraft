@@ -154,13 +154,10 @@ impl DesignApp {
         if drops.is_empty() {
             return;
         }
-        // Each file keeps the pointer it was dropped at; the system is asked once, for those
-        // that came without one.
+        // Dropped together, they go together: several images load the place cursor at once. Each
+        // file keeps the pointer it was dropped at.
         let system = drops.iter().any(|d| d.pointer.is_none()).then(|| self.system_pointer(ctx)).flatten();
-        let mut frame_free = true;
-        for drop in drops {
-            let _ = self.place_dropped(&drop.path, drop.pointer.or(system), &mut frame_free);
-        }
+        self.open_dropped_batch(drops.into_iter().map(|d| (d.path, d.pointer.or(system))).collect());
     }
 
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
