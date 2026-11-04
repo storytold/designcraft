@@ -204,7 +204,6 @@ impl OutputRoot {
 }
 
 /// Whether the file at `path` holds exactly `bytes` (read only as far as they go).
-#[cfg(not(target_arch = "wasm32"))]
 fn same_contents(path: &Path, bytes: &[u8]) -> bool {
     use std::io::Read;
     let Ok(file) = std::fs::File::open(path) else { return false };
