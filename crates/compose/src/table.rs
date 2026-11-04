@@ -125,18 +125,32 @@ impl CellLineExtent {
 
 /// How far line `l`'s drawn glyphs reach below its baseline (0 when none does): their outlines
 /// and the underline and strikethrough bars of their runs (`styles`, the composed story's).
+///
+/// Every term is a distance below the baseline in the frame's y-down space, so they compare:
+/// a glyph's `y` is its offset from the line's baseline (y-down, as the renderer places it at
+/// `baseline + y`), its outline is in font units y-down ([`designcraft_fonts::FontDb::outline`]),
+/// scaled to the frame by `sy`; a bar's rect is in frame space, so the baseline is subtracted.
+/// A glyph with no outline (a space, an empty glyph) has no ink and adds nothing.
 fn ink_depth(l: &crate::Line, styles: &[crate::RunStyle]) -> f64 {
     let fonts = designcraft_fonts::FontDb::global();
     l.glyphs
         .iter()
         .filter(|g| g.visible)
         .map(|g| {
-            let letter = g.y + designcraft_geom::Shape::bounding_box(&*fonts.outline(g.face.get(), g.gid)).y1 * g.sy;
+            let outline = fonts.outline(g.face.get(), g.gid);
+            let letter = if outline.elements().is_empty() {
+                f64::NEG_INFINITY
+            } else {
+                let b = designcraft_geom::Shape::bounding_box(&*outline);
+                // The lower edge whichever way `sy` scales the outline.
+                g.y + (b.y0 * g.sy).max(b.y1 * g.sy)
+            };
             let bars = styles.get(g.style as usize).map_or(f64::NEG_INFINITY, |st| {
                 st.rules(g.x, g.x + g.adv, crate::rule_baseline(st, l, g)).map(|(_, r)| r.y1 - l.baseline).fold(f64::NEG_INFINITY, f64::max)
             });
             letter.max(bars)
         })
+        // Glyphs with neither ink nor bars stay at NEG_INFINITY; NaN from a degenerate scale too.
         .filter(|d| d.is_finite())
         .fold(0.0, f64::max)
 }
@@ -1013,6 +1027,47 @@ mod height_tests {
             placed.origin.y + shading,
             placed.rect.y1
         );
+    }
+
+    /// A rule above a later paragraph is drawn between the lines: it counts with the line above
+    /// it (the deepest line above its bottom edge), which grows nothing the next line doesn't, so
+    /// the row keeps its height and the rule stays inside the cell.
+    #[test]
+    fn a_rule_above_a_later_paragraph_counts_with_the_line_above_it() {
+        let plain = text_cell("xxx\nxxx", 0.0);
+        let mut ruled = plain.clone();
+        let second = ruled.text.text.find('\n').unwrap() + 1;
+        let rule = designcraft_doc::Rule { on: true, weight: 1.0, offset: 12.0, ..Default::default() };
+        ruled.text.format_paras(second..ruled.text.len(), |p| p.para.rule_above = Some(rule.clone()));
+        let layout = measure(&ruled, 92.0);
+        let ft = &layout.text.frames[0];
+        let (first, last) = (&ft.lines[0], &ft.lines[1]);
+        let rule_bottom = ft.decos.iter().map(|d| d.rect.y1).filter(|y| *y > first.baseline && *y < last.baseline).fold(f64::NEG_INFINITY, f64::max);
+        assert!(rule_bottom.is_finite(), "the rule is drawn between the lines: {:?}", ft.decos.iter().map(|d| d.rect).collect::<Vec<_>>());
+        assert!(layout.line_heights[0] >= rule_bottom - plain.insets[2] - 1e-6, "the rule counts with the first line");
+        let height = |cell: Cell| compose_table(single_table(cell), 200.0).frames[0].tables[0].cell(0, 0).unwrap().rect.height();
+        assert!((height(ruled.clone()) - height(plain)).abs() < 1e-6, "the row keeps its height");
+        let composed = compose_table(single_table(ruled), 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        assert!(placed.origin.y + rule_bottom <= placed.rect.y1 + 1e-6 && !placed.overset);
+    }
+
+    /// The terms of [`ink_depth`] compare: a glyph's `y` is relative to the baseline and its
+    /// outline is y-down, so text lowered by a baseline shift reaches that much deeper, and a
+    /// glyph without a descender reaches (almost) nowhere below the baseline.
+    #[test]
+    fn ink_depth_follows_a_baseline_shift() {
+        let depth = |shift: f64| {
+            let mut cell = text_cell("ggg", 0.0);
+            cell.text.format_chars(0..3, |f| f.over.baseline_shift = Some(shift));
+            let layout = measure(&cell, 92.0);
+            ink_depth(&layout.text.frames[0].lines[0], &layout.text.styles)
+        };
+        let (plain, lowered) = (depth(0.0), depth(-3.0));
+        assert!(plain > 1.0, "a g reaches below the baseline: {plain}");
+        assert!((lowered - plain - 3.0).abs() < 1e-6, "{plain} {lowered}");
+        let layout = measure(&text_cell("x x", 0.0), 92.0);
+        assert!(ink_depth(&layout.text.frames[0].lines[0], &layout.text.styles) < 0.5, "a space adds no ink");
     }
 
     #[test]
