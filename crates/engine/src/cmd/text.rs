@@ -211,7 +211,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Character Formatting",
             [],
             None,
-            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}} → null, or {warnings} naming a fontFamily or fontStyle that isn't available (still applied; a substitute draws the text)",
+            "{attrs: {fontFamily?, fontStyle?, size?, leading?: {kind:auto}|{kind:points,value}, tracking?, kerning?, hScale?, vScale?, baselineShift?, fill?, capitalization?, underline?, …}} → null, or, after a fontFamily or fontStyle change, {warnings} naming each font the text now resolves to that isn't available (still applied; a substitute draws the text)",
             has_text_or_frames,
             |s, p| format_chars(s, p.get("attrs").unwrap_or(p))
         ),
