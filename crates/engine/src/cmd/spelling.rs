@@ -1,17 +1,21 @@
-//! Edit → Spelling: check spelling against the bundled US English word list (the public-domain
-//! Moby list used for hyphenation) plus the document's user dictionary; suggestions by edit distance.
+//! Edit → Spelling: check English against the bundled US English word list (the public-domain
+//! Moby list used for hyphenation), suggestions by edit distance; check a language with an
+//! installed Hunspell dictionary against it ([`crate::dictionaries`]); the document's user
+//! dictionary counts for both.
+
+use std::sync::Arc;
 
 use designcraft_compose::hyphen::Dictionary;
 use designcraft_doc::StoryId;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
-use crate::{Result, Session};
+use crate::{Result, Session, dictionaries};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "spelling.check", "Check Spelling…", ["Edit", "Spelling"], Some("Cmd+I"),
-            "{story?, suggestions?: true} → [{story, start, end, word, suggestions}]", has_doc, check),
+            "{story?, suggestions?: true} → [{story, start, end, word, suggestions}] (installed dictionaries suggest for the first 10 words)", has_doc, check),
         cmd!(
             "hyphenation.addException",
             "Add Hyphenation Exception",
@@ -238,21 +242,67 @@ pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
     out
 }
 
+/// What checks the words of a run of text.
+#[derive(Clone)]
+enum Checker {
+    /// The bundled English list.
+    English,
+    /// Hunspell dictionaries installed for the run's language (see [`crate::dictionaries`]).
+    Installed(Vec<Arc<dictionaries::Installed>>),
+    /// Nothing: a language without a dictionary isn't checked.
+    None,
+}
+
+impl Checker {
+    fn for_language(language: &str) -> Checker {
+        let installed = dictionaries::for_language(language);
+        // English has the bundled list to fall back on when no installed dictionary can be read.
+        if designcraft_compose::is_english(language) && !installed.iter().any(|d| d.is_readable()) {
+            Checker::English
+        } else if installed.is_empty() {
+            Checker::None
+        } else {
+            Checker::Installed(installed)
+        }
+    }
+
+    /// Is `word` misspelled? The user dictionary counts.
+    fn misspelled(&self, word: &str, user: &[String]) -> bool {
+        match self {
+            Checker::English => !known(Dictionary::en_us(), user, &word.to_lowercase()),
+            Checker::Installed(dicts) => !user.iter().any(|u| *u == word.to_lowercase()) && dictionaries::check(dicts, word).is_some_and(|ok| !ok),
+            Checker::None => false,
+        }
+    }
+}
+
 /// Misspelled words of a story: byte ranges (acronyms skipped; the user dictionary counts).
 pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String]) -> Vec<std::ops::Range<usize>> {
-    // Text in other languages isn't checked against the English dictionary.
-    let foreign: Vec<std::ops::Range<usize>> = {
-        story
-            .runs()
-            .filter(|(r, f)| {
-                let pi = story.para_at(r.start.min(story.len()));
-                let base = doc.styles.resolve_para(&story.paras[pi.min(story.paras.len().saturating_sub(1))]).1;
-                !designcraft_compose::is_english(&doc.styles.resolve_char(&base, f).language)
-            })
-            .map(|(r, _)| r)
-            .collect()
-    };
-    let dict = Dictionary::en_us();
+    misspellings_with(doc, story, user).into_iter().map(|(r, _)| r).collect()
+}
+
+/// [`misspellings`] with what found each one.
+fn misspellings_with(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String]) -> Vec<(std::ops::Range<usize>, Checker)> {
+    // Each run is checked in its language: English by the bundled list, a language with an
+    // installed dictionary by that dictionary, any other not at all.
+    let mut checkers: Vec<(String, Checker)> = Vec::new();
+    let runs: Vec<(std::ops::Range<usize>, Checker)> = story
+        .runs()
+        .map(|(r, f)| {
+            let pi = story.para_at(r.start.min(story.len()));
+            let base = doc.styles.resolve_para(&story.paras[pi.min(story.paras.len().saturating_sub(1))]).1;
+            let language = doc.styles.resolve_char(&base, f).language;
+            let checker = match checkers.iter().find(|(l, _)| *l == language) {
+                Some((_, c)) => c.clone(),
+                None => {
+                    let c = Checker::for_language(&language);
+                    checkers.push((language, c.clone()));
+                    c
+                }
+            };
+            (r, checker)
+        })
+        .collect();
     let text = &story.text;
     let bytes: Vec<(usize, char)> = text.char_indices().collect();
     let mut out = Vec::new();
@@ -272,29 +322,44 @@ pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::St
         let end = bytes.get(j).map(|b| b.0).unwrap_or(text.len());
         let word = &text[start..end];
         let acronym = word.chars().all(|c| c.is_uppercase()) && word.chars().count() <= 5;
-        if !acronym && !foreign.iter().any(|r| r.contains(&start)) && !known(dict, user, &word.to_lowercase()) {
-            out.push(start..end);
+        if !acronym
+            && let Some((_, checker)) = runs.iter().find(|(r, _)| r.contains(&start))
+            && checker.misspelled(word, user)
+        {
+            out.push((start..end, checker.clone()));
         }
         i = j.max(i + 1);
     }
     out
 }
 
+/// Words that get suggestions from an installed dictionary in one check: those take a few
+/// hundred milliseconds each (the English list's take microseconds, and all get them).
+const DICTIONARY_SUGGESTIONS: usize = 10;
+
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let d = &st.doc;
-    let dict = Dictionary::en_us();
     let want_sugg = p.get("suggestions").and_then(Value::as_bool).unwrap_or(true);
     let stories: Vec<StoryId> = match p.get("story").and_then(Value::as_u64) {
         Some(id) => vec![StoryId(id)],
         None => d.stories.keys().copied().collect(),
     };
     let mut out = Vec::new();
+    let mut dictionary_suggestions = 0;
     for sid in stories {
         let Some(story) = d.story(sid) else { continue };
-        for r in misspellings(d, story, &d.user_words) {
+        for (r, checker) in misspellings_with(d, story, &d.user_words) {
             let word = &story.text[r.clone()];
-            let sugg = if want_sugg { suggest(dict, &word.to_lowercase()) } else { vec![] };
+            let sugg = match checker {
+                _ if !want_sugg => vec![],
+                Checker::English => suggest(Dictionary::en_us(), &word.to_lowercase()),
+                Checker::Installed(dicts) if dictionary_suggestions < DICTIONARY_SUGGESTIONS => {
+                    dictionary_suggestions += 1;
+                    dictionaries::suggest(&dicts, word)
+                }
+                Checker::Installed(_) | Checker::None => vec![],
+            };
             out.push(json!({"story": sid.0, "start": r.start, "end": r.end, "word": word, "suggestions": sugg}));
         }
     }
@@ -391,6 +456,39 @@ mod tests {
         assert!(r[0]["suggestions"].as_array().unwrap().iter().any(|v| v == "the"));
         s.execute("spelling.addWord", &json!({"word": "jumpd"})).unwrap();
         assert_eq!(s.execute("spelling.check", &json!({})).unwrap().as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn installed_dictionaries_check_their_language() {
+        // A language no other test installs: installing is process-wide.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gd_GB.aff"), "SET UTF-8\nTRY abcdefghijklmnopqrstuvwxyz\n").unwrap();
+        std::fs::write(dir.path().join("gd_GB.dic"), "2\nfailte\nslainte\n").unwrap();
+        dictionaries::install_dir(dir.path());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "failte slaintte Thw zzzq"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 15})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"language": "gd"}})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 20, "focus": 24})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"language": "Basque"}})).unwrap();
+        let r = s.execute("spelling.check", &json!({})).unwrap();
+        let words: Vec<&str> = r.as_array().unwrap().iter().map(|m| m["word"].as_str().unwrap()).collect();
+        assert_eq!(words, vec!["slaintte", "Thw"], "Gaelic by its dictionary, English by the bundled list, Basque not at all");
+        assert!(r[0]["suggestions"].as_array().unwrap().iter().any(|v| v == "slainte"));
+        s.execute("spelling.addWord", &json!({"word": "Slaintte"})).unwrap();
+        assert_eq!(s.execute("spelling.check", &json!({})).unwrap().as_array().unwrap().len(), 1, "the user dictionary counts");
+    }
+
+    #[test]
+    fn english_keeps_the_bundled_list_when_its_dictionary_cannot_be_read() {
+        // Harmless to other tests, though process-wide: they get the bundled list as before.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("en_ZA.aff"), "SET UTF-8\n").unwrap();
+        std::fs::write(dir.path().join("en_ZA.dic"), [0xff, 0xfe, 0x00]).unwrap();
+        dictionaries::install_dir(dir.path());
+        assert!(!dictionaries::for_language("English").is_empty());
+        assert!(Checker::for_language("English: USA").misspelled("zzzq", &[]));
     }
 }
 
