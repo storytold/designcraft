@@ -1,19 +1,22 @@
-//! Renaming a swatch: every place the document names a swatch follows the new name.
+//! Every place a document names a swatch: renaming a swatch makes them follow the new name, and
+//! objects pasted from another document bring the swatches they name.
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use designcraft_color::SwatchValue;
 
-use crate::Document;
 use crate::attrs::{CharAttrs, ParaAttrs};
 use crate::item::{Fill, Item, Stroke, TextFrameOptions};
 use crate::story::Story;
 use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs};
 use crate::table::{AltFills, AltStrokes, CellStroke, Table};
+use crate::{Document, ItemId};
 
+/// Visits every swatch name in what it walks, as `visit` (which may change it) says.
 struct Names<'a> {
-    from: &'a str,
-    to: &'a str,
+    visit: &'a dyn Fn(&mut String),
 }
 
 impl Names<'_> {
@@ -65,9 +68,7 @@ impl Names<'_> {
     }
 
     fn s(&self, v: &mut String) {
-        if v == self.from {
-            *v = self.to.to_string();
-        }
+        (self.visit)(v);
     }
     fn o(&self, v: &mut Option<String>) {
         if let Some(v) = v {
@@ -239,7 +240,12 @@ impl Document {
         if from == to {
             return;
         }
-        let n = Names { from, to };
+        let rename = |v: &mut String| {
+            if v == from {
+                *v = to.to_string();
+            }
+        };
+        let n = Names { visit: &rename };
         for w in &mut self.swatches {
             match &mut w.value {
                 SwatchValue::Tint { base, .. } => n.s(base),
@@ -278,5 +284,60 @@ impl Document {
                 }
             }
         }
+    }
+
+    /// Copy from `src` the swatches that `items` of this document (pasted from `src`) name and
+    /// this document lacks: in their fills, strokes and effects, in the text, tables and anchored
+    /// objects of their frames, and the swatches those are built from (a tint's base, a gradient's
+    /// stop swatches). A name this document already has keeps this document's definition, as when
+    /// InDesign pastes between documents. Returns how many were added.
+    pub fn adopt_swatches(&mut self, src: &Document, items: &[ItemId]) -> usize {
+        let used = RefCell::new(BTreeSet::new());
+        let collect = |v: &mut String| {
+            used.borrow_mut().insert(v.clone());
+        };
+        let n = Names { visit: &collect };
+        let mut stories = BTreeSet::new();
+        for id in items {
+            let Some(it) = self.item(*id) else { continue };
+            it.walk(&mut |i| {
+                if let Some(tf) = i.text_frame() {
+                    stories.insert(tf.story);
+                }
+            });
+            // A copy: collecting changes nothing, but the walk takes what it visits mutably.
+            n.item(&mut it.clone(), 0);
+        }
+        for sid in stories {
+            if let Some(st) = self.story(sid) {
+                let mut st = st.clone();
+                st.for_each_text_mut(&mut |x| n.story(x));
+                for e in &mut st.endnotes {
+                    Arc::make_mut(e).text.for_each_text_mut(&mut |x| n.story(x));
+                }
+            }
+        }
+        // The swatches those are built from, from `src`.
+        let mut needed = BTreeSet::new();
+        let mut todo: Vec<String> = used.into_inner().into_iter().collect();
+        while let Some(name) = todo.pop() {
+            if self.swatch(&name).is_some() || !needed.insert(name.clone()) {
+                continue;
+            }
+            match src.swatch(&name).map(|w| &w.value) {
+                Some(SwatchValue::Tint { base, .. }) => todo.push(base.clone()),
+                Some(SwatchValue::Gradient { gradient }) => todo.extend(gradient.stops.iter().filter_map(|s| s.swatch.clone())),
+                _ => {}
+            }
+        }
+        // In `src`'s order, so they line up in the Swatches panel as they did there.
+        let mut added = 0;
+        for w in &src.swatches {
+            if needed.contains(&w.name) && self.swatch(&w.name).is_none() {
+                self.swatches.push(w.clone());
+                added += 1;
+            }
+        }
+        added
     }
 }

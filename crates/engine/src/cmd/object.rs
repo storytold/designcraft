@@ -1077,7 +1077,8 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-/// Deep-copy items `ids` from `src` into `dst` spread `to` (fresh ids; text frames get story copies).
+/// Deep-copy items `ids` from `src` into `dst` spread `to` (fresh ids; text frames get story copies;
+/// the swatches they name that `dst` lacks come along).
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
@@ -1093,6 +1094,8 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    // Objects from another document keep their colours: the swatches they name come along (#1743).
+    dst.adopt_swatches(src, &out);
     Ok(out)
 }
 

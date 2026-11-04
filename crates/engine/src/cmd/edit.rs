@@ -895,3 +895,73 @@ mod preview_tests {
         assert_eq!(s.doc().unwrap().interaction.as_ref().unwrap().label, "Move");
     }
 }
+
+#[cfg(test)]
+mod paste_swatch_tests {
+    use designcraft_color::{Color, Swatch, SwatchValue};
+    use designcraft_doc::ItemId;
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn names(s: &Session) -> Vec<String> {
+        s.doc().unwrap().doc.swatches.iter().map(|w| w.name.clone()).collect()
+    }
+
+    /// Objects pasted into another document keep their colours: the swatches they name come
+    /// along, with the base of a tint, and a name the other document has keeps its own colour. Until
+    /// now they came without them, and a frame filled with a swatch pasted blank (#1743).
+    #[test]
+    fn objects_pasted_into_another_document_bring_the_swatches_they_name() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, color) in [("Brand", "#e05010"), ("Text Green", "#108040"), ("Shared", "#ff0000"), ("Unused", "#123456"), ("Deep Blue", "#102080")]
+        {
+            s.execute("swatch.create", &json!({"name": name, "color": color})).unwrap();
+        }
+        s.edit(|d, _| {
+            d.swatches.push(Swatch {
+                name: "Deep Blue 40%".into(),
+                value: SwatchValue::Tint { base: "Deep Blue".into(), tint: 0.4 },
+                locked: false,
+                named: true,
+                hidden: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Brand"})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [rect], "swatch": "Deep Blue 40%", "weight": 2})).unwrap();
+        let shared = s.execute("frame.create", &json!({"rect": [72, 220, 200, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [shared], "swatch": "Shared"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [220, 72, 400, 200], "content": "text", "text": "Hello"})).unwrap();
+        let (text, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Text Green"}})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect, shared, text]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#0000ff"})).unwrap();
+        let before = names(&s);
+        let pasted: Vec<u64> = s.execute("edit.paste", &json!({})).unwrap()["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        let d = &s.doc().unwrap().doc;
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Brand", "Text Green", "Deep Blue", "Deep Blue 40%"], "the used swatches and the tint's base, in the source's order");
+        let it = d.item(ItemId(pasted[0])).unwrap();
+        assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str()), ("Brand", "Deep Blue 40%"));
+        assert_eq!(d.resolve_color("Brand", 1.0), Some(Color::rgb(224.0 / 255.0, 80.0 / 255.0, 16.0 / 255.0)), "the source's colour");
+        assert_eq!(d.resolve_color("Shared", 1.0), Some(Color::rgb(0.0, 0.0, 1.0)), "a name this document has keeps its colour");
+        let story = d.item(ItemId(pasted[2])).unwrap().text_frame().unwrap().story;
+        assert!(d.story(story).unwrap().chars.iter().any(|r| r.format.over.fill.as_deref() == Some("Text Green")));
+        // One undo step takes the swatches away with the objects.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(names(&s), before);
+        // Pasting again within the source document adds nothing.
+        s.execute("file.close", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(names(&s), before);
+    }
+}
