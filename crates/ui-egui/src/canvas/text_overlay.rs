@@ -90,11 +90,7 @@ pub(super) fn draw_text_selection(
                     quads.push([Point::new(a, r.y0), Point::new(b, r.y0), Point::new(b, r.y1), Point::new(a, r.y1)]);
                 }
             }
-            for (gi, g) in l.glyphs.iter().enumerate() {
-                if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
-                    glyphs.push((li, gi));
-                }
-            }
+            glyphs.extend(compose::selected_glyphs(l, s, e).into_iter().map(|gi| (li, gi)));
         }
         if !quads.is_empty() {
             runs.push((fi, m, quads, glyphs));
