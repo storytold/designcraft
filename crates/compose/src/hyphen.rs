@@ -345,14 +345,15 @@ pub fn korean_paragraph(text: &str, end: usize, glyphs: impl Iterator<Item = (us
     let mut bounds: Vec<usize> = own.iter().map(|(byte, _)| *byte).collect();
     bounds.sort_unstable();
     bounds.dedup();
-    let mut counted: Vec<usize> = Vec::new();
+    // A set and a binary search, not a scan of each: this runs for every paragraph, and again in
+    // the nested-line-style loop, so it stays O(n log n) in the glyphs.
+    let mut counted: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut chars: Vec<char> = Vec::new();
     for (byte, ch) in own {
-        if ch == crate::shape::HIDDEN || counted.contains(&byte) {
+        if ch == crate::shape::HIDDEN || !counted.insert(byte) {
             continue;
         }
-        counted.push(byte);
-        let next = bounds.iter().copied().find(|b| *b > byte).unwrap_or(end).min(end);
+        let next = bounds.get(bounds.partition_point(|b| *b <= byte)).copied().unwrap_or(end).min(end);
         chars.extend(text.get(byte..next).into_iter().flat_map(str::chars).filter(|c| *c != '\n'));
     }
     mostly_hangul_chars(chars.into_iter())
