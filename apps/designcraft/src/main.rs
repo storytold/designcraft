@@ -21,6 +21,8 @@ mod gpu_limits;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "macos")]
+mod pointer;
 mod profile;
 mod window_frame;
 
@@ -228,6 +230,8 @@ fn services() -> Services {
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        #[cfg(target_os = "macos")]
+        pointer: Some(Box::new(pointer::screen_position)),
         ..Default::default()
     }
 }

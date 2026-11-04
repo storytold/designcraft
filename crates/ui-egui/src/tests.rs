@@ -886,6 +886,36 @@ fn dropped_png(name: &str) -> std::path::PathBuf {
     path
 }
 
+/// A frame holding its image as an item pasted into it (how a document from InDesign keeps a
+/// photo) takes a dropped graphic like a graphic frame: the new image replaces the nested one.
+#[test]
+fn a_graphic_dropped_on_a_frame_with_a_nested_image_replaces_it() {
+    let (mut app, frame, inside, _) = app_with_drop_frame();
+    let path = dropped_png("drop-nested-old");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let id = designcraft_doc::ItemId(frame);
+    app.session
+        .edit(|d, _| {
+            let it = d.item_mut(id).unwrap();
+            let mut image = it.clone();
+            image.id = designcraft_doc::ItemId(9_999);
+            image.xf = designcraft_geom::Affine::IDENTITY;
+            it.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(image)] };
+            Ok(())
+        })
+        .unwrap();
+    assert!(app.session.doc().unwrap().doc.item(id).unwrap().has_nested_items());
+    assert_eq!(canvas::drop_frame(&app, Some(inside)), Some(id));
+    let path = dropped_png("drop-nested-new");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(id).unwrap().content else { panic!("the frame holds the new graphic") };
+    assert!(d.assets[&g.asset].name.contains("drop-nested-new"));
+}
+
 #[test]
 fn a_graphic_dropped_on_a_frame_fills_it() {
     let (mut app, frame, inside, outside) = app_with_drop_frame();
@@ -906,6 +936,42 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
+/// A file dragged in from the Finder brings no pointer events (winit sends none during a drag on
+/// macOS): the drop asks the system where the pointer is, so one dropped on a frame fills it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointer() {
+    // At any UI scale: the system's pointer is in unscaled points, egui's are divided by the scale.
+    for zoom in [1.0f32, 2.0] {
+        let (mut app, frame, inside, _) = app_with_drop_frame();
+        // The window's content starts at (300, 200) in egui's points.
+        let window = egui::vec2(300.0, 200.0);
+        app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
+        let path = dropped_png("drop-system-pointer");
+        app.pending_drops.push(crate::PendingDrop {
+            path: path.to_string_lossy().into_owned(),
+            pointer: None,
+            generation: app.input_generation(),
+            starts_batch: true,
+            pointer_sampled: false,
+        });
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(zoom);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
+        let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
+        raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
+        ctx.run_ui(raw, |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+        let _ = std::fs::remove_file(&path);
+        assert!(app.pending_drops.is_empty());
+        let d = &app.session.doc().unwrap().doc;
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object at {zoom}");
+        let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+            panic!("the frame under the pointer is filled at {zoom}")
+        };
+        assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
+    }
 }
 
 #[test]

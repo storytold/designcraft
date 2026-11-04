@@ -121,10 +121,22 @@ pub fn rotate(dir: &Path) -> std::io::Result<(PathBuf, File)> {
     Ok((path, file))
 }
 
-/// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
+/// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`. A message
+/// of several lines (a backtrace) continues on lines that start with a tab, so a line break in
+/// what a message quotes (a file name, an identifier out of a document) can't pass for the start
+/// of another record; other control characters are written as escapes.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
-    format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
+    let mut text = String::with_capacity(message.len());
+    for c in message.chars() {
+        match c {
+            '\n' => text.push_str("\n\t"),
+            '\t' => text.push(c),
+            c if c.is_control() => text.push_str(&c.escape_default().to_string()),
+            c => text.push(c),
+        }
+    }
+    format!("{ts} {level:<5} [{thread}] {target}: {text}\n")
 }
 
 /// Where formatted lines go besides standard error: kept in memory until a file is attached,
@@ -357,7 +369,12 @@ mod tests {
             "2026-10-08T07:59:17.728Z ERROR [main] designcraft_engine::guard: command `frame.create` panicked: boom\n"
         );
         // A multi-line message (a panic with a backtrace) keeps its lines; the record still ends in one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\n\tb\n"));
+        // A name out of a document can't write a second record: its line breaks continue this
+        // one and a carriage return or an escape sequence is spelled out.
+        let forged =
+            format_line("t", log::Level::Warn, "w", "x", "cannot open `a.designcraft\n2026-01-01T00:00:00.000Z INFO  [main] x: all good\r\u{1b}[0m`");
+        assert_eq!(forged, "t WARN  [w] x: cannot open `a.designcraft\n\t2026-01-01T00:00:00.000Z INFO  [main] x: all good\\r\\u{1b}[0m`\n");
     }
 
     #[test]

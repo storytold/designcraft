@@ -72,7 +72,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{BackgroundWriteFn, ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{BackgroundWriteFn, ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -114,6 +114,8 @@ struct PendingDrop {
     pointer: Option<egui::Pos2>,
     generation: InputGeneration,
     starts_batch: bool,
+    /// The system pointer is captured once, before export can defer the drop.
+    pointer_sampled: bool,
 }
 
 /// One admitted `ui.screenshot` request. The token, path, deadline and epoch are app-owned; the

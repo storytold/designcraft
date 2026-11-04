@@ -365,11 +365,20 @@ mod tests {
         saved.execute("file.save", &json!({"path":path})).unwrap();
         let (tx, rx) = mpsc::sync_channel(1);
         app.pdf_export.pending = Some(rx);
+        let samples = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = samples.clone();
+        app.services.pointer = Some(Box::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(egui::pos2(20.0, 20.0))
+        }));
         app.open_dropped_files(&[Arc::new(DroppedDocument(path)) as egui::DroppedFileHandle], None);
         for _ in 0..3 {
             logic_frame(&mut app, &ctx, false);
             assert_eq!(app.session.documents().len(), 1, "export must defer the floating-window drop");
             assert_eq!(app.pending_drops.len(), 1);
+            assert!(app.pending_drops[0].pointer_sampled);
+            assert_eq!(app.pending_drops[0].pointer, None, "floating-window fallback stays captured");
+            assert_eq!(samples.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
         tx.send(Err("synthetic export failure".into())).unwrap();
         logic_frame(&mut app, &ctx, false);
@@ -402,6 +411,7 @@ mod tests {
             pointer,
             generation: app.input_generation(),
             starts_batch: true,
+            pointer_sampled: true,
         });
         logic_frame(&mut app, &ctx, false);
         assert_eq!(app.pending_drops.len(), 1);
@@ -485,6 +495,70 @@ mod tests {
                 assert!(matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
                 app.replay_dropped_files();
                 assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), if separate_batches { 1 } else { 2 }, "replayed exactly once");
+            }
+        }
+    }
+
+    #[test]
+    fn pdf_export_captures_system_drop_pointer_before_deferring_placement() {
+        for zoom in [1.0f32, 2.0] {
+            for available in [false, true] {
+                let ctx = egui::Context::default();
+                let mut app = ready_app(&ctx).unwrap();
+                // App initialization applies the saved UI scale; request the test scale after it.
+                ctx.set_zoom_factor(zoom);
+                let frame = app.run("frame.create", json!({"rect":[10,10,40,40]})).unwrap()["id"].as_u64().unwrap();
+                app.run("selection.set", json!({"ids":[]})).unwrap();
+                app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+                *app.view_mut().unwrap() = crate::View { zoom: 1.0, origin: designcraft_geom::Point::new(-200.0, -200.0), fitted: true, rotation: 0 };
+                let layout = designcraft_tools::CanvasLayout::new(&app.session.doc().unwrap().doc, false);
+                let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+                let point = slot.to_canvas(designcraft_geom::Point::new(20.0, 20.0));
+                let inside = crate::canvas::Xf::new(app.canvas_rect.unwrap(), app.view().unwrap()).to_screen(point);
+                let window = egui::vec2(300.0, 200.0);
+                let pointer = Arc::new(std::sync::Mutex::new(available.then_some(((inside + window).to_vec2() * zoom).to_pos2())));
+                let source = pointer.clone();
+                app.services.pointer = Some(Box::new(move || *source.lock().unwrap()));
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("system-drop.svg");
+                std::fs::write(
+                    &path,
+                    br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##,
+                )
+                .unwrap();
+                app.pending_drops.push(crate::PendingDrop {
+                    path: path.to_string_lossy().into_owned(),
+                    pointer: None,
+                    generation: app.input_generation(),
+                    starts_batch: true,
+                    pointer_sampled: false,
+                });
+                let (tx, rx) = mpsc::sync_channel(1);
+                app.pdf_export.pending = Some(rx);
+                let raw = || {
+                    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
+                    let mut raw =
+                        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
+                    raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
+                    raw
+                };
+                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                assert_eq!(app.pending_drops.len(), 1, "busy export retains the drop");
+                assert!(app.pending_drops[0].pointer_sampled);
+                assert_eq!(app.pending_drops[0].pointer, available.then_some(inside));
+                // Moving the system pointer, or making it available later, cannot retarget the drop.
+                *pointer.lock().unwrap() = Some(egui::pos2(1300.0, 800.0));
+                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                assert_eq!(app.pending_drops[0].pointer, available.then_some(inside));
+                tx.send(Err("synthetic export failure".into())).unwrap();
+                app.logic(&ctx);
+                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                assert!(app.pending_drops.is_empty());
+                let doc = &app.session.doc().unwrap().doc;
+                assert_eq!(doc.spreads[0].items.len(), if available { 1 } else { 2 });
+                assert_eq!(matches!(doc.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)), available);
+                ctx.run_ui(raw(), |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+                assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), if available { 1 } else { 2 }, "exactly once");
             }
         }
     }

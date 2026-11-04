@@ -63,7 +63,7 @@ impl DesignApp {
             for file in std::mem::take(&mut raw.dropped_files) {
                 let path = file.path().to_string_lossy().to_string();
                 if !path.is_empty() {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch });
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch, pointer_sampled: pointer.is_some() });
                     starts_batch = false;
                 }
             }
@@ -142,6 +142,40 @@ impl DesignApp {
         if self.host_order_pending() {
             ctx.request_repaint();
         }
+    }
+
+    /// Open or place the files dropped since the last UI pass, at the pointer. Files dropped
+    /// without pointer events (dragged in from another application) are placed where the system
+    /// says the pointer is, so one dropped on a frame still fills it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_pending_drops(&mut self, ctx: &egui::Context) {
+        // Sample once before a busy export defers placement: moving the mouse while the
+        // worker runs must not move the captured drop. An unavailable pointer stays unavailable.
+        if self.pending_drops.iter().any(|drop| !drop.pointer_sampled) {
+            let system = self.system_pointer(ctx);
+            for drop in &mut self.pending_drops {
+                if !drop.pointer_sampled {
+                    drop.pointer = drop.pointer.or(system);
+                    drop.pointer_sampled = true;
+                }
+            }
+        }
+        self.replay_dropped_files();
+    }
+
+    /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
+    /// for files dropped without pointer events: dragged in from another application, they bring
+    /// none. `None` when the system doesn't say or the window's place isn't known.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let at = (self.services.pointer.as_ref()?)()?;
+        // The system's points are unscaled; egui's (the window's rect too) are divided by the
+        // UI scale.
+        let zoom = ctx.zoom_factor();
+        let at = if zoom.is_finite() && zoom > 0.0 { at / zoom } else { at };
+        let inner = ctx.input(|i| i.viewport().inner_rect)?;
+        let local = at - inner.min.to_vec2();
+        (local.x.is_finite() && local.y.is_finite()).then_some(local)
     }
 
     /// The current state an injected batch belongs to.

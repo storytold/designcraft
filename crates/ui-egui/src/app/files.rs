@@ -187,7 +187,9 @@ impl DesignApp {
             let path = f.path().to_string_lossy().to_string();
             if !path.is_empty() {
                 if defer {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch });
+                    // A floating window already supplied main-window coordinates (or its normal
+                    // no-pointer fallback); never replace those with the system pointer.
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch, pointer_sampled: true });
                     starts_batch = false;
                 } else {
                     let _ = self.place_dropped(&path, pointer, &mut frame_free);
