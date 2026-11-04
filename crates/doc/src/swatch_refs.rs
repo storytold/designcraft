@@ -292,14 +292,20 @@ impl Document {
     /// stop swatches). A name this document already has keeps this document's definition, as when
     /// InDesign pastes between documents. Returns how many were added.
     pub fn adopt_swatches(&mut self, src: &Document, items: &[ItemId]) -> usize {
+        let items: Vec<Item> = items.iter().filter_map(|id| self.item(*id).cloned()).collect();
+        self.adopt_item_swatches(src, &items)
+    }
+
+    /// [`Document::adopt_swatches`] for `items` given as values: objects about to be anchored in
+    /// text, which [`Document::item`] doesn't find. Their frames' stories are this document's.
+    pub fn adopt_item_swatches(&mut self, src: &Document, items: &[Item]) -> usize {
         let used = RefCell::new(BTreeSet::new());
         let collect = |v: &mut String| {
             used.borrow_mut().insert(v.clone());
         };
         let n = Names { visit: &collect };
         let mut stories = BTreeSet::new();
-        for id in items {
-            let Some(it) = self.item(*id) else { continue };
+        for it in items {
             it.walk(&mut |i| {
                 if let Some(tf) = i.text_frame() {
                     stories.insert(tf.story);
@@ -360,6 +366,10 @@ impl Document {
                 self.swatches.push(w.clone());
                 added += 1;
             }
+        }
+        // An adopted gradient's stops show this document's colour for a swatch it already had.
+        if added > 0 {
+            self.refresh_gradient_stops();
         }
         added
     }
