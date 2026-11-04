@@ -794,6 +794,19 @@ impl<'r> Importer<'r> {
             next_id: self.next_id,
             font_scope: 0,
         };
+        // A link from a frame anchored in text is kept -- it is in the document and goes back out
+        // to IDML -- but PDF export finds a link's frame among the spreads' items, where an
+        // anchored frame is not, so the PDF would leave it out without a word. Say so here.
+        for h in &d.hyperlinks {
+            if let designcraft_doc::HyperlinkSource::Item { id } = h.source
+                && d.find(id).is_none()
+            {
+                self.warnings.push(format!(
+                    "hyperlink {}: its source is a frame anchored in text, which PDF export cannot place yet, so the PDF will not have this link",
+                    h.name
+                ));
+            }
+        }
         if let [x, y] = root.get("ZeroPoint").map(nums).unwrap_or_default()[..]
             && let Some(zp) = d.clamp_zero_point([x, y])
         {

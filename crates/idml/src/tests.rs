@@ -1585,6 +1585,58 @@ fn page_item_and_text_hyperlinks_survive_import() {
     );
 }
 
+/// A link from a frame anchored in text is kept, but PDF export finds a link's frame among the
+/// spreads' items, where an anchored frame is not: the import report says the PDF will not have it,
+/// rather than the link going missing from the PDF without a word.
+#[test]
+fn a_link_from_an_anchored_frame_is_kept_and_reported() {
+    const LINKS: &str = r#"
+  <HyperlinkURLDestination Self="hud1" Name="Photo" DestinationURL="https://example.com/photo.jpg" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis1" Name="thumb" SourcePageItem="inl" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis2" Name="img" SourcePageItem="img" Hidden="false"/>
+  <Hyperlink Self="h1" Name="Thumbnail link" Source="hpis1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="Frame link" Source="hpis2" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+"#;
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+        <Rectangle Self="inl" ItemTransform="1 0 0 1 0 0">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+          <AnchoredObjectSetting AnchoredPosition="InlinePosition"/>
+        </Rectangle>
+        <Content> here.</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+    assert!(d.hyperlinks.iter().any(|h| h.name == "Thumbnail link"), "the link is kept: {:?}", d.hyperlinks);
+    let anchored: Vec<&String> = r.warnings.iter().filter(|w| w.contains("anchored in text")).collect();
+    assert_eq!(anchored.len(), 1, "one report, for the anchored frame's link: {:?}", r.warnings);
+    assert!(anchored[0].contains("hyperlink Thumbnail link"), "{anchored:?}");
+}
+
 #[test]
 fn round_trips_index_references() {
     use designcraft_doc::index::IndexRange;
