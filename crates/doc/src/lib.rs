@@ -216,17 +216,23 @@ impl Document {
             .iter()
             .map(|e| {
                 let mut word = String::new();
+                // The word's length in chars, kept as it grows (counting it again at every `~`
+                // was quadratic in the exception's length).
+                let mut len = 0;
                 let mut breaks = Vec::new();
                 for c in e.trim().chars() {
                     if c == '~' {
-                        if breaks.last() != Some(&word.chars().count()) && !word.is_empty() {
-                            breaks.push(word.chars().count());
+                        if breaks.last() != Some(&len) && len > 0 {
+                            breaks.push(len);
                         }
                     } else {
-                        word.extend(c.to_lowercase());
+                        for l in c.to_lowercase() {
+                            word.push(l);
+                            len += 1;
+                        }
                     }
                 }
-                breaks.retain(|b| *b < word.chars().count());
+                breaks.retain(|b| *b < len);
                 (word, breaks)
             })
             .collect()

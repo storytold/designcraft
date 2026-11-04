@@ -3,6 +3,7 @@
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
+//! Danish is `hyph-da.tex` 2011-01-11 from hyph-utf8 (Frank Jensen), LPPL or MIT, taken under MIT;
 //! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
@@ -539,6 +540,18 @@ mod tests {
         assert_eq!(h("Universidade"), "Uni-ver-si-dade");
         assert_eq!(h("experiência"), "ex-pe-ri-ên-cia");
         assert_eq!(h("pós-graduação"), "pós-gra-du-a-ção", "each part of a compound");
+    }
+
+    #[test]
+    fn danish_uses_the_hyph_da_patterns() {
+        let da = Lang::for_language("Danish").unwrap();
+        assert_eq!(da, Lang::Patterns(hypher::Lang::Danish));
+        assert_eq!(da, Lang::for_language("da").unwrap());
+        assert_ne!(da, Lang::English);
+        assert_ne!(da, Lang::for_language("Norwegian").unwrap());
+        for w in ["bacheloruddannelser", "industrialiseringens", "samarbejdspartnere"] {
+            assert!(!hyphen_points_in(w, &Limits::default(), da).is_empty(), "{w} gets break points");
+        }
     }
 
     #[test]
