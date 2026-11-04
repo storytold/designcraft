@@ -46,16 +46,6 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("New Paragraph Style", ["Neues Absatzformat", "Nouveau style de paragraphe", "Nuevo estilo de párrafo", "新規段落スタイル", "新建段落样式"]),
     ("New Character Style", ["Neues Zeichenformat", "Nouveau style de caractère", "Nuevo estilo de carácter", "新規文字スタイル", "新建字符样式"]),
     (
-        "Apply Style to Selection",
-        [
-            "Format auf Auswahl anwenden",
-            "Appliquer le style à la sélection",
-            "Aplicar estilo a la selección",
-            "選択範囲にスタイルを適用",
-            "将样式应用于选区",
-        ],
-    ),
-    (
         "Clear Frame Fitting Options",
         [
             "Rahmeneinpassungsoptionen löschen",
