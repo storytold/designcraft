@@ -36,6 +36,8 @@ pub(crate) struct StoryWriter<'a, 'f> {
     /// Number shown on the next footnote and endnote of the current story.
     next_footnote: u32,
     next_endnote: u32,
+    /// Where footnote and endnote numbering starts in each story, built once per export.
+    starts: designcraft_doc::numbering::NumberStarts,
     /// Endnotes met so far: (number, list item markup).
     endnotes: Vec<(u32, String)>,
     /// Names each packaged file (a package path, or a data URI for single-file HTML). Without
@@ -72,6 +74,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             endnote_ids: 0,
             next_footnote: 1,
             next_endnote: 1,
+            starts: doc.number_starts(),
             endnotes: Vec::new(),
             img_src,
             images: BTreeMap::new(),
@@ -103,8 +106,8 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     pub(crate) fn story(&mut self, sid: StoryId, heading_ids: Option<&str>) -> String {
         let Some(st) = self.doc.story(sid) else { return String::new() };
         self.heading_ids = heading_ids.map(str::to_string);
-        self.next_footnote = self.doc.footnote_start(sid);
-        self.next_endnote = self.doc.endnote_start(sid);
+        self.next_footnote = self.starts.footnote(sid);
+        self.next_endnote = self.starts.endnote(sid);
         let mut out = String::new();
         self.paragraphs(st, 0, "", &mut out);
         out
