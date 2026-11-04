@@ -76,9 +76,12 @@ flo_curves = "0.8"
 qrcodegen = "1.8"
 quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
-# INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, tracking its main branch
+# INDD/INDT → IDML conversion for File › Open: storytold/indd-utils, pinned by rev as every other
+# git dependency here is. It parses untrusted INDD files, and `branch = "main"` meant any
+# `cargo update` -- Dependabot runs them -- pulled whatever was on that branch into the parser
+# without review (#1599).
 # (MIT OR Apache-2.0, no dependencies, builds for wasm).
-indd = { git = "https://github.com/storytold/indd-utils", branch = "main" }
+indd = { git = "https://github.com/storytold/indd-utils", rev = "7f3060e5bce78d21ea70e0d5eacb96edce15dfbe" }
 
 # Which paths stored in documents may be followed (craft-libs).
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
