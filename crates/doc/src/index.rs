@@ -6,7 +6,7 @@
 //! index composes the document to find each mark's page and writes a story with "Index Title",
 //! "Index Section Head" and "Index Level n" paragraph styles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -203,20 +203,32 @@ fn record_ref(n: &mut Node, res: &Resolved) {
 pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> String) -> Vec<(String, String)> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
     let mut heads: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // One entry per topic whatever the language of its references: a topic sorts with `lj`, `nj`
+    // and `dž` as letters, and takes its section head by them, when any of its references is in a
+    // language that has them.
+    let path = |res: &Resolved| res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).map(|t| t.trim().to_string()).collect::<Vec<_>>();
+    let mut with_digraphs: BTreeSet<Vec<String>> = BTreeSet::new();
+    for res in refs.iter().filter(|res| has_digraphs(&res.language)) {
+        let p = path(res);
+        for n in 1..=p.len() {
+            with_digraphs.insert(p[..n].to_vec());
+        }
+    }
     for res in refs {
         let topics: Vec<&String> = res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).collect();
         if topics.is_empty() {
             continue;
         }
-        let digraphs = has_digraphs(&res.language);
+        let p = path(res);
+        let digraphs = |i: usize| p.get(..=i).is_some_and(|k| with_digraphs.contains(k));
         let source = |i: usize, t: &'_ String| res.r.sort.get(i).filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| t.to_string());
         let keys: Vec<(String, String)> = topics
             .iter()
             .enumerate()
-            .map(|(i, t)| (format!("{}\u{0}{}", sort_key(&source(i, t), digraphs), t.trim()), t.trim().to_string()))
+            .map(|(i, t)| (format!("{}\u{0}{}", sort_key(&source(i, t), digraphs(i)), t.trim()), t.trim().to_string()))
             .collect();
         if let (Some((key, _)), Some(t)) = (keys.first(), topics.first()) {
-            heads.entry(key.clone()).or_insert_with(|| section_head(&source(0, t), digraphs));
+            heads.entry(key.clone()).or_insert_with(|| section_head(&source(0, t), digraphs(0)));
         }
         let n = descend(&mut root, &keys);
         record_ref(n, res);
@@ -426,6 +438,41 @@ mod tests {
         assert_eq!(sorted(&["lopta", "Ljubljana"], "English: USA").0, ["Ljubljana", "lopta"]);
         // The letters with marks follow their base letter in any language.
         assert_eq!(sorted(&["dan", "cvet", "čaj"], "English: USA").0, ["cvet", "čaj", "dan"]);
+    }
+
+    /// A topic referenced from Serbian and English text is one entry, sorted and headed as Serbian.
+    #[test]
+    fn a_topic_in_two_languages_is_one_entry() {
+        let at = |topics: &[&str], language: &str, page: usize| Resolved {
+            language: language.into(),
+            ..r(topics, IndexRange::CurrentPage, Some((page, page)))
+        };
+        for languages in [["English: USA", "Serbian: Latin"], ["Serbian: Latin", "English: USA"]] {
+            let refs = vec![
+                at(&["Ljubljana"], languages[0], 0),
+                at(&["Ljubljana"], languages[1], 2),
+                at(&["lopta"], "English: USA", 1),
+                at(&["Grad", "Ljubljana"], languages[0], 3),
+                at(&["Grad", "Ljubljana"], languages[1], 4),
+                at(&["Grad", "Loznica"], "English: USA", 5),
+            ];
+            let spec = IndexSpec { title: String::new(), ..IndexSpec::default() };
+            let lines: Vec<String> = build(&spec, &refs, &|p| (p + 1).to_string()).iter().map(|(s, t)| format!("{s}|{t}")).collect();
+            assert_eq!(
+                lines,
+                [
+                    "Index Section Head|G",
+                    "Index Level 1|Grad",
+                    "Index Level 2|Loznica  6",
+                    "Index Level 2|Ljubljana  4, 5",
+                    "Index Section Head|L",
+                    "Index Level 1|lopta  2",
+                    "Index Section Head|Lj",
+                    "Index Level 1|Ljubljana  1, 3",
+                ],
+                "{languages:?}"
+            );
+        }
     }
 
     #[test]
