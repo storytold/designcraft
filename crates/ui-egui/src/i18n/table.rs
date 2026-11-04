@@ -1241,7 +1241,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Font Family:", ["Font Family:", "Famille de polices :", "Familia de fuentes:", "Font Family:", "字体系列："]),
     ("Font Size:", ["Font Size:", "Corps :", "Tamaño:", "Font Size:", "字体大小："]),
     ("Font Style:", ["Font Style:", "Style de police :", "Estilo de fuente:", "Font Style:", "字体样式："]),
-    ("Footer Rows", ["Footer Rows", "Lignes de pied de tableau", "Líneas de pie de página", "Footer Rows", "表尾行"]),
+    ("Footer Rows", ["Footer Rows", "Lignes de pied de tableau", "Filas de pie de tabla", "Footer Rows", "表尾行"]),
     ("Footnote Options", ["Footnote Options", "Options des notes de bas de page", "Opciones de notas al pie", "Footnote Options", "脚注选项"]),
     ("Form Field", ["Form Field", "Champ de formulaire", "Campo de formulario", "Form Field", "表单字段"]),
     ("Format:", ["Format:", "Format :", "Formato:", "Format:", "格式："]),
@@ -1264,7 +1264,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         [
             "Horizontal Gridline Every:",
             "Ligne de grille horizontale tous les:",
-            "Línea horizontal de rejilla Horizontal cada:",
+            "Línea horizontal de rejilla cada:",
             "Horizontal Gridline Every:",
             "水平网格线间隔：",
         ],
