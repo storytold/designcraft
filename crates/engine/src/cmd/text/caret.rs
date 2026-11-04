@@ -215,8 +215,10 @@ pub(super) fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
+        let mut piece = d.text_story(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?.extract(r.clone());
+        // A dragged copy gets fresh ids for its anchored objects, as a pasted one (#2284).
+        if copy { crate::cmd::object::renumber_slice(d, None, &mut piece); }
         let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
         let mut at = b;
         if !copy {
             st.delete(r.clone());
