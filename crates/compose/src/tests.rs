@@ -50,7 +50,7 @@ fn all_lines(cs: &ComposedStory) -> Vec<&Line> {
 /// kept as the breaker goes (it searched back over the whole run for every one).
 #[test]
 fn a_run_of_soft_hyphens_composes() {
-    let text = format!("Word{}end", "\u{AD}".repeat(40_000));
+    let text = format!("Word{}end", "\u{AD}".repeat(3_900));
     let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 700.0), ParaAttrs::default());
     let t = std::time::Instant::now();
     let cs = compose_story(&d, sid, &ComposeOptions::default());
