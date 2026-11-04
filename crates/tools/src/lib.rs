@@ -300,8 +300,7 @@ impl ToolContext<'_> {
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
-        let s = self.doc.spread(sr)?;
-        s.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
+        self.doc.hit_parent_item(sr, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
     /// Spread-space → canvas transform of the spread holding item `id`.
