@@ -37,7 +37,7 @@ fn escape_value(v: &str) -> String {
     out
 }
 
-/// A tag value with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
+/// A tag value (cut to [`crate::MAX_NAME_CHARS`]: style names are copied into every paragraph) with the escapes `escape_value` writes (`\\`, `\<`, `\>`) decoded. Any other
 /// backslash, including a trailing one, stays literal, as older files and InDesign's `\:` expect.
 fn unescape_value(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
@@ -53,7 +53,7 @@ fn unescape_value(v: &str) -> String {
             out.push(c);
         }
     }
-    out
+    crate::capped_name(out)
 }
 
 /// The first format version whose `cFont` and `cTypeface` values are escaped like style names.
@@ -62,7 +62,7 @@ const ESCAPED_FONTS_VERSION: u32 = 8;
 
 /// A `cFont` or `cTypeface` value: decoded in files that escape it, literal in older ones.
 fn font_value(v: &str, escaped: bool) -> String {
-    if escaped { unescape_value(v) } else { v.to_string() }
+    if escaped { unescape_value(v) } else { crate::capped_name(v.to_string()) }
 }
 
 /// `story` as Tagged Text.
@@ -220,7 +220,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
                     // keeps its style's size (#1593).
                     "cSize" => fmt.over.size = value.trim().parse().ok().and_then(designcraft_doc::attrs::imported_type_size),
                     "DefineParaStyle" | "DefineCharStyle" => {
-                        let nm = value.split('=').next().unwrap_or("").to_string();
+                        let nm = crate::capped_name(value.split('=').next().unwrap_or("").to_string());
                         let (list, seen) =
                             if name == "DefineParaStyle" { (&mut para_styles, &mut para_seen) } else { (&mut char_styles, &mut char_seen) };
                         if !nm.is_empty() && seen.insert(nm.clone()) {
@@ -445,5 +445,12 @@ mod tests {
             u16.extend(u.to_le_bytes());
         }
         assert_eq!(import(&u16).unwrap().story.text, "Hi");
+    }
+
+    #[test]
+    fn a_long_style_name_is_cut() {
+        let name = "N".repeat(100_000);
+        assert_eq!(unescape_value(&name).len(), crate::MAX_NAME_CHARS);
+        assert_eq!(unescape_value("Body"), "Body");
     }
 }
