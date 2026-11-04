@@ -1,6 +1,6 @@
 use super::column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_drag};
 use super::guides::guide_drag;
-use super::ime::{finish_pending_ime_delete, ime_event, ime_follow_caret, typed_text};
+use super::ime::{finish_pending_ime_delete, ime_event, japanese_input_source, typed_text};
 use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
@@ -294,14 +294,8 @@ fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f
 
 /// Text typed with no composition: into the story the caret is in now.
 fn insert_typed(app: &mut DesignApp, t: &str, shift: bool) {
-    // The caret may have moved to another story earlier this frame (a click).
-    ime_follow_caret(app);
-    let typed = typed_text(t, app.ime_japanese_typing, shift, cfg!(target_os = "macos"));
-    // Letters straight from the keys: the input method is in its Roman mode.
-    if !t.trim().is_empty() {
-        app.ime_japanese_typing = false;
-    }
-    let _ = app.run("text.insert", json!({"text": typed}));
+    let japanese = app.input_source.as_deref().is_some_and(japanese_input_source);
+    let _ = app.run("text.insert", json!({"text": typed_text(t, japanese, shift)}));
 }
 
 /// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
