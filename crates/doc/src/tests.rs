@@ -370,3 +370,21 @@ fn check_is_linear_in_the_frames() {
     Arc::make_mut(d.stories.get_mut(&sid).unwrap()).frames.push(ItemId(u64::MAX));
     assert!(matches!(d.check(), Err(DocError::NoItem(ItemId(u64::MAX)))));
 }
+
+/// Exceptions are read in one pass: breaks are char positions of the lowercased word, a break
+/// at the start, at the end or twice in a row counts once or not at all, and a long exception
+/// full of breaks takes no longer than its length.
+#[test]
+fn hyphenation_exceptions_are_read_in_one_pass() {
+    let mut d = Document::new(&NewDocument::default());
+    d.hyphenation_exceptions = vec!["~Ty~~po~graph~y~".into(), "İs~tanbul".into()];
+    let map = d.hyphenation_exception_map();
+    assert_eq!(map["typography"], [2, 4, 9]);
+    // `İ` lowercases to two chars: positions count the lowercased word.
+    assert_eq!(map["i\u{307}stanbul"], [3]);
+    d.hyphenation_exceptions = vec!["a~".repeat(200_000)];
+    let t = std::time::Instant::now();
+    let map = d.hyphenation_exception_map();
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(map.values().next().map(Vec::len), Some(199_999));
+}
