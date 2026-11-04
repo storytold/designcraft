@@ -677,7 +677,10 @@ fn glyph_outlines(glyphs: &[PlacedGlyph], size: f64, tan: f64) -> BezPath {
     let k = size / g0.face.upem;
     for g in glyphs {
         // A .notdef the font leaves empty prints as nothing, as InDesign exports it (the screen
-        // shows a box, and Preflight lists the character).
+        // shows a box, and Preflight lists the character). `missing_box` is `Some` exactly when
+        // the font's .notdef is empty. Only PDF text painting calls this function: outline
+        // conversion and the screen still get the box from `FontDb::outline`. The glyphs after it
+        // keep their places: each is placed from its own position.
         if g.gid == 0 && db.missing_box(&g.face).is_some() {
             continue;
         }
