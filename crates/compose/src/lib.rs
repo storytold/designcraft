@@ -5623,11 +5623,9 @@ fn band_quad(x0: f64, x1: f64, top: f64, bot: f64) -> [Point; 4] {
     [Point::new(x0, top), Point::new(x1, top), Point::new(x1, bot), Point::new(x0, bot)]
 }
 
-/// Highlight rectangles for bytes `s..e` on `l`. `past_end` extends the line-end caret when the
-/// selection continues onto the next line. Stacked rows (warichu) each get their own band.
 /// The glyphs of line `l` in the selected range `s..e`, by index. A cluster's other glyphs (subscripts,
 /// marks, and in right-to-left text the base that follows its first mark) carry no length of their
-/// own but belong to it; generated ones (a list label, a line-end hyphen) never are selected.
+/// own but belong to it; generated ones (a list label, a line-end hyphen) are never selected.
 fn selected_cluster_glyphs(l: &Line, s: usize, e: usize) -> impl Iterator<Item = usize> {
     // The byte of the cluster being walked, once its first glyph has been found.
     let mut cluster = None;
@@ -5642,6 +5640,8 @@ pub fn selected_glyphs(l: &Line, s: usize, e: usize) -> Vec<usize> {
     selected_cluster_glyphs(l, s, e).filter(|i| l.glyphs.get(*i).is_some_and(|g| g.visible)).collect()
 }
 
+/// Highlight rectangles for bytes `s..e` on `l`. `past_end` extends the line-end caret when the
+/// selection continues onto the next line. Stacked rows (warichu) each get their own band.
 pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Point; 4]> {
     let selected: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= s && g.byte < e).collect();
     let stacked = selected.iter().any(|g| on_stacked_row(&selected, g));
