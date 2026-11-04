@@ -313,9 +313,7 @@ fn validate_place_cursor(s: &mut Session, command: &str) -> Result<()> {
     }
     let valid = s.loaded.iter().chain(s.loaded_queue.iter()).all(|image| s.doc().is_ok_and(|d| d.doc.assets.contains_key(&image.asset)));
     if !valid {
-        s.loaded = None;
-        s.loaded_queue.clear();
-        s.set_tool("selection");
+        s.unload_place_cursor();
         return Err(bad(command, "the loaded graphic is no longer in the document"));
     }
     Ok(())

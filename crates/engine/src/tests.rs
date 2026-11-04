@@ -2127,6 +2127,33 @@ fn undoing_loaded_assets_cancels_every_placement_cursor() {
     }
 }
 
+/// Switching, opening or closing a document empties the place cursor and leaves its tool: a click
+/// on the canvas then selects, instead of failing with nothing loaded. Another tool stays.
+#[test]
+fn changing_documents_unloads_the_place_cursor_and_its_tool() {
+    let changes: [fn(&mut Session); 3] = [
+        |s| s.set_active(0),
+        |s| {
+            s.execute("file.new", &json!({})).unwrap();
+        },
+        |s| s.close_document(1),
+    ];
+    for (n, change) in changes.into_iter().enumerate() {
+        let mut s = session();
+        s.execute("file.new", &json!({})).unwrap();
+        load_test_images(&mut s, 3);
+        assert_eq!(s.tool_id(), "placeGun");
+        change(&mut s);
+        assert!(s.loaded.is_none() && s.loaded_queue.is_empty(), "change {n}");
+        assert_eq!(s.tool_id(), "selection", "change {n}");
+        // Holding another tool, the change keeps it.
+        s.execute("file.new", &json!({})).unwrap();
+        s.set_tool("rectangle");
+        s.set_active(0);
+        assert_eq!(s.tool_id(), "rectangle", "change {n}");
+    }
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]
