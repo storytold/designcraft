@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::bytes::{PREVIEW_PX, to_bytes};
-use super::bytes::{base64_decode, load_bytes};
+use super::bytes::{base64_decode, load_bytes, without_native_extension};
 use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
@@ -14,6 +14,10 @@ pub struct RecentPreview {
     pub rgba: Vec<u8>,
 }
 
+/// The most pixels a recent file's preview may have to be shown (its PNG is bounded by
+/// `designcraft_format::MAX_PREVIEW_BYTES`, but a small PNG can claim a huge picture).
+const MAX_PREVIEW_PIXELS: u64 = 1 << 24;
+
 /// The picture a `.designcraft` file saved of its first page; None when the file is gone, isn't
 /// ours, or was saved before files had one (it gets one when saved again).
 pub fn recent_preview(path: &str) -> Option<RecentPreview> {
@@ -21,6 +25,12 @@ pub fn recent_preview(path: &str) -> Option<RecentPreview> {
     {
         // Only the zip directory and the preview entry are read, not the whole document.
         let png = designcraft_format::read_preview(std::io::BufReader::new(crate::io::open(path).ok()?))?;
+        // A preview is a small picture: one whose header claims more pixels than that isn't
+        // decoded (a decode is bounded, but not at thumbnail size).
+        let (w, h) = designcraft_images::pixel_size(&png)?;
+        if u64::from(w).saturating_mul(u64::from(h)) > MAX_PREVIEW_PIXELS {
+            return None;
+        }
         let img = designcraft_images::decode_rgba(&png)?;
         let (width, height) = img.dimensions();
         Some(RecentPreview { width, height, rgba: img.into_raw() })
@@ -128,6 +138,8 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
 #[cfg(not(target_arch = "wasm32"))]
 fn document_fonts_folder(dir: &std::path::Path) -> std::path::PathBuf {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
+    // A bare file name has an empty parent; directory traversal needs an explicit `.`.
+    let dir = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir };
     let exact = dir.join(DOCUMENT_FONTS_FOLDER);
     if crate::io::is_dir(&exact) {
         return exact;
@@ -150,7 +162,8 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
     if let Some(n) = str_param(p, "name") {
-        d.title = n.to_string();
+        // Titled as an IDML file opened from bytes is: without its extension.
+        d.title = without_native_extension(n).to_string();
     }
     let i = s.add_document(DocState::new(d, None));
     Ok(json!({"index": i, "warnings": warnings}))
@@ -286,6 +299,75 @@ mod document_fonts_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn document_fonts_are_found_for_bare_and_explicit_paths() {
+        // Only the child changes its working directory; parallel tests keep theirs.
+        let dir = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cmd::file::open::document_fonts_tests::document_font_paths_child", "--ignored", "--nocapture"])
+            .env("DESIGNCRAFT_TEST_DOCUMENT_FONT_PATHS", "1")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("test result: ok. 1 passed; 0 failed;"), "the subprocess helper must run exactly once: {stdout}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "subprocess helper, executed by document_fonts_are_found_for_bare_and_explicit_paths"]
+    fn document_font_paths_child() {
+        const FAMILY: &str = "DocFont Bare Path Test";
+        assert!(std::env::var_os("DESIGNCRAFT_TEST_DOCUMENT_FONT_PATHS").is_some(), "run through the parent test");
+        let cwd = std::env::current_dir().unwrap();
+        std::fs::create_dir("nested").unwrap();
+        std::fs::create_dir("other").unwrap();
+        for extension in ["idml", "designcraft"] {
+            let path = PathBuf::from(format!("t.{extension}"));
+            write_document(&cwd.join(&path), FAMILY);
+            write_document(&cwd.join("other").join(&path), FAMILY);
+            assert_eq!(open(&mut Session::new(), &path)["documentFonts"], 0, "no font folder: {path:?}");
+        }
+
+        let roots = crate::file_access::AutomationRoots::new(&[cwd.as_path()], &[]).unwrap();
+        for folder in ["Document fonts", DOCUMENT_FONTS_FOLDER] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(Path::new(folder).join("case.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
+            if folder == DOCUMENT_FONTS_FOLDER {
+                // Both spellings exist on case-sensitive file systems; the exact name still wins.
+                assert_eq!(super::document_fonts_folder(Path::new("")), Path::new(".").join(DOCUMENT_FONTS_FOLDER));
+            }
+            for extension in ["idml", "designcraft"] {
+                let name = format!("t.{extension}");
+                for path in [PathBuf::from(&name), Path::new(".").join(&name), Path::new("nested/..").join(&name), cwd.join(&name)] {
+                    let mut s = Session::new();
+                    let r = crate::file_access::confine(roots.as_ref(), || open(&mut s, &path));
+                    assert_eq!(r["documentFonts"], 1, "{folder}, {path:?}: {r}");
+                    let f = font_entry(&mut s, FAMILY);
+                    assert_eq!((f["missing"].clone(), f["source"].clone()), (json!(false), json!("document")), "{path:?}: {f}");
+                }
+            }
+        }
+
+        // Opening a second document without the folder must not inherit the first one's font.
+        let mut s = Session::new();
+        assert_eq!(open(&mut s, Path::new("t.idml"))["documentFonts"], 1);
+        assert_eq!(open(&mut s, Path::new("other/t.designcraft"))["documentFonts"], 0);
+        assert_eq!(font_entry(&mut s, FAMILY)["missing"], true);
+        s.execute("file.activate", &json!({"index": 0})).unwrap();
+        assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
+
+        // Normalising the directory must not grant access outside the automation read root.
+        let restricted = crate::file_access::AutomationRoots::new(&[Path::new("other")], &[]).unwrap();
+        let mut doc = s.doc().unwrap().doc.as_ref().clone();
+        let (scope, faces, _) = crate::file_access::confine(restricted.as_ref(), || super::load_document_fonts(&mut doc, "t.idml"));
+        assert!(scope.is_none());
+        assert_eq!(faces, 0);
+        assert_eq!(doc.font_scope, 0);
+    }
+
     #[test]
     fn a_document_without_the_folder_opens_as_before() {
         let dir = std::env::temp_dir().join(format!("dc-open-docfonts-none-{}", std::process::id()));
@@ -410,6 +492,66 @@ mod document_fonts_tests {
         let r = s.execute("type.italic", &json!({"on": false})).unwrap();
         assert_eq!(r["fontStyle"], "Regular", "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod open_bytes_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn legacy_and_idml_bytes_named_as_indesign_files_open_without_conversion() {
+        let mut maker = Session::new();
+        maker.execute("file.new", &json!({})).unwrap();
+        let idml = designcraft_idml::export_idml(&maker.doc().unwrap().doc);
+        let base64 = super::super::bytes::base64_encode(&idml);
+        let legacy = super::super::bytes::base64_encode(&serde_json::to_vec(&maker.doc().unwrap().doc).unwrap());
+        for name in ["Brochure.indd", "Brochure.INDT"] {
+            let mut s = Session::new();
+            s.execute("file.openBytes", &json!({"name": name, "base64": legacy})).unwrap();
+            assert_eq!(s.documents().len(), 1, "legacy: {name}");
+            assert_eq!(s.doc().unwrap().doc.title, name, "legacy: {name}");
+        }
+        for command in ["file.openBytes", "file.openIdml"] {
+            for name in ["Brochure.indd", "Brochure.INDT"] {
+                let mut s = Session::new();
+                s.execute(command, &json!({"name": name, "base64": base64})).unwrap();
+                assert_eq!(s.documents().len(), 1, "{command}: {name}");
+                assert_eq!(s.doc().unwrap().doc.title, "Brochure", "{command}: {name}");
+            }
+        }
+    }
+
+    /// A `.designcraft` file opened from bytes under its file name (a browser or host passes the
+    /// name it has) is titled without the extension, as an IDML file is, so saving it gives
+    /// `Brochure.designcraft` and not `Brochure.designcraft.designcraft`.
+    #[test]
+    fn open_bytes_titles_a_native_document_without_its_extension() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let native = s.execute("file.serialize", &json!({})).unwrap();
+        for (name, title) in [
+            ("Brochure.designcraft", "Brochure"),
+            ("Brochure.DesignCraft", "Brochure"),
+            ("Brochure", "Brochure"),
+            ("Brochure.v2", "Brochure.v2"),
+            ("Brochure.indd", "Brochure.indd"),
+            ("Brochure.INDT", "Brochure.INDT"),
+            ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+            (".designcraft", ".designcraft"),
+            // Names that aren't ASCII: cutting the extension's length off the end of the last one
+            // would land inside its `é`.
+            ("Präsentation.designcraft", "Präsentation"),
+            ("日本.DESIGNCRAFT", "日本"),
+            ("é", "é"),
+            ("édesigncraft", "édesigncraft"),
+        ] {
+            let r = s.execute("file.openBytes", &json!({"name": name, "base64": native["base64"]})).unwrap();
+            let st = &s.documents()[r["index"].as_u64().unwrap() as usize];
+            assert_eq!((st.doc.title.as_str(), st.title()), (title, title.to_string()), "{name}");
+        }
     }
 }
 
