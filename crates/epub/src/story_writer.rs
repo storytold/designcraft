@@ -106,7 +106,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             let table = pf
                 .table
                 .and_then(|id| st.tables.get(&id))
-                .filter(|_| text.find(story::TABLE_ANCHOR).is_some_and(|at| !doc.hides_run(&base, st.char_format_at(r.start + at))));
+                .filter(|_| text.find(story::TABLE_ANCHOR).is_some_and(|at| !doc.hides_run(&base, st.char_format_of(r.start + at))));
             let only_table = table.is_some() && text.chars().all(|c| c == story::TABLE_ANCHOR || c.is_whitespace());
             if !only_table || !lead.is_empty() {
                 // Export Tagging: the style's element and class.

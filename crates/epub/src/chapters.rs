@@ -100,7 +100,7 @@ pub(crate) fn toc_entries(doc: &Document, order: &[Block]) -> Vec<(String, Strin
         }
         let Some(st) = doc.story(*sid) else { continue };
         let spans = doc.visible_spans(st);
-        let first = label(&Document::visible_text(st, &spans, 0..st.text.find('\n').unwrap_or(st.text.len())));
+        let first = st.para_ranges().into_iter().map(|r| label(&Document::visible_text(st, &spans, r))).find(|t| !t.is_empty()).unwrap_or_default();
         if !first.is_empty() {
             firsts.push((format!("s{k}"), first, 1));
         }

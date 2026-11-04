@@ -144,10 +144,13 @@ fn articles_keep_their_explicit_order_and_exclusions() {
     let (c, _) = text(&mut doc, 0, 36.0, 10.0, "Article third");
     let (omitted, _) = text(&mut doc, 0, 36.0, 5.0, "Excluded story");
     doc.articles.push(Article { name: "Unused".into(), items: vec![omitted], export: false });
-    doc.articles.push(Article { name: "Chosen".into(), items: vec![grouped, c, grouped], export: true });
+    let (hidden, _) = text(&mut doc, 0, 36.0, 1.0, "Hidden in article");
+    doc.item_mut(hidden).unwrap().hidden = true;
+    doc.articles.push(Article { name: "Chosen".into(), items: vec![grouped, c, grouped, hidden], export: true });
     assert_output_order(&doc, &["Article first", "Article second", "Article third"]);
     for output in outputs(&doc) {
         assert!(!output.contains("Excluded story"));
+        assert!(!output.contains("Hidden in article"));
     }
 }
 

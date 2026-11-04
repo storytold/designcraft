@@ -162,6 +162,10 @@ fn page_text(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache, 
             if d.page_of_item(ft.frame) != Some(abs) {
                 continue;
             }
+            // A frame that is hidden, or on a hidden layer, isn't on the rendered page.
+            if d.item(ft.frame).is_some_and(|it| it.hidden || d.layers.iter().any(|l| !l.visible && l.id == it.layer)) {
+                continue;
+            }
             for l in &ft.lines {
                 let r = l.range.start.min(st.text.len())..l.range.end.min(st.text.len());
                 // The line's text as it shows: hidden conditional text and deletions left out.
