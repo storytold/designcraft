@@ -172,11 +172,12 @@ fn edges_on_bounds(c: [Point; 4]) -> usize {
     let (y0, y1) = (c.iter().map(|p| p.y).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
     let eps = 1e-9 * (x1 - x0 + y1 - y0).max(1.0);
     let near = |a: f64, b: f64| (a - b).abs() <= eps;
-    let on = |k: usize| {
-        let (a, b) = (c[k % 4], c[(k + 1) % 4]);
-        (near(a.x, b.x) && (near(a.x, x0) || near(a.x, x1))) || (near(a.y, b.y) && (near(a.y, y0) || near(a.y, y1)))
-    };
-    (0..4).filter(|&k| on(k)).count()
+    let on = |a: Point, b: Point| (near(a.x, b.x) && (near(a.x, x0) || near(a.x, x1))) || (near(a.y, b.y) && (near(a.y, y0) || near(a.y, y1)));
+    // Three points in line along a side make a diagonal an edge (a triangle): it keeps the bounds X.
+    if on(c[0], c[2]) || on(c[1], c[3]) {
+        return 0;
+    }
+    (0..4).filter(|&k| on(c[k], c[(k + 1) % 4])).count()
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.

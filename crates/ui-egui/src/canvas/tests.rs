@@ -278,6 +278,11 @@ fn a_frame_slanted_by_its_own_width_keeps_its_x_corner_to_corner() {
         app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0]], "dx": dx, "dy": 0})).unwrap();
         assert!(!corner_x(&app, p), "a diamond with a point moved {dx} pt");
     }
+    let p = app.run("frame.create", json!({"rect": [300, 300, 400, 360], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0], [0, 2]], "dx": 50, "dy": 0})).unwrap();
+    assert!(!corner_x(&app, p), "a diamond whose top and bottom points were moved onto its right side");
 }
 
 fn item_of(app: &DesignApp, id: u64) -> designcraft_doc::Item {
