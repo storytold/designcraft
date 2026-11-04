@@ -101,15 +101,12 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
         None => designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default()),
     };
     match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| {
-            let mut out = json!({"path": path, "bytes": bytes.len()});
-            // Only the formats that report warnings (PPTX, EPUB, HTML, booklets) carry the key;
-            // for the others the engine has no `warnings` at all and the result stays as it was.
-            if let Some(warnings) = r.get("warnings").filter(|w| !w.is_null()) {
-                out["warnings"] = warnings.clone();
-            }
-            out
-        }),
+        // `warnings` is always a list, empty when nothing was reported: the engine's export
+        // contract pins `"warnings": []` for the page reports, and a format that has no report
+        // of its own (text, XML) would otherwise answer `null` — the same thing said two ways.
+        Some(w) => {
+            w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "warnings": r["warnings"].as_array().cloned().unwrap_or_default()}))
+        }
         None => Err("no writer".into()),
     }
 }

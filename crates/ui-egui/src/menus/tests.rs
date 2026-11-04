@@ -3312,12 +3312,14 @@ fn powerpoint_export_embeds_fonts_only_when_asked() {
 }
 
 #[test]
-fn export_results_without_warnings_omit_the_key() {
+fn export_results_carry_an_empty_warnings_list_when_nothing_is_reported() {
+    // The engine's export contract keeps `warnings` present and empty; a caller can then tell
+    // "nothing to report" from "this command has no such field" without a second lookup.
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     app.services.write = Some(Box::new(|_, _| Ok(())));
     let r = run_ui(&mut app, "app.exportXml", &json!({"path": "/tmp/no-warnings.xml"})).unwrap().unwrap();
-    assert!(r.get("warnings").is_none(), "a format with no warnings has no warnings key: {r}");
+    assert_eq!(r["warnings"], json!([]), "an empty list, not a missing key: {r}");
 }
 
 #[test]
