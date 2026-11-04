@@ -79,60 +79,75 @@ const LINK: f32 = 0.35;
 
 /// The cheapest split of a lowercase stem (a word without its ending) into morphemes, with its
 /// cost: the char index where each morpheme after the first starts. None when no split covers the
-/// stem. `is_root` says whether a piece is a root.
+/// stem with at least one root (affixes alone would split names and foreign words). `is_root` says
+/// whether a piece is a root.
 pub fn segment(stem: &[char], is_root: &dyn Fn(&str) -> bool) -> Option<(Vec<usize>, f32)> {
     let n = stem.len();
     if n == 0 || n > MAX_WORD {
         return None;
     }
-    // best[i]: (cost, start of the last morpheme, kind of the last morpheme) of the cheapest split
-    // of stem[..i].
-    let mut best: Vec<Option<(f32, usize, Kind)>> = vec![None; n + 1];
+    // best[i][r]: the cheapest split of stem[..i], with a root among its morphemes when r is 1,
+    // without when 0. Splits with and without a root are kept apart so that a cheaper rootless one
+    // never hides the split with a root.
+    let mut best: Vec<[Option<Step>; 2]> = vec![[None; 2]; n + 1];
     if let Some(b) = best.get_mut(0) {
-        *b = Some((0.0, 0, Kind::Prefix));
+        b[0] = Some(Step { cost: 0.0, start: 0, kind: Kind::Prefix, had_root: false });
     }
     for i in 0..n {
-        let Some(Some((c0, _, last))) = best.get(i).copied() else { continue };
-        let mut piece = String::new();
-        for j in i + 1..=n.min(i + MAX_PIECE) {
-            let Some(&ch) = stem.get(j - 1) else { break };
-            piece.push(ch);
-            let mut kinds = Vec::new();
-            if is_root(&piece) {
-                kinds.push(Kind::Root);
-            }
-            if i > 0 && SUFFIXES.contains(&piece.as_str()) {
-                kinds.push(Kind::Suffix);
-            }
-            if (i == 0 || last == Kind::Prefix) && PREFIXES.contains(&piece.as_str()) {
-                kinds.push(Kind::Prefix);
-            }
-            for kind in kinds {
-                let c = c0 + cost(j - i, kind);
-                relax(&mut best, j, (c, i, kind));
-                if kind == Kind::Root && j < n && matches!(stem.get(j), Some('o' | 'a' | 'e' | 'i')) {
-                    relax(&mut best, j + 1, (c + LINK, i, kind));
+        for had_root in [false, true] {
+            let Some(Some(from)) = best.get(i).map(|b| b[usize::from(had_root)]) else { continue };
+            let mut piece = String::new();
+            for j in i + 1..=n.min(i + MAX_PIECE) {
+                let Some(&ch) = stem.get(j - 1) else { break };
+                piece.push(ch);
+                let mut kinds = Vec::new();
+                if is_root(&piece) {
+                    kinds.push(Kind::Root);
+                }
+                if had_root && SUFFIXES.contains(&piece.as_str()) {
+                    kinds.push(Kind::Suffix);
+                }
+                if (i == 0 || from.kind == Kind::Prefix) && PREFIXES.contains(&piece.as_str()) {
+                    kinds.push(Kind::Prefix);
+                }
+                for kind in kinds {
+                    let has_root = had_root || kind == Kind::Root;
+                    let step = Step { cost: from.cost + cost(j - i, kind), start: i, kind, had_root };
+                    relax(&mut best, j, has_root, step);
+                    if kind == Kind::Root && j < n && matches!(stem.get(j), Some('o' | 'a' | 'e' | 'i')) {
+                        relax(&mut best, j + 1, has_root, Step { cost: step.cost + LINK, ..step });
+                    }
                 }
             }
         }
     }
-    let (total, _, _) = best.get(n).copied().flatten()?;
+    let total = best.get(n)?[1]?.cost;
     let mut starts = Vec::new();
-    let mut at = n;
+    let (mut at, mut has_root) = (n, true);
     while at > 0 {
-        let (_, start, _) = best.get(at).copied().flatten()?;
-        if start > 0 {
-            starts.push(start);
+        let step = best.get(at)?[usize::from(has_root)]?;
+        if step.start > 0 {
+            starts.push(step.start);
         }
-        at = start;
+        (at, has_root) = (step.start, step.had_root);
     }
     starts.reverse();
     Some((starts, total))
 }
 
-fn relax(best: &mut [Option<(f32, usize, Kind)>], at: usize, cand: (f32, usize, Kind)) {
-    if let Some(slot) = best.get_mut(at)
-        && slot.is_none_or(|(c, _, _)| cand.0 < c)
+/// The last morpheme of a split: its cost so far, where it starts, its kind, and whether the
+/// split before it already had a root.
+#[derive(Clone, Copy)]
+struct Step {
+    cost: f32,
+    start: usize,
+    kind: Kind,
+    had_root: bool,
+}
+
+fn relax(best: &mut [[Option<Step>; 2]], at: usize, has_root: bool, cand: Step) {
+    if let Some(slot) = best.get_mut(at).map(|b| &mut b[usize::from(has_root)])
+        && slot.is_none_or(|s| cand.cost < s.cost)
     {
         *slot = Some(cand);
     }
@@ -218,6 +233,16 @@ mod tests {
     #[test]
     fn unknown_words_stay_whole() {
         assert_eq!(h("xyzzyplugh"), "xyzzyplugh");
+    }
+
+    #[test]
+    fn affixes_alone_are_not_a_word() {
+        // `mal` + `eg` covers `maleg`, but neither is a root: no break.
+        assert_eq!(h("malego"), "malego");
+        let is_root = |p: &str| p == "san";
+        assert!(breaks_with(&"malego".chars().collect::<Vec<_>>(), &is_root).is_empty());
+        // With a root, the prefix and suffix around it still break.
+        assert_eq!(breaks_with(&"malsanego".chars().collect::<Vec<_>>(), &is_root), vec![3, 6]);
     }
 
     #[test]
