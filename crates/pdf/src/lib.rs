@@ -218,6 +218,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     let bad = || PdfError::BadRange(s.to_string());
     let num = |v: &str| v.trim().parse::<usize>().map_err(|_| bad());
     let mut out = Vec::new();
+    // The pages selected so far, for ranges that overlap (`1-9, 2-8, …`): a set, not a search.
+    let mut selected = vec![false; count];
     for part in t.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (a, b) = match part.split_once('-') {
             Some((a, b)) => {
@@ -237,7 +239,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
             if p > count {
                 return Err(PdfError::BadPage(p));
             }
-            if !out.contains(&(p - 1)) {
+            if let Some(new) = selected.get_mut(p - 1).filter(|s| !**s) {
+                *new = true;
                 out.push(p - 1);
             }
         }
