@@ -3966,6 +3966,8 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Portuguese: Brazilian", ["Portuguese: Brazilian", "Portugais : Brésil", "Portuguese: Brazilian", "Portuguese: Brazilian", "葡萄牙语：巴西"]),
     ("Rounded Rectangle", ["Rounded Rectangle", "Rectangle arrondi", "Rounded Rectangle", "Rounded Rectangle", "圆角矩形"]),
     ("Russian", ["Russian", "Russe", "Russian", "Russian", "俄语"]),
+    ("Serbian: Cyrillic", ["Serbian: Cyrillic", "Serbe : cyrillique", "Serbian: Cyrillic", "Serbian: Cyrillic", "塞尔维亚语：西里尔字母"]),
+    ("Serbian: Latin", ["Serbian: Latin", "Serbe : latin", "Serbian: Latin", "Serbian: Latin", "塞尔维亚语：拉丁字母"]),
     ("Solid", ["Solid", "Continu", "Solid", "Solid", "实线"]),
     ("Spanish", ["Spanish", "Espagnol", "Spanish", "Spanish", "西班牙语"]),
     ("Story Editor", ["Story Editor", "Mode éditeur", "Story Editor", "Story Editor", "文章编辑器"]),
