@@ -135,7 +135,10 @@ impl<'a> Rules<'a> {
             // to that default. The tier follows the character classes, not the blank's size. The
             // Chinese sets reduce all punctuation blanks together.
             let japanese = self.base != Base::Chinese;
+            // After: closing brackets (2, 28 」, 29 ）), full stops (6 。, 31 ．) and commas
+            // (21 、, 30 ，). Before: opening brackets (1, 26 「, 27 （).
             let bracket_or_comma = matches!(left, 2 | 6 | 21 | 28..=31) || matches!(right, 1 | 26 | 27);
+            // Full stops: 6 。 and 31 ．.
             let full_stop = matches!(left, 6 | 31);
             return Aki {
                 min: if japanese && full_stop { punctuation } else { 0.0 },
