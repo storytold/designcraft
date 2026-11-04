@@ -115,6 +115,8 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                         i
                     })
                     .collect();
+                // Objects from another document keep their colours here too (#1743).
+                d.adopt_item_swatches(&items, &fresh);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
@@ -963,5 +965,57 @@ mod paste_swatch_tests {
         let before = names(&s);
         s.execute("edit.paste", &json!({})).unwrap();
         assert_eq!(names(&s), before);
+    }
+
+    /// Objects pasted at a text insertion point of another document are anchored there instead
+    /// of placed on the page, and they bring their swatches too.
+    #[test]
+    fn objects_pasted_into_text_of_another_document_bring_their_swatches() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Brand", "color": "#e05010"})).unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Brand"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        let sid =
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "ab"})).unwrap()["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 1, "focus": 1})).unwrap();
+        let before = names(&s);
+        let r = s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(r["anchored"], 1, "{r}");
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Brand"]);
+    }
+
+    /// A gradient swatch brought along whose stop names a swatch this document already has
+    /// shows this document's colour at that stop, as its own uses of that swatch do.
+    #[test]
+    fn an_adopted_gradient_shows_this_documents_colour_for_a_shared_stop_swatch() {
+        use designcraft_color::{Gradient, GradientKind, GradientStop};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#ff0000"})).unwrap();
+        s.edit(|d, _| {
+            let shared = GradientStop { swatch: Some("Shared".into()), ..GradientStop::new(0.0, Color::rgb(1.0, 0.0, 0.0)) };
+            let gradient = Gradient { kind: GradientKind::Linear, stops: vec![shared, GradientStop::new(1.0, Color::WHITE)] };
+            d.swatches.push(Swatch { name: "Sunset".into(), value: SwatchValue::Gradient { gradient }, locked: false, named: true, hidden: false });
+            Ok(())
+        })
+        .unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Sunset"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#0000ff"})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let Some(SwatchValue::Gradient { gradient }) = d.swatch("Sunset").map(|w| &w.value) else { panic!("Sunset came along") };
+        assert_eq!(gradient.stops[0].swatch.as_deref(), Some("Shared"));
+        assert_eq!(gradient.stops[0].color, Color::rgb(0.0, 0.0, 1.0), "this document's Shared");
     }
 }
