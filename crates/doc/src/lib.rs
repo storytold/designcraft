@@ -45,7 +45,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
-pub use assets::{find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
+pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
     DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
@@ -947,6 +947,12 @@ impl Document {
     }
     pub fn default_layer(&self) -> LayerId {
         self.layers.first().map(|l| l.id).unwrap_or_default()
+    }
+    /// The layer new objects go to when a document opens: the topmost one shown and unlocked, so
+    /// a document whose top layer is a hidden, locked dieline doesn't put what is placed or drawn
+    /// where it can't be seen or selected. The top layer when every layer is hidden or locked.
+    pub fn working_layer(&self) -> LayerId {
+        self.layers.iter().find(|l| l.visible && !l.locked).map_or_else(|| self.default_layer(), |l| l.id)
     }
 
     pub fn story(&self, id: StoryId) -> Option<&Story> {

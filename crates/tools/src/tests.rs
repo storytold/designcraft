@@ -888,6 +888,62 @@ fn pen_click_snaps_to_a_guide() {
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
 }
 
+/// #1438: dragging a smooth point shows the segment it shapes under the pointer (from the
+/// previous anchor's out handle to the new anchor's in handle), and after a smooth point the
+/// rubber band to the pointer curves out of its direction line; a corner keeps the straight one.
+#[test]
+fn pen_previews_the_curve_while_dragging_and_after_a_smooth_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (sr, _) = cx.layout.spread_at(Point::new(100.0, 100.0)).expect("the page is under the pointer");
+    let xf = cx.layout.xf(sr);
+    let sp = |x: f64, y: f64| cx.layout.to_spread(sr, Point::new(x, y));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let paths = |t: &dyn Tool, dashed: bool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: d, .. } if d == dashed => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut t = create("pen");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 100.0, 100.0));
+    // A corner's rubber band is a straight line: no curve.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 150.0, 120.0));
+    assert!(paths(&*t, true).is_empty() && paths(&*t, false).is_empty(), "a corner's rubber band is a line");
+    // Dragging the second anchor out: the segment from the first anchor is previewed live.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 230.0, 130.0));
+    let [p] = &paths(&*t, false)[..] else { panic!("one solid curve preview: {:?}", t.overlays(&cx)) };
+    let in_handle = sp(200.0, 100.0) - (sp(230.0, 130.0) - sp(200.0, 100.0));
+    match p.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(100.0, 100.0)) && near(*c1, xf * sp(100.0, 100.0)), "from the corner, whose out handle is itself: {a:?} {c1:?}");
+            assert!(near(*c2, xf * in_handle) && near(*b, xf * sp(200.0, 100.0)), "to the dragged anchor by its in handle: {c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Let go: the anchor is committed and the segment preview goes; the rubber band now curves
+    // out of the smooth point's direction line towards the pointer.
+    let up = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 230.0, 130.0));
+    assert!(matches!(&up[..], [Action::Exec(cmd, _)] if cmd == "path.create"), "{up:?}");
+    assert!(paths(&*t, false).is_empty(), "no segment preview once let go");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 300.0, 100.0));
+    let [band] = &paths(&*t, true)[..] else { panic!("a curved rubber band: {:?}", t.overlays(&cx)) };
+    match band.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(200.0, 100.0)) && near(*c1, xf * sp(230.0, 130.0)), "{a:?} {c1:?}");
+            assert!(near(*c2, Point::new(300.0, 100.0)) && near(*b, Point::new(300.0, 100.0)), "{c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A text frame with overset text (selected), an empty frame and a threaded pair x → y, on page 1.
 struct ThreadDoc {
     d: Document,
@@ -1850,6 +1906,52 @@ fn pen_over_a_selected_open_paths_end_point_continues_it() {
     assert!(t.busy(), "the path is being continued");
 }
 
+/// Continuing a path from an end point and dragging its direction lines previews the segment the
+/// drag reshapes: from the anchor joined to that end point, not from the path's other end, from
+/// either end (#1438).
+#[test]
+fn pen_previews_the_segment_joined_to_a_continued_end_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let anchors = vec![
+        designcraft_geom::Anchor::corner(Point::new(100.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 200.0)),
+    ];
+    let mut it = Item::new(id, lid, Shape::Path, designcraft_geom::PathData::single(designcraft_geom::SubPath::new(anchors, false)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::items(vec![id]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let xf = l.xf(SpreadRef::Doc(0));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let solid = |t: &dyn Tool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: false, .. } => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    for (end, joined, far) in [((200.0, 200.0), (200.0, 100.0), (100.0, 100.0)), ((100.0, 100.0), (200.0, 100.0), (200.0, 200.0))] {
+        let mut t = create("pen");
+        let p = xf * Point::new(end.0, end.1);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p.x + 30.0, p.y + 30.0));
+        let [path] = &solid(&*t)[..] else { panic!("one segment preview from {end:?}: {:?}", t.overlays(&cx)) };
+        match path.elements() {
+            [PathEl::MoveTo(a), PathEl::CurveTo(_, _, b)] => {
+                assert!(near(*a, xf * Point::new(joined.0, joined.1)), "from the anchor joined to {end:?}, not the other end {far:?}: {a:?}");
+                assert!(near(*b, p), "to the end point being reshaped: {b:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 #[test]
 fn the_selection_tool_drags_a_path_type_bracket_along_its_path() {
     let mut d = Document::new(&NewDocument::default());
@@ -2075,6 +2177,41 @@ fn loaded_text_cursor_threads_into_a_frame_inside_a_group() {
     let q = td2.at(650.0, 350.0);
     assert_eq!(cx2.hit_text_frame(q).map(|(_, i)| i), None, "no text frame in that group");
     assert_eq!(t2.cursor(&cx2, q, Mods::default()), Cursor::NotAllowed);
+}
+
+#[test]
+fn parent_resize_page_tool_targets_the_visible_parent() {
+    let d = Document::new(&NewDocument { width: 400.0, height: 600.0, pages: 3, facing_pages: true, ..Default::default() });
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, true));
+    let cx = ctx(&d, &s, &c, &l);
+    let p = l.to_canvas(SpreadRef::Parent(0), d.parents[0].pages[0].bounds().center());
+    let mut t = create("page");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+    assert_eq!(
+        a,
+        vec![Action::Dialog(
+            "cmd:layout.parentPageSize".into(),
+            serde_json::json!({"parent": d.parents[0].id.0, "page": 0, "width": 400.0, "height": 600.0})
+        )],
+        "double click must target the visible parent instead of document page zero"
+    );
+}
+
+#[test]
+fn parent_resize_selection_tracks_ids_and_never_crosses_canvas_modes() {
+    let mut d = Document::new(&NewDocument::default());
+    let second = d.add_parent("B", "Parent", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    let selection = Selection { page: Some(0), parent_page: Some((second, 1)), ..Default::default() };
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(1), 1)));
+    d.parents.swap(0, 1);
+    let l = CanvasLayout::new(&d, true);
+    assert_eq!(l.selected_page(&d, &selection), Some((SpreadRef::Parent(0), 1)));
+    assert_eq!(CanvasLayout::new(&d, false).selected_page(&d, &selection), Some((SpreadRef::Doc(0), 0)));
+    d.parents.remove(0);
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
+    let selection = Selection { page: Some(0), ..Default::default() };
+    assert_eq!(CanvasLayout::new(&d, true).selected_page(&d, &selection), None);
 }
 
 #[test]
