@@ -166,6 +166,7 @@ impl DesignApp {
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
     /// for files dropped without pointer events: dragged in from another application, they bring
     /// none. `None` when the system doesn't say or the window's place isn't known.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
         let at = (self.services.pointer.as_ref()?)()?;
         // The system's points are unscaled; egui's (the window's rect too) are divided by the

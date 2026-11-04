@@ -47,6 +47,6 @@ pub struct Services {
     /// The pointer's place on the screen, asked when a file is dropped: a file dragged in from
     /// another application brings no pointer events with it (winit reports none during a drag on
     /// macOS), so without it a drop can't tell which frame it landed on. `None`: a drop without
-    /// pointer events loads the place cursor.
+    /// pointer events lands in the middle of the view.
     pub pointer: Option<PointerFn>,
 }
