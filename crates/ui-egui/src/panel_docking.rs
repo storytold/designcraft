@@ -1257,8 +1257,8 @@ fn floating_size(panel: &str) -> egui::Vec2 {
         "properties" | "pages" | "layers" => egui::vec2(300.0, 420.0),
         "characterStyles" | "paragraphStyles" => egui::vec2(290.0, 340.0),
         "glyphs" | "library" | "links" | "preflight" | "dataMerge" => egui::vec2(320.0, 400.0),
-        // The word in its sentence, a replacement, the suggestions and the actions.
-        "spelling" => egui::vec2(320.0, 520.0),
+        // Six suggestions under a one-line sentence; a longer sentence scrolls the list.
+        "spelling" => egui::vec2(320.0, 468.0),
         _ => egui::vec2(280.0, 360.0),
     }
 }
