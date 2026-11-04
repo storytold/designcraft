@@ -77,7 +77,9 @@ fn jpeg_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
         let payload = &bytes[pos + 2..pos + len];
         if m == 0xE0 && jfif.is_none() {
             jfif = jfif_density(payload);
-        } else if m == 0xE1 && let Some(dpi) = exif_resolution(payload) {
+        } else if m == 0xE1
+            && let Some(dpi) = exif_resolution(payload)
+        {
             // A non-EXIF APP1 (XMP, ICC, ...) parses to nothing: keep scanning, since a
             // later APP1 can still carry the EXIF resolution.
             return Some(dpi);
