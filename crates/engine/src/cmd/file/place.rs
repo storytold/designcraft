@@ -25,6 +25,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
         s.ui_requests.push(crate::UiRequest::Pick { purpose: "place".into(), params: json!({}) });
         return ok();
     };
+    // A frame named outright is not replaced while it is locked (the selected frame is the user's own choice).
+    if let Some(fid) = crate::cmd::id_param(p, "frame")
+        && s.doc()?.doc.item(fid).is_some_and(|it| it.locked)
+    {
+        return Err(bad("file.place", "the frame is locked"));
+    }
     // A page of another layout (IDML or DesignCraft): its objects, as one group.
     let lname = name.to_lowercase();
     if lname.ends_with(".idml") || lname.ends_with(".designcraft") {
@@ -99,7 +105,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             return None;
         }
         let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
+        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| it.takes_graphic()))
     });
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
@@ -429,6 +435,21 @@ pub(super) mod image_place_tests {
     }
 
     #[test]
+    fn a_locked_frame_named_outright_is_not_replaced() {
+        let image = image_file_with_color(30).unwrap();
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let frame = session.execute("frame.create", &json!({"rect": [36, 36, 136, 136]})).unwrap()["id"].as_u64().unwrap();
+        session.execute("object.lock", &json!({"ids": [frame]})).unwrap();
+        assert!(session.execute("file.place", &json!({"path": image.path(), "frame": frame})).is_err());
+        let document = &session.doc().unwrap().doc;
+        assert!(matches!(document.item(ItemId(frame)).unwrap().content, Content::Unassigned), "the locked frame stays empty");
+        session.execute("object.unlockAll", &json!({})).unwrap();
+        session.execute("file.place", &json!({"path": image.path(), "frame": frame})).unwrap();
+        assert!(matches!(session.doc().unwrap().doc.item(ItemId(frame)).unwrap().content, Content::Graphic(_)));
+    }
+
+    #[test]
     fn individual_placement_parameters_bypass_selected_frames() {
         let image = image_file().unwrap();
         for graphic in [false, true] {
@@ -754,5 +775,52 @@ mod layout_place_tests {
         assert!((bb.x0 - 100.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "page top-left at 0,0: {bb:?}");
         assert!(d.stories.values().any(|st| st.text == "From page one"), "stories come along");
         assert!(b.execute("file.place", &json!({"base64": b64, "name": "src.idml", "layoutPage": 2})).is_err(), "page 2 is empty");
+    }
+}
+
+#[cfg(test)]
+mod nested_frame_tests {
+    use std::sync::Arc;
+
+    use designcraft_doc::{Content, Item, ItemId, Shape, SpreadRef};
+    use designcraft_geom::{Affine, Rect, shapes};
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn png(red: u8) -> String {
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 30, 255].repeat(800) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A graphic placed into a frame holding an image pasted into it (how a document from InDesign
+    /// keeps a photo) replaces the image and fills the frame, which keeps its size.
+    #[test]
+    fn placing_into_a_frame_with_a_nested_image_replaces_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("file.place", &json!({"base64": png(200), "name": "old.png", "x": 0, "y": 0})).unwrap();
+        let old = ItemId(first["id"].as_u64().unwrap());
+        let frame = s
+            .edit(|d, _| {
+                let mut image = (*d.item(old).unwrap()).clone();
+                d.remove_item(old)?;
+                image.xf = Affine::translate((-20.0, -20.0));
+                let id = ItemId(d.alloc());
+                let mut frame = Item::new(id, image.layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 90.0)));
+                frame.xf = Affine::translate((100.0, 100.0));
+                frame.content = Content::Group { items: vec![Arc::new(image)] };
+                d.insert_item(SpreadRef::Doc(0), frame, None)?;
+                Ok(id)
+            })
+            .unwrap();
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("file.place", &json!({"base64": png(20), "name": "new.png"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(frame).unwrap();
+        let Content::Graphic(g) = &it.content else { panic!("the frame holds the new graphic: {:?}", it.content) };
+        assert_eq!(d.assets[&g.asset].name, "new.png");
+        assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
+        assert_eq!(d.spreads[0].items.len(), 1, "no new object");
     }
 }

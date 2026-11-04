@@ -136,10 +136,7 @@ impl Tool for PlaceGun {
                 let click = (ev.pos - a).hypot() < cx.tol(3.0);
                 if click
                     && let Some((_, id)) = cx.hit(a)
-                    && cx
-                        .doc
-                        .item(id)
-                        .is_some_and(|i| matches!(i.content, designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_)))
+                    && cx.doc.item(id).is_some_and(designcraft_doc::Item::takes_graphic)
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }

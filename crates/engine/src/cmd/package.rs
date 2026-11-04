@@ -221,7 +221,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report, warnings: PDF export warnings}",
             has_doc,
             package
         ),
@@ -486,9 +486,12 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
         }
     }
+    let mut warnings = Vec::new();
     if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
-        root.write(&path, &super::export::pdf_report(&packed, &s.cache, &params)?.bytes)?;
+        let pdf = super::export::pdf_report(&packed, &s.cache, &params)?;
+        root.write(&path, &pdf.bytes)?;
+        warnings = pdf.warnings;
         files.push(path);
     }
     // The printing instructions first, as the form gave them; then the report: fonts (missing
@@ -515,10 +518,18 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             r += &format!("  {}\n", i.get("message").and_then(Value::as_str).unwrap_or(""));
         }
     }
+    if !warnings.is_empty() {
+        r += "\nPDF export warnings\n";
+        for warning in &warnings {
+            r += &format!("  {warning}\n");
+        }
+    }
     let report = dir.join("Instructions.txt");
     root.write(&report, r.as_bytes())?;
     files.push(report);
-    Ok(json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r}))
+    Ok(
+        json!({"dir": dir.to_string_lossy(), "files": files.iter().map(|f| f.to_string_lossy().to_string()).collect::<Vec<_>>(), "report": r, "warnings": warnings}),
+    )
 }
 
 fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
