@@ -359,7 +359,7 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Korean | ko | none | 0% |
 | Vietnamese | vi | none | 0% |
 
-Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%), Georgian (100%), Swedish (99%), Hungarian (65%), Russian (63%).
+Also shipped (2026-11-04 `i18n-report`, of 2,939): Czech (69%), Italian (68%), Ukrainian (65%), Polish (64%), Georgian (98%), Swedish (98%), Hungarian (65%), Russian (63%).
 
 ## Upcoming
 

@@ -75,10 +75,10 @@ right-click flyouts in both Tools-panel layouts. Narrow-window coverage exercise
 scrolling, complete label/shortcut accessibility and selecting a scrolled row at 180 and
 240 points; the existing wide-window checks keep their assertions.
 
-Brazilian Portuguese (2026-11-04): `cargo xtask i18n-report` on main `f3bcc886` with this catalog
+Brazilian Portuguese (2026-11-04): `cargo xtask i18n-report` on main `ef6c3686` with this catalog
 counts 2,939 interface strings; pt-BR translates 2,936 of them (up from 1,933). Like every other
 language it leaves the Control panel's `IT`, `VA` and `Y:` captions in English. Tools are named "Ferramenta …", parent pages "página principal", stories "artigo" and
-paths "demarcador" ("traçado" is Stroke). The 996 new strings were AI-drafted and approved by
+paths "demarcador" ("traçado" is Stroke; Pathfinder keeps its name). The 996 new strings were AI-drafted and approved by
 the contributor; they are not yet checked in the running app, and a native-speaker review is
 pending. Older rows still use "página-pai" and "página mestra" for parent pages and "Matéria"
 for a story.
@@ -88,7 +88,7 @@ for a story.
 | Language | Code | UI strings translated | Status |
 |---|---|---|---|
 | Hungarian | hu | 1,906 entries + 4 context captions (2026-11-01); initial catalog native-reviewed | partial |
-| Russian | ru | 1,853 of 2,939 (63%, 2026-11-04 missing-translations report), count captions category-first | partial |
+| Russian | ru | 1,855 of 2,939 (63%, 2026-11-04 missing-translations report), count captions category-first | partial |
 | Czech | cs | 1,722 (99%), plural categories handled | partial |
 | Italian | it | 1,464 (85%) | partial |
 | Ukrainian | uk | 1,432 (83%), plural categories handled | partial |
@@ -126,7 +126,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,853) listed, eight languages beyond the twelve |
+| 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,855) listed, eight languages beyond the twelve |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
 | 2026-10-15 | minor | Swedish (`sv`) interface added |
