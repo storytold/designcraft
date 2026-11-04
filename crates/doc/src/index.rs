@@ -205,8 +205,9 @@ pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> S
     let mut heads: BTreeMap<String, Option<String>> = BTreeMap::new();
     // One entry per topic whatever the language of its references: a topic sorts with `lj`, `nj`
     // and `dž` as letters, and takes its section head by them, when any of its references is in a
-    // language that has them.
-    let path = |res: &Resolved| res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).map(|t| t.trim().to_string()).collect::<Vec<_>>();
+    // language that has them. Topics that differ only in case decide together, so they stay side
+    // by side.
+    let path = |res: &Resolved| res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).map(|t| t.trim().to_lowercase()).collect::<Vec<_>>();
     let mut with_digraphs: BTreeSet<Vec<String>> = BTreeSet::new();
     for res in refs.iter().filter(|res| has_digraphs(&res.language)) {
         let p = path(res);
@@ -473,6 +474,35 @@ mod tests {
                 "{languages:?}"
             );
         }
+    }
+
+    /// A sub-topic referenced from Serbian text makes its parent Serbian too, so the parent stays
+    /// one entry; a topic in other capitals sorts beside it.
+    #[test]
+    fn a_serbian_sub_topic_or_capitalisation_keeps_one_place() {
+        let at = |topics: &[&str], language: &str, page: usize| Resolved {
+            language: language.into(),
+            ..r(topics, IndexRange::CurrentPage, Some((page, page)))
+        };
+        let refs = vec![
+            at(&["Ljubljana"], "English: USA", 0),
+            at(&["Ljubljana", "centar"], "Serbian: Latin", 1),
+            at(&["lopta"], "English: USA", 2),
+            at(&["LJUBLJANA"], "English: USA", 3),
+        ];
+        let spec = IndexSpec { title: String::new(), ..IndexSpec::default() };
+        let lines: Vec<String> = build(&spec, &refs, &|p| (p + 1).to_string()).iter().map(|(s, t)| format!("{s}|{t}")).collect();
+        assert_eq!(
+            lines,
+            [
+                "Index Section Head|L",
+                "Index Level 1|lopta  3",
+                "Index Section Head|Lj",
+                "Index Level 1|LJUBLJANA  4",
+                "Index Level 1|Ljubljana  1",
+                "Index Level 2|centar  2",
+            ]
+        );
     }
 
     #[test]
