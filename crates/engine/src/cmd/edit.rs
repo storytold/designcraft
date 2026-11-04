@@ -109,7 +109,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                     .map(|orig| {
                         let mut i = orig.clone();
                         if !super::object::renumber(d, &items, &mut i, &mut stories) {
-                            return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups too deeply to copy", orig.id)));
+                            return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups or tables too deeply to copy", orig.id)));
                         }
                         if d.layer(i.layer).is_none() {
                             i.layer = d.default_layer();
