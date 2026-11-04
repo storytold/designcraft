@@ -1115,6 +1115,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-proof"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=4cb633dc2899704006c36a4490e680eda2bef822#4cb633dc2899704006c36a4490e680eda2bef822"
+dependencies = [
+ "log",
+ "miniz_oxide 0.9.1",
+ "toml",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "craft-ui"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
@@ -1361,6 +1372,7 @@ dependencies = [
 name = "designcraft-compose"
 version = "0.17.0"
 dependencies = [
+ "craft-proof",
  "designcraft-color",
  "designcraft-doc",
  "designcraft-fonts",
@@ -1399,6 +1411,7 @@ dependencies = [
  "craft-docpath",
  "craft-prepress",
  "craft-print",
+ "craft-proof",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -1425,6 +1438,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-normalization",
  "unicode-segmentation",
  "wasm-bindgen-test",
  "zip 3.0.0",

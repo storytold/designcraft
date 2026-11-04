@@ -235,3 +235,15 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+Optional Hungarian Language pack (craft-i18n / craft-proof)
+--------------------------------------------------------
+Hungarian spelling data: Magyar Ispell, selected MPL-2.0; original authors and
+complete notices are retained in the hu pack. Hungarian hyphenation: Huhyphn /
+hyph-hu, Bence Nagy and László Németh, selected MPL-1.1. Two malformed Huhyphn
+replacement records are corrected by the shared pack builder and explicitly
+marked in its MODIFICATIONS notice. Dictionaries and patterns are downloaded
+and verified when building the pack, not committed to this application. Builds
+embedding the hu pack include its full licence texts; distribution packages
+must retain the pack's LICENCES directory as well.

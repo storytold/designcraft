@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
+# Shared Hunspell reader and nonstandard hyphenation; hu data comes from a Language pack.
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "4cb633dc2899704006c36a4490e680eda2bef822" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", default-features = false }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.

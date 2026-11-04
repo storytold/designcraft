@@ -3,6 +3,7 @@
 //! Further terminology and in-context UI review is welcome.
 //! Uncatalogued keys fall back to English.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Language data licences", "Nyelvi adatok licencei"),
     ("Redefine Style", "Stílus újradefiniálása"),
     ("Alt-click clears overrides", "Alt-kattintás: felülírások törlése"),
     ("Apply \"{name}\", Clear Overrides", "„{name}” alkalmazása, felülírások törlése"),
@@ -1957,6 +1958,29 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Measure Tool", "Mérőeszköz"),
     ("Hand Tool", "Kéz eszköz"),
     ("Zoom Tool", "Nagyító eszköz"),
+    ("Ruler Guide", "Vonalzó-segédvonal"),
+    ("Skip", "Kihagyás"),
+    ("Checking spelling…", "Helyesírás ellenőrzése…"),
+    ("Spelling check complete.", "A helyesírás ellenőrzése befejeződött."),
+    ("Only text set to English or Hungarian is checked.", "Az ellenőrzés az angol vagy magyar nyelvűként beállított szövegre terjed ki."),
+    ("The text language is set in the Character panel.", "A szöveg nyelvét a Karakter panelen állíthatja be."),
+    ("The document has changed. Reopen the spelling checker.", "A dokumentum megváltozott. Nyissa meg újra a helyesírás-ellenőrzőt."),
+    ("Delete Parent", "Mesteroldal törlése"),
+    ("Deutsch", "Deutsch"),
+    ("English", "English"),
+    ("Español", "Español"),
+    ("Français", "Français"),
+    ("Italiano", "Italiano"),
+    ("Lock Column Guides", "Hasábsegédvonalak zárolása"),
+    ("Move Column Guide", "Hasábsegédvonal áthelyezése"),
+    ("Português (Brasil)", "Português (Brasil)"),
+    ("Reload Fonts", "Betűtípusok újratöltése"),
+    ("Select All Guides", "Összes segédvonal kijelölése"),
+    ("Українська", "Українська"),
+    ("العربية", "العربية"),
+    ("ქართული", "ქართული"),
+    ("日本語", "日本語"),
+    ("简体中文", "简体中文"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] =
