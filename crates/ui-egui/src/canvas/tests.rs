@@ -255,9 +255,10 @@ fn a_frame_slanted_by_its_own_width_keeps_its_x_corner_to_corner() {
         it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).x > 730.0).map(|(k, _)| json!([0, k])).collect();
     app.run("path.moveAnchors", json!({"id": down, "anchors": right, "dx": 0, "dy": 100})).unwrap();
     assert!(corner_x(&app, down), "a frame whose right edge moved down 100 pt");
-    // A diamond keeps the bounds however far one of its points is moved sideways: no edge of it
-    // lies on its bounds.
-    for dx in [15, 30] {
+    // A diamond keeps the bounds however far one of its points is moved sideways, and when the
+    // move puts it in line with the next point, giving the diamond one edge on its bounds (noted in
+    // review): only a rectangle has two opposite ones.
+    for dx in [15, 30, 50] {
         let p = app.run("frame.create", json!({"rect": [300, 300, 400, 360], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
             .as_u64()
             .unwrap();

@@ -142,9 +142,10 @@ pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
     // A rectangle (slanted or not: four corner points, no handles). Ellipses, polygons (a
     // four-sided one is a diamond) and curved paths keep the X across their bounds. Edited points
     // make any of them a path: a four-cornered one whose corners would cross as a plus (a diamond,
-    // edited) keeps the bounds too. A rectangle whose points were moved keeps an edge on its
-    // bounds, which a diamond never has: slanted by about its own width, one of its diagonals is
-    // near vertical, and the X still joins its corners (#2280).
+    // edited) keeps the bounds too. A rectangle whose points were moved along one axis keeps two
+    // opposite edges on its bounds, which a diamond never has (one of its points moved in line with
+    // another gives it one): slanted by about its own width, one of its diagonals is near vertical,
+    // and the X still joins its corners (#2280).
     let crosses = |a: Point, b: Point| {
         let d = b - a;
         d.x.abs() > 0.18 * d.hypot() && d.y.abs() > 0.18 * d.hypot()
@@ -154,7 +155,9 @@ pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
         && sp.closed
         && let [c0, c1, c2, c3] = sp.anchors.as_slice()
         && sp.anchors.iter().all(|a| a.h_in == a.p && a.h_out == a.p)
-        && (it.shape == designcraft_doc::Shape::Rectangle || edge_on_bounds([c0.p, c1.p, c2.p, c3.p]) || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
+        && (it.shape == designcraft_doc::Shape::Rectangle
+            || opposite_edges_on_bounds([c0.p, c1.p, c2.p, c3.p])
+            || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
     {
         return [(c0.p, c2.p), (c1.p, c3.p)];
     }
@@ -162,16 +165,17 @@ pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
     [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))]
 }
 
-/// Whether an edge of the quadrilateral `c` lies along a side of its bounds.
-fn edge_on_bounds(c: [Point; 4]) -> bool {
+/// Whether two opposite edges of the quadrilateral `c` each lie along a side of its bounds.
+fn opposite_edges_on_bounds(c: [Point; 4]) -> bool {
     let (x0, x1) = (c.iter().map(|p| p.x).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max));
     let (y0, y1) = (c.iter().map(|p| p.y).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
     let eps = 1e-9 * (x1 - x0 + y1 - y0).max(1.0);
     let near = |a: f64, b: f64| (a - b).abs() <= eps;
-    (0..4).any(|k| {
-        let (a, b) = (c[k], c[(k + 1) % 4]);
+    let on = |k: usize| {
+        let (a, b) = (c[k % 4], c[(k + 1) % 4]);
         (near(a.x, b.x) && (near(a.x, x0) || near(a.x, x1))) || (near(a.y, b.y) && (near(a.y, y0) || near(a.y, y1)))
-    })
+    };
+    (on(0) && on(2)) || (on(1) && on(3))
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.
