@@ -102,7 +102,7 @@ impl Gradient {
         // The first window whose end offset is at or past `t` (none for a NaN `t`).
         let k = match ends {
             None => stops.windows(2).position(|w| t <= w[1].offset).unwrap_or(stops.len()),
-            Some(ends) => ends.partition_point(|e| !(*e >= t)),
+            Some(ends) => ends.partition_point(|e| matches!(e.partial_cmp(&t), None | Some(std::cmp::Ordering::Less))),
         };
         if let (Some(a), Some(b)) = (stops.get(k), stops.get(k + 1)) {
             let span = (b.offset - a.offset).max(1e-6);
