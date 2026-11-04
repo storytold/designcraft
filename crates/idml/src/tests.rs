@@ -1702,6 +1702,30 @@ fn world_ready_composers_import_and_round_trip() {
     }
 }
 
+/// A Japanese composer with World-Ready off writes "HL Composer J", which reads back World-Ready:
+/// the Japanese composers are always World-Ready (`ParaProps::is_world_ready`), so the paragraph
+/// sets the same before and after the round trip.
+#[test]
+fn a_japanese_composer_round_trips_as_world_ready() {
+    use designcraft_doc::{Composer, ParaAttrs};
+    for composer in [Composer::Japanese, Composer::JapaneseSingleLine] {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let format =
+            ParaFormat { para: ParaAttrs { composer: Some(composer), world_ready: Some(false), ..Default::default() }, ..Default::default() };
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 100.0), lid, "text", format).unwrap();
+        let props = |doc: &Document| {
+            let st = doc.stories.values().find(|s| s.text.contains("text")).unwrap();
+            doc.styles.resolve_para(&st.paras[0]).0
+        };
+        let before = props(&d);
+        let back = import_idml(&export_idml(&d)).unwrap();
+        let after = props(&back);
+        assert_eq!((after.composer, after.is_world_ready()), (before.composer, before.is_world_ready()), "{composer:?}");
+        assert!(after.is_world_ready());
+    }
+}
+
 /// A paragraph that only turns World-Ready off keeps its style's composer: the one Composer name
 /// it writes takes the composer from the style.
 #[test]

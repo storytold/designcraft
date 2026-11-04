@@ -43,7 +43,7 @@ use text::{
 pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_panel, show_typography_panel};
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
-pub(crate) use typography::{composer_choice, para_field_min};
+pub(crate) use typography::{composer_entries, para_field_min};
 
 /// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
 /// that panel stays: `window.panel` would close it.

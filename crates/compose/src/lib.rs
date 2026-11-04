@@ -2298,7 +2298,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         auto_leading: pp.auto_leading,
         adv: doc.settings.advanced_type,
         glyph_fallback: doc.settings.glyph_fallback,
-        unjoined: !pp.world_ready,
+        unjoined: !pp.is_world_ready(),
     };
     let mut sp = shape::shape_para(
         shape::ShapeInput {
@@ -4538,7 +4538,7 @@ fn page_alignment(align: Align, left_page: bool) -> Align {
 /// Allocate justified Arabic elongation before distributing the remaining space.
 fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, f64)> {
     // Not World-Ready, Arabic letters stand unjoined: there are no joins to stretch.
-    if !(*extra > 0.0 && pp.world_ready && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
+    if !(*extra > 0.0 && pp.is_world_ready() && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
         return Vec::new();
     }
     let points: Vec<usize> = kashida_points(line).into_iter().filter(|&i| i >= seg).collect();
@@ -4778,7 +4778,7 @@ fn layout_line(
 /// InDesign's Paragraph Composer does, so its start edge (first-line indent, drop cap, list label)
 /// is the left one and beside an object the left segment fills first.
 fn lines_rtl(pp: &designcraft_doc::ParaProps) -> bool {
-    pp.world_ready && pp.direction == designcraft_doc::TextDirection::RightToLeft
+    pp.is_world_ready() && pp.direction == designcraft_doc::TextDirection::RightToLeft
 }
 
 /// The paragraph's base bidi level ([`lines_rtl`]).
@@ -4790,10 +4790,10 @@ fn bidi_level(pp: &designcraft_doc::ParaProps) -> unicode_bidi::Level {
 /// at their levels. Not World-Ready, the line runs left to right in text order whatever the script:
 /// every glyph is set left to right and bidi controls in the text don't reorder it.
 fn paragraph_bidi(glyphs: &mut [Glyph], source: &str, pp: &designcraft_doc::ParaProps) -> String {
-    if !pp.world_ready {
+    if !pp.is_world_ready() {
         glyphs.iter_mut().for_each(|g| g.character_direction = designcraft_doc::arabic::CharacterDirection::LeftToRight);
     }
-    let text = bidi::paragraph_text(glyphs, source, pp.world_ready);
+    let text = bidi::paragraph_text(glyphs, source, pp.is_world_ready());
     bidi::resolve_mirroring(glyphs, &unicode_bidi::BidiInfo::new(&text, Some(bidi_level(pp))));
     text
 }

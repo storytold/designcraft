@@ -248,6 +248,13 @@ impl ParaAttrs {
 }
 
 impl ParaProps {
+    /// Whether lines are set World-Ready ([`ParaProps::world_ready`]). The Japanese composers
+    /// always are: InDesign has no Japanese composer that isn't (IDML names one composer for both,
+    /// `HL Composer J`), so `world_ready` off under one is ignored and round-trips as it sets.
+    pub fn is_world_ready(&self) -> bool {
+        self.world_ready || self.composer.japanese()
+    }
+
     /// The label of a numbered paragraph with number `n`.
     pub fn number_label(&self, n: u32) -> String {
         expand_list_text(&self.number_expression, &self.number_style.format(n))

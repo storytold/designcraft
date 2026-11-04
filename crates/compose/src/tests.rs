@@ -8356,6 +8356,59 @@ fn arabic_outside_a_world_ready_paragraph_runs_left_to_right_unjoined() {
     assert_eq!((b.1, l.1), (beh, lam), "isolated forms");
 }
 
+/// The Japanese composers are always World-Ready, as in InDesign (IDML has one name for each): World-Ready
+/// off under one is ignored, so the paragraph sets as it reads back from IDML.
+#[test]
+fn a_japanese_composer_is_always_world_ready() {
+    let text = "\u{0628}\u{0644}";
+    let set = |composer, world_ready: bool| {
+        let para = ParaAttrs { composer: Some(composer), world_ready: Some(world_ready), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+        d.settings.glyph_fallback = true;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.gid, g.x)).collect::<Vec<_>>()
+    };
+    for composer in [designcraft_doc::Composer::Japanese, designcraft_doc::Composer::JapaneseSingleLine] {
+        assert_eq!(set(composer, false), set(composer, true), "{composer:?}");
+    }
+    assert_ne!(set(designcraft_doc::Composer::Paragraph, false), set(designcraft_doc::Composer::Paragraph, true), "control");
+}
+
+/// A vowelled Arabic word in a paragraph that isn't World-Ready: its letters stand unjoined, left
+/// to right, and each vowel mark is still drawn on its own letter (over the letter's advance, not
+/// after it), with no advance of its own pushing the next letter away.
+#[test]
+fn vowel_marks_stay_on_their_letters_outside_a_world_ready_paragraph() {
+    // Beh with fatha, lam with kasra.
+    let text = "\u{0628}\u{064E}\u{0644}\u{0650}";
+    let para = ParaAttrs { world_ready: Some(false), ..Default::default() };
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+    d.settings.glyph_fallback = true;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    // Each letter with its mark: one cluster (the font's glyph order within it), or two.
+    let glyphs: Vec<_> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).collect();
+    if glyphs.len() != 4 || glyphs.iter().any(|g| g.gid == 0) {
+        eprintln!("skipped: no installed font has these Arabic letters and marks");
+        return;
+    }
+    let pair = |first: usize| {
+        let (marks, bases): (Vec<&PlacedGlyph>, Vec<&PlacedGlyph>) =
+            glyphs.iter().copied().filter(|g| g.byte == first || (g.byte == first + 2 && g.len > 0)).partition(|g| g.adv.abs() < 0.01);
+        assert_eq!((marks.len(), bases.len()), (1, 1), "a letter and its mark at byte {first}");
+        (bases[0], marks[0])
+    };
+    let ((beh, fatha), (lam, kasra)) = (pair(0), pair(4));
+    assert!(beh.x < lam.x, "left to right: {} {}", beh.x, lam.x);
+    assert!(lam.x >= beh.x + beh.adv - 0.01, "the fatha pushes nothing away: {} {} {}", beh.x, beh.adv, lam.x);
+    for (mark, base) in [(fatha, beh), (kasra, lam)] {
+        let outline = designcraft_fonts::FontDb::global().outline(mark.face.get(), mark.gid);
+        let ink = designcraft_geom::Shape::bounding_box(&*outline);
+        let (x0, x1) = (mark.x + ink.x0 * mark.sx, mark.x + ink.x1 * mark.sx);
+        let centre = (x0 + x1) / 2.0;
+        assert!(centre > base.x && centre < base.x + base.adv, "the mark ({x0}..{x1}) is on its letter ({}..{})", base.x, base.x + base.adv);
+    }
+}
+
 /// A paragraph that isn't World-Ready sets its lines left to right whatever its direction, as
 /// InDesign's Paragraph Composer does: beside an object the left segment fills first, and the
 /// first-line indent and the drop cap are at the left edge. A right-to-left paragraph's lines
