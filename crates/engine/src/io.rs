@@ -73,18 +73,12 @@ fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
     }
     if meta.len() > MAX_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("longer than {MAX_FILE_BYTES} bytes"),
-        ));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("longer than {MAX_FILE_BYTES} bytes")));
     }
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("longer than {MAX_FILE_BYTES} bytes"),
-        ));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("longer than {MAX_FILE_BYTES} bytes")));
     }
     Ok(bytes)
 }
