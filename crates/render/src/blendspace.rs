@@ -191,21 +191,11 @@ fn pipeline(doc: &Document, sr: SpreadRef, opts: &RenderOptions) -> Pipeline {
             return Pipeline::Proof;
         }
     }
-    if let SpreadRef::Doc(si) = sr {
-        let first = doc.first_page_of_spread(si);
-        for (pi, page) in sp.pages.iter().enumerate() {
-            if !page.show_parent_items {
-                continue;
-            }
-            let Some((ppi, ppage)) = doc.parent_page_for(first.saturating_add(pi)) else { continue };
-            let Some(parent) = doc.parents.get(ppi) else { continue };
-            for item in &parent.items {
-                if page.overridden.contains(&item.id) || parent.pages.len() > 1 && parent.page_at_x(item.bounds().center().x) != Some(ppage) {
-                    continue;
-                }
-                if !inspect(item) {
-                    return Pipeline::Proof;
-                }
+    // The parent items behind each page, through the based-on chain (as drawing places them).
+    for pi in 0..sp.pages.len() {
+        for shown in doc.shown_parent_items(sr, pi) {
+            if !inspect(shown.item) {
+                return Pipeline::Proof;
             }
         }
     }
@@ -295,20 +285,9 @@ impl Renderer {
             inspect_item(doc, item, f.opts, 0, &mut t);
             t
         };
-        if let SpreadRef::Doc(si) = sr {
-            let first = doc.first_page_of_spread(si);
-            for (pi, page) in sp.pages.iter().enumerate() {
-                if !page.show_parent_items {
-                    continue;
-                }
-                let Some((ppi, _)) = doc.parent_page_for(first.saturating_add(pi)) else { continue };
-                if doc
-                    .parents
-                    .get(ppi)
-                    .is_some_and(|parent| parent.items.iter().any(|it| visible(it) && !page.overridden.contains(&it.id) && transparent(it)))
-                {
-                    return None;
-                }
+        for pi in 0..sp.pages.len() {
+            if doc.shown_parent_items(sr, pi).iter().any(|shown| visible(shown.item) && transparent(shown.item)) {
+                return None;
             }
         }
         // What an object can paint on the spread: its bounds with its (and its children's)
@@ -492,6 +471,28 @@ mod tests {
         Arc::make_mut(&mut doc.spreads[0]).pages[0].show_parent_items = false;
         let hidden = draw(&doc, &mut renderer);
         assert_eq!(hidden.pixel(70, 50), [255; 4]);
+    }
+
+    /// Blending items on parent A show through parent B based on A as they do through A: the
+    /// blend-space check looked at the page's own parent only, so they were drawn in RGB. B's
+    /// page overriding the blending item takes it out, as drawing does.
+    #[test]
+    fn cmyk_blends_on_a_base_parent_follow_the_based_on_chain() {
+        let mut doc = document();
+        let black = dodge(&mut doc, SpreadRef::Parent(0));
+        let mut renderer = Renderer::new();
+        renderer.threads = 0;
+        let direct = draw(&doc, &mut renderer);
+        let a = doc.parents[0].id;
+        let b = doc.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(0.0));
+        Arc::make_mut(&mut doc.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+        doc.apply_parent(&[0], Some(b)).unwrap();
+        let through_b = draw(&doc, &mut renderer);
+        white(through_b.pixel(70, 50));
+        assert_eq!(through_b.pixels, direct.pixels);
+        Arc::make_mut(&mut doc.parents[1]).pages[0].overridden.push(black);
+        let overridden = draw(&doc, &mut renderer);
+        assert_ne!(overridden.pixel(70, 50), through_b.pixel(70, 50));
     }
 
     #[test]
