@@ -9,6 +9,28 @@ pub fn offset_path(bp: &BezPath, d: f64, tol: f64) -> BezPath {
         return bp.clone();
     }
     let mut out = BezPath::new();
+    for sub in subpaths(bp) {
+        offset_subpath(&sub, d, tol, &mut out);
+    }
+    out
+}
+
+/// `bp` split at each `MoveTo` into its subpaths.
+fn subpaths(bp: &BezPath) -> Vec<BezPath> {
+    let mut out: Vec<BezPath> = Vec::new();
+    for el in bp.elements() {
+        if matches!(el, kurbo::PathEl::MoveTo(_)) || out.is_empty() {
+            out.push(BezPath::new());
+        }
+        if let Some(sub) = out.last_mut() {
+            sub.push(*el);
+        }
+    }
+    out
+}
+
+/// One subpath offset by `d`, its segments joined into one line, appended to `out`.
+fn offset_subpath(bp: &BezPath, d: f64, tol: f64, out: &mut BezPath) {
     let mut started = false;
     for seg in bp.segments() {
         let c = match seg {
@@ -30,7 +52,6 @@ pub fn offset_path(bp: &BezPath, d: f64, tol: f64) -> BezPath {
         }
         started = true;
     }
-    out
 }
 
 /// Bands (start, width) across a stroke, as fractions of the weight from its left edge.
@@ -54,8 +75,13 @@ pub fn stripes(bp: &BezPath, weight: f64, bands: &Bands, tol: f64) -> BezPath {
     out
 }
 
-/// Points along `bp` every `step` of arc length, with the unit tangent there.
-fn samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
+/// Points along each subpath of `bp` every `step` of arc length, with the unit tangent there.
+fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
+    subpaths(bp).iter().map(|sub| subpath_samples(sub, step)).collect()
+}
+
+/// Points along one subpath every `step` of arc length, with the unit tangent there.
+fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
     let mut out = Vec::new();
     let mut carry = 0.0;
     for seg in bp.segments() {
@@ -85,13 +111,14 @@ fn samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
 /// A wavy stroke: the line swings `weight` wide, drawn a third of the weight thick.
 pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let wavelength = (weight * 4.0).max(2.0);
-    let pts = samples(bp, wavelength / 16.0);
     let mut line = BezPath::new();
-    for (i, (p, t)) in pts.iter().enumerate() {
-        let normal = Vec2::new(-t.y, t.x);
-        let phase = i as f64 / 16.0 * std::f64::consts::TAU;
-        let q = *p + normal * (phase.sin() * weight * 0.33);
-        if i == 0 { line.move_to(q) } else { line.line_to(q) }
+    for pts in samples(bp, wavelength / 16.0) {
+        for (i, (p, t)) in pts.iter().enumerate() {
+            let normal = Vec2::new(-t.y, t.x);
+            let phase = i as f64 / 16.0 * std::f64::consts::TAU;
+            let q = *p + normal * (phase.sin() * weight * 0.33);
+            if i == 0 { line.move_to(q) } else { line.line_to(q) }
+        }
     }
     let s = Stroke::new(weight / 3.0).with_join(kurbo::Join::Round);
     kurbo::stroke(line.iter(), &s, &kurbo::StrokeOpts::default(), tol)
@@ -100,7 +127,7 @@ pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
 /// A straight-hash stroke: short ticks across the path, as wide as the weight.
 pub fn hashed(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let mut ticks = BezPath::new();
-    for (p, t) in samples(bp, (weight * 0.6).max(1.0)) {
+    for (p, t) in samples(bp, (weight * 0.6).max(1.0)).into_iter().flatten() {
         let normal = Vec2::new(-t.y, t.x) * (weight / 2.0);
         ticks.move_to(p - normal);
         ticks.line_to(p + normal);
@@ -140,5 +167,21 @@ mod tests {
         assert!(w.height() > 4.0 && w.height() < 9.5, "{w:?}");
         let h = hashed(&line(), 8.0, 0.01).bounding_box();
         assert!((h.height() - 8.0).abs() < 0.5 && h.width() > 90.0, "{h:?}");
+    }
+
+    #[test]
+    fn styled_strokes_keep_subpaths_apart() {
+        // Two separate lines, 50 pt apart, in one compound path.
+        let mut b = line();
+        b.move_to((0.0, 50.0));
+        b.line_to((100.0, 50.0));
+        let moves = |p: &BezPath| p.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
+        assert_eq!(moves(&offset_path(&b, 3.0, 0.01)), 2, "one offset subpath per input subpath");
+        let s = stripes(&b, 12.0, &[(0.0, 0.5), (0.75, 0.25)], 0.01);
+        assert!(!s.contains(Point::new(50.0, 25.0)), "stripe bridges the subpaths: {:?}", s.bounding_box());
+        assert!(s.contains(Point::new(50.0, 46.0)), "second line is still striped");
+        let w = wavy(&b, 4.0, 0.01);
+        let bridged = (0..=2000).map(|i| f64::from(i) * 0.05).filter(|&x| w.contains(Point::new(x, 25.0))).count();
+        assert_eq!(bridged, 0, "wavy bridges the subpaths: {:?}", w.bounding_box());
     }
 }
