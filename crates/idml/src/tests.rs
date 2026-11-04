@@ -2289,6 +2289,38 @@ fn custom_glyph_id_imports_and_round_trips() {
     assert_eq!(glyphs(&import_idml(&bytes).unwrap()), [Some("68".to_string()), None]);
 }
 
+/// Text typed next to a custom glyph doesn't take its CustomGlyph property, and a CustomGlyph on
+/// a range that also holds plain text applies to the glyph only: typed text used to inherit it
+/// and go out as plain runs carrying a CustomGlyph property.
+#[test]
+fn custom_glyph_stays_on_its_character() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Properties><CustomGlyph type="string">$ID/laa03</CustomGlyph></Properties><Content>ab<?ACE 1a?></Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let mut d = import_idml_with(&fixture_with_story(story), &|_| None).unwrap();
+    let sid = *d.stories.keys().next().unwrap();
+    let st = d.story_mut(sid).unwrap();
+    let at = st.text.find(designcraft_doc::story::CUSTOM_GLYPH).expect("the custom glyph");
+    assert_eq!(st.char_format_at(1).over.custom_glyph, None, "plain text in the range");
+    // Typing right after the glyph takes the glyph's run format.
+    let after = at + designcraft_doc::story::CUSTOM_GLYPH.len_utf8();
+    st.insert(after, "xy");
+    assert_eq!(st.char_format_at(after + 1).over.custom_glyph, None, "typed text");
+    assert_eq!(st.char_format_at(after).over.custom_glyph.as_deref(), Some("laa03"), "the glyph keeps it");
+    let text = zip_text(&export_idml(&d), "Stories/");
+    assert_eq!(text.matches("<CustomGlyph").count(), 1, "{text}");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    let st = back.story(*back.stories.keys().next().unwrap()).unwrap();
+    let at = st.text.find(designcraft_doc::story::CUSTOM_GLYPH).expect("the custom glyph");
+    assert_eq!(st.char_format_at(at + 3).over.custom_glyph.as_deref(), Some("laa03"));
+    assert!(st.text.contains("xy"), "{:?}", st.text);
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
