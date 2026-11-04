@@ -144,8 +144,9 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
             }
             out.push_str(rest);
             if out.len() > MAX_INTERPOLATED_BYTES {
-                return Err(format!("the interpolated text of {} is longer than {MAX_INTERPOLATED_BYTES} bytes", s.get(..40).unwrap_or(s))
-                    .replace('\n', " "));
+                return Err(
+                    format!("the interpolated text of {} is longer than {MAX_INTERPOLATED_BYTES} bytes", s.get(..40).unwrap_or(s)).replace('\n', " ")
+                );
             }
             Value::String(out)
         }
