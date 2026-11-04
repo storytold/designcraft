@@ -85,7 +85,20 @@ fn main() {
         std::process::exit(2);
     };
     let text = std::fs::read_to_string(src).expect("read the Kaikki file");
-    let entries: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    // A truncated or malformed download must not silently shrink the root list.
+    let mut entries: Vec<Value> = Vec::new();
+    for (i, l) in text.lines().enumerate() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(l) {
+            Ok(v) => entries.push(v),
+            Err(e) => {
+                eprintln!("{src}:{}: not a JSON entry ({e}); eo.roots left unchanged", i + 1);
+                std::process::exit(1);
+            }
+        }
+    }
 
     let mut strong = BTreeSet::new();
     let mut weak = BTreeSet::new();
