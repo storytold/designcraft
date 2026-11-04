@@ -469,6 +469,11 @@ mod tests {
         assert!(PathData::new(vec![line.clone(), square]).encloses_area());
         assert!(!PathData::new(vec![line]).encloses_area());
         assert!(!PathData::default().encloses_area());
+        // Handles left on the open ends don't bend the closing segment.
+        let mut stray = SubPath::polyline(&pts(&[(0.0, 0.0), (100.0, 0.0)]), false);
+        stray.anchors[0].h_in = Point::new(0.0, 40.0);
+        stray.anchors[1].h_out = Point::new(100.0, 40.0);
+        assert!(!PathData::single(stray).encloses_area());
     }
 
     #[test]
