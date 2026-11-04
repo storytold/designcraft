@@ -252,7 +252,10 @@ fn community_card(app: &mut DesignApp, ui: &mut egui::Ui) {
                     for (text, id) in [("DesignCraft page", "help.appPage"), ("GitHub", "help.github"), ("getartcraft.com", "help.website")] {
                         let url = designcraft_engine::links::get(&id[5..]).unwrap_or_default();
                         let l = ui
-                            .add(egui::Label::new(egui::RichText::new(text).size(12.0).color(t.accent).underline()).sense(Sense::click()))
+                            .add(
+                                egui::Label::new(egui::RichText::new(crate::i18n::tr(&app.ui.language, text)).size(12.0).color(t.accent).underline())
+                                    .sense(Sense::click()),
+                            )
                             .on_hover_text(url)
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                         if l.clicked() {
