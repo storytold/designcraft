@@ -220,6 +220,25 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 120.0, 120.0), None);
 }
 
+/// While editing parent pages, a click doesn't pick items on a hidden or locked layer (#2221).
+#[test]
+fn parent_mode_hit_skips_hidden_and_locked_layers() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (id, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, true));
+        let p = l.to_canvas(SpreadRef::Parent(0), Point::new(150.0, 150.0));
+        ctx(d, &s, &c, &l).hit(p)
+    };
+    assert_eq!(hit(&d), Some((SpreadRef::Parent(0), id)));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(hit(&d), None, "hidden layer");
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(hit(&d), None, "locked layer");
+}
+
 #[test]
 fn gradient_tool_drag_sets_the_vector() {
     let mut d = Document::new(&NewDocument::default());
