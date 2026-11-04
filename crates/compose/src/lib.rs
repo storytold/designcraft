@@ -641,10 +641,10 @@ pub struct ComposeOptions {
 /// Nesting depth past which wrap obstacles inside groups are not collected.
 const MAX_WRAP_DEPTH: usize = 64;
 
-/// Do the objects on `layer` wrap text? Those on a hidden layer too, unless the layer suppresses
-/// their wrap (Layer Options › Suppress Text Wrap When Layer Is Hidden), as in InDesign.
+/// Do the objects on `layer` wrap text ([`designcraft_doc::Layer::wraps_text`])? Objects on a
+/// layer the document doesn't have do.
 pub(crate) fn layer_wraps_text(doc: &Document, layer: designcraft_doc::LayerId) -> bool {
-    doc.layer(layer).is_none_or(|l| l.visible || !l.suppress_wrap_when_hidden)
+    doc.layer(layer).is_none_or(designcraft_doc::Layer::wraps_text)
 }
 
 /// The layer the item at `loc` is drawn on: its top-level item's. A group takes its backmost

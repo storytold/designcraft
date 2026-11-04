@@ -86,7 +86,7 @@ fn doc_signature(doc: &Document) -> u64 {
     // A layer that starts or stops wrapping text can move text to other pages. Layers change in
     // place: the spreads stay the same allocations.
     for l in &doc.layers {
-        (l.id.0, crate::layer_wraps_text(doc, l.id)).hash(&mut h);
+        (l.id.0, l.wraps_text()).hash(&mut h);
     }
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
