@@ -709,6 +709,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Hair Space", "Hajszálköz"),
     ("Header Rows", "Fejlécsorok"),
     ("Hebrew", "Héber"),
+    ("Esperanto", "Eszperantó"),
     ("Height", "Magasság"),
     ("Height Only", "Csak magasság"),
     ("Height and Width", "Magasság és szélesség"),
