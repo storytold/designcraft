@@ -498,13 +498,15 @@ fn tiff_decoder(bytes: &[u8]) -> Option<tiff::decoder::Decoder<std::io::Cursor<&
 }
 
 /// An indexed-colour TIFF (PhotometricInterpretation 3): its size, bits per index, ColorMap
-/// in 8 bits per channel, and whether each index is followed by an 8-bit alpha sample.
+/// in 8 bits per channel, whether each index is followed by an 8-bit alpha sample, and whether
+/// that alpha is associated (the colours are premultiplied by it).
 struct PaletteTiff {
     width: u32,
     height: u32,
     bits: u8,
     colours: Vec<[u8; 3]>,
     alpha: bool,
+    premultiplied: bool,
 }
 
 /// The header of a palette TIFF with 1-, 2-, 4- or 8-bit indices and a full ColorMap, which
@@ -520,12 +522,12 @@ fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
     let sample_bits = d.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).ok()?.unwrap_or_else(|| vec![1]);
     let extra = d.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples).ok()?;
     let planar = d.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok()?.unwrap_or(1);
-    let (bits, alpha) = match (samples, sample_bits.as_slice(), extra.as_deref()) {
-        (1, &[bits], _) => (u8::try_from(bits).ok()?, false),
+    let (bits, alpha, premultiplied) = match (samples, sample_bits.as_slice(), extra.as_deref()) {
+        (1, &[bits], _) => (u8::try_from(bits).ok()?, false, false),
         // Associated (1) or unassociated (2) alpha after each index, interleaved (planar
         // configuration 1) as the decoder reads it. Illustrator writes one BitsPerSample value
         // for both samples.
-        (2, &[8] | &[8, 8], Some(&[1 | 2])) if planar == 1 => (8, true),
+        (2, &[8] | &[8, 8], Some(&[kind @ (1 | 2)])) if planar == 1 => (8, true, kind == 1),
         _ => return None,
     };
     if !matches!(bits, 1 | 2 | 4 | 8) {
@@ -541,7 +543,16 @@ fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
     }
     let colours = r.iter().zip(g).zip(b).map(|((&r, &g), &b)| [r, g, b].map(|v| (v >> 8) as u8)).collect();
     let (width, height) = d.dimensions().ok()?;
-    Some(PaletteTiff { width, height, bits, colours, alpha })
+    Some(PaletteTiff { width, height, bits, colours, alpha, premultiplied })
+}
+
+/// An 8-bit colour value premultiplied by `alpha`, back to straight. Alpha 0 has no colour to
+/// recover, so the value stays; one above its alpha, which premultiplying can't give, saturates.
+fn unpremultiply(value: u8, alpha: u8) -> u8 {
+    match u16::from(alpha) {
+        0 => value,
+        a => u8::try_from((u16::from(value) * 255 + a / 2) / a).unwrap_or(u8::MAX),
+    }
 }
 
 /// A palette TIFF as RGBA, each index looked up in the ColorMap.
@@ -554,11 +565,11 @@ fn decode_palette_tiff(bytes: &[u8]) -> Option<image::RgbaImage> {
     let mut out = Vec::new();
     out.try_reserve_exact(w.checked_mul(h)?.checked_mul(4)?).ok()?;
     if p.alpha {
-        // Index, then alpha. Associated alpha is read as straight too: Illustrator leaves fully
-        // transparent pixels white, where premultiplied colour would be black.
+        // Index, then alpha, returned straight.
         let px = px.get(..w.checked_mul(h)?.checked_mul(2)?)?;
         for &[i, a] in px.as_chunks::<2>().0 {
-            let [r, g, b] = *p.colours.get(usize::from(i))?;
+            let colour = *p.colours.get(usize::from(i))?;
+            let [r, g, b] = if p.premultiplied { colour.map(|v| unpremultiply(v, a)) } else { colour };
             out.extend([r, g, b, a]);
         }
         return image::RgbaImage::from_raw(p.width, p.height, out);

@@ -427,9 +427,9 @@ fn palette_tiff_decodes_through_its_colormap() {
 
 /// A 2×2 palette TIFF with an alpha sample after each 8-bit index, laid out as Illustrator
 /// writes EPS previews: little-endian, uncompressed, one strip, and (with `shared_bits`) one
-/// BitsPerSample value for both samples. ColorMap: white, black, 153 grey.
+/// BitsPerSample value for both samples. ColorMap: white, black, 153 grey, dark orange.
 fn palette_alpha_tiff(shared_bits: bool, planar: u16, extra: Option<u16>) -> Vec<u8> {
-    let px = [1, 255, 0, 0, 2, 255, 2, 128];
+    let px = [1, 255, 0, 0, 2, 255, 3, 128];
     let mut entries: Vec<(u16, u16, u32, u32)> = Vec::new();
     let count = 11 + u32::from(extra.is_some());
     let map_at = 8 + 2 + 12 * count + 4;
@@ -453,7 +453,7 @@ fn palette_alpha_tiff(shared_bits: bool, planar: u16, extra: Option<u16>) -> Vec
     }
     b.extend(0u32.to_le_bytes());
     let mut map = vec![0u16; 3 * 256];
-    for (i, c) in [[255u16, 255, 255], [0, 0, 0], [153, 153, 153]].iter().enumerate() {
+    for (i, c) in [[255u16, 255, 255], [0, 0, 0], [153, 153, 153], [64, 32, 16]].iter().enumerate() {
         for (ch, &v) in c.iter().enumerate() {
             map[ch * 256 + i] = v << 8;
         }
@@ -465,11 +465,14 @@ fn palette_alpha_tiff(shared_bits: bool, planar: u16, extra: Option<u16>) -> Vec
 
 /// Illustrator's DOS EPS preview is a palette TIFF with an associated-alpha sample after each
 /// index, transparent pixels white. It missed the palette decoder, so the placed EPS was
-/// blank; now it draws through its ColorMap and keeps its alpha.
+/// blank; now it draws through its ColorMap and keeps its alpha. Colours come back straight:
+/// associated alpha (ExtraSamples 1) divides them by it, unassociated (2) leaves them.
 #[test]
 fn eps_preview_palette_tiff_with_alpha_draws() {
-    let want = [[0, 0, 0, 255], [255, 255, 255, 0], [153, 153, 153, 255], [153, 153, 153, 128]];
-    for (shared_bits, extra) in [(true, 1), (true, 2), (false, 1)] {
+    let want = |last: [u8; 4]| [[0, 0, 0, 255], [255, 255, 255, 0], [153, 153, 153, 255], last];
+    let associated = want([128, 64, 32, 128]);
+    let unassociated = want([64, 32, 16, 128]);
+    for (shared_bits, extra, want) in [(true, 1, associated), (true, 2, unassociated), (false, 1, associated)] {
         let b = palette_alpha_tiff(shared_bits, 1, Some(extra));
         assert_eq!(pixel_size(&b), Some((2, 2)), "shared bits {shared_bits}, extra {extra}");
         let px: Vec<_> = decode_rgba(&b).expect("decodes").pixels().map(|p| p.0).collect();
@@ -490,7 +493,21 @@ fn eps_preview_palette_tiff_with_alpha_draws() {
     eps.extend(ps);
     eps.extend(&preview);
     let px: Vec<_> = decode_rgba(&eps).expect("EPS draws its preview").pixels().map(|p| p.0).collect();
-    assert_eq!(px, want);
+    assert_eq!(px, associated);
+}
+
+/// Premultiplied colour back to straight, rounded. Opaque colour is unchanged, alpha 0 has no
+/// colour to recover (and no division by it), and an invalid value above its alpha saturates.
+#[test]
+fn unpremultiply_recovers_straight_colour() {
+    assert_eq!(unpremultiply(64, 128), 128);
+    assert_eq!(unpremultiply(32, 128), 64);
+    for v in [0, 1, 153, 254, 255] {
+        assert_eq!(unpremultiply(v, 255), v, "opaque {v}");
+        assert_eq!(unpremultiply(v, 0), v, "clear {v}");
+    }
+    assert_eq!(unpremultiply(200, 128), 255);
+    assert_eq!(unpremultiply(255, 1), 255);
 }
 
 #[test]
