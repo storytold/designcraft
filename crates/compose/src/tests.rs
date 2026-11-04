@@ -4610,6 +4610,58 @@ fn an_empty_line_takes_its_auto_leading_from_a_larger_paragraph_mark() {
     }
 }
 
+/// Under a leading model the lines of `text` (all formatted by `format`, with a 16 pt leading)
+/// are 16 pt apart, empty lines included.
+fn assert_leading_kept(text: &str, mut d: Document, sid: StoryId, format: impl Fn(&mut designcraft_doc::CharFormat)) {
+    use designcraft_doc::cjk::LeadingModel;
+    for model in [LeadingModel::AkiBelow, LeadingModel::AkiAbove, LeadingModel::Center] {
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            format(f);
+            f.over.leading = Some(designcraft_doc::Leading::Points(16.0));
+            f.over.leading_model = Some(model);
+        });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let base: Vec<f64> = all_lines(&cs).iter().map(|l| l.baseline).collect();
+        assert_eq!(base.len(), 4, "{model:?}");
+        for w in base.windows(2) {
+            assert!((w[1] - w[0] - 16.0).abs() < 1e-6, "{model:?}: {base:?}");
+        }
+    }
+}
+
+/// A superscript or subscript paragraph mark is shaped at the Advanced Type size, like the text
+/// around it: an empty line measures from that em box, so it keeps the leading. It measured from
+/// the em box at the full size, so it moved against the superscript lines beside it.
+#[test]
+fn an_empty_superscript_paragraph_keeps_the_leading_under_a_leading_model() {
+    use designcraft_doc::Position;
+    let text = "Aaa\n\nBbb\nCcc";
+    for position in [Position::Superscript, Position::Subscript] {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), japanese());
+        assert_leading_kept(text, d, sid, |f| f.over.position = Some(position));
+    }
+}
+
+/// A paragraph mark in a composite font is measured with the composite font's entry (its font,
+/// relative size and vertical scale), as shaping sets the text around it, so an empty line keeps
+/// the leading. It measured the composite font's name, a substitute face, at the plain size.
+#[test]
+fn an_empty_paragraph_in_a_composite_font_keeps_the_leading_under_a_leading_model() {
+    use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+    let text = "Aaa\n\nBbb\nCcc";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 300.0), japanese());
+    std::sync::Arc::make_mut(&mut d.styles).composite_fonts.push(CompositeFont {
+        name: "Scaled".into(),
+        entries: vec![CompositeFontEntry {
+            family: designcraft_fonts::DEFAULT_FAMILY.into(),
+            relative_size: 1.5,
+            vertical_scale: 1.2,
+            ..Default::default()
+        }],
+    });
+    assert_leading_kept(text, d, sid, |f| f.over.font_family = Some("CompositeFont/Scaled".into()));
+}
+
 /// In a vertical frame an empty paragraph measures from the upright em box (the font's
 /// ideographic em box), as the upright characters around it do. It measured from the font's
 /// ascender and descender, so it moved against the lines beside it.
