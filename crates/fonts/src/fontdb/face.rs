@@ -334,6 +334,8 @@ pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
     const MAX_INSTANCES: usize = 4096;
     let mut out = Vec::new();
     let mut instances = 0usize;
+    // Records looked at, kept or not: duplicate or unnamed ones cost a name lookup too.
+    let mut inspected = 0usize;
     for i in 0..count {
         let Ok(f) = skrifa::FontRef::from_index(data, i) else { continue };
         let Some((family, style)) = face_names(&f) else { continue };
@@ -342,9 +344,10 @@ pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
         // The styles taken, ASCII-lowercased: a lookup, not a search of those before.
         let mut taken = std::collections::HashSet::new();
         for ni in f.named_instances().iter() {
-            if instances >= MAX_INSTANCES {
+            if instances >= MAX_INSTANCES || inspected >= MAX_INSTANCES {
                 break;
             }
+            inspected += 1;
             let Some(style) = name(&f, &[ni.subfamily_name_id()]) else { continue };
             if !taken.insert(style.to_ascii_lowercase()) {
                 continue;
