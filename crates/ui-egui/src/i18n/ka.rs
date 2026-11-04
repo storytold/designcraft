@@ -1585,8 +1585,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "გამოუყენებელი"),
     ("⚠ Missing", "⚠ აკლია"),
     ("▲ Modified", "▲ შეცვლილია"),
-    ("Missing", "აკლია"),
-    ("Modified", "შეცვლილია"),
     ("Too large to check", "შესამოწმებლად ზედმეტად დიდია"),
     ("(Text Color)", "(ტექსტის ფერი)"),
     ("{count} glyphs — click to insert at the text cursor", "გლიფი: {count} — დაწკაპეთ ტექსტის კურსორთან ჩასასმელად"),

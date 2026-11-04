@@ -1489,8 +1489,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "nepoužito"),
     ("⚠ Missing", "⚠ Chybí"),
     ("▲ Modified", "▲ Změněno"),
-    ("Missing", "Chybí"),
-    ("Modified", "Změněno"),
     ("Too large to check", "Příliš velké na kontrolu"),
     ("(Text Color)", "(Barva textu)"),
     ("{count} glyphs — click to insert at the text cursor", "Glyfy: {count} — kliknutím vložíte na pozici textového kurzoru"),
