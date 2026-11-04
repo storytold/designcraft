@@ -104,13 +104,14 @@ fn press(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Shows the state `pick(active, count)` chooses on multi-state object `object` (through
 /// `states.show`, so it is one undo step) and returns the state now shown; `None` from `pick`
-/// leaves the active state as it is.
+/// leaves the active state as it is. A target that is gone (deleted, released, pasted elsewhere)
+/// or no longer multi-state makes the press do nothing, as its PDF export does: `Ok(None)`.
 fn show_state(s: &mut Session, object: ItemId, pick: &dyn Fn(usize, usize) -> Option<usize>) -> Result<Option<usize>> {
-    let list = s.execute("states.list", &json!({"id": object.0}))?;
+    let Ok(list) = s.execute("states.list", &json!({"id": object.0})) else { return Ok(None) };
     let n = list["states"].as_array().map_or(0, Vec::len);
     let active = list["active"].as_u64().unwrap_or(0) as usize;
     if n == 0 {
-        return Err(bad("button.press", format!("{object} is no longer a multi-state object")));
+        return Ok(None);
     }
     match pick(active, n) {
         Some(i) if i != active => {
@@ -427,6 +428,15 @@ mod tests {
         assert_eq!(press(&mut s)["relative"], -1);
         s.execute("button.set", &json!({"ids": [button], "action": "url", "url": "https://example.com"})).unwrap();
         assert_eq!(press(&mut s)["url"], "https://example.com");
+        // A state action whose object is gone does nothing: no state, no error (the PDF export
+        // leaves such a button out the same way).
+        s.execute("button.set", &json!({"ids": [button], "action": "nextState", "wrap": true})).unwrap();
+        s.execute("edit.clear", &json!({"ids": [mso]})).unwrap();
+        let pressed = press(&mut s);
+        assert!(pressed.get("state").is_none(), "{pressed}");
+        assert_eq!(pressed["action"]["kind"], "nextState", "the action itself is still reported");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(press(&mut s)["state"], 0, "the object is back: the press works again");
         // A destination resolves to its anchor's page; a deleted anchor is an error, not a crash.
         let text = s.execute("frame.create", &json!({"spread": 2, "rect": [72, 72, 400, 200], "content": "text", "text": "Appendix"})).unwrap();
         s.execute("text.select", &json!({"story": text["story"], "anchor": 0, "focus": 0})).unwrap();
