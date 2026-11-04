@@ -5329,7 +5329,7 @@ fn hyphenation_points(
     // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
     // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
     // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
-    // hyphenated its English (noted in review). See `hyphen::korean_paragraph`.
+    // hyphenated its English. See `hyphen::korean_paragraph`.
     if korean {
         return out;
     }
@@ -5357,6 +5357,8 @@ fn hyphenation_points(
     if cache.len() > 100_000 {
         cache.clear();
     }
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5378,10 +5380,20 @@ fn hyphenation_points(
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
             // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
-            // on it ("News와") or inside an address is not a word to hyphenate (#1688).
-            let token_start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
-            let token_end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
-            if hyphen::keep_whole(&text[token_start..token_end]) {
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
                 i = j.max(i + 1);
                 continue;
             }

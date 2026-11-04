@@ -223,8 +223,6 @@ pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
     (out, src)
 }
 
-/// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
-/// the paragraph limits applied to each letter run.
 /// Whether a whitespace-delimited token is one no language's hyphenation should break.
 ///
 /// Korean attaches particles straight onto Latin words ("News와", "PDF로"), and notices are full
@@ -245,23 +243,25 @@ pub fn keep_whole(token: &str) -> bool {
             | 0xA960..=0xA97F     // Hangul Jamo Extended-A
             | 0xD7B0..=0xD7FF     // Hangul Jamo Extended-B
             | 0x3040..=0x30FF     // kana
-            | 0xFF66..=0xFF9F     // halfwidth katakana (noted in review)
+            | 0xFF66..=0xFF9F     // halfwidth katakana
             | 0x4E00..=0x9FFF     // CJK unified ideographs
             | 0x3400..=0x4DBF
             | 0xF900..=0xFAFF
-            | 0x20000..=0x3FFFF) // supplementary ideographs (noted in review)
+            | 0x20000..=0x3FFFF) // supplementary ideographs
     };
     if token.chars().any(cjk) {
         return true;
     }
     // Prose punctuation around a token is not part of the address inside it: `(https://...)` was
     // not recognised because the bracket came first, and `library.example.kr,` because the comma
-    // ended the last label (noted in review). Only this classification ignores it; the text keeps
+    // ended the last label. Only this classification ignores it; the text keeps
     // every character it had.
     let wrapper = |c: char| {
         matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | ',' | ';' | ':' | '!' | '?' | '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}')
     };
-    let token = token.trim_matches(wrapper).trim_end_matches('.');
+    // Full stops count with the wrapper characters at the end, so `(library.example.kr).` loses
+    // both its closing bracket and the sentence's full stop.
+    let token = token.trim_start_matches(wrapper).trim_end_matches(|c: char| wrapper(c) || c == '.');
     let lower = token.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("ftp://") || lower.starts_with("www.") {
         return true;
@@ -285,7 +285,9 @@ pub fn keep_whole(token: &str) -> bool {
     // A domain: dot-separated labels up to the first `/`, whose last label is a short run of
     // letters -- "example.kr", "library.example.kr". Ordinary prose ("end. Next") never reaches
     // here, because a token holds no space.
-    let host = lower.split('/').next().unwrap_or("");
+    // Judged as written, not lower-cased: a domain's last label is lower-case letters, so `Mr.Smith`
+    // is not one and stays a word to hyphenate.
+    let host = token.split('/').next().unwrap_or("");
     let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
     if labels.len() >= 2
         && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
@@ -307,7 +309,7 @@ pub fn mostly_hangul(text: &str) -> bool {
 
 /// [`mostly_hangul`] over characters, for judging the text that is actually set: hidden text has
 /// no glyphs, and counting it let hidden Korean turn hyphenation off for the visible English
-/// around it, and hidden Latin keep it on for visible Korean (noted in review).
+/// around it, and hidden Latin keep it on for visible Korean.
 pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
     let (mut hangul, mut latin) = (0usize, 0usize);
     for c in chars {
@@ -330,12 +332,12 @@ pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
 ///
 /// Generated glyphs do not vote: a list bullet or number, or a footnote label, is not the
 /// paragraph's own text, and `prepend_label` gives it the paragraph's *first* byte -- so counting
-/// it would also swallow the real first character in the deduplication (noted in review).
+/// it would also swallow the real first character in the deduplication.
 ///
 /// **Approximation.** A ligature is one glyph over several characters, so those characters vote
 /// once between them and Latin is under-counted. That can change the answer: 16 Hangul with
 /// `office hyphenation` is 17 Latin letters, and a font that shapes `fi` counts at most 16, so
-/// the paragraph classifies as Korean and loses its hyphens (review's example). Fixing it needs
+/// the paragraph classifies as Korean and loses its hyphens. Fixing it needs
 /// the visible source characters each cluster stands for; `byte..byte + len` is not that, because
 /// the glyph after a hidden run spans it -- measured, every byte of the paragraph came out
 /// covered -- which would revive the hidden-text bug this function was changed to avoid.
@@ -354,6 +356,8 @@ pub fn korean_paragraph(glyphs: impl Iterator<Item = (usize, char, bool)>) -> bo
     mostly_hangul_chars(chars.into_iter())
 }
 
+/// Allowed hyphenation points in `word` as char indices (a hyphen goes before that char), with
+/// the paragraph limits applied to each letter run.
 pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
     hyphen_points_in(word, lim, Lang::English)
 }
@@ -492,21 +496,29 @@ mod tests {
             assert!(!keep_whole(t), "{t} should not be protected");
         }
 
-        // An address wrapped in prose punctuation is the same address (noted in review).
+        // An address wrapped in prose punctuation is the same address.
         for t in [
             "library.example.kr,",
             "(https://example.kr/page)",
             "\u{201C}www.example.kr\u{201D}",
             "mail@example.kr;",
             "example.kr.",
+            // A bracket and then the sentence's full stop.
+            "(library.example.kr).",
             "[https://example.kr]",
         ] {
             assert!(keep_whole(t), "{t} should be kept whole");
         }
 
-        // Halfwidth katakana and a supplementary ideograph are CJK too (noted in review).
+        // Halfwidth katakana and a supplementary ideograph are CJK too.
         for t in ["News\u{FF76}", "\u{20B9F}\u{C640}", "x\u{FF9F}"] {
             assert!(keep_whole(t), "{t:?} should be kept whole");
+        }
+
+        // A domain's last label is lower-case letters as written: a name run into the next word
+        // after a full stop is not one, and its words still hyphenate.
+        for t in ["Mr.Smith", "Section.Introduction", "End.Next"] {
+            assert!(!keep_whole(t), "{t} is not an address");
         }
     }
 
@@ -802,14 +814,14 @@ mod korean_paragraph_tests {
     use super::korean_paragraph;
 
     /// `(byte, ch, generated)` per glyph, which is all the classification reads -- so these cases
-    /// need no font and state the counting rules directly (review's suggestion).
+    /// need no font and state the counting rules directly.
     fn k(glyphs: &[(usize, char, bool)]) -> bool {
         korean_paragraph(glyphs.iter().copied())
     }
 
     /// One character per source byte, however many glyphs shaping made of it. A syllable shaped
     /// into three glyphs voted three times, which could classify a mostly-Latin paragraph as
-    /// Korean (noted in review).
+    /// Korean.
     #[test]
     fn glyphs_of_one_cluster_vote_once() {
         // Two Hangul characters, the first shaped into three glyphs, against three Latin letters.
@@ -831,7 +843,7 @@ mod korean_paragraph_tests {
 
     /// A generated label is not the paragraph's own text, and `prepend_label` gives it the
     /// paragraph's *first* byte -- so counting it also swallowed the real first character in the
-    /// deduplication (noted in review).
+    /// deduplication.
     #[test]
     fn a_generated_label_neither_votes_nor_hides_the_first_character() {
         // A footnote label at byte 0, then two Hangul characters (the first also at byte 0) and
@@ -857,7 +869,7 @@ mod korean_paragraph_tests {
 
     /// The remaining approximation, pinned so it is visible rather than surprising: a ligature is
     /// one glyph over several characters, so Latin is under-counted and this paragraph classifies
-    /// as Korean although it has more Latin letters (review's example).
+    /// as Korean although it has more Latin letters.
     #[test]
     fn a_ligature_under_counts_latin_which_is_a_known_approximation() {
         // Two Hangul characters against three Latin letters shaped as one `ffi` glyph.
