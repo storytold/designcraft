@@ -89,6 +89,14 @@ fn run_end(ft: &FrameText, gs: &[PlacedGlyph], i: usize) -> usize {
     j
 }
 
+/// End of the run `i..j` of `gs` (glyphs of `text`) while tagging: an anchored object's mark is a
+/// run of its own, so the story of a text frame anchored there can go between the text before
+/// and after it in the structure tree.
+fn tagged_run_end(gs: &[PlacedGlyph], i: usize, j: usize, text: &str) -> usize {
+    let mark = |k: usize| gs.get(k).and_then(|g| text.get(g.byte..)).is_some_and(|t| t.starts_with(designcraft_doc::OBJECT_MARK));
+    if mark(i) { i + 1 } else { (i + 1..j).find(|&k| mark(k)).unwrap_or(j) }
+}
+
 /// Clusters of several glyphs (a base and its marks, as in pointed Hebrew) map glyph by glyph
 /// when every glyph stands for one of the cluster's characters, and are drawn in text order:
 /// viewers that only read ToUnicode then get each character once, marks after their base. A
@@ -225,10 +233,11 @@ impl Exporter<'_> {
         match self.tag_story {
             Some(sid) => {
                 let pi = self.doc.story(sid).map_or(0, |st| st.para_at(gs[0].byte.min(st.len())));
+                let first = gs.iter().map(|g| g.byte).min().unwrap_or(0);
                 let id = s.start_tagged(ContentTag::Span(SpanTag::empty()));
                 self.run(s, cs, gs, baseline, story);
                 s.end_tagged();
-                self.para_tags.entry((sid, pi)).or_default().push(id);
+                self.para_tags.entry((sid, pi)).or_default().push((first, id));
             }
             None => self.run(s, cs, gs, baseline, story),
         }
@@ -257,21 +266,22 @@ impl Exporter<'_> {
                 continue;
             }
             let j = run_end(ft, gs, i);
+            let j = if self.tag_story.is_some() { tagged_run_end(gs, i, j, story) } else { j };
             self.tagged_run(s, cs, &gs[i..j], l.baseline, story);
             i = j;
         }
     }
 
-    /// The frame's text. With `objects` (the frame text space → page transform and the page),
-    /// the frame's anchored objects are drawn too, over its paragraph shading and under its text;
-    /// returns whether they were.
+    /// The frame's text. With `objects` (the frame text space → page transform, the page and the
+    /// frame's story), the frame's anchored objects are drawn too, over its paragraph shading and
+    /// under its text; returns whether they were.
     pub(crate) fn frame_text(
         &mut self,
         s: &mut Surface,
         cs: &ComposedStory,
         ft: &FrameText,
         story: &str,
-        objects: Option<(Affine, Option<usize>)>,
+        objects: Option<(Affine, Option<usize>, designcraft_doc::StoryId)>,
     ) -> bool {
         // Paragraph shading and rules under the text.
         self.as_artifact(s, |me, s| {
@@ -293,9 +303,9 @@ impl Exporter<'_> {
         // Anchored objects under the text (as InDesign draws them): a picture whose frame reaches
         // into the next line doesn't hide that line. Objects keep their page-space transforms.
         let drawn = match objects {
-            Some((xf, page)) if xf.determinant().abs() > 1e-12 => {
+            Some((xf, page, sid)) if xf.determinant().abs() > 1e-12 => {
                 s.push_transform(&tf(xf.inverse()));
-                self.frame_objects(s, ft, xf, page);
+                self.frame_objects(s, ft, sid, xf, page);
                 s.pop();
                 true
             }
