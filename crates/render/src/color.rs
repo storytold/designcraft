@@ -202,7 +202,11 @@ pub(crate) fn overprints(f: &Frame, swatch: &str, tint: f32, flag: bool) -> bool
 pub(crate) fn spread_blends(doc: &Document, sp: &designcraft_doc::Spread) -> bool {
     let blends = |it: &Item| {
         let mut any = false;
-        it.walk(&mut |i| any |= i.blend != Default::default());
+        // A screened glow or a shadow with a blend mode blends with the objects below too, not the paper.
+        let fx_blends = |e: &designcraft_doc::Effects| {
+            (e.outer_glow.on && e.outer_glow.mode != Default::default()) || (e.drop_shadow.on && e.drop_shadow.mode != Default::default())
+        };
+        it.walk(&mut |i| any |= i.blend != Default::default() || fx_blends(&i.effects));
         any
     };
     sp.items.iter().any(|i| blends(i)) || doc.parents.iter().any(|p| p.items.iter().any(|i| blends(i)))

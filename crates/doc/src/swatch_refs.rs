@@ -97,6 +97,10 @@ impl Names<'_> {
         if let Some(tf) = it.text_frame_mut() {
             self.frame(&mut tf.options);
         }
+        // The swatch a greyscale or bitmap image is coloured with (#2306).
+        if let crate::item::Content::Graphic(g) = &mut it.content {
+            self.fill(&mut g.fill);
+        }
         if let Some(kids) = it.children_mut() {
             for k in kids {
                 self.item(Arc::make_mut(k), depth + 1);
@@ -117,6 +121,9 @@ impl Names<'_> {
         }
         for c in &mut t.cells {
             self.s(&mut c.fill);
+            if let Some(g) = &mut c.graphic {
+                self.fill(&mut g.fill);
+            }
             for s in &mut c.strokes {
                 self.cell_stroke(s);
             }
@@ -228,11 +235,10 @@ impl Document {
     }
 
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
-    /// styles, page items (fills, strokes, gaps, effects, column rules), text, kenten and ruby
-    /// colours, rules, shading, borders and border gaps, tables (with stroke gaps), footnotes,
-    /// gradient stops,
-    /// endnotes and the footnote rule. The swatch itself is renamed by the
-    /// caller.
+    /// styles, page items (fills, strokes, gaps, effects, column rules, the swatch an image is
+    /// coloured with), text, kenten and ruby colours, rules, shading, borders and border gaps,
+    /// tables (with stroke gaps and cell images), footnotes, gradient stops, endnotes and the
+    /// footnote rule. The swatch itself is renamed by the caller.
     pub fn rename_swatch_refs(&mut self, from: &str, to: &str) {
         if from == to {
             return;
