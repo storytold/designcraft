@@ -425,75 +425,175 @@ fn palette_tiff_decodes_through_its_colormap() {
     assert_eq!(px, [[10, 20, 30, 255], [255, 0, 0, 255], [0, 128, 255, 255], [10, 20, 30, 255]]);
 }
 
-/// A 2×2 palette TIFF with an alpha sample after each 8-bit index, laid out as Illustrator
-/// writes EPS previews: little-endian, uncompressed, one strip, and (with `shared_bits`) one
-/// BitsPerSample value for both samples. ColorMap: white, black, 153 grey, dark orange.
-fn palette_alpha_tiff(shared_bits: bool, planar: u16, extra: Option<u16>) -> Vec<u8> {
-    let px = [1, 255, 0, 0, 2, 255, 3, 128];
-    let mut entries: Vec<(u16, u16, u32, u32)> = Vec::new();
-    let count = 11 + u32::from(extra.is_some());
-    let map_at = 8 + 2 + 12 * count + 4;
-    let strip_at = map_at + 3 * 256 * 2;
-    let bits = if shared_bits { (1, 8) } else { (2, 8 | 8 << 16) };
-    // Tag, type (3 SHORT, 4 LONG), count, then the value (SHORTs packed low first) or offset:
-    // width, height, BitsPerSample, Compression, Photometric, StripOffsets, SamplesPerPixel,
-    // RowsPerStrip, StripByteCounts, PlanarConfiguration, ColorMap, ExtraSamples.
-    entries.extend([(256, 3, 1, 2), (257, 3, 1, 2), (258, 3, bits.0, bits.1), (259, 3, 1, 1), (262, 3, 1, 3)]);
-    entries.extend([(273, 4, 1, strip_at), (277, 3, 1, 2), (278, 3, 1, 2), (279, 4, 1, u32::try_from(px.len()).unwrap())]);
-    entries.extend([(284, 3, 1, u32::from(planar)), (320, 3, 3 * 256, map_at)]);
-    entries.extend(extra.map(|e| (338, 3, 1, u32::from(e))));
-    let mut b = b"II*\0".to_vec();
-    b.extend(8u32.to_le_bytes());
-    b.extend(u16::try_from(entries.len()).unwrap().to_le_bytes());
-    for (tag, ty, n, v) in entries {
-        b.extend(tag.to_le_bytes());
-        b.extend(ty.to_le_bytes());
-        b.extend(n.to_le_bytes());
-        b.extend(v.to_le_bytes());
-    }
-    b.extend(0u32.to_le_bytes());
+/// Black, then white under alpha 0 as in the preview from Illustrator 30.7, grey, and a
+/// half-transparent dark orange: index and alpha pairs.
+const ILLUSTRATOR_PX: [u8; 8] = [1, 255, 0, 0, 2, 255, 3, 128];
+/// [`ILLUSTRATOR_PX`] decoded: its white under alpha 0 shows its colours are straight.
+const ILLUSTRATOR_RGBA: [[u8; 4]; 4] = [[0, 0, 0, 255], [255, 255, 255, 0], [153, 153, 153, 255], [64, 32, 16, 128]];
+
+/// White, black, 153 grey and dark orange, as 16-bit ColorMap entries.
+fn palette_alpha_map() -> Vec<u16> {
     let mut map = vec![0u16; 3 * 256];
     for (i, c) in [[255u16, 255, 255], [0, 0, 0], [153, 153, 153], [64, 32, 16]].iter().enumerate() {
         for (ch, &v) in c.iter().enumerate() {
             map[ch * 256 + i] = v << 8;
         }
     }
-    b.extend(map.iter().flat_map(|v| v.to_le_bytes()));
-    b.extend(px);
+    map
+}
+
+/// A 2×2 palette TIFF with an alpha sample after each 8-bit index, written by hand to control its
+/// layout. The default is the layout of the preview from Illustrator 30.7: little-endian,
+/// uncompressed, one strip, one BitsPerSample value for both samples and associated alpha.
+struct PaletteAlphaTiff {
+    px: [u8; 8],
+    big_endian: bool,
+    per_sample_bits: bool,
+    planar: u16,
+    extra: Option<u16>,
+}
+
+impl Default for PaletteAlphaTiff {
+    fn default() -> Self {
+        Self { px: ILLUSTRATOR_PX, big_endian: false, per_sample_bits: false, planar: 1, extra: Some(1) }
+    }
+}
+
+impl PaletteAlphaTiff {
+    fn bytes(&self) -> Vec<u8> {
+        let short = |v: u16| if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+        let long = |v: u32| if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+        let count = 11 + u32::from(self.extra.is_some());
+        let map_at = 8 + 2 + 12 * count + 4;
+        let strip_at = map_at + 3 * 256 * 2;
+        let bits = if self.per_sample_bits { (2, 8 | 8 << 16) } else { (1, 8) };
+        let mut entries: Vec<(u16, u16, u32, u32)> = Vec::new();
+        // Tag, type (3 SHORT, 4 LONG), count, then the value (SHORTs packed low first) or offset:
+        // width, height, BitsPerSample, Compression, Photometric, StripOffsets, SamplesPerPixel,
+        // RowsPerStrip, StripByteCounts, PlanarConfiguration, ColorMap, ExtraSamples.
+        entries.extend([(256, 3, 1, 2), (257, 3, 1, 2), (258, 3, bits.0, bits.1), (259, 3, 1, 1), (262, 3, 1, 3)]);
+        entries.extend([(273, 4, 1, strip_at), (277, 3, 1, 2), (278, 3, 1, 2), (279, 4, 1, u32::try_from(self.px.len()).unwrap())]);
+        entries.extend([(284, 3, 1, u32::from(self.planar)), (320, 3, 3 * 256, map_at)]);
+        entries.extend(self.extra.map(|e| (338, 3, 1, u32::from(e))));
+        let mut b = if self.big_endian { b"MM\0*".to_vec() } else { b"II*\0".to_vec() };
+        b.extend(long(8));
+        b.extend(short(u16::try_from(entries.len()).unwrap()));
+        for (tag, ty, n, v) in entries {
+            b.extend(short(tag));
+            b.extend(short(ty));
+            b.extend(long(n));
+            if ty == 3 && n <= 2 {
+                b.extend(short(u16::try_from(v & 0xFFFF).unwrap()));
+                b.extend(short(u16::try_from(v >> 16).unwrap()));
+            } else {
+                b.extend(long(v));
+            }
+        }
+        b.extend(long(0));
+        b.extend(palette_alpha_map().iter().flat_map(|&v| short(v)));
+        b.extend(self.px);
+        b
+    }
+}
+
+/// An 8-bit palette index and an alpha sample, for the `tiff` encoder.
+struct PaletteAndAlpha;
+impl tiff::encoder::colortype::ColorType for PaletteAndAlpha {
+    type Inner = u8;
+    const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::RGBPalette;
+    const BITS_PER_SAMPLE: &[u16] = &[8, 8];
+    const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 2];
+    fn horizontal_predict(row: &[u8], result: &mut Vec<u8>) {
+        result.extend_from_slice(row);
+    }
+}
+
+/// [`ILLUSTRATOR_PX`] through the `tiff` encoder, which can compress it and embed a profile.
+pub(crate) fn encoded_palette_alpha(lzw: bool, icc: Option<&[u8]>) -> Vec<u8> {
+    let mut b = Vec::new();
+    let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
+    if lzw {
+        enc = enc.with_compression(tiff::encoder::Compression::Lzw);
+    }
+    let mut img = enc.new_image::<PaletteAndAlpha>(2, 2).unwrap();
+    img.encoder().write_tag(tiff::tags::Tag::ColorMap, &palette_alpha_map()[..]).unwrap();
+    img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+    if let Some(icc) = icc {
+        img.encoder().write_tag(tiff::tags::Tag::IccProfile, icc).unwrap();
+    }
+    img.write_data(&ILLUSTRATOR_PX).unwrap();
     b
 }
 
-/// Illustrator's DOS EPS preview is a palette TIFF with an associated-alpha sample after each
-/// index, transparent pixels white. It missed the palette decoder, so the placed EPS was
-/// blank; now it draws through its ColorMap and keeps its alpha. Colours come back straight:
-/// associated alpha (ExtraSamples 1) divides them by it, unassociated (2) leaves them.
-#[test]
-fn eps_preview_palette_tiff_with_alpha_draws() {
-    let want = |last: [u8; 4]| [[0, 0, 0, 255], [255, 255, 255, 0], [153, 153, 153, 255], last];
-    let associated = want([128, 64, 32, 128]);
-    let unassociated = want([64, 32, 16, 128]);
-    for (shared_bits, extra, want) in [(true, 1, associated), (true, 2, unassociated), (false, 1, associated)] {
-        let b = palette_alpha_tiff(shared_bits, 1, Some(extra));
-        assert_eq!(pixel_size(&b), Some((2, 2)), "shared bits {shared_bits}, extra {extra}");
-        let px: Vec<_> = decode_rgba(&b).expect("decodes").pixels().map(|p| p.0).collect();
-        assert_eq!(px, want, "shared bits {shared_bits}, extra {extra}");
-    }
-    // Not read as alpha: a second sample without ExtraSamples, or alpha in a plane of its own.
-    assert!(super::palette_tiff(&palette_alpha_tiff(true, 1, None)).is_none());
-    assert!(super::palette_tiff(&palette_alpha_tiff(true, 2, Some(1))).is_none());
-
-    // The same preview inside a DOS EPS, as placed.
-    let ps = b"%!PS-Adobe-3.1 EPSF-3.0\n%%BoundingBox: 0 0 2 2\n%%EOF\n";
-    let preview = palette_alpha_tiff(true, 1, Some(1));
+/// A DOS EPS: its 30-byte header, the PostScript, then the TIFF preview.
+pub(crate) fn dos_eps(ps: &[u8], tiff: &[u8]) -> Vec<u8> {
     let mut eps = vec![0xC5, 0xD0, 0xD3, 0xC6];
-    for v in [30, ps.len(), 0, 0, 30 + ps.len(), preview.len()] {
+    for v in [30, ps.len(), 0, 0, 30 + ps.len(), tiff.len()] {
         eps.extend(u32::try_from(v).unwrap().to_le_bytes());
     }
     eps.extend([0xFF, 0xFF]);
     eps.extend(ps);
-    eps.extend(&preview);
-    let px: Vec<_> = decode_rgba(&eps).expect("EPS draws its preview").pixels().map(|p| p.0).collect();
-    assert_eq!(px, associated);
+    eps.extend(tiff);
+    eps
+}
+
+fn rgba(bytes: &[u8]) -> Vec<[u8; 4]> {
+    decode_rgba(bytes).expect("decodes").pixels().map(|p| p.0).collect()
+}
+
+/// A preview from Illustrator 30.7 is a palette TIFF with an associated-alpha sample after each
+/// index, transparent pixels white. It missed the palette decoder, so the placed EPS was
+/// blank; now it draws through its ColorMap and keeps its alpha, on the page and, through
+/// [`eps_png`], in HTML and EPUB.
+#[test]
+fn eps_preview_palette_tiff_with_alpha_draws() {
+    for (per_sample_bits, extra) in [(false, 1), (false, 2), (true, 1)] {
+        let b = PaletteAlphaTiff { per_sample_bits, extra: Some(extra), ..Default::default() }.bytes();
+        assert_eq!(pixel_size(&b), Some((2, 2)), "per-sample bits {per_sample_bits}, extra {extra}");
+        assert_eq!(rgba(&b), ILLUSTRATOR_RGBA, "per-sample bits {per_sample_bits}, extra {extra}");
+    }
+    // Not read as alpha: a second sample without ExtraSamples, or alpha in a plane of its own.
+    assert!(super::palette_tiff(&PaletteAlphaTiff { extra: None, ..Default::default() }.bytes()).is_none());
+    assert!(super::palette_tiff(&PaletteAlphaTiff { planar: 2, ..Default::default() }.bytes()).is_none());
+
+    // The same preview inside a DOS EPS, as placed.
+    let ps = b"%!PS-Adobe-3.1 EPSF-3.0\n%%BoundingBox: 0 0 2 2\n%%EOF\n";
+    let eps = dos_eps(ps, &PaletteAlphaTiff::default().bytes());
+    assert_eq!(rgba(&eps), ILLUSTRATOR_RGBA);
+    assert_eq!(rgba(&eps_png(&eps).expect("a PNG for HTML and EPUB")), ILLUSTRATOR_RGBA);
+}
+
+/// The alpha sample survives what `tiff` handles for us and the tag rewrite: compression and
+/// either byte order.
+#[test]
+fn palette_tiff_alpha_reads_compressed_and_big_endian() {
+    assert_eq!(rgba(&encoded_palette_alpha(false, None)), ILLUSTRATOR_RGBA, "encoder, uncompressed");
+    assert_eq!(rgba(&encoded_palette_alpha(true, None)), ILLUSTRATOR_RGBA, "LZW");
+    let big = PaletteAlphaTiff { big_endian: true, ..Default::default() }.bytes();
+    assert_eq!(pixel_size(&big), Some((2, 2)));
+    assert_eq!(rgba(&big), ILLUSTRATOR_RGBA, "big-endian");
+}
+
+/// Associated alpha divides the colours when every one is within its alpha, as premultiplied
+/// colour must be. One above its alpha anywhere means the image is straight; unassociated alpha
+/// never divides.
+#[test]
+fn palette_tiff_alpha_is_premultiplied_only_when_its_colours_can_be() {
+    let decoded = |px, extra| rgba(&PaletteAlphaTiff { px, extra: Some(extra), ..Default::default() }.bytes());
+    let within = [1, 255, 1, 0, 2, 255, 3, 128];
+    let with_last = |last| [[0, 0, 0, 255], [0, 0, 0, 0], [153, 153, 153, 255], last];
+    assert_eq!(decoded(within, 1), with_last([128, 64, 32, 128]));
+    assert_eq!(decoded(within, 2), with_last([64, 32, 16, 128]));
+    // 64 is above alpha 8, in a pixel that isn't fully transparent.
+    assert_eq!(decoded([1, 255, 1, 0, 2, 255, 3, 8], 1), with_last([64, 32, 16, 8]));
+}
+
+/// A palette TIFF too short for its size is refused.
+#[test]
+fn palette_tiff_with_a_short_strip_is_refused() {
+    let mut b = palette_tiff::<8>(2, 1, &[0, 0], &[[1, 2, 3]], false);
+    b.truncate(b.len() - 1);
+    assert_eq!(decode_rgba(&b), None);
 }
 
 /// Premultiplied colour back to straight, rounded. Opaque colour is unchanged, alpha 0 has no

@@ -214,6 +214,20 @@ fn rgb_with_an_embedded_profile_is_converted_to_srgb() {
     assert_eq!(decode_rgba(&png_with_icc(2, 1, &px, None)).unwrap().as_raw(), &px);
 }
 
+/// A palette TIFF's profile is applied like any other's, though `image` can't open the file.
+#[test]
+fn palette_tiff_with_an_embedded_profile_is_converted() {
+    let raw = decode_rgba(&crate::tests::encoded_palette_alpha(false, None)).unwrap();
+    let img = decode_rgba(&crate::tests::encoded_palette_alpha(false, Some(&adobe_rgb_icc()))).unwrap();
+    let orange = img.get_pixel(1, 1).0;
+    assert_eq!(raw.get_pixel(1, 1).0, [64, 32, 16, 128]);
+    assert!(near(orange, adobe_to_srgb([64, 32, 16]), 2.0), "{orange:?}");
+    assert_ne!(orange, raw.get_pixel(1, 1).0, "converted");
+    assert_eq!(orange[3], 128, "alpha kept");
+    let srgb = decode_rgba(&crate::tests::encoded_palette_alpha(false, Some(&icc(Builtin::Srgb)))).unwrap();
+    assert_eq!(srgb, raw, "an sRGB profile leaves the pixels as stored");
+}
+
 #[test]
 fn gray_with_an_embedded_profile_is_converted() {
     let img = image::RgbaImage::from_pixel(1, 1, Rgba([128, 128, 128, 255]));

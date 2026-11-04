@@ -411,9 +411,11 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     if is_psd(bytes) {
         return psd::decode(bytes);
     }
-    // `image` rejects indexed-colour TIFFs (an old GIF logo saved from Photoshop).
+    // `image` rejects indexed-colour TIFFs (an old GIF logo saved from Photoshop), so it can't read
+    // their profile either.
     if let Some(img) = decode_palette_tiff(bytes) {
-        return Some(img);
+        let icc = tiff_decoder(bytes).and_then(|mut d| d.get_tag_u8_vec(tiff::tags::Tag::IccProfile).ok());
+        return to_display_rgba(Pixels::Rgb(img), icc.as_deref(), &DisplayColour::active());
     }
     // An EPS is drawn as its proxy (preview, simple PostScript or placeholder); the document
     // keeps the EPS itself.
@@ -497,21 +499,30 @@ fn tiff_decoder(bytes: &[u8]) -> Option<tiff::decoder::Decoder<std::io::Cursor<&
     tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).ok()
 }
 
+/// What follows each index of a palette TIFF.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaletteAlpha {
+    /// Nothing: the image is opaque.
+    Opaque,
+    /// An 8-bit alpha sample, tagged as premultiplying the colours (ExtraSamples 1).
+    Associated,
+    /// An 8-bit alpha sample, the colours straight (ExtraSamples 2).
+    Unassociated,
+}
+
 /// An indexed-colour TIFF (PhotometricInterpretation 3): its size, bits per index, ColorMap
-/// in 8 bits per channel, whether each index is followed by an 8-bit alpha sample, and whether
-/// that alpha is associated (the colours are premultiplied by it).
+/// in 8 bits per channel and alpha.
 struct PaletteTiff {
     width: u32,
     height: u32,
     bits: u8,
     colours: Vec<[u8; 3]>,
-    alpha: bool,
-    premultiplied: bool,
+    alpha: PaletteAlpha,
 }
 
 /// The header of a palette TIFF with 1-, 2-, 4- or 8-bit indices and a full ColorMap, which
 /// neither `image` nor `tiff` decodes. 8-bit indices may carry an alpha sample, as in the
-/// previews Illustrator writes into DOS EPS files. `None` for anything else.
+/// preview Illustrator 30.7 wrote into a DOS EPS file. `None` for anything else.
 fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
     use tiff::tags::Tag;
     let mut d = tiff_decoder(bytes)?;
@@ -522,12 +533,12 @@ fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
     let sample_bits = d.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).ok()?.unwrap_or_else(|| vec![1]);
     let extra = d.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples).ok()?;
     let planar = d.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok()?.unwrap_or(1);
-    let (bits, alpha, premultiplied) = match (samples, sample_bits.as_slice(), extra.as_deref()) {
-        (1, &[bits], _) => (u8::try_from(bits).ok()?, false, false),
-        // Associated (1) or unassociated (2) alpha after each index, interleaved (planar
-        // configuration 1) as the decoder reads it. Illustrator writes one BitsPerSample value
-        // for both samples.
-        (2, &[8] | &[8, 8], Some(&[kind @ (1 | 2)])) if planar == 1 => (8, true, kind == 1),
+    let (bits, alpha) = match (samples, sample_bits.as_slice(), extra.as_deref()) {
+        (1, &[bits], _) => (u8::try_from(bits).ok()?, PaletteAlpha::Opaque),
+        // Alpha after each index, interleaved (planar configuration 1) as the decoder reads it.
+        // Illustrator writes one BitsPerSample value for both samples.
+        (2, &[8] | &[8, 8], Some(&[1])) if planar == 1 => (8, PaletteAlpha::Associated),
+        (2, &[8] | &[8, 8], Some(&[2])) if planar == 1 => (8, PaletteAlpha::Unassociated),
         _ => return None,
     };
     if !matches!(bits, 1 | 2 | 4 | 8) {
@@ -543,14 +554,15 @@ fn palette_tiff(bytes: &[u8]) -> Option<PaletteTiff> {
     }
     let colours = r.iter().zip(g).zip(b).map(|((&r, &g), &b)| [r, g, b].map(|v| (v >> 8) as u8)).collect();
     let (width, height) = d.dimensions().ok()?;
-    Some(PaletteTiff { width, height, bits, colours, alpha, premultiplied })
+    Some(PaletteTiff { width, height, bits, colours, alpha })
 }
 
 /// An 8-bit colour value premultiplied by `alpha`, back to straight. Alpha 0 has no colour to
-/// recover, so the value stays; one above its alpha, which premultiplying can't give, saturates.
+/// recover and 255 nothing to undo, so the value stays; one above its alpha, which premultiplying
+/// can't give, saturates.
 fn unpremultiply(value: u8, alpha: u8) -> u8 {
     match u16::from(alpha) {
-        0 => value,
+        0 | 255 => value,
         a => u8::try_from((u16::from(value) * 255 + a / 2) / a).unwrap_or(u8::MAX),
     }
 }
@@ -562,14 +574,20 @@ fn decode_palette_tiff(bytes: &[u8]) -> Option<image::RgbaImage> {
     let gray = with_photometric(bytes, 1)?;
     let tiff::decoder::DecodingResult::U8(px) = tiff_decoder(&gray)?.read_image().ok()? else { return None };
     let (w, h) = (usize::try_from(p.width).ok()?, usize::try_from(p.height).ok()?);
-    let mut out = Vec::new();
-    out.try_reserve_exact(w.checked_mul(h)?.checked_mul(4)?).ok()?;
-    if p.alpha {
-        // Index, then alpha, returned straight.
-        let px = px.get(..w.checked_mul(h)?.checked_mul(2)?)?;
-        for &[i, a] in px.as_chunks::<2>().0 {
+    let pixels = w.checked_mul(h)?;
+    let rgba_len = pixels.checked_mul(4)?;
+    if p.alpha != PaletteAlpha::Opaque {
+        // Index, then alpha, returned straight. Premultiplied colour can't exceed its alpha, so a
+        // file where one does holds straight colour whatever its tag says: a preview from
+        // Illustrator 30.7 declares associated alpha but leaves fully transparent pixels white.
+        let px = px.get(..pixels.checked_mul(2)?)?.as_chunks::<2>().0;
+        let within_alpha = |&[i, a]: &[u8; 2]| p.colours.get(usize::from(i)).is_some_and(|c| c.iter().all(|&v| v <= a));
+        let premultiplied = p.alpha == PaletteAlpha::Associated && px.iter().all(within_alpha);
+        let mut out = Vec::new();
+        out.try_reserve_exact(rgba_len).ok()?;
+        for &[i, a] in px {
             let colour = *p.colours.get(usize::from(i))?;
-            let [r, g, b] = if p.premultiplied { colour.map(|v| unpremultiply(v, a)) } else { colour };
+            let [r, g, b] = if premultiplied { colour.map(|v| unpremultiply(v, a)) } else { colour };
             out.extend([r, g, b, a]);
         }
         return image::RgbaImage::from_raw(p.width, p.height, out);
@@ -582,6 +600,8 @@ fn decode_palette_tiff(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
     let per_byte = 8 / bits;
     let mask = ((1u16 << bits) - 1) as u8;
+    let mut out = Vec::new();
+    out.try_reserve_exact(rgba_len).ok()?;
     for line in px.chunks_exact(row).take(h) {
         for x in 0..w {
             let shift = 8 - bits * (x % per_byte + 1);
