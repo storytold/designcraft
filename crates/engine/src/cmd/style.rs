@@ -182,7 +182,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Object Style…",
             [],
             None,
-            "{name, fromSelection?: true (fill, stroke, effects and text frame options of the first selected item), fill?, paragraphStyle?, effects?: {dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?}, dropShadow?: {on?, color?, opacity? (0–1), angle?, globalLight?, distance?, size?, spread?}, feather?: width, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} → {name} (made unique)",
+            "{name, fromSelection?: true (fill, stroke, corners, effects and text frame options of the first selected item), fill?: swatch | {swatch?, tint?}, stroke?: {swatch?, weight?, tint?, type?, …}, corners?: {shape?, size?} | {corners: [{shape, size}] ×4}, paragraphStyle?, effects?: {dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?}, dropShadow?: {on?, color?, opacity? (0–1), angle?, globalLight?, distance?, size?, spread?}, feather?: width, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} → {name} (made unique)",
             has_doc,
             create_object
         ),
@@ -191,7 +191,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Object Style Options…",
             [],
             None,
-            "{name, effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects match the style's (no effects, when the style set none) take the new effects, items with their own effects keep them → {name, updated}",
+            "{name, rename?: new name (every use follows), fill?: swatch | {swatch?, tint?} | null, stroke?: {swatch?, weight?, tint?, type?, …} | null, corners?: {shape?: none|rounded|inverseRounded|inset|bevel|fancy, size?} | {corners: [{shape, size}] ×4} | null (null: the style no longer sets it; items keep theirs), effects?: {…} | null (the style no longer sets effects), dropShadow?, feather?, innerShadow?, outerGlow?, innerGlow?, bevel?, satin?, gradientFeather?, directionalFeather?} — effect objects merge field by field into the style's effects (fields as in `document.inspect` item effects); values that aren't finite numbers are refused, the others clamped (opacities 0–1, sizes and distances ≥ 0); items using the style whose effects (fill, stroke, corners) match the style's (an item's defaults, when the style set none) take the new ones, items with their own keep them → {name, updated}",
             has_doc,
             edit_object
         ),
@@ -200,7 +200,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Object Style Overrides",
             [],
             None,
-            "{ids?} — each item takes its object style's fill, stroke, effects and text frame options again → {changed}",
+            "{ids?} — each item takes its object style's fill, stroke, effects and text frame options again, and a text frame's story its paragraph style → {changed}",
             super::has_selection,
             clear_object_overrides
         ),
