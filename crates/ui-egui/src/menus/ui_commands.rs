@@ -7,6 +7,9 @@ pub const CJK_ONLY: &[&str] = &["type.tateChuYoko", "app.rubyDialog", "type.kent
 /// Whether command `id` has a menu item or Quick Apply entry in the current interface (CJK-only
 /// ones need [`crate::cjk_features`]).
 pub fn shown(app: &DesignApp, id: &str) -> bool {
+    if id == "file.openProviderResource" {
+        return app.file_providers.enabled();
+    }
     !CJK_ONLY.contains(&id) || crate::cjk_features(app)
 }
 
@@ -15,6 +18,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
+    (
+        "file.openProviderResource",
+        "Open Provider File",
+        None,
+        "{connectionId, resourceId} — request a native file from the enabled provider account; returns pending and requestId without changing local file.open",
+    ),
     ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),

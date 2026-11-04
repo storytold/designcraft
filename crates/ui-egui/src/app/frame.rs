@@ -24,6 +24,7 @@ impl DesignApp {
 
     /// Work whose identity is a consumed queue item, revision or deadline.
     pub(super) fn logic_tick(&mut self, ctx: &egui::Context) {
+        crate::file_provider_app::tick(self);
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);
@@ -82,6 +83,9 @@ impl DesignApp {
     /// The end of a settled `run_ui` pass: pacing, recovery and screenshot settlement. Recovery
     /// uses the monotonic clock, so a wall-clock/NTP jump cannot postpone or advance it.
     pub(super) fn ui_frame_end(&mut self, ctx: &egui::Context) {
+        if !self.host_order_pending() {
+            crate::file_provider_app::settled(self, ctx);
+        }
         let now = now_ms() / 1000.0;
         // Crash recovery: unsaved documents are written to the recovery folder every 30 s.
         #[cfg(not(target_arch = "wasm32"))]
