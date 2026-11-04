@@ -178,7 +178,13 @@ impl OutputRoot {
         if self.validate_file_entry(to)?
             && std::fs::canonicalize(to).is_ok_and(|target| std::fs::canonicalize(from).is_ok_and(|source| source == target))
         {
-            return Ok(());
+            // The destination is the font's own file: nothing to write while it still holds what
+            // was loaded. Overwriting it with the loaded bytes would undo a change made since, and
+            // leaving it would package that change instead of the font the document used.
+            if same_contents(to, bytes) {
+                return Ok(());
+            }
+            return Err(path_error(to, "the font file changed on disk after it was loaded, and this is that file; package to another folder"));
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -195,6 +201,18 @@ impl OutputRoot {
             Ok(())
         }
     }
+}
+
+/// Whether the file at `path` holds exactly `bytes` (read only as far as they go).
+#[cfg(not(target_arch = "wasm32"))]
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    if file.metadata().map_or(true, |m| m.len() != bytes.len() as u64) {
+        return false;
+    }
+    let mut now = Vec::with_capacity(bytes.len());
+    file.take(bytes.len() as u64 + 1).read_to_end(&mut now).is_ok() && now == bytes
 }
 
 pub fn specs() -> Vec<CommandSpec> {

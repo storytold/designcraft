@@ -371,6 +371,30 @@ fn packaged_fonts_are_the_loaded_bytes_not_what_is_at_the_path_now() {
 }
 
 #[test]
+fn packaging_into_a_fonts_own_folder_neither_overwrites_nor_packages_a_changed_font() {
+    use designcraft_fonts::testing::{font_with, installed_face};
+    let dir = std::env::temp_dir().join(format!("dc-package-font-same-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let from = dir.join("loaded.ttf");
+    let bytes = font_with("DocFont Package Same File", &['S']).unwrap();
+    std::fs::write(&from, &bytes).unwrap();
+    let face = installed_face(bytes.clone(), from.clone()).unwrap();
+    let root = OutputRoot::new(dir.clone()).unwrap();
+    let copy = |taken: &mut Taken| copy_font(&root, &face, &dir, &mut Vec::new(), taken, &mut Vec::new());
+    // Unchanged since it loaded: already where it is wanted.
+    assert_eq!(copy(&mut Taken::default()), "");
+    assert_eq!(std::fs::read(&from).unwrap(), bytes);
+    // Changed on disk since: the package can't hold the loaded font there, and the new file is kept.
+    let newer = font_with("DocFont Package Same File", &['S', 'T']).unwrap();
+    std::fs::write(&from, &newer).unwrap();
+    let note = copy(&mut Taken::default());
+    assert!(note.contains("not copied") && note.contains("changed on disk"), "{note}");
+    assert_eq!(std::fs::read(&from).unwrap(), newer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn packaged_fonts_keep_a_font_extension() {
     use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
     use designcraft_fonts::testing::{font_with, installed_face};
