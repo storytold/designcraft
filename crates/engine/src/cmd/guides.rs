@@ -118,7 +118,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select All Guides",
             ["Edit"],
             Some("Cmd+Alt+G"),
-            "{spread?} — every guide on the spread that is not locked or on a locked or hidden layer → {selected: n}",
+            "{spread?} — every guide on the spread that is not locked or on a layer that is locked, hidden or locks its guides → {selected: n}",
             has_doc,
             select_all
         ),
