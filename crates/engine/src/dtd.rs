@@ -354,9 +354,12 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
     }
     let key = (std::ptr::from_ref(cp) as usize, i);
     if let Some(done) = memo.map.get(&key) {
-        let done = done.clone();
-        memo.spend(done.len());
-        return done;
+        // Charged before the clone, and a failed charge ends the match.
+        let len = done.len();
+        if !memo.spend(len) {
+            return vec![];
+        }
+        return memo.map[&key].clone();
     }
     if !memo.spend(1) {
         return vec![];
@@ -371,7 +374,9 @@ fn ends(cp: &Cp, seq: &[&str], i: usize, memo: &mut EndsMemo) -> Vec<usize> {
                 for p in at {
                     next.extend(ends(c, seq, p, memo));
                 }
-                memo.spend(next.len());
+                if !memo.spend(next.len()) {
+                    return vec![];
+                }
                 next.sort_unstable();
                 next.dedup();
                 at = next;

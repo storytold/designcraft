@@ -76,13 +76,17 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
 }
 
 /// Containment tests `orient_holes` makes at most (after the bounding-box filter). A compound path
-/// of thousands of nested contours would otherwise take quadratic time; past this the remaining
-/// subpaths keep their direction.
+/// of thousands of nested contours would otherwise take quadratic time; past this the command is
+/// refused rather than leave later subpaths with the wrong direction.
 const MAX_HOLE_TESTS: usize = 4_000_000;
 
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
-fn orient_holes(path: &mut PathData) {
+fn orient_holes(path: &mut PathData, command: &str) -> Result<()> {
+    orient_holes_within(path, command, MAX_HOLE_TESTS)
+}
+
+fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> Result<()> {
     let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
     // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
     let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
@@ -93,8 +97,8 @@ fn orient_holes(path: &mut PathData) {
         let mut depth = 0;
         for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
             tests += 1;
-            if tests > MAX_HOLE_TESTS {
-                return;
+            if tests > max_tests {
+                return Err(bad(command, "too many nested contours to tell holes from fills"));
             }
             depth += usize::from(designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p));
         }
@@ -104,6 +108,7 @@ fn orient_holes(path: &mut PathData) {
             sp.reverse();
         }
     }
+    Ok(())
 }
 
 fn make_compound(s: &mut Session, p: &Value) -> Result<Value> {
@@ -130,7 +135,7 @@ fn make_compound(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let it = d.item_mut(base_id).ok_or(designcraft_doc::DocError::NoItem(base_id))?;
         it.path = PathData::new(subpaths);
-        orient_holes(&mut it.path);
+        orient_holes(&mut it.path, "object.makeCompoundPath")?;
         it.shape = Shape::Path;
         *sel = Selection::items(vec![base_id]);
         Ok(json!({"id": base_id.0}))
@@ -174,7 +179,7 @@ fn pathfinder(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let it = d.item_mut(keep).ok_or(designcraft_doc::DocError::NoItem(keep))?;
         it.path = result.transformed(kxf.inverse());
-        orient_holes(&mut it.path);
+        orient_holes(&mut it.path, "object.pathfinder")?;
         it.shape = Shape::Path;
         it.corners = Default::default();
         *sel = Selection::items(vec![keep]);
@@ -438,10 +443,22 @@ mod tests {
             subs.extend(rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths);
         }
         let mut path = PathData::new(subs);
-        orient_holes(&mut path);
+        orient_holes(&mut path, "test").unwrap();
         let cw: Vec<bool> = path.subpaths.iter().map(|s| s.area() > 0.0).collect();
         assert_eq!(cw[..3], [true, false, true]);
         assert!(cw[3..].iter().all(|c| *c));
+    }
+
+    #[test]
+    fn orient_holes_refuses_past_its_budget_instead_of_half_orienting() {
+        use designcraft_geom::{Rect, shapes::rectangle};
+        let mut subs: Vec<SubPath> = Vec::new();
+        for k in 0..4 {
+            let o = 10.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(o, o, 100.0 - o, 100.0 - o)).subpaths);
+        }
+        assert!(orient_holes_within(&mut PathData::new(subs.clone()), "test", 3).is_err());
+        assert!(orient_holes_within(&mut PathData::new(subs), "test", 100).is_ok());
     }
 
     #[test]
