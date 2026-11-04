@@ -274,6 +274,22 @@ fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
     assert_eq!(required_version(&load(&save(&d).unwrap()).unwrap()), 4);
 }
 
+/// `document.json` is written compact. Indented, a 54-page brand book was 315 MB against 69 MB of
+/// data, past the 256 MiB the reader accepts, so DesignCraft saved a file it could not reopen.
+#[test]
+fn document_json_is_written_compact_and_reads_back() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let lid = d.default_layer();
+    d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "compact", ParaFormat::default()).unwrap();
+    let bytes = save(&d).unwrap();
+    let mut z = zip::ZipArchive::new(Cursor::new(&bytes[..])).unwrap();
+    let mut json = String::new();
+    std::io::Read::read_to_string(&mut z.by_name("document.json").unwrap(), &mut json).unwrap();
+    assert!(!json.contains('\n'), "no line breaks");
+    assert!(!json.contains("  "), "no indentation");
+    assert_eq!(load(&bytes).unwrap().page_count(), 3);
+}
+
 #[test]
 fn roundtrip_with_assets() {
     let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
