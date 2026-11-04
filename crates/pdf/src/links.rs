@@ -48,7 +48,7 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                     // link starting at that character took the label in and the rectangle
                     // covered text outside the link. `list_label` is the one generated glyph to
                     // leave out (noted in review).
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| !g.list_label && g.byte >= *start && g.byte < *end).collect();
+                    let gs: Vec<_> = l.glyphs.iter().filter(|g| (g.len > 0 || g.generated_text.is_some()) && !g.list_label && g.byte >= *start && g.byte < *end).collect();
                     if gs.is_empty() {
                         continue;
                     }
