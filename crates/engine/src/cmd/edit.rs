@@ -126,11 +126,16 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     if use_clip && let Some((slice, _)) = clip {
         let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
+            // From the document as it was before the selection is replaced.
+            let mut slice = slice;
+            super::object::renumber_slice(d, &mut slice);
+            let before = super::object::anchored_text_frames(d);
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
+            super::object::unthread_deleted_anchored(d, &before);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
@@ -180,7 +185,9 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
         if let Some(sl) = slice {
-            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+            let mut sl = sl.clone();
+            super::object::renumber_slice(d, &mut sl);
+            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
