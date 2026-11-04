@@ -580,8 +580,11 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
     if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
-        let ids: HashMap<String, String> =
-            styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?.to_string(), s.val("name")?))).collect();
+        let ids: HashMap<String, String> = styles
+            .els()
+            .filter(|s| s.name == "style")
+            .filter_map(|s| Some((s.attr("styleId")?.to_string(), crate::capped_name(s.val("name")?))))
+            .collect();
         ctx.style_lists = style_lists(&styles);
         // Word's document defaults sit beneath every paragraph style that isn't based on another.
         let defaults = styles.child("docDefaults");
@@ -603,7 +606,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
             // Word's default paragraph font is "no character style": our [None].
             let name = match (kind, name.as_str()) {
                 ("character", "Default Paragraph Font") => NO_CHAR_STYLE.to_string(),
-                _ => name.clone(),
+                _ => crate::capped_name(name.clone()),
             };
             let based_on = s.val("basedOn").and_then(|b| ids.get(&b).cloned());
             let mut imp = ImportedStyle { name: name.clone(), based_on, para: para_attrs(s.child("pPr")), chars: run_attrs(s.child("rPr")) };
