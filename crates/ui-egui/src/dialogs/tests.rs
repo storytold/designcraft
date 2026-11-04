@@ -1079,13 +1079,13 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
     assert!(app.run("app.justificationDialog", json!({})).is_err());
 }
 
-/// The shared composer controls preserve mixed families while spacing edits remain one undo step.
+/// An ordinary composer choice disables World-Ready in the same undo step as spacing edits.
 #[test]
-fn composer_dialog_preserves_mixed_families() {
+fn composer_dialog_selects_an_ordinary_composer() {
     use egui_kittest::{Harness, kittest::Queryable};
 
     let (mut app, story) = two_paragraphs();
-    app.run("type.para", json!({"attrs": {"composer": "worldReady"}})).unwrap();
+    app.run("type.para", json!({"attrs": {"composer": "paragraph", "worldReady": true}})).unwrap();
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 7})).unwrap();
     app.run("app.justificationDialog", json!({})).unwrap();
     let before = app.session.doc().unwrap().doc.clone();
@@ -1109,8 +1109,10 @@ fn composer_dialog_preserves_mixed_families() {
     app.ui.dialog.as_mut().unwrap().fields.insert("wordSpaceDesired".into(), json!(1.1));
     confirm(app).unwrap();
     assert_eq!(undo_steps(app), steps + 1);
-    assert_eq!(para_attr(app, &story, 0, "composer"), "worldReadySingleLine");
+    assert_eq!(para_attr(app, &story, 0, "composer"), "singleLine");
     assert_eq!(para_attr(app, &story, 4, "composer"), "singleLine");
+    assert_eq!(para_attr(app, &story, 0, "worldReady"), false);
+    assert_eq!(para_attr(app, &story, 4, "worldReady"), false);
     assert_eq!(para_attr(app, &story, 0, "wordSpaceDesired"), 1.1);
     assert_eq!(para_attr(app, &story, 4, "wordSpaceDesired"), 1.1);
     app.run("edit.undo", json!({})).unwrap();

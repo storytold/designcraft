@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (World-Ready composer preservation, #2032; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (World-Ready composer preservation, #2032; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -39,14 +39,28 @@ layer survive interchange; literal XML and round-trip tests are in
 
 IDML retains Adobe World-Ready paragraph and single-line composer identities in paragraph styles
 and local overrides (#2032), including inherited styles, `$ID/` names and XML property elements.
-Native saves retain those identities too; switching paragraph versus single-line composition
-keeps each selected paragraph's composer family, including mixed selections in the Paragraph
-panel and Justification dialog. Synthetic regressions inspect the exported XML as well as
-reimporting it. This preserves the composer InDesign uses on reopening; DesignCraft continues
-to use its own shaping and line breaking, without Adobe's legacy shaping engine.
-Native files containing World-Ready composer values require the version-5 reader, so older apps
-show the update-required error before decoding them. Other files keep their existing version 2–4
-requirements.
+Native saves retain those identities too. `composer` stores `paragraph`, `singleLine`,
+`japanese` or `japaneseSingleLine`; the independent `worldReady` boolean uses the same name,
+values and default (`true`) as the shaping work in #1152. Missing sparse attributes inherit.
+IDML's combined composer name resolves an omitted mode or flag from the actual parent style.
+The `composerMode` command changes only breaking mode; the UI's explicit ordinary-composer
+choices set `worldReady: false`, matching the observed InDesign 2025 Paragraph panel.
+Leaving those controls untouched preserves an imported World-Ready choice. Synthetic
+regressions inspect exported XML as well as reimporting it. DesignCraft continues to use its
+own shaping and line breaking; the boolean's shaping behavior remains work for #1152.
+
+Native files with either an explicit on or off `worldReady` choice require reader 6. This
+prevents older readers, including the earlier version-5 test build, from silently dropping
+the boolean. Mode-only ordinary overrides also require reader 6, distinguishing their new
+independent inheritance from the older enum identity. Files with neither choice retain
+their version 2–4 requirements. The reader
+migrates the earlier test build's `composer: worldReady` / `worldReadySingleLine` values to the
+shared boolean and mode, including files written before the version-5 guard. Earlier explicit
+ordinary enum choices migrate to `worldReady: false`; contradictory
+old/new values are errors. The scan covers every serialized paragraph style (even unused)
+and body, cell, footnote and endnote paragraph override. Document settings have no `ParaAttrs`;
+object/cell/table styles refer to paragraph styles by name. Snippets use the same native
+archive writer and capability check, and Load Styles reads through the native reader.
 
 ## Output
 

@@ -363,16 +363,19 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        if let Some(c) = a.composer {
+        if a.composer.is_some() || a.world_ready.is_some() {
+            // IDML stores mode and World-Ready in one name. Resolve either omitted half from
+            // the parent style rather than replacing an inherited choice with a default.
+            let inherited = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
             el.set(
                 "Composer",
-                match c {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
-                    designcraft_doc::Composer::WorldReady => "HL Composer Optyca",
-                    designcraft_doc::Composer::WorldReadySingleLine => "HL Single Optyca",
-                    designcraft_doc::Composer::Japanese => "HL Composer J",
-                    designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
+                match (a.composer.unwrap_or(inherited.composer), a.world_ready.unwrap_or(inherited.world_ready)) {
+                    (designcraft_doc::Composer::Paragraph, false) => "HL Composer",
+                    (designcraft_doc::Composer::SingleLine, false) => "HL Single",
+                    (designcraft_doc::Composer::Paragraph, true) => "HL Composer Optyca",
+                    (designcraft_doc::Composer::SingleLine, true) => "HL Single Optyca",
+                    (designcraft_doc::Composer::Japanese, _) => "HL Composer J",
+                    (designcraft_doc::Composer::JapaneseSingleLine, _) => "HL Single J",
                 },
             );
         }

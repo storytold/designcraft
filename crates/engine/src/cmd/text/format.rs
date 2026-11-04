@@ -302,8 +302,6 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
                     if let Some(single_line) = composer_mode {
                         use designcraft_doc::Composer;
                         a.composer = Some(match (current.composer, single_line) {
-                            (Composer::WorldReady | Composer::WorldReadySingleLine, false) => Composer::WorldReady,
-                            (Composer::WorldReady | Composer::WorldReadySingleLine, true) => Composer::WorldReadySingleLine,
                             (Composer::Japanese | Composer::JapaneseSingleLine, false) => Composer::Japanese,
                             (Composer::Japanese | Composer::JapaneseSingleLine, true) => Composer::JapaneseSingleLine,
                             (Composer::Paragraph | Composer::SingleLine, false) => Composer::Paragraph,
@@ -611,8 +609,10 @@ mod composer_mode_tests {
         let sid = StoryId(frame["story"].as_u64().unwrap());
 
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 4})).unwrap();
-        s.execute("style.paragraph.create", &json!({"name": "World", "para": {"composer": "worldReady"}})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "World", "para": {"composer": "paragraph", "worldReady": true}})).unwrap();
         s.execute("style.paragraph.apply", &json!({"name": "World"})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 6, "focus": 10})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"worldReady": false}})).unwrap();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 12, "focus": 16})).unwrap();
         s.execute("type.para", &json!({"attrs": {"composer": "japaneseSingleLine"}})).unwrap();
         s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 17})).unwrap();
@@ -620,16 +620,19 @@ mod composer_mode_tests {
         let before = s.doc().unwrap().doc.clone();
         let steps = s.doc().unwrap().history.undo.len();
         s.execute("type.para", &json!({"attrs": {"composerMode": "singleLine", "spaceAfter": 6}})).unwrap();
-        assert_eq!(composers(&s, sid), [Composer::WorldReadySingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
+        assert_eq!(composers(&s, sid), [Composer::SingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
         assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
-        assert_eq!(s.doc().unwrap().doc.styles.resolve_para_style("World").0.composer, Composer::WorldReady);
+        assert_eq!(s.doc().unwrap().doc.styles.resolve_para_style("World").0.composer, Composer::Paragraph);
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc, before);
         s.execute("edit.redo", &json!({})).unwrap();
-        assert_eq!(composers(&s, sid), [Composer::WorldReadySingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
+        assert_eq!(composers(&s, sid), [Composer::SingleLine, Composer::SingleLine, Composer::JapaneseSingleLine]);
 
         s.execute("type.para", &json!({"composerMode": "paragraph"})).unwrap();
-        assert_eq!(composers(&s, sid), [Composer::WorldReady, Composer::Paragraph, Composer::Japanese]);
+        assert_eq!(composers(&s, sid), [Composer::Paragraph, Composer::Paragraph, Composer::Japanese]);
+        let document = &s.doc().unwrap().doc;
+        let world_ready: Vec<_> = document.story(sid).unwrap().paras.iter().map(|p| document.styles.resolve_para(p).0.world_ready).collect();
+        assert_eq!(world_ready, [true, false, true]);
 
         let before = s.doc().unwrap().doc.clone();
         let steps = s.doc().unwrap().history.undo.len();

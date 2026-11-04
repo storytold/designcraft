@@ -64,23 +64,59 @@ fn world_ready_composer_styles_inheritance_and_overrides_round_trip() {
     use designcraft_doc::Composer;
 
     for (name, composer, local_name, local_composer) in [
-        ("HL Composer Optyca", Composer::WorldReady, "HL Single Optyca", Composer::WorldReadySingleLine),
-        ("HL Single Optyca", Composer::WorldReadySingleLine, "HL Composer Optyca", Composer::WorldReady),
+        ("HL Composer Optyca", Composer::Paragraph, "HL Single Optyca", Composer::SingleLine),
+        ("HL Single Optyca", Composer::SingleLine, "HL Composer Optyca", Composer::Paragraph),
     ] {
         for property in [false, true] {
             let doc = import_idml(&fixture(name, local_name, property)).unwrap();
             let reopened = import_idml(&export_idml(&doc)).unwrap();
             for d in [&doc, &reopened] {
                 assert_eq!(d.styles.para("WorldReady").unwrap().para.composer, Some(composer));
+                assert_eq!(d.styles.para("WorldReady").unwrap().para.world_ready, Some(true));
                 assert_eq!(d.styles.para("Inherited").unwrap().para.composer, None);
                 assert_eq!(d.styles.resolve_para_style("Inherited").0.composer, composer);
                 let story = d.stories.values().find(|s| s.text.contains("தமிழ்")).unwrap();
                 assert_eq!(story.text, "தமிழ்\nதமிழ்");
                 assert_eq!(story.paras[0].para.composer, None);
+                assert_eq!(story.paras[0].para.world_ready, None);
                 assert_eq!(story.paras[1].para.composer, Some(local_composer));
                 assert_eq!(d.styles.resolve_para(&story.paras[0]).0.composer, composer);
                 assert_eq!(d.styles.resolve_para(&story.paras[1]).0.composer, local_composer);
+                assert!(d.styles.resolve_para(&story.paras[0]).0.world_ready);
+                assert!(d.styles.resolve_para(&story.paras[1]).0.world_ready);
             }
+        }
+    }
+}
+
+/// IDML combines two attributes in one name: exporting a mode-only or World-Ready-only edit must
+/// inherit the other half from its actual parent, for both styles and local overrides.
+#[test]
+fn world_ready_partial_overrides_resolve_the_other_half_from_the_style() {
+    use designcraft_doc::{Composer, ParaAttrs};
+    for (name, mode, other, ordinary) in [
+        ("HL Composer Optyca", Composer::Paragraph, Composer::SingleLine, "HL Composer"),
+        ("HL Single Optyca", Composer::SingleLine, Composer::Paragraph, "HL Single"),
+    ] {
+        let mut doc = import_idml(&fixture(name, name, false)).unwrap();
+        doc.styles_mut().para_mut("Inherited").unwrap().para.world_ready = Some(false);
+        let sid = *doc.stories.keys().next().unwrap();
+        let story = doc.story_mut(sid).unwrap();
+        story.paras[0].para = ParaAttrs { composer: Some(other), ..Default::default() };
+        story.paras[1].para = ParaAttrs { world_ready: Some(true), ..Default::default() };
+        let bytes = export_idml(&doc);
+        let styles = zip_text(&bytes, "Resources/Styles.xml");
+        let tag = styles.split("<ParagraphStyle ").filter_map(|tag| tag.split('>').next()).find(|tag| tag.contains(r#"Name="Inherited""#)).unwrap();
+        assert!(tag.contains(&format!(r#"Composer="{ordinary}""#)), "{tag}");
+        let reopened = import_idml(&bytes).unwrap();
+        for doc in [&doc, &reopened] {
+            let inherited = doc.styles.resolve_para_style("Inherited").0;
+            assert_eq!((inherited.composer, inherited.world_ready), (mode, false));
+            let story = doc.story(sid).or_else(|| doc.stories.values().next().map(|s| s.as_ref())).unwrap();
+            let first = doc.styles.resolve_para(&story.paras[0]).0;
+            let second = doc.styles.resolve_para(&story.paras[1]).0;
+            assert_eq!((first.composer, first.world_ready), (other, false));
+            assert_eq!((second.composer, second.world_ready), (mode, true));
         }
     }
 }

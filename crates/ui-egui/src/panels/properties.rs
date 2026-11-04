@@ -38,10 +38,10 @@ pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
 use text::{
     bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_style_section,
 };
+pub(crate) use typography::para_field_min;
 pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_panel, show_typography_panel};
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
-pub(crate) use typography::{composer_choice, para_field_min};
 
 /// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
 /// that panel stays: `window.panel` would close it.

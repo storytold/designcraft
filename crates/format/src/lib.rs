@@ -24,9 +24,10 @@ pub const MIME: &str = "application/vnd.designcraft+zip";
 /// Latest reader capability. Version 2 pinned the Keep Lines Together and drop cap defaults;
 /// version 3 adds rendering of retained EPS source assets; version 4 is one capability covering both
 /// retained placed-graphic layer options and explicit all-on placed-PDF layer choices, so a version 4
-/// reader understands both. Version 5 retains World-Ready composer identities. Any later capability
-/// needs version 6. [`required_version`] is the only place that picks a version.
-pub const VERSION: u32 = 5;
+/// reader understands both. Version 5 was the pre-release World-Ready enum representation; version 6
+/// retains the independent `worldReady` boolean shared with the shaping work. Version-5 documents
+/// migrate on read. [`required_version`] is the only place that picks a version.
+pub const VERSION: u32 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
@@ -73,11 +74,12 @@ const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
 /// The oldest reader capability that keeps everything in `doc`. Documents that need nothing newer
 /// keep their older requirement so existing readers still open them.
 fn required_version(doc: &Document) -> u32 {
-    // Older serde readers cannot decode these enum variants. Even unused styles are serialized.
+    // Older readers ignore this boolean, losing either an explicit on or off choice. Even
+    // unused paragraph styles are serialized. Other style kinds store paragraph style names.
     if doc.styles.paragraph.iter().any(|style| world_ready_composer(&style.para))
         || doc.stories.values().any(|story| story_needs_world_ready_reader(story, 0))
     {
-        return 5;
+        return 6;
     }
     // Version 4 covers both of these: older readers ignore the unknown fields, so they would
     // silently drop retained graphic layer choices, or read an explicit all-on PDF layer choice
@@ -91,9 +93,10 @@ fn required_version(doc: &Document) -> u32 {
     if doc.assets.values().any(|a| designcraft_images::is_eps(&a.data)) { 3 } else { 2 }
 }
 
-/// Whether paragraph attributes contain a composer value introduced by the version-5 reader.
+/// Whether attributes require independent World-Ready inheritance: either an explicit flag or
+/// an ordinary mode whose missing flag now inherits, unlike the earlier combined enum identity.
 fn world_ready_composer(attrs: &ParaAttrs) -> bool {
-    matches!(attrs.composer, Some(designcraft_doc::Composer::WorldReady | designcraft_doc::Composer::WorldReadySingleLine))
+    attrs.world_ready.is_some() || matches!(attrs.composer, Some(designcraft_doc::Composer::Paragraph | designcraft_doc::Composer::SingleLine))
 }
 
 /// Include cell, footnote and endnote text. At the nesting limit, conservatively require the new
@@ -241,7 +244,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     }
     let json = read_entry(&mut z, "document.json", MAX_JSON_BYTES, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
     let mut v: Value = serde_json::from_slice(&json).map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    upgrade_json(&mut v);
+    upgrade_json(&mut v, version)?;
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     let names: Vec<String> = z.file_names().map(str::to_string).collect();
     // Files saved with one copy per placement: identical copies share one buffer as they are
@@ -325,7 +328,7 @@ fn pin_para_default<T: Clone>(doc: &mut Document, field: fn(&mut ParaAttrs) -> &
 
 fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
     let mut v: Value = serde_json::from_slice(bytes).map_err(|e| FormatError::NotOurs(e.to_string()))?;
-    upgrade_json(&mut v);
+    upgrade_json(&mut v, 1)?;
     let mut doc: Document = serde_json::from_value(v.clone()).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if let Some(data) = v.get("assetData").and_then(Value::as_object) {
         for (k, s) in data {
@@ -347,13 +350,14 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
 /// Bring older documents' JSON up to the current model. Vertical Type was a text frame option
 /// (`content.options.vertical`); it is the story's direction, which a story takes from its first
 /// frame.
-fn upgrade_json(doc: &mut Value) {
+fn upgrade_json(doc: &mut Value, version: u64) -> Result<(), FormatError> {
+    upgrade_world_ready_json(doc, version < 6, 0)?;
     let mut vertical = HashSet::new();
     vertical_frames(doc, &mut vertical, 0);
     if vertical.is_empty() {
-        return;
+        return Ok(());
     }
-    let Some(stories) = doc.get_mut("stories").and_then(Value::as_object_mut) else { return };
+    let Some(stories) = doc.get_mut("stories").and_then(Value::as_object_mut) else { return Ok(()) };
     for st in stories.values_mut() {
         let first = st.get("frames").and_then(|f| f.get(0)).and_then(Value::as_u64);
         if let (Some(f), Some(st)) = (first, st.as_object_mut())
@@ -363,6 +367,50 @@ fn upgrade_json(doc: &mut Value) {
             st.insert("vertical".into(), Value::Bool(true));
         }
     }
+    Ok(())
+}
+
+/// Preserve native files saved by the earlier test build. Only paragraph attribute objects are
+/// rewritten; conflicting representations fail explicitly rather than silently losing a choice.
+fn upgrade_world_ready_json(value: &mut Value, legacy: bool, depth: usize) -> Result<(), FormatError> {
+    if depth > 128 {
+        return Err(FormatError::NotOurs("paragraph attributes exceed the nesting limit".into()));
+    }
+    match value {
+        Value::Object(object) => {
+            if let Some(para) = object.get_mut("para").and_then(Value::as_object_mut) {
+                let mode = match para.get("composer").and_then(Value::as_str) {
+                    Some("worldReady") => Some("paragraph"),
+                    Some("worldReadySingleLine") => Some("singleLine"),
+                    _ => None,
+                };
+                if let Some(mode) = mode {
+                    if para.get("worldReady").is_some_and(|v| v != &Value::Bool(true)) {
+                        return Err(FormatError::NotOurs("conflicting World-Ready paragraph attributes".into()));
+                    }
+                    para.insert("composer".into(), Value::String(mode.into()));
+                    para.insert("worldReady".into(), Value::Bool(true));
+                } else if legacy
+                    && !para.contains_key("worldReady")
+                    && matches!(para.get("composer").and_then(Value::as_str), Some("paragraph" | "singleLine"))
+                {
+                    // Earlier explicit ordinary enum values did not inherit the World-Ready
+                    // identity. Pin off so an old native file still exports the ordinary name.
+                    para.insert("worldReady".into(), Value::Bool(false));
+                }
+            }
+            for child in object.values_mut() {
+                upgrade_world_ready_json(child, legacy, depth + 1)?;
+            }
+        }
+        Value::Array(array) => {
+            for child in array {
+                upgrade_world_ready_json(child, legacy, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Ids of the text frames in `v` (any depth: groups, anchored objects) whose options say vertical.

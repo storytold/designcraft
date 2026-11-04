@@ -9,13 +9,13 @@ fn world_ready_composers_survive_native_save_and_reopen() {
     use designcraft_doc::{Composer, ParagraphStyle, Story, StoryId};
 
     let mut doc = Document::new(&NewDocument::default());
-    let paragraph: Composer = serde_json::from_value(serde_json::json!("worldReady")).unwrap();
-    let single: Composer = serde_json::from_value(serde_json::json!("worldReadySingleLine")).unwrap();
+    let paragraph = Composer::Paragraph;
+    let single = Composer::SingleLine;
     doc.styles_mut().paragraph.push(ParagraphStyle {
         name: "Tamil".into(),
         based_on: Some(designcraft_doc::NO_PARA_STYLE.into()),
         next_style: None,
-        para: ParaAttrs { composer: Some(paragraph), ..Default::default() },
+        para: ParaAttrs { composer: Some(paragraph), world_ready: Some(true), ..Default::default() },
         chars: Default::default(),
         shortcut: String::new(),
     });
@@ -34,10 +34,12 @@ fn world_ready_composers_survive_native_save_and_reopen() {
     assert_eq!(story.paras[1].para.composer, Some(single));
     assert_eq!(reopened.styles.resolve_para(&story.paras[0]).0.composer, paragraph);
     assert_eq!(reopened.styles.resolve_para(&story.paras[1]).0.composer, single);
+    assert!(reopened.styles.resolve_para(&story.paras[0]).0.world_ready);
+    assert!(reopened.styles.resolve_para(&story.paras[1]).0.world_ready);
 }
 
-/// New enum values require the version-5 reader wherever they are serialized, including unused
-/// styles and nested text. Ordinary and Japanese composers retain their older file requirement.
+/// Explicit flags and mode-only ordinary edits require reader 6 wherever serialized. Japanese
+/// modes without a flag keep older requirements. Other style kinds/settings have no ParaAttrs.
 #[test]
 fn world_ready_content_requires_new_reader() {
     use designcraft_doc::{Composer, StoryId, Table};
@@ -51,42 +53,108 @@ fn world_ready_content_requires_new_reader() {
         Endnote,
     }
 
-    for composer in [
-        Composer::Paragraph,
-        Composer::SingleLine,
-        Composer::Japanese,
-        Composer::JapaneseSingleLine,
-        Composer::WorldReady,
-        Composer::WorldReadySingleLine,
-    ] {
-        let expected = if matches!(composer, Composer::WorldReady | Composer::WorldReadySingleLine) { 5 } else { 2 };
-        for scope in [Scope::Style, Scope::Story, Scope::Cell, Scope::Footnote, Scope::Endnote] {
-            let mut doc = Document::new(&NewDocument::default());
-            let id = StoryId(doc.alloc());
-            let mut story = Story::with_text(id, "Root", ParaFormat::default());
-            let para = ParaFormat { para: ParaAttrs { composer: Some(composer), ..Default::default() }, ..Default::default() };
-            match scope {
-                Scope::Style => doc.styles_mut().paragraph[0].para.composer = Some(composer),
-                Scope::Story => story.paras[0] = para,
-                Scope::Cell => {
-                    let mut table = Table::new(1, 1, 1, 0, 0, 100.0);
-                    table.cells[0].text.paras[0] = para;
-                    story.insert_table(0, table);
+    for composer in [Composer::Paragraph, Composer::SingleLine, Composer::Japanese, Composer::JapaneseSingleLine] {
+        for world_ready in [None, Some(false), Some(true)] {
+            let expected = if world_ready.is_some() || !composer.japanese() { 6 } else { 2 };
+            for scope in [Scope::Style, Scope::Story, Scope::Cell, Scope::Footnote, Scope::Endnote] {
+                let mut doc = Document::new(&NewDocument::default());
+                let id = StoryId(doc.alloc());
+                let mut story = Story::with_text(id, "Root", ParaFormat::default());
+                let para = ParaFormat { para: ParaAttrs { composer: Some(composer), world_ready, ..Default::default() }, ..Default::default() };
+                match scope {
+                    Scope::Style => doc.styles_mut().paragraph[0].para = para.para,
+                    Scope::Story => story.paras[0] = para,
+                    Scope::Cell => {
+                        let mut table = Table::new(1, 1, 1, 0, 0, 100.0);
+                        table.cells[0].text.paras[0] = para;
+                        story.insert_table(0, table);
+                    }
+                    Scope::Footnote => {
+                        story.insert_note(0, "Note", para).unwrap();
+                    }
+                    Scope::Endnote => {
+                        story.insert_endnote(0, "Note", para).unwrap();
+                    }
                 }
-                Scope::Footnote => {
-                    story.insert_note(0, "Note", para).unwrap();
-                }
-                Scope::Endnote => {
-                    story.insert_endnote(0, "Note", para).unwrap();
-                }
+                doc.stories.insert(id, Arc::new(story));
+                let bytes = save(&doc).unwrap();
+                let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+                let mut meta = String::new();
+                zip.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], expected, "{composer:?} in {scope:?}");
+                let reopened = load(&bytes).unwrap();
+                assert_eq!(required_version(&reopened), expected as u32);
+                assert_eq!(reopened.styles, doc.styles);
+                assert_eq!(reopened.stories, doc.stories);
             }
-            doc.stories.insert(id, Arc::new(story));
-            let bytes = save(&doc).unwrap();
-            let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
-            let mut meta = String::new();
-            zip.by_name("meta.json").unwrap().read_to_string(&mut meta).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&meta).unwrap()["version"], expected, "{composer:?} in {scope:?}");
-            assert_eq!(required_version(&load(&bytes).unwrap()), expected as u32);
+        }
+    }
+}
+
+/// Earlier test builds stored the World-Ready identity in the composer enum, before reader 6.
+/// Preserve those files, including nested text, and write only the shared boolean afterward.
+#[test]
+fn world_ready_test_build_files_migrate_without_loss() {
+    for (old, mode, world_ready) in [
+        ("worldReady", "paragraph", true),
+        ("worldReadySingleLine", "singleLine", true),
+        ("paragraph", "paragraph", false),
+        ("singleLine", "singleLine", false),
+    ] {
+        let mut doc = Document::new(&NewDocument::default());
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), doc.default_layer(), "Tamil", ParaFormat::default()).unwrap();
+        let composer = serde_json::from_value(json!(mode)).unwrap();
+        let attrs = ParaAttrs { composer: Some(composer), world_ready: Some(world_ready), ..Default::default() };
+        doc.styles_mut().paragraph[0].para = attrs.clone();
+        let story = doc.story_mut(sid).unwrap();
+        story.paras[0].para = attrs.clone();
+        let mut table = designcraft_doc::Table::new(1, 1, 1, 0, 0, 100.0);
+        table.cells[0].text.paras[0].para = attrs.clone();
+        story.insert_table(0, table);
+        let para = ParaFormat { para: attrs, ..Default::default() };
+        story.insert_note(0, "Footnote", para.clone()).unwrap();
+        story.insert_endnote(0, "Endnote", para).unwrap();
+        let json = serde_json::to_string(&doc).unwrap().replace(&format!(r#""composer":"{mode}""#), &format!(r#""composer":"{old}""#));
+        let mut value: Value = serde_json::from_str(&json).unwrap();
+        fn remove_flag(v: &mut Value) {
+            match v {
+                Value::Object(m) => {
+                    m.remove("worldReady");
+                    for child in m.values_mut() {
+                        remove_flag(child);
+                    }
+                }
+                Value::Array(a) => {
+                    for child in a {
+                        remove_flag(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+        remove_flag(&mut value);
+        for version in [2, 5] {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            zip.start_file("meta.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(json!({"version": version}).to_string().as_bytes()).unwrap();
+            zip.start_file("document.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let reopened = load(&zip.finish().unwrap().into_inner()).unwrap();
+            assert_eq!(reopened.styles, doc.styles);
+            assert_eq!(reopened.stories, doc.stories);
+            assert_eq!(required_version(&reopened), 6);
+            let saved = save(&reopened).unwrap();
+            let mut zip = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+            let mut text = String::new();
+            zip.by_name("document.json").unwrap().read_to_string(&mut text).unwrap();
+            if world_ready {
+                assert!(!text.contains(&format!(r#""composer": "{old}""#)));
+            }
+        }
+        if world_ready {
+            value["styles"]["paragraph"][0]["para"]["worldReady"] = json!(false);
+            assert!(load(&serde_json::to_vec(&value).unwrap()).is_err(), "conflicting old/new values must not lose data");
         }
     }
 }

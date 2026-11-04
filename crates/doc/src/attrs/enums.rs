@@ -184,11 +184,6 @@ pub enum Composer {
     Paragraph,
     /// Greedy, line by line.
     SingleLine,
-    /// World-Ready paragraph composer identity, retained for interchange. DesignCraft uses its
-    /// own shaper and total-fit breaker, rather than Adobe's implementation.
-    WorldReady,
-    /// World-Ready single-line composer identity, using the greedy breaker.
-    WorldReadySingleLine,
     /// The Japanese paragraph composer: total fit, with the CJK leading model and character
     /// alignment.
     Japanese,
@@ -199,7 +194,7 @@ pub enum Composer {
 impl Composer {
     /// Breaks lines greedily, one at a time.
     pub fn single_line(self) -> bool {
-        matches!(self, Composer::SingleLine | Composer::WorldReadySingleLine | Composer::JapaneseSingleLine)
+        matches!(self, Composer::SingleLine | Composer::JapaneseSingleLine)
     }
 
     /// A Japanese composer: lines follow the leading model ([`crate::cjk::LeadingModel`]) and

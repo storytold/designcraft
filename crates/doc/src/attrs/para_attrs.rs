@@ -37,6 +37,10 @@ attr_set! {
         nested_line_styles: Vec<NestedLineStyle> = Vec::new(),
         grid_align: GridAlign = GridAlign::None,
         composer: Composer = Composer::Paragraph,
+        /// World-Ready identity, independent of the paragraph/single-line breaking mode.
+        /// Retained for interchange; shaping behavior is separate work (#1152). The default
+        /// agrees with that work without changing DesignCraft's current shaping behavior.
+        world_ready: bool = true,
         // Hyphenation
         hyphenate: bool = true,
         hyph_min_word: u32 = 5,

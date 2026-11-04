@@ -240,7 +240,9 @@ impl<'r> Importer<'r> {
                 a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
             }
         }
-        a.composer = e.prop("Composer").map(|c| composer_in(&c));
+        let composer = e.prop("Composer");
+        a.composer = composer.as_deref().map(composer_in);
+        a.world_ready = composer.as_deref().map(world_ready_in);
         a.hyphenate = e.boolean("Hyphenation");
         a.hyph_min_word = u("HyphenateWordsLongerThan");
         a.hyph_after_first = u("HyphenateAfterFirst");
@@ -441,18 +443,22 @@ pub(super) fn ace_char(v: &str) -> Option<char> {
 }
 
 /// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.
-/// Decode the vendor composer identifier without dropping its family or line-breaking mode.
+/// Decode the breaking mode; [`world_ready_in`] retains the independent World-Ready identity.
 fn composer_in(name: &str) -> designcraft_doc::Composer {
     use designcraft_doc::Composer as C;
     let name = name.trim().trim_start_matches("$ID/");
-    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese"), name.ends_with(" Optyca")) {
-        (false, true, _) => C::Japanese,
-        (true, true, _) => C::JapaneseSingleLine,
-        (false, false, true) => C::WorldReady,
-        (true, false, true) => C::WorldReadySingleLine,
-        (false, false, false) => C::Paragraph,
-        (true, false, false) => C::SingleLine,
+    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese")) {
+        (false, true) => C::Japanese,
+        (true, true) => C::JapaneseSingleLine,
+        (false, false) => C::Paragraph,
+        (true, false) => C::SingleLine,
     }
+}
+
+/// Optyca and Japanese composers are World-Ready; ordinary composers explicitly disable it.
+fn world_ready_in(name: &str) -> bool {
+    let name = name.trim().trim_start_matches("$ID/");
+    name.ends_with(" Optyca") || name.ends_with(" J") || name.contains("Japanese")
 }
 
 /// [`Importer::clear_inherited_drop_cap_styles`] for one story's paragraphs and those of the table

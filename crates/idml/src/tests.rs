@@ -1646,24 +1646,24 @@ fn composers_import_by_kind_and_round_trip() {
         )
     };
     let cases = [
-        ("HL Composer", C::Paragraph),
-        ("HL Single", C::SingleLine),
-        ("HL Single Optyca", C::WorldReadySingleLine),
-        ("HL Composer Optyca", C::WorldReady),
-        ("$ID/HL Composer Optyca", C::WorldReady),
-        ("$ID/HL Single Optyca", C::WorldReadySingleLine),
-        ("HL Composer J", C::Japanese),
-        ("$ID/HL Single J", C::JapaneseSingleLine),
+        ("HL Composer", C::Paragraph, false),
+        ("HL Single", C::SingleLine, false),
+        ("HL Single Optyca", C::SingleLine, true),
+        ("HL Composer Optyca", C::Paragraph, true),
+        ("$ID/HL Composer Optyca", C::Paragraph, true),
+        ("$ID/HL Single Optyca", C::SingleLine, true),
+        ("HL Composer J", C::Japanese, true),
+        ("$ID/HL Single J", C::JapaneseSingleLine, true),
     ];
-    let body: String = cases.iter().enumerate().map(|(i, (name, _))| para(name, &format!("p{i}"))).collect();
+    let body: String = cases.iter().enumerate().map(|(i, (name, _, _))| para(name, &format!("p{i}"))).collect();
     let story =
         format!(r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">{body}</Story></idPkg:Story>"#);
     let doc = import_idml(&fixture_with_story(&story)).unwrap();
     let back = import_idml(&export_idml(&doc)).unwrap();
     for d in [&doc, &back] {
         let st = d.stories.values().find(|s| s.text.contains("p0")).unwrap();
-        let got: Vec<_> = st.paras.iter().take(cases.len()).map(|p| p.para.composer).collect();
-        assert_eq!(got, cases.iter().map(|(_, c)| Some(*c)).collect::<Vec<_>>());
+        let got: Vec<_> = st.paras.iter().take(cases.len()).map(|p| (p.para.composer, p.para.world_ready)).collect();
+        assert_eq!(got, cases.iter().map(|(_, c, wr)| (Some(*c), Some(*wr))).collect::<Vec<_>>());
     }
 }
 
