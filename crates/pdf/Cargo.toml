@@ -15,6 +15,8 @@ designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
 craft-pdf = { workspace = true, features = ["write-pdf"] }
+craft-prepress = { workspace = true }
+craft-cms = { workspace = true }
 krilla-svg = { workspace = true }
 designcraft-images = { workspace = true }
 image = { workspace = true }
@@ -29,4 +31,5 @@ hayro-interpret = { version = "0.7.0", default-features = false, features = ["em
 hayro-cmap = "0.1"
 kurbo = { workspace = true }
 tiff = { workspace = true }
+flate2 = "1"
 designcraft-fonts = { workspace = true, features = ["testing"] }

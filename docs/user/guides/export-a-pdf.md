@@ -17,7 +17,7 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 4. Under **Compression**, tick or clear **Compress images**.
 5. Under **Marks and Bleeds**, tick **Include document bleed**, **Crop Marks**, **Bleed Marks** or **Page Information** as your printer asks. **Weight:** and **Offset:** set the marks.
 6. Under **Advanced**, pick a **Standard:** (**None**, **PDF/X-4** or **PDF/A-2b**) and decide on **Tagged PDF**.
-7. Click **OK**, then choose where to save. The file name starts as your document's title with `.pdf`.
+7. Click **OK**, then choose where to save. The file name starts as your document's title with `.pdf`. The save dialog opens in your document's folder, or, if the document has never been saved, in the folder you last saved or exported to.
 
 ## Presets
 

@@ -95,6 +95,35 @@ fn export_to_an_unknown_file_type_is_an_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `run --export` prints what the PDF export reports, and `script --export` dropped it: the same
+/// PDF with a drop shadow came out of a script with nothing on stderr.
+#[test]
+fn script_export_prints_the_export_warnings_as_run_does() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-warnings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let steps = [
+        r#"frame.create={"rect": [72, 72, 300, 200]}"#,
+        r#"object.fill={"ids": ["$0.id"], "swatch": "[Black]"}"#,
+        r#"object.dropShadow={"ids": ["$0.id"], "on": true, "distance": 8, "size": 6}"#,
+    ];
+    let script = dir.join("shadow.dcs");
+    std::fs::write(&script, steps.join("\n")).unwrap();
+    let pdf = dir.join("shadow.pdf");
+    let pdf = pdf.to_str().unwrap();
+    let mut run = vec!["run"];
+    for step in steps {
+        run.extend(["--cmd", step]);
+    }
+    run.extend(["--export", pdf]);
+    for args in [run, vec!["script", script.to_str().unwrap(), "--export", pdf]] {
+        let out = cli().args(&args).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{}: {err}", args[0]);
+        assert!(err.contains("warning: 1 object(s) with soft effects"), "{}: {err}", args[0]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With `--connect` the exports happen in the running app. `--export copy.designcraft` saves a
 /// copy there: Save As would make the copy the file the open document saves to from then on.
 #[test]
@@ -347,6 +376,29 @@ fn make_document(path: &std::path::Path) {
     assert!(path.exists());
 }
 
+/// `path` without the `\\?\` or `\\?\UNC\` prefix that `canonicalize` adds on Windows, as the
+/// server shows a root (`file_access::plain`).
+fn without_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path,
+    }
+}
+
+#[test]
+fn without_verbatim_prefix_keeps_a_share_a_share() {
+    let p = |t: &str| without_verbatim_prefix(std::path::PathBuf::from(t));
+    assert_eq!(p(r"\\?\UNC\server\share\dir"), std::path::PathBuf::from(r"\\server\share\dir"));
+    assert_eq!(p(r"\\?\C:\Users\dir"), std::path::PathBuf::from(r"C:\Users\dir"));
+    assert_eq!(p("/private/var/dir"), std::path::PathBuf::from("/private/var/dir"));
+}
+
 #[test]
 fn mcp_automation_roots_confine_the_server() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-{}", std::process::id()));
@@ -401,6 +453,99 @@ fn mcp_automation_roots_confine_the_server() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// #1552: each root flag may be given more than once. A path inside any root of its kind passes;
+/// the roots' common parent, a sibling whose name starts like a root's, `..` out of a root, the
+/// other kind's roots and a link out of a root stay refused.
+#[test]
+fn mcp_automation_roots_take_several_folders() {
+    let base = std::env::temp_dir().join(format!("dc-cli-roots-several-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    for d in ["in", "shared", "out", "scratch", "outside", "in2", "scratch2"] {
+        std::fs::create_dir_all(base.join(d)).unwrap();
+    }
+    // Resolved, as the server shows the roots (`/var` is `/private/var` on macOS), and without the
+    // `\\?\` prefix that `canonicalize` adds on Windows: the server shows the roots without it, and
+    // Windows does not resolve `..` in a path that has it.
+    let base = without_verbatim_prefix(std::fs::canonicalize(base).unwrap());
+    for f in ["in/a.designcraft", "shared/b.designcraft", "outside/secret.designcraft", "parent.designcraft", "in2/c.designcraft"] {
+        make_document(&base.join(f));
+    }
+    // Windows' canonical `\\?\` form is not a prefix under which `..` is a path component:
+    // traversal requests use the ordinary spelling, while the other requests keep the resolved one.
+    let plain = |path: &std::path::Path| -> String {
+        let text = path.to_string_lossy();
+        if !cfg!(windows) {
+            return text.into_owned();
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_owned(),
+            None => text.into_owned(),
+        }
+    };
+    let p = |f: &str| base.join(f).to_str().unwrap().to_string();
+    let sep = std::path::MAIN_SEPARATOR;
+    let up = |root: &str, rest: &str| format!("{}{sep}..{sep}{rest}", plain(&base.join(root)));
+    let calls = [
+        ("open_document", serde_json::json!({"path": p("in/a.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("shared/b.designcraft")})),
+        // The roots' common parent is not a root.
+        ("open_document", serde_json::json!({"path": p("parent.designcraft")})),
+        ("open_document", serde_json::json!({"path": up("shared", &format!("outside{sep}secret.designcraft"))})),
+        // `in2` only starts like `in`.
+        ("open_document", serde_json::json!({"path": p("in2/c.designcraft")})),
+        // `..` from one read root into another stays inside.
+        ("open_document", serde_json::json!({"path": up("shared", &format!("in{sep}a.designcraft"))})),
+        ("save_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch/y.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("z.designcraft")})),
+        ("save_document", serde_json::json!({"path": p("scratch2/z.designcraft")})),
+        // Read and write stay separate: a read root is not a write root, nor the other way round.
+        ("save_document", serde_json::json!({"path": p("shared/w.designcraft")})),
+        ("open_document", serde_json::json!({"path": p("out/x.designcraft")})),
+        ("export_png", serde_json::json!({"path": up("scratch", &format!("outside{sep}p.png"))})),
+    ];
+    let read2 = format!("--automation-read-root={}", p("shared"));
+    let args = ["--automation-read-root", &p("in"), &read2, "--automation-write-root", &p("out"), "--automation-write-root", &p("scratch")];
+    let (success, stderr, replies) = mcp_session(&args, &calls);
+    assert!(success, "{stderr}");
+    let confined = format!(
+        "files confined: read {}, {}; write {}, {}",
+        plain(&base.join("in")),
+        plain(&base.join("shared")),
+        plain(&base.join("out")),
+        plain(&base.join("scratch"))
+    );
+    assert!(stderr.contains(&confined), "expected {confined:?} in {stderr:?}");
+    let errors: Vec<bool> = replies.iter().map(|r| r["result"]["isError"] == true).collect();
+    assert_eq!(errors, [false, false, true, true, true, false, false, false, true, true, true, true, true], "{replies:?}");
+    for (i, kind) in [(2, "read"), (3, "read"), (4, "read"), (8, "write"), (9, "write"), (10, "write"), (11, "read"), (12, "write")] {
+        assert!(text(&replies[i]).contains(&format!("outside the {kind} roots ")), "{i}: {}", text(&replies[i]));
+    }
+    assert!(base.join("out/x.designcraft").is_file() && base.join("scratch/y.designcraft").is_file());
+    for f in ["z.designcraft", "scratch2/z.designcraft", "shared/w.designcraft", "outside/p.png"] {
+        assert!(!base.join(f).exists(), "{f} was written outside the write roots");
+    }
+
+    // A link in one root that leads out of all of them is outside, for reading and for writing.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(base.join("outside/secret.designcraft"), base.join("shared/leak.designcraft")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), base.join("scratch/away")).unwrap();
+        let calls = [
+            ("open_document", serde_json::json!({"path": p("shared/leak.designcraft")})),
+            ("save_document", serde_json::json!({"path": p("scratch/away/x.designcraft")})),
+        ];
+        let (_, _, replies) = mcp_session(&args, &calls);
+        assert!(text(&replies[0]).contains("outside the read roots"), "{}", text(&replies[0]));
+        assert!(text(&replies[1]).contains("outside the write roots"), "{}", text(&replies[1]));
+        assert!(!base.join("outside/x.designcraft").exists());
+    }
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[test]
 fn mcp_automation_root_flags_are_checked_up_front() {
     let base = std::env::temp_dir().join(format!("dc-cli-roots-args-{}", std::process::id()));
@@ -419,9 +564,11 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     // The flags confine the in-process server, so they cannot be combined with --connect.
     fails(&["--connect", "7979", "--automation-read-root", dir], "--connect");
     fails(&["--automation-write-root", dir, "--connect", "7979"], "--connect");
-    fails(&["--automation-read-root", dir, "--automation-read-root", dir], "given twice");
-    fails(&["--automation-write-root", dir, "--automation-write-root", dir], "given twice");
-    fails(&["--automation-read-root", dir, "--automation-read-root=x"], "given twice");
+    // #1552: a flag may be given again, but every folder it names must exist and be given.
+    fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
+    fails(&["--automation-write-root", missing.to_str().unwrap(), "--automation-write-root", dir], "cannot open the automation write root");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
+    fails(&["--automation-read-root", dir, "--automation-read-root="], "needs a non-empty folder");
     fails(&["--automation-read-root"], "needs a folder");
     fails(&["--automation-write-root", "--sample"], "needs a folder");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
@@ -438,3 +585,248 @@ fn usage_lists_the_automation_root_flags() {
     let usage = String::from_utf8_lossy(&out.stdout);
     assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
 }
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+    let be = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    (be(16), be(20))
+}
+
+/// Linux file managers (Dolphin, Nautilus, Thunar) draw a `.designcraft` file's icon through the
+/// freedesktop thumbnailer, which runs `designcraft-cli thumbnail %i %o %s` (#1782). The picture is
+/// the first-page preview the file already holds, fitted to the size asked for and never enlarged.
+#[test]
+fn thumbnail_writes_the_saved_preview_fitted_to_the_size() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let preview = designcraft_format::read_preview(std::fs::File::open(&doc).unwrap()).unwrap();
+    let (pw, ph) = png_size(&preview);
+    assert!(pw.max(ph) > 128, "the saved preview is {pw}×{ph}");
+
+    let small = dir.join("small.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&small).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&small).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h} from a {pw}×{ph} preview");
+    // The page's proportions stay.
+    let ratio = |a: u32, b: u32| f64::from(a) / f64::from(b);
+    assert!((ratio(w, h) - ratio(pw, ph)).abs() < 0.02, "{w}×{h} from a {pw}×{ph} preview");
+
+    let large = dir.join("large.png");
+    let out = cli().arg("thumbnail").arg(&doc).arg(&large).arg("1024").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read(&large).unwrap(), preview, "a preview smaller than the size is written as saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file saved without a preview (by an older version, or not by DesignCraft) has no picture: the
+/// thumbnailer fails and writes nothing, so the file manager keeps the file type's icon.
+#[test]
+fn thumbnail_of_a_file_without_a_preview_fails_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-none-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let with = dir.join("with.designcraft");
+    make_document(&with);
+    let doc = designcraft_format::load(&std::fs::read(&with).unwrap()).unwrap();
+    let without = dir.join("without.designcraft");
+    std::fs::write(&without, designcraft_format::save(&doc).unwrap()).unwrap();
+    let text = dir.join("notes.designcraft");
+    std::fs::write(&text, "not a document").unwrap();
+    for input in [&without, &text] {
+        let png = dir.join("out.png");
+        let out = cli().arg("thumbnail").arg(input).arg(&png).arg("256").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{}", input.display());
+        assert!(err.contains("no preview"), "{}: {err}", input.display());
+        assert!(!png.exists(), "{}", input.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `thumbnail a.designcraft a.designcraft` would replace the document with a PNG. An output that
+/// names the input, by the same path, through a symlink or (on Unix) as a hard link, is refused
+/// before anything is read or written, and the document keeps its bytes.
+#[test]
+fn thumbnail_refuses_an_output_that_names_the_input() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-self-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let saved = std::fs::read(&doc).unwrap();
+    let mut outs = vec![doc.clone(), dir.join(".").join("a.designcraft")];
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.png");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        outs.push(link);
+        let hard = dir.join("hard.png");
+        std::fs::hard_link(&doc, &hard).unwrap();
+        outs.push(hard);
+    }
+    for out_path in &outs {
+        let out = cli().arg("thumbnail").arg(&doc).arg(out_path).arg("128").output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{}: {err}", out_path.display());
+        assert!(err.contains("is the document"), "{}: {err}", out_path.display());
+        assert!(std::fs::read(&doc).unwrap() == saved, "{} changed the document", out_path.display());
+        assert!(std::fs::read(out_path).unwrap() == saved, "{} was written", out_path.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Another existing file at the output path is still replaced by the thumbnail.
+#[test]
+fn thumbnail_replaces_another_existing_file() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-thumb-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("a.designcraft");
+    make_document(&doc);
+    let png = dir.join("old.png");
+    std::fs::write(&png, b"an older thumbnail").unwrap();
+    let out = cli().arg("thumbnail").arg(&doc).arg(&png).arg("128").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (w, h) = png_size(&std::fs::read(&png).unwrap());
+    assert_eq!(w.max(h), 128, "{w}×{h}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The argument bugs photocraft#7071 lists, measured here: every one of them was live in this
+/// parser too. Each case names the photocraft issue it comes from.
+#[test]
+fn the_argument_parser_refuses_what_it_cannot_mean() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-args-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // photocraft#423: `<sub> --help` was read as an unknown option. It asks about the
+    // subcommand, goes to stdout and succeeds.
+    for sub in ["run", "commands", "describe", "app", "mcp", "perf", "bench", "validate-pdf", "links"] {
+        let out = cli().args([sub, "--help"]).output().unwrap();
+        assert!(out.status.success(), "{sub} --help: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains(&format!("designcraft-cli {sub}")), "{sub} --help names it: {text:?}");
+        assert!(!text.contains("unknown option"), "{sub} --help: {text:?}");
+    }
+    // `script --help` keeps its own longer help, which it had already.
+    let out = cli().args(["script", "--help"]).output().unwrap();
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Script text, one step per line"));
+
+    // photocraft#6944: an option took the next token whatever it was, so `--export --scale`
+    // wrote a file called `--scale` in the working directory.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "--scale"]).output().unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("another option") && err.contains("./--scale"), "{err:?}");
+    assert!(!dir.join("--scale").exists(), "nothing was written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no other file either");
+
+    // A name that really does start with `-` is still reachable, the way the shell reaches one.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "./-dash.png"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("-dash.png").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+
+    // A missing value is found before anything runs, so an export earlier on the line does not
+    // happen: reported later, `--export first.png --scale --export second.png` wrote first.png
+    // and only then failed, overwriting a file that was already there (noted in review).
+    let first = dir.join("first.png");
+    std::fs::write(&first, b"older file").unwrap();
+    let out =
+        cli().current_dir(&dir).args(["run", "--sample", "--export", first.to_str().unwrap(), "--scale", "--export", "second.png"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err:?}");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert_eq!(std::fs::read(&first).unwrap(), b"older file", "the file that was already there is untouched");
+    assert!(!dir.join("second.png").exists(), "and nothing else is written");
+    std::fs::remove_file(&first).unwrap();
+
+    // A missing value is still a missing value, with the message it had.
+    let out = cli().args(["run", "--sample", "--export"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--export needs a value"));
+
+    // And a missing value in front of an export is still a missing value: the order of the
+    // options is beside the point until `--scale` has one, and "put it before its --export" was
+    // advice for a list that already does that.
+    let out = cli().current_dir(&dir).args(["run", "--sample", "--scale", "--export", "out.png"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err:?}");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert!(!err.contains("has no --export"), "{err:?}");
+    // `./--export` is a file name, which is no way out of a missing `--scale`.
+    assert!(!err.contains("./"), "{err:?}");
+    assert!(!dir.join("out.png").exists(), "and nothing is exported");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// photocraft#1108: an argument that is not UTF-8 panicked in `std::env::args` ("called
+/// `Result::unwrap()` on an `Err` value"). Such a name cannot reach the engine, whose paths are
+/// `str`, so it is a usage error.
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let out = cli().arg("info").arg(OsStr::from_bytes(b"/tmp/caf\xe9.designcraft")).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "an error, not a panic (101): {err:?}");
+    assert!(err.contains("not valid UTF-8"), "{err:?}");
+    assert!(!err.contains("panicked"), "{err:?}");
+}
+
+/// `<sub> --help` answers about that subcommand, which is right where the subcommand exists. For
+/// one that does not, it printed the whole usage and **succeeded**, so `typo` on its own was an
+/// error while `typo --help` was not, and a script checking the exit status carried on past a
+/// misspelled command (noted in review).
+#[test]
+fn an_unknown_subcommand_is_an_error_even_with_help_after_it() {
+    for sub in ["typo", "nonsense", "valdiate-pdf", "runn"] {
+        for help in ["--help", "-h"] {
+            let out = cli().arg(sub).arg(help).output().unwrap();
+            assert_eq!(out.status.code(), Some(1), "{sub} {help} must fail");
+            assert!(out.stdout.is_empty(), "{sub} {help} must not answer on stdout: {:?}", String::from_utf8_lossy(&out.stdout));
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("usage: designcraft-cli"), "{sub} {help}: {err:?}");
+        }
+    }
+
+    // Every subcommand the usage lists still answers on stdout and succeeds, so this is not a
+    // block on subcommand help. The list is read from the usage text, as the code's own check is.
+    let subs: Vec<&str> = USAGE_SUBCOMMANDS.iter().copied().filter(|s| !s.starts_with('-')).collect();
+    assert!(subs.len() >= 8, "the usage lists {} subcommands", subs.len());
+    for sub in subs {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help must succeed: {:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(!out.stdout.is_empty(), "{sub} --help must answer on stdout");
+    }
+}
+
+/// A subcommand's help has to name the options that subcommand accepts. `validate-pdf` takes
+/// `--standard x4|x1a` -- its own usage string and the module docs both say so -- but the line in
+/// the global `USAGE`, which is what `validate-pdf --help` slices out, left it off, so the option
+/// was hidden from the only place a user would look (noted in review).
+#[test]
+fn subcommand_help_names_the_options_that_subcommand_takes() {
+    let help = |sub: &str| {
+        let out = cli().arg(sub).arg("--help").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{sub} --help: {:?}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let v = help("validate-pdf");
+    assert!(v.contains("--standard"), "validate-pdf --help hides --standard: {v:?}");
+    // The option is refused for a value it cannot mean, so the help and the parser agree on it.
+    let out = cli().arg("validate-pdf").arg("x.pdf").arg("--standard").arg("x9").output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "an unknown standard is refused");
+
+    // A couple of others, so this is about subcommand help in general and not one line.
+    assert!(help("run").contains("--cmd"), "run --help hides --cmd");
+    assert!(help("mcp").contains("--automation-read-root"), "mcp --help hides its roots");
+}
+
+/// The subcommands the binary's usage text lists. Kept here rather than imported because the
+/// binary is not a library; the assertion above on the count is what notices if it drifts.
+const USAGE_SUBCOMMANDS: &[&str] = &["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];

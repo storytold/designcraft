@@ -78,6 +78,7 @@ fn placed(size: f64, pdf: Vec<u8>) -> Rendered {
         let id = ItemId(d.alloc());
         let mut item = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, size, size)));
         item.content = Content::Graphic(Graphic {
+            layer_options: None,
             asset,
             size: (size, size),
             xf: Affine::IDENTITY,

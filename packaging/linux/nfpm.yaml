@@ -24,13 +24,15 @@ description: |-
 
 # The binaries link only glibc and libgcc_s directly. Windowing (X11/Wayland, xkbcommon) and the
 # GPU (Vulkan, EGL/GL) are loaded at runtime, so they are dependencies/recommendations here
-# rather than ELF NEEDED entries.
+# rather than ELF NEEDED entries. The X11 keyboard module is a separate library from the core
+# xkbcommon one, and winit's X11 backend panics without it, so it is required next to it.
 overrides:
   deb:
     depends:
       - libc6 (>= 2.35)
       - libgcc-s1
       - libxkbcommon0
+      - libxkbcommon-x11-0
       - libvulkan1 | libegl1
     recommends:
       - libwayland-client0
@@ -51,6 +53,7 @@ overrides:
       - libm.so.6(GLIBC_2.35)(64bit)
       - libgcc_s.so.1()(64bit)
       - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
       - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
     recommends:
       - libwayland-client
@@ -71,6 +74,7 @@ overrides:
       - gcc-libs
       - hicolor-icon-theme
       - libxkbcommon
+      - libxkbcommon-x11
       - vulkan-icd-loader
     provides:
       - designcraft

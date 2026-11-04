@@ -80,6 +80,21 @@ sign() {
   codesign --force --sign "$IDENTITY" ${kc[@]+"${kc[@]}"} "${ts[@]}" "$@"
 }
 
+# `stapler staple` and `stapler validate` both fetch the ticket from Apple's CloudKit, and a dropped
+# connection there (NSURLErrorDomain -1005, "Error 68") fails them although notarization worked.
+# Both are idempotent, so retry with a pause; a missing or bad ticket still fails every try.
+stapler_retry() {
+  local try
+  for try in 1 2 3 4; do
+    xcrun stapler "$1" "$2" && return 0
+    [[ "$try" = 4 ]] && break
+    echo "stapler $1 failed (try $try of 4); retrying in $((try * 20)) s" >&2
+    sleep $((try * 20))
+  done
+  echo "error: stapler $1 $(basename "$2") failed 4 times" >&2
+  exit 1
+}
+
 notarize() {
   local file="$1" out id status
   echo "==> notarizing $(basename "$file") (this can take a few minutes)"
@@ -102,7 +117,10 @@ echo "==> assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # Executable and icon carry the display name (CFBundleExecutable / CFBundleIconFile).
 cp "$WORK/bin/designcraft" "$APP/Contents/MacOS/DesignCraft"
+cp "$WORK/bin/designcraft-cli" "$APP/Contents/MacOS/designcraft-cli"
 cp "$ROOT/assets/app-icon/designcraft.icns" "$APP/Contents/Resources/DesignCraft.icns"
+# Required embedded-font notices are independent of optional font inputs.
+cp "$ROOT/NOTICE" "$APP/Contents/Resources/NOTICE"
 # Licences of the embedded craft-fonts fonts (only when built with CRAFT_FONTS_DIR).
 copy_font_licences "$APP/Contents/Resources"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
@@ -112,16 +130,17 @@ plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
 # Sign inside-out: nested code first, then the bundle itself (no --deep on the final signature).
-# Today the only nested code is the main executable; frameworks/helpers would be signed here too.
+sign --options runtime "$APP/Contents/MacOS/designcraft-cli"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/DesignCraft"
 sign --options runtime --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
+"$APP/Contents/MacOS/designcraft-cli" --version
 
 if [[ "$NOTARIZE" = 1 ]]; then
   ditto -c -k --keepParent "$APP" "$WORK/DesignCraft-notarize.zip"
   notarize "$WORK/DesignCraft-notarize.zip"
-  xcrun stapler staple "$APP"
-  xcrun stapler validate "$APP"
+  stapler_retry staple "$APP"
+  stapler_retry validate "$APP"
   spctl --assess --type execute -vvv "$APP"
 fi
 
@@ -171,8 +190,8 @@ fi
 hdiutil_retry detach detach "$MOUNT" >/dev/null
 if [[ "$NOTARIZE" = 1 ]]; then
   notarize "$DMG"
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  stapler_retry staple "$DMG"
+  stapler_retry validate "$DMG"
   spctl --assess --type open --context context:primary-signature -vvv "$DMG"
 fi
 
@@ -189,6 +208,6 @@ ditto -c -k --keepParent "$CLI_DIR" "$CLI_ZIP"
 # A bare Mach-O can't carry a stapled ticket; Gatekeeper looks the notarization up online.
 if [[ "$NOTARIZE" = 1 ]]; then notarize "$CLI_ZIP"; fi
 
-"$WORK/bin/designcraft-cli" --version
+"$CLI_DIR/designcraft-cli" --version
 echo "==> done"
 ls -lh "$DMG" "$CLI_ZIP"

@@ -5,12 +5,9 @@ use std::collections::HashMap;
 
 use crate::Point;
 
-/// Closed outlines around the `true` cells of a `w`×`h` mask (row-major), simplified to within
-/// `tol` pixels; outlines enclosing less than `min_area` pixels are dropped. Holes come out
-/// with the opposite winding.
-pub fn trace(mask: &[bool], w: usize, h: usize, tol: f64, min_area: f64) -> Vec<Vec<Point>> {
+/// Pixel-border edges of the mask with the inside on the right (clockwise, y down), by start point.
+fn border_edges(mask: &[bool], w: usize, h: usize) -> HashMap<(isize, isize), Vec<(isize, isize)>> {
     let inside = |x: isize, y: isize| x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && mask[y as usize * w + x as usize];
-    // Pixel-border edges with the inside on the right (clockwise, y down).
     let mut next: HashMap<(isize, isize), Vec<(isize, isize)>> = HashMap::new();
     let mut add = |a: (isize, isize), b: (isize, isize)| next.entry(a).or_default().push(b);
     for y in 0..h as isize {
@@ -32,16 +29,24 @@ pub fn trace(mask: &[bool], w: usize, h: usize, tol: f64, min_area: f64) -> Vec<
             }
         }
     }
+    next
+}
+
+/// Closed outlines around the `true` cells of a `w`×`h` mask (row-major), simplified to within
+/// `tol` pixels; outlines enclosing less than `min_area` pixels are dropped. Holes come out
+/// with the opposite winding.
+pub fn trace(mask: &[bool], w: usize, h: usize, tol: f64, min_area: f64) -> Vec<Vec<Point>> {
+    let mut next = border_edges(mask, w, h);
     let mut out = Vec::new();
     let mut starts: Vec<(isize, isize)> = next.keys().copied().collect();
     starts.sort();
     for s in starts {
-        while let Some(first) = next.get_mut(&s).and_then(|v| v.pop()) {
+        while let Some(first) = next.get_mut(&s).and_then(Vec::pop) {
             let mut ring = vec![s];
             let mut cur = first;
             while cur != s {
                 ring.push(cur);
-                match next.get_mut(&cur).and_then(|v| v.pop()) {
+                match next.get_mut(&cur).and_then(Vec::pop) {
                     Some(n) => cur = n,
                     None => break,
                 }
