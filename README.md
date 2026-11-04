@@ -69,7 +69,7 @@
 ## The sample magazine
 
 Every page below was laid out by DesignCraft from code (`crates/engine/src/sample.rs`) and exported
-by its own renderer. Try it yourself with `File → New → Sample Document`, or start the app with
+by its own renderer. Try it yourself with `Help → Sample Document`, or start the app with
 `--sample`.
 
 <table>
@@ -275,11 +275,11 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 |---|---|
 | L0 | `geom` (paths, units & measurement parsing, corner options) · `color` (CMYK/RGB/Lab, swatches, tints, gradients) |
 | L1 | `doc` (spreads, pages, parents, layers, frames, stories, styles) · `fonts` (font DB, shaping, outlines) |
-| L2 | `compose` (the text engine) |
-| L3 | `render` (vello_cpu) |
+| L2 | `compose` (the text engine) · `images` |
+| L3 | `render` (vello_cpu) · `pdf` · `idml` · `epub` · `pptx` · `textimport` · `format` |
 | L4 | `tools` (pointer events → commands + overlays) |
 | L5 | `engine` (session, history, command registry) |
-| L6 | `ui-egui` (publishing UI, control channel) |
+| L6 | `ui-egui` (publishing UI, control channel) · `mcp` |
 | L7 | `apps/designcraft`, `apps/designcraft-cli`, `apps/designcraft-web` |
 
 - **Status and milestones:** [ROADMAP.md](ROADMAP.md) (stage: pre-alpha); feature assessment: [`docs/target-app-parity.md`](docs/target-app-parity.md); known gaps: [`docs/gaps.md`](docs/gaps.md)
@@ -307,7 +307,7 @@ Installers and executables are code-signed.
 
 | Build | File | Notes |
 |---|---|---|
-| App, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
+| App and bundled CLI, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
 | Command-line tool, universal | `designcraft-cli-<ver>-macos-universal.zip` | Signed and notarized |
 
 ### Linux
