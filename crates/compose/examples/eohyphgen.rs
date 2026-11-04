@@ -159,6 +159,10 @@ fn main() {
     for s in NOT_ROOTS {
         roots.remove(*s);
     }
+    if roots.is_empty() {
+        eprintln!("{src}: no usable Esperanto roots; eo.roots left unchanged");
+        std::process::exit(1);
+    }
 
     let sorted: BTreeSet<&String> = roots.iter().collect();
     let mut body = String::from(
