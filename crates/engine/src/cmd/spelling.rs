@@ -362,7 +362,7 @@ fn paragraph_issues(
                 range: paragraph.start + issue.start..paragraph.start + issue.end,
                 kind: if issue.kind == IssueKind::Spelling { "spelling" } else { "grammar" },
                 message: issue.message,
-                language: if issue.lang == ProofLang::Km { "km".into() } else { issue.lang.code().to_owned() },
+                language: issue.lang.tag().into_owned(),
                 lang: issue.lang,
                 suggestions: Vec::new(),
                 preferred,

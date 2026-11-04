@@ -272,3 +272,21 @@ fn the_issue_at_a_caret_comes_with_its_suggestions_only_inside_it() {
     assert!(at(&mut s, 15).is_null(), "nor does another paragraph");
     assert!(s.execute("spelling.at", &serde_json::json!({"story": sid.0, "at": 1000})).is_err());
 }
+
+/// Any language with a dictionary is checked in its own language, right to left included.
+#[test]
+fn a_language_with_a_dictionary_is_checked_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("ar.aff"), "SET UTF-8\n").unwrap();
+    std::fs::write(dir.path().join("ar.dic"), "3\nهذا\nكتاب\nجميل\n").unwrap();
+    craft_proof::set_dictionaries_folder(Some(dir.path().to_path_buf()));
+    let (mut session, sid) = session("هذا كتابب جميل");
+    let text = session.doc().unwrap().doc.story(sid).unwrap().text.clone();
+    let check = |session: &mut Session| session.execute("spelling.check", &json!({"suggestions": false})).unwrap();
+    let doc = std::sync::Arc::make_mut(&mut session.doc_mut().unwrap().doc);
+    doc.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Arabic".into()));
+    let found = check(&mut session);
+    craft_proof::set_dictionaries_folder(None);
+    let issue = found.as_array().unwrap().iter().find(|i| i["word"] == "كتابب").expect("checked with its own dictionary");
+    assert_eq!(issue["language"], "ar", "named by its tag, as every pack language is");
+}
