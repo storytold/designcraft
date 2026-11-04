@@ -434,7 +434,7 @@ mod tests {
         s.execute("edit.clear", &json!({"ids": [mso]})).unwrap();
         let pressed = press(&mut s);
         assert!(pressed.get("state").is_none(), "{pressed}");
-        assert_eq!(pressed["action"]["kind"], "nextState", "the action itself is still reported");
+        assert_eq!(pressed["action"]["kind"], "goToNextState", "the action itself is still reported");
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(press(&mut s)["state"], 0, "the object is back: the press works again");
         // A destination resolves to its anchor's page; a deleted anchor is an error, not a crash.
