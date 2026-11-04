@@ -280,7 +280,32 @@ fn a_missing_value_names_its_option() {
         assert!(err.contains("needs"), "{args:?}: {err:?}");
     }
     assert!(!png.exists(), "nothing is exported");
+
+    // A missing value after an export is found before that export runs: the line writes nothing,
+    // as a malformed line always did.
+    let first = dir.join("first.png");
+    let line = ["run", "--sample", "--export", first.to_str().unwrap(), "--scale", "--export", png.to_str().unwrap()];
+    let err = run(&line).failed("a missing value after an export");
+    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert!(!first.exists(), "the export before it was not written");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--help` wins wherever it appears after the subcommand, even where an option would take it as
+/// its value: `run --in -h` prints `run`'s usage and opens nothing.
+#[test]
+fn help_wins_even_where_an_option_would_take_it_as_a_value() {
+    for flag in ["-h", "--help"] {
+        let out = run(&["run", "--in", flag]).succeeded(&format!("run --in {flag}"));
+        assert!(out.contains("designcraft-cli run"), "{out:?}");
+    }
+    // And each subcommand's usage lists every option it takes.
+    let perf = run(&["perf", "--help"]).succeeded("perf --help");
+    for option in ["--pages", "--frames", "--chars", "--images", "--runs", "--strict"] {
+        assert!(perf.contains(option), "perf --help lists {option}: {perf:?}");
+    }
+    let validate = run(&["validate-pdf", "--help"]).succeeded("validate-pdf --help");
+    assert!(validate.contains("--standard"), "{validate:?}");
 }
 
 /// An option that takes no value does not swallow the token after it: that token is read as the

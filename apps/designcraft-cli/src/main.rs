@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf  # built-in PDF/X-4 checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -124,12 +124,10 @@ fn can_be_value(v: &str) -> bool {
     !(v.starts_with('-') && v.len() > 1 && v.parse::<f64>().is_err())
 }
 
-/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
-/// subcommand, and the indented lines after it belong to it.
-/// The part of [`USAGE`] that describes `sub`, or `None` when it describes no such subcommand --
-/// which is how `<sub> --help` tells a real subcommand from a typo. Falling back to the whole
-/// usage made `bogus --help` print it and succeed, bypassing the unknown-command failure (noted
-/// in review).
+/// The usage lines for one subcommand, for `<sub> --help`: each line of [`USAGE`] names its
+/// subcommand, and the indented lines after it belong to it. `None` when no line describes `sub`,
+/// which is how `<sub> --help` tells a real subcommand from a typo; falling back to the whole usage
+/// made `bogus --help` print it and succeed, bypassing the unknown-command failure.
 fn usage_for(sub: &str) -> Option<String> {
     let mut out = Vec::new();
     let mut keep = false;
@@ -161,7 +159,10 @@ fn main() -> ExitCode {
         }
     }
     // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
-    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.
+    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does. It wins
+    // wherever it appears after the subcommand, even where an option would take it as its value
+    // (`run --in -h`): no file is named `-h`, and asking for help is what that line most likely
+    // means.
     if let Some(sub) = args.first().map(String::as_str)
         && !matches!(sub, "--help" | "-h" | "help" | "script")
         && args[1..].iter().any(|a| a == "--help" || a == "-h")
@@ -442,6 +443,14 @@ impl Export {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    // Nothing runs on a line with an option missing its value: found here, before the first export
+    // writes anything, with the message `value()` gives. Left to `value()` alone, `--export a.png
+    // --scale --export b.png` wrote a.png and only then said `--scale needs a value`.
+    for (i, a) in args.iter().enumerate() {
+        if matches!(a.as_str(), "--page" | "--scale" | "--pdf-options" | "--export" | "--all-pages" | "--in" | "--cmd") {
+            value(a, args.get(i + 1))?;
+        }
+    }
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
