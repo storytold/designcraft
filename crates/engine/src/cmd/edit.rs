@@ -54,7 +54,8 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
-    s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    let swatches: Arc<[designcraft_color::Swatch]> = st.doc.swatches.clone().into();
+    s.text_clipboard = Some((Arc::new(slice), text.clone(), swatches));
     Ok(Some(text))
 }
 
@@ -121,9 +122,9 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             });
         }
     }
-    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
+    let use_clip = formatted && clip.as_ref().is_some_and(|(_, p, _)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
-    if use_clip && let Some((slice, _)) = clip {
+    if use_clip && let Some((slice, _, swatches)) = clip {
         let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
         return s.edit(|d, sel| {
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
@@ -131,13 +132,15 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             let r = r.start.min(st.len())..r.end.min(st.len());
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
+            // Text from another document keeps its colours: the swatches it names come along.
+            d.adopt_text_swatches(&swatches, &slice);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
     }
     // U+FFFC stands for objects with no text.
     let text = if own { Some(copied_objects_text(s)).filter(|m| m != "\u{FFFC}") } else { text };
-    let text = text.or_else(|| clip.map(|(_, p)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
+    let text = text.or_else(|| clip.map(|(_, p, _)| p)).ok_or_else(|| super::bad("edit.paste", "clipboard is empty"))?;
     let text = outside_text(&text)?;
     s.execute("text.insert", &json!({"text": text, "raw": true}))
 }
@@ -153,8 +156,9 @@ fn outside_text(text: &str) -> Result<String> {
 /// Pasted text with no insertion point: a new text frame holding it, as wide as the first column
 /// of the page's margin area and as tall as the text (at most the margin area's height), centred
 /// on `at` (spread coordinates) or else on the margin area. The frame ends up selected. With
-/// `slice` (the text copied here), the frame's story is that formatted copy.
-fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&designcraft_doc::Story>) -> Result<Value> {
+/// `slice` (the text copied here, with its document's swatches), the frame's story is that
+/// formatted copy.
+fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<(&designcraft_doc::Story, &[designcraft_color::Swatch])>) -> Result<Value> {
     use designcraft_geom::{Point, Rect, shapes};
     const LIMIT: f64 = 1.0e5;
     let sr = super::spread_param(p, "edit.paste")?;
@@ -174,13 +178,14 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         let max_h = margins.height().max(12.0);
         let c = at.unwrap_or(Point::new(column.center().x, margins.center().y));
         let rect = |h: f64| Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0);
-        let para = match slice.and_then(|sl| sl.paras.first()) {
+        let para = match slice.and_then(|(sl, _)| sl.paras.first()) {
             Some(pf) => designcraft_doc::ParaFormat { table: None, ..pf.clone() },
             None => designcraft_doc::ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() },
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
-        if let Some(sl) = slice {
+        if let Some((sl, swatches)) = slice {
             d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+            d.adopt_text_swatches(swatches, sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
@@ -432,8 +437,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 // The placeholder of an object copy pastes the copied objects.
                 if let Some(text) = text.filter(|t| !is_objects_placeholder(s, t)) {
                     // What our own text copy put on the clipboard keeps its formatting.
-                    let slice = s.text_clipboard.clone().filter(|(_, plain)| text.replace("\r\n", "\n") == *plain).map(|(slice, _)| slice);
-                    return paste_text_frame(s, p, text, slice.as_deref());
+                    let clip = s.text_clipboard.clone().filter(|(_, plain, _)| text.replace("\r\n", "\n") == *plain);
+                    return paste_text_frame(s, p, text, clip.as_ref().map(|(slice, _, swatches)| (&**slice, &**swatches)));
                 }
                 let Some(clip) = s.clipboard.clone() else {
                     return Err(super::bad("edit.paste", "clipboard is empty"));
@@ -963,5 +968,60 @@ mod paste_swatch_tests {
         let before = names(&s);
         s.execute("edit.paste", &json!({})).unwrap();
         assert_eq!(names(&s), before);
+    }
+
+    /// The same for copied text: pasted into another document's text, or with nothing selected
+    /// as a new frame, it brings the swatches it names, with the base of a tint, and a name the
+    /// other document has keeps its own colour. Without them the text drew invisible.
+    #[test]
+    fn text_pasted_into_another_document_brings_the_swatches_it_names() {
+        for into_frame in [true, false] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            for (name, color) in [("Leaf", "#2a9d3a"), ("Shared", "#ff0000"), ("Unused", "#123456"), ("Deep Blue", "#102080")] {
+                s.execute("swatch.create", &json!({"name": name, "color": color})).unwrap();
+            }
+            s.edit(|d, _| {
+                d.swatches.push(Swatch {
+                    name: "Deep Blue 40%".into(),
+                    value: SwatchValue::Tint { base: "Deep Blue".into(), tint: 0.4 },
+                    locked: false,
+                    named: true,
+                    hidden: false,
+                });
+                Ok(())
+            })
+            .unwrap();
+            let sid = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "one two three"})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+            for (range, swatch) in [([0, 3], "Leaf"), ([4, 7], "Deep Blue 40%"), ([8, 13], "Shared")] {
+                s.execute("text.select", &json!({"story": sid, "anchor": range[0], "focus": range[1]})).unwrap();
+                s.execute("type.char", &json!({"attrs": {"fill": swatch}})).unwrap();
+            }
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 13})).unwrap();
+            let copied = s.execute("edit.copy", &json!({})).unwrap();
+
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("swatch.create", &json!({"name": "Shared", "color": "#0000ff"})).unwrap();
+            let before = names(&s);
+            if into_frame {
+                s.execute("selection.set", &json!({"ids": []})).unwrap();
+                s.execute("edit.paste", &json!({"text": copied["text"]})).unwrap();
+            } else {
+                let to = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap()["story"]
+                    .as_u64()
+                    .unwrap();
+                s.execute("text.select", &json!({"story": to, "anchor": 0, "focus": 0})).unwrap();
+                s.execute("edit.paste", &json!({})).unwrap();
+            }
+            let d = &s.doc().unwrap().doc;
+            let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+            assert_eq!(added, ["Leaf", "Deep Blue", "Deep Blue 40%"], "into a new frame: {into_frame}");
+            assert_eq!(d.resolve_color("Shared", 1.0), Some(Color::rgb(0.0, 0.0, 1.0)), "a name this document has keeps its colour");
+            assert!(d.stories.values().any(|st| st.chars.iter().any(|r| r.format.over.fill.as_deref() == Some("Deep Blue 40%"))));
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(names(&s), before, "undo takes them away: into a new frame: {into_frame}");
+        }
     }
 }

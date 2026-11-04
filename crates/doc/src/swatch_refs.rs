@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use designcraft_color::SwatchValue;
+use designcraft_color::{Swatch, SwatchValue};
 
 use crate::attrs::{CharAttrs, ParaAttrs};
 use crate::item::{Fill, Item, Stroke, TextFrameOptions};
@@ -317,22 +317,45 @@ impl Document {
                 }
             }
         }
-        // The swatches those are built from, from `src`.
+        self.adopt_named(&src.swatches, used.into_inner())
+    }
+
+    /// [`Document::adopt_swatches`] for formatted text pasted from another document: the swatches
+    /// `text` (a copied story slice, with its tables and notes) names that this document lacks,
+    /// copied from `src`, the source document's swatches when the text was copied.
+    pub fn adopt_text_swatches(&mut self, src: &[Swatch], text: &Story) -> usize {
+        let used = RefCell::new(BTreeSet::new());
+        let collect = |v: &mut String| {
+            used.borrow_mut().insert(v.clone());
+        };
+        let n = Names { visit: &collect };
+        let mut st = text.clone();
+        st.for_each_text_mut(&mut |x| n.story(x));
+        for e in &mut st.endnotes {
+            Arc::make_mut(e).text.for_each_text_mut(&mut |x| n.story(x));
+        }
+        self.adopt_named(src, used.into_inner())
+    }
+
+    /// Copy from `src` the swatches in `used` that this document lacks, with the swatches they are
+    /// built from (a tint's base, a gradient's stop swatches), in `src`'s order so they line up in
+    /// the Swatches panel as they did there. Returns how many were added.
+    fn adopt_named(&mut self, src: &[Swatch], used: BTreeSet<String>) -> usize {
+        let find = |name: &str| src.iter().find(|w| w.name == name);
         let mut needed = BTreeSet::new();
-        let mut todo: Vec<String> = used.into_inner().into_iter().collect();
+        let mut todo: Vec<String> = used.into_iter().collect();
         while let Some(name) = todo.pop() {
             if self.swatch(&name).is_some() || !needed.insert(name.clone()) {
                 continue;
             }
-            match src.swatch(&name).map(|w| &w.value) {
+            match find(&name).map(|w| &w.value) {
                 Some(SwatchValue::Tint { base, .. }) => todo.push(base.clone()),
                 Some(SwatchValue::Gradient { gradient }) => todo.extend(gradient.stops.iter().filter_map(|s| s.swatch.clone())),
                 _ => {}
             }
         }
-        // In `src`'s order, so they line up in the Swatches panel as they did there.
         let mut added = 0;
-        for w in &src.swatches {
+        for w in src {
             if needed.contains(&w.name) && self.swatch(&w.name).is_none() {
                 self.swatches.push(w.clone());
                 added += 1;
