@@ -51,31 +51,48 @@ pub fn token_path(config_dir: &Path, port: u16) -> PathBuf {
 ///
 /// The caller must already hold `port` (`control_server::bind`), so that a launch which cannot
 /// have the port never reaches here and never replaces a running server's token.
+///
+/// The token goes into a new file, created owner-only, which is then renamed over the old one.
+/// Writing into the old file -- even narrowed first -- would hand the token to any process that
+/// opened that file while others could read it and still holds it open: the descriptor stays on
+/// the same inode (noted in review). The old inode keeps the old token, which no server accepts.
 pub fn write_token(config_dir: &Path, port: u16, token: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(config_dir)?;
     let path = token_path(config_dir, port);
-    // Create with the mode set, rather than writing and then narrowing: a token must never exist
-    // readable, however briefly.
+    let fresh = config_dir.join(format!(".{TOKEN_FILE}-{port}.{}.new", std::process::id()));
+    // A leftover from a launch that died between the two steps is ours to replace.
+    let _ = std::fs::remove_file(&fresh);
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&path)?;
-    // `mode` applies only where `open` creates the file, so a token file left behind by an
-    // earlier run keeps whatever mode it had. Narrowed on the handle while it is still empty,
-    // so the token is never in a file others can read (noted in review).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let written = options.open(&fresh).and_then(|mut file| {
+        file.write_all(token.as_bytes())?;
+        file.flush()
+    });
+    match written.and_then(|()| std::fs::rename(&fresh, &path)) {
+        Ok(()) => Ok(path),
+        Err(e) => {
+            let _ = std::fs::remove_file(&fresh);
+            Err(e)
+        }
     }
-    file.write_all(token.as_bytes())?;
-    file.flush()?;
-    Ok(path)
 }
+
+/// Remove the token file an earlier launch on `port` left behind. A token passed in
+/// [`TOKEN_ENV`] writes no file, and a stale one would point clients at a token the server no
+/// longer accepts (noted in review).
+pub fn remove_stale(config_dir: &Path, port: u16) {
+    let _ = std::fs::remove_file(token_path(config_dir, port));
+}
+
+/// The longest token [`TOKEN_ENV`] may supply: the first line of a connection holds at most 256
+/// bytes, and `{"token": "…"}` adds 13 to the token, so a longer one could never be presented
+/// (noted in review).
+pub const MAX_SUPPLIED: usize = 200;
 
 /// Whether `given` is `expected`, compared without giving away where they differ.
 pub fn matches(expected: &str, given: &str) -> bool {
@@ -218,5 +235,43 @@ mod tests {
         // contents: a client is told a path, and that path must name one server's token.
         assert!(token_path(dir, 0).to_string_lossy().ends_with("-0"));
         assert!(token_path(dir, u16::MAX).to_string_lossy().ends_with("-65535"));
+    }
+
+    /// A process that opened the token file while it was readable keeps its descriptor; the new
+    /// token goes into a new file, so that descriptor reads only the old one (noted in review).
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_held_on_the_old_file_does_not_see_the_new_token() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("dc-token-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = token_path(&dir, 7423);
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut held = std::fs::File::open(&path).unwrap();
+
+        let token = new_token().unwrap();
+        write_token(&dir, 7423, &token).unwrap();
+        let mut seen = String::new();
+        held.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "old", "the held descriptor does not reach the new token");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), token, "the path names the new one");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        assert_eq!(leftovers.len(), 1, "no temporary file left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_token_file_is_removed() {
+        let dir = std::env::temp_dir().join(format!("dc-token-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = write_token(&dir, 7424, &new_token().unwrap()).unwrap();
+        remove_stale(&dir, 7424);
+        assert!(!path.exists());
+        remove_stale(&dir, 7424); // nothing there: no error
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

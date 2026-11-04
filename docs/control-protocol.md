@@ -21,10 +21,24 @@ gets one error reply and is closed, so connections that never authenticate canno
 channel's slots. Once the token is accepted the connection may stay idle as long as you like.
 
 Each launch makes a fresh 128-bit token and writes it to the profile directory as
-`control-token-<port>`, readable only by its owner (mode 600 on unix); the app prints the path on startup. Clients:
-`designcraft-cli mcp --connect` reads `DESIGNCRAFT_CONTROL_TOKEN`, else the file named by
-`DESIGNCRAFT_CONTROL_TOKEN_FILE`. Without a random source for a token the channel does not open at
-all, rather than opening without one.
+`control-token-<port>`, readable only by its owner (mode 600 on unix), and logs the path when the
+channel opens. The file is written new and renamed into place, so a process holding the old file
+open never sees the new token. Clients: `designcraft-cli mcp --connect` and
+`designcraft-cli script --connect` read `DESIGNCRAFT_CONTROL_TOKEN`, else the file named by
+`DESIGNCRAFT_CONTROL_TOKEN_FILE`, for example:
+
+```sh
+DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/Library/Application Support/DesignCraft/control-token-7979" designcraft-cli mcp --connect 7979   # macOS
+DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/.config/designcraft/control-token-7979" designcraft-cli mcp --connect 7979                      # Linux
+```
+
+(`%APPDATA%\DesignCraft\control-token-7979` on Windows; with `DESIGNCRAFT_CONFIG_DIR` set, in that folder.)
+
+The app can be given its token instead: started with `DESIGNCRAFT_CONTROL_TOKEN` set, it uses that
+token, writes no file, and removes a `control-token-<port>` an earlier launch left for that port. A
+supplied token is at most 200 bytes, so that `{"token": "…"}` fits the 256-byte first line; a longer
+one keeps the channel shut. Without a random source for a token the channel does not open at all,
+rather than opening without one.
 
 For an isolated native test profile, set `DESIGNCRAFT_CONFIG_DIR` to a dedicated directory before
 launch. UI/engine preferences and the `Recovery` directory then live under that root. An unset

@@ -609,7 +609,24 @@ fn main() -> std::process::ExitCode {
                         }
                     });
                     let token = bound.and_then(|bound| match supplied {
-                        Some(token) => Some(token),
+                        Some(token) if token.len() > control_token::MAX_SUPPLIED => {
+                            log::error!(
+                                "the control server did not start: {} is {} bytes; a token can be at most {}",
+                                control_token::TOKEN_ENV,
+                                token.len(),
+                                control_token::MAX_SUPPLIED
+                            );
+                            None
+                        }
+                        Some(token) => {
+                            // No file for this token: one an earlier launch left would name a
+                            // token this server doesn't accept.
+                            if let Some(dir) = profile::config_dir() {
+                                control_token::remove_stale(&dir, bound);
+                            }
+                            log::info!("the control token is the one in {}", control_token::TOKEN_ENV);
+                            Some(token)
+                        }
                         None => match control_token::new_token() {
                             None => {
                                 // Through `log`, not `eprintln!`: a release Windows build is a

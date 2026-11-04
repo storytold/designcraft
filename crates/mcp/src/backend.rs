@@ -93,7 +93,7 @@ impl Remote {
         self.conn = None;
         Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "the app refused the control token (it is in the profile directory, or pass DESIGNCRAFT_CONTROL_TOKEN)",
+            "the app refused the control token: set DESIGNCRAFT_CONTROL_TOKEN_FILE to the control-token-<port> file the app wrote in its profile directory (it logs the path when the channel opens), or DESIGNCRAFT_CONTROL_TOKEN to the token",
         ))
     }
 
