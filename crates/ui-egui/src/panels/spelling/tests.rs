@@ -150,6 +150,51 @@ fn a_right_click_adds_to_the_dictionary_or_opens_the_panel() {
     assert!(h.state_mut().run("spelling.words", json!({})).unwrap().as_array().unwrap().contains(&json!("jumpd")));
 }
 
+/// A cell's offsets are into its own story: at those offsets in the frame's story is some other word.
+#[test]
+fn a_right_click_in_a_table_cell_offers_nothing_for_the_text_around_it() {
+    let (mut app, sid) = app_with(TEXT);
+    app.run("text.select", json!({"story": sid.0, "anchor": 6, "focus": 6})).unwrap();
+    app.run("table.insert", json!({"rows": 1, "cols": 1})).unwrap();
+    let table = *app.session.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().unwrap();
+    let cell = designcraft_doc::CellAddr { table, row: 0, col: 0 };
+    let selection = designcraft_doc::TextSel { story: sid, anchor: 6, focus: 6, frame: None, cell: Some(cell) };
+    app.session.doc_mut().unwrap().selection.text = Some(selection);
+    prepare_context(&mut app);
+    assert!(app.spelling_context.is_none());
+}
+
+#[test]
+fn a_right_click_in_a_longer_selection_isnt_about_the_word_at_its_end() {
+    let (mut app, sid) = app_with(TEXT);
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 6})).unwrap();
+    prepare_context(&mut app);
+    assert!(app.spelling_context.is_none());
+    app.run("text.select", json!({"story": sid.0, "anchor": 4, "focus": 9})).unwrap();
+    prepare_context(&mut app);
+    assert_eq!(app.spelling_context.as_ref().map(|i| i.word.as_str()), Some("jumpd"), "exactly the word, as the review selects it");
+}
+
+/// In the icon column `window.panel` closes an open flyout: the review mustn't go on out of sight.
+#[test]
+fn checking_again_keeps_the_panel_open() {
+    let (mut app, _) = app_with(TEXT);
+    open(&mut app).unwrap();
+    assert!(crate::panel_docking::showing(&app, "spelling"));
+    open(&mut app).unwrap();
+    assert!(crate::panel_docking::showing(&app, "spelling"));
+    assert!(!review_marks(&app).is_empty());
+}
+
+#[test]
+fn the_panel_says_what_it_doesnt_check() {
+    let (mut app, sid) = app_with(TEXT);
+    assert!(AppHost(&mut app).notice().is_none_or(|n| !n.contains(NOTES_UNCHECKED)));
+    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 1, "cols": 1})).unwrap();
+    assert!(AppHost(&mut app).notice().is_some_and(|n| n.contains(NOTES_UNCHECKED)));
+}
+
 #[test]
 fn a_right_click_elsewhere_adds_nothing_to_the_menu() {
     let (mut app, sid) = app_with(TEXT);

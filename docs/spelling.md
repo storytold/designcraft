@@ -24,6 +24,10 @@ only when its text, its styles or the user dictionary change.
 Each run of text is checked in its own language; **[No Language]** text is not checked. A language with
 no dictionary installed is not checked either.
 
+Text in tables and footnotes and endnotes is not checked yet, and the panel says so in a document that
+has any. Generated text (a table of contents, an index, the endnote list) is skipped, as a correction
+there wouldn't last. Corrections aren't marked by Track Changes, as with Find/Change.
+
 ## Dictionaries
 
 | Language | Source |

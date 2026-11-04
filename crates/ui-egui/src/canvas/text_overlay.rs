@@ -386,7 +386,7 @@ pub(super) fn draw_spelling_marks(app: &DesignApp, ctx: &egui::Context, painter:
     }
     let preferred = crate::theme::Tokens::get(ctx).accent;
     for story in doc.stories.values() {
-        let marks: Vec<(std::ops::Range<usize>, Color32)> = if let Some(found) = review.get(&story.id.0) {
+        let mut marks: Vec<(std::ops::Range<usize>, Color32)> = if let Some(found) = review.get(&story.id.0) {
             found.iter().map(|(r, kind)| (r.clone(), if *kind == craft_proof_ui::IssueKind::Spelling { SPELLING_MARK } else { preferred })).collect()
         } else if app.ui.dynamic_spelling {
             dynamic_misspellings(ctx, doc, story).iter().map(|r| (r.clone(), SPELLING_MARK)).collect()
@@ -396,12 +396,21 @@ pub(super) fn draw_spelling_marks(app: &DesignApp, ctx: &egui::Context, painter:
         if marks.is_empty() {
             continue;
         }
+        marks.sort_by_key(|(r, _)| r.start);
         let cs = app.session.cache.get(doc, story.id, None);
         for ft in &cs.frames {
             let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            // This runs every frame, and a book has many: only what is on screen.
+            if !painter.clip_rect().intersects(xf.rect(a.transform_rect_bbox(it.bounds()))) {
+                continue;
+            }
             let m = a * doc.text_xf(it);
+            // Lines and marks both run in text order.
+            let mut next = 0;
             for l in &ft.lines {
-                for (r, color) in marks.iter().filter(|(r, _)| r.start < l.range.end && r.end > l.range.start) {
+                next += marks.get(next..).unwrap_or_default().iter().take_while(|(r, _)| r.end <= l.range.start).count();
+                let on_line = marks.get(next..).unwrap_or_default().iter().take_while(|(r, _)| r.start < l.range.end);
+                for (r, color) in on_line.filter(|(r, _)| r.end > l.range.start) {
                     let gs: Vec<_> = compose::selected_glyphs(l, r.start, r.end).into_iter().filter_map(|i| l.glyphs.get(i)).collect();
                     let (Some(x0), Some(x1)) = (gs.iter().map(|g| g.x).reduce(f64::min), gs.iter().map(|g| g.x + g.adv).reduce(f64::max)) else {
                         continue;

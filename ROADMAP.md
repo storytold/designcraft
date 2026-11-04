@@ -388,7 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
-- **2026-11-03 · PF1:** Spelling moves to the shared `craft-proof`, with the shared Spelling panel and right-click suggestions; Khmer is checked with its optional data. Dynamic Spelling proofs a story again only when its text, styles or the user dictionary change. See [spelling.md](docs/spelling.md). No readiness percentage change.
+- **2026-11-03 · PF1:** Spelling moves to the shared `craft-proof`, with the shared Spelling panel, underlines on the page while it shows and right-click suggestions; Khmer is checked with its optional data. Dynamic Spelling proofs a story again only when its text, styles or the user dictionary change. See [spelling.md](docs/spelling.md). No readiness percentage change.
 
 - **2026-11-02** · EPUB Export Options names a cover image file (PNG or JPEG, typed or chosen with Choose…) for the reflowable export; left empty, the first page stays the cover (#1934). No readiness percentage change.
 - **2026-11-02** · The Pen shows the segment a dragged smooth point shapes while it is dragged, and its rubber band curves out of a smooth point's direction line (#1438, first item). No readiness percentage change.

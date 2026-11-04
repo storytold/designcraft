@@ -91,12 +91,30 @@ pub fn specs() -> Vec<CommandSpec> {
             };
             let (a, b) = (offset("start")?, offset("end")?);
             let to = str_param(p, "to").unwrap_or("").to_string();
-            s.edit(|d, _| {
+            s.edit(|d, sel| {
+                if generated(d, sid) {
+                    return Err(bad("spelling.change", "generated text is rebuilt from its source: correct it there"));
+                }
                 let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
                 if a > b || st.text.get(a..b).is_none() {
                     return Err(bad("spelling.change", "range must address original UTF-8 character boundaries"));
                 }
                 st.replace(a..b, &to);
+                // The selection follows the text: a selected word stays selected at its new length.
+                let end = a + to.len();
+                let follow = |pos: usize| {
+                    if pos <= a {
+                        pos
+                    } else if pos >= b {
+                        pos - b + end
+                    } else {
+                        end
+                    }
+                };
+                if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+                    t.anchor = follow(t.anchor);
+                    t.focus = follow(t.focus);
+                }
                 Ok(Value::Null)
             })
         }),
@@ -350,7 +368,12 @@ fn paragraph_issues(
         .filter(|(r, _)| r.start < paragraph.end && r.end > paragraph.start)
         .map(|(r, l)| (r.start.max(paragraph.start) - paragraph.start..r.end.min(paragraph.end) - paragraph.start, *l))
         .collect();
-    let known = |word: &str| user.iter().any(|w| w == word || w.eq_ignore_ascii_case(word));
+    // As `spelling.addWord` stores a word: lowercase, whatever the script. Either apostrophe.
+    let fold = |word: &str| word.to_lowercase().replace('’', "'");
+    let known = |word: &str| {
+        let word = fold(word);
+        user.iter().any(|w| fold(w) == word)
+    };
     craft_proof::check_text(text, &local)
         .into_iter()
         .filter(|issue| issue.kind == IssueKind::Spelling || issue.lang == ProofLang::Km)
@@ -437,6 +460,9 @@ fn issue_at(s: &mut Session, p: &Value) -> Result<Value> {
     let at = p.get("at").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(command, "at must be a byte offset"))?;
     let doc = &s.doc()?.doc;
     let story = doc.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    if generated(doc, sid) {
+        return Ok(Value::Null);
+    }
     let (Some(before), Some(tail)) = (story.text.get(..at), story.text.get(at..)) else {
         return Err(bad(command, "at must be on a UTF-8 character boundary inside the story"));
     };
@@ -460,13 +486,18 @@ fn suggestions_for(issue: &mut ProofIssue, word: &str) -> Vec<String> {
     }
 }
 
+/// Text rebuilt from its source (endnotes, a table of contents, an index): an edit here wouldn't last.
+fn generated(d: &designcraft_doc::Document, sid: StoryId) -> bool {
+    d.endnote_story == Some(sid) || d.toc.as_ref().is_some_and(|t| t.story == sid) || d.index.as_ref().is_some_and(|i| i.story == sid)
+}
+
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let d = &st.doc;
     let want_sugg = p.get("suggestions").and_then(Value::as_bool).unwrap_or(true);
     let stories: Vec<StoryId> = match p.get("story").and_then(Value::as_u64) {
         Some(id) => vec![StoryId(id)],
-        None => d.stories.keys().copied().collect(),
+        None => d.stories.keys().copied().filter(|sid| !generated(d, *sid)).collect(),
     };
     let mut out = Vec::new();
     for sid in stories {
@@ -479,6 +510,57 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_with(text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 400, 200], "content": "text", "text": text})).unwrap();
+        (s, frame["story"].as_u64().unwrap())
+    }
+
+    /// `spelling.addWord` lowers the case in any script, and a word is typed with either apostrophe.
+    #[test]
+    fn the_user_dictionary_holds_for_any_case_and_apostrophe() {
+        let (mut s, _) = session_with("Zqémile. Zqdon’t.");
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap().as_array().unwrap().len(), 2);
+        s.execute("spelling.addWord", &json!({"word": "Zqémile"})).unwrap();
+        s.execute("spelling.addWord", &json!({"word": "zqdon't"})).unwrap();
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn a_change_keeps_the_selection_with_the_text() {
+        let (mut s, story) = session_with("ete and more");
+        let selection = |s: &Session| {
+            let t = s.doc().unwrap().selection.text.unwrap();
+            (t.anchor, t.focus)
+        };
+        let change = |s: &mut Session, to: &str| s.execute("spelling.change", &json!({"story": story, "start": 0, "end": 3, "to": to})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        change(&mut s, "été");
+        assert_eq!(selection(&s), (5, 5), "a caret inside the word lands after it, on a character boundary");
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 3})).unwrap();
+        change(&mut s, "an");
+        assert_eq!(selection(&s), (0, 2), "a selected word stays selected, reaching no further");
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 8, "focus": 12})).unwrap();
+        change(&mut s, "an");
+        assert_eq!(selection(&s), (7, 11), "later text keeps its selection");
+    }
+
+    /// The endnote list is rebuilt after every edit: a correction there would report success and vanish.
+    #[test]
+    fn generated_text_is_left_out_of_the_review() {
+        let (mut s, story) = session_with("Plain.");
+        s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "A zqwrong endnote."})).unwrap();
+        let list = s.doc().unwrap().doc.endnote_story.expect("the endnote list").0;
+        assert!(s.doc().unwrap().doc.story(StoryId(list)).unwrap().text.contains("zqwrong"));
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap(), json!([]));
+        assert_eq!(s.execute("spelling.at", &json!({"story": list, "at": 5})).unwrap(), Value::Null);
+        assert!(s.execute("spelling.change", &json!({"story": list, "start": 0, "end": 1, "to": "x"})).is_err());
+    }
 
     #[test]
     fn known_words_and_suggestions() {

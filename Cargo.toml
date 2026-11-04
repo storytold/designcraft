@@ -12,11 +12,11 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared Khmer segmentation and proofreading; data is an explicit, hash-verified build input.
-craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "2322f68f2e24bebb6e89e8333de3bbb7d02d1704", version = "=0.1.0" }
+craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "f4875b2f30697d56bfdc94494c3b33d2bb0f75ca", version = "=0.1.0" }
 # Shared proofing: spelling, suggestions and Khmer preferred forms for each language's dictionary.
-craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "2322f68f2e24bebb6e89e8333de3bbb7d02d1704", version = "=0.1.0" }
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "f4875b2f30697d56bfdc94494c3b33d2bb0f75ca", version = "=0.1.0" }
 # The shared spelling review: the Spelling panel and its right-click section.
-craft-proof-ui = { git = "https://github.com/storytold/craft-libs", rev = "1dbdcdc1b2fb000b7407c031018287031cc927d3", version = "=0.1.0" }
+craft-proof-ui = { git = "https://github.com/storytold/craft-libs", rev = "12c2eb7e9db0bc4215ff034f7ad53ea83cd35b39", version = "=0.1.0" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", default-features = false }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.

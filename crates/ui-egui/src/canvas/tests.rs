@@ -3021,6 +3021,40 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     assert_eq!(current_page(h.state()), Some(1));
 }
 
+/// A review of a book goes to words on other pages.
+#[test]
+fn a_review_brings_its_word_into_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text", "text": "The jumpd fox."})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(4);
+    let app = h.state_mut();
+    let rect = app.canvas_rect.unwrap();
+    app.view_mut().unwrap().origin = Point::new(-9000.0, -9000.0);
+    let far = app.view().unwrap().origin;
+    crate::panels::spelling::open(app).unwrap();
+    let view = app.view().unwrap();
+    assert_ne!(view.origin, far);
+    let st = app.session.doc().unwrap();
+    let selection = st.selection.text.unwrap();
+    let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+    let cs = app.session.cache.get(&st.doc, selection.story, None);
+    let (a, _) = item_canvas_xf(&st.doc, &layout, cs.frames[0].frame).unwrap();
+    let frame = Xf::new(rect, view).rect(a.transform_rect_bbox(st.doc.item(cs.frames[0].frame).unwrap().bounds()));
+    assert!(rect.intersects(frame), "{frame:?} in {rect:?}");
+    let at = view.origin;
+    crate::panels::spelling::action(app, "check", None).unwrap();
+    assert_eq!(app.view().unwrap().origin, at, "a word in view leaves the view alone");
+}
+
 /// Red squiggles the canvas draws, drawn above the selection a review makes of its word.
 #[test]
 fn a_review_underlines_its_issues_on_the_canvas() {

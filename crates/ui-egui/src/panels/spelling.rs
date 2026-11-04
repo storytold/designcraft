@@ -10,6 +10,12 @@ use crate::{DesignApp, i18n::tr, theme::Tokens};
 /// The underline of a misspelled word, in the panel and on the canvas.
 pub(crate) const SPELLING_MARK: egui::Color32 = egui::Color32::from_rgb(230, 30, 30);
 
+const KHMER_UNCHECKED: &str = "Khmer data is not included. Khmer text has not been checked.";
+const NOTES_UNCHECKED: &str = "Text in tables and notes has not been checked.";
+/// The notices' strings, for the catalogs' report.
+#[cfg(test)]
+pub(crate) const STRINGS: &[&str] = &[KHMER_UNCHECKED, NOTES_UNCHECKED];
+
 /// The session as the review sees it.
 struct AppHost<'a>(&'a mut DesignApp);
 
@@ -55,6 +61,7 @@ impl Host for AppHost<'_> {
 
     fn reveal(&mut self, issue: &Issue) {
         let _ = self.0.run("text.select", json!({"story": issue.story, "anchor": issue.start, "focus": issue.end}));
+        crate::canvas::reveal_text(self.0, designcraft_doc::StoryId(issue.story), issue.start, issue.end);
     }
 
     fn change(&mut self, issue: &Issue, to: &str) -> Result<(), String> {
@@ -67,9 +74,17 @@ impl Host for AppHost<'_> {
 
     fn notice(&self) -> Option<String> {
         let st = self.0.session.active()?;
-        let unchecked = !designcraft_engine::cmd::spelling::khmer_available()
-            && st.doc.stories.values().any(|s| designcraft_engine::cmd::spelling::has_khmer(&s.text));
-        unchecked.then(|| tr(&self.0.ui.language, "Khmer data is not included. Khmer text has not been checked.").to_owned())
+        let lang = &self.0.ui.language;
+        let mut notices = Vec::new();
+        if !designcraft_engine::cmd::spelling::khmer_available()
+            && st.doc.stories.values().any(|s| designcraft_engine::cmd::spelling::has_khmer(&s.text))
+        {
+            notices.push(tr(lang, KHMER_UNCHECKED));
+        }
+        if st.doc.stories.values().any(|s| !s.tables.is_empty() || !s.notes.is_empty() || !s.endnotes.is_empty()) {
+            notices.push(tr(lang, NOTES_UNCHECKED));
+        }
+        (!notices.is_empty()).then(|| notices.join(" "))
     }
 }
 
@@ -125,7 +140,10 @@ pub(crate) fn open(app: &mut DesignApp) -> Result<Value, String> {
     if app.session.active().is_none() {
         return Err("no document open".into());
     }
-    app.run("window.panel", json!({"panel": "spelling"}))?;
+    // `window.panel` closes a flyout that is already open.
+    if !crate::panel_docking::showing(app, "spelling") {
+        app.run("window.panel", json!({"panel": "spelling"}))?;
+    }
     let mut review = Review::default();
     review.start(&mut AppHost(app));
     let status = status(&review);
@@ -172,8 +190,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 pub(crate) fn prepare_context(app: &mut DesignApp) {
     app.spelling_context = None;
     let Some(text) = app.session.active().and_then(|st| st.selection.text) else { return };
+    // A cell's offsets are into its own story, which isn't checked.
+    if text.cell.is_some() {
+        return;
+    }
     if let Ok(found) = app.run("spelling.at", json!({"story": text.story.0, "at": text.focus})) {
-        app.spelling_context = issue_of(&found);
+        // A longer selection isn't about the word at its end. The review selects exactly its word.
+        app.spelling_context = issue_of(&found).filter(|issue| text.is_caret() || text.range() == (issue.start..issue.end));
     }
 }
 

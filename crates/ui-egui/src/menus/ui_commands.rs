@@ -12,12 +12,7 @@ pub fn shown(app: &DesignApp, id: &str) -> bool {
 
 /// UI commands: (id, label, shortcut, params).
 pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
-    (
-        "app.checkSpelling",
-        "Check Spelling…",
-        None,
-        "{} — opens the Spelling panel and checks the document; → {issue, remaining, skipped, to, message, khmerPresent, khmerUnchecked}",
-    ),
+    ("app.checkSpelling", "Check Spelling…", None, "{} — opens the Spelling panel and checks the document; → {issue, remaining, to, message}"),
     (
         "app.spelling",
         "Spelling Review",
