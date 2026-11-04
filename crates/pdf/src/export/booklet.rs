@@ -98,6 +98,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         inks: crate::inks::ink_set(doc),
         doc,
         cache,
+        composed: HashMap::new(),
         opts: &pdf_opts,
         clip: Rect::ZERO,
         warnings,

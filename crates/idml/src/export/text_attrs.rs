@@ -1,5 +1,33 @@
 use super::common::{bool_s, p, pct};
-use super::*;
+use super::{CHAR_BUILTINS, CharAttrs, El, Ex, ListType, ParaAttrs, SpanColumns, escape_id, names, num, st};
+
+// Optional paragraph values are omitted when inherited from the style.
+macro_rules! n {
+    ($a:expr, $el:expr, $f:ident, $k:literal) => {
+        if let Some(v) = $a.$f {
+            $el.set($k, num(v as f64));
+        }
+    };
+    ($a:expr, $el:expr, $f:ident, $k:literal, pct) => {
+        if let Some(v) = $a.$f {
+            $el.set($k, pct(v as f64));
+        }
+    };
+}
+macro_rules! b {
+    ($a:expr, $el:expr, $f:ident, $k:literal) => {
+        if let Some(v) = $a.$f {
+            $el.set($k, bool_s(v));
+        }
+    };
+}
+
+/// The Overprint switches of a paragraph's shading, border and border gap.
+fn para_box_overprints(el: &mut El, a: &ParaAttrs) {
+    b!(a, el, shading_overprint, "ParagraphShadingOverprint");
+    b!(a, el, border_overprint, "ParagraphBorderOverprint");
+    b!(a, el, border_gap_overprint, "ParagraphBorderGapOverprint");
+}
 
 impl<'a> Ex<'a> {
     pub(super) fn char_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
@@ -21,6 +49,93 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.character_alignment {
             el.set("CharacterAlignment", crate::cjk::alignment_out(v));
         }
+        self.char_font_attrs(el, props, a);
+        if let Some(v) = &a.fill {
+            el.set("FillColor", self.sw(v));
+        }
+        if let Some(v) = a.fill_tint {
+            el.set("FillTint", pct(v as f64));
+        }
+        if let Some(v) = &a.stroke {
+            el.set("StrokeColor", self.sw(v));
+        }
+        if let Some(v) = a.stroke_tint {
+            el.set("StrokeTint", pct(v as f64));
+        }
+        if let Some(v) = a.stroke_weight {
+            el.set("StrokeWeight", num(v));
+        }
+        if let Some(v) = a.stroke_behind_fill {
+            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
+        }
+        if let Some(v) = a.capitalization {
+            el.set("Capitalization", names::caps_out(v));
+        }
+        if let Some(v) = a.position {
+            el.set("Position", names::position_out(v));
+        }
+        if let Some(v) = a.underline {
+            el.set("Underline", bool_s(v));
+        }
+        if let Some(v) = a.strikethrough {
+            el.set("StrikeThru", bool_s(v));
+        }
+        if let Some(v) = a.ligatures {
+            el.set("Ligatures", bool_s(v));
+        }
+        self.char_decoration_attrs(el, a);
+        if let Some(list) = &a.otf_features {
+            for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
+                el.set(attr, bool_s(designcraft_doc::otf::is_on(list, tag)));
+            }
+            let fig = designcraft_doc::otf::figures(list);
+            if let Some(f) = designcraft_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
+                el.set("OTFFigureStyle", f.3);
+            }
+            el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
+        }
+        if let Some(v) = &a.glyph_form {
+            el.set("GlyphForm", v);
+        }
+        if let Some(v) = a.no_break {
+            el.set("NoBreak", bool_s(v));
+        }
+        self.char_arabic_attrs(el, a);
+        self.char_cjk_layout_attrs(el, props, a);
+        self.cjk_settings_chars(el, props, a);
+        if let Some(list) = &a.conditions {
+            el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
+        }
+        if let Some(v) = &a.language {
+            el.set("AppliedLanguage", format!("$ID/{v}"));
+        }
+    }
+
+    fn char_arabic_attrs(&self, el: &mut El, a: &CharAttrs) {
+        if let Some(v) = a.digits {
+            el.set("DigitsType", names::digits_out(v));
+        }
+        if let Some(v) = a.character_direction {
+            el.set("CharacterDirection", crate::arabic::direction_out(v));
+        }
+        if let Some(v) = a.allow_kashidas {
+            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
+        }
+        if let Some(v) = a.diacritic_position {
+            el.set("DiacriticPosition", crate::arabic::diacritic_out(v));
+        }
+        if let Some(v) = a.diacritic_x_offset {
+            el.set("XOffsetDiacritic", num(v));
+        }
+        if let Some(v) = a.diacritic_y_offset {
+            el.set("YOffsetDiacritic", num(v));
+        }
+        if let Some(v) = &a.positional_form {
+            el.set("PositionalForm", v);
+        }
+    }
+
+    fn char_font_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(f) = &a.font_family {
             if let Some(composite) = self.d.styles.composite_font(f) {
                 props.push(p("AppliedFont", "object", format!("CompositeFont/{}", escape_id(&composite.name))));
@@ -63,39 +178,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.skew {
             el.set("Skew", num(v));
         }
-        if let Some(v) = &a.fill {
-            el.set("FillColor", self.sw(v));
-        }
-        if let Some(v) = a.fill_tint {
-            el.set("FillTint", pct(v as f64));
-        }
-        if let Some(v) = &a.stroke {
-            el.set("StrokeColor", self.sw(v));
-        }
-        if let Some(v) = a.stroke_tint {
-            el.set("StrokeTint", pct(v as f64));
-        }
-        if let Some(v) = a.stroke_weight {
-            el.set("StrokeWeight", num(v));
-        }
-        if let Some(v) = a.stroke_behind_fill {
-            el.set("StrokeAlignment", if v { "OutsideAlignment" } else { "CenterAlignment" });
-        }
-        if let Some(v) = a.capitalization {
-            el.set("Capitalization", names::caps_out(v));
-        }
-        if let Some(v) = a.position {
-            el.set("Position", names::position_out(v));
-        }
-        if let Some(v) = a.underline {
-            el.set("Underline", bool_s(v));
-        }
-        if let Some(v) = a.strikethrough {
-            el.set("StrikeThru", bool_s(v));
-        }
-        if let Some(v) = a.ligatures {
-            el.set("Ligatures", bool_s(v));
-        }
+    }
+
+    fn char_decoration_attrs(&self, el: &mut El, a: &CharAttrs) {
         for (k, w, o, c, t) in [
             ("Underline", a.underline_weight, a.underline_offset, &a.underline_color, a.underline_tint),
             ("StrikeThru", a.strikethrough_weight, a.strikethrough_offset, &a.strikethrough_color, a.strikethrough_tint),
@@ -113,43 +198,9 @@ impl<'a> Ex<'a> {
                 el.set(&format!("{k}Tint"), num(t as f64 * 100.0));
             }
         }
-        if let Some(list) = &a.otf_features {
-            for (tag, _, attr) in designcraft_doc::otf::TOGGLES {
-                el.set(attr, bool_s(designcraft_doc::otf::is_on(list, tag)));
-            }
-            let fig = designcraft_doc::otf::figures(list);
-            if let Some(f) = designcraft_doc::otf::FIGURES.iter().find(|f| f.0 == fig) {
-                el.set("OTFFigureStyle", f.3);
-            }
-            el.set("OTFStylisticSets", designcraft_doc::otf::stylistic_sets(list).to_string());
-        }
-        if let Some(v) = &a.glyph_form {
-            el.set("GlyphForm", v);
-        }
-        if let Some(v) = a.no_break {
-            el.set("NoBreak", bool_s(v));
-        }
-        if let Some(v) = a.digits {
-            el.set("DigitsType", names::digits_out(v));
-        }
-        if let Some(v) = a.character_direction {
-            el.set("CharacterDirection", crate::arabic::direction_out(v));
-        }
-        if let Some(v) = a.allow_kashidas {
-            el.set("Kashidas", if v { "DefaultKashidas" } else { "KashidasOff" });
-        }
-        if let Some(v) = a.diacritic_position {
-            el.set("DiacriticPosition", crate::arabic::diacritic_out(v));
-        }
-        if let Some(v) = a.diacritic_x_offset {
-            el.set("XOffsetDiacritic", num(v));
-        }
-        if let Some(v) = a.diacritic_y_offset {
-            el.set("YOffsetDiacritic", num(v));
-        }
-        if let Some(v) = &a.positional_form {
-            el.set("PositionalForm", v);
-        }
+    }
+
+    fn char_cjk_layout_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &CharAttrs) {
         if let Some(r) = a.ruby.as_ref() {
             el.set("RubyFlag", if r.is_empty() { "0" } else { "1" });
             el.set("RubyString", r.as_str());
@@ -196,66 +247,9 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.warichu_chars_after_break {
             el.set("WarichuCharsAfterBreak", v);
         }
-        self.cjk_settings_chars(el, props, a);
-        if let Some(list) = &a.conditions {
-            el.set("AppliedConditions", list.iter().map(|c| format!("Condition/{}", escape_id(c))).collect::<Vec<_>>().join(" "));
-        }
-        if let Some(v) = &a.language {
-            el.set("AppliedLanguage", format!("$ID/{v}"));
-        }
     }
 
-    /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
-    /// root style).
-    pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
-        if let Some(v) = &a.mojikumi {
-            props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
-        }
-        if let Some(v) = &a.kinsoku_type {
-            el.set("KinsokuType", v);
-        }
-        if let Some(v) = a.kinsoku_hang {
-            el.set(
-                "KinsokuHangType",
-                match v {
-                    designcraft_doc::cjk::KinsokuHang::None => "None",
-                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
-                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
-                },
-            );
-        }
-        if let Some(v) = a.bunri_kinshi {
-            el.set("BunriKinshi", bool_s(v));
-        }
-        if let Some(v) = a.rensuuji {
-            el.set("Rensuuji", bool_s(v));
-        }
-        if let Some(v) = a.treat_ideographic_space_as_space {
-            el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
-        }
-        cjk_settings_para(el, a);
-        if let Some(Some(k)) = &a.kinsoku {
-            props.push(p(
-                "KinsokuSet",
-                if k.name.is_empty() { "enumeration" } else { "object" },
-                if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
-            ));
-        }
-        if let Some(n) = &a.list_name {
-            el.set(
-                "AppliedNumberingList",
-                if n.is_empty() { "NumberingList/$ID/[Default]".to_string() } else { format!("NumberingList/{}", escape_id(n)) },
-            );
-        }
-        if let Some(v) = a.start_at {
-            match v {
-                Some(n) => {
-                    el.set("NumberingContinue", "false");
-                    el.set("NumberingStartAt", n);
-                }
-                None => el.set("NumberingContinue", "true"),
-            }
-        }
+    fn para_nested_styles(&self, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
         // Nested and GREP styles: property lists of records. The drop cap's character style is the
         // nested style list's leading "through 1 Dropcap" entry (IDML has no attribute for it): a
         // drop cap style set here (`[None]` included) restyles that entry, and a real one is
@@ -319,25 +313,9 @@ impl<'a> Ex<'a> {
             }
             props.push(l);
         }
-        macro_rules! n {
-            ($f:ident, $k:literal) => {
-                if let Some(v) = a.$f {
-                    el.set($k, num(v as f64));
-                }
-            };
-            ($f:ident, $k:literal, pct) => {
-                if let Some(v) = a.$f {
-                    el.set($k, pct(v as f64));
-                }
-            };
-        }
-        macro_rules! b {
-            ($f:ident, $k:literal) => {
-                if let Some(v) = a.$f {
-                    el.set($k, bool_s(v));
-                }
-            };
-        }
+    }
+
+    fn para_alignment_attrs(&self, el: &mut El, a: &ParaAttrs, parent: Option<&str>) {
         if let Some(v) = a.align {
             el.set("Justification", names::align_out(v));
         }
@@ -356,20 +334,20 @@ impl<'a> Ex<'a> {
         if let Some(Some(v)) = a.paragraph_kashida_width {
             el.set("ParagraphKashidaWidth", num(v));
         }
-        n!(left_indent, "LeftIndent");
-        n!(right_indent, "RightIndent");
-        n!(first_line_indent, "FirstLineIndent");
-        n!(last_line_indent, "LastLineIndent");
-        n!(space_before, "SpaceBefore");
-        n!(space_after, "SpaceAfter");
+        n!(a, el, left_indent, "LeftIndent");
+        n!(a, el, right_indent, "RightIndent");
+        n!(a, el, first_line_indent, "FirstLineIndent");
+        n!(a, el, last_line_indent, "LastLineIndent");
+        n!(a, el, space_before, "SpaceBefore");
+        n!(a, el, space_after, "SpaceAfter");
         match a.same_para_style_spacing {
             Some(Some(v)) => el.set("SameParaStyleSpacing", num(v)),
             // Explicit Ignore: must be written so it still overrides a based-on style's value.
             Some(None) => el.set("SameParaStyleSpacing", "Nothing"),
             None => {}
         }
-        n!(drop_cap_lines, "DropCapLines");
-        n!(drop_cap_chars, "DropCapCharacters");
+        n!(a, el, drop_cap_lines, "DropCapLines");
+        n!(a, el, drop_cap_chars, "DropCapCharacters");
         if a.drop_cap_align_left.is_some() || a.drop_cap_scale_descenders.is_some() {
             let d = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
             let bits = u32::from(a.drop_cap_align_left.unwrap_or(d.drop_cap_align_left))
@@ -403,40 +381,46 @@ impl<'a> Ex<'a> {
                 },
             );
         }
-        b!(hyphenate, "Hyphenation");
-        n!(hyph_min_word, "HyphenateWordsLongerThan");
-        n!(hyph_after_first, "HyphenateAfterFirst");
-        n!(hyph_before_last, "HyphenateBeforeLast");
-        n!(hyph_limit, "HyphenateLadderLimit");
-        n!(hyph_zone, "HyphenationZone");
-        b!(hyph_capitalized, "HyphenateCapitalizedWords");
-        b!(hyph_last_word, "HyphenateLastWord");
-        b!(hyph_across_column, "HyphenateAcrossColumns");
+    }
+
+    fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
+        b!(a, el, hyphenate, "Hyphenation");
+        n!(a, el, hyph_min_word, "HyphenateWordsLongerThan");
+        n!(a, el, hyph_after_first, "HyphenateAfterFirst");
+        n!(a, el, hyph_before_last, "HyphenateBeforeLast");
+        n!(a, el, hyph_limit, "HyphenateLadderLimit");
+        n!(a, el, hyph_zone, "HyphenationZone");
+        b!(a, el, hyph_capitalized, "HyphenateCapitalizedWords");
+        b!(a, el, hyph_last_word, "HyphenateLastWord");
+        b!(a, el, hyph_across_column, "HyphenateAcrossColumns");
         if let Some(v) = a.hyph_weight {
             el.set("HyphenWeight", num((v * 10.0).round()));
         }
-        n!(word_space_min, "MinimumWordSpacing", pct);
-        n!(word_space_desired, "DesiredWordSpacing", pct);
-        n!(word_space_max, "MaximumWordSpacing", pct);
-        n!(letter_space_min, "MinimumLetterSpacing", pct);
-        n!(letter_space_desired, "DesiredLetterSpacing", pct);
-        n!(letter_space_max, "MaximumLetterSpacing", pct);
-        n!(glyph_scale_min, "MinimumGlyphScaling", pct);
-        n!(glyph_scale_desired, "DesiredGlyphScaling", pct);
-        n!(glyph_scale_max, "MaximumGlyphScaling", pct);
-        n!(auto_leading, "AutoLeading", pct);
+        n!(a, el, word_space_min, "MinimumWordSpacing", pct);
+        n!(a, el, word_space_desired, "DesiredWordSpacing", pct);
+        n!(a, el, word_space_max, "MaximumWordSpacing", pct);
+        n!(a, el, letter_space_min, "MinimumLetterSpacing", pct);
+        n!(a, el, letter_space_desired, "DesiredLetterSpacing", pct);
+        n!(a, el, letter_space_max, "MaximumLetterSpacing", pct);
+        n!(a, el, glyph_scale_min, "MinimumGlyphScaling", pct);
+        n!(a, el, glyph_scale_desired, "DesiredGlyphScaling", pct);
+        n!(a, el, glyph_scale_max, "MaximumGlyphScaling", pct);
+        n!(a, el, auto_leading, "AutoLeading", pct);
         if let Some(v) = a.single_word_justify {
             el.set("SingleWordJustification", names::align_out(v));
         }
-        n!(keep_with_next, "KeepWithNext");
-        b!(keep_lines_together, "KeepLinesTogether");
-        b!(ignore_optical_margin, "IgnoreEdgeAlignment");
-        b!(keep_all_lines, "KeepAllLinesTogether");
-        n!(keep_first, "KeepFirstLines");
-        n!(keep_last, "KeepLastLines");
+        n!(a, el, keep_with_next, "KeepWithNext");
+        b!(a, el, keep_lines_together, "KeepLinesTogether");
+        b!(a, el, ignore_optical_margin, "IgnoreEdgeAlignment");
+        b!(a, el, keep_all_lines, "KeepAllLinesTogether");
+        n!(a, el, keep_first, "KeepFirstLines");
+        n!(a, el, keep_last, "KeepLastLines");
         if let Some(v) = a.start_paragraph {
             el.set("StartParagraph", names::start_para_out(v));
         }
+    }
+
+    fn para_columns_and_list_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
         if let Some(sc) = a.span_columns {
             match sc {
                 SpanColumns::Single => el.set("SpanColumnType", "SingleColumn"),
@@ -450,8 +434,8 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        n!(split_inside_gutter, "SplitColumnInsideGutter");
-        n!(split_outside_gutter, "SplitColumnOutsideGutter");
+        n!(a, el, split_inside_gutter, "SplitColumnInsideGutter");
+        n!(a, el, split_outside_gutter, "SplitColumnOutsideGutter");
         if let Some(r) = &a.rule_above {
             self.rule(el, props, "RuleAbove", r);
         }
@@ -497,22 +481,38 @@ impl<'a> Ex<'a> {
         if let Some(b) = a.balance_ragged {
             props.push(p("BalanceRaggedLines", "enumeration", if b { "FullyBalanced" } else { "NoBalancing" }));
         }
-        b!(shading_on, "ParagraphShadingOn");
+    }
+
+    fn para_box_corners(el: &mut El, a: &ParaAttrs) {
+        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
+        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
+            if let Some(cs) = corners {
+                for (c, k) in cs.iter().zip(CORNERS) {
+                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
+                }
+            }
+        }
+    }
+
+    fn para_box_attrs(&self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+        b!(a, el, shading_on, "ParagraphShadingOn");
         if let Some(c) = &a.shading_color {
             props.push(p("ParagraphShadingColor", "object", self.sw(c)));
         }
-        n!(shading_tint, "ParagraphShadingTint", pct);
+        n!(a, el, shading_tint, "ParagraphShadingTint", pct);
+        para_box_overprints(el, a);
         const SIDES: [&str; 4] = ["Top", "Left", "Bottom", "Right"];
         if let Some(o) = a.shading_offsets {
             for (i, side) in SIDES.iter().enumerate() {
                 el.set(&format!("ParagraphShading{side}Offset"), num(o[i]));
             }
         }
-        b!(border_on, "ParagraphBorderOn");
+        b!(a, el, border_on, "ParagraphBorderOn");
         if let Some(c) = &a.border_color {
             props.push(p("ParagraphBorderColor", "object", self.sw(c)));
         }
-        n!(border_tint, "ParagraphBorderTint", pct);
+        n!(a, el, border_tint, "ParagraphBorderTint", pct);
         if let Some(w) = a.border_weights {
             for (i, side) in SIDES.iter().enumerate() {
                 el.set(&format!("ParagraphBorder{side}LineWeight"), num(w[i]));
@@ -532,15 +532,7 @@ impl<'a> Ex<'a> {
         if let Some(j) = a.border_join {
             el.set("ParagraphBorderStrokeEndJoin", names::join_out(j));
         }
-        const CORNERS: [&str; 4] = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"];
-        for (prefix, corners) in [("ParagraphBorder", a.border_corners), ("ParagraphShading", a.shading_corners)] {
-            if let Some(cs) = corners {
-                for (c, k) in cs.iter().zip(CORNERS) {
-                    el.set(&format!("{prefix}{k}CornerOption"), names::corner_out(c.shape));
-                    el.set(&format!("{prefix}{k}CornerRadius"), num(c.size));
-                }
-            }
-        }
+        Self::para_box_corners(el, a);
         if let Some(w) = a.border_width {
             el.set("ParagraphBorderWidth", names::box_width_out(w));
         }
@@ -550,12 +542,12 @@ impl<'a> Ex<'a> {
         if let Some(b) = a.border_bottom {
             el.set("ParagraphBorderBottomOrigin", names::box_bottom_out(b));
         }
-        b!(border_display_if_splits, "ParagraphBorderDisplayIfSplits");
-        b!(border_merge, "MergeConsecutiveParaBorders");
+        b!(a, el, border_display_if_splits, "ParagraphBorderDisplayIfSplits");
+        b!(a, el, border_merge, "MergeConsecutiveParaBorders");
         if let Some(c) = &a.border_gap_color {
             props.push(p("ParagraphBorderGapColor", "object", self.sw(c)));
         }
-        n!(border_gap_tint, "ParagraphBorderGapTint", pct);
+        n!(a, el, border_gap_tint, "ParagraphBorderGapTint", pct);
         if let Some(w) = a.shading_width {
             el.set("ParagraphShadingWidth", names::box_width_out(w));
         }
@@ -565,11 +557,14 @@ impl<'a> Ex<'a> {
         if let Some(b) = a.shading_bottom {
             el.set("ParagraphShadingBottomOrigin", names::box_bottom_out(b));
         }
-        b!(shading_clip, "ParagraphShadingClipToFrame");
-        b!(shading_nonprinting, "ParagraphShadingSuppressPrinting");
-        n!(span_space_before, "SpanColumnMinSpaceBefore");
-        n!(span_space_after, "SpanColumnMinSpaceAfter");
-        n!(list_level, "NumberingLevel");
+        b!(a, el, shading_clip, "ParagraphShadingClipToFrame");
+        b!(a, el, shading_nonprinting, "ParagraphShadingSuppressPrinting");
+    }
+
+    fn para_list_attrs(&self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs) {
+        n!(a, el, span_space_before, "SpanColumnMinSpaceBefore");
+        n!(a, el, span_space_after, "SpanColumnMinSpaceAfter");
+        n!(a, el, list_level, "NumberingLevel");
         for (k, style) in [("BulletsCharacterStyle", &a.bullet_char_style), ("NumberingCharacterStyle", &a.number_char_style)] {
             if let Some(st) = style {
                 props.push(p(k, "object", names::style_self("CharacterStyle", CHAR_BUILTINS, st)));
@@ -581,7 +576,7 @@ impl<'a> Ex<'a> {
         if let Some(v) = a.number_align {
             el.set("NumberingAlignment", names::list_align_out(v));
         }
-        b!(restart_numbers, "NumberingApplyRestartPolicy");
+        b!(a, el, restart_numbers, "NumberingApplyRestartPolicy");
         if let Some(level) = a.restart_after_level {
             let (policy, level) = if level == 0 { ("AnyPreviousLevel", 0) } else { ("SpecificPreviousLevel", level) };
             props.push(
@@ -597,6 +592,65 @@ impl<'a> Ex<'a> {
         if let Some(f) = a.bullet_font_style.as_ref().filter(|f| !f.is_empty()) {
             props.push(p("BulletsFontStyle", "string", f.clone()));
         }
+    }
+
+    /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
+    /// root style).
+    pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
+        if let Some(v) = &a.mojikumi {
+            props.push(p("Mojikumi", if v.starts_with("MojikumiTable/") { "object" } else { "enumeration" }, v));
+        }
+        if let Some(v) = &a.kinsoku_type {
+            el.set("KinsokuType", v);
+        }
+        if let Some(v) = a.kinsoku_hang {
+            el.set(
+                "KinsokuHangType",
+                match v {
+                    designcraft_doc::cjk::KinsokuHang::None => "None",
+                    designcraft_doc::cjk::KinsokuHang::Regular => "KinsokuHangRegular",
+                    designcraft_doc::cjk::KinsokuHang::Force => "KinsokuHangForce",
+                },
+            );
+        }
+        if let Some(v) = a.bunri_kinshi {
+            el.set("BunriKinshi", bool_s(v));
+        }
+        if let Some(v) = a.rensuuji {
+            el.set("Rensuuji", bool_s(v));
+        }
+        if let Some(v) = a.treat_ideographic_space_as_space {
+            el.set("TreatIdeographicSpaceAsSpace", bool_s(v));
+        }
+        cjk_settings_para(el, a);
+        if let Some(Some(k)) = &a.kinsoku {
+            props.push(p(
+                "KinsokuSet",
+                if k.name.is_empty() { "enumeration" } else { "object" },
+                if k.name.is_empty() { "Nothing".into() } else { format!("KinsokuTable/{}", escape_id(&k.name)) },
+            ));
+        }
+        if let Some(n) = &a.list_name {
+            el.set(
+                "AppliedNumberingList",
+                if n.is_empty() { "NumberingList/$ID/[Default]".to_string() } else { format!("NumberingList/{}", escape_id(n)) },
+            );
+        }
+        if let Some(v) = a.start_at {
+            match v {
+                Some(n) => {
+                    el.set("NumberingContinue", "false");
+                    el.set("NumberingStartAt", n);
+                }
+                None => el.set("NumberingContinue", "true"),
+            }
+        }
+        self.para_nested_styles(props, a, parent);
+        self.para_alignment_attrs(el, a, parent);
+        self.para_flow_attrs(el, a);
+        self.para_columns_and_list_attrs(el, props, a);
+        self.para_box_attrs(el, props, a);
+        self.para_list_attrs(el, props, a);
     }
 }
 

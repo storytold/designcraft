@@ -1,6 +1,9 @@
-use super::object::swatch_menu;
+use super::object::{open_color_picker, swatch_menu};
 use super::typography::{para_field_min, show_typography_panel};
-use super::*;
+use super::{
+    Align, DesignApp, FIELD_H, NumField, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, icon_toggle, icons, json, link_label,
+    more_options, outline_button, place, pos2, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs, units, vec2, widgets,
+};
 
 // ---------------------------------------------------------------- Text
 
@@ -125,7 +128,11 @@ pub(super) fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, "T", crate::theme::semibold(12.0), tc);
         }
         let resp = ui.interact(chip, ui.scope_id().with(("tchip", k)), Sense::click()).on_hover_text(format!("{label}: {sw}"));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if k == 0 { "Text fill swatch" } else { "Text stroke swatch" }));
         swatch_menu(app, &resp, &doc, &sw, k != 0, false, true);
+        if resp.double_clicked() {
+            open_color_picker(app, &doc, &sw, k != 0, true);
+        }
         if k == 0 {
             crate::rtl::paint(
                 ui.painter(),
@@ -141,7 +148,7 @@ pub(super) fn text_appearance_section(app: &mut DesignApp, ui: &mut Ui) {
             }
             const WEIGHTS: &[f64] = &[0.0, 0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0];
             if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-                NumField::number("tsw", c["strokeWeight"].as_f64(), " pt", 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
+                NumField::points("tsw", c["strokeWeight"].as_f64(), 3).width(69.0).spinner().presets(WEIGHTS).range(0.0, 100.0).show(ui)
             }) {
                 let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
             }
@@ -179,7 +186,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
         egui::FontId::proportional(11.5),
         t.text,
     );
-    if let Some(f) = crate::panels::font_popup(app, &resp, &menu, &fam) {
+    if let Some(f) = crate::panels::font_popup(app, ui, &resp, &menu, &fam) {
         crate::panels::apply_font(app, &f);
     }
     ui.add_space(1.0);
@@ -197,7 +204,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     let lv = if auto { size.map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "font-size", t.icon);
     if let Some(v) = place(ui, sub(b, 24.0, 0.0, half - 24.0, FIELD_H), |ui| {
-        NumField::number("csize", size, " pt", 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
+        NumField::points("csize", size, 2).width(half - 24.0).spinner().presets(SIZES).range(0.1, 1296.0).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"size": v}}));
     }
@@ -207,7 +214,7 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     if let Some(v) = place(ui, sub(b, half + 34.0, 0.0, lw, FIELD_H), |ui| {
         let key = if auto { "cleadauto" } else { "clead" };
         // Auto leading is shown in parentheses, like "(14.4 pt)".
-        NumField::number(key, lshow, " pt", 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
+        NumField::points(key, lshow, 2).width(lw).spinner().presets(SIZES).range(0.0, 5000.0).parens(auto).show(ui)
     }) {
         let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
     }
@@ -477,8 +484,9 @@ pub(super) fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
+            // As InDesign's: the Bullets and Numbering dialog for the selected paragraphs.
             if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 66.0).clicked() {
-                show_panel(app, "paragraph");
+                let _ = app.run("app.bulletsNumberingDialog", json!({}));
             }
         });
     });

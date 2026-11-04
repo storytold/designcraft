@@ -32,7 +32,7 @@ fn render(d: &Document) -> Rendered {
     let mut r = Renderer::new();
     r.threads = 0;
     let opts = RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
-    r.render(d, &Cache::new(), &[Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }], 200, 240, Affine::IDENTITY, &opts)
+    r.render(d, &Cache::new(), &[Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }], (200, 240), Affine::IDENTITY, &opts)
 }
 
 fn grey(img: &Rendered, x: u32, y: u32) -> u8 {
