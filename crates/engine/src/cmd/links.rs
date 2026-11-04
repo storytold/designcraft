@@ -313,10 +313,15 @@ fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
     // One walk with the group transforms and the spread's first page carried along; a lookup of each
     // placement (`Document::find`, `page_of_item`) searched the whole document per placement.
     let mut out: Vec<Shown> = Vec::new();
+    let mut next_page = 0;
     for r in d.spread_refs() {
         let Some(sp) = d.spread(r) else { continue };
         let first = match r {
-            SpreadRef::Doc(si) => Some(d.first_page_of_spread(si)),
+            SpreadRef::Doc(_) => {
+                let f = next_page;
+                next_page += sp.pages.len();
+                Some(f)
+            }
             SpreadRef::Parent(_) => None,
         };
         fn graphics<'a>(
