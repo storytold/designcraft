@@ -333,3 +333,21 @@ fn a_check_of_an_older_revision_updates_nothing() {
     tick(&mut app, 0.0, Some(true));
     assert_eq!(pixels(&app, asset), Some((9, 4)), "updated from a check of this revision");
 }
+
+/// A check that found nothing modified but finished after the document changed keeps the request
+/// to update: the next check, which finds the file modified, updates it.
+#[test]
+fn a_stale_check_that_found_nothing_keeps_the_update_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(4)).unwrap();
+    let mut app = app();
+    let (_, asset) = place(&mut app, &file);
+    let st = app.session.active().unwrap();
+    let stale = Done { token: (st.uid, st.revision.wrapping_sub(1)), states: vec![(asset, LinkState::Ok)], update: true };
+    apply(&mut app, stale);
+    assert!(app.link_watch.again && app.link_watch.update, "checked again, to update");
+    std::fs::write(&file, png(9)).unwrap();
+    tick(&mut app, 0.0, Some(true));
+    assert_eq!(pixels(&app, asset), Some((9, 4)), "the request to update survived");
+}

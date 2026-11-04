@@ -141,6 +141,32 @@ fn edit_with_lists_the_hosts_applications_and_opens_the_file_in_the_one_chosen()
     assert!(same(&launched.borrow()[1].0, &file));
 }
 
+/// A graphic relinked after Edit Original opened its file isn't updated when that file is saved:
+/// the remembered edit is of a file it no longer links to, and updating would read the new one.
+#[test]
+fn a_relinked_graphic_is_not_updated_from_the_file_edited_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = (dir.path().join("first.png"), dir.path().join("second.png"));
+    std::fs::write(&first, png(4)).unwrap();
+    std::fs::write(&second, png(5)).unwrap();
+    let (mut app, _) = app();
+    let (linked, _) = place(&mut app, &first);
+    select(&mut app, &[linked]);
+    app.run(EDIT_ORIGINAL, json!({})).unwrap();
+    let row = |app: &mut DesignApp| app.session.execute("links.list", &json!({})).unwrap()[0].clone();
+    let asset = row(&mut app)["asset"].as_u64().unwrap();
+    app.run("links.relink", json!({"asset": asset, "path": second.to_string_lossy()})).unwrap();
+    // Both files change: the one edited before, and the one now linked.
+    std::fs::write(&first, png(9)).unwrap();
+    std::fs::write(&second, png(7)).unwrap();
+    assert_eq!(refresh_edited(&mut app), 0, "nothing updated");
+    assert_eq!(row(&mut app)["pixels"], json!([5, 4]), "the new link's change isn't pulled in");
+    assert_eq!(row(&mut app)["status"], "modified", "left to the Links panel");
+    // And the edit is forgotten: a later save of the old file changes nothing either.
+    std::fs::write(&first, png(11)).unwrap();
+    assert_eq!(refresh_edited(&mut app), 0);
+}
+
 /// After the other application saves, coming back to the window updates the link.
 #[test]
 fn an_edited_file_updates_its_link_when_the_window_is_back_in_front() {

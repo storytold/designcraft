@@ -261,16 +261,34 @@ pub(crate) fn refresh_edited(app: &mut DesignApp) -> u64 {
         if now.is_none() || now == e.stamp {
             continue;
         }
+        // Relinked since it was opened: the file edited is no longer this graphic's, and
+        // updating would read the new link instead. Forgotten below.
+        if !still_linked(app, e) {
+            e.stamp = None;
+            e.path = PathBuf::new();
+            continue;
+        }
         e.stamp = now;
         match app.run("links.update", json!({ "asset": e.asset })) {
             Ok(r) => updated += r["updated"].as_u64().unwrap_or(0),
             Err(err) => app.status(err),
         }
     }
+    edited.retain(|e| !e.path.as_os_str().is_empty());
     // Links opened meanwhile (from the update's status, never) come after the ones checked.
     edited.append(&mut app.edit_original.edited);
     app.edit_original.edited = edited;
     updated
+}
+
+/// Whether the graphic of `e` still links to the file that was opened for editing. A link that
+/// can't be resolved now (the file briefly gone while an editor saves it) still counts: only
+/// another file means it was relinked.
+fn still_linked(app: &DesignApp, e: &Edited) -> bool {
+    match designcraft_engine::cmd::link_originals(&app.session, &json!({ "asset": e.asset })) {
+        Ok(files) => files.iter().any(|f| f.asset.0 == e.asset && f.path == e.path),
+        Err(_) => true,
+    }
 }
 
 /// The process that opens `file` in `app` (or its default application) on this platform.

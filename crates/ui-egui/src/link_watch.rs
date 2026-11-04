@@ -250,15 +250,16 @@ fn apply(app: &mut DesignApp, done: Done) {
     let w = &mut app.link_watch;
     w.doc = done.token.0;
     w.states = done.states.iter().copied().collect();
-    let modified: Vec<u64> = done.states.iter().filter(|(_, s)| *s == LinkState::Modified).map(|(id, _)| *id).collect();
-    if modified.is_empty() {
-        return;
-    }
     // The document changed while the check ran (an edit, a Revert): its badges still show, but
-    // updating from it could reload a graphic the change put back. Check again and update then.
+    // updating from it could reload a graphic the change put back, and finding nothing modified
+    // says nothing of the document now. Check again, keeping the request to update.
     if revision != done.token.1 {
         app.link_watch.again = true;
         app.link_watch.update |= done.update;
+        return;
+    }
+    let modified: Vec<u64> = done.states.iter().filter(|(_, s)| *s == LinkState::Modified).map(|(id, _)| *id).collect();
+    if modified.is_empty() {
         return;
     }
     // An update made during a gesture would be undone by its next preview, which starts again
