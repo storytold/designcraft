@@ -2352,3 +2352,20 @@ fn direct_selection_marquee_selects_points_of_several_frames_and_drags_them_toge
     assert!(want.x.abs() < 1e-9 && (want.y.abs() - inc).abs() < 1e-9, "a quarter turn: {want:?}");
     assert!(moves(p).iter().all(|&(x, y)| (x - want.x).abs() < 1e-9 && (y - want.y).abs() < 1e-9), "{p}");
 }
+
+/// While the place cursor drags out a grid, the arrow keys change it and are handled, even at a
+/// limit, so the session doesn't try them elsewhere; other keys and keys before a drag aren't.
+#[test]
+fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert!(t.key(&cx, ToolKey::Right, Mods::default()).is_empty(), "no drag yet");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    for key in [ToolKey::Right, ToolKey::Up, ToolKey::Left, ToolKey::Left, ToolKey::Down, ToolKey::Down] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
+    }
+    assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}

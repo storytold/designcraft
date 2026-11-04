@@ -402,11 +402,18 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
                 rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
             };
             wasm_bindgen_futures::spawn_local(async move {
-                let Some(file) = dialog.pick_file().await else {
-                    return;
+                // Place takes several files, loaded into the place cursor in the order chosen.
+                let handles = if request.purpose == "place" {
+                    dialog.pick_files().await.unwrap_or_default()
+                } else {
+                    dialog.pick_file().await.into_iter().collect()
                 };
-                let bytes = file.read().await;
-                inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name: file.file_name(), bytes });
+                let mut files = Vec::with_capacity(handles.len());
+                for file in handles {
+                    let bytes = file.read().await;
+                    files.push(ImportedFile { request: request.clone(), name: file.file_name(), bytes });
+                }
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                 ctx.request_repaint();
             });
         })),

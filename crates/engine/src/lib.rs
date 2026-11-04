@@ -411,6 +411,8 @@ pub struct Session {
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
     pub loaded: Option<LoadedGraphic>,
+    /// Remaining graphics, in source-selection order, after `loaded`.
+    pub loaded_queue: std::collections::VecDeque<LoadedGraphic>,
     pub(crate) untitled: u32,
     /// Transforms applied to the current selection, oldest first (Transform Again / Sequence
     /// Again), with the selection they were applied to and whether the last one came from a
@@ -474,6 +476,7 @@ impl Session {
             image_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
+            loaded_queue: Default::default(),
             transforms: Default::default(),
             text_drag: false,
             text_unit: None,
@@ -549,6 +552,8 @@ impl Session {
             }
             self.reset_find_scope();
             self.stop_data_preview();
+            self.loaded = None;
+            self.loaded_queue.clear();
             self.active = Some(i);
         }
     }
@@ -558,6 +563,8 @@ impl Session {
         }
         self.reset_find_scope();
         self.stop_data_preview();
+        self.loaded = None;
+        self.loaded_queue.clear();
         self.docs.push(d);
         self.active = Some(self.docs.len() - 1);
         self.docs.len() - 1
@@ -580,6 +587,8 @@ impl Session {
             recovery::discard_document(self, i, recovery_dir.as_deref());
         }
         if i < self.docs.len() {
+            self.loaded = None;
+            self.loaded_queue.clear();
             self.reset_find_scope();
             self.docs.remove(i);
             self.active = if self.docs.is_empty() { None } else { Some(i.min(self.docs.len() - 1)) };
