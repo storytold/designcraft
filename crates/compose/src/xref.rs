@@ -52,8 +52,14 @@ impl XrefIndex {
 }
 
 /// The text a cross-reference shows ("??" when its destination is gone, like an unresolved
-/// reference in typesetting).
+/// reference in typesetting, unless the text was edited).
 pub fn xref_text(doc: &Document, x: &xref::CrossRef, index: Option<&XrefIndex>) -> String {
+    // Edited text stays as typed; its page numbers still follow the destination, or show the
+    // page last shown when the destination is gone (as in InDesign).
+    if let Some(t) = &x.text {
+        let live = index.filter(|_| doc.xref_values(x.target).is_some()).and_then(|i| i.page(x.target));
+        return xref::expand_edited(t, live.or(x.page.as_deref()).unwrap_or("?"));
+    }
     let Some(mut v) = doc.xref_values(x.target) else { return "??".into() };
     v.page = index.and_then(|i| i.page(x.target)).unwrap_or("?").to_string();
     let def = doc.xref_format(&x.format).map_or("<fullPara />", |f| f.definition.as_str());

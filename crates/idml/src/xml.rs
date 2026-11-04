@@ -88,7 +88,7 @@ impl El {
         if let Some(v) = self.get(k) {
             return Some(v.to_string());
         }
-        self.prop_el(k).map(|e| e.text_content())
+        self.prop_el(k).map(El::text_content)
     }
     pub fn prop_el(&self, k: &str) -> Option<&El> {
         self.find("Properties").and_then(|p| p.find(k))

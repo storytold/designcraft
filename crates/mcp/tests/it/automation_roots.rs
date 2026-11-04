@@ -51,7 +51,7 @@ fn confined(tag: &str, read: bool, write: bool) -> (Server, PathBuf) {
         std::fs::write(dir.join("tags.xml"), format!("<root><p>{text}</p></root>")).unwrap();
     }
     let (in_dir, out_dir) = (base.join("in"), base.join("out"));
-    let roots = AutomationRoots::new(read.then_some(in_dir.as_path()), write.then_some(out_dir.as_path())).unwrap();
+    let roots = AutomationRoots::new(read.then_some(in_dir.as_path()).as_slice(), write.then_some(out_dir.as_path()).as_slice()).unwrap();
     let mut server = Server::new(Box::new(Headless::with_document().with_automation_roots(roots)));
     ok(&mut server, "new_document", json!({}));
     (server, base)
@@ -339,7 +339,7 @@ fn without_roots_nothing_is_confined() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     designcraft_file(&base.join("a.designcraft"), 3, "Anywhere");
-    let mut server = Server::new(Box::new(Headless::with_document().with_automation_roots(AutomationRoots::new(None, None).unwrap())));
+    let mut server = Server::new(Box::new(Headless::with_document().with_automation_roots(AutomationRoots::new(&[], &[]).unwrap())));
     ok(&mut server, "open_document", json!({"path": s(&base.join("a.designcraft"))}));
     assert_eq!(pages(&mut server), 3);
     ok(&mut server, "save_document", json!({"path": s(&base.join("b.designcraft"))}));

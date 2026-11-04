@@ -16,7 +16,7 @@ mod frame;
 mod gradient;
 pub mod layout;
 mod nav;
-pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX};
+pub use nav::{LOCK_OFFSET_PX, PIN_OFFSET_PX, PLACE_DRAG_MIN};
 mod pen;
 mod pencil;
 pub mod select;
@@ -31,9 +31,11 @@ use designcraft_geom::{Affine, BezPath, Point, Rect, Unit, Vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_for_shortcut, tool_info};
+pub use catalog::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo, tool_info};
 pub use layout::{CanvasLayout, SpreadSlot};
 pub use nav::ZoomTool;
+/// The exact text an IME commit types (see [`Tool::ime_commit`]).
+pub use text::ime_commit_text;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mods {
@@ -230,6 +232,8 @@ pub struct ToolContext<'a> {
     pub unit: Unit,
     /// The toolbox's Stroke box is in front: sampled colours go to strokes (the Eyedropper).
     pub stroke_in_front: bool,
+    /// Natural size, in points, of the graphic loaded in the place cursor.
+    pub loaded: Option<(f64, f64)>,
 }
 
 impl ToolContext<'_> {
@@ -296,8 +300,7 @@ impl ToolContext<'_> {
     }
 
     fn hit_parent(&self, sr: SpreadRef, sp: Point) -> Option<(SpreadRef, ItemId)> {
-        let s = self.doc.spread(sr)?;
-        s.items.iter().rev().find(|it| !it.locked && designcraft_doc::edit_hit(it, sp, self.tol(4.0))).map(|it| (sr, it.id))
+        self.doc.hit_parent_item(sr, sp, self.tol(4.0)).map(|id| (sr, id))
     }
 
     /// Spread-space → canvas transform of the spread holding item `id`.
