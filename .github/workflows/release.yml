@@ -69,6 +69,12 @@ jobs:
     with:
       app-name: designcraft
       app-title: DesignCraft
+      # packaging/linux/package.sh builds the Arch package itself (nfpm, see archlinux in
+      # packaging/linux/nfpm.yaml). The shared makepkg job would build a second, different package
+      # under the same asset name, and the draft release merges artifacts last-writer-wins, so
+      # which one shipped came down to upload order (0.17.0 shipped the copy without
+      # libxkbcommon-x11). Keep a single builder.
+      has-arch: false
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       web-craft-fonts: true
       version: ${{ inputs.version }}
