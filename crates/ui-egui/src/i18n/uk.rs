@@ -1670,8 +1670,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("unused", "не використовується"),
     ("⚠ Missing", "⚠ Немає"),
     ("▲ Modified", "▲ Змінено"),
-    ("Missing", "Немає"),
-    ("Modified", "Змінено"),
     ("Too large to check", "Завеликий для перевірки"),
     ("(Text Color)", "(Колір тексту)"),
     ("{count} glyphs — click to insert at the text cursor", "Гліфів: {count} — клацніть, щоб вставити в позиції текстового курсора"),

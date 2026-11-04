@@ -4175,8 +4175,6 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("⚠ Missing", ["⚠ Missing", "⚠ Manquant", "⚠ Missing", "⚠ Missing", "⚠ 缺失"]),
     ("▲ Modified", ["▲ Modified", "▲ Modifié", "▲ Modified", "▲ Modified", "▲ 已修改"]),
     // The Links panel's status labels (tooltip, Link Info).
-    ("Missing", ["Fehlt", "Manquant", "Falta", "リンク切れ", "缺失"]),
-    ("Modified", ["Geändert", "Modifié", "Modificado", "変更済み", "已修改"]),
     (
         "Too large to check",
         [
