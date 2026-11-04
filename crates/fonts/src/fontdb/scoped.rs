@@ -325,6 +325,14 @@ impl ScopedFonts<'_> {
             return Some(f.clone());
         }
         let mut coords = base.coords.clone();
+        // The font's own axes, and where each tag is in `coords`: a setting for an axis the font
+        // doesn't have changes nothing, so it isn't kept (a style string is document input).
+        let axes: std::collections::HashSet<[u8; 4]> =
+            base.skrifa().map(|f| f.axes().iter().map(|a| a.tag().to_be_bytes()).collect()).unwrap_or_default();
+        let mut at: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+        for (i, (t, _)) in coords.iter().enumerate() {
+            at.entry(*t).or_insert(i);
+        }
         for kv in style[open + 1..].trim_end_matches('}').split(',') {
             let (k, v) = kv.split_once(':')?;
             let k = k.trim().as_bytes();
@@ -333,9 +341,13 @@ impl ScopedFonts<'_> {
                 return None;
             }
             let tag = [k[0], k[1], k[2], k[3]];
-            match coords.iter_mut().find(|(t, _)| *t == tag) {
+            match at.get(&tag).and_then(|i| coords.get_mut(*i)) {
                 Some(c) => c.1 = v,
-                None => coords.push((tag, v)),
+                None if axes.contains(&tag) => {
+                    at.insert(tag, coords.len());
+                    coords.push((tag, v));
+                }
+                None => {}
             }
         }
         let f = make_face(base.bytes.clone(), base.source.clone(), base.index, base.family.clone(), style.to_string(), coords)?;

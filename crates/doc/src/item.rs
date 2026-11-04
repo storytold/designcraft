@@ -282,6 +282,16 @@ impl Item {
         self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
     }
 
+    /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
+    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    pub fn takes_graphic(&self) -> bool {
+        match &self.content {
+            Content::Unassigned | Content::Graphic(_) => true,
+            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            _ => false,
+        }
+    }
+
     pub fn bounds(&self) -> Rect {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
