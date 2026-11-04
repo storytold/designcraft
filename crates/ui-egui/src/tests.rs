@@ -899,6 +899,15 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
 }
 
+/// The raw input of a drop without pointer events, with the window's content at `inner`.
+#[cfg(not(target_arch = "wasm32"))]
+fn pointerless_drop(path: &std::path::Path, inner: egui::Rect) -> egui::RawInput {
+    let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, inner.size())), ..Default::default() };
+    raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(inner), ..Default::default() });
+    raw.dropped_files.push(dropped_file(path));
+    raw
+}
+
 /// A file dragged in from the Finder brings no pointer events (winit sends none during a drag on
 /// macOS): the drop asks the system where the pointer is, so one dropped on a frame fills it.
 #[cfg(not(target_arch = "wasm32"))]
@@ -911,13 +920,13 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         let window = egui::vec2(300.0, 200.0);
         app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
         let path = dropped_png("drop-system-pointer");
-        app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer: None, generation: app.input_generation() });
         let ctx = egui::Context::default();
         ctx.set_zoom_factor(zoom);
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
-        let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
-        raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
-        ctx.run_ui(raw, |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+        // The zoom takes effect from the next pass, as it has by the time the system drops a file.
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let mut raw = pointerless_drop(&path, egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0)));
+        app.raw_input_hook(&ctx, &mut raw);
+        ctx.run_ui(raw, |_| app.take_pending_drops()).textures_delta.clear();
         let _ = std::fs::remove_file(&path);
         assert!(app.pending_drops.is_empty());
         let d = &app.session.doc().unwrap().doc;
@@ -927,6 +936,65 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         };
         assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
     }
+}
+
+/// A drop without pointer events keeps the place the system gave when its input arrived,
+/// converted with that input's window: the pointer and the window moving before the UI pass that
+/// places it don't move the drop.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_pointerless_drop_keeps_the_system_pointer_of_its_own_input() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let at = std::rc::Rc::new(std::cell::Cell::new(inside));
+    let reported = at.clone();
+    app.services.pointer = Some(Box::new(move || Some(reported.get())));
+    let ctx = egui::Context::default();
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let path = dropped_png("drop-own-input");
+    let mut raw = pointerless_drop(&path, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    // Before the pass that places it, the window moves and the pointer leaves the frame; a later
+    // input with no drop doesn't ask the system again.
+    let moved = window.translate(egui::vec2(50.0, 40.0));
+    at.set(outside + moved.min.to_vec2());
+    let mut later = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, moved.size())), ..Default::default() };
+    later.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(moved), ..Default::default() });
+    app.raw_input_hook(&ctx, &mut later);
+    ctx.run_ui(later, |_| app.take_pending_drops()).textures_delta.clear();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+        panic!("the file fills the frame it was dropped on")
+    };
+    assert!(d.assets[&g.asset].name.contains("drop-own-input"));
+}
+
+/// A filled compound path (Object > Compound Paths > Make) is a frame a dropped image fills, as
+/// in InDesign, through its ring and not its hole.
+#[test]
+fn a_graphic_dropped_on_a_compound_path_fills_it() {
+    let (mut app, frame, _, _) = app_with_drop_frame();
+    let hole = app.run("frame.create", json!({"rect": [66, 66, 106, 106]})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(app.run("object.makeCompoundPath", json!({"ids": [frame, hole]})).unwrap()["id"].as_u64(), Some(frame));
+    app.run("object.fill", json!({"ids": [frame], "swatch": "[Black]"})).unwrap();
+    let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+    let st = app.session.active().unwrap();
+    let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+    let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+    let screen = |x, y| canvas::Xf::new(rect, view).to_screen(slot.to_canvas(designcraft_geom::Point::new(x, y)));
+    // On the ring, between the outer edge (36) and the hole (66); the hole's middle is no frame.
+    let ring = screen(50.0, 50.0);
+    assert!(canvas::drop_frame(&app, Some(screen(86.0, 86.0))).is_none(), "the hole");
+    let path = dropped_png("drop-compound");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(ring));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r.unwrap()["id"].as_u64(), Some(frame), "the compound path under the pointer is filled");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let it = d.item(designcraft_doc::ItemId(frame)).unwrap();
+    assert!(matches!(it.content, designcraft_doc::Content::Graphic(_)));
+    assert_eq!(it.path.subpaths.len(), 2, "it keeps its hole");
 }
 
 #[test]

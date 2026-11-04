@@ -111,6 +111,10 @@ struct InputGeneration {
 struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
+    /// Where the system said the pointer was in the window when this drop's raw input arrived,
+    /// for a drop that brought no pointer events ([`crate::Services::pointer`]). Each drop keeps
+    /// its own, converted with the window's place and the UI scale of that input.
+    system: Option<egui::Pos2>,
     generation: InputGeneration,
 }
 

@@ -206,7 +206,7 @@ impl DesignApp {
         // must not replay shortcuts or dropped files from stale input.
         if ctx.current_pass_index() == 0 {
             #[cfg(not(target_arch = "wasm32"))]
-            self.take_pending_drops(&ctx);
+            self.take_pending_drops();
             menus::shortcuts(self, &ctx);
         }
         let t0 = now_ms();
