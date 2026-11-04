@@ -66,7 +66,7 @@ Hungarian release follow-up (2026-11-03) adds **23 entries**, bringing the catal
 **1,929 entries and four contexts**. It covers recent files, application and dock menus,
 ruler origin and kerning/tracking increments, and the separations panel. The start-screen
 project link now uses the catalog. macOS built-in Services/Hide/Show All items use translated
-titles when available and retain the OS-provided titles when a translation is missing.
+titles when available and keep their default titles when a translation is missing; Hide Others stays untranslated because its catalog key belongs to the layers panel.
 Rendered regressions exercise the start screen, unit preferences and separations captions.
 
 The interface uses bundled **Source Sans 3 Regular** and **Source Sans 3 Semibold**; monospace

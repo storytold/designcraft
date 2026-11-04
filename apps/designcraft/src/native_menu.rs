@@ -54,7 +54,7 @@ fn menu_title(app: &DesignApp, label: &str) -> String {
     menus::native_label(designcraft_ui_egui::i18n::tr(&app.ui.language, label))
 }
 
-/// Translate built-in item titles when available; otherwise keep the OS-provided title.
+/// Translate built-in item titles when available; otherwise keep the menu library's default title.
 fn predefined_title(lang: &str, label: &str) -> Option<String> {
     let translated = designcraft_ui_egui::i18n::tr(lang, label);
     (translated != label).then(|| menus::native_label(translated))
@@ -114,9 +114,7 @@ impl NativeMenu {
                 AppMenuItem::Sep => app_menu.append(&PredefinedMenuItem::separator()),
                 AppMenuItem::Services => app_menu.append(&PredefinedMenuItem::services(predefined_title(&app.ui.language, "Services").as_deref())),
                 AppMenuItem::Hide => app_menu.append(&PredefinedMenuItem::hide(predefined_title(&app.ui.language, "Hide DesignCraft").as_deref())),
-                AppMenuItem::HideOthers => {
-                    app_menu.append(&PredefinedMenuItem::hide_others(predefined_title(&app.ui.language, "Hide Others").as_deref()))
-                }
+                AppMenuItem::HideOthers => app_menu.append(&PredefinedMenuItem::hide_others(None)),
                 AppMenuItem::ShowAll => app_menu.append(&PredefinedMenuItem::show_all(predefined_title(&app.ui.language, "Show All").as_deref())),
             };
         }
@@ -285,7 +283,6 @@ mod tests {
         for (source, expected) in [
             ("Services", "Szolgáltatások"),
             ("Hide DesignCraft", "A DesignCraft elrejtése"),
-            ("Hide Others", "Többi elrejtése"),
             ("Show All", "Összes megjelenítése"),
         ] {
             assert_eq!(predefined_title("hu", source).as_deref(), Some(expected));
