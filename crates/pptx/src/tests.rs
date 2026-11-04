@@ -144,6 +144,22 @@ fn composed_lines_become_line_breaks_with_the_story_text() {
 }
 
 #[test]
+fn a_repeated_hyphen_shows_only_on_the_lines_it_was_set_for() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let text = "auto-salon radio-stanica sever-jug naučno-tehnički auto-salon radio-stanica";
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 170.0, 400.0), lid, text, ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.language = Some("Serbian: Latin".into()));
+    assert!(Cache::new().get(&d, sid, None).frame(fid).is_some_and(|f| f.lines.iter().any(|l| l.repeated_hyphen)));
+    // Lines kept as set keep the hyphen; where PowerPoint breaks them, it goes with the break.
+    let s = part(&mut export(&d, &PptxOptions::default()), "ppt/slides/slide1.xml");
+    assert_eq!(shape_texts(&s).concat().replace("--", "-"), text, "{s}");
+    assert!(shape_texts(&s).concat().contains("--"), "{s}");
+    let s = part(&mut export(&d, &PptxOptions { line_breaks: LineBreaks::Reflow, ..Default::default() }), "ppt/slides/slide1.xml");
+    assert_eq!(shape_texts(&s).concat(), text, "{s}");
+}
+
+#[test]
 fn reflow_writes_one_box_with_native_columns() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

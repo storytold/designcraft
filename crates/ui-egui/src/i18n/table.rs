@@ -1436,6 +1436,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ["Über Spalten trennen", "Césure entre colonnes", "Separar entre columnas", "段をまたいでハイフネーション", "跨栏连字"],
     ),
     (
+        "Repeat Hyphen at Line Break",
+        [
+            "Bindestrich am Zeilenumbruch wiederholen",
+            "Répéter le trait d’union à la coupure de ligne",
+            "Repetir el guion en el salto de línea",
+            "行の折り返しでハイフンを繰り返す",
+            "在换行处重复连字符",
+        ],
+    ),
+    (
         "Differs from this document",
         ["Weicht von diesem Dokument ab", "Diffère de ce document", "Difiere de este documento", "このドキュメントと異なります", "与此文档不同"],
     ),
@@ -3966,6 +3976,8 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Portuguese: Brazilian", ["Portuguese: Brazilian", "Portugais : Brésil", "Portuguese: Brazilian", "Portuguese: Brazilian", "葡萄牙语：巴西"]),
     ("Rounded Rectangle", ["Rounded Rectangle", "Rectangle arrondi", "Rounded Rectangle", "Rounded Rectangle", "圆角矩形"]),
     ("Russian", ["Russian", "Russe", "Russian", "Russian", "俄语"]),
+    ("Serbian: Cyrillic", ["Serbian: Cyrillic", "Serbe : cyrillique", "Serbian: Cyrillic", "Serbian: Cyrillic", "塞尔维亚语：西里尔字母"]),
+    ("Serbian: Latin", ["Serbian: Latin", "Serbe : latin", "Serbian: Latin", "Serbian: Latin", "塞尔维亚语：拉丁字母"]),
     ("Solid", ["Solid", "Continu", "Solid", "Solid", "实线"]),
     ("Spanish", ["Spanish", "Espagnol", "Spanish", "Spanish", "西班牙语"]),
     ("Story Editor", ["Story Editor", "Mode éditeur", "Story Editor", "Story Editor", "文章编辑器"]),
