@@ -146,6 +146,9 @@ pub fn breaks(word: &[char]) -> Vec<usize> {
 
 /// [`breaks`] with another root set.
 pub fn breaks_with(word: &[char], is_root: &dyn Fn(&str) -> bool) -> Vec<usize> {
+    if word.len() > MAX_WORD {
+        return Vec::new();
+    }
     let end = ending_len(word);
     let stem = word.get(..word.len() - end).unwrap_or(word);
     segment(stem, is_root).map(|(s, _)| s).unwrap_or_default()
@@ -223,5 +226,15 @@ mod tests {
         assert!(breaks(&long).is_empty());
         assert!(breaks(&[]).is_empty());
         assert!(breaks(&['o']).is_empty());
+    }
+
+    #[test]
+    fn the_word_limit_counts_the_ending() {
+        let is_root = |p: &str| p == "kat";
+        let word = |n: usize| -> Vec<char> { format!("{}oj", "kat".repeat(n)).chars().collect() };
+        // 62 chars: segmented.
+        assert!(!breaks_with(&word(20), &is_root).is_empty());
+        // 65 chars, whose 63-char stem tiles: still over the limit.
+        assert!(breaks_with(&word(21), &is_root).is_empty());
     }
 }
