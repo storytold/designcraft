@@ -5749,7 +5749,21 @@ fn caret_stops(l: &Line) -> Vec<(usize, f64)> {
     ps.extend([l.range.start, l.range.end]);
     ps.sort_unstable();
     ps.dedup();
-    ps.into_iter().filter(|p| l.range.contains(p) || *p == l.range.end).map(|p| (p, caret_x(l, p))).collect()
+    ps.into_iter().filter(|p| (l.range.contains(p) || *p == l.range.end) && !before_own_mark(l, *p)).map(|p| (p, caret_x(l, p))).collect()
+}
+
+/// Whether glyph `i` of line `l` is a combining mark in a cluster of its own after a letter (a
+/// mark in a colour of its own, see `shape::StyleRuns::cluster_chars`): the caret stays with its
+/// letter, as it does when the mark is in the letter's cluster.
+fn own_mark(l: &Line, i: usize) -> bool {
+    l.glyphs
+        .get(i)
+        .is_some_and(|g| g.len > 0 && i > 0 && g.byte > l.range.start && unicode_bidi::bidi_class(g.rendered_char) == unicode_bidi::BidiClass::NSM)
+}
+
+/// Whether story byte `p` is where such a mark ([`own_mark`]) starts: no caret position.
+fn before_own_mark(l: &Line, p: usize) -> bool {
+    l.glyphs.iter().enumerate().any(|(i, g)| g.byte == p && own_mark(l, i))
 }
 
 /// Bidi caret movement: the position one step to the left (or right) of `pos` on its line as
@@ -5834,7 +5848,12 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     }
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
-    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+    for (i, g) in l.glyphs.iter().enumerate().filter(|(_, g)| g.len > 0) {
+        if own_mark(l, i) {
+            // No caret position between a letter and its mark.
+            best = g.byte + g.len;
+            continue;
+        }
         let mid = g.x + g.adv / 2.0;
         if p.x < mid && p.x >= prev_mid {
             return Some(g.byte);

@@ -1297,10 +1297,18 @@ fn shape_segment(
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         let body = adv;
-        // Tracking follows a letter with its marks: none before a mark in a cluster of its own
-        // (a run shaped across styles keeps every character apart).
-        let tracked =
-            last_in_cluster && !shaped.get(gi + 1).is_some_and(|x| src.get(x.cluster..).and_then(|t| t.chars().next()).is_some_and(is_mark));
+        // Tracking follows a letter with its marks, on the glyph laid out last of them, so it never
+        // moves a mark off its letter. A run shaped across styles keeps every character in a
+        // cluster of its own, and its glyphs come in text order: left to right a mark follows its
+        // letter (the mark takes the tracking, not the letter before it); right to left the
+        // shaper sets a mark before its letter, which is laid out last and takes it (a mark,
+        // never).
+        let tracked = last_in_cluster
+            && if sg.rtl {
+                !is_mark(ch)
+            } else {
+                !shaped.get(gi + 1).is_some_and(|x| src.get(x.cluster..).and_then(|t| t.chars().next()).is_some_and(is_mark))
+            };
         if ch == SOFT_HYPHEN {
             adv = 0.0;
         } else if tracked {
