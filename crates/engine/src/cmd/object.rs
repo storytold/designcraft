@@ -1161,13 +1161,31 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
     }
 }
 
-/// Fresh ids for the objects anchored in `slice`, text copied from `d` that is about to be pasted
-/// into it, with copies of the stories of anchored text frames. A copied range carried its
-/// objects' ids into every paste, so two anchored items shared an id and the saved file no
-/// longer opened (#2284).
-pub(crate) fn renumber_slice(d: &mut Document, slice: &mut Story) {
-    let src = d.clone();
-    renumber_anchored(d, &src, slice, &mut HashMap::new());
+/// Fresh ids from `dst` for the objects anchored in `slice`, text copied from `src` that is about
+/// to be pasted into `dst`, with copies of the stories of anchored text frames and the graphics
+/// they place adopted from `src`. A copied range carried its objects' ids into every paste, so two
+/// anchored items shared an id and the saved file no longer opened (#2284). The stories and
+/// graphics are looked up in the document the text was copied from, which may be another one:
+/// looked up in `dst`, an id from another document finds nothing, or an unrelated story or image.
+/// With no `src`, `dst` as it is now stands in.
+pub(crate) fn renumber_slice(dst: &mut Document, src: Option<&Document>, slice: &mut Story) {
+    let own;
+    let src = match src {
+        Some(src) => src,
+        None => {
+            own = dst.clone();
+            &own
+        }
+    };
+    let mut assets = HashMap::new();
+    for a in designcraft_doc::story_asset_refs(slice) {
+        let na = adopt_or_dangle(dst, src, a);
+        if na != a {
+            assets.insert(a, na);
+        }
+    }
+    designcraft_doc::remap_story_assets(slice, &assets);
+    renumber_anchored(dst, src, slice, &mut HashMap::new());
 }
 
 /// The anchored text frames of `d`, with their stories.
@@ -6197,6 +6215,92 @@ mod anchored_copy_tests {
         s.execute("edit.undo", &json!({})).unwrap();
         let doc = &s.doc().unwrap().doc;
         assert_eq!(doc.story(host_sid).unwrap().objects[0].item.id, inner);
+        assert_reopens(doc);
+    }
+
+    /// `d` opened as a second document of `s`, made active; returns its index.
+    fn open_second(s: &mut Session, d: Document) -> usize {
+        let index = s.add_document(crate::DocState::new(d, None));
+        s.execute("file.activate", &json!({"index": index})).unwrap();
+        index
+    }
+
+    // Pasted into another document, an anchored text frame's story is the one it had where it was
+    // copied. Looked up in the destination, the same id found nothing (an empty story) or an
+    // unrelated story (noted in review).
+    #[test]
+    fn copied_text_pasted_into_another_document_keeps_its_anchored_frames_story() {
+        let (a, host, _, inner_sid) = host_with_anchored_text_frame();
+        let mut s = session_with(a);
+        let (text, _) = copy_story_text(&mut s, host);
+        // The destination has a story under the same id, holding something else.
+        let mut b = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = b.default_layer();
+        let (b_host, b_host_sid) =
+            b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host B", ParaFormat::default()).unwrap();
+        b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, 300.0, 500.0), layer, "Unrelated", ParaFormat::default()).unwrap();
+        assert_eq!(b.story(inner_sid).map(|st| st.text.as_str()), Some("Unrelated"), "the destination reuses the id");
+        open_second(&mut s, b);
+        let _ = b_host;
+        let end = s.doc().unwrap().doc.story(b_host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": b_host_sid.0, "anchor": end, "focus": end})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let objects = &doc.story(b_host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 1);
+        let copy_sid = objects[0].item.text_frame().unwrap().story;
+        assert_eq!(doc.story(copy_sid).unwrap().text, "Inner", "the copied frame's own text");
+        assert_eq!(doc.story(inner_sid).unwrap().text, "Unrelated", "the destination's story is untouched");
+        assert_reopens(doc);
+    }
+
+    // An anchored image pasted into another document brings its graphic along: the asset id it
+    // had names nothing there, or another image.
+    #[test]
+    fn copied_text_pasted_into_another_document_brings_its_anchored_images() {
+        let mut a = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = a.default_layer();
+        let (host, host_sid) = a.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let aid = AssetId(a.alloc());
+        let bytes = vec![7u8; 64];
+        a.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "a.png".into(),
+                mime: "image/png".into(),
+                data: Arc::new(bytes.clone()),
+                ..Default::default()
+            }),
+        );
+        let mut pic = Item::new(ItemId(a.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        pic.content = Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (10.0, 10.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        a.story_mut(host_sid).unwrap().insert_object(2, AnchoredObject { item: pic, position: Default::default() });
+        a.check().unwrap();
+        let mut s = session_with(a);
+        let (text, _) = copy_story_text(&mut s, host);
+        let mut b = Document::new(&designcraft_doc::build::NewDocument::default());
+        let (_, b_sid) =
+            b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), b.default_layer(), "B", ParaFormat::default()).unwrap();
+        assert!(b.assets.is_empty());
+        open_second(&mut s, b);
+        s.execute("text.select", &json!({"story": b_sid.0, "anchor": 1, "focus": 1})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let pasted = &doc.story(b_sid).unwrap().objects[0].item;
+        let asset = pasted.graphic().map(|g| g.asset).and_then(|id| doc.assets.get(&id)).expect("the image came along");
+        assert_eq!(*asset.data, bytes);
         assert_reopens(doc);
     }
 
