@@ -454,8 +454,20 @@ fn read_entry_file(path: &Path) -> std::io::Result<Vec<u8>> {
     if !before.file_type().is_file() {
         return Err(refuse());
     }
+    #[cfg(windows)]
+    let mut file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // A reparse point swapped in after the check is opened as itself, not followed.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?
+    };
+    #[cfg(not(windows))]
     let mut file = std::fs::File::open(path)?;
     let opened = file.metadata()?;
+    #[cfg(windows)]
+    if is_link_like(&opened) {
+        return Err(refuse());
+    }
     if !opened.file_type().is_file() {
         return Err(refuse());
     }
