@@ -280,11 +280,9 @@ mod tests {
 
     #[test]
     fn predefined_titles_follow_hungarian_and_keep_system_fallback() {
-        for (source, expected) in [
-            ("Services", "Szolgáltatások"),
-            ("Hide DesignCraft", "A DesignCraft elrejtése"),
-            ("Show All", "Összes megjelenítése"),
-        ] {
+        for (source, expected) in
+            [("Services", "Szolgáltatások"), ("Hide DesignCraft", "A DesignCraft elrejtése"), ("Show All", "Összes megjelenítése")]
+        {
             assert_eq!(predefined_title("hu", source).as_deref(), Some(expected));
             assert_eq!(predefined_title("", source), None);
             assert_eq!(predefined_title("unknown", source), None);
