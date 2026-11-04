@@ -328,6 +328,18 @@ fn tracking_skips_a_letter_whose_mark_is_shaped_apart() {
     }
 }
 
+/// Pieces that differ only in a feature switch (here Ligatures off) are shaped as one, the switch
+/// over its own piece: the kerning across them stays.
+#[test]
+fn a_feature_switch_keeps_kerning() {
+    let (mut d, sid, _) = doc_with("ayay", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.font_style = Some("Bold".into()));
+    let xs = |d: &Document| all_lines(&compose_story(d, sid, &ComposeOptions::default()))[0].glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
+    let kerned = xs(&d);
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.ligatures = Some(false));
+    assert_eq!(xs(&d), kerned);
+}
+
 /// Lam-alif stays one ligature when its letters differ only in colour, as in InDesign: it takes
 /// the lam's colour. (Outside Arabic a change of style still ends a ligature, see
 /// `colour_change_keeps_kerning_and_ligatures_keep_colour`.)
