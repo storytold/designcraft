@@ -88,3 +88,7 @@ sync_github_name = false
 
 [people.Tom-R-Main]
 sync_github_name = true
+
+[people.JonRC]
+real_name = "Jonathan Cardoso"
+display_name = "Jonathan Cardoso"

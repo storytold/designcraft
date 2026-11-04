@@ -187,12 +187,25 @@ fn line_height(seg: &Segment, i: usize) -> f64 {
 fn para_step(seg: &Segment, i: usize) -> Option<f64> {
     let para = seg.lines.get(i)?.para;
     let ls: Vec<&OutLine> = seg.lines.iter().filter(|l| l.para == para).collect();
+    median_step(&ls)
+}
+
+fn median_step(ls: &[&OutLine]) -> Option<f64> {
     let mut d: Vec<f64> = ls.windows(2).map(|w| w[1].baseline - w[0].baseline).filter(|v| *v > 0.0).collect();
     if d.is_empty() {
         return None;
     }
     d.sort_by(f64::total_cmp);
     d.get(d.len() / 2).copied()
+}
+
+/// [`para_step`] for every paragraph of a segment, in one pass (it is asked once per paragraph).
+fn para_steps(seg: &Segment) -> std::collections::HashMap<usize, Option<f64>> {
+    let mut by_para: std::collections::HashMap<usize, Vec<&OutLine>> = std::collections::HashMap::new();
+    for l in &seg.lines {
+        by_para.entry(l.para).or_default().push(l);
+    }
+    by_para.into_iter().map(|(p, ls)| (p, median_step(&ls))).collect()
 }
 
 fn text_box(ex: &mut Exporter, seg: &Segment, m: Affine, k: f64, opacity: f32, name: &str) {
@@ -215,6 +228,7 @@ fn write_box(ex: &mut Exporter, xfrm: XfrmBox, body: &str, name: &str) {
 pub(crate) fn segments(ex: &mut Exporter, cs: &ComposedStory, ft: &FrameText, story: &str, skip: &[usize]) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     let mut prev: Option<&Line> = None;
+    let skip: std::collections::HashSet<usize> = skip.iter().copied().collect();
     for (i, l) in ft.lines.iter().enumerate() {
         if skip.contains(&i) {
             prev = None;
@@ -379,13 +393,11 @@ fn body(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32, insets:
 pub(crate) fn paragraphs(ex: &mut Exporter, seg: &Segment, r: Rect, k: f64, opacity: f32) -> String {
     let mut s = String::new();
     let mut prev_end: Option<(f64, f64)> = None;
-    // The segment's lines, a paragraph at a time; `at` is the index of each one's first line.
-    let mut at = 0;
+    // The segment's lines, a paragraph at a time.
+    let steps = para_steps(seg);
     for lines in seg.lines.chunk_by(|a, b| a.para == b.para && !a.last_in_para) {
-        let i = at;
-        at += lines.len();
         let (Some(first), Some(last)) = (lines.first(), lines.last()) else { continue };
-        let mut h = line_height(seg, i);
+        let mut h = steps.get(&first.para).copied().flatten().unwrap_or(if first.leading > 0.0 { first.leading } else { first.size * SINGLE });
         let r_in = BASELINE_IN_LINE;
         if let Some((prev_base, prev_h)) = prev_end
             && lines.len() == 1
@@ -537,12 +549,17 @@ fn reflow(ex: &mut Exporter, it: &Item, tfr: &TextFrame, ft: &FrameText, cs: &Co
     let _ = write!(s, " anchor=\"{anchor}\"><a:noAutofit/></a:bodyPr><a:lstStyle/>");
     // The paragraphs this frame shows, with the runs of their composed glyphs.
     let ranges = st.para_ranges();
+    // The frame's lines by paragraph, once (a filter per paragraph made many paragraphs quadratic).
+    let mut by_para: std::collections::HashMap<usize, Vec<&Line>> = std::collections::HashMap::new();
+    for l in &ft.lines {
+        by_para.entry(l.para).or_default().push(l);
+    }
     let mut first = true;
     for (pi, range) in ranges.iter().enumerate() {
         if range.end < ft.range.start || range.start >= ft.range.end.max(ft.range.start + 1) {
             continue;
         }
-        let lines: Vec<&Line> = ft.lines.iter().filter(|l| l.para == pi).collect();
+        let lines: Vec<&Line> = by_para.get(&pi).cloned().unwrap_or_default();
         let Some(pf) = st.paras.get(pi) else { continue };
         let (pp, chars) = doc.styles.resolve_para(pf);
         let algn = match pp.align {
