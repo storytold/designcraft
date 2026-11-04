@@ -206,12 +206,21 @@ impl OutputRoot {
 /// Whether the file at `path` holds exactly `bytes` (read only as far as they go).
 fn same_contents(path: &Path, bytes: &[u8]) -> bool {
     use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else { return false };
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
     if file.metadata().map_or(true, |m| m.len() != bytes.len() as u64) {
         return false;
     }
-    let mut now = Vec::with_capacity(bytes.len());
-    file.take(bytes.len() as u64 + 1).read_to_end(&mut now).is_ok() && now == bytes
+    // Fixed-size chunks: no second font-sized buffer.
+    let mut chunk = [0u8; 64 * 1024];
+    for expected in bytes.chunks(chunk.len()) {
+        let got = &mut chunk[..expected.len()];
+        if file.read_exact(got).is_err() || got != expected {
+            return false;
+        }
+    }
+    // A file that grew since the length check is not the same.
+    let mut extra = [0u8; 1];
+    matches!(file.read(&mut extra), Ok(0))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
