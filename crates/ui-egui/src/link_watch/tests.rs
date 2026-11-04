@@ -351,3 +351,31 @@ fn a_stale_check_that_found_nothing_keeps_the_update_request() {
     tick(&mut app, 0.0, Some(true));
     assert_eq!(pixels(&app, asset), Some((9, 4)), "the request to update survived");
 }
+
+/// A linked text file that keeps its size but changes its words shows as modified in the Links
+/// panel after a check: the panel's metadata-only look never reads it, and the worker's check
+/// compares it and the engine remembers the answer.
+#[test]
+fn a_text_file_changed_at_the_same_size_shows_modified_after_a_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("story.txt");
+    std::fs::write(&file, "Words one").unwrap();
+    let mut app = app();
+    app.run("file.place", json!({"path": file.to_string_lossy(), "link": true, "x": 100, "y": 100})).unwrap();
+    let text_row = |app: &mut DesignApp| {
+        let rows = app.session.execute("links.list", &json!({"metadataOnly": true})).unwrap();
+        rows.as_array().unwrap().iter().find(|r| r.get("story").is_some()).cloned().unwrap()
+    };
+    assert_eq!(text_row(&mut app)["status"], "ok");
+    // The same number of bytes, other words, saved a while ago (a time settled enough to be
+    // remembered).
+    std::fs::write(&file, "Words two").unwrap();
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(past).unwrap();
+    let before = text_row(&mut app);
+    assert_eq!((before["status"].as_str(), before["unverified"].as_bool()), (Some("ok"), Some(true)), "not read on the UI thread");
+    tick(&mut app, 0.0, Some(true));
+    let after = text_row(&mut app);
+    assert_eq!(after["status"], "modified", "{after}");
+    assert_ne!(after["unverified"], true);
+}

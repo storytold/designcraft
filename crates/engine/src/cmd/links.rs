@@ -32,10 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
         cmd!(query "links.list", "Links", [], None, "{metadataOnly?: bool (only the files' size and time are read, never their contents, linked text files included: a graphic or text file that is the copy's size but not yet compared since it last changed reads as ok, with unverified: true)} → [{asset, name, path, status: ok|modified|missing|embedded, unverified?, refused?: why a missing link isn't followed (a path on another computer, a device), pixels, pdfCrop (placed PDFs: the box shown), uses: [{id, page, ppi}]}], then linked text files: [{story, name, path, status (also tooLarge: unchanged size, too big to check), unverified?, edited (the story was changed in the layout), uses: [{id, page}]}]. A file is read only when its size is the copy's and its size or time changed since it was last compared", has_doc, |s, p| {
             let read = p.get("metadataOnly").and_then(Value::as_bool) != Some(true);
-            // Taken out for the call so the document needn't be cloned on every poll.
-            let mut checks = std::mem::take(&mut s.text_link_checks);
-            let links = s.doc().map(|d| list(&d.doc, &s.cache, d.path.as_deref().map(Path::new), &mut checks, read));
-            s.text_link_checks = checks;
+            let links = s.doc().map(|d| list(&d.doc, &s.cache, d.path.as_deref().map(Path::new), read));
             Ok(Value::Array(links?))
         }),
         cmd!(
@@ -196,21 +193,43 @@ pub(crate) fn settled(f: &Fingerprint) -> bool {
     }
 }
 
-/// Checked linked text files: path → (size and time, hash of the contents then).
-pub(crate) type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
+/// Checked linked text files, for the whole process as graphics' are ([`check`]): path → (size
+/// and time, hash of the contents then). The UI's worker thread fills it, so the Links panel's
+/// metadata-only look on the UI thread knows a file it compared without reading it again.
+type TextChecks = std::collections::HashMap<String, (Fingerprint, String)>;
+static TEXT_CHECKS: std::sync::Mutex<Option<TextChecks>> = std::sync::Mutex::new(None);
+/// Most files remembered: past it the oldest answers are forgotten (each costs one read again).
+const MAX_TEXT_CHECKS: usize = 4096;
+
+/// The remembered hash of the file at `path` when it had `at`.
+fn text_checked(path: &str, at: &Fingerprint) -> Option<String> {
+    let c = TEXT_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    c.as_ref()?.get(path).filter(|(seen, _)| seen == at).map(|(_, hash)| hash.clone())
+}
+
+/// Remember that the file at `path` held contents hashing to `hash` when it had `at`.
+fn remember_text(path: &str, at: Fingerprint, hash: String) {
+    let mut c = TEXT_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = c.get_or_insert_with(Default::default);
+    if map.len() >= MAX_TEXT_CHECKS && !map.contains_key(path) {
+        map.clear();
+    }
+    map.insert(path.to_string(), (at, hash));
+}
 
 /// Link status of a linked text file: `tooLarge` when it is the recorded size but over
 /// [`MAX_TEXT_LINK_BYTES`], so its contents aren't checked. The file is read only when its size
-/// is the recorded one but its time isn't, and then once per new time (`checks`): a file saved
-/// or synced again without changes stays OK. `document` is the document's file.
-pub(crate) fn text_status(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>) -> &'static str {
-    text_state(l, checks, document, true).0
+/// is the recorded one but its time isn't, and then once per new time: a file saved or synced
+/// again without changes stays OK. `document` is the document's file. The UI's link watch calls
+/// it on its worker thread for every linked text file.
+pub fn text_status(l: &TextFileLink, document: Option<&Path>) -> &'static str {
+    text_state(l, document, true).0
 }
 
 /// [`text_status`], and whether it is unverified: with `read` false the file's contents are never
 /// read, and a file of the recorded size whose time changed since it was last compared reads as
 /// `ok`, unverified (as a graphic's [`LinkState::Unverified`]).
-fn text_state(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>, read: bool) -> (&'static str, bool) {
+fn text_state(l: &TextFileLink, document: Option<&Path>, read: bool) -> (&'static str, bool) {
     let status = |s: &'static str| (s, false);
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -228,8 +247,8 @@ fn text_state(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>
         if l.mtime != 0 && now.mtime == l.mtime {
             return status("ok");
         }
-        let hash = match checks.get(&l.path) {
-            Some((at, hash)) if *at == now => hash.clone(),
+        let hash = match text_checked(&l.path, &now) {
+            Some(hash) => hash,
             _ if now.size > MAX_TEXT_LINK_BYTES => return status("tooLarge"),
             _ if !read => return ("ok", true),
             _ => match read_text(&path) {
@@ -237,7 +256,7 @@ fn text_state(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>
                     let hash = fnv_hex(&b);
                     // The time from before the read: a change during it is seen next time.
                     if settled(&at) {
-                        checks.insert(l.path.clone(), (at, hash.clone()));
+                        remember_text(&l.path, at, hash.clone());
                     }
                     hash
                 }
@@ -248,7 +267,7 @@ fn text_state(l: &TextFileLink, checks: &mut TextChecks, document: Option<&Path>
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (l, checks, document, read);
+        let _ = (l, document, read);
         status("ok")
     }
 }
@@ -310,11 +329,11 @@ fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
     out
 }
 
-fn list(d: &Document, cache: &Cache, document: Option<&Path>, checks: &mut TextChecks, read: bool) -> Vec<Value> {
+fn list(d: &Document, cache: &Cache, document: Option<&Path>, read: bool) -> Vec<Value> {
     let texts = d.stories.values().filter_map(|st| {
         let l = st.file_link.as_ref()?;
         let uses: Vec<Value> = st.frames.iter().map(|id| json!({"id": id.0, "page": d.page_of_item(*id).map(|p| d.page_name(p))})).collect();
-        let (status, unverified) = text_state(l, checks, document, read);
+        let (status, unverified) = text_state(l, document, read);
         let mut row = json!({"story": st.id.0, "name": file_name(&l.path), "path": l.path, "status": status, "refused": refused(&l.path, document).map(|r| r.to_string()), "edited": story_hash(st) != l.story_hash, "uses": uses});
         if unverified {
             row["unverified"] = json!(true);
@@ -558,7 +577,6 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         (st.doc.clone(), st.path.clone())
     };
     let document = document.as_deref().map(Path::new);
-    let checks = &mut s.text_link_checks;
     // A selector that is there but isn't an id is an error, never "all of them".
     let selector = |key: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -586,7 +604,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         .values()
         .filter(|st| all || only_story == Some(st.id))
         .filter_map(|st| {
-            let l = st.file_link.as_ref().filter(|l| text_status(l, checks, document) == "modified")?;
+            let l = st.file_link.as_ref().filter(|l| text_status(l, document) == "modified")?;
             Some((st.id, l.path.clone(), resolved(&l.path)?))
         })
         .collect();
@@ -1005,7 +1023,7 @@ mod text_link_tests {
         // Saved and opened again: the link and its options are kept.
         let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
         assert_eq!(back.story(sid).unwrap().file_link, story(s, sid).file_link);
-        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), &mut Default::default(), None), "ok");
+        assert_eq!(super::text_status(back.story(sid).unwrap().file_link.as_ref().unwrap(), None), "ok");
     }
 
     #[test]
@@ -1196,7 +1214,7 @@ mod text_link_read_tests {
 
     fn status_of(path: &std::path::Path, size: u64) -> &'static str {
         let l = TextFileLink { path: path.to_string_lossy().to_string(), size, hash: "0".into(), ..Default::default() };
-        promptly(move || text_status(&l, &mut Default::default(), None))
+        promptly(move || text_status(&l, None))
     }
 
     fn read(path: &std::path::Path) -> Result<usize, String> {
@@ -1240,9 +1258,9 @@ mod text_link_read_tests {
         let file = dir.path().join("story.txt");
         std::fs::write(&file, "Some text").unwrap();
         let l = TextFileLink { path: file.to_string_lossy().to_string(), size: 9, mtime: 1, hash: "0".into(), ..Default::default() };
-        let mut checks = Default::default();
-        assert_eq!(text_state(&l, &mut checks, None, false), ("ok", true));
-        assert!(checks.is_empty(), "nothing was read");
-        assert_eq!(text_state(&l, &mut checks, None, true), ("modified", false));
+        let at = super::super::datamerge::fingerprint_from(&crate::io::metadata(&file).unwrap());
+        assert_eq!(text_state(&l, None, false), ("ok", true));
+        assert_eq!(super::text_checked(&l.path, &at), None, "nothing was read");
+        assert_eq!(text_state(&l, None, true), ("modified", false));
     }
 }

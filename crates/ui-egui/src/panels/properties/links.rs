@@ -43,8 +43,9 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rows = match cached {
         Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
         _ => {
-            // Metadata only: the UI thread never reads a linked file's contents. A file not yet
-            // compared since it changed shows OK until the link watch's worker has compared it.
+            // Metadata only: the UI thread never reads a linked file's contents. A graphic or text
+            // file not yet compared since it changed shows OK until the link watch's worker has
+            // compared it, within a check (a few seconds); the engine remembers that comparison.
             let rows = app.session.execute("links.list", &json!({"metadataOnly": true})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
             ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
             rows

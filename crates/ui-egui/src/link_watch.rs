@@ -2,7 +2,7 @@
 //! link badges.
 //!
 //! Every few seconds, when the window gains focus again and soon after the document changes, the
-//! active document's linked graphics are handed to a worker thread, which asks the engine how each
+//! active document's linked graphics and text files are handed to a worker thread, which asks the engine how each
 //! file compares with the copy in the document ([`designcraft_engine::cmd::link_state`]). That
 //! reads only metadata, except once for a file of the copy's size whose time changed since it was
 //! last compared. The frame never waits for it: the badges show the last answer.
@@ -40,6 +40,10 @@ pub(crate) struct Job {
     token: (u64, u64),
     document: Option<PathBuf>,
     links: Vec<(u64, String, Arc<Vec<u8>>)>,
+    /// Its linked text files. They have no badge; comparing them here is what lets the Links
+    /// panel, which never reads a file on the UI thread, show one that changed (the engine
+    /// remembers each comparison for the process).
+    texts: Vec<designcraft_doc::TextFileLink>,
     /// Update the modified graphics found (focus regained with the preference on).
     update: bool,
 }
@@ -55,6 +59,9 @@ pub(crate) struct Done {
 fn run(job: Job) -> Done {
     let document = job.document.as_deref();
     let states = job.links.iter().map(|(id, link, data)| (*id, designcraft_engine::cmd::link_state(Some(link), document, data, true))).collect();
+    for text in &job.texts {
+        let _ = designcraft_engine::cmd::text_link_status(text, document);
+    }
     Done { token: job.token, states, update: job.update }
 }
 
@@ -187,8 +194,10 @@ pub(crate) fn tick(app: &mut DesignApp, now: f64, focused: Option<bool>) {
 /// The active document's linked graphics, for a check.
 fn job(app: &DesignApp, token: (u64, u64)) -> Job {
     let mut links = Vec::new();
+    let mut texts = Vec::new();
     let mut document = None;
     if let Some(st) = app.session.active() {
+        texts = st.doc.stories.values().filter_map(|story| story.file_link.clone()).collect();
         document = st.path.as_deref().map(PathBuf::from);
         let used = st.doc.used_assets();
         for a in st.doc.assets.values().filter(|a| used.contains(&a.id)) {
@@ -197,7 +206,7 @@ fn job(app: &DesignApp, token: (u64, u64)) -> Job {
             }
         }
     }
-    Job { token, document, links, update: app.link_watch.update }
+    Job { token, document, links, texts, update: app.link_watch.update }
 }
 
 fn submit(app: &mut DesignApp, job: Job) {

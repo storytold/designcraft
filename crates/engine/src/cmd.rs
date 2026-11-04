@@ -36,7 +36,7 @@ mod links;
 /// [`link_state`]: how a linked file compares with the copy in the document.
 pub use links::{
     LinkState, Original as LinkOriginal, Reveal as LinkReveal, can_edit_original, link_state, originals as link_originals,
-    reveal_target as link_reveal_target,
+    reveal_target as link_reveal_target, text_status as text_link_status,
 };
 mod liquid;
 mod lists;
