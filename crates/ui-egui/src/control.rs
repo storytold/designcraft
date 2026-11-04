@@ -12,7 +12,7 @@
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
 //! - `ui.move {x, y}` / `ui.click {x, y, button?, count?, shift?…}` / `ui.drag {x, y, toX, toY, steps?}`:
 //!   real egui pointer input in screen points (reaches every widget: panels, flyouts, dialogs)
-//! - `ui.set {brightness?, appearanceMode?, panel?, dockTab?, rulers?, outline?, …}`
+//! - `ui.set {brightness?, appearanceMode?, darkTheme?, lightTheme?, panel?, dockTab?, rulers?, outline?, …}`
 //! - `ui.dialog.set {field, value}` / `ui.dialog.confirm` / `ui.dialog.cancel`
 //! - `ui.resize {width, height}`, `ui.focus`, `ui.screenshot {path?}`
 //! - `ui.render {path?, scale?}`: render the active artboard headlessly (PNG)
@@ -236,8 +236,17 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
             if let Some(b) = s("brightness") {
                 r = app.run("window.brightness", json!({"brightness": b}));
             }
-            if let Some(m) = s("appearanceMode") {
-                r = app.run("window.appearanceMode", json!({"mode": m}));
+            let mode = s("appearanceMode");
+            let dark = s("darkTheme");
+            let light = s("lightTheme");
+            if mode.is_some() || dark.is_some() || light.is_some() {
+                let mut params = serde_json::Map::new();
+                for (key, value) in [("mode", mode), ("darkTheme", dark), ("lightTheme", light)] {
+                    if let Some(value) = value {
+                        params.insert(key.into(), json!(value));
+                    }
+                }
+                r = app.run("window.appearanceMode", Value::Object(params));
             }
             if let Some(pn) = s("panel") {
                 r = app.run("window.panel", json!({"panel": pn}));
@@ -445,6 +454,16 @@ mod automation_contract_tests {
         frame(&mut app, &ctx, events);
         assert_eq!(app.ui.palette.as_deref(), Some("field"));
         assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
+    }
+    #[test]
+    fn control_ui_set_forwards_appearance_theme_choices() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let result = call(&mut app, &ctx, "ui.set", json!({"appearanceMode":"light","darkTheme":"highContrast","lightTheme":"mediumLight"}));
+        assert_eq!(result["ok"], true);
+        assert_eq!(app.ui.appearance_mode, crate::theme::AppearanceMode::Light);
+        assert_eq!(app.ui.dark_theme, crate::theme::DarkTheme::HighContrast);
+        assert_eq!(app.ui.light_theme, crate::theme::LightTheme::MediumLight);
     }
     #[test]
     fn control_pages_validate_before_writer_and_preserve_omission() {
