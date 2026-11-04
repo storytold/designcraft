@@ -178,6 +178,12 @@ fn spreads_and_ranges() {
     assert_eq!(parse_page_range("1-2, 4", 4).unwrap(), vec![0, 1, 3]);
     assert_eq!(parse_page_range("3-", 4).unwrap(), vec![2, 3]);
     assert_eq!(parse_page_range("", 2).unwrap(), vec![0, 1]);
+    // Ranges that overlap many times over: each page is selected once, in the order first named.
+    let overlapping = std::iter::repeat_n("1-20000, 5-19000", 500).collect::<Vec<_>>().join(",");
+    let t = std::time::Instant::now();
+    assert_eq!(parse_page_range(&overlapping, 20000).unwrap().len(), 20000);
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(parse_page_range("3, 1-3", 4).unwrap(), vec![2, 0, 1]);
     assert!(parse_page_range("5", 4).is_err());
     assert!(parse_page_range("x", 4).is_err());
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
