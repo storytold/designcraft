@@ -375,7 +375,8 @@ And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video stud
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before starting a change to find existing work and let
-other contributors know which part you are taking on.
+other contributors know which part you are taking on. The clean-room, asset and quality-gate rules
+for human and agent contributors are in [AGENTS.md](AGENTS.md).
 
 ## License and credits
 
