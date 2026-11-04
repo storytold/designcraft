@@ -29,6 +29,17 @@ pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>
 
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
 
+/// Characters kept of a style name read from a file: each paragraph that uses a style carries a
+/// copy of its name, so a long one would be multiplied by the paragraph count.
+pub(crate) const MAX_NAME_CHARS: usize = 256;
+
+pub(crate) fn capped_name(mut name: String) -> String {
+    if let Some((at, _)) = name.char_indices().nth(MAX_NAME_CHARS) {
+        name.truncate(at);
+    }
+    name
+}
+
 /// Joins UTF-16 code units that arrive one at a time (RTF `\uN`, Tagged Text `<0xNNNN>`) into
 /// characters. A character past U+FFFF comes as two units, a surrogate pair: the first half
 /// waits for the second.

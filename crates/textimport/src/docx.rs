@@ -681,8 +681,11 @@ pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> R
     let mut para_styles = Vec::new();
     let mut char_styles = Vec::new();
     if let Some(styles) = part(&mut zip, "word/styles.xml")?.map(|s| parse(&s)).transpose()? {
-        let ids: HashMap<String, String> =
-            styles.els().filter(|s| s.name == "style").filter_map(|s| Some((s.attr("styleId")?.to_string(), s.val("name")?))).collect();
+        let ids: HashMap<String, String> = styles
+            .els()
+            .filter(|s| s.name == "style")
+            .filter_map(|s| Some((s.attr("styleId")?.to_string(), crate::capped_name(s.val("name")?))))
+            .collect();
         ctx.style_lists = style_lists(&styles);
         // Word's document defaults sit beneath every paragraph style that isn't based on another.
         let defaults = styles.child("docDefaults");
@@ -704,7 +707,7 @@ pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> R
             // Word's default paragraph font is "no character style": our [None].
             let name = match (kind, name.as_str()) {
                 ("character", "Default Paragraph Font") => NO_CHAR_STYLE.to_string(),
-                _ => name.clone(),
+                _ => crate::capped_name(name.clone()),
             };
             let based_on = s.val("basedOn").and_then(|b| ids.get(&b).cloned());
             let mut imp = ImportedStyle { name: name.clone(), based_on, para: para_attrs(s.child("pPr")), chars: run_attrs(s.child("rPr")) };
@@ -762,13 +765,23 @@ pub fn import_with(bytes: &[u8], opts: &designcraft_doc::TextImportOptions) -> R
             return list;
         }
         let mut want: std::collections::HashSet<String> = used.clone();
-        loop {
-            let more: Vec<String> =
-                list.iter().filter(|s| want.contains(&s.name)).filter_map(|s| s.based_on.clone()).filter(|b| !want.contains(b)).collect();
-            if more.is_empty() {
-                break;
+        {
+            // What each name is based on (every style of that name), then a worklist: each name
+            // is looked at once, however long the chain.
+            let mut bases: HashMap<&str, Vec<&str>> = HashMap::new();
+            for s in &list {
+                if let Some(b) = &s.based_on {
+                    bases.entry(s.name.as_str()).or_default().push(b.as_str());
+                }
             }
-            want.extend(more);
+            let mut todo: Vec<String> = want.iter().cloned().collect();
+            while let Some(name) = todo.pop() {
+                for b in bases.get(name.as_str()).into_iter().flatten() {
+                    if want.insert((*b).to_string()) {
+                        todo.push((*b).to_string());
+                    }
+                }
+            }
         }
         list.into_iter().filter(|s| want.contains(&s.name)).collect::<Vec<_>>()
     };
