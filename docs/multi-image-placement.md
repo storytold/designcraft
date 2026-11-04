@@ -5,7 +5,7 @@ Choose **File > Place** (Cmd+D on macOS) and select several images. They load in
 - Click to place the next image at its natural size.
 - Drag to draw its frame: it keeps the image's proportions, and shows the scale beside the pointer.
 - Click an existing graphic frame to replace its contents.
-- While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames.
+- While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames. A drag too small for the grid's cells shows and places one frame instead, as an ordinary drag does.
 - Press Escape or select another tool to cancel the remaining placement.
 
 For larger selections, choose **File > Place Contact Sheet…** after loading the images. Set columns, rows, gutter and page margin. All remaining images are fitted proportionally and centered in equal frames across as many new pages as needed. The default is 3 columns by 4 rows. New pages use the last document page's size and have no parent-page artwork. The entire contact sheet is one undo step.

@@ -2369,3 +2369,34 @@ fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
     }
     assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
 }
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
