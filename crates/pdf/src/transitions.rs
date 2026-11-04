@@ -43,6 +43,14 @@ pub(crate) fn int_after(s: &str, key: &str) -> Option<usize> {
     rest[..end].parse().ok()
 }
 
+/// The text between the first `[` and the first `]` after it. `None` when there is no such pair (a `]`
+/// before the `[` included).
+pub(crate) fn bracketed(s: &str) -> Option<&str> {
+    let open = s.find('[')?;
+    let close = s[open..].find(']')? + open;
+    s.get(open + 1..close)
+}
+
 /// Byte range of object `id`'s body (between `obj` and `endobj`).
 pub(crate) fn object(pdf: &[u8], id: usize) -> Option<std::ops::Range<usize>> {
     // The latest copy (incremental updates re-state objects further on).
@@ -132,7 +140,7 @@ pub fn add_page_entries(pdf: &[u8], extra: &[Option<String>]) -> Option<Vec<u8>>
     let pages = String::from_utf8_lossy(&pdf[object(pdf, pages_id)?]).to_string();
     let kids_at = pages.find("/Kids")?;
     let kids_str = &pages[kids_at + 5..];
-    let kids_str = &kids_str[kids_str.find('[')? + 1..kids_str.find(']')?];
+    let kids_str = bracketed(kids_str)?;
     let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
     let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
     let starts = object_starts(pdf, extra.iter().zip(&kids).filter_map(|(t, &kid)| t.as_ref().map(|_| kid)));
@@ -197,6 +205,31 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
             .as_bytes(),
     );
     Some(out)
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::{add_page_entries, bracketed};
+
+    #[test]
+    fn bracketed_ignores_a_close_before_the_open() {
+        assert_eq!(bracketed(" [3 0 R 4 0 R] "), Some("3 0 R 4 0 R"));
+        assert_eq!(bracketed("] ["), None);
+        assert_eq!(bracketed("] [3 0 R]"), Some("3 0 R"));
+        assert_eq!(bracketed("[]"), Some(""));
+    }
+
+    /// `]` before the `[` of /Kids (a spoofed page tree) is refused, not a slice panic.
+    #[test]
+    fn kids_closed_before_opened_is_refused() {
+        let objects = ["<</Type/Catalog/Pages 2 0 R>>", "<</Type/Pages/Kids ] [3 0 R/Count 1>>"];
+        let mut out = b"%PDF-1.6\n".to_vec();
+        for (i, o) in objects.iter().enumerate() {
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        out.extend_from_slice(b"trailer\n<</Size 3/Root 1 0 R>>\nstartxref\n0\n%%EOF\n");
+        assert!(add_page_entries(&out, &[Some("/Rotate 0".to_string())]).is_none());
+    }
 }
 
 #[cfg(test)]

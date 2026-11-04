@@ -32,19 +32,22 @@ impl Story {
         if out.chars.is_empty() {
             out.chars.push(CharRun { len: 0, format: self.char_format_at(a).clone() });
         }
-        let count = |m: char, upto: usize| self.text[..upto].matches(m).count();
-        let span = |m: char| count(m, a)..count(m, b);
-        out.notes = self.notes[span(FOOTNOTE_REF)].to_vec();
-        // Malformed input can have fewer payloads than markers. Keep the available entries;
-        // insertion creates empty entries for any missing payloads.
-        let endnotes = span(ENDNOTE_REF);
-        out.endnotes = self.endnotes.iter().skip(endnotes.start).take(endnotes.len()).cloned().collect();
-        let editorial = span(NOTE_MARK);
-        out.editorial = self.editorial.iter().skip(editorial.start).take(editorial.len()).cloned().collect();
-        out.anchors = self.anchors[span(ANCHOR_MARK)].to_vec();
-        out.xrefs = self.xrefs[span(XREF_MARK)].to_vec();
-        out.index_refs = self.index_refs[span(INDEX_MARK)].to_vec();
-        out.objects = self.objects[span(crate::anchored::OBJECT_MARK)].to_vec();
+        // Payloads in text order; a file may hold fewer payloads than markers, so the lists are
+        // read with `get` and the slice's own lists are made to match its markers below.
+        let span = |m: char| {
+            let lo = self.text[..a].matches(m).count();
+            lo..lo + self.text[a..b].matches(m).count()
+        };
+        out.notes = marked(&self.notes, span(FOOTNOTE_REF));
+        out.endnotes = marked(&self.endnotes, span(ENDNOTE_REF));
+        out.editorial = marked(&self.editorial, span(NOTE_MARK));
+        out.anchors = marked(&self.anchors, span(ANCHOR_MARK));
+        out.xrefs = marked(&self.xrefs, span(XREF_MARK));
+        out.index_refs = marked(&self.index_refs, span(INDEX_MARK));
+        out.objects = marked(&self.objects, span(crate::anchored::OBJECT_MARK));
+        out.fix_notes();
+        out.fix_endnotes();
+        out.fix_marks();
         for p in &out.paras {
             if let Some(id) = p.table
                 && let Some(t) = self.tables.get(&id)
@@ -92,7 +95,7 @@ impl Story {
         // Marker payloads in text order, keeping newly allocated destination note ids.
         let first = |m: char| self.text[..pos].matches(m).count();
         let (nf, nx, ni, na) = (first(FOOTNOTE_REF), first(XREF_MARK), first(INDEX_MARK), first(ANCHOR_MARK));
-        let no = first(crate::anchored::OBJECT_MARK);
+        let (no, ne, nn) = (first(crate::anchored::OBJECT_MARK), first(ENDNOTE_REF), first(NOTE_MARK));
         for (k, o) in src.objects.iter().enumerate() {
             if let Some(slot) = self.objects.get_mut(no + k) {
                 *slot = o.clone();
@@ -104,16 +107,15 @@ impl Story {
                 *slot = Arc::new(crate::notes::Footnote { id, text: n.text.clone() });
             }
         }
-        // Limit payload copies to inserted markers so excess source entries cannot overwrite
+        // Notes keep the ids made for their new markers, so a pasted copy never shares an id.
+        // Payload copies stop at the inserted markers so excess source entries cannot overwrite
         // notes already following the insertion point.
-        let ne = first(ENDNOTE_REF);
         for (k, n) in src.endnotes.iter().take(src.text.matches(ENDNOTE_REF).count()).enumerate() {
             if let Some(slot) = self.endnotes.get_mut(ne + k) {
                 let id = slot.id;
                 *slot = Arc::new(crate::notes::Footnote { id, text: n.text.clone() });
             }
         }
-        let nn = first(NOTE_MARK);
         for (k, n) in src.editorial.iter().take(src.text.matches(NOTE_MARK).count()).enumerate() {
             if let Some(slot) = self.editorial.get_mut(nn + k) {
                 let id = slot.id;
@@ -153,7 +155,7 @@ impl Story {
             }
         }
         let splits = self.fix_tables_with(&claims);
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         // Past any return the fix-up put inside the pasted text.
         end + splits.iter().filter(|&&s| s < end).count()
     }
@@ -217,6 +219,12 @@ impl Story {
         self.objects.extend(other.objects);
         self.rev = self.rev.saturating_add(1);
     }
+}
+
+/// The payloads of the markers numbered `span` (in text order), as far as `list` holds them.
+fn marked<T: Clone>(list: &[T], span: std::ops::Range<usize>) -> Vec<T> {
+    let n = list.len();
+    list.get(span.start.min(n)..span.end.min(n)).map(<[T]>::to_vec).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -342,10 +350,15 @@ mod tests {
             let slice = damaged.extract(pair_len..damaged.len());
             assert_eq!(slice.text, format!("{ENDNOTE_REF}{NOTE_MARK}").repeat(2));
             let expected = if available == 2 { 1 } else { 0 };
-            assert_eq!((slice.endnotes.len(), slice.editorial.len()), (expected, expected));
+            // The slice is a valid story: missing payloads become empty notes.
+            slice.check().unwrap();
+            assert_eq!((slice.endnotes.len(), slice.editorial.len()), (2, 2));
             if expected == 1 {
                 assert_eq!(slice.endnotes[0], source.endnotes[1]);
                 assert_eq!(slice.editorial[0], source.editorial[1]);
+            } else {
+                assert!(slice.endnotes[0].text.is_empty());
+                assert!(slice.editorial[0].text.is_empty());
             }
             let mut dest = Story::new(StoryId(2));
             append_note_pair(&mut dest, "untouched");
@@ -443,5 +456,66 @@ mod tests {
         assert_eq!(a.text, "Alpha\nBeta");
         assert_eq!(a.endnotes.len(), 2);
         assert_eq!(a.notes.len(), 2);
+    }
+
+    #[test]
+    fn copy_paste_keeps_endnotes_and_editorial_notes() {
+        let mut a = Story::with_text(StoryId(1), "One two three", ParaFormat::default());
+        a.insert_endnote(3, "An endnote.", ParaFormat::default());
+        let at = a.text.find("three").unwrap();
+        a.insert(at, &NOTE_MARK.to_string());
+        let n = Arc::make_mut(&mut a.editorial[0]);
+        (n.author, n.text) = ("Ed".into(), "Check this.".into());
+        a.check().unwrap();
+        let slice = a.extract(0..a.len());
+        slice.check().unwrap();
+        assert_eq!(slice.endnotes[0].text.text, "An endnote.");
+        assert_eq!(slice.editorial[0].text, "Check this.");
+        // Duplicate into the same story: the copies get their own ids and are independent.
+        let len = a.len();
+        a.insert_story(len, &slice);
+        a.check().unwrap();
+        assert_eq!(a.endnotes.len(), 2);
+        assert_eq!(a.editorial.len(), 2);
+        assert_ne!(a.endnotes[0].id, a.endnotes[1].id);
+        assert_ne!(a.editorial[0].id, a.editorial[1].id);
+        assert_eq!(a.endnotes[1].text.text, "An endnote.");
+        assert_eq!((a.editorial[1].author.as_str(), a.editorial[1].text.as_str()), ("Ed", "Check this."));
+        let copy = a.endnotes[1].id;
+        a.endnote_mut(copy).unwrap().text = Story::with_text(StoryId(0), "Changed.", ParaFormat::default());
+        Arc::make_mut(&mut a.editorial[1]).text = "Changed.".into();
+        assert_eq!(a.endnotes[0].text.text, "An endnote.");
+        assert_eq!(a.editorial[0].text, "Check this.");
+        assert_eq!(slice.endnotes[0].text.text, "An endnote.");
+        // Into another story, between existing notes.
+        let mut b = Story::with_text(StoryId(2), "x y", ParaFormat::default());
+        b.insert_endnote(0, "B first.", ParaFormat::default());
+        b.insert_endnote(b.len(), "B last.", ParaFormat::default());
+        let mid = b.text.find(' ').unwrap();
+        b.insert_story(mid, &slice);
+        b.check().unwrap();
+        let texts: Vec<_> = b.endnotes.iter().map(|n| n.text.text.as_str()).collect();
+        assert_eq!(texts, ["B first.", "An endnote.", "B last."]);
+        assert_eq!(b.editorial[0].text, "Check this.");
+    }
+
+    #[test]
+    fn extract_survives_more_markers_than_payloads() {
+        let mut a = Story::with_text(StoryId(1), "a b c d e f", ParaFormat::default());
+        for (pos, m) in [(1, FOOTNOTE_REF), (4, ENDNOTE_REF), (7, NOTE_MARK), (10, XREF_MARK)] {
+            a.insert(pos, &format!("{m}{m}"));
+        }
+        // A hostile file: two markers of each kind, at most one payload.
+        a.notes.truncate(1);
+        a.endnotes.truncate(1);
+        a.editorial.clear();
+        a.xrefs.clear();
+        for r in [0..a.len(), 2..a.len(), 0..3] {
+            let slice = a.extract(r);
+            slice.check().unwrap();
+            let mut b = Story::with_text(StoryId(2), "z", ParaFormat::default());
+            b.insert_story(1, &slice);
+            b.check().unwrap();
+        }
     }
 }
