@@ -14,12 +14,14 @@ impl Exporter<'_> {
     /// first, then the parent.
     fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, page: &designcraft_doc::Page, layer: &designcraft_doc::Layer, first: usize) {
         let doc = self.doc;
+        // What the canvas hides: this page's overrides and those of the parent pages behind it.
+        let overridden = doc.overridden_parent_items(SpreadRef::Doc(si), pi);
         for (ppi, ppage) in doc.shown_parent_pages(SpreadRef::Doc(si), pi) {
             let Some(parent) = doc.parents.get(ppi) else { continue };
             let Some(ppg) = parent.pages.get(ppage) else { continue };
             let dx = page.x - ppg.x;
             for it in &parent.items {
-                if it.layer != layer.id || page.overridden.contains(&it.id) {
+                if it.layer != layer.id || overridden.contains(&it.id) {
                     continue;
                 }
                 // Parent items belong to the parent page they sit on.

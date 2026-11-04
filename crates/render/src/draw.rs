@@ -91,21 +91,8 @@ impl Renderer {
                     continue;
                 }
                 let chain = doc.shown_parent_pages(sr, pi);
-                // This page's overrides, and those of every parent page behind it: a parent that
-                // overrode an item of the parent it is based on and then deleted the override
-                // removed that item from itself and from the pages that use it (#1469). An
-                // override always names an item of a parent further back, so one set does.
-                let overridden: Vec<designcraft_doc::ItemId> = page
-                    .overridden
-                    .iter()
-                    .copied()
-                    .chain(
-                        chain
-                            .iter()
-                            .filter_map(|(ppi, ppage)| doc.parents.get(*ppi)?.pages.get(*ppage))
-                            .flat_map(|ppg| ppg.overridden.iter().copied()),
-                    )
-                    .collect();
+                // This page's overrides and those of every parent page behind it (#1469).
+                let overridden = doc.overridden_parent_items(sr, pi);
                 for (ppi, ppage) in chain {
                     let Some(parent) = doc.parents.get(ppi) else { continue };
                     let Some(ppg) = parent.pages.get(ppage) else { continue };
