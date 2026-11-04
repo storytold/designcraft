@@ -427,17 +427,41 @@ impl Grep {
             if !keep(&m.range()) {
                 continue;
             }
-            let expanded = exp.expansion(template, &caps);
-            bytes = bytes.saturating_add(expanded.len());
-            if bytes > max_bytes {
+            // Written into a buffer that refuses bytes past the budget, so an oversized
+            // expansion is rejected before it is allocated.
+            let mut w = BoundedBuf { buf: Vec::new(), left: max_bytes.saturating_sub(bytes) };
+            if exp.write_expansion(&mut w, template, &caps).is_err() {
                 return Err(err(format!("the replacements would put more than {max_bytes} bytes in")));
             }
+            bytes += w.buf.len();
+            let expanded = String::from_utf8(w.buf).map_err(|_| err("the replacement is not valid UTF-8".to_string()))?;
             out.push((m.range(), expanded));
             if first_only {
                 break;
             }
         }
         Ok(out)
+    }
+}
+
+/// A byte sink that fails a write that would pass its remaining budget (nothing is copied then).
+struct BoundedBuf {
+    buf: Vec<u8>,
+    left: usize,
+}
+
+impl std::io::Write for BoundedBuf {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if data.len() > self.left {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.left -= data.len();
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

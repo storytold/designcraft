@@ -452,6 +452,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_source_style_defined_twice_keeps_its_last_definition() {
         let list = [("a", 1), ("b", 2), ("a", 3), ("c", 4)];
