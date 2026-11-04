@@ -457,6 +457,30 @@ fn rasterized_links_clear_interactivity_in_nested_groups() {
     assert_eq!(copy.item(id).unwrap().text_frame().unwrap().story, story);
 }
 
+/// The stand-in keeps the frame's story, alt text and effects for link bounds, but being
+/// nonprinting none of it reaches a tagged PDF: only the link annotation is added.
+#[test]
+fn rasterized_link_stand_ins_add_only_the_link_to_tagged_pdf() {
+    let tagged = |keep_link: bool| {
+        let (mut s, id) = linked_effect_frame();
+        s.execute("object.exportOptions", &json!({"ids": [id.0], "altText": "A link"})).unwrap();
+        if !keep_link {
+            std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc).hyperlinks.clear();
+        }
+        let r = s.execute("file.exportPdf", &json!({"tagged": true})).unwrap();
+        String::from_utf8_lossy(&super::super::file::base64_decode(r["base64"].as_str().unwrap())).into_owned()
+    };
+    // Whole names only: `/Tabs/S/Parent` on a page with annotations is not a `/S/P` element.
+    let count =
+        |pdf: &str, tag: &str| pdf.match_indices(tag).filter(|(i, _)| !pdf[i + tag.len()..].starts_with(|c: char| c.is_ascii_alphabetic())).count();
+    let (linked, plain) = (tagged(true), tagged(false));
+    assert_eq!(count(&linked, "/S/Figure"), 1);
+    for tag in ["/S/Figure", "/S/P", "/Alt", "(A link)"] {
+        assert_eq!(count(&linked, tag), count(&plain, tag), "{tag}");
+    }
+    assert!(linked.contains("/Subtype/Link") && !plain.contains("/Subtype/Link"));
+}
+
 #[test]
 fn rasterized_links_keep_exactly_one_wrapping_stand_in() {
     let (mut s, id) = linked_effect_frame();

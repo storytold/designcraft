@@ -344,7 +344,9 @@ fn rasterize_where_with_links(
             osp.items[pos] = std::sync::Arc::new(img_item);
             if linked {
                 // Annotation bounds and text composition still need the original frame, not
-                // the image's larger effect bounds. This copy also keeps any text wrap.
+                // the image's larger effect bounds. This copy also keeps any text wrap. It keeps
+                // the frame's ItemId, which hyperlink sources and the story's frame list name,
+                // while the image takes a fresh id.
                 osp.items.insert(pos, std::sync::Arc::new(link_stand_in(it, 0)));
             } else if keep_wrap && has_wrap(it, 0) {
                 osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
