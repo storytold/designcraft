@@ -220,6 +220,25 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 120.0, 120.0), None);
 }
 
+/// While editing parent pages, a click doesn't pick items on a hidden or locked layer (#2221).
+#[test]
+fn parent_mode_hit_skips_hidden_and_locked_layers() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (id, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, true));
+        let p = l.to_canvas(SpreadRef::Parent(0), Point::new(150.0, 150.0));
+        ctx(d, &s, &c, &l).hit(p)
+    };
+    assert_eq!(hit(&d), Some((SpreadRef::Parent(0), id)));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(hit(&d), None, "hidden layer");
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(hit(&d), None, "locked layer");
+}
+
 #[test]
 fn gradient_tool_drag_sets_the_vector() {
     let mut d = Document::new(&NewDocument::default());
@@ -476,6 +495,28 @@ fn turned_spread_maps_points_both_ways() {
     // A canvas drag rightwards is a drag down the spread.
     let dv = slot.delta_to_spread(designcraft_geom::Vec2::new(10.0, 0.0));
     assert!(dv.x.abs() < 1e-9 && (dv.y + 10.0).abs() < 1e-9 || (dv.y - 10.0).abs() < 1e-9, "{dv:?}");
+}
+
+#[test]
+fn place_gun_click_places_into_frames_but_not_onto_lines() {
+    let mut d = Document::new(&NewDocument::default());
+    let frame = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let lid = d.default_layer();
+    let line = ItemId(d.alloc());
+    let mut it = Item::new(line, lid, Shape::GraphicLine, shapes::line(Point::new(100.0, 300.0), Point::new(300.0, 300.0)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let click = |t: &mut Box<dyn Tool>, x: f64, y: f64| {
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x + off.x, y + off.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x + off.x, y + off.y))
+    };
+    let mut t = create("placeGun");
+    assert_eq!(click(&mut t, 150.0, 150.0), vec![Action::Exec("place.drop".into(), serde_json::json!({"frame": frame.0}))]);
+    let a = click(&mut t, 200.0, 300.0);
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "place.drop" && p.get("frame").is_none()), "{a:?}");
 }
 
 fn add_rect(doc: &mut Document, rect: Rect) -> ItemId {
@@ -886,6 +927,62 @@ fn pen_click_snaps_to_a_guide() {
     assert_eq!(cmd, "path.create");
     let x = p["anchors"][0]["p"][0].as_f64().unwrap();
     assert!((x - 100.0).abs() < 1e-6, "anchor x {x}");
+}
+
+/// #1438: dragging a smooth point shows the segment it shapes under the pointer (from the
+/// previous anchor's out handle to the new anchor's in handle), and after a smooth point the
+/// rubber band to the pointer curves out of its direction line; a corner keeps the straight one.
+#[test]
+fn pen_previews_the_curve_while_dragging_and_after_a_smooth_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (sr, _) = cx.layout.spread_at(Point::new(100.0, 100.0)).expect("the page is under the pointer");
+    let xf = cx.layout.xf(sr);
+    let sp = |x: f64, y: f64| cx.layout.to_spread(sr, Point::new(x, y));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let paths = |t: &dyn Tool, dashed: bool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: d, .. } if d == dashed => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut t = create("pen");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 100.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 100.0, 100.0));
+    // A corner's rubber band is a straight line: no curve.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 150.0, 120.0));
+    assert!(paths(&*t, true).is_empty() && paths(&*t, false).is_empty(), "a corner's rubber band is a line");
+    // Dragging the second anchor out: the segment from the first anchor is previewed live.
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 200.0, 100.0));
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 230.0, 130.0));
+    let [p] = &paths(&*t, false)[..] else { panic!("one solid curve preview: {:?}", t.overlays(&cx)) };
+    let in_handle = sp(200.0, 100.0) - (sp(230.0, 130.0) - sp(200.0, 100.0));
+    match p.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(100.0, 100.0)) && near(*c1, xf * sp(100.0, 100.0)), "from the corner, whose out handle is itself: {a:?} {c1:?}");
+            assert!(near(*c2, xf * in_handle) && near(*b, xf * sp(200.0, 100.0)), "to the dragged anchor by its in handle: {c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Let go: the anchor is committed and the segment preview goes; the rubber band now curves
+    // out of the smooth point's direction line towards the pointer.
+    let up = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 230.0, 130.0));
+    assert!(matches!(&up[..], [Action::Exec(cmd, _)] if cmd == "path.create"), "{up:?}");
+    assert!(paths(&*t, false).is_empty(), "no segment preview once let go");
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Move, 300.0, 100.0));
+    let [band] = &paths(&*t, true)[..] else { panic!("a curved rubber band: {:?}", t.overlays(&cx)) };
+    match band.elements() {
+        [PathEl::MoveTo(a), PathEl::CurveTo(c1, c2, b)] => {
+            assert!(near(*a, xf * sp(200.0, 100.0)) && near(*c1, xf * sp(230.0, 130.0)), "{a:?} {c1:?}");
+            assert!(near(*c2, Point::new(300.0, 100.0)) && near(*b, Point::new(300.0, 100.0)), "{c2:?} {b:?}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A text frame with overset text (selected), an empty frame and a threaded pair x → y, on page 1.
@@ -1848,6 +1945,52 @@ fn pen_over_a_selected_open_paths_end_point_continues_it() {
     let p = at(200.0, 200.0);
     assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y)).is_empty(), "no anchor is deleted");
     assert!(t.busy(), "the path is being continued");
+}
+
+/// Continuing a path from an end point and dragging its direction lines previews the segment the
+/// drag reshapes: from the anchor joined to that end point, not from the path's other end, from
+/// either end (#1438).
+#[test]
+fn pen_previews_the_segment_joined_to_a_continued_end_point() {
+    use designcraft_geom::{BezPath, PathEl};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let id = ItemId(d.alloc());
+    let anchors = vec![
+        designcraft_geom::Anchor::corner(Point::new(100.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 100.0)),
+        designcraft_geom::Anchor::corner(Point::new(200.0, 200.0)),
+    ];
+    let mut it = Item::new(id, lid, Shape::Path, designcraft_geom::PathData::single(designcraft_geom::SubPath::new(anchors, false)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::items(vec![id]), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let xf = l.xf(SpreadRef::Doc(0));
+    let near = |a: Point, b: Point| (a - b).hypot() < 1e-6;
+    let solid = |t: &dyn Tool| -> Vec<BezPath> {
+        t.overlays(&cx)
+            .into_iter()
+            .filter_map(|o| match o {
+                Overlay::Path { path, dashed: false, .. } => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
+    for (end, joined, far) in [((200.0, 200.0), (200.0, 100.0), (100.0, 100.0)), ((100.0, 100.0), (200.0, 100.0), (200.0, 200.0))] {
+        let mut t = create("pen");
+        let p = xf * Point::new(end.0, end.1);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p.x + 30.0, p.y + 30.0));
+        let [path] = &solid(&*t)[..] else { panic!("one segment preview from {end:?}: {:?}", t.overlays(&cx)) };
+        match path.elements() {
+            [PathEl::MoveTo(a), PathEl::CurveTo(_, _, b)] => {
+                assert!(near(*a, xf * Point::new(joined.0, joined.1)), "from the anchor joined to {end:?}, not the other end {far:?}: {a:?}");
+                assert!(near(*b, p), "to the end point being reshaped: {b:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]
