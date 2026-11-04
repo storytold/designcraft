@@ -236,6 +236,20 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn parent_hit_testing_respects_layers() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (a, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
+    let at = designcraft_geom::Point::new(50.0, 50.0);
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), Some(a));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+}
+
+#[test]
 fn page_numbers_saturate_at_the_largest_start() {
     // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
     let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
@@ -350,4 +364,22 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
+}
+
+/// Exceptions are read in one pass: breaks are char positions of the lowercased word, a break
+/// at the start, at the end or twice in a row counts once or not at all, and a long exception
+/// full of breaks takes no longer than its length.
+#[test]
+fn hyphenation_exceptions_are_read_in_one_pass() {
+    let mut d = Document::new(&NewDocument::default());
+    d.hyphenation_exceptions = vec!["~Ty~~po~graph~y~".into(), "İs~tanbul".into()];
+    let map = d.hyphenation_exception_map();
+    assert_eq!(map["typography"], [2, 4, 9]);
+    // `İ` lowercases to two chars: positions count the lowercased word.
+    assert_eq!(map["i\u{307}stanbul"], [3]);
+    d.hyphenation_exceptions = vec!["a~".repeat(200_000)];
+    let t = std::time::Instant::now();
+    let map = d.hyphenation_exception_map();
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(map.values().next().map(Vec::len), Some(199_999));
 }

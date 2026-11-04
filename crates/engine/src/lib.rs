@@ -147,7 +147,7 @@ fn next_revision() -> u64 {
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
     pub fn new(doc: Document, path: Option<String>) -> Self {
-        let active_layer = doc.default_layer();
+        let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
         let identity_epoch = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -639,7 +639,7 @@ impl Session {
         if let Some(st) = self.active_mut()
             && st.doc.layer(st.active_layer).is_none()
         {
-            st.active_layer = st.doc.default_layer();
+            st.active_layer = st.doc.working_layer();
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {

@@ -145,10 +145,19 @@ fn parse_level(e: &El) -> Level {
         first_line: ind.and_then(|i| tw(i.attr("firstLine")).or(tw(i.attr("hanging")).map(|h| -h))),
         restart: parse_u32(e.val("lvlRestart")),
         legal: e.on("isLgl") == Some(true),
-        font: e.child("rPr").and_then(|r| r.child("rFonts")).and_then(|f| f.attr("ascii").or(f.attr("hAnsi"))).map(str::to_string),
+        // Only the font's kind matters (Symbol, Wingdings), and every bullet paragraph looks at it:
+        // a font name longer than any real one is cut.
+        font: e
+            .child("rPr")
+            .and_then(|r| r.child("rFonts"))
+            .and_then(|f| f.attr("ascii").or(f.attr("hAnsi")))
+            .map(|f| f.chars().take(MAX_FONT_NAME_CHARS).collect()),
         picture: e.child("lvlPicBulletId").is_some(),
     }
 }
+
+/// Longest font name kept from a numbering level.
+const MAX_FONT_NAME_CHARS: usize = 128;
 
 /// The bullet Word shows for `text` in `font`. Symbol and Wingdings bullets are stored as
 /// private-use characters (U+F0xx) or as the font's own code points; the common ones become
