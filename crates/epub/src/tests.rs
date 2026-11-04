@@ -26,8 +26,6 @@ fn exports_valid_package_in_reading_order() {
     assert!(z.by_name("OEBPS/nav.xhtml").is_ok());
 }
 
-/// #766: anchored graphics are exported where they are anchored (inline in the text, an
-/// above-line object as a block of its own), and their images go into the package.
 /// Many footnotes and endnotes each export with their own text, in reference order.
 #[test]
 fn many_notes_keep_their_own_text() {
@@ -58,6 +56,8 @@ fn a_huge_title_is_capped() {
     assert!(s.contains(&"T".repeat(1024)) && !s.contains(&"T".repeat(1025)), "{}", s.len());
 }
 
+/// #766: anchored graphics are exported where they are anchored (inline in the text, an
+/// above-line object as a block of its own), and their images go into the package.
 #[test]
 fn anchored_objects_are_exported_in_place() {
     let mut d = Document::new(&NewDocument::default());
