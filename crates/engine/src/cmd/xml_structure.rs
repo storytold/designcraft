@@ -345,6 +345,83 @@ pub fn export(d: &Document, xrefs: Option<&XrefIndex>) -> String {
     out
 }
 
+// ---------- outline ----------
+
+/// How much of an element's text the outline shows.
+const OUTLINE_TEXT: usize = 60;
+
+/// The document's XML structure as the Structure pane lists it: every element in document order,
+/// `depth` levels under the root, with the start of its text and the frame showing it (an inline
+/// element's: its story's). Tables and cells are left out: `xml.cells` lists a frame's.
+pub fn outline(d: &Document) -> Vec<Value> {
+    let ix = Index::new(d, None);
+    let mut frames: HashMap<StoryId, u64> = HashMap::new();
+    for id in d.all_items() {
+        if let Some(tf) = d.item(id).and_then(|it| it.text_frame()) {
+            frames.entry(tf.story).or_insert(id.0);
+        }
+    }
+    let mut out = Vec::new();
+    for id in &d.xml.root_children {
+        outline_element(&ix, &frames, *id, 0, &mut out);
+    }
+    out
+}
+
+fn outline_element(ix: &Index, frames: &HashMap<StoryId, u64>, id: u64, depth: usize, out: &mut Vec<Value>) {
+    let Some(e) = ix.el(id) else { return };
+    if depth > 64 {
+        return;
+    }
+    match e.content {
+        XmlContent::Story { story } => {
+            let Some(st) = ix.d.stories.get(&story) else { return };
+            let frame = frames.get(&story).copied();
+            out.push(json!({"element": id, "tag": e.tag, "depth": depth, "kind": "story", "text": outline_text(&st.text), "frame": frame}));
+            outline_inline(ix, st, frame, depth + 1, out);
+        }
+        XmlContent::None => {
+            out.push(json!({"element": id, "tag": e.tag, "depth": depth, "kind": "element", "text": "", "frame": null}));
+            for c in &e.children {
+                outline_element(ix, frames, *c, depth + 1, out);
+            }
+        }
+        XmlContent::Table { .. } | XmlContent::Cell { .. } | XmlContent::Text => {}
+    }
+}
+
+/// A story's inline elements, each where its text first appears, with the text it marks.
+fn outline_inline(ix: &Index, st: &Story, frame: Option<u64>, depth: usize, out: &mut Vec<Value>) {
+    let mut at: HashMap<u64, (usize, String)> = HashMap::new();
+    for (range, f) in st.runs() {
+        let chain = f.over.xml_element.filter(|id| *id != 0).map(|id| ix.inline_chain(id)).unwrap_or_default();
+        for (level, id) in chain.iter().enumerate() {
+            let entry = at.entry(*id).or_insert_with(|| {
+                let tag = ix.el(*id).map_or("", |e| e.tag.as_str());
+                out.push(json!({"element": id, "tag": tag, "depth": depth + level, "kind": "text", "text": "", "frame": frame}));
+                (out.len() - 1, String::new())
+            });
+            if entry.1.chars().count() < OUTLINE_TEXT {
+                entry.1.push_str(&st.text[range.clone()]);
+            }
+        }
+    }
+    for (i, text) in at.into_values() {
+        out[i]["text"] = json!(outline_text(&text));
+    }
+}
+
+/// The start of `text` on one line: markers left out, breaks as spaces.
+fn outline_text(text: &str) -> String {
+    let t: String = text
+        .chars()
+        .filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c) && *c != '\u{FEFF}')
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .take(OUTLINE_TEXT)
+        .collect();
+    t.trim().to_string()
+}
+
 // ---------- import by Id ----------
 
 /// The texts of the elements with an `Id` attribute in `xml`: Id → text, paragraphs separated by
@@ -653,6 +730,21 @@ mod tests {
         assert_eq!(
             export(&mut s),
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Root><Story><Translation Id=\"7\" SourceText=\"Hallo &quot;x&quot; &lt;y&gt;\">Hallo</Translation> Welt</Story></Root>\n"
+        );
+    }
+
+    /// The Tags panel's Structure lists the elements read from InDesign, not only tagged frames.
+    #[test]
+    fn structure_lists_the_elements_with_their_text_and_frame() {
+        let (mut s, _) = tagged();
+        let st = s.execute("xml.structure", &json!({})).unwrap();
+        let frame = s.doc().unwrap().doc.all_items()[0].0;
+        assert_eq!(
+            st["tree"],
+            json!([
+                {"element": 1, "tag": "Story", "depth": 0, "kind": "story", "text": "Hallo Welt", "frame": frame},
+                {"element": 2, "tag": "Translation", "depth": 1, "kind": "text", "text": "Hallo", "frame": frame},
+            ])
         );
     }
 

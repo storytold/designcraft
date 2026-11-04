@@ -241,6 +241,15 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Structure")).strong());
     let st = app.session.execute("xml.structure", &json!({})).unwrap_or_default();
     crate::rtl::label(ui, egui::RichText::new(st["root"].as_str().unwrap_or("Root")).size(11.0).color(t.text_dim));
+    // The structure read from InDesign, indented by depth: click an element to select its frame.
+    for el in st["tree"].as_array().cloned().unwrap_or_default() {
+        let indent = "  ".repeat(el["depth"].as_u64().unwrap_or(0) as usize + 1);
+        let text = el["text"].as_str().unwrap_or("").chars().take(40).collect::<String>();
+        let label = format!("{indent}<{}> {}", el["tag"].as_str().unwrap_or(""), text);
+        if ui.selectable_label(false, egui::RichText::new(label).size(11.0)).clicked() && el["frame"].is_u64() {
+            let _ = app.run("selection.set", json!({"ids": [el["frame"]]}));
+        }
+    }
     for el in st["elements"].as_array().cloned().unwrap_or_default() {
         let text = el["text"].as_str().unwrap_or("").chars().take(40).collect::<String>();
         let label = format!("  <{}> {}", el["tag"].as_str().unwrap_or(""), text);

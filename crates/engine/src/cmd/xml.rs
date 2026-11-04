@@ -500,7 +500,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(query "xml.structure", "Structure", [], None, "{} → {root, elements: [{tag, id, kind, text?}]} in reading order", has_doc, |s, _| {
+        cmd!(query "xml.structure", "Structure", [], None, "{} → {root, elements: [{tag, id, kind, text?}], tree: [{element, tag, depth, kind, text, frame}]}: the tagged frames in reading order, and the XML structure read from InDesign (`tree`, in document order; `kind`: story, element or text, `frame`: the frame showing it)", has_doc, |s, _| {
             let d = &s.doc()?.doc;
             let elements: Vec<Value> = tagged(d)
                 .into_iter()
@@ -514,7 +514,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     json!({"tag": it.xml_tag, "id": it.id.0, "kind": kind, "text": text})
                 })
                 .collect();
-            Ok(json!({"root": root_name(d), "elements": elements}))
+            Ok(json!({"root": root_name(d), "elements": elements, "tree": super::xml_structure::outline(d)}))
         }),
         cmd!(noundo "file.exportXml", "Export XML…", ["File"], None, "{path?} — the tagged content in reading order → {path, bytes} (no path: {text})", has_doc, |s, p| {
             let d = &s.doc()?.doc;
