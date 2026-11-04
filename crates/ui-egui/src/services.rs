@@ -13,6 +13,14 @@ pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 
 /// Open a file in its default application, or with `reveal`, show it in the file manager.
 pub type OpenPathFn = Box<dyn FnMut(&std::path::Path, bool) -> Result<(), String>>;
+/// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
+pub type WindowFrameFn = Box<dyn FnMut()>;
+
+/// Where the pointer is on the screen now, in the system's points from the top left of the main
+/// display, before the UI scale: the app divides them by egui's zoom factor to compare them with
+/// the window's `inner_rect`. `None` when the system doesn't say.
+pub type PointerFn = Box<dyn Fn() -> Option<egui::Pos2>>;
+
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -37,4 +45,13 @@ pub struct Services {
     /// Open a linked file in its application or show it in the file manager (Edit Original,
     /// Reveal in Explorer / Finder). Without it (the web build), Edit Original and Reveal are greyed out.
     pub open_path: Option<OpenPathFn>,
+    /// Keeps the undecorated window borderless, so the content and the pointer stay aligned
+    /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
+    /// needs no fixing.
+    pub window_frame: Option<WindowFrameFn>,
+    /// The pointer's place on the screen, asked when a file is dropped: a file dragged in from
+    /// another application brings no pointer events with it (winit reports none during a drag on
+    /// macOS), so without it a drop can't tell which frame it landed on. `None`: a drop without
+    /// pointer events lands in the middle of the view.
+    pub pointer: Option<PointerFn>,
 }
