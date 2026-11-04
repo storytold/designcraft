@@ -248,6 +248,19 @@ fn a_frame_slanted_by_its_own_width_keeps_its_x_corner_to_corner() {
         .collect();
     app.run("path.moveAnchors", json!({"id": trap, "anchors": corner, "dx": 50, "dy": 0})).unwrap();
     assert!(corner_x(&app, trap), "a trapezoid");
+    // One corner moved (50, 1): its two other edges stay on the bounds, side by side (noted in
+    // review).
+    let nudged = app.run("frame.create", json!({"rect": [900, 100, 960, 200]})).unwrap()["id"].as_u64().unwrap();
+    let it = item_of(&app, nudged);
+    let corner: Vec<Value> = it.path.subpaths[0]
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| (it.xf * a.p).y < 150.0 && (it.xf * a.p).x < 930.0)
+        .map(|(k, _)| json!([0, k]))
+        .collect();
+    app.run("path.moveAnchors", json!({"id": nudged, "anchors": corner, "dx": 50, "dy": 1})).unwrap();
+    assert!(corner_x(&app, nudged), "a frame with one corner moved (50, 1)");
     // Slanted the other way: the right edge moved down by the frame's height.
     let down = app.run("frame.create", json!({"rect": [700, 100, 760, 200]})).unwrap()["id"].as_u64().unwrap();
     let it = item_of(&app, down);
