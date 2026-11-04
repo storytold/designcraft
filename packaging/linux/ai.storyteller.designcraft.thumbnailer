@@ -1,0 +1,8 @@
+# Installed as share/thumbnailers/ai.storyteller.designcraft.thumbnailer (package.sh). File managers
+# that read freedesktop thumbnailers (Nautilus, Thunar, Dolphin through KIO) run it for .designcraft
+# files: %i is the file, %o the PNG to write, %s the size in pixels. It writes the first-page preview
+# saved in the file; a file without one keeps the file type's icon.
+[Thumbnailer Entry]
+TryExec=designcraft-cli
+Exec=designcraft-cli thumbnail %i %o %s
+MimeType=application/x-designcraft;

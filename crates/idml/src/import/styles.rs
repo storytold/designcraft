@@ -86,6 +86,7 @@ impl<'r> Importer<'r> {
             let split = e.get("SplitDocument") == Some("true")
                 || e.elements()
                     .any(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB") && m.get("SplitDocument") == Some("true"));
+            self.export_tag(e, &format!("p:{name}"));
             if split {
                 self.styles.export_tags.entry(format!("p:{name}")).or_default().split = true;
             }
@@ -99,6 +100,7 @@ impl<'r> Importer<'r> {
                 Some(slot) => *slot = s,
                 None => self.styles.character.push(s),
             }
+            self.export_tag(e, &format!("c:{name}"));
         }
         // Keep built-ins as well: [Basic Table] is editable, and [No table style]
         // supplies the defaults used by named styles in ordinary IDML files.
@@ -199,6 +201,19 @@ impl<'r> Importer<'r> {
                 None => self.styles.object.push(s),
             }
         }
+    }
+
+    /// Export Tagging (tag and class) of style `e` from its EPUB export tag map, under `key`.
+    fn export_tag(&mut self, e: &El, key: &str) {
+        let Some(m) = e.elements().find(|m| m.local() == "StyleExportTagMap" && m.get("ExportType") == Some("EPUB")) else { return };
+        let tag = m.get("ExportTag").unwrap_or("").to_string();
+        let class = m.get("ExportClass").unwrap_or("").to_string();
+        if tag.is_empty() && class.is_empty() {
+            return;
+        }
+        let t = self.styles.export_tags.entry(key.to_string()).or_default();
+        t.tag = tag;
+        t.class = class;
     }
 
     fn based_on(&self, e: &El, para: bool) -> Option<String> {
