@@ -588,6 +588,7 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let Some(document) = s.docs.get_mut(index) else { continue };
+        document.recovery_revisions.retain(|(entry_dir, _)| !same_directory(entry_dir, dir));
         let (doc, meta) = files(dir, document.uid);
         let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
             .map_err(|e| EngineError::Other(e.to_string()))?;
