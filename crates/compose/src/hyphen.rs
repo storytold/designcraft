@@ -272,8 +272,7 @@ fn is_serbian(lang: Lang) -> bool {
 /// never `преду-слов`, though the patterns allow both. A vowel alone between two breaks after a
 /// prefix belongs to the second word, so the break after it goes.
 fn serbian_compound_breaks(core: &[char], pts: Vec<usize>) -> Vec<usize> {
-    let latin = core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c));
-    let (word, at) = if latin {
+    let (word, at) = if is_serbian_latin(core) {
         match serbian_cyrillic(core) {
             Some(x) => x,
             None => return pts,
@@ -375,6 +374,11 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || is_apostrophe(c)
 }
 
+/// Is `core` written in Serbian Latin (any Latin letter)?
+fn is_serbian_latin(core: &[char]) -> bool {
+    core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c))
+}
+
 /// Break points of a Serbian Latin `core` through its Cyrillic spelling, in `lang`'s patterns.
 fn serbian_latin_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let Some((cyr, at)) = serbian_cyrillic(core) else { return (vec![], Source::None) };
@@ -390,11 +394,24 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     }
     let lang = match lang {
         Lang::Installed(i) => {
-            if installed_bundled(i) == Some(hypher::Lang::Serbian) && !serbian_two_letters(core).is_empty() {
+            let serbian = installed_bundled(i) == Some(hypher::Lang::Serbian);
+            if serbian && !serbian_two_letters(core).is_empty() {
                 return serbian_latin_breaks(core, lang);
+            }
+            // An elision, as for the bundled patterns below: only the word after it hyphenates.
+            if matches!(installed_bundled(i), Some(hypher::Lang::French | hypher::Lang::Italian))
+                && let Some(ap) = core.iter().rposition(|&c| c == '\'')
+            {
+                let (pts, src) = if ap + 1 < n { core_breaks(&core[ap + 1..], lang) } else { (vec![], Source::None) };
+                return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
             }
             if let Some(p) = installed_points(i, core) {
                 return (p, Source::Patterns);
+            }
+            // A Latin word no installed set's alphabet covers: its Cyrillic spelling tries the
+            // installed sets again, a Cyrillic one first, before the bundled patterns.
+            if serbian && is_serbian_latin(core) {
+                return serbian_latin_breaks(core, lang);
             }
             match installed_bundled(i) {
                 Some(l) => Lang::Patterns(l),
@@ -414,7 +431,7 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
             return (pts.into_iter().map(|p| p + ap + 1).collect(), src);
         }
         // Serbian Latin through its Cyrillic spelling, the script of the bundled patterns.
-        if l == hypher::Lang::Serbian && core.iter().any(|c| c.is_ascii_alphabetic() || "čćđšž".contains(*c)) {
+        if l == hypher::Lang::Serbian && is_serbian_latin(core) {
             return serbian_latin_breaks(core, lang);
         }
         let s: String = core.iter().collect();
@@ -509,7 +526,12 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     }
     let min_before = lim.after_first.max(1);
     let min_after = lim.before_last.max(1);
-    let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
+    let base = match lang {
+        Lang::Patterns(l) => Some(l),
+        Lang::Installed(i) => installed_bundled(i),
+        Lang::English => None,
+    };
+    let elides = matches!(base, Some(hypher::Lang::French | hypher::Lang::Italian));
     // Run bounds of each point's letter run (trimmed of apostrophes).
     let run_of = |p: usize| {
         let mut a = p;
@@ -535,6 +557,10 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
     pts.into_iter()
         .filter(|&p| {
             let (a, b) = run_of(p);
+            // A break in an elided prefix never counts.
+            if p <= a {
+                return false;
+            }
             let run = &chars[a..b];
             // Serbian `lj`, `nj` and `dž` are one letter each (Pravopis, §186г).
             let digraphs = is_serbian(lang).then(|| {
