@@ -1,11 +1,14 @@
 //! The Spelling panel and right-click suggestions: the shared review (`craft-proof-ui`) over this
 //! document's stories and the read-only spelling queries.
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, ops::Range, sync::Arc};
 
 use craft_proof_ui::{Action, ContextChoice, Host, Issue, IssueKind, Review, Text};
 use serde_json::{Value, json};
 
 use crate::{DesignApp, i18n::tr, theme::Tokens};
+
+/// The underline of a misspelled word, in the panel and on the canvas.
+pub(crate) const SPELLING_MARK: egui::Color32 = egui::Color32::from_rgb(230, 30, 30);
 
 /// The session as the review sees it.
 struct AppHost<'a>(&'a mut DesignApp);
@@ -43,8 +46,7 @@ impl Host for AppHost<'_> {
 
     /// A story is replaced on any edit, formatting too; that can only ask for a needless re-check.
     fn version(&self, story: u64) -> Option<u64> {
-        let story = self.0.session.active()?.doc.stories.get(&designcraft_doc::StoryId(story))?;
-        Some(Arc::as_ptr(story) as usize as u64)
+        story_version(&self.0.session.active()?.doc, story)
     }
 
     fn document(&self) -> Option<u64> {
@@ -71,6 +73,28 @@ impl Host for AppHost<'_> {
     }
 }
 
+fn story_version(doc: &designcraft_doc::Document, story: u64) -> Option<u64> {
+    Some(Arc::as_ptr(doc.stories.get(&designcraft_doc::StoryId(story))?) as usize as u64)
+}
+
+/// While the review's panel shows, the issues left to underline in each story it still speaks for:
+/// not its ignored words, and not a story edited since, until it is checked again.
+pub(crate) fn review_marks(app: &DesignApp) -> HashMap<u64, Vec<(Range<usize>, IssueKind)>> {
+    let mut marks: HashMap<_, Vec<_>> = HashMap::new();
+    let Some(st) = app.session.active() else { return marks };
+    if !app.spelling.started() || !crate::panel_docking::showing(app, "spelling") {
+        return marks;
+    }
+    let document = Some(st.identity_epoch);
+    for id in st.doc.stories.keys().filter(|id| app.spelling.covers(document, id.0, story_version(&st.doc, id.0))) {
+        marks.insert(id.0, Vec::new());
+    }
+    for issue in app.spelling.marks(document, |story| story_version(&st.doc, story)) {
+        marks.entry(issue.story).or_default().push((issue.start..issue.end, issue.kind));
+    }
+    marks
+}
+
 struct AppText(String);
 
 impl Text for AppText {
@@ -86,7 +110,11 @@ fn colors(t: &Tokens, ui: &egui::Ui) -> craft_proof_ui::Colors {
         field: t.input,
         field_border: t.input_border,
         hover: t.hover,
-        spelling: egui::Color32::from_rgb(230, 30, 30),
+        selected: t.row_selected,
+        accent: t.accent_strong,
+        // White, but for High Contrast's yellow.
+        on_accent: if t.accent_strong.intensity() > 0.6 { egui::Color32::BLACK } else { egui::Color32::WHITE },
+        spelling: SPELLING_MARK,
         grammar: t.accent,
         error: ui.visuals().error_fg_color,
     }

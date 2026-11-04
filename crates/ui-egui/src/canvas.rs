@@ -56,7 +56,7 @@ use scroll::{mods, navigation_space, scrollbars, spring_zoom_mode};
 #[cfg(test)]
 use text_overlay::dynamic_misspellings;
 pub use text_overlay::selected_text;
-use text_overlay::{draw_dynamic_spelling, draw_hidden_characters};
+use text_overlay::{draw_hidden_characters, draw_spelling_marks};
 #[cfg(test)]
 use text_overlay::{draw_text_selection, frame_hidden_marks, hidden_marks};
 use tool_overlays::draw_tool_overlays;
@@ -293,14 +293,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         if app.ui.flattener_preview {
             draw_flattener_preview(&painter, &xf, &doc, &layout);
         }
-        if app.ui.dynamic_spelling && !preview {
-            draw_dynamic_spelling(app, ui.ctx(), &painter, &xf, &doc, &layout);
-        }
     }
     if presenting {
         return;
     }
     let sel_rect = draw_selection(app, &painter, &xf, &doc, &layout);
+    if !preview {
+        // Over the selection: a review selects the word it marks.
+        draw_spelling_marks(app, ui.ctx(), &painter, &xf, &doc, &layout);
+    }
     // Where the pointer moved on to another of the app's windows, this window's last pointer
     // position is stale: no hover feedback or tool cursor there.
     let elsewhere = pointer_elsewhere(app, ui.ctx());

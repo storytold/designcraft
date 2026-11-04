@@ -376,21 +376,33 @@ pub(super) fn dynamic_misspellings(
     bad
 }
 
-/// Edit › Spelling › Dynamic Spelling: red squiggles under misspelled words.
-pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+/// Squiggles under spelling issues: what is left of a review while its panel shows, else Edit ›
+/// Spelling › Dynamic Spelling's misspelled words if it is on.
+pub(super) fn draw_spelling_marks(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
+    use crate::panels::spelling::SPELLING_MARK;
+    let review = crate::panels::spelling::review_marks(app);
+    if review.is_empty() && !app.ui.dynamic_spelling {
+        return;
+    }
+    let preferred = crate::theme::Tokens::get(ctx).accent;
     for story in doc.stories.values() {
-        let bad = dynamic_misspellings(ctx, doc, story);
-        if bad.is_empty() {
+        let marks: Vec<(std::ops::Range<usize>, Color32)> = if let Some(found) = review.get(&story.id.0) {
+            found.iter().map(|(r, kind)| (r.clone(), if *kind == craft_proof_ui::IssueKind::Spelling { SPELLING_MARK } else { preferred })).collect()
+        } else if app.ui.dynamic_spelling {
+            dynamic_misspellings(ctx, doc, story).iter().map(|r| (r.clone(), SPELLING_MARK)).collect()
+        } else {
+            continue;
+        };
+        if marks.is_empty() {
             continue;
         }
         let cs = app.session.cache.get(doc, story.id, None);
-        let red = Stroke::new(1.0, Color32::from_rgb(230, 30, 30));
         for ft in &cs.frames {
             let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
             let m = a * doc.text_xf(it);
             for l in &ft.lines {
-                for r in bad.iter().filter(|r| r.start < l.range.end && r.end > l.range.start) {
-                    let gs: Vec<_> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= r.start && g.byte < r.end).collect();
+                for (r, color) in marks.iter().filter(|(r, _)| r.start < l.range.end && r.end > l.range.start) {
+                    let gs: Vec<_> = compose::selected_glyphs(l, r.start, r.end).into_iter().filter_map(|i| l.glyphs.get(i)).collect();
                     let (Some(x0), Some(x1)) = (gs.iter().map(|g| g.x).reduce(f64::min), gs.iter().map(|g| g.x + g.adv).reduce(f64::max)) else {
                         continue;
                     };
@@ -398,7 +410,7 @@ pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painte
                     let (p0, p1) = (xf.to_screen(m * Point::new(x0, y)), xf.to_screen(m * Point::new(x1, y)));
                     // Screen direction of the text's own "down", so the wave hangs below the baseline in rotated, flipped and vertical frames.
                     let down = xf.to_screen(m * Point::new(x0, y + 1.0)) - p0;
-                    painter.add(egui::Shape::line(squiggle_points(p0, p1, down), red));
+                    painter.add(egui::Shape::line(squiggle_points(p0, p1, down), Stroke::new(1.0, *color)));
                 }
             }
         }

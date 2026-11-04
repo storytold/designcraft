@@ -36,18 +36,49 @@ fn check_spelling_opens_the_panel_on_the_first_issue_and_selects_it() {
 }
 
 #[test]
-fn a_suggestion_clicked_in_the_panel_corrects_and_undo_restores() {
+fn a_suggestion_chosen_in_the_panel_corrects_and_undo_restores() {
     let (mut app, sid) = app_with(TEXT);
     open(&mut app).unwrap();
-    let suggestion = app.spelling.current().unwrap().suggestions[0].clone();
+    let suggestion = app.spelling.current().unwrap().suggestions[1].clone();
     let mut h = panel(app);
     h.get_by_label(&suggestion).click();
+    h.run_steps(2);
+    assert_eq!(text_of(h.state(), sid), TEXT, "a click only chooses");
+    h.get_by_label("Change").click();
     h.run_steps(2);
     let app = h.state_mut();
     assert_eq!(text_of(app, sid), format!("The {suggestion} fox. A jumpd dog."));
     assert_eq!(app.spelling.current().unwrap().start, 17 + suggestion.len() - 5, "on to the next");
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(text_of(app, sid), TEXT);
+}
+
+/// A review marks what is left of its pass on the canvas, whatever Dynamic Spelling is set to.
+#[test]
+fn the_review_underlines_what_is_left_while_its_panel_shows() {
+    let (mut app, sid) = app_with(TEXT);
+    assert!(review_marks(&app).is_empty(), "nothing before a review");
+    open(&mut app).unwrap();
+    assert!(!app.ui.dynamic_spelling);
+    let ranges = |app: &DesignApp| review_marks(app).get(&sid.0).map(|marks| marks.iter().map(|m| m.0.clone()).collect::<Vec<_>>());
+    assert_eq!(ranges(&app), Some(vec![4..9, 17..22]));
+    action(&mut app, "ignoreOnce", None).unwrap();
+    assert_eq!(ranges(&app), Some(vec![17..22]), "an ignored occurrence is no longer marked");
+    app.run("window.panel", json!({"panel": "pages"})).unwrap();
+    assert!(review_marks(&app).is_empty(), "the panel behind another one marks nothing");
+}
+
+/// The dock scrolls most panels itself, which would take the actions out of view with the rest.
+#[test]
+fn the_docked_panel_keeps_its_actions_in_view() {
+    let (mut app, _) = app_with(TEXT);
+    open(&mut app).unwrap();
+    let height = 460.0;
+    let h = crate::test_window::open(app, egui::vec2(1400.0, height));
+    for action in ["Change", "Ignore Once", "Ignore All", "Add to Dictionary"] {
+        let bottom = h.get_by_label(action).rect().max.y;
+        assert!(bottom <= height, "{action} ends at {bottom}");
+    }
 }
 
 #[test]

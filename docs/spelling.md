@@ -6,11 +6,16 @@ and reviews it with the shared interface, [`craft-proof-ui`](https://github.com/
 ## Using it
 
 **Edit > Spelling > Check Spelling…** opens the Spelling panel beside the page, on the first issue in
-the document, with the word selected in the text. Clicking a suggestion corrects the word and moves
-on; corrections are ordinary undoable edits. **Ignore Once** and **Ignore All** last for this pass, and
-**Add to Dictionary** adds to the document's user dictionary. **Change…** takes a typed replacement. The
-document stays editable: if the text under the current issue changes, the panel asks to check again
-instead of applying a correction to the wrong place.
+the document, with the word selected in the text. While the panel shows, every issue left in the pass
+is underlined on the page: red for spelling, blue for a preferred form. Ignored words lose their
+underline.
+
+**Change to** starts with the best suggestion. Click another suggestion or type a replacement, then
+**Change** or Enter corrects the word and moves on; double-clicking a suggestion does both. Corrections
+are ordinary undoable edits. **Ignore Once** and **Ignore All** last for this pass, and **Add to
+Dictionary** adds to the document's user dictionary. The document stays editable: if the text under the
+current issue changes, the panel asks to check again instead of applying a correction to the wrong place,
+and that story's underlines go until it does.
 
 Right-clicking a misspelled word while typing offers its suggestions, Add to Dictionary and Check
 Spelling…. **Edit > Spelling > Dynamic Spelling** underlines issues as you type, and proofs a story again

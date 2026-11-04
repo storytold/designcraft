@@ -71,9 +71,10 @@ fn scrolled_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, max_h: f32) {
     }
 }
 
-/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer).
+/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer; the
+/// Spelling panel: the review, then its actions in view).
 pub fn scrolls_itself(id: &str) -> bool {
-    id == "pages"
+    matches!(id, "pages" | "spelling")
 }
 
 /// The contents of an icon-column panel.

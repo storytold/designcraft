@@ -3021,6 +3021,40 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     assert_eq!(current_page(h.state()), Some(1));
 }
 
+/// Red squiggles the canvas draws, drawn above the selection a review makes of its word.
+#[test]
+fn a_review_underlines_its_issues_on_the_canvas() {
+    use crate::panels::spelling::SPELLING_MARK;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text", "text": "The jumpd fox. A jumpd dog."})).unwrap();
+    let squiggles = |app: &DesignApp| {
+        let st = app.session.doc().unwrap();
+        let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+        let xf = Xf { min: pos2(0.0, 0.0), origin: Point::new(0.0, 0.0), zoom: 1.0, rot: 0, pivot: pos2(0.0, 0.0) };
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_spelling_marks(app, ui.ctx(), ui.painter(), &xf, &st.doc, &layout);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter(|s| matches!(&s.shape, egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(SPELLING_MARK)))
+            .count()
+    };
+    assert_eq!(squiggles(&app), 0, "nothing without a review or Dynamic Spelling");
+    crate::panels::spelling::open(&mut app).unwrap();
+    assert!(!app.ui.dynamic_spelling);
+    assert_eq!(squiggles(&app), 2);
+    crate::panels::spelling::action(&mut app, "ignoreAll", None).unwrap();
+    assert_eq!(squiggles(&app), 0, "an ignored word loses its underline");
+    app.ui.dynamic_spelling = true;
+    assert_eq!(squiggles(&app), 0, "the review speaks for a story it has checked");
+    app.run("window.panel", json!({"panel": "pages"})).unwrap();
+    assert_eq!(squiggles(&app), 2, "Dynamic Spelling once the panel is away");
+}
+
 /// Typing in one story must not re-proof the others; a language or dictionary change must.
 #[test]
 fn dynamic_spelling_reproofs_only_after_a_relevant_change() {

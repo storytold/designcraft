@@ -1142,7 +1142,7 @@ dependencies = [
 [[package]]
 name = "craft-proof-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5c7a410e6ce1dc9672ad75b75d5dd424986fa956#5c7a410e6ce1dc9672ad75b75d5dd424986fa956"
+source = "git+https://github.com/storytold/craft-libs?rev=f3d689bdad0816e7d5e00891a789acd31b5e34cb#f3d689bdad0816e7d5e00891a789acd31b5e34cb"
 dependencies = [
  "egui",
 ]
