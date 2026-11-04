@@ -538,19 +538,41 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
     need_ui(b, "screenshot")?;
     // The app writes the capture to disk (loopback: same machine), then we read it back.
     let keep = a.get("path").and_then(Value::as_str);
-    let target = match keep {
-        Some(p) => p.to_string(),
-        None => std::env::temp_dir()
-            .join(format!("designcraft-mcp-{}-{}.png", std::process::id(), std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_millis())))
-            .to_string_lossy()
-            .to_string(),
+    // Without a path of the caller's, the capture goes through a folder of our own that nobody
+    // else can read (the temporary folder may be shared with other users).
+    let private = match keep {
+        Some(_) => None,
+        None => Some(private_temp_dir("designcraft-mcp")?),
     };
-    let r = b.call("ui.screenshot", json!({"path": target}))?;
-    let png = std::fs::read(&target).map_err(|e| format!("read {target}: {e}"))?;
-    if keep.is_none() {
+    let target = match (keep, &private) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(dir)) => dir.join("screenshot.png").to_string_lossy().to_string(),
+        (None, None) => return Err("no screenshot folder".into()),
+    };
+    let r = b.call("ui.screenshot", json!({"path": target}));
+    let png = r.as_ref().ok().map(|_| std::fs::read(&target).map_err(|e| format!("read {target}: {e}")));
+    if let Some(dir) = private {
         std::fs::remove_file(&target).ok();
+        std::fs::remove_dir(dir).ok();
     }
+    let (r, png) = (r?, png.transpose()?.unwrap_or_default());
     Ok(ToolResult::image(designcraft_engine::cmd::base64_encode(&png), &json!({"width": r.get("width"), "height": r.get("height"), "path": keep})))
+}
+
+/// A new folder under the temporary folder that only this user can read, named after `prefix`.
+/// Made with `create_dir` (never an existing folder, so never one someone else made) and, on
+/// Unix, mode 0700.
+fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 fn pointer(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {
