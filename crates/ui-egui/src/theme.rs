@@ -288,7 +288,15 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
 
 /// Whether [`install_fonts`] would find the installed fonts cataloged and their faces read.
 pub fn system_fonts_ready() -> bool {
-    designcraft_fonts::FontDb::global().system_fonts_cataloged() && (cfg!(test) || SYSTEM_FACES.get().is_some())
+    if !designcraft_fonts::FontDb::global().system_fonts_cataloged() {
+        return false;
+    }
+    // The first frame may have come before the scan finished: start reading the faces now.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !cfg!(test) {
+        read_ui_fonts(designcraft_fonts::CRAFT_FONTS);
+    }
+    cfg!(test) || SYSTEM_FACES.get().is_some()
 }
 
 /// An installed font the UI falls back to for a script the built-in faces lack.
