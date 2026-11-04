@@ -156,7 +156,7 @@ fn exports_sort_keys_as_topic_attributes_without_changing_names() {
 /// These references all belong to the same page. Fix the page resolution to isolate index
 /// ordering from fonts/composition, and use the real index generator for its text and headings.
 fn generated_index(doc: &Document) -> Vec<(String, String)> {
-    let refs: Vec<_> = references(doc).into_iter().map(|r| Resolved { r, pages: Some((0, 0)) }).collect();
+    let refs: Vec<_> = references(doc).into_iter().map(|r| Resolved { r, pages: Some((0, 0)), language: String::new() }).collect();
     index::build(&IndexSpec { title: String::new(), ..Default::default() }, &refs, &|p| (p + 1).to_string())
 }
 

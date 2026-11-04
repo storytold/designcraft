@@ -81,6 +81,11 @@ display_name = "youssef"
 [people.dylanmtaylor]
 sync_github_name = true
 
+[people.sociolog]
+real_name = "Mile Vukajlović"
+display_name = "Mile Vukajlović"
+sync_github_name = false
+
 [people.Tom-R-Main]
 sync_github_name = true
 

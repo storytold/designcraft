@@ -1502,6 +1502,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Portuguese: Brazilian", "პორტუგალიური: ბრაზილია"),
     ("Rounded Rectangle", "მომრგვალებული მართკუთხედი"),
     ("Russian", "რუსული"),
+    ("Serbian: Cyrillic", "სერბული: კირილიცა"),
+    ("Serbian: Latin", "სერბული: ლათინური"),
     ("Solid", "უწყვეტი"),
     ("Spanish", "ესპანური"),
     ("Story Editor", "ტექსტის რედაქტორი"),
