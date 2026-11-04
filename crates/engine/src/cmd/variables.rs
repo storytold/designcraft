@@ -365,9 +365,12 @@ fn unvar(st: &mut designcraft_doc::Story, i: usize, n: usize, value: &str, depth
             at
         };
         let target = var_char(i).unwrap_or(' ').to_string();
-        let value = var_char(i).map_or_else(|| value.to_string(), |c| value.replace(c, ""));
-        for pos in instances(&st.text, &target) {
-            st.replace(pos..pos + target.len(), &value);
+        let at = instances(&st.text, &target);
+        if !at.is_empty() {
+            let value = var_char(i).map_or_else(|| value.to_string(), |c| value.replace(c, ""));
+            for pos in at {
+                st.replace(pos..pos + target.len(), &value);
+            }
         }
         for k in i + 1..n {
             let (from, to) = (var_char(k).unwrap_or(' ').to_string(), var_char(k - 1).unwrap_or(' ').to_string());

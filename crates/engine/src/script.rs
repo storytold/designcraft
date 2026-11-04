@@ -69,8 +69,8 @@ fn step_of(v: &Value) -> Result<Step, String> {
     Ok(Step { command, params })
 }
 
-/// The value a reference (`N.path`, `last.path`) points at.
-fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
+/// The value a reference (`N.path`, `last.path`) points at, borrowed from `results`.
+fn lookup<'a>(r: &str, results: &'a [Value]) -> Result<&'a Value, String> {
     let mut parts = r.split('.');
     let head = parts.next().unwrap_or("");
     let idx = if head == "last" {
@@ -78,14 +78,14 @@ fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
     } else {
         head.parse::<usize>().map_err(|_| format!("bad reference `${r}`"))?
     };
-    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?.clone();
+    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?;
     for p in parts {
-        v = match (&v, p.parse::<usize>()) {
-            (Value::Array(a), Ok(i)) => a.get(i).cloned(),
-            (Value::Object(o), _) => o.get(p).cloned(),
+        v = match (v, p.parse::<usize>()) {
+            (Value::Array(a), Ok(i)) => a.get(i),
+            (Value::Object(o), _) => o.get(p),
             _ => None,
         }
-        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(&v)))?;
+        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(v)))?;
     }
     Ok(v)
 }
@@ -108,12 +108,18 @@ fn is_reference(r: &str) -> bool {
 /// story, then interpolates that story into the next, could otherwise double its size each step.
 pub const MAX_INTERPOLATED_BYTES: usize = 16 << 20;
 
+fn too_long(s: &str) -> String {
+    // Cut at a char boundary: a preview of a long Unicode input mustn't copy all of it.
+    let preview = &s[..s.floor_char_boundary(40)];
+    format!("the interpolated text of {preview} is longer than {MAX_INTERPOLATED_BYTES} bytes").replace('\n', " ")
+}
+
 /// Replace references in `params` with values from earlier `results`.
 pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
     Ok(match params {
         Value::String(s) => {
             if let Some(r) = s.strip_prefix('$').filter(|r| is_reference(r)) {
-                return lookup(r, results);
+                return lookup(r, results).cloned();
             }
             if !s.contains("${") && !s.contains("$$") {
                 return Ok(params.clone());
@@ -128,26 +134,25 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
                     rest = tail;
                 } else if let Some(inner) = after.strip_prefix('{') {
                     let end = inner.find('}').ok_or_else(|| format!("unclosed `${{` in {s:?}"))?;
-                    match lookup(&inner[..end], results)? {
-                        Value::String(t) => out.push_str(&t),
-                        other => out.push_str(&other.to_string()),
+                    // The length is checked before the value is copied in.
+                    let piece = match lookup(&inner[..end], results)? {
+                        Value::String(t) => std::borrow::Cow::Borrowed(t.as_str()),
+                        other => std::borrow::Cow::Owned(other.to_string()),
+                    };
+                    if out.len().saturating_add(piece.len()) > MAX_INTERPOLATED_BYTES {
+                        return Err(too_long(s));
                     }
-                    if out.len() > MAX_INTERPOLATED_BYTES {
-                        return Err(format!("the interpolated text of {} is longer than {MAX_INTERPOLATED_BYTES} bytes", s.get(..40).unwrap_or(s))
-                            .replace('\n', " "));
-                    }
+                    out.push_str(&piece);
                     rest = &inner[end + 1..];
                 } else {
                     out.push('$');
                     rest = after;
                 }
             }
-            out.push_str(rest);
-            if out.len() > MAX_INTERPOLATED_BYTES {
-                return Err(
-                    format!("the interpolated text of {} is longer than {MAX_INTERPOLATED_BYTES} bytes", s.get(..40).unwrap_or(s)).replace('\n', " ")
-                );
+            if out.len().saturating_add(rest.len()) > MAX_INTERPOLATED_BYTES {
+                return Err(too_long(s));
             }
+            out.push_str(rest);
             Value::String(out)
         }
         Value::Array(a) => Value::Array(a.iter().map(|v| resolve(v, results)).collect::<Result<_, _>>()?),
@@ -221,6 +226,12 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_limit_error_previews_a_multibyte_input_in_bounds() {
+        let e = super::too_long(&"€".repeat(1000));
+        assert!(e.len() < 150, "{e}");
+    }
+
     use super::*;
 
     #[test]
