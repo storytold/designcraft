@@ -21,7 +21,10 @@ mod gpu_limits;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(target_os = "macos")]
+mod pointer;
 mod profile;
+mod window_frame;
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, Services};
@@ -224,6 +227,8 @@ fn services() -> Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        #[cfg(target_os = "macos")]
+        pointer: Some(Box::new(pointer::screen_position)),
         ..Default::default()
     }
 }
@@ -428,6 +433,9 @@ fn main() -> std::process::ExitCode {
                 }
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
+                // The custom title bar's undecorated window must stay borderless, or its caption
+                // and border offset the content and the pointer on some Windows systems (#1295).
+                app.services.window_frame = window_frame::service(cc, app.custom_titlebar);
                 if let Some(port) = control_port {
                     let rx = control_server::start(port, cc.egui_ctx.clone());
                     app = app.with_control(rx);

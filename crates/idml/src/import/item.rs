@@ -371,7 +371,7 @@ impl<'r> Importer<'r> {
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        let id = designcraft_doc::insert_asset(
+        let id = self.asset_index.insert_asset(
             &mut self.assets,
             Asset {
                 page,
