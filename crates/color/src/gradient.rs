@@ -24,16 +24,29 @@ impl GradientKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GradientStop {
     /// 0..=1 along the gradient.
     pub offset: f32,
+    /// The display color. For a stop with a `swatch`, the swatch's color when it was last
+    /// resolved ([`GradientStop::swatch`]).
     pub color: Color,
     #[serde(default = "one")]
     pub opacity: f32,
     /// Midpoint to the next stop, 0.13..=0.87 (InDesign's diamond), default 0.5.
     #[serde(default = "half")]
     pub midpoint: f32,
+    /// The color swatch the stop takes its ink from: a spot or process color, a tint of one,
+    /// or `[Paper]`. Print export writes the stop in that swatch's inks; `None` is a plain color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<String>,
+}
+
+impl GradientStop {
+    /// A plain-color stop, opaque, with the midpoint halfway to the next stop.
+    pub fn new(offset: f32, color: Color) -> Self {
+        Self { offset, color, opacity: 1.0, midpoint: 0.5, swatch: None }
+    }
 }
 
 fn one() -> f32 {
@@ -52,13 +65,7 @@ pub struct Gradient {
 impl Default for Gradient {
     /// InDesign's default "White, Black" gradient.
     fn default() -> Self {
-        Self {
-            kind: GradientKind::Linear,
-            stops: vec![
-                GradientStop { offset: 0.0, color: Color::WHITE, opacity: 1.0, midpoint: 0.5 },
-                GradientStop { offset: 1.0, color: Color::BLACK, opacity: 1.0, midpoint: 0.5 },
-            ],
-        }
+        Self { kind: GradientKind::Linear, stops: vec![GradientStop::new(0.0, Color::WHITE), GradientStop::new(1.0, Color::BLACK)] }
     }
 }
 
@@ -99,6 +106,26 @@ impl Gradient {
                 let t = s.offset + (n.offset - s.offset) * s.midpoint;
                 let (c, o) = self.sample(t);
                 out.push((t, c, o));
+            }
+        }
+        out
+    }
+    /// Stops for a renderer that blends between them in RGB: the expanded stops, plus samples
+    /// through each span that isn't RGB at both ends, so process colours keep blending as inks.
+    pub fn display_stops(&self) -> Vec<(f32, Color, f32)> {
+        const STEPS: usize = 16;
+        let stops = self.expanded_stops();
+        let mut out: Vec<(f32, Color, f32)> = Vec::with_capacity(stops.len() * STEPS);
+        for (i, s) in stops.iter().enumerate() {
+            out.push(*s);
+            let Some(n) = stops.get(i + 1) else { continue };
+            if matches!((s.1, n.1), (Color::Rgb { .. }, Color::Rgb { .. })) || n.0 - s.0 <= 1e-4 {
+                continue;
+            }
+            for j in 1..STEPS {
+                let t = s.0 + (n.0 - s.0) * j as f32 / STEPS as f32;
+                let (c, a) = self.sample(t);
+                out.push((t, c, a));
             }
         }
         out
@@ -200,6 +227,35 @@ mod tests {
     }
 
     #[test]
+    fn process_stops_blend_as_inks() {
+        // LYH Studio episode 6: magenta to cyan is C 50 M 50 halfway (a light lilac), not the RGB mix.
+        let mut g = Gradient::default();
+        g.stops[0].color = Color::cmyk(0.0, 1.0, 0.0, 0.0);
+        g.stops[1].color = Color::cmyk(1.0, 0.0, 0.0, 0.0);
+        assert_eq!(g.sample(0.5).0, Color::cmyk(0.5, 0.5, 0.0, 0.0));
+        let d = g.display_stops();
+        assert_eq!(d.len(), 17, "sampled through the span");
+        assert!(d.iter().any(|(o, c, _)| (*o - 0.5).abs() < 1e-6 && *c == Color::cmyk(0.5, 0.5, 0.0, 0.0)));
+        // A midpoint stays an ink too; RGB stops aren't sampled.
+        g.stops[0].midpoint = 0.25;
+        assert!(matches!(g.expanded_stops()[1].1, Color::Cmyk { .. }));
+        assert_eq!(Gradient::default().display_stops().len(), 2);
+        // Grey and CMYK meet as inks; RGB with anything else blends in RGB.
+        assert_eq!(Color::gray(1.0).lerp(&Color::cmyk(1.0, 0.0, 0.0, 0.0), 0.5), Color::cmyk(0.5, 0.0, 0.0, 0.5));
+        assert!(matches!(Color::rgb(1.0, 0.0, 0.0).lerp(&Color::cmyk(1.0, 0.0, 0.0, 0.0), 0.5), Color::Rgb { .. }));
+    }
+
+    #[test]
+    fn saved_stops_without_a_swatch_are_plain_colors() {
+        let old = r#"{"offset": 0.0, "color": {"model": "cmyk", "c": 0.0, "m": 0.3, "y": 0.9, "k": 0.1}, "opacity": 1.0, "midpoint": 0.5}"#;
+        let stop: GradientStop = serde_json::from_str(old).unwrap();
+        assert_eq!(stop, GradientStop::new(0.0, Color::cmyk(0.0, 0.3, 0.9, 0.1)));
+        assert!(!serde_json::to_string(&stop).unwrap().contains("swatch"), "plain stops save as before");
+        let on = GradientStop { swatch: Some("Gold".into()), ..stop };
+        assert_eq!(serde_json::from_str::<GradientStop>(&serde_json::to_string(&on).unwrap()).unwrap(), on);
+    }
+
+    #[test]
     fn midpoint_shifts() {
         let mut g = Gradient::default();
         g.stops[0].midpoint = 0.25;
@@ -233,7 +289,7 @@ mod tests {
         // With several stops, the reversed gradient is the original mirrored.
         let mut g = Gradient::default();
         g.stops[0].midpoint = 0.3;
-        g.stops.insert(1, GradientStop { offset: 0.4, color: Color::rgb(1.0, 0.0, 0.0), opacity: 0.5, midpoint: 0.8 });
+        g.stops.insert(1, GradientStop { offset: 0.4, color: Color::rgb(1.0, 0.0, 0.0), opacity: 0.5, midpoint: 0.8, swatch: None });
         let original = g.clone();
         g.reverse();
         for t in [0.1, 0.3, 0.5, 0.7, 0.9] {

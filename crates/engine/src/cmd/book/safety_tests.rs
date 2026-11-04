@@ -1,4 +1,4 @@
-use super::{ChapterBatch, MAX_BATCH_CHAPTERS, write_staged_chapter};
+use super::{ChapterBatch, MAX_BATCH_CHAPTERS};
 use crate::Session;
 use serde_json::json;
 
@@ -26,7 +26,7 @@ fn a_commit_failure_reports_the_completed_prefix_and_cleans_staging() {
     let error = batch
         .commit_with(|path, staged| {
             calls += 1;
-            if path == second { Err(std::io::Error::other("synthetic disk full")) } else { write_staged_chapter(path, staged) }
+            if path == second { Err(std::io::Error::other("synthetic disk full")) } else { crate::io::replace_with(path, staged) }
         })
         .unwrap_err()
         .to_string();
@@ -34,8 +34,8 @@ fn a_commit_failure_reports_the_completed_prefix_and_cleans_staging() {
     assert!(error.contains("synthetic disk full"), "{error}");
     assert!(error.contains(second.to_str().unwrap()), "{error}");
     let completed = error.split("completed chapter paths:").nth(1).unwrap();
-    assert!(completed.contains(first.to_str().unwrap()), "{error}");
-    assert!(!completed.contains(second.to_str().unwrap()) && !completed.contains(third.to_str().unwrap()), "{error}");
+    // The completed list uses debug formatting, which escapes Windows path separators.
+    assert_eq!(completed.trim(), format!("{:?}", [first.to_str().unwrap()]), "{error}");
     assert_eq!(designcraft_format::load(&std::fs::read(first).unwrap()).unwrap().sections.first().unwrap().start_number, Some(9));
     assert_eq!(std::fs::read(second).unwrap(), old_bytes);
     assert_eq!(std::fs::read(third).unwrap(), old_bytes);
