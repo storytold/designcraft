@@ -33,6 +33,7 @@ pub(crate) fn mark_deleted_reporting(st: &mut Story, r: std::ops::Range<usize>) 
 
 /// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
 /// the text after the range now starts.
+#[cfg(test)]
 pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
     mark_deleted_reporting(st, r).0
 }

@@ -96,9 +96,6 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
 
-            if let Some((range, len)) = auto_edit {
-                d.adjust_text_ranges(t.story, range, len);
-            }
             for rr in removed {
                 d.adjust_text_ranges(t.story, rr, 0);
             }
@@ -158,24 +155,46 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     };
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.deleteSurrounding", "no text insertion point"))?;
-        let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
-        if !after_range.is_empty() {
-            if tracking {
-                crate::cmd::changes::mark_deleted(story, after_range.clone());
+        let (shift, after_removed, before_removed) = {
+            let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+            let after_removed = if !after_range.is_empty() {
+                if tracking {
+                    let (_, removed) = crate::cmd::changes::mark_deleted_reporting(story, after_range.clone());
+                    removed
+                } else {
+                    story.delete(after_range.clone());
+                    Vec::new()
+                }
             } else {
-                story.delete(after_range.clone());
+                Vec::new()
+            };
+            let (shift, before_removed) = if !before_range.is_empty() {
+                if tracking {
+                    // Tracked changes keep the text and mark it deleted: the selection does not move.
+                    let (new_end, removed) = crate::cmd::changes::mark_deleted_reporting(story, before_range.clone());
+                    (before_range.end.saturating_sub(new_end), removed)
+                } else {
+                    story.delete(before_range.clone());
+                    (before_range.len(), Vec::new())
+                }
+            } else {
+                (0, Vec::new())
+            };
+            (shift, after_removed, before_removed)
+        };
+        if tracking {
+            for rr in after_removed {
+                d.adjust_text_ranges(t.story, rr, 0);
             }
+        } else if t.cell.is_none() && !after_range.is_empty() {
+            d.adjust_text_ranges(t.story, after_range.clone(), 0);
         }
-        let mut shift = 0usize;
-        if !before_range.is_empty() {
-            if tracking {
-                // Tracked changes keep the text and mark it deleted: the selection does not move.
-                let new_end = crate::cmd::changes::mark_deleted(story, before_range.clone());
-                shift = before_range.end.saturating_sub(new_end);
-            } else {
-                shift = before_range.len();
-                story.delete(before_range.clone());
+        if tracking {
+            for rr in before_removed {
+                d.adjust_text_ranges(t.story, rr, 0);
             }
+        } else if t.cell.is_none() && !before_range.is_empty() {
+            d.adjust_text_ranges(t.story, before_range.clone(), 0);
         }
         sel.text = Some(TextSel { anchor: t.anchor.saturating_sub(shift), focus: t.focus.saturating_sub(shift), ..t });
         Ok(())

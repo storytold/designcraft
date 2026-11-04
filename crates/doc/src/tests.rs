@@ -477,3 +477,56 @@ fn move_text_ranges_tracks_hyperlinks_and_placeholders() {
     assert_eq!(d.hyperlinks[0].id, 1, "original list order in doc.hyperlinks must be preserved");
     assert_eq!(d.hyperlinks[1].id, 2);
 }
+
+#[test]
+fn set_story_text_prunes_story_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (_, sid1) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "initial one", ParaFormat::default()).unwrap();
+    let (_, sid2) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(110.0, 10.0, 200.0, 100.0), lid, "initial two", ParaFormat::default()).unwrap();
+
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "Link1".into(),
+        source: HyperlinkSource::Text { story: sid1, start: 0, end: 7 },
+        dest: HyperlinkDest::Url("https://example.com/1".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Link2".into(),
+        source: HyperlinkSource::Text { story: sid2, start: 0, end: 7 },
+        dest: HyperlinkDest::Url("https://example.com/2".into()),
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 10,
+        source_id: 1,
+        field: "Ph1".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid1, start: 0, end: 7 },
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 20,
+        source_id: 1,
+        field: "Ph2".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid2, start: 0, end: 7 },
+    });
+
+    d.set_story_text(sid1, "Replacement story text").unwrap();
+
+    // sid1 hyperlinks and placeholders must be pruned
+    assert!(d.hyperlinks.iter().all(|h| match &h.source {
+        HyperlinkSource::Text { story, .. } => *story != sid1,
+        _ => true,
+    }));
+    assert!(d.data_merge.placeholders.iter().all(|ph| match &ph.anchor {
+        crate::PlaceholderAnchor::Text { story, .. } => *story != sid1,
+        _ => true,
+    }));
+
+    // sid2 hyperlinks and placeholders must be preserved
+    assert_eq!(d.hyperlinks.len(), 1);
+    assert_eq!(d.hyperlinks[0].id, 2);
+    assert_eq!(d.data_merge.placeholders.len(), 1);
+    assert_eq!(d.data_merge.placeholders[0].id, 20);
+}

@@ -617,3 +617,29 @@ fn wholesale_story_replacement_prunes_links_and_undo_restores_them() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(text_hyperlink_range(&s, hid), (17, 23));
 }
+
+#[test]
+fn delete_surrounding_adjusts_hyperlink_ranges() {
+    let initial = "Prefix Keep Caret Suffix LinkText";
+    let (mut s, sid, _) = fixture(initial);
+
+    let link_start = initial.find("LinkText").unwrap();
+    let link_end = link_start + "LinkText".len();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": link_start, "focus": link_end})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start, link_end));
+
+    // Place caret between "Keep" and " Caret" (offset 11)
+    let caret = initial.find(" Caret").unwrap();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": caret, "focus": caret})).unwrap();
+
+    // Delete 4 chars before ("Keep") and 6 chars after (" Caret")
+    s.execute("text.deleteSurrounding", &json!({"before": 4, "after": 6})).unwrap();
+
+    let doc = &s.doc().unwrap().doc;
+    let text = &doc.story(sid).unwrap().text;
+    assert_eq!(text, "Prefix  Suffix LinkText");
+    // Link must shift down by 10 bytes (4 before + 6 after)
+    assert_eq!(text_hyperlink_range(&s, hid), (link_start - 10, link_end - 10));
+    assert_eq!(&text[link_start - 10..link_end - 10], "LinkText");
+}
