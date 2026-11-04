@@ -11,7 +11,10 @@ pub(super) fn has_serifs(face: &FontFace) -> Option<bool> {
     if bbox.height().is_nan() || bbox.height() <= 1.0 {
         return None;
     }
+    // Flattened segments kept: an "l" has a few dozen; a hostile outline has no such limit of its own.
+    const MAX_EDGES: usize = 1 << 20;
     let mut edges = Vec::new();
+    let mut over = false;
     let mut last = None;
     let mut start = None;
     // A tolerance of one unit is fine for outlines of normal size; a transform that blows one up
@@ -27,18 +30,29 @@ pub(super) fn has_serifs(face: &FontFace) -> Option<bool> {
         }
         kurbo::PathEl::LineTo(p) => {
             if let Some(a) = last {
-                edges.push((a, p));
+                if edges.len() < MAX_EDGES {
+                    edges.push((a, p));
+                } else {
+                    over = true;
+                }
             }
             last = Some(p);
         }
         kurbo::PathEl::ClosePath => {
             if let (Some(a), Some(b)) = (last, start) {
-                edges.push((a, b));
+                if edges.len() < MAX_EDGES {
+                    edges.push((a, b));
+                } else {
+                    over = true;
+                }
             }
             last = start;
         }
         _ => {}
     });
+    if over {
+        return None;
+    }
     // The outline is y-down: the foot is near bbox.y1 (the baseline).
     let width_at = |y: f64| {
         let xs: Vec<f64> = edges
