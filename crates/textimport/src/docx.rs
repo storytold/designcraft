@@ -650,13 +650,23 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let used_c: std::collections::HashSet<String> = stories().flat_map(|s| s.runs().map(|(_, f)| f.style.clone())).collect();
     let keep = |list: Vec<ImportedStyle>, used: &std::collections::HashSet<String>| {
         let mut want: std::collections::HashSet<String> = used.clone();
-        loop {
-            let more: Vec<String> =
-                list.iter().filter(|s| want.contains(&s.name)).filter_map(|s| s.based_on.clone()).filter(|b| !want.contains(b)).collect();
-            if more.is_empty() {
-                break;
+        {
+            // What each name is based on (every style of that name), then a worklist: each name
+            // is looked at once, however long the chain.
+            let mut bases: HashMap<&str, Vec<&str>> = HashMap::new();
+            for s in &list {
+                if let Some(b) = &s.based_on {
+                    bases.entry(s.name.as_str()).or_default().push(b.as_str());
+                }
             }
-            want.extend(more);
+            let mut todo: Vec<String> = want.iter().cloned().collect();
+            while let Some(name) = todo.pop() {
+                for b in bases.get(name.as_str()).into_iter().flatten() {
+                    if want.insert((*b).to_string()) {
+                        todo.push((*b).to_string());
+                    }
+                }
+            }
         }
         list.into_iter().filter(|s| want.contains(&s.name)).collect::<Vec<_>>()
     };
