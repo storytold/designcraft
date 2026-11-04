@@ -737,7 +737,7 @@ fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Option<Vec<u8>> {
 /// a percent of the width, or a preset for dotted and solid lines. Item strokes and table edges
 /// both write it, so a dashed table edge keeps the same pattern as a dashed frame.
 pub(crate) fn line_dash(kind: &StrokeType, w: f64) -> String {
-    match kind.dashes(w).filter(|_| w > 0.0) {
+    match kind.dashes(w).filter(|p| w > 0.0 && p.len() <= designcraft_doc::MAX_DASH_ENTRIES) {
         Some(mut v) => {
             if v.len() % 2 == 1 {
                 v.extend(v.clone());

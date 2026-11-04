@@ -5401,8 +5401,9 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
     let mut line = designcraft_geom::BezPath::new();
     line.move_to((rect.x0, y));
     line.line_to((rect.x1, y));
-    let path = match &kind {
-        StrokeType::Dashed { pattern } if StrokeType::expandable_dashes(pattern, len) => {
+    let dashes = kind.dashes(w).filter(|p| StrokeType::expandable_dashes(p, len));
+    let path = match (&kind, dashes) {
+        (StrokeType::Dashed { .. }, Some(pattern)) => {
             let mut p = designcraft_geom::BezPath::new();
             let (mut x, mut k, mut on) = (rect.x0, 0, true);
             while x < rect.x1 {
@@ -5417,7 +5418,7 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
             }
             Some(p)
         }
-        StrokeType::Dotted if StrokeType::expandable_dashes(&[w, w], len) => {
+        (StrokeType::Dotted, _) if StrokeType::expandable_dashes(&[w, w], len) => {
             let mut p = designcraft_geom::BezPath::new();
             let mut x = rect.x0 + w / 2.0;
             while x <= rect.x1 - w / 2.0 + 1e-9 {
@@ -5426,7 +5427,7 @@ fn rule_decos(doc: &Document, r: &designcraft_doc::Rule, rect: Rect, (color, tin
             }
             Some(p)
         }
-        k => k.outline(&line, w, 0.05),
+        (k, _) => k.outline(&line, w, 0.05),
     };
     out.push(Deco { rect, color, tint, path, ..Deco::default() });
     out
