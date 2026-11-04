@@ -236,6 +236,20 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn parent_hit_testing_respects_layers() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (a, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
+    let at = designcraft_geom::Point::new(50.0, 50.0);
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), Some(a));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+}
+
+#[test]
 fn page_numbers_saturate_at_the_largest_start() {
     // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
     let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
