@@ -167,7 +167,6 @@ pub(crate) fn part_capped(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, nam
     Ok(Some(s))
 }
 
-/// Character attributes from `<w:rPr>`.
 /// A Word language tag (`sr-Latn-RS`) as a language of the document: the name InDesign and IDML
 /// write where the tag has a variant of its own, else the tag. None for what isn't a language
 /// (`x-none`).
@@ -182,6 +181,7 @@ fn word_language(tag: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Character attributes from `<w:rPr>`.
 fn run_attrs(rpr: Option<&El>) -> CharAttrs {
     let mut a = CharAttrs::default();
     let Some(r) = rpr else { return a };
