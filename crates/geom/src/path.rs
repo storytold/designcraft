@@ -414,7 +414,19 @@ impl PathData {
     /// True if some subpath encloses an area once closed: a frame, or an open path such as a V.
     /// A line, or a path whose points all lie on one line, encloses none.
     pub fn encloses_area(&self) -> bool {
-        self.subpaths.iter().any(|sp| SubPath::new(sp.anchors.clone(), true).area().abs() > 1e-6)
+        self.subpaths.iter().any(|sp| {
+            let mut anchors = sp.anchors.clone();
+            // An open subpath closes with a straight segment: its end handles are unused.
+            if !sp.closed {
+                if let Some(a) = anchors.first_mut() {
+                    a.h_in = a.p;
+                }
+                if let Some(a) = anchors.last_mut() {
+                    a.h_out = a.p;
+                }
+            }
+            SubPath::new(anchors, true).area().abs() > 1e-6
+        })
     }
 }
 
