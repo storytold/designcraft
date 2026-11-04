@@ -120,12 +120,12 @@ pub fn sans_by_name(family: &str) -> Option<bool> {
     let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
     // A Korean serif name comes first: "Myungjo Gothic" does not exist, but a name holding both
     // reads as the serif it names, and "Sans" inside "Noto Sans Myungjo" would otherwise win.
-    if has(&["batang", "myungjo", "myeongjo", "gungsuh", "\u{BC14}\u{D5D5}", "\u{BA85}\u{C870}", "\u{AD81}\u{C11C}"]) {
+    if has(&["batang", "myungjo", "myeongjo", "gungsuh", "\u{BC14}\u{D0D5}", "\u{BA85}\u{C870}", "\u{AD81}\u{C11C}"]) {
         return Some(false);
     }
     // Then the word itself, which outranks every sans indicator: "Sweet Gothic Serif" is a serif
     // family whatever "Gothic" suggests. "Sans serif" and "sans-serif" end with the word and do
-    // not mean it, so the phrase goes before the word is looked for (both noted in review).
+    // not mean it, so the phrase goes before the word is looked for.
     if lower.replace("sans-serif", "sans").replace("sans serif", "sans").contains("serif") {
         return Some(false);
     }

@@ -178,7 +178,7 @@ fn a_korean_family_name_says_sans_or_serif() {
 
 /// "sans serif" ends with the word it is not. The bare "serif" needle matched first, so
 /// "Microsoft Sans Serif" -- and the CSS generic -- classified as serif and a missing Hangul
-/// glyph took the serif-first chain (noted in review of #1692).
+/// glyph took the serif-first chain (#1692).
 #[test]
 fn a_sans_serif_name_is_not_read_as_serif() {
     for sans in ["sans-serif", "Microsoft Sans Serif", "MS Sans Serif", "Lucida Sans Serif"] {
@@ -192,9 +192,14 @@ fn a_sans_serif_name_is_not_read_as_serif() {
     assert_eq!(sans_by_name("Noto Sans Myungjo"), Some(false));
     assert_eq!(sans_by_name("Myungjo Gothic"), Some(false));
     // And the word outranks every sans indicator: Sweet Gothic Serif is a serif family
-    // whatever "Gothic" suggests (noted in review).
+    // whatever "Gothic" suggests.
     for serif in ["Sweet Gothic Serif", "Gothic Serif", "Sans Forgetica Serif"] {
         assert_eq!(sans_by_name(serif), Some(false), "{serif} names itself serif");
+    }
+    // Korean serif names written in Hangul: 바탕 (Batang), 명조 (Myungjo), 궁서 (Gungsuh). 바탕 was
+    // spelled with the wrong second syllable, so a Hangul Batang name was not recognised.
+    for serif in ["\u{BC14}\u{D0D5}\u{CCB4}", "HCR \u{BC14}\u{D0D5}", "\u{D55C}\u{CEF4} \u{BA85}\u{C870}", "\u{AD81}\u{C11C}\u{CCB4}"] {
+        assert_eq!(sans_by_name(serif), Some(false), "{serif} is serif");
     }
     // Neither word present, so the caller still decides.
     assert_eq!(sans_by_name("monospace"), None);

@@ -1169,8 +1169,9 @@ fn shape_segment(
     if let Some(label) = replacement.filter(|_| auto_leading.glyph_fallback) {
         let lang = designcraft_doc::language_tag(&p.language);
         let mut segments: Vec<(usize, usize, Arc<FontFace>)> = Vec::new();
+        // The same for every character of the label: worked out once, not per character.
+        let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&face.family));
         for (at, c) in label.char_indices() {
-            let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&face.family));
             let selected =
                 if face.covers(c) { face.clone() } else { db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone()) };
             if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
