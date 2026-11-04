@@ -809,18 +809,51 @@ impl Document {
     /// Clear `based_on` links that name a missing parent or close a cycle (hand-edited or damaged
     /// files). Returns one warning per link cleared.
     pub fn fix_parent_bases(&mut self) -> Vec<String> {
+        // One id index and one walk over the `based_on` graph (each parent has at most one base),
+        // not an ancestor walk per parent. `parent_index` takes the first of duplicate ids; so does this.
+        let mut index = std::collections::HashMap::new();
+        for (i, p) in self.parents.iter().enumerate() {
+            index.entry(p.id).or_insert(i);
+        }
+        let n = self.parents.len();
+        let base = |i: usize| self.parents.get(i).and_then(|ps| ps.parent.as_ref()).and_then(|info| info.based_on);
+        // `clear[pi]`: why the link is cleared. 0 = unvisited, 1 = on the current walk, 2 = done.
+        let mut state = vec![0u8; n];
+        let mut clear: Vec<Option<&str>> = vec![None; n];
+        for start in 0..n {
+            let mut path = Vec::new();
+            let mut cur = start;
+            loop {
+                if state[cur] == 2 {
+                    break;
+                }
+                if state[cur] == 1 {
+                    // A cycle: breaking its lowest-numbered link is what clearing in order does.
+                    let at = path.iter().position(|&x| x == cur).unwrap_or(0);
+                    if let Some(&low) = path[at..].iter().min() {
+                        clear[low] = Some("makes a cycle");
+                    }
+                    break;
+                }
+                state[cur] = 1;
+                path.push(cur);
+                let Some(b) = base(cur) else { break };
+                match index.get(&b) {
+                    Some(&next) => cur = next,
+                    None => {
+                        clear[cur] = Some("names a missing parent");
+                        break;
+                    }
+                }
+            }
+            for x in path {
+                state[x] = 2;
+            }
+        }
         let mut warnings = Vec::new();
-        for pi in 0..self.parents.len() {
-            let Some(ps) = self.parents.get(pi) else { continue };
-            let Some(base) = ps.parent.as_ref().and_then(|info| info.based_on) else { continue };
-            let label = ps.parent.as_ref().map(ParentInfo::label).unwrap_or_default();
-            let why = if self.parent_index(base).is_none() {
-                "names a missing parent"
-            } else if self.parent_base_cycles(pi, base) {
-                "makes a cycle"
-            } else {
-                continue;
-            };
+        for (pi, why) in clear.into_iter().enumerate() {
+            let Some(why) = why else { continue };
+            let label = self.parents.get(pi).and_then(|ps| ps.parent.as_ref()).map(ParentInfo::label).unwrap_or_default();
             if let Some(info) = self.parents.get_mut(pi).map(Arc::make_mut).and_then(|ps| ps.parent.as_mut()) {
                 info.based_on = None;
             }
@@ -1060,5 +1093,22 @@ mod tests {
         assert_eq!(w.len(), 1, "{w:?}");
         assert_eq!(d.parents[0].parent.as_ref().unwrap().based_on, None);
         assert!((0..65).all(|i| d.parent_base_cycles(i, ids[(i + 1) % 65]) == (i == 0)), "only the cleared link would close it again");
+    }
+
+    /// A long acyclic chain is left alone (this was cubic work before); closing it clears one link.
+    #[test]
+    fn fix_parent_bases_long_chain() {
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        for i in 1..2000 {
+            d.add_parent(&format!("P{i}"), "Parent", 1, 12.0, Margins::uniform(36.0));
+        }
+        let ids: Vec<SpreadId> = d.parents.iter().map(|p| p.id).collect();
+        for i in 1..ids.len() {
+            base(&mut d, i, Some(ids[i - 1]));
+        }
+        assert!(d.fix_parent_bases().is_empty());
+        base(&mut d, 0, Some(ids[ids.len() - 1]));
+        assert_eq!(d.fix_parent_bases().len(), 1);
+        assert_eq!(d.parents[0].parent.as_ref().unwrap().based_on, None);
     }
 }
