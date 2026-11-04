@@ -3,8 +3,8 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
-use super::text::openable;
 use super::object::transform_anchors;
+use super::text::openable;
 use super::*;
 
 /// A link to a panel whose flyout is open leaves the flyout open.
