@@ -154,10 +154,6 @@ fn imports_pages_styles_guides_and_sections() {
     assert_eq!(d.parents[0].parent.as_ref().map(|p| p.name.as_str()), Some("Master A"));
     assert_eq!(d.parents[0].items.len(), 1, "master footer imported");
     assert_eq!(d.layers.len(), 2);
-    assert_eq!(d.layers[0].name, "Top", "DesignCraft lists the frontmost layer first");
-    assert_eq!(d.layers[1].name, "Main");
-    let body_layer = d.spreads[0].items.iter().find(|i| i.name == "body").map(|i| i.layer).expect("body");
-    assert_eq!(body_layer, d.layers[1].id, "Scribus layer 0 is the bottom one");
     assert_eq!(im.warnings.len(), 0, "{:?}", im.warnings);
 }
 
@@ -397,4 +393,135 @@ fn exif_orientation_turns_the_picture_upright() {
     // Orientation 6 is a quarter turn clockwise: the raw top-left goes to the top right, so the
     // image takes the frame's 80x50 fallback size for the 50x80 upright one.
     assert_eq!(g.xf.as_coeffs(), [0.0, 1.0, -1.0, 0.0, 50.0, 0.0]);
+}
+
+#[test]
+fn layers_keep_scribus_stacking_and_ids() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <Layers Number="0" Level="0" Name="Bottom" IsViewable="1" IsPrintable="1" IsEditable="1" LayerColor="#000000"/>
+      <Layers Number="1" Level="2" Name="Top" IsViewable="1" IsPrintable="1" IsEditable="1" LayerColor="#ff0000"/>
+      <Layers Number="2" Level="1" Name="Middle" IsViewable="1" IsPrintable="1" IsEditable="1" LayerColor="#00ff00"/>
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="0" YPosition="0" OwnPage="0" ItemID="1" ItemType="6" Width="50" Height="50" FrameType="0"
+        AutoName="onMiddle" Path="M0 0 L50 0 L50 50 L0 50 L0 0 Z" ContourLinePath="M0 0 L50 0 L50 50 L0 50 L0 0 Z" Layer="2"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    let names: Vec<_> = d.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["Top", "Middle", "Bottom"], "front to back by Level, not by Number");
+    assert_eq!(d.spreads[0].items[0].layer, d.layers[1].id, "Layer=2 is the layer whose Number is 2 (Middle)");
+}
+
+#[test]
+fn exported_layers_have_distinct_levels_and_font_defaults() {
+    let d = import_fixture().document;
+    let exported = export_scribus(&d);
+    let xml = String::from_utf8(exported.data).expect("xml");
+    let root = crate::xml::parse(xml.as_bytes()).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    assert!(doc_el.get("FontFace").is_some_and(|v| !v.is_empty()), "the document default font is written");
+    let levels: Vec<i64> = doc_el.find_all("Layers").filter_map(|l| l.get("Level").and_then(|v| v.parse().ok())).collect();
+    let mut unique = levels.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), levels.len(), "duplicate levels make Scribus lose the layers: {levels:?}");
+    assert!(xml.contains("Font=\"Test Font Regular\""), "the Regular face keeps its name");
+}
+
+#[test]
+fn font_names_survive_the_round_trip() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <CharacterStyle Name="Default Character Style" Font="DejaVu Sans Book" FontSize="12"/>
+      <CharacterStyle Name="cEx" Font="Geist ExtraLight" FontSize="8.5"/>
+      <ParagraphStyle Name="Default Paragraph Style" DefaultStyle="1" Alignment="0" LineSpacing="14"/>
+      <ParagraphStyle Name="p" Alignment="0" LineSpacing="16" CParent="cEx"/>
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="0" YPosition="0" OwnPage="0" ItemID="1" ItemType="4" Width="50" Height="50" FrameType="0"
+        AutoName="t" Columns="1" ColumnGap="0" TextToFrameDistanceLeft="0" TextToFrameDistanceTop="0"
+        TextToFrameDistanceBottom="0" TextToFrameDistanceRight="0" VerticalAlignment="0" TextPathType="0" TextPathFlipped="0"
+        Path="M0 0 L50 0 L50 50 L0 50 L0 0 Z" ContourLinePath="M0 0 L50 0 L50 50 L0 50 L0 0 Z" Layer="0" NextItem="-1" BackItem="-1">
+        <StoryText>
+          <DefaultStyle Parent="p"/>
+          <Content Chars="x" Font="Geist Regular"/>
+          <trail Parent="p"/>
+        </StoryText>
+      </PageObject>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    let exported = export_scribus(&d);
+    let xml = String::from_utf8(exported.data).expect("xml");
+    for name in ["DejaVu Sans Book", "Geist ExtraLight", "Geist Regular"] {
+        assert!(xml.contains(&format!("Font=\"{name}\"")), "missing {name} in {xml}");
+    }
+}
+
+#[test]
+fn master_objects_name_their_master_page() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <MasterPage PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" PageNumber="0" PageName="A" LeftPage="1"/>
+      <MasterPage PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" PageNumber="1" PageName="B" LeftPage="0"/>
+      <Page PageNumber="0" PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <MasterObject XPosition="110" YPosition="30" OwnPage="0" ItemID="1" ItemType="6" Width="10" Height="10" FrameType="0"
+        AutoName="onA" Path="M0 0 L10 0 L10 10 L0 10 L0 0 Z" ContourLinePath="M0 0 L10 0 L10 10 L0 10 L0 0 Z" Layer="0" OnMasterPage="A"/>
+      <MasterObject XPosition="110" YPosition="30" OwnPage="1" ItemID="2" ItemType="6" Width="10" Height="10" FrameType="0"
+        AutoName="onB" Path="M0 0 L10 0 L10 10 L0 10 L0 0 Z" ContourLinePath="M0 0 L10 0 L10 10 L0 10 L0 0 Z" Layer="0" OnMasterPage="B"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    let exported = export_scribus(&d);
+    let xml = String::from_utf8(exported.data).expect("xml");
+    let root = crate::xml::parse(xml.as_bytes()).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    let numbers: std::collections::HashMap<String, String> = doc_el
+        .find_all("MasterPage")
+        .map(|m| (m.get("PageName").unwrap_or_default().to_string(), m.get("PageNumber").unwrap_or_default().to_string()))
+        .collect();
+    assert_ne!(numbers.get("A"), numbers.get("B"), "each master page has its own number: {numbers:?}");
+    for obj in doc_el.find_all("MasterObject") {
+        let master = obj.get("OnMasterPage").unwrap_or_default();
+        assert_eq!(obj.get("OwnPage"), numbers.get(master).map(String::as_str), "object {master} names its master page");
+    }
+}
+
+#[test]
+fn exported_document_declares_the_spread_gap() {
+    // Scribus lays spreads out from GapVertical; without it every page after the first is shifted.
+    let d = import_fixture().document;
+    let exported = export_scribus(&d);
+    let root = crate::xml::parse(&exported.data).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    assert_eq!(doc_el.get("GapVertical"), Some("40"), "the gap items are positioned with");
+}
+
+#[test]
+fn export_removes_the_exif_uprighting() {
+    use std::sync::Arc;
+    let mut d = import_fixture().document;
+    let asset_id = d.spreads[0].items.iter().find(|i| i.name == "pic").and_then(|i| i.graphic()).map(|g| g.asset).expect("pic");
+    if let Some(a) = d.assets.get_mut(&asset_id) {
+        let mut asset = (**a).clone();
+        asset.data = Arc::new(jpeg_with_orientation(6));
+        asset.pixels = Some((80, 50));
+        asset.link = Some("pic.jpg".into());
+        *a = Arc::new(asset);
+    }
+    {
+        let spread = Arc::make_mut(&mut d.spreads[0]);
+        for it in &mut spread.items {
+            if it.name == "pic" {
+                let item = Arc::make_mut(it);
+                if let designcraft_doc::Content::Graphic(g) = &mut item.content {
+                    // Raw pixel space with the orientation 6 uprighting the importer applies.
+                    g.size = (80.0, 50.0);
+                    g.xf = designcraft_geom::Affine::new([0.0, 1.0, -1.0, 0.0, 50.0, 0.0]);
+                }
+            }
+        }
+    }
+    let exported = export_scribus(&d);
+    let root = crate::xml::parse(&exported.data).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    let obj = doc_el.find_all("PageObject").find(|o| o.get("AutoName") == Some("pic")).expect("pic");
+    // Scribus applies the EXIF turn itself, so the written transform is upright again.
+    assert_eq!(obj.get("ImageRotation"), Some("0"), "{:?}", obj.attrs);
+    assert_eq!(obj.get("ImageScaleX"), Some("1"));
+    assert_eq!(obj.get("ImageOffsetX"), Some("0"));
 }

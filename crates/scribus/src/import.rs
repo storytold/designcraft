@@ -60,7 +60,8 @@ struct Importer<'r> {
     default_char: String,
     swatches: Vec<Swatch>,
     layers: Vec<Layer>,
-    layer_ids: Vec<LayerId>,
+    /// Layer `Number` attribute → its id (items name it in their `Layer` attribute).
+    layer_ids: HashMap<i64, LayerId>,
     spreads: Vec<Spread>,
     parents: Vec<Spread>,
     /// PageNumber attribute → (spread index, page index).
@@ -101,7 +102,7 @@ impl<'r> Importer<'r> {
             default_char: designcraft_doc::NO_CHAR_STYLE.into(),
             swatches: designcraft_color::default_swatches(),
             layers: Vec::new(),
-            layer_ids: Vec::new(),
+            layer_ids: HashMap::new(),
             spreads: Vec::new(),
             parents: Vec::new(),
             page_at: HashMap::new(),
@@ -208,9 +209,16 @@ impl<'r> Importer<'r> {
 
     fn read_layers(&mut self, document: &El) {
         let mut elements: Vec<&El> = document.find_all("Layers").collect();
-        elements.sort_by_key(|e| e.get("Number").and_then(|v| v.parse::<i64>().ok()).unwrap_or(i64::MAX));
+        // `Number` is the layer's id, named by each item's `Layer` attribute; `Level` is its
+        // stacking position, 0 at the bottom. Build bottom to top and reverse for DesignCraft,
+        // which lists the frontmost layer first.
+        elements.sort_by_key(|e| {
+            let number = e.get("Number").and_then(|v| v.parse::<i64>().ok()).unwrap_or(i64::MAX);
+            (e.get("Level").and_then(|v| v.parse::<i64>().ok()).unwrap_or(number), number)
+        });
         for (i, e) in elements.iter().enumerate() {
             let id = LayerId(self.doc.alloc());
+            let number = e.get("Number").and_then(|v| v.parse::<i64>().ok()).unwrap_or(i as i64);
             let name = e.get("Name").filter(|n| !n.is_empty()).map_or_else(|| format!("Layer {}", i + 1), str::to_string);
             let color = e.get("LayerColor").and_then(hex_rgb).unwrap_or(designcraft_doc::LAYER_COLORS[i % designcraft_doc::LAYER_COLORS.len()].1);
             self.layers.push(Layer {
@@ -223,10 +231,8 @@ impl<'r> Importer<'r> {
                 show_guides: true,
                 suppress_wrap_when_hidden: false,
             });
-            self.layer_ids.push(id);
+            self.layer_ids.insert(number, id);
         }
-        // DesignCraft lists the frontmost layer first; Scribus numbers them bottom to top, so the
-        // sorted list above is back to front and the document keeps it the other way round.
         self.layers.reverse();
         if self.layers.is_empty() {
             let id = LayerId(self.doc.alloc());
@@ -240,7 +246,7 @@ impl<'r> Importer<'r> {
                 show_guides: true,
                 suppress_wrap_when_hidden: false,
             });
-            self.layer_ids.push(id);
+            self.layer_ids.insert(0, id);
         }
     }
 
@@ -360,7 +366,7 @@ impl<'r> Importer<'r> {
     /// element. Only the attributes the element names come back, so it overrides just those.
     fn para_overrides(&self, e: &El) -> ParaAttrs {
         ParaAttrs {
-            align: e.get("Alignment").and_then(|v| v.trim().parse::<i64>().ok()).map(align_of).map(Into::into),
+            align: e.get("Alignment").and_then(|v| v.trim().parse::<i64>().ok()).map(align_of),
             left_indent: e.num("LeftMargin").filter(|v| *v >= 0.0),
             right_indent: e.num("RightMargin").filter(|v| *v >= 0.0),
             first_line_indent: e.num("FirstIndent"),
@@ -592,8 +598,10 @@ impl<'r> Importer<'r> {
     }
 
     fn layer_of(&self, e: &El) -> LayerId {
-        let n = int_attr(e, "Layer", 0).max(0) as usize;
-        self.layer_ids.get(n).copied().or_else(|| self.layer_ids.first().copied()).unwrap_or(LayerId(1))
+        let n = int_attr(e, "Layer", 0);
+        // An unknown layer id falls back to the bottom layer, where Scribus keeps what it cannot
+        // place.
+        self.layer_ids.get(&n).copied().or_else(|| self.layers.last().map(|l| l.id)).unwrap_or(LayerId(1))
     }
 
     fn fill_of(&self, e: &El) -> Fill {
@@ -1027,14 +1035,20 @@ fn swatch_name(name: &str) -> String {
 fn split_font(full: &str) -> (String, String) {
     const STYLES: &[&str] = &[
         "Bold Italic",
+        "BoldItalic",
         "Bold Oblique",
+        "BoldOblique",
         "Bold Condensed",
         "Semi Bold",
         "SemiBold",
         "Extra Bold",
+        "ExtraBold",
         "Ultra Bold",
+        "UltraBold",
         "Extra Light",
+        "ExtraLight",
         "Ultra Light",
+        "UltraLight",
         "Book Italic",
         "Book",
         "Bold",

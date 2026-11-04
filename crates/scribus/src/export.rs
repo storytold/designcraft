@@ -11,6 +11,11 @@ use std::collections::{HashMap, HashSet};
 use crate::VERSION;
 use crate::xml::{El, document};
 
+/// Vertical space between spreads, in points. Scribus lays spreads out from this document
+/// attribute rather than from the pages' `PageYPosition`, so it must match the coordinates the
+/// items are written at.
+const SPREAD_GAP: f64 = 40.0;
+
 /// Export options.
 #[derive(Clone, Debug, Default)]
 pub struct ExportOptions {
@@ -90,7 +95,7 @@ impl<'a> Ex<'a> {
         for s in &d.spreads {
             spread_y.insert(s.id, y);
             let h = s.pages.iter().map(|p| p.height).fold(0.0_f64, f64::max);
-            y += h + 40.0;
+            y += h + SPREAD_GAP;
         }
         let mut page_number = HashMap::new();
         let mut number = 0i64;
@@ -217,9 +222,16 @@ impl<'a> Ex<'a> {
         e.set("PageSize", "Custom");
         e.set("FirstPageNumber", first_number);
         e.set("PagePositioning", if settings.facing_pages { 1 } else { 0 });
+        // Scribus positions spreads from these, not from each page's `PageYPosition`.
+        e.set("GapVertical", num(SPREAD_GAP));
+        e.set("GapHorizontal", 0);
         e.set("UnitIndex", unit_index(settings.horizontal_units));
         e.set("BaselineGridSpacing", num(settings.baseline_grid.increment));
         e.set("BaselineGridOffset", num(settings.baseline_grid.start));
+        // Scribus keeps the document's default text font on the Document element too.
+        let (_, default_chars) = self.d.styles.resolve_para_style(&self.d.styles.default_paragraph);
+        e.set("FontFace", font_name(&default_chars.font_family, &default_chars.font_style));
+        e.set("FontSize", num(default_chars.size.max(0.1)));
         e.set("ActiveLayer", self.layer_number.get(&self.d.layers.first().map(|l| l.id).unwrap_or(LayerId(0))).copied().unwrap_or(0));
         let info = &self.d.file_info;
         e.set("DocumentInfoTitle", &info.document_title);
@@ -295,7 +307,9 @@ impl<'a> Ex<'a> {
         for (i, layer) in layers.iter().enumerate() {
             let el = El::new("Layers")
                 .attr("Number", i)
-                .attr("Level", 0)
+                // Scribus uses `Level` as the layer's stacking position and `Number` as its id;
+                // duplicate levels make it lose the layers (and everything drawn on them).
+                .attr("Level", i)
                 .attr("Name", &layer.name)
                 .attr("IsViewable", bool_num(layer.visible))
                 .attr("IsPrintable", bool_num(layer.printable))
@@ -345,6 +359,9 @@ impl<'a> Ex<'a> {
 
     fn write_masters(&mut self, e: &mut El) {
         let parents = self.d.parents.clone();
+        // A master page's `PageNumber` is its index among all master pages, and the objects on it
+        // name that number in `OwnPage`; every master sharing 0 attaches its objects to every page.
+        let mut number = 0i64;
         for parent in &parents {
             let names = self.master_names.get(&parent.id).cloned().unwrap_or_else(|| vec!["Master".into()]);
             for (pi, page) in parent.pages.iter().enumerate() {
@@ -360,7 +377,7 @@ impl<'a> Ex<'a> {
                         .attr("BorderRight", num(right))
                         .attr("BorderTop", num(page.margins.top))
                         .attr("BorderBottom", num(page.margins.bottom))
-                        .attr("PageNumber", pi)
+                        .attr("PageNumber", number)
                         .attr("PageName", &name)
                         .attr("MasterPageName", "")
                         .attr("Size", "Custom")
@@ -370,12 +387,14 @@ impl<'a> Ex<'a> {
                         .attr("VerticalGuides", guide_list(&page.guides, true, page.x))
                         .attr("HorizontalGuides", guide_list(&page.guides, false, page.x)),
                 );
+                number += 1;
             }
         }
     }
 
     fn write_master_objects(&mut self, e: &mut El) {
         let parents = self.d.parents.clone();
+        let mut number = 0i64;
         for parent in &parents {
             let names = self.master_names.get(&parent.id).cloned().unwrap_or_else(|| vec!["Master".into()]);
             for (pi, _page) in parent.pages.iter().enumerate() {
@@ -386,9 +405,10 @@ impl<'a> Ex<'a> {
                     }
                     let abs = Affine::translate((100.0, 20.0)) * item.xf;
                     let mut el = El::new("MasterObject");
-                    self.write_object_attrs(&mut el, item, ObjCtx { abs, own_page: pi as i64, master: Some(&name), group: None, depth: 0 });
+                    self.write_object_attrs(&mut el, item, ObjCtx { abs, own_page: number, master: Some(&name), group: None, depth: 0 });
                     e.push(el);
                 }
+                number += 1;
             }
         }
     }
@@ -616,7 +636,21 @@ impl<'a> Ex<'a> {
     }
 
     fn put_image_geometry(&mut self, el: &mut El, g: &designcraft_doc::Graphic, item: &Item) {
-        let c = g.xf.as_coeffs();
+        // Scribus applies the camera's EXIF orientation when it loads the picture. A graphic whose
+        // transform was built in raw pixel space (as the importer does) already carries that
+        // uprighting, so divide it out before writing the scale, offset and rotation.
+        let mut xf = g.xf;
+        if let Some(asset) = self.d.assets.get(&g.asset)
+            && let Some((iw, ih)) = asset.pixels
+            && (g.size.0 - f64::from(iw)).abs() < 1e-6
+            && (g.size.1 - f64::from(ih)).abs() < 1e-6
+        {
+            let o = designcraft_images::exif_orientation(&asset.data);
+            if o != 1 {
+                xf *= exif_inverse(o, g.size.0, g.size.1);
+            }
+        }
+        let c = xf.as_coeffs();
         let (pw, ph) = g.size;
         let scale_x = c[0].hypot(c[1]);
         let scale_y = c[2].hypot(c[3]);
@@ -845,8 +879,26 @@ fn align_number(a: designcraft_doc::Align) -> i64 {
     }
 }
 
+/// The inverse of the importer's EXIF uprighting: map upright pixel coordinates back to the raw
+/// ones Scribus stores, so `xf * inverse` is the transform Scribus should apply itself.
+fn exif_inverse(o: u8, w: f64, h: f64) -> Affine {
+    match o {
+        2 => Affine::new([-1.0, 0.0, 0.0, 1.0, w, 0.0]),
+        3 => Affine::new([-1.0, 0.0, 0.0, -1.0, w, h]),
+        4 => Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]),
+        5 => Affine::new([0.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+        6 => Affine::new([0.0, -1.0, 1.0, 0.0, 0.0, h]),
+        7 => Affine::new([0.0, -1.0, -1.0, 0.0, h, w]),
+        8 => Affine::new([0.0, 1.0, -1.0, 0.0, w, 0.0]),
+        _ => Affine::IDENTITY,
+    }
+}
+
 fn font_name(family: &str, style: &str) -> String {
-    if style.is_empty() || style.eq_ignore_ascii_case("Regular") || style.eq_ignore_ascii_case("Book") {
+    // Scribus names a face by family and style, including the default styles: "DejaVu Sans
+    // Book" and "Geist Regular", not "DejaVu Sans" or "Geist".
+    let (family, style) = (family.trim(), style.trim());
+    if style.is_empty() || family.eq_ignore_ascii_case(style) || family.to_lowercase().ends_with(&format!(" {}", style.to_lowercase())) {
         family.to_string()
     } else {
         format!("{family} {style}")
