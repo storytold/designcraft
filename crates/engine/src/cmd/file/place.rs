@@ -497,6 +497,44 @@ pub(super) fn place_grid(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "remaining": loaded_count(s)}))
 }
 
+/// Place all queued images on new pages as one undoable edit.
+pub(super) fn place_contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.contactSheet";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 3, 4)?;
+    let margin = crate::cmd::f64_or(p, "margin", 36.0);
+    if !margin.is_finite() || margin < 0.0 {
+        return Err(bad(ID, "invalid margin"));
+    }
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().collect();
+    if images.is_empty() {
+        return Err(bad(ID, "load images first using File > Place"));
+    }
+    let layer = s.doc()?.active_layer;
+    let per_page = columns.saturating_mul(rows).max(1);
+    let count = images.len().div_ceil(per_page);
+    let ids = s.edit(|d, sel| {
+        let after = d.page_count().saturating_sub(1);
+        d.insert_pages(Some(after), count, None)?;
+        let mut ids = Vec::with_capacity(images.len());
+        for (page_offset, chunk) in images.chunks(per_page).enumerate() {
+            let index = after.saturating_add(1).saturating_add(page_offset);
+            let (si, pi) = d.page_loc(index).ok_or_else(|| bad(ID, "missing page"))?;
+            let b = d.spreads.get(si).and_then(|sp| sp.pages.get(pi)).ok_or_else(|| bad(ID, "missing page"))?.bounds();
+            let cells = grid_cells(Rect::new(b.x0 + margin, b.y0 + margin, b.x1 - margin, b.y1 - margin), columns, rows, gutter, ID)?;
+            for (image, rect) in chunk.iter().zip(cells) {
+                ids.push(insert_grid_image(d, designcraft_doc::SpreadRef::Doc(si), layer, *image, rect, ID)?);
+            }
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"pages": count, "images": ids.len()}))
+}
+
 /// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,
 /// 1-based) grouped, top-left at x/y (default: the source position on the first page).
 fn place_layout_page(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
@@ -573,7 +611,9 @@ pub(super) mod image_place_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
         s.set_tool("rectangleFrame");
-        for (cmd, p) in [("place.drop", json!({"x": 10, "y": 10})), ("place.grid", json!({"rect": [0, 0, 100, 100]}))] {
+        for (cmd, p) in
+            [("place.drop", json!({"x": 10, "y": 10})), ("place.grid", json!({"rect": [0, 0, 100, 100]})), ("place.contactSheet", json!({}))]
+        {
             let e = s.execute(cmd, &p).unwrap_err().to_string();
             assert!(e.contains("nothing loaded"), "{cmd}: {e}");
             assert_eq!(s.tool_id(), "rectangleFrame", "{cmd}");

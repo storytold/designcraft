@@ -893,6 +893,10 @@ pub(crate) mod browser_import_tests {
         assert_eq!(app.session.tool_id(), "placeGun");
         assert_eq!(app.session.loaded_queue.len(), 2);
         assert!(app.session.documents()[1].doc.assets.is_empty());
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let result = dialogs::confirm(&mut app).unwrap();
+        assert_eq!(result["images"], 3);
+        assert_eq!(result["pages"], 1);
     }
 
     /// Files dropped together are placed in the order they came: images around a PDF go into the
@@ -981,6 +985,40 @@ pub(crate) mod browser_import_tests {
         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
         scripted.run("app.placeDialog", json!({"paths": paths})).unwrap();
         assert_eq!(loaded_names(&scripted), ["b.svg", "a.svg", "c.svg"]);
+    }
+
+    #[test]
+    fn contact_sheet_measures_use_the_document_unit() {
+        let mut app = app();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters"})).unwrap();
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.unit, designcraft_geom::Unit::Millimeters);
+        assert_eq!(d.s("gutter"), "6pt");
+    }
+
+    #[test]
+    fn contact_sheet_validation_preserves_fields_and_pending_images() {
+        let mut app = app();
+        let request = app.import_request("place");
+        deliver(&mut app, request, "image.png", png(200));
+        app.run("app.contactSheetDialog", json!({})).unwrap();
+        let before = app.session.doc().unwrap().doc.clone();
+        for (field, value) in [("rows", "bad"), ("rows", "0"), ("rows", "4"), ("margin", "999999pt")] {
+            app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
+            if field == "rows" && value == "4" {
+                continue;
+            }
+            assert!(dialogs::confirm(&mut app).is_err());
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.s(field), value);
+            assert!(!dialog.s("status").is_empty());
+            assert!(std::sync::Arc::ptr_eq(&before, &app.session.doc().unwrap().doc));
+            assert!(app.session.loaded.is_some());
+        }
+        app.ui.dialog.as_mut().unwrap().fields.insert("margin".into(), json!("36pt"));
+        assert!(dialogs::confirm(&mut app).is_ok());
+        assert!(app.ui.dialog.is_none());
     }
 
     #[test]

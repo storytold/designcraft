@@ -148,6 +148,10 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             },
             (None, None) => app.pick_and_open("place"),
         },
+        "app.contactSheetDialog" => {
+            crate::dialogs::open_contact_sheet(app);
+            Ok(Value::Null)
+        }
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };

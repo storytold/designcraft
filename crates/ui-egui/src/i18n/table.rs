@@ -147,6 +147,25 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Revert", ["Zurück zur letzten Version", "Version précédente", "Volver a la versión guardada", "復帰", "恢复到上次保存"]),
     ("Place…", ["Platzieren …", "Importer…", "Colocar…", "配置…", "置入…"]),
     (
+        "Place Contact Sheet…",
+        ["Kontaktbogen platzieren…", "Importer une planche-contact…", "Colocar hoja de contactos…", "コンタクトシートを配置…", "置入联系表…"],
+    ),
+    (
+        "Place Contact Sheet",
+        ["Kontaktbogen platzieren", "Importer une planche-contact", "Colocar hoja de contactos", "コンタクトシートを配置", "置入联系表"],
+    ),
+    (
+        "Place loaded images on new pages, in file order.",
+        [
+            "Geladene Bilder in Dateireihenfolge auf neuen Seiten platzieren.",
+            "Importer les images chargées sur de nouvelles pages, dans l’ordre des fichiers.",
+            "Colocar las imágenes cargadas en páginas nuevas, en el orden de los archivos.",
+            "読み込んだ画像をファイル順に新しいページに配置します。",
+            "按文件顺序将载入的图像置入新页面。",
+        ],
+    ),
+    ("Page margin", ["Seitenrand", "Marge de page", "Margen de página", "ページマージン", "页边距"]),
+    (
         "Image import cancelled while a dialog is open",
         [
             "Bildimport bei geöffnetem Dialog abgebrochen",

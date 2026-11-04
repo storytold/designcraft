@@ -21,6 +21,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         Some("Cmd+D"),
         "{path?, paths?: [path] (several, loaded into the place cursor in order)} — without either, choose the files in a dialog",
     ),
+    ("app.contactSheetDialog", "Place Contact Sheet…", None, "{} — place the images loaded in the place cursor on new pages"),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
