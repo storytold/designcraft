@@ -342,13 +342,21 @@ impl PathData {
         if self.is_empty() {
             return None;
         }
-        let bp = self.to_bezpath();
-        if self.anchor_count() == 1
-            && let Some(a) = self.subpaths.iter().find_map(|s| s.anchors.first())
-        {
-            return Some(Rect::from_points(a.p, a.p));
+        // `bounding_box` skips a lone MoveTo, so single-anchor subpaths are folded in by point.
+        let mut bp = BezPath::new();
+        let mut lone: Option<Rect> = None;
+        for sp in &self.subpaths {
+            if let [a] = sp.anchors.as_slice() {
+                lone = Some(lone.map_or(Rect::from_points(a.p, a.p), |r| r.union_pt(a.p)));
+            } else {
+                sp.to_bezpath_into(&mut bp);
+            }
         }
-        Some(bp.bounding_box())
+        if bp.elements().is_empty() {
+            return lone;
+        }
+        let bb = bp.bounding_box();
+        Some(lone.map_or(bb, |r| r.union(bb)))
     }
     /// Bounds including control handles (used for quick culling).
     pub fn control_bounds(&self) -> Option<Rect> {
@@ -403,6 +411,23 @@ impl PathData {
     pub fn length(&self) -> f64 {
         self.to_bezpath().segments().map(|s| kurbo::ParamCurveArclen::arclen(&s, 1e-6)).sum()
     }
+    /// True if some subpath encloses an area once closed: a frame, or an open path such as a V.
+    /// A line, or a path whose points all lie on one line, encloses none.
+    pub fn encloses_area(&self) -> bool {
+        self.subpaths.iter().any(|sp| {
+            let mut anchors = sp.anchors.clone();
+            // An open subpath closes with a straight segment: its end handles are unused.
+            if !sp.closed {
+                if let Some(a) = anchors.first_mut() {
+                    a.h_in = a.p;
+                }
+                if let Some(a) = anchors.last_mut() {
+                    a.h_out = a.p;
+                }
+            }
+            SubPath::new(anchors, true).area().abs() > 1e-6
+        })
+    }
 }
 
 fn push_curve(cur: &mut Option<SubPath>, last: Point, c1: Point, c2: Point, p: Point) {
@@ -419,6 +444,36 @@ mod tests {
 
     fn square() -> PathData {
         PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)], true))
+    }
+
+    #[test]
+    fn bounds_cover_single_anchor_subpaths() {
+        let mut pd = PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0)], true));
+        pd.subpaths.push(SubPath::polyline(&[Point::new(50.0, 50.0)], false));
+        assert_eq!(pd.bounds(), Some(Rect::new(0.0, 0.0, 50.0, 50.0)));
+
+        let mut two = PathData::single(SubPath::polyline(&[Point::new(5.0, 7.0)], false));
+        two.subpaths.push(SubPath::polyline(&[Point::new(50.0, 50.0)], false));
+        assert_eq!(two.bounds(), Some(Rect::new(5.0, 7.0, 50.0, 50.0)));
+    }
+
+    #[test]
+    fn lines_enclose_no_area_and_open_vs_do() {
+        let pts = |p: &[(f64, f64)]| p.iter().map(|&(x, y)| Point::new(x, y)).collect::<Vec<_>>();
+        let open = |p: &[(f64, f64)]| PathData::single(SubPath::polyline(&pts(p), false));
+        assert!(!open(&[(0.0, 0.0), (100.0, 0.0)]).encloses_area());
+        assert!(!open(&[(0.0, 0.0), (50.0, 50.0), (100.0, 100.0)]).encloses_area());
+        assert!(open(&[(20.0, 30.0), (80.0, 90.0), (140.0, 30.0)]).encloses_area());
+        let square = SubPath::polyline(&pts(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]), true);
+        let line = SubPath::polyline(&pts(&[(20.0, 0.0), (40.0, 0.0)]), false);
+        assert!(PathData::new(vec![line.clone(), square]).encloses_area());
+        assert!(!PathData::new(vec![line]).encloses_area());
+        assert!(!PathData::default().encloses_area());
+        // Handles left on the open ends don't bend the closing segment.
+        let mut stray = SubPath::polyline(&pts(&[(0.0, 0.0), (100.0, 0.0)]), false);
+        stray.anchors[0].h_in = Point::new(0.0, 40.0);
+        stray.anchors[1].h_out = Point::new(100.0, 40.0);
+        assert!(!PathData::single(stray).encloses_area());
     }
 
     #[test]
