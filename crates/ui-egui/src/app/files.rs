@@ -1124,6 +1124,40 @@ pub(crate) mod browser_import_tests {
         assert_eq!(d.s("gutter"), "6pt");
     }
 
+    /// A bare number in a field means the document's ruler unit, whether it was typed or came as
+    /// a number over `ui.dialog.open` or `ui.dialog.set`.
+    #[test]
+    fn contact_sheet_numbers_are_in_the_document_unit_however_they_came() {
+        let frames = |margin: Value, gutter: Value, set: bool| {
+            let mut app = app();
+            app.run("document.preferences", json!({"horizontalUnits": "inches"})).unwrap();
+            let request = app.import_request("place");
+            for name in ["one.png", "two.png"] {
+                app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile {
+                    request: request.clone(),
+                    name: name.into(),
+                    bytes: png(200),
+                });
+            }
+            app.drain_inbox();
+            let fields = json!({"columns": 2, "rows": 1, "gutter": gutter, "margin": margin});
+            app.ui.dialog = Some(dialogs::contact_sheet_dialog(&app, if set { json!({"columns": 2, "rows": 1}) } else { fields.clone() }));
+            if set {
+                let d = app.ui.dialog.as_mut().unwrap();
+                d.set_field("gutter", fields["gutter"].clone());
+                d.set_field("margin", fields["margin"].clone());
+            }
+            dialogs::confirm(&mut app).unwrap();
+            let doc = &app.session.doc().unwrap().doc;
+            doc.spreads.last().unwrap().items.iter().map(|item| item.bounds()).collect::<Vec<_>>()
+        };
+        let typed = frames(json!("1"), json!("0.5"), false);
+        assert_eq!(typed.len(), 2);
+        assert_eq!(frames(json!(1), json!(0.5), false), typed, "numbers over ui.dialog.open");
+        assert_eq!(frames(json!(1), json!(0.5), true), typed, "numbers over ui.dialog.set");
+        assert_eq!(frames(json!("72pt"), json!("36pt"), false), typed, "an explicit unit still says what it means");
+    }
+
     #[test]
     fn contact_sheet_validation_preserves_fields_and_pending_images() {
         let mut app = app();

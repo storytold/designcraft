@@ -4721,11 +4721,14 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         }
         "contactSheet" => {
             let result = (|| {
+                // A bare number means the ruler unit, as typed or as a JSON number (`Dialog::m`
+                // takes the latter as points).
+                let measure = |k: &str| parse_measure(&d.s(k), d.unit).ok();
                 let params = json!({
                     "columns": d.s("columns").trim().parse::<u64>().map_err(|_| "Columns must be a whole number")?,
                     "rows": d.s("rows").trim().parse::<u64>().map_err(|_| "Rows must be a whole number")?,
-                    "gutter": d.m("gutter").ok_or("Enter a valid gutter")?,
-                    "margin": d.m("margin").ok_or("Enter a valid margin")?,
+                    "gutter": measure("gutter").ok_or("Enter a valid gutter")?,
+                    "margin": measure("margin").ok_or("Enter a valid margin")?,
                 });
                 app.run("place.contactSheet", params)
             })();
