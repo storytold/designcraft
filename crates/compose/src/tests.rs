@@ -1898,6 +1898,45 @@ fn table_rows_keep_with_next_row_and_start_in_the_next_frame() {
     // fills the first frame rather than moving its later rows on.
     let (a4, b4) = rows_per_frame(|t| t.rows.iter_mut().for_each(|r| r.keep_with_next = true));
     assert_eq!((a4, b4), (a, b));
+    // A row that starts in the next frame ends the kept run before it.
+    let (a5, b5) = rows_per_frame(|t| {
+        (1..3).for_each(|r| t.rows[r].keep_with_next = true);
+        t.rows[2].start = designcraft_doc::StartParagraph::NextFrame;
+    });
+    assert_eq!((a5, b5.first()), (vec![1], Some(&2)));
+}
+
+#[test]
+fn a_row_starting_in_the_next_frame_leaves_a_later_column() {
+    // A table at the top of the second column of a frame (after a column break): a first row
+    // that asks for the next frame still moves on to the second frame (the top of a column isn't
+    // the next frame), and one that asks for the next column stays.
+    let compose = |start: designcraft_doc::StartParagraph| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let text = format!("Intro{}", designcraft_doc::story::COLUMN_BREAK);
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 200.0), lid, &text, ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 300.0, 300.0, 500.0), lid, "", ParaFormat::default()).unwrap();
+        d.item_mut(f1).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        d.thread(f1, f2).unwrap();
+        let mut t = filled(2, 1, 0, 100.0);
+        t.rows[0].start = start;
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert(
+            end, "
+",
+        );
+        let end = st.len();
+        st.insert_table(end, t);
+        d.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        cs.frames.iter().map(|f| f.tables.iter().map(|t| t.column).collect::<Vec<_>>()).collect::<Vec<_>>()
+    };
+    assert_eq!(compose(designcraft_doc::StartParagraph::Anywhere), vec![vec![1], vec![]]);
+    assert_eq!(compose(designcraft_doc::StartParagraph::NextColumn), vec![vec![1], vec![]]);
+    assert_eq!(compose(designcraft_doc::StartParagraph::NextFrame), vec![vec![], vec![0]]);
 }
 
 #[test]

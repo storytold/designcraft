@@ -324,8 +324,8 @@ pub(crate) fn place_table(
         }
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        let at_top = (body_placed == 0 && at_col_top) || started == Some(r);
-        forced = forced.or(row_start(table.rows[r].start, at_top, frames.get(cur.fi).and_then(|f| f.page).map(|p| doc.page_number(p) % 2 == 1)));
+        // A row its start option has just moved needs no further move.
+        forced = forced.or(row_start(table.rows[r].start, body_placed == 0 && at_col_top, cur, frames, doc).filter(|_| started != Some(r)));
         let room = bottom - (col.y0 + if first_frag || o.repeat_header { sum(0, header) } else { 0.0 });
         let ge = next_group(&heights, r, (keep_end[r].min(body_end), group_end[r].min(body_end)), room - footer_h, &mut loose);
         let gh = sum(r, ge);
@@ -379,14 +379,22 @@ pub(crate) fn place_table(
     true
 }
 
-/// Start Row: where a row must begin, unless it already starts a column (`at_top`) and, for an odd or even page start, its page (`odd`: its number is odd) has that parity.
-fn row_start(start: StartParagraph, at_top: bool, odd: Option<bool>) -> Option<StartParagraph> {
-    let parity = match start {
-        StartParagraph::NextOddPage => odd != Some(false),
-        StartParagraph::NextEvenPage => odd != Some(true),
-        _ => true,
+/// Start Row: where a row must begin, unless it already begins there: at the top of a column
+/// (`at_top`) for Next Column, and of the frame, the page, or a page of that parity for the others.
+fn row_start(start: StartParagraph, at_top: bool, cur: &Cursor, frames: &[FrameSpec], doc: &Document) -> Option<StartParagraph> {
+    let page = |fi: usize| frames.get(fi).and_then(|f| f.page);
+    let frame_top = at_top && cur.col == 0;
+    let page_top = frame_top && (cur.fi == 0 || page(cur.fi).is_none() || page(cur.fi - 1) != page(cur.fi));
+    let odd = page(cur.fi).map(|p| doc.page_number(p) % 2 == 1);
+    let there = match start {
+        StartParagraph::Anywhere => true,
+        StartParagraph::NextColumn => at_top,
+        StartParagraph::NextFrame => frame_top,
+        StartParagraph::NextPage => page_top,
+        StartParagraph::NextOddPage => page_top && odd != Some(false),
+        StartParagraph::NextEvenPage => page_top && odd != Some(true),
     };
-    (start != StartParagraph::Anywhere && !(at_top && parity)).then_some(start)
+    (!there).then_some(start)
 }
 
 /// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
@@ -410,7 +418,8 @@ fn keep_groups(table: &Table, group_end: &[usize], body_end: usize) -> Vec<usize
     let mut keep_end = group_end.to_vec();
     for r in (0..body_end).rev() {
         let e = group_end[r];
-        if e < body_end && table.rows[e - 1].keep_with_next {
+        // A row with a start option ends the kept run before it, so it can start where it asks.
+        if e < body_end && table.rows[e - 1].keep_with_next && table.rows[e].start == StartParagraph::Anywhere {
             keep_end[r] = keep_end[e];
         }
     }
