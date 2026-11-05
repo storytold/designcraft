@@ -37,7 +37,7 @@ changes invalidate the affected spreads; global styles, parents, page structures
 changes conservatively refresh all. Browser/no-thread fallback renders at most one thumbnail
 per frame. A source replacement gets new preview keys automatically. Decodes and mip builds retain their colour generation and immutable colour context; work finishing after a colour-setting change cannot populate the new memory cache. Disk writes keep the key captured before decoding, so old pixels cannot acquire a newer settings key. Profile fingerprints are computed once per context; replacing a named CMYK profile cannot reuse previews converted by its previous bytes.
 Document-page thumbnails follow the Pages panel's size and Show Thumbnails options; only
-visible document rows request background rendering. Colour-setting changes invalidate decoded
+visible document rows request background rendering. Alternate-layout columns retain the same background thumbnail requests and size limits; parent, layout and export controls remain available in the Pages panel. Colour-setting changes invalidate decoded
 image pixels and document-page thumbnail textures.
 
 This is demand loading of **decoded pixels**. Native linked documents still read and retain

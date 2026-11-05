@@ -49,7 +49,9 @@ muda = { version = "0.21", default-features = false }
 # The input context, to drop the IME's marked text when the Type tool ends a composition. The
 # versions muda uses, through safe methods.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSTextInputContext"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSResponder", "NSScreen", "NSTextInputContext"] }
+# Files dragged in from the Finder: the pointer's place on the screen (src/pointer.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 # The window's `movable` flag follows the application bar's controls.
 craft-window = { workspace = true }
 # Finder double-clicks, Open With, Dock drops and `open -a DesignCraft brochure.idml` arrive as a
