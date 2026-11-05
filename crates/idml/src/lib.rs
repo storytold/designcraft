@@ -227,6 +227,11 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
         if size < 8 || at + size > b.len() {
             break;
         }
+        // A drawn shape, line, path or text beside the bitmap: the picture is a vector drawing that
+        // the bitmap alone would misrepresent, so it is left as it is.
+        if matches!(kind, 2..=8 | 42..=47 | 54..=56 | 62..=64 | 71..=74 | 83..=92) {
+            return None;
+        }
         // EMR_STRETCHDIBITS: offBmi, cbBmi, offBits, cbBits at 48..64 of the record.
         if kind == 81 && size >= 80 {
             let (bmi, bmi_len, bits, bits_len) = (word(at + 48)?, word(at + 52)?, word(at + 56)?, word(at + 60)?);
@@ -251,7 +256,8 @@ fn emf_dibs(b: &[u8]) -> Option<Vec<Dib<'_>>> {
 /// The bitmap inside an EMF (what InDesign keeps for a `<WMF>` placement), as a BMP file. A
 /// transparent picture is written as a 1-bit mask record then the colour record: the colour
 /// bitmap shows, with the mask as its alpha. `None` for anything that is not an EMF with a
-/// bitmap in it (the vector drawing is not interpreted).
+/// bitmap in it, or one that also draws shapes, lines or text (the vector drawing is not interpreted,
+/// so such an EMF is not replaced by its bitmap).
 pub(crate) fn emf_raster_to_bmp(b: &[u8]) -> Option<Vec<u8>> {
     let dibs = emf_dibs(b)?;
     let colour = dibs.iter().reduce(|best, d| if d.depth > best.depth { d } else { best })?;

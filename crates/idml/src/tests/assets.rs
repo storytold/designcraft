@@ -453,3 +453,14 @@ fn a_masked_emf_shows_its_colour_bitmap_with_the_mask_as_alpha() {
     assert_eq!(bmp[10..14], 122u32.to_le_bytes());
     assert_eq!(bmp[122..], [10, 20, 30, 0, 40, 50, 60, 255], "the first pixel is outside the mask");
 }
+
+#[test]
+fn an_emf_that_also_draws_vectors_is_not_reduced_to_its_bitmap() {
+    let colour = emf_dib_record(2, 1, 24, &[], &[10, 20, 30, 40, 50, 60, 0, 0]);
+    // EMR_POLYGON16 (86), EMR_RECTANGLE (43): a drawing the bitmap alone would misrepresent.
+    for kind in [86u32, 43] {
+        let shape = [kind.to_le_bytes(), 8u32.to_le_bytes()].concat();
+        assert!(crate::emf_raster_to_bmp(&emf_of(&[colour.clone(), shape])).is_none(), "{kind}");
+    }
+    assert!(crate::emf_raster_to_bmp(&emf_of(&[colour])).is_some());
+}

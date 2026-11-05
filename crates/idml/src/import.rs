@@ -2807,11 +2807,13 @@ impl<'r> Importer<'r> {
         // PostScript name → family and style: `YuMincho-Regular` is Yu Mincho, Regular.
         let (family, style) = t.font.split_once('-').unwrap_or((&t.font, "Regular"));
         let mut spaced = String::new();
-        for (i, c) in family.chars().enumerate() {
-            if i > 0 && c.is_ascii_uppercase() && family.as_bytes().get(i - 1).is_some_and(u8::is_ascii_lowercase) {
+        let mut prev: Option<char> = None;
+        for c in family.chars() {
+            if c.is_ascii_uppercase() && prev.is_some_and(|p| p.is_ascii_lowercase()) {
                 spaced.push(' ');
             }
             spaced.push(c);
+            prev = Some(c);
         }
         let fill = e.get("FillColor").map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::BLACK.into());
         let over =
