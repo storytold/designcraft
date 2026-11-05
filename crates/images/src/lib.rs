@@ -450,12 +450,13 @@ fn tiff_orientation(t: &[u8]) -> Option<u8> {
         b"MM" => true,
         _ => return None,
     };
+    // Offsets come from the file: a hostile IFD near `usize::MAX` must not overflow the range.
     let u16_at = |o: usize| -> Option<u16> {
-        let b = t.get(o..o + 2)?;
+        let b = t.get(o..o.checked_add(2)?)?;
         Some(if big { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) })
     };
     let u32_at = |o: usize| -> Option<u32> {
-        let b = t.get(o..o + 4)?;
+        let b = t.get(o..o.checked_add(4)?)?;
         Some(if big { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) })
     };
     if u16_at(2)? != 42 {
@@ -464,15 +465,15 @@ fn tiff_orientation(t: &[u8]) -> Option<u8> {
     let ifd = u32_at(4)? as usize;
     let count = u16_at(ifd)? as usize;
     for k in 0..count {
-        let entry = ifd.checked_add(2 + k.checked_mul(12)?)?;
+        let entry = ifd.checked_add(2usize.checked_add(k.checked_mul(12)?)?)?;
         if u16_at(entry)? != 0x0112 {
             continue;
         }
         // SHORT, one value: the value itself sits in the entry's last two bytes.
-        if u16_at(entry + 2)? != 3 || u32_at(entry + 4)? != 1 {
+        if u16_at(entry.checked_add(2)?)? != 3 || u32_at(entry.checked_add(4)?)? != 1 {
             return None;
         }
-        return u8::try_from(u16_at(entry + 8)?).ok().filter(|v| (1..=8).contains(v));
+        return u8::try_from(u16_at(entry.checked_add(8)?)?).ok().filter(|v| (1..=8).contains(v));
     }
     None
 }

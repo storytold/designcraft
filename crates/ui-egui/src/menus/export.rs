@@ -90,8 +90,20 @@ pub(super) fn export_scribus(app: &mut DesignApp, p: &Value) -> Result<Value, St
                 .collect()
         })
         .unwrap_or_default();
+    // The images are extra files beside the chosen document: an existing one may be a newer
+    // linked file, so it is never replaced. Refuse before writing anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    for (rel, _) in &images {
+        let path = std::path::Path::new(rel);
+        if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(format!("{rel}: refusing to write an image outside the document's folder"));
+        }
+        let dest = dir.join(path);
+        if designcraft_engine::io::exists_for_write(&dest) {
+            return Err(format!("{}: refusing to overwrite an existing image beside the document; choose an empty folder", dest.display()));
+        }
+    }
     let write = app.services.write.as_mut().ok_or("no writer")?;
-    write(&path, &bytes)?;
     for (rel, data) in &images {
         let dest = dir.join(rel);
         #[cfg(not(target_arch = "wasm32"))]
@@ -102,6 +114,7 @@ pub(super) fn export_scribus(app: &mut DesignApp, p: &Value) -> Result<Value, St
         }
         write(&dest.to_string_lossy(), data)?;
     }
+    write(&path, &bytes)?;
     Ok(json!({"path": path, "bytes": bytes.len(), "images": images.len()}))
 }
 

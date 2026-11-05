@@ -52,9 +52,29 @@ pub type Result<T> = std::result::Result<T, ScribusError>;
 
 /// Does `bytes` look like a Scribus document? Scribus writes UTF-8 XML whose root is
 /// `<SCRIBUSUTF8NEW>`; older files use `<SCRIBUSUTF8>` or `<SCRIBUSUTF8OLD>`.
+///
+/// The root element decides, not a substring: a DesignCraft document may quote a `.sla` file (or
+/// the marker) in its story text without being one.
 pub fn is_scribus(bytes: &[u8]) -> bool {
     let b = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let head = &b[..b.len().min(4096)];
     let text = String::from_utf8_lossy(head);
-    text.contains("<SCRIBUSUTF8")
+    let mut rest = text.trim_start();
+    // Skip the XML declaration, comments, processing instructions and a doctype to reach the
+    // document element.
+    loop {
+        if rest.starts_with("<!--") {
+            let Some(end) = rest.find("-->") else { return false };
+            rest = rest[end + 3..].trim_start();
+        } else if rest.starts_with("<?") {
+            let Some(end) = rest.find("?>") else { return false };
+            rest = rest[end + 2..].trim_start();
+        } else if rest.starts_with("<!") {
+            let Some(end) = rest.find('>') else { return false };
+            rest = rest[end + 1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    rest.starts_with("<SCRIBUSUTF8")
 }

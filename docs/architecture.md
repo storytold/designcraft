@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (shared PDF writing) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (Scribus 1.7 `.sla` import and export as `designcraft-scribus`; shared PDF writing) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -8,7 +8,7 @@ rules (never crash, everything is a command, layering, clean-room).
 
 ## Workspace
 
-A Cargo workspace: 16 library crates in `crates/`, 3 apps in `apps/`, and `xtask`. 126,411
+A Cargo workspace: 17 library crates in `crates/`, 3 apps in `apps/`, and `xtask`. 126,411
 lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default,
 `unsafe_code = "forbid"` workspace-wide.
 

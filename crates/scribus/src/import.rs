@@ -428,8 +428,11 @@ impl<'r> Importer<'r> {
                 let number = int_attr(e, "PageNumber", 0);
                 let width = e.num("PageWidth").unwrap_or(self.doc.settings.page_width).max(1.0);
                 let height = e.num("PageHeight").unwrap_or(self.doc.settings.page_height).max(1.0);
+                // Page numbers come from the file and can overflow or be negative; the parity
+                // decides the side without panicking.
+                let page_number = first_number.wrapping_add(number);
                 let side = if self.doc.settings.facing_pages {
-                    if (first_number + number) % 2 == 1 { PageSide::Right } else { PageSide::Left }
+                    if page_number.rem_euclid(2) == 1 { PageSide::Right } else { PageSide::Left }
                 } else {
                     PageSide::Single
                 };
@@ -439,7 +442,7 @@ impl<'r> Importer<'r> {
                 p.parent = e.get("MasterPageName").filter(|n| !n.is_empty()).and_then(|n| match self.masters.get(n) {
                     Some((i, _, _)) => self.parents.get(*i).map(|s| s.id),
                     None => {
-                        self.warn(format!("page {} uses the master page `{n}`, which is not in the file", number + first_number));
+                        self.warn(format!("page {} uses the master page `{n}`, which is not in the file", page_number));
                         None
                     }
                 });
@@ -477,6 +480,7 @@ impl<'r> Importer<'r> {
                     prefix: String::new(),
                     marker: e.get("Name").unwrap_or("").to_string(),
                     include_prefix: false,
+                    layout: None,
                 });
             }
         }
@@ -488,6 +492,7 @@ impl<'r> Importer<'r> {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             });
         }
         self.doc.sections = sections;
@@ -982,21 +987,19 @@ fn text_options(e: &El) -> TextFrameOptions {
 /// Scribus alignment values: 3 = block (the last line stays left), 4 = forced (the last line is
 /// justified too).
 fn align_of(v: i64) -> designcraft_doc::Align {
+    // Scribus's AlignmentType: 0 left, 1 centre, 2 right, 3 justified, 4 forced justified.
     match v {
         1 => designcraft_doc::Align::Center,
         2 => designcraft_doc::Align::Right,
         3 => designcraft_doc::Align::LeftJustified,
         4 => designcraft_doc::Align::FullyJustified,
-        5 => designcraft_doc::Align::LeftJustified,
-        6 => designcraft_doc::Align::CenterJustified,
-        7 => designcraft_doc::Align::RightJustified,
         _ => designcraft_doc::Align::Left,
     }
 }
 
 /// The affine that turns raw pixel coordinates into the upright image an EXIF orientation tag
 /// asks for (`w`,`h` are the raw pixel size). 5–8 swap the axes.
-fn exif_affine(o: u8, w: f64, h: f64) -> Affine {
+pub(crate) fn exif_affine(o: u8, w: f64, h: f64) -> Affine {
     match o {
         2 => Affine::new([-1.0, 0.0, 0.0, 1.0, w, 0.0]),
         3 => Affine::new([-1.0, 0.0, 0.0, -1.0, w, h]),

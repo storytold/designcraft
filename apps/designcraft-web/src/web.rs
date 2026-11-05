@@ -6,6 +6,10 @@ use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
+/// Files the Open dialog offers. The browser hands over the chosen file's bytes only, so a
+/// package's linked files (a `.sla`'s images, an IDML package's links) are not read: the importer
+/// warns for each unreadable link and the import-warnings alert shows them, as it does on the
+/// desktop.
 const DOC_EXTS: &[&str] = &["designcraft", "sla", "idml", "indd", "indt"];
 const IMAGE_EXTS: &[&str] = &[
     "png",

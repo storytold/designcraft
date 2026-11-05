@@ -97,8 +97,12 @@ fn detects_scribus_files() {
     assert!(is_scribus(FIXTURE.as_bytes()));
     assert!(is_scribus(b"\xEF\xBB\xBF<SCRIBUSUTF8 Version=\"1.4\"></SCRIBUSUTF8>"));
     assert!(is_scribus(b"<SCRIBUSUTF8OLD></SCRIBUSUTF8OLD>"));
+    assert!(is_scribus(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- made by Scribus -->\n<SCRIBUSUTF8NEW></SCRIBUSUTF8NEW>"));
     assert!(!is_scribus(b"<html></html>"));
     assert!(!is_scribus(b""));
+    // Native documents quote `.sla` text without being one: the root element decides.
+    assert!(!is_scribus(b"{\"stories\":{\"0\":{\"text\":\"<SCRIBUSUTF8NEW>\"}}}"));
+    assert!(!is_scribus(b"<?xml version=\"1.0\"?>\n<html><p>&lt;SCRIBUSUTF8NEW</p></html>"));
 }
 
 #[test]
@@ -355,6 +359,13 @@ fn image_rotation_turns_counter_clockwise() {
     // In the y-down page space a counter-clockwise quarter turn maps (1, 0) to (0, -1).
     assert!((c[1] + 1.0).abs() < 1e-9, "rotation turns counter-clockwise: {c:?}");
     assert!((c[2] - 1.0).abs() < 1e-9, "{c:?}");
+    // The export writes the angle Scribus applies counter-clockwise, so the picture keeps
+    // turning the same way through an export and a re-import.
+    let exported = export_scribus(&d);
+    let back = import_scribus_with(&exported.data, &|_| Some(vec![0u8])).expect("re-imports");
+    let c2 = back.spreads[0].items[0].graphic().expect("graphic").xf.as_coeffs();
+    assert!((c2[1] + 1.0).abs() < 1e-9, "ImageRotation survives the round trip: {c2:?}");
+    assert!((c2[2] - 1.0).abs() < 1e-9, "{c2:?}");
 }
 
 /// A JPEG carrying only an APP1 `Exif` segment with the given orientation tag.
@@ -524,4 +535,148 @@ fn export_removes_the_exif_uprighting() {
     assert_eq!(obj.get("ImageRotation"), Some("0"), "{:?}", obj.attrs);
     assert_eq!(obj.get("ImageScaleX"), Some("1"));
     assert_eq!(obj.get("ImageOffsetX"), Some("0"));
+}
+
+#[test]
+fn character_language_survives_the_export() {
+    // `pBody` is Italian; the exporter used to write `Language="en"` for every run.
+    let d = import_fixture().document;
+    let xml = String::from_utf8(export_scribus(&d).data).expect("xml");
+    assert!(xml.contains("Language=\"it\""), "the Italian runs keep their language: {xml}");
+}
+
+#[test]
+fn paragraph_alignment_and_overrides_round_trip() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <ParagraphStyle Name="p" Alignment="0" LineSpacing="14" LeftMargin="0" RightMargin="0" FirstIndent="0" GapBefore="0" GapAfter="0"/>
+      <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+      <PageObject XPosition="10" YPosition="10" OwnPage="0" ItemID="1" ItemType="4" Width="80" Height="60" FrameType="0"
+        AutoName="story" Columns="1" ColumnGap="0" TextToFrameDistanceLeft="0" TextToFrameDistanceTop="0"
+        TextToFrameDistanceBottom="0" TextToFrameDistanceRight="0" VerticalAlignment="0" TextPathType="0" TextPathFlipped="0"
+        Path="M0 0 L80 0 L80 60 L0 60 L0 0 Z" ContourLinePath="M0 0 L80 0 L80 60 L0 60 L0 0 Z" Layer="0" NextItem="-1" BackItem="-1">
+        <StoryText>
+          <DefaultStyle Parent="p"/>
+          <Content Chars="One"/>
+          <para Parent="p" Alignment="2" LeftMargin="7" RightMargin="8" FirstIndent="9"/>
+          <Content Chars="Two"/>
+          <trail Parent="p" Alignment="3" LeftMargin="4"/>
+        </StoryText>
+      </PageObject>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    let exported = export_scribus(&d);
+    let back = import_scribus(&exported.data).expect("re-imports");
+    let story = back.stories.values().next().expect("story");
+    let first = back.styles.resolve_para(&story.paras[0]).0;
+    assert_eq!(first.align, designcraft_doc::Align::Right, "the first paragraph keeps its <para> alignment");
+    assert_eq!(first.left_indent, 7.0, "and its indent");
+    let second = back.styles.resolve_para(&story.paras[1]).0;
+    assert_eq!(second.align, designcraft_doc::Align::LeftJustified, "the <trail> paragraph keeps its alignment");
+    assert_eq!(second.left_indent, 4.0);
+}
+
+#[test]
+fn paragraph_alignment_uses_the_five_scribus_values() {
+    use designcraft_doc::Align;
+    for (value, want) in [(0, Align::Left), (1, Align::Center), (2, Align::Right), (3, Align::LeftJustified), (4, Align::FullyJustified)] {
+        let xml = format!(
+            r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+          <ParagraphStyle Name="p" Alignment="0" LineSpacing="14"/>
+          <Page PageNumber="0" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0"/>
+          <PageObject XPosition="10" YPosition="10" OwnPage="0" ItemID="1" ItemType="4" Width="80" Height="40" FrameType="0"
+            AutoName="story" Columns="1" ColumnGap="0" TextToFrameDistanceLeft="0" TextToFrameDistanceTop="0"
+            TextToFrameDistanceBottom="0" TextToFrameDistanceRight="0" VerticalAlignment="0" TextPathType="0" TextPathFlipped="0"
+            Path="M0 0 L80 0 L80 40 L0 40 L0 0 Z" ContourLinePath="M0 0 L80 0 L80 40 L0 40 L0 0 Z" Layer="0" NextItem="-1" BackItem="-1">
+            <StoryText><DefaultStyle Parent="p"/><Content Chars="x"/><trail Parent="p" Alignment="{value}"/></StoryText>
+          </PageObject>
+        </Document></SCRIBUSUTF8NEW>"##
+        );
+        let d = import_scribus(xml.as_bytes()).expect("imports");
+        let exported = export_scribus(&d);
+        let root = crate::xml::parse(&exported.data).expect("parse");
+        let trail = root
+            .find("Document")
+            .and_then(|doc| doc.find("PageObject"))
+            .and_then(|object| object.find("StoryText"))
+            .and_then(|story| story.find("trail"))
+            .expect("trail");
+        let written: i64 = trail.get("Alignment").and_then(|v| v.parse().ok()).expect("alignment");
+        assert!((0..=4).contains(&written), "Scribus has only 0..=4; wrote {written} for {want:?}");
+        let back = import_scribus(&exported.data).expect("re-imports");
+        let story = back.stories.values().next().expect("story");
+        assert_eq!(back.styles.resolve_para(&story.paras[0]).0.align, want, "the alignment survives the round trip");
+    }
+}
+
+#[test]
+fn every_exif_orientation_inverse_composes_to_identity() {
+    let (w, h) = (80.0, 50.0);
+    for o in 1..=8u8 {
+        let m = crate::import::exif_affine(o, w, h) * crate::export::exif_inverse(o, w, h);
+        let c = m.as_coeffs();
+        assert!(
+            (c[0] - 1.0).abs() < 1e-9
+                && c[1].abs() < 1e-9
+                && c[2].abs() < 1e-9
+                && (c[3] - 1.0).abs() < 1e-9
+                && c[4].abs() < 1e-9
+                && c[5].abs() < 1e-9,
+            "orientation {o} does not round-trip: {c:?}"
+        );
+    }
+}
+
+#[test]
+fn master_page_names_are_made_unique() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100">
+      <MasterPage PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" PageNumber="0" PageName="Same" LeftPage="1"/>
+      <MasterPage PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" PageNumber="1" PageName="Same" LeftPage="0"/>
+      <Page PageNumber="0" PageXPosition="100" PageYPosition="20" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0" MasterPageName="Same"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("imports");
+    assert_eq!(d.parents.len(), 2);
+    let exported = export_scribus(&d);
+    let root = crate::xml::parse(&exported.data).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    let names: Vec<String> = doc_el.find_all("MasterPage").filter_map(|m| m.get("PageName").map(str::to_string)).collect();
+    assert_eq!(names.len(), 2);
+    assert_ne!(names[0], names[1], "two parents called `Same` must not share a name: {names:?}");
+    for page in doc_el.find_all("Page") {
+        if let Some(master) = page.get("MasterPageName").filter(|m| !m.is_empty()) {
+            assert!(names.iter().any(|n| n == master), "page names a missing master `{master}`: {names:?}");
+        }
+    }
+}
+
+#[test]
+fn hostile_page_numbers_do_not_overflow_the_side() {
+    let xml = r##"<SCRIBUSUTF8NEW Version="1.7.4"><Document PageCount="1" PageWidth="100" PageHeight="100" FirstPageNumber="9223372036854775807" PagePositioning="1">
+      <Page PageNumber="9223372036854775807" PageXPosition="0" PageYPosition="0" PageWidth="100" PageHeight="100" BorderLeft="0" BorderRight="0" BorderTop="0" BorderBottom="0" MasterPageName="Nope"/>
+    </Document></SCRIBUSUTF8NEW>"##;
+    let d = import_scribus(xml.as_bytes()).expect("huge page numbers import without panicking");
+    assert_eq!(d.spreads.len(), 1);
+}
+
+#[test]
+fn master_objects_on_the_second_page_come_off_its_origin() {
+    use std::sync::Arc;
+    let mut d = import_fixture().document;
+    let width = d.parents[0].pages[0].width;
+    {
+        let spread = Arc::make_mut(&mut d.parents[0]);
+        let mut second = spread.pages[0].clone();
+        second.side = designcraft_doc::PageSide::Right;
+        second.x = width;
+        spread.pages.push(second);
+        let item = Arc::make_mut(&mut spread.items[0]);
+        item.xf = designcraft_geom::Affine::translate((width + 10.0, 20.0)) * item.xf;
+    }
+    let exported = export_scribus(&d);
+    let root = crate::xml::parse(&exported.data).expect("parse");
+    let doc_el = root.find("Document").expect("Document");
+    let obj = doc_el.find_all("MasterObject").next().expect("master object");
+    let x: f64 = obj.get("XPosition").and_then(|v| v.parse().ok()).expect("XPosition");
+    // Master pages are written one page wide at x = 100: an item on the second page must land
+    // within it, not one page width further right.
+    assert!(x >= 100.0 && x < 100.0 + width, "master object at {x}, page width {width}");
 }

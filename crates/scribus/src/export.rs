@@ -106,9 +106,35 @@ impl<'a> Ex<'a> {
             }
         }
         let mut master_names = HashMap::new();
+        // Scribus identifies a master page by name, and a sheet of pages by its name too: a name
+        // that repeats (two parents called "Parent", or two with no ParentInfo) would make pages
+        // attach to the wrong parent. Keep a unique name, add the parent's prefix on a collision,
+        // then a number.
+        let mut used_names: HashSet<String> = HashSet::new();
         for parent in &d.parents {
-            let base = parent.parent.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Master".into());
-            let names = if parent.pages.len() <= 1 { vec![base] } else { (0..parent.pages.len()).map(|i| format!("{base} {}", i + 1)).collect() };
+            let (name, prefix) = match &parent.parent {
+                Some(p) if !p.name.trim().is_empty() => (p.name.clone(), p.prefix.clone()),
+                _ => ("Master".to_string(), parent.parent.as_ref().map(|p| p.prefix.clone()).unwrap_or_default()),
+            };
+            let bases: Vec<String> =
+                if parent.pages.len() <= 1 { vec![name.clone()] } else { (0..parent.pages.len()).map(|i| format!("{name} {}", i + 1)).collect() };
+            let mut names = Vec::with_capacity(bases.len());
+            for base in bases {
+                let mut candidate = if used_names.contains(&base) && !prefix.is_empty() { format!("{prefix} {base}") } else { base };
+                if used_names.contains(&candidate) {
+                    let mut n = 2u32;
+                    loop {
+                        let next = format!("{candidate} {n}");
+                        if !used_names.contains(&next) {
+                            candidate = next;
+                            break;
+                        }
+                        n = n.saturating_add(1);
+                    }
+                }
+                used_names.insert(candidate.clone());
+                names.push(candidate);
+            }
             master_names.insert(parent.id, names);
         }
         let mut threads = HashMap::new();
@@ -335,6 +361,7 @@ impl<'a> Ex<'a> {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             });
         }
         let mut wrap = El::new("Sections");
@@ -397,13 +424,15 @@ impl<'a> Ex<'a> {
         let mut number = 0i64;
         for parent in &parents {
             let names = self.master_names.get(&parent.id).cloned().unwrap_or_else(|| vec!["Master".into()]);
-            for (pi, _page) in parent.pages.iter().enumerate() {
+            for (pi, page) in parent.pages.iter().enumerate() {
                 let name = names.get(pi).cloned().unwrap_or_else(|| names[0].clone());
                 for item in &parent.items {
                     if page_for(item, parent) != pi {
                         continue;
                     }
-                    let abs = Affine::translate((100.0, 20.0)) * item.xf;
+                    // `item.xf` is in the parent spread's space; the master page is written one
+                    // page wide at 100, so its own page's origin comes off first.
+                    let abs = Affine::translate((100.0 - page.x, 20.0)) * item.xf;
                     let mut el = El::new("MasterObject");
                     self.write_object_attrs(&mut el, item, ObjCtx { abs, own_page: number, master: Some(&name), group: None, depth: 0 });
                     e.push(el);
@@ -661,7 +690,7 @@ impl<'a> Ex<'a> {
         let sy = scale_y * px_to_frame_y;
         let ox = if sx.abs() > 1e-12 { c[4] / sx } else { 0.0 };
         let oy = if sy.abs() > 1e-12 { c[5] / sy } else { 0.0 };
-        let rot = c[1].atan2(c[0]).to_degrees();
+        let rot = -c[1].atan2(c[0]).to_degrees();
         let _ = item;
         el.set("ImageScaleX", num(sx.max(1e-9)));
         el.set("ImageScaleY", num(sy.max(1e-9)));
@@ -739,7 +768,16 @@ impl<'a> Ex<'a> {
                     '\n' => {
                         push_content(&mut e, &buf, run, &chars);
                         buf.clear();
-                        e.push(El::new("para").attr("Parent", &style));
+                        // The `<para>` closes this paragraph and carries its own style and
+                        // overrides: Scribus keeps paragraph-level alignment here, not only on
+                        // the style.
+                        let closed = para_style(story, para, styles);
+                        let mut pf = story.paras.get(para).cloned().unwrap_or_default();
+                        pf.style = closed.clone();
+                        let (pp, cp) = styles.resolve_para(&pf);
+                        let mut el = El::new("para").attr("Parent", &closed);
+                        put_para(&mut el, &pp, &cp);
+                        e.push(el);
                         para = para.saturating_add(1);
                     }
                     '\t' => {
@@ -771,8 +809,14 @@ impl<'a> Ex<'a> {
             push_content(&mut e, &buf, run, &chars);
             pos = end;
         }
-        let last = para_style(story, para.min(story.paras.len().saturating_sub(1)), styles);
-        e.push(El::new("trail").attr("Parent", last));
+        let last_index = para.min(story.paras.len().saturating_sub(1));
+        let last = para_style(story, last_index, styles);
+        let mut pf = story.paras.get(last_index).cloned().unwrap_or_default();
+        pf.style = last.clone();
+        let (pp, cp) = styles.resolve_para(&pf);
+        let mut trail = El::new("trail").attr("Parent", &last);
+        put_para(&mut trail, &pp, &cp);
+        e.push(trail);
         e
     }
 }
@@ -845,7 +889,10 @@ fn put_char(el: &mut El, c: &CharProps) {
     let baseline = if c.size.abs() > 1e-9 { c.baseline_shift / c.size * 100.0 } else { 0.0 };
     el.set("BaselineOffset", num(baseline));
     el.set("Kerning", num(c.tracking));
-    el.set("Language", "en");
+    // Scribus names a language by its locale ("en_US"); the model keeps "English: USA" or a
+    // locale code, and `language_tag` turns either into the tag Scribus reads back.
+    let language = designcraft_doc::language_tag(&c.language).unwrap_or("en").replace('-', "_");
+    el.set("Language", language);
 }
 
 fn put_para(el: &mut El, p: &ParaProps, chars: &CharProps) {
@@ -868,27 +915,27 @@ fn put_para(el: &mut El, p: &ParaProps, chars: &CharProps) {
 
 fn align_number(a: designcraft_doc::Align) -> i64 {
     use designcraft_doc::Align;
+    // Scribus's AlignmentType has 0 left, 1 centre, 2 right, 3 justified (last line stays left)
+    // and 4 forced justified; it has no centre- or right-justified last-line style, which map to 3.
     match a {
         Align::Left | Align::TowardsSpine => 0,
         Align::Center => 1,
         Align::Right | Align::AwayFromSpine => 2,
-        Align::FullyJustified => 3,
-        Align::LeftJustified => 5,
-        Align::CenterJustified => 6,
-        Align::RightJustified => 7,
+        Align::LeftJustified | Align::CenterJustified | Align::RightJustified => 3,
+        Align::FullyJustified => 4,
     }
 }
 
 /// The inverse of the importer's EXIF uprighting: map upright pixel coordinates back to the raw
 /// ones Scribus stores, so `xf * inverse` is the transform Scribus should apply itself.
-fn exif_inverse(o: u8, w: f64, h: f64) -> Affine {
+pub(crate) fn exif_inverse(o: u8, w: f64, h: f64) -> Affine {
     match o {
         2 => Affine::new([-1.0, 0.0, 0.0, 1.0, w, 0.0]),
         3 => Affine::new([-1.0, 0.0, 0.0, -1.0, w, h]),
         4 => Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]),
         5 => Affine::new([0.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
         6 => Affine::new([0.0, -1.0, 1.0, 0.0, 0.0, h]),
-        7 => Affine::new([0.0, -1.0, -1.0, 0.0, h, w]),
+        7 => Affine::new([0.0, -1.0, -1.0, 0.0, w, h]),
         8 => Affine::new([0.0, 1.0, -1.0, 0.0, w, 0.0]),
         _ => Affine::IDENTITY,
     }
