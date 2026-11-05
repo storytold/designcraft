@@ -116,7 +116,7 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
     // A group shows its children's edges. A frame with items pasted into it shows only its own:
     // they are clipped to it, and their edges would run out past it (#2345).
     if let Content::Group { items } = &it.content
-        && !it.has_nested_items()
+        && it.is_group()
     {
         for c in items {
             draw_item_edges(painter, xf, doc, c, a * it.xf);
