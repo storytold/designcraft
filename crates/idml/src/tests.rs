@@ -1732,6 +1732,58 @@ fn a_hyperlink_across_a_paragraph_is_written_as_one_source_per_paragraph() {
     assert!(across.iter().all(|h| h.dest == D::Url("https://example.com/".into())), "both pieces lead where the link led");
 }
 
+/// A link from a frame anchored in text is kept, but PDF export finds a link's frame among the
+/// spreads' items, where an anchored frame is not: the import report says the PDF will not have it,
+/// rather than the link going missing from the PDF without a word.
+#[test]
+fn a_link_from_an_anchored_frame_is_kept_and_reported() {
+    const LINKS: &str = r#"
+  <HyperlinkURLDestination Self="hud1" Name="Photo" DestinationURL="https://example.com/photo.jpg" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis1" Name="thumb" SourcePageItem="inl" Hidden="false"/>
+  <HyperlinkPageItemSource Self="hpis2" Name="img" SourcePageItem="img" Hidden="false"/>
+  <Hyperlink Self="h1" Name="Thumbnail link" Source="hpis1" Visible="true" DestinationUniqueKey="1">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+  <Hyperlink Self="h2" Name="Frame link" Source="hpis2" Visible="true" DestinationUniqueKey="2">
+    <Properties><Destination type="object">hud1</Destination></Properties>
+  </Hyperlink>
+"#;
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+        <Content>See </Content>
+        <Rectangle Self="inl" ItemTransform="1 0 0 1 0 0">
+          <Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+            <PathPointType Anchor="0 0"/><PathPointType Anchor="0 10"/><PathPointType Anchor="10 10"/><PathPointType Anchor="10 0"/>
+          </PathPointArray></GeometryPathType></PathGeometry></Properties>
+          <AnchoredObjectSetting AnchoredPosition="InlinePosition"/>
+        </Rectangle>
+        <Content> here.</Content>
+      </CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let map = DESIGNMAP.replace("</Document>", &format!("{LINKS}</Document>"));
+    let bytes = zip_files(&[
+        ("designmap.xml", &map),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", PREFS),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", story),
+    ]);
+    let r = import_idml_report(&bytes, &|_| None).unwrap();
+    let d = r.document;
+    d.check().unwrap();
+    assert!(d.hyperlinks.iter().any(|h| h.name == "Thumbnail link"), "the link is kept: {:?}", d.hyperlinks);
+    let anchored: Vec<&String> = r.warnings.iter().filter(|w| w.contains("anchored in text")).collect();
+    assert_eq!(anchored.len(), 1, "one report, for the anchored frame's link: {:?}", r.warnings);
+    assert!(anchored[0].contains("hyperlink Thumbnail link"), "{anchored:?}");
+}
+
 #[test]
 fn round_trips_index_references() {
     use designcraft_doc::index::IndexRange;
@@ -3354,6 +3406,38 @@ fn round_trips_the_zero_point_and_ruler_origin() {
     assert!(x.is_finite() && y.is_finite() && x < 1e4 && y > -1e4, "{x} {y}");
     assert_eq!(fixture("12").settings.zero_point, [0.0, 0.0]);
     assert_eq!(fixture("NaN 4").settings.zero_point, [0.0, 0.0]);
+}
+
+/// Q is `Q` in IDML, as InDesign writes it (`U` is another unit). Units DesignCraft lacks are
+/// read as points, and the import report says so.
+#[test]
+fn ruler_units_in_q_and_ha_round_trip_and_unknown_units_are_reported() {
+    use designcraft_geom::Unit;
+    let mut d = Document::new(&NewDocument::default());
+    for (h, v) in [(Unit::Q, Unit::Ha), (Unit::Ha, Unit::Q), (Unit::Millimeters, Unit::Points)] {
+        (d.settings.horizontal_units, d.settings.vertical_units) = (h, v);
+        let bytes = export_idml(&d);
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!((back.settings.horizontal_units, back.settings.vertical_units), (h, v));
+    }
+    d.settings.horizontal_units = Unit::Q;
+    let prefs = zip_text(&export_idml(&d), "Resources/Preferences.xml");
+    assert!(prefs.contains(r#"HorizontalMeasurementUnits="Q""#), "{prefs}");
+
+    let prefs =
+        PREFS.replace("<MarginPreference", r#"<ViewPreference HorizontalMeasurementUnits="U" VerticalMeasurementUnits="Q"/><MarginPreference"#);
+    let zip = zip_files(&[
+        ("designmap.xml", DESIGNMAP),
+        ("Resources/Graphic.xml", GRAPHIC),
+        ("Resources/Styles.xml", STYLES),
+        ("Resources/Preferences.xml", &prefs),
+        ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+        ("Spreads/Spread_sp1.xml", SPREAD),
+        ("Stories/Story_s1.xml", STORY),
+    ]);
+    let r = import_idml_report(&zip, &|_| None).unwrap();
+    assert_eq!((r.document.settings.horizontal_units, r.document.settings.vertical_units), (Unit::Points, Unit::Q));
+    assert!(r.warnings.iter().any(|w| w.contains("horizontal ruler units `U`")), "{:?}", r.warnings);
 }
 
 #[test]

@@ -71,11 +71,17 @@ pub fn copy_item(
 }
 
 fn renumber(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, it: &mut Item, maps: &mut Maps) {
+    renumber_in(dst, src, it, maps, true);
+}
+
+/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
+fn renumber_in(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, it: &mut Item, maps: &mut Maps, adopt: bool) {
     let old = it.id;
     let new_id = ItemId(dst.alloc());
     maps.items.insert(old, new_id);
     it.id = new_id;
-    if let Some(m) = it.media.as_mut()
+    if adopt
+        && let Some(m) = it.media.as_mut()
         && let Some(p) = m.poster
     {
         m.poster = dst.adopt_asset(src, p).or(Some(p));
@@ -98,8 +104,10 @@ fn renumber(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document
                 }
                 designcraft_doc::remap_story_assets(&mut st, &assets);
                 st.frames.clear();
-                dst.stories.insert(n, Arc::new(st));
+                // Mapped first: the map is the seen-set that stops story recursion.
                 maps.stories.insert(tf.story, n);
+                renumber_anchored(dst, src, &mut st, maps);
+                dst.stories.insert(n, Arc::new(st));
                 n
             };
             tf.story = new_sid;
@@ -108,16 +116,29 @@ fn renumber(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document
             }
         }
         Content::Graphic(g) => {
-            if let Some(a) = dst.adopt_asset(src, g.asset) {
+            if adopt && let Some(a) = dst.adopt_asset(src, g.asset) {
                 g.asset = a;
             }
         }
         Content::Group { items } => {
             for child in items.iter_mut() {
-                renumber(dst, src, Arc::make_mut(child), maps);
+                renumber_in(dst, src, Arc::make_mut(child), maps, adopt);
             }
         }
         Content::Unassigned => {}
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+fn renumber_anchored(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, st: &mut Story, maps: &mut Maps) {
+    let mut fresh = |t: &mut Story| {
+        for o in &mut t.objects {
+            renumber_in(dst, src, &mut Arc::make_mut(o).item, maps, false);
+        }
+    };
+    st.for_each_text_mut(&mut fresh);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
 }
 
