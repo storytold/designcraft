@@ -14,6 +14,24 @@ use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs};
 use crate::table::{AltFills, AltStrokes, CellStroke, Table};
 use crate::{Document, ItemId};
 
+/// How deep into groups the walks here go: past it a hostile document's nesting is left alone
+/// rather than exhausting the stack.
+const MAX_ITEM_DEPTH: u32 = 64;
+
+/// The stories of the text frames in `it` and its members, as deep as [`Names::item`] goes, so the
+/// text that is visited belongs to the frames that are.
+fn frame_stories(it: &Item, depth: u32, out: &mut BTreeSet<crate::StoryId>) {
+    if depth > MAX_ITEM_DEPTH {
+        return;
+    }
+    if let Some(tf) = it.text_frame() {
+        out.insert(tf.story);
+    }
+    for k in it.children() {
+        frame_stories(k, depth + 1, out);
+    }
+}
+
 /// Visits every swatch name in what it walks, as `visit` (which may change it) says.
 struct Names<'a> {
     visit: &'a dyn Fn(&mut String),
@@ -133,7 +151,7 @@ impl Names<'_> {
     }
     /// An item and everything inside it (group members). Depth-bounded for hostile documents.
     fn item(&self, it: &mut Item, depth: u32) {
-        if depth > 64 {
+        if depth > MAX_ITEM_DEPTH {
             return;
         }
         self.fill(&mut it.fill);
@@ -314,11 +332,7 @@ impl Document {
         let n = Names { visit: &collect };
         let mut stories = BTreeSet::new();
         for it in items {
-            it.walk(&mut |i| {
-                if let Some(tf) = i.text_frame() {
-                    stories.insert(tf.story);
-                }
-            });
+            frame_stories(it, 0, &mut stories);
             // A copy: collecting changes nothing, but the walk takes what it visits mutably.
             n.item(&mut it.clone(), 0);
         }
