@@ -56,12 +56,13 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
         for (pi, page) in sp.pages.iter().enumerate() {
+            let overridden = doc.overridden_parent_items(slot.spread, pi);
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || overridden.contains(&it.id) {
                         continue;
                     }
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
