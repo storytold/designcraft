@@ -1,0 +1,12 @@
+name: probe
+on:
+  workflow_dispatch:
+jobs:
+  inherited:
+    uses: ./.github/workflows/probe-called.yml
+    secrets: inherit
+  explicit:
+    uses: ./.github/workflows/probe-called.yml
+    secrets:
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

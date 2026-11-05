@@ -1,0 +1,12 @@
+name: probe called
+on:
+  workflow_call:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Report which secrets resolve
+        run: |
+          if [ -n "${{ secrets.LINUX_SIGNING_KEY }}" ]; then echo "KEY=PRESENT"; else echo "KEY=EMPTY"; fi
+          if [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then echo "APPLE=PRESENT"; else echo "APPLE=EMPTY"; fi
