@@ -336,14 +336,24 @@ impl Document {
             // A copy: collecting changes nothing, but the walk takes what it visits mutably.
             n.item(&mut it.clone(), 0);
         }
-        for sid in stories {
-            if let Some(st) = self.story(sid) {
-                let mut st = st.clone();
-                st.for_each_text_mut(&mut |x| n.story(x));
-                for e in &mut st.endnotes {
-                    Arc::make_mut(e).text.for_each_text_mut(&mut |x| n.story(x));
+        // Text frames anchored in those stories bring their own stories' text too.
+        let mut todo: Vec<crate::StoryId> = stories.iter().copied().collect();
+        let mut seen = stories;
+        while let Some(sid) = todo.pop() {
+            let Some(st) = self.story(sid) else { continue };
+            let mut st = st.clone();
+            let mut inner = BTreeSet::new();
+            let mut visit = |x: &mut Story| {
+                n.story(x);
+                for o in &x.objects {
+                    frame_stories(&o.item, 0, &mut inner);
                 }
+            };
+            st.for_each_text_mut(&mut visit);
+            for e in &mut st.endnotes {
+                Arc::make_mut(e).text.for_each_text_mut(&mut visit);
             }
+            todo.extend(inner.into_iter().filter(|s| seen.insert(*s)));
         }
         // The swatches those are built from, from `src`.
         let mut needed = BTreeSet::new();
