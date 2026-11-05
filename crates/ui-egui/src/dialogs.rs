@@ -5190,6 +5190,9 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     }
                 }
             }
+            if cid == "layout.alternate.options" {
+                drop_unchanged_size(&d, &mut p);
+            }
             let r = app.run(cid, Value::Object(p));
             if let Err(e) = &r {
                 // Keep the dialog open with the error.
@@ -8370,6 +8373,23 @@ fn command_form(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+    }
+}
+
+/// Alternate Layout Options: the size fields start at the layout's first page's size (`sizeWas`),
+/// and one left as it was isn't sent: it would resize every page of the layout to it.
+fn drop_unchanged_size(d: &Dialog, p: &mut Map<String, Value>) {
+    let num = |v: Option<&Value>| match v {
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    let was = d.fields.get("sizeWas").and_then(Value::as_array);
+    for (k, key) in ["width", "height"].into_iter().enumerate() {
+        let before = num(was.and_then(|a| a.get(k)));
+        if num(p.get(key)).zip(before).is_some_and(|(now, before)| (now - before).abs() < 1e-6) {
+            p.remove(key);
+        }
     }
 }
 

@@ -887,8 +887,10 @@ pub(crate) fn open_create_alternate(app: &mut DesignApp, doc: &designcraft_doc::
 pub(crate) fn open_layout_options(app: &mut DesignApp, doc: &designcraft_doc::Document, layouts: &[designcraft_doc::LayoutRange], k: usize) {
     let Some(l) = layouts.get(k) else { return };
     let (w, h) = layout_size(doc, l);
-    app.ui.dialog =
-        Some(crate::dialogs::Dialog::new("cmd:layout.alternate.options", json!({"layout": l.name, "name": l.name, "width": w, "height": h})));
+    app.ui.dialog = Some(crate::dialogs::Dialog::new(
+        "cmd:layout.alternate.options",
+        json!({"layout": l.name, "name": l.name, "width": w, "height": h, "sizeWas": [w, h]}),
+    ));
 }
 
 /// Parent Options… for parent `id`: prefix, name and Based on Parent.

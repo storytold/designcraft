@@ -420,6 +420,31 @@ fn alternate_layouts_show_as_columns_with_their_own_menus() {
 }
 
 #[test]
+fn renaming_an_alternate_layout_keeps_its_page_sizes() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "width": 600, "height": 800, "facingPages": false})).unwrap();
+    app.run("layout.createAlternate", json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+    app.run("layout.pages.insert", json!({"after": 1, "count": 1})).unwrap();
+    app.run("layout.pageSize", json!({"pages": [3], "width": 400, "height": 400})).unwrap();
+    let sizes = |app: &DesignApp| (1..3).map(|i| app.session.doc().unwrap().doc.page(i).map(|p| (p.width, p.height))).collect::<Vec<_>>();
+    let open = |app: &mut DesignApp| {
+        let doc = app.session.doc().unwrap().doc.clone();
+        crate::panels::pages::open_layout_options(app, &doc, &doc.layouts(), 1);
+    };
+    // The dialog shows the first page's size (900 × 600); renaming leaves the 400 × 400 page.
+    open(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("name".into(), json!("Landscape"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(sizes(&app), vec![Some((900.0, 600.0)), Some((400.0, 400.0))]);
+    assert_eq!(app.session.doc().unwrap().doc.layouts()[1].name, "Landscape");
+    // A changed width still resizes the layout's pages.
+    open(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("width".into(), json!("1000"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert!(sizes(&app).iter().all(|s| s.is_some_and(|(w, _)| (w - 1000.0).abs() < 1e-6)), "{:?}", sizes(&app));
+}
+
+#[test]
 fn layout_menu_options_open_the_pages_panel_dialogs() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();

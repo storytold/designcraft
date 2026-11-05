@@ -444,13 +444,8 @@ fn alternate_options(s: &mut crate::Session, p: &Value) -> Result<Value> {
                 sec.layout = Some(out.clone());
             }
         }
-        // Only pages whose size changes: the options dialog sends the size with every rename.
-        let differs = |a: f64, b: Option<f64>| b.is_some_and(|b| (a - b).abs() > 1e-6);
-        let pages: Vec<usize> = (layout.start..layout.end)
-            .filter(|&i| d.page(i).is_some_and(|pg| differs(pg.width, w) || differs(pg.height, h)))
-            .map(|i| i.saturating_add(1))
-            .collect();
-        if !pages.is_empty() {
+        if w.is_some() || h.is_some() {
+            let pages: Vec<usize> = (layout.start + 1..=layout.end).collect();
             super::layout::resize_pages(d, &pages, w, h);
         }
         Ok(json!({"layout": out}))
@@ -626,21 +621,6 @@ mod tests {
         s.execute("layout.pages.move", &json!({"from": 2, "to": 0})).unwrap();
         assert_eq!(layouts(&s), vec![("Layout 1".into(), 0, 3), ("Wide".into(), 3, 6)]);
         assert!(wide(&s, 0) && (3..5).all(|i| wide(&s, i)));
-    }
-
-    #[test]
-    fn renaming_a_layout_keeps_its_page_sizes() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"pages": 1, "width": 600, "height": 800, "facingPages": false})).unwrap();
-        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
-        s.execute("layout.pages.insert", &json!({"after": 1, "count": 1})).unwrap();
-        s.execute("layout.pageSize", &json!({"pages": [3], "width": 400, "height": 400})).unwrap();
-        let sizes = |s: &Session| (1..3).map(|i| s.doc().unwrap().doc.page(i).map(|p| (p.width, p.height))).collect::<Vec<_>>();
-        let before = sizes(&s);
-        // What the Alternate Layout Options dialog sends: the first page's size with the new name.
-        s.execute("layout.alternate.options", &json!({"layout": "Wide", "name": "Landscape", "width": 900, "height": 600})).unwrap();
-        assert_eq!(sizes(&s), before);
-        assert_eq!(layouts(&s)[1].0, "Landscape");
     }
 
     #[test]
