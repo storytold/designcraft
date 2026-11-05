@@ -183,12 +183,19 @@ fn painted_bounds(it: &Item) -> Rect {
 /// text frame anchored in either document: it isn't on a spread there (so it has no area of its
 /// own here) but is drawn inside the text it is anchored in, wherever that is laid out, also when
 /// it is on a spread in the other document. A frame that is neither on a spread nor anchored in
-/// either document is drawn nowhere and adds nothing.
+/// either document is drawn nowhere and adds nothing. Anchored items are searched (a scan of the
+/// whole document) only in a version where the frame is not on a spread: item ids are unique in
+/// a document, and anchoring takes an item off its spread.
 fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
-    if [old, new].into_iter().any(|d| d.anchored_item(f).is_some()) {
-        return None;
+    let mut areas = Vec::new();
+    for d in [old, new] {
+        if d.find(f).is_some() {
+            areas.push(frame_area(d, f)?);
+        } else if d.anchored_item(f).is_some() {
+            return None;
+        }
     }
-    [old, new].into_iter().filter(|d| d.find(f).is_some()).map(|d| frame_area(d, f)).collect()
+    Some(areas)
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
