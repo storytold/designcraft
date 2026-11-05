@@ -253,6 +253,7 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     if sources.is_empty() || sources.len() > MAX_LOADED_IMAGES {
         return Err(bad("place.load", format!("select between 1 and {MAX_LOADED_IMAGES} images")));
     }
+    check_cursor_room(s, sources.len(), append, "place.load")?;
     let mut images = Vec::with_capacity(sources.len());
     for source in sources {
         let (bytes, name, link) = read_source(source)?;
@@ -280,8 +281,17 @@ pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"remaining": loaded_count(s), "loaded": true}))
 }
 
-/// Most images one `place.load` takes.
+/// Most images the place cursor holds, and so most one `place.load` takes.
 const MAX_LOADED_IMAGES: usize = 1000;
+
+/// Whether `incoming` images fit in the place cursor: appended, they go after the ones it holds.
+fn check_cursor_room(s: &Session, incoming: usize, append: bool, command: &str) -> Result<()> {
+    let held = if append { loaded_count(s) } else { 0 };
+    if held.saturating_add(incoming) > MAX_LOADED_IMAGES {
+        return Err(bad(command, format!("the place cursor holds at most {MAX_LOADED_IMAGES} images, and it has {held}")));
+    }
+    Ok(())
+}
 
 /// How many images the place cursor holds: the current one and those queued after it.
 fn loaded_count(s: &Session) -> usize {
@@ -291,6 +301,7 @@ fn loaded_count(s: &Session) -> usize {
 /// Add a decoded asset with a fresh id, replacing the previous placement queue (or, with
 /// `append` and an image already loaded, queued after it).
 fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64), append: bool) -> Result<Value> {
+    check_cursor_room(s, 1, append, "place.load")?;
     let name = asset.name.clone();
     let (pw, ph) = asset.pixels.unwrap_or_default();
     let aid = s.edit(|d, _| {
@@ -1065,5 +1076,82 @@ mod nested_frame_tests {
         assert_eq!(d.assets[&g.asset].name, "new.png");
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+}
+
+#[cfg(test)]
+mod cursor_cap_tests {
+    use serde_json::{Value, json};
+
+    use super::MAX_LOADED_IMAGES;
+    use crate::Session;
+
+    fn png() -> String {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: [200, 90, 30, 255].repeat(16) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A session whose place cursor holds `held` images, loaded without decoding each of them.
+    fn holding(held: usize) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("place.load", &json!({"base64": png(), "name": "first.png"})).unwrap();
+        let first = s.loaded.unwrap();
+        s.loaded_queue = std::iter::repeat_n(first, held - 1).collect();
+        s
+    }
+
+    fn count(s: &Session) -> usize {
+        super::loaded_count(s)
+    }
+
+    /// Every way of adding to the cursor stops at the cap, and a refused add changes nothing.
+    #[test]
+    fn appending_stops_at_the_cap_on_the_whole_cursor() {
+        let image = png();
+        let single = json!({"base64": image, "name": "a.png", "append": true});
+        let placed = json!({"base64": image, "name": "a.png", "append": true, "loadCursor": true});
+        let two = json!({"files": [{"base64": image, "name": "a.png"}, {"base64": image, "name": "b.png"}], "append": true});
+        for (command, params) in [("place.load", &single), ("file.place", &placed), ("place.load", &two)] {
+            let mut s = holding(MAX_LOADED_IMAGES);
+            let assets = s.doc().unwrap().doc.assets.len();
+            assert!(s.execute(command, params).is_err(), "{command} {params}");
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{command} {params}");
+            assert_eq!(s.doc().unwrap().doc.assets.len(), assets, "{command} {params}");
+        }
+        // One over, as a batch.
+        let mut s = holding(MAX_LOADED_IMAGES - 1);
+        assert!(s.execute("place.load", &two).is_err());
+        assert_eq!(count(&s), MAX_LOADED_IMAGES - 1);
+    }
+
+    /// The last places up to the cap load, and an unreadable batch reports the cap before decoding.
+    #[test]
+    fn appending_up_to_the_cap_still_loads() {
+        let image = png();
+        for params in
+            [json!({"base64": image, "name": "a.png", "append": true}), json!({"files": [{"base64": image, "name": "a.png"}], "append": true})]
+        {
+            let mut s = holding(MAX_LOADED_IMAGES - 1);
+            s.execute("place.load", &params).unwrap();
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{params}");
+        }
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let error =
+            s.execute("place.load", &json!({"files": [{"base64": "not an image", "name": "a.png"}], "append": true})).unwrap_err().to_string();
+        assert!(error.contains(&MAX_LOADED_IMAGES.to_string()), "{error}");
+    }
+
+    /// Without `append` the new images replace the cursor, so what it holds doesn't count.
+    #[test]
+    fn replacing_a_full_cursor_is_not_capped() {
+        let image = png();
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let result: Value = s.execute("place.load", &json!({"base64": image, "name": "a.png"})).unwrap();
+        assert_eq!(result["loaded"], true);
+        assert_eq!(count(&s), 1);
+        let mut s = holding(MAX_LOADED_IMAGES);
+        s.execute("place.load", &json!({"files": [{"base64": image, "name": "a.png"}]})).unwrap();
+        assert_eq!(count(&s), 1);
     }
 }
