@@ -140,7 +140,7 @@ impl Tool for PlaceGun {
                 let click = (ev.pos - a).hypot() < cx.tol(3.0);
                 if click
                     && let Some((_, id)) = cx.hit(a)
-                    && cx.doc.item(id).is_some_and(designcraft_doc::Item::takes_graphic)
+                    && cx.doc.item(id).is_some_and(|i| i.path.encloses_area() && i.takes_graphic())
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
@@ -155,7 +155,7 @@ impl Tool for PlaceGun {
                 if !grid_cells(r, self.columns, self.rows).is_empty() {
                     return vec![Action::Exec(
                         "place.grid".into(),
-                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows}),
+                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows, "gutter": PLACE_GRID_GUTTER}),
                     )];
                 }
                 // The frame the drag drew: at the graphic's proportions from where it started.
@@ -197,11 +197,16 @@ impl Tool for PlaceGun {
         // no frame is drawn yet, the loaded cursor shows what lands.
         let click = (self.cur - a).hypot() < cx.tol(3.0);
         // A grid draws its cells; one too small for them falls back to the single frame, as the
-        // release does.
-        if !click {
-            let cells = grid_cells(designcraft_geom::Rect::from_points(a, self.cur), self.columns, self.rows);
+        // release does. The cells are the release's, worked out on the spread: on a rotated spread
+        // its columns don't run across the canvas.
+        if !click && let Some((sr, sa)) = cx.layout.spread_at(a) {
+            let cells = grid_cells(designcraft_geom::Rect::from_points(sa, cx.layout.to_spread(sr, self.cur)), self.columns, self.rows);
             if !cells.is_empty() {
-                return cells.into_iter().map(crate::Overlay::Marquee).collect();
+                let on_canvas = |x: f64, y: f64| cx.layout.to_canvas(sr, Point::new(x, y));
+                return cells
+                    .into_iter()
+                    .map(|c| crate::Overlay::Marquee(designcraft_geom::Rect::from_points(on_canvas(c.x0, c.y0), on_canvas(c.x1, c.y1))))
+                    .collect();
             }
         }
         let Some(size) = cx.loaded else {
@@ -234,7 +239,8 @@ Y: {pct}"
     }
 }
 
-/// The gutter between place-grid cells, in points: `place.grid`'s default.
+/// The gutter between place-grid cells, in points. The tool sends it with `place.grid`, so the
+/// preview and what lands can't disagree if the command's default changes.
 const PLACE_GRID_GUTTER: f64 = 6.0;
 
 /// The cells of a `columns` × `rows` place grid drawn over `rect`, [`PLACE_GRID_GUTTER`] apart, as

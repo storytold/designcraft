@@ -7,10 +7,11 @@ Choose **File > Place** (Cmd+D on macOS) and select several images. They load in
 - Click an existing graphic frame to replace its contents.
 - While drawing, Right/Left add/remove columns and Up/Down add/remove rows. Release to place a grid in row order with 6-point gutters. Extra images remain in the cursor; unused grid cells create no empty frames. A drag too small for the grid's cells shows and places one frame instead, as an ordinary drag does.
 - Press Escape or select another tool to cancel the remaining placement.
+- Switching to, opening or closing a document also cancels it, and goes back to the Selection tool.
 
 For larger selections, choose **File > Place Contact Sheet…** after loading the images. Set columns, rows, gutter and page margin. All remaining images are fitted proportionally and centered in equal frames across as many new pages as needed. The default is 3 columns by 4 rows. New pages use the last document page's size and have no parent-page artwork. The entire contact sheet is one undo step.
 
-A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. Image batches support up to 1000 images. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid or contact-sheet area also leaves the document and queue unchanged.
+A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. A multi-page PDF in a batch stops the batch at its import options; once confirmed, it queues after the images loaded before it. Image batches support up to 1000 images. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid or contact-sheet area also leaves the document and queue unchanged.
 
 Images here are PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, PSD and EPS files.
 

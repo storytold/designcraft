@@ -87,6 +87,16 @@ impl Session {
         }
     }
 
+    /// Empty the place cursor (its graphic and the ones queued after it). Holding the place
+    /// cursor's tool, go back to the Selection tool: with nothing loaded, a click would only fail.
+    pub(crate) fn unload_place_cursor(&mut self) {
+        self.loaded = None;
+        self.loaded_queue.clear();
+        if self.tool_id() == "placeGun" {
+            self.set_tool("selection");
+        }
+    }
+
     pub fn layout(&self) -> CanvasLayout {
         match self.active() {
             Some(st) => CanvasLayout::new(&st.doc, st.editing_parents),

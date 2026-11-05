@@ -44,7 +44,8 @@ impl DesignApp {
             let target = self.session.active().map(|d| d.uid);
             let pages = self.services.read.as_mut().and_then(|r| r(path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
             if pages > 1 {
-                self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
+                self.ui.dialog =
+                    Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target, "append": append})));
                 return Ok(Value::Null);
             }
         }
@@ -135,10 +136,12 @@ impl DesignApp {
         self.pending_pdf = None;
     }
 
-    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String) -> Result<Value, String> {
+    /// Import Options confirmed for the delivered PDF; a placed one is added to the place cursor
+    /// when `append`, so the images loaded before it stay.
+    pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String, append: bool) -> Result<Value, String> {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
         self.activate_import_target(&file.request)?;
-        let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop});
+        let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop, "append": append});
         if file.request.purpose == "place" { self.place_file(params) } else { self.open_file("file.place", params) }
     }
 
@@ -243,8 +246,10 @@ impl DesignApp {
         if place && lower.ends_with(".pdf") {
             let pages = designcraft_render::pdf_page_count(&file.bytes).unwrap_or(1);
             if pages > 1 {
-                self.ui.dialog =
-                    Some(dialogs::Dialog::new("pdfImport", json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages})));
+                self.ui.dialog = Some(dialogs::Dialog::new(
+                    "pdfImport",
+                    json!({"async": true, "name": file.name.clone(), "page": "1", "pages": pages, "append": append}),
+                ));
                 self.pending_pdf = Some(file);
                 return Ok(Value::Null);
             }
@@ -770,7 +775,7 @@ pub(crate) mod browser_import_tests {
             app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!(page.to_string()));
             // The native dialog clamps zero to one; positive invalid pages must fail.
             if page == 0 {
-                assert!(app.confirm_pdf_import(page, "crop".into()).is_err());
+                assert!(app.confirm_pdf_import(page, "crop".into(), false).is_err());
             } else {
                 assert!(dialogs::confirm(&mut app).is_err());
             }
@@ -910,6 +915,51 @@ pub(crate) mod browser_import_tests {
         }
         app.drain_inbox();
         assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A multi-page PDF after images in a native batch asks which page, then queues after them.
+    #[test]
+    fn native_batch_keeps_its_images_when_a_multi_page_pdf_is_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(vec![path("a.svg"), path("b.svg"), path("three.pdf")]).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "b.svg", "three.pdf"]);
+    }
+
+    /// The same for files delivered by the host (a browser's Place): the images stay.
+    #[test]
+    fn inbox_keeps_its_images_when_a_multi_page_pdf_is_confirmed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("b.png", png(90)), ("three.pdf", pdf_pages(3))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.png", "b.png", "three.pdf"]);
+    }
+
+    /// A single multi-page PDF still replaces what the cursor holds, as any single Place does.
+    #[test]
+    fn a_single_multi_page_pdf_replaces_the_cursor_when_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("three.pdf").to_string_lossy().to_string();
+        std::fs::write(&path, pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("place.load", json!({"base64": b64, "name": "a.svg"})).unwrap();
+        app.open_picked("place", path).unwrap();
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["three.pdf"]);
     }
 
     #[test]
