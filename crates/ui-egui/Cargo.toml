@@ -27,6 +27,7 @@ craft-prepress = { workspace = true }
 # The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
 # them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+egui_extras = { workspace = true }
 web-time = { workspace = true }
 # Unicode bidi classes are used only to bypass the label cache for ordinary LTR text.
 unicode-bidi = { workspace = true }
