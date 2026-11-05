@@ -434,7 +434,7 @@ fn overset_count(doc: &Document) -> usize {
         .count()
 }
 
-fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> Result<Value> {
+fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str) -> Result<Value> {
     let (source_id, field) = {
         let source = d.data_merge.sources.first().ok_or_else(|| bad("data.placeholder.add", "select a data source"))?;
         let field =
@@ -490,10 +490,21 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             if role != PlaceholderRole::Text {
                 return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell; insert it as text"));
             }
+            if name.contains(['<', '>', '\n']) {
+                return Err(bad("data.placeholder.add", "this field's name can't be used in a table cell"));
+            }
             let marker = format!("<<{name}>>");
-            let st = d.text_story_mut(t.story, t.cell).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
+            let cell = t.cell.map(|c| {
+                d.story(t.story).and_then(|st| st.tables.get(&c.table)).map_or(c, |tb| {
+                    let (row, col) = tb.owner(c.row, c.col);
+                    designcraft_doc::CellAddr { row, col, ..c }
+                })
+            });
+            let st = d.text_story_mut(t.story, cell).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
             let at = designcraft_doc::floor_char_boundary(&st.text, t.range().start.min(st.text.len()));
             st.replace(at..at, &marker);
+            let caret = at + marker.len();
+            *sel = Selection::text(designcraft_doc::TextSel { anchor: caret, focus: caret, cell, ..t });
             return Ok(json!({"cell": true, "marker": marker}));
         }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
