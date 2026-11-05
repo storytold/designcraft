@@ -398,7 +398,14 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
     for i in (0..n).rev() {
         hangs[i] = glyphs[i].is_space() && glyphs.get(i + 1).is_none_or(|nx| hangs[i + 1] || is_forced(nx.ch));
     }
+    // The last glyph that isn't a soft hyphen, kept as the loop goes (a run of soft hyphens
+    // searched back over all of them for every one).
+    let mut last_plain: Option<&Glyph> = None;
     for (i, g) in glyphs.iter().enumerate() {
+        // Set before the soft-hyphen case below reads it; a soft hyphen leaves it as it was.
+        if g.ch != SOFT_HYPHEN {
+            last_plain = Some(g);
+        }
         let prev_hang = if i > 0 { right_hang(&glyphs[i - 1], sp) } else { 0.0 };
         if hangs[i] {
             continue;
@@ -447,7 +454,7 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if g.ch == SOFT_HYPHEN {
-            let hw = glyphs[..i].iter().rev().find(|g| g.ch != SOFT_HYPHEN).map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
+            let hw = last_plain.map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
             let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
             p.auto = true;
             p.zone_from = last_space;
