@@ -8780,7 +8780,7 @@ fn a_spanning_table_spaces_and_column_starts_as_spanning_text() {
 
 #[test]
 fn a_spanning_table_right_below_another_keeps_its_space_before() {
-    let (mut d, sid, fid) = doc_with(&LOREM.to_string(), Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
+    let (mut d, sid, fid) = doc_with(LOREM, Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
     d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
     let st = d.story_mut(sid).unwrap();
     let table = |id: u64| {
