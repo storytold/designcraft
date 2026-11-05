@@ -1811,6 +1811,21 @@ fn table_rows_fit_their_content() {
 }
 
 #[test]
+fn a_table_starts_at_the_baseline_of_the_line_above() {
+    // As in InDesign: the line's descenders hang into the space above the table, which starts at
+    // the baseline plus the paragraph's space after.
+    let mut t = filled(2, 2, 0, 300.0);
+    t.options.space_before = 0.0;
+    let (mut d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+    d.story_mut(sid).unwrap().paras[0].para.space_after = Some(3.0);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let intro = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    assert!(intro.descent > 0.0);
+    assert!((ft.tables[0].rect.y0 - (intro.baseline + 3.0)).abs() < 1e-6, "{} vs {}", ft.tables[0].rect.y0, intro.baseline);
+}
+
+#[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
