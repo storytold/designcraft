@@ -2385,6 +2385,16 @@ fn the_table_menu_follows_indesigns_order() {
 }
 
 #[test]
+fn convert_cell_to_graphic_cell_needs_a_table_target() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    assert!(!menu_enabled(&app, "app.graphicCell"), "without a table");
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    assert!(menu_enabled(&app, "app.graphicCell"), "in a table");
+}
+
+#[test]
 fn the_type_menu_follows_indesigns_order() {
     // InDesign's Type menu, as Chris Nielsen opens it in "Numbering Page Sections" (2:09).
     let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;

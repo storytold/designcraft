@@ -194,6 +194,14 @@ pub struct Condition {
     pub visible: bool,
 }
 
+/// One layout of the document: absolute pages `start..end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutRange {
+    pub name: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl Document {
     /// A stroke type with named styles resolved (unknown names draw solid).
     pub fn stroke_kind(&self, t: &StrokeType) -> StrokeType {
@@ -216,17 +224,23 @@ impl Document {
             .iter()
             .map(|e| {
                 let mut word = String::new();
+                // The word's length in chars, kept as it grows (counting it again at every `~`
+                // was quadratic in the exception's length).
+                let mut len = 0;
                 let mut breaks = Vec::new();
                 for c in e.trim().chars() {
                     if c == '~' {
-                        if breaks.last() != Some(&word.chars().count()) && !word.is_empty() {
-                            breaks.push(word.chars().count());
+                        if breaks.last() != Some(&len) && len > 0 {
+                            breaks.push(len);
                         }
                     } else {
-                        word.extend(c.to_lowercase());
+                        for l in c.to_lowercase() {
+                            word.push(l);
+                            len += 1;
+                        }
                     }
                 }
-                breaks.retain(|b| *b < word.chars().count());
+                breaks.retain(|b| *b < len);
                 (word, breaks)
             })
             .collect()
@@ -894,6 +908,32 @@ impl Document {
         self.spreads.iter().enumerate().flat_map(|(si, s)| s.pages.iter().map(move |p| (si, p))).enumerate().map(|(i, (si, p))| (i, si, p))
     }
 
+    /// The document's layouts (Layout › Create Alternate Layout), in page order: the pages up to
+    /// the first section that starts a layout are the first layout. Always at least one; a layout
+    /// whose pages are gone is skipped.
+    pub fn layouts(&self) -> Vec<LayoutRange> {
+        let n = self.page_count();
+        let mut starts: Vec<(usize, Option<&str>)> =
+            self.sections.iter().filter_map(|s| s.layout.as_deref().map(|l| (s.start, Some(l)))).filter(|(st, _)| *st < n).collect();
+        starts.sort_by_key(|(st, _)| *st);
+        starts.dedup_by_key(|(st, _)| *st);
+        if starts.first().is_none_or(|(st, _)| *st != 0) {
+            starts.insert(0, (0, None));
+        }
+        let mut out: Vec<LayoutRange> = Vec::with_capacity(starts.len());
+        for (k, (start, name)) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).map_or(n, |(e, _)| *e);
+            let name = name.map_or_else(|| format!("Layout {}", k + 1), str::to_string);
+            out.push(LayoutRange { name, start: *start, end });
+        }
+        out
+    }
+
+    /// The layout holding absolute page `abs` (an index into [`Document::layouts`]).
+    pub fn layout_of(&self, abs: usize) -> usize {
+        self.layouts().iter().rposition(|l| l.start <= abs).unwrap_or(0)
+    }
+
     /// The section containing absolute page `abs`.
     pub fn section_of(&self, abs: usize) -> Option<&Section> {
         self.sections.iter().filter(|s| s.start <= abs).max_by_key(|s| s.start)
@@ -945,6 +985,12 @@ impl Document {
     }
     pub fn default_layer(&self) -> LayerId {
         self.layers.first().map(|l| l.id).unwrap_or_default()
+    }
+    /// The layer new objects go to when a document opens: the topmost one shown and unlocked, so
+    /// a document whose top layer is a hidden, locked dieline doesn't put what is placed or drawn
+    /// where it can't be seen or selected. The top layer when every layer is hidden or locked.
+    pub fn working_layer(&self) -> LayerId {
+        self.layers.iter().find(|l| l.visible && !l.locked).map_or_else(|| self.default_layer(), |l| l.id)
     }
 
     pub fn story(&self, id: StoryId) -> Option<&Story> {
