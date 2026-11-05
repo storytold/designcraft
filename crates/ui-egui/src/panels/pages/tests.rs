@@ -348,12 +348,13 @@ fn only_visible_pages_get_thumbnails() {
     let h = crate::test_window::open(app, vec2(1400.0, 900.0));
     let st = h.state().app.session.active().unwrap();
     let (uid, rev) = (st.uid, st.revision);
+    let last = st.doc.page(119).expect("120th page").id;
     let thumbs = super::THUMBS.lock().unwrap();
     let drawn = thumbs.as_ref().map_or(0, |m| m.keys().filter(|k| k.0 == uid && k.1 == rev && matches!(k.2, super::ThumbOf::Page(_))).count());
     assert!(drawn > 0, "the rows on screen are drawn");
     assert!(drawn < 40, "120 pages, but only the visible rows are drawn: {drawn}");
     assert!(
-        !thumbs.as_ref().is_some_and(|m| m.keys().any(|k| k.0 == uid && k.1 == rev && k.2 == super::ThumbOf::Page(119))),
+        !thumbs.as_ref().is_some_and(|m| m.keys().any(|k| k.0 == uid && k.1 == rev && k.2 == super::ThumbOf::Page(last))),
         "the last page is far below the panel"
     );
 }
@@ -362,7 +363,7 @@ fn only_visible_pages_get_thumbnails() {
 /// rather than every page.
 #[test]
 fn background_thumbnails_are_capped() {
-    let keys: Vec<ThumbKey> = (0..10).map(|i| (u64::MAX - 1, 0, ThumbOf::Page(i), 24)).collect();
+    let keys: Vec<ThumbKey> = (0..10).map(|i| (u64::MAX - 1, 0, ThumbOf::Page(designcraft_doc::PageId(i)), 24)).collect();
     let taken = keys.iter().filter(|k| begin(**k)).count();
     assert_eq!(taken, super::MAX_IN_FLIGHT);
     assert!(!begin(keys[0]), "a slot is reserved once");
@@ -371,6 +372,35 @@ fn background_thumbnails_are_capped() {
     }
     assert!(begin(keys[0]), "released slots are free again");
     ended(keys[0]);
+}
+
+/// The panel caches a thumbnail by the page's stable id, so an insert, delete or move cannot make
+/// a row show the picture of whatever page used to sit at that index.
+#[test]
+fn page_thumbnails_are_keyed_by_the_page_not_its_index() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 3, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let (uid, ids): (u64, Vec<designcraft_doc::PageId>) = {
+        let st = h.state().app.session.active().unwrap();
+        (st.uid, (0..3).map(|i| st.doc.page(i).expect("page").id).collect())
+    };
+    {
+        let thumbs = super::THUMBS.lock().unwrap();
+        let map = thumbs.as_ref().expect("the visible rows drew");
+        for id in &ids {
+            assert!(map.keys().any(|k| k.0 == uid && k.2 == super::ThumbOf::Page(*id)), "page {id} is cached by its id");
+        }
+    }
+    // Move the first page to the end: its picture follows the page, not the index it left.
+    h.state_mut().app.run("layout.pages.move", json!({"from": 0, "to": 2})).unwrap();
+    h.run_steps(2);
+    let moved = h.state().app.session.active().unwrap().doc.page(2).expect("page").id;
+    assert_eq!(moved, ids[0], "the moved page keeps its id");
+    let thumbs = super::THUMBS.lock().unwrap();
+    let map = thumbs.as_ref().expect("thumbnails");
+    assert!(map.keys().any(|k| k.0 == uid && k.2 == super::ThumbOf::Page(moved)), "the moved page keeps its own cache entry");
 }
 
 #[test]

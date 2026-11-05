@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use designcraft_doc::{Document, SpreadId, SpreadRef};
+use designcraft_doc::{Document, PageId, SpreadId, SpreadRef};
 use designcraft_render::{RenderOptions, Rendered};
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
 use serde_json::json;
@@ -14,10 +14,11 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-/// What a thumbnail shows: a document page (absolute index) or a whole parent spread.
+/// What a thumbnail shows: a document page (by its stable id, so a move, insert or delete keeps
+/// the picture with the page) or a whole parent spread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ThumbOf {
-    Page(usize),
+    Page(PageId),
     Parent(SpreadId),
 }
 
@@ -65,10 +66,12 @@ fn draw(
 ) -> Option<(Rendered, String)> {
     let opts = RenderOptions { printing_only: true, ..Default::default() };
     match of {
-        ThumbOf::Page(abs) => {
+        ThumbOf::Page(id) => {
+            // The cache follows the page's id; rendering still needs where it is now.
+            let abs = doc.pages().find(|(_, _, page)| page.id == id).map(|(abs, _, _)| abs)?;
             let page = doc.page(abs)?;
             let img = r.render_page(doc, cache, abs, px / page.height.max(1e-6), false, &opts)?;
-            Some((img, format!("thumb{abs}")))
+            Some((img, format!("thumb{}", id.0)))
         }
         ThumbOf::Parent(id) => {
             let i = doc.parent_index(id)?;
@@ -701,7 +704,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                     });
                     let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                    let tex = if thumbnails { thumb(app, ui.ctx(), ThumbOf::Page(abs), th, ui.is_rect_visible(pr)) } else { None };
+                    let tex = if thumbnails { thumb(app, ui.ctx(), ThumbOf::Page(p.id), th, ui.is_rect_visible(pr)) } else { None };
                     match tex {
                         Some(tex) => {
                             ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
