@@ -363,6 +363,7 @@ fn start_at(d: &mut designcraft_doc::Document, n: u32) {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             },
         );
     }
@@ -477,8 +478,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let _fonts = super::file::load_document_fonts(&mut d, path).0;
                 let cache = designcraft_compose::Cache::new();
                 let r = designcraft_pdf::export_pdf_with_report(&super::interchange::with_pdf_boxes(&d), &cache, &designcraft_pdf::PdfOptions::default()).map_err(|e| EngineError::Other(e.to_string()))?;
-                let n = designcraft_render::pdf_page_count(&r.bytes).unwrap_or(0);
-                let sizes: Vec<(f32, f32)> = (0..n).filter_map(|i| designcraft_render::pdf_page_size(&r.bytes, i)).map(|(w, h)| (w as f32, h as f32)).collect();
+                // Every page's size from one opening of the chapter's PDF (not one per page).
+                let sizes: Vec<(f32, f32)> =
+                    designcraft_render::pdf_page_sizes(&r.bytes).unwrap_or_default().into_iter().map(|(w, h)| (w as f32, h as f32)).collect();
                 held = held.saturating_add(r.bytes.len());
                 // Checked as soon as the chapter is exported. A chapter over the budget on its
                 // own is still generated once before it is refused: the exporter answers with one
