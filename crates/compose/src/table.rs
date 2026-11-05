@@ -11,7 +11,7 @@ use std::sync::Arc;
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
 use designcraft_geom::{Point, Rect};
 
-use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
+use crate::{Above, Band, ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
 
 /// A cell placed in a frame (frame inner space).
 #[derive(Clone, Debug)]
@@ -191,7 +191,24 @@ pub(crate) fn place_table(
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
         return false;
     }
-    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+    // A table in a paragraph set across the columns spans them, as text does: it goes below the
+    // deepest of the columns above it, moves on to the next frame, and the columns below start
+    // under it.
+    let spanning = crate::spans_columns(pp);
+    let spans_in = |cur: &Cursor| spanning && cols[cur.fi].len() > 1;
+    let col_rect = |cur: &Cursor| {
+        let col = cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+        if spans_in(cur) { crate::span_rect(&cols[cur.fi], col, pp.span_columns) } else { col }
+    };
+    if spans_in(cur) {
+        let deepest = out.frames[cur.fi].lines.get(cur.band.line0..).unwrap_or_default().iter().map(|l| l.baseline + l.descent).reduce(f64::max);
+        if let Some(bottom) = deepest {
+            cur.col = 0;
+            cur.last_baseline = Some(bottom);
+            cur.last_descent = 0.0;
+            cur.pending = cur.pending.max(pp.span_space_before);
+        }
+    }
     let mut col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
@@ -339,7 +356,11 @@ pub(crate) fn place_table(
             first_frag = false;
         }
         let was_first = first_frag;
-        cur.next_column(cols);
+        if spans_in(cur) {
+            cur.next_frame();
+        } else {
+            cur.next_column(cols);
+        }
         if cur.fi >= frames.len() {
             return false;
         }
@@ -361,6 +382,11 @@ pub(crate) fn place_table(
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
+    if spans_in(cur) {
+        cur.pending = cur.pending.max(pp.span_space_after);
+        let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending };
+        cur.band = Band { para: pi + 1, line0: out.frames[cur.fi].lines.len(), above: Some(above), tail: None };
+    }
     true
 }
 

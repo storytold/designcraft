@@ -8647,3 +8647,36 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+#[test]
+fn a_table_in_a_spanning_paragraph_spans_the_columns() {
+    // A heading table set across a two-column frame (as InDesign documents anchor section bars),
+    // with text before it (`intro`) or not.
+    for intro in [false, true] {
+        let body = [LOREM; 4].join("\n");
+        let text = if intro { format!("Intro\n{body}") } else { body };
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+        let st = d.story_mut(sid).unwrap();
+        let at = if intro { "Intro\n".len() } else { 0 };
+        st.insert_table(at, filled(2, 1, 0, 380.0));
+        let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+        st.paras[tp].para.span_columns = Some(SpanColumns::Span(0));
+        d.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        let ft = &cs.frames[0];
+        let tf = &ft.tables[0];
+        // The table keeps its width, wider than one column.
+        assert!((tf.rect.width() - 380.0).abs() < 1e-6, "{}", tf.rect.width());
+        assert!((tf.rect.x0 - ft.columns[0].x0).abs() < 1e-6);
+        // The text after it starts below it, in both columns.
+        let after: Vec<&Line> = ft.lines.iter().filter(|l| l.para > tp).collect();
+        assert!(after.iter().all(|l| line_box(l).0 >= tf.rect.y1 - 0.5), "intro {intro}");
+        assert!((0..2).all(|c| after.iter().any(|l| l.column == c)), "intro {intro}");
+        if intro {
+            let first = ft.lines.iter().find(|l| l.para == 0).unwrap();
+            assert!(tf.rect.y0 >= first.baseline, "the table goes below the text above it");
+        }
+    }
+}
