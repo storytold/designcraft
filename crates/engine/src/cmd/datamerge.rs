@@ -482,6 +482,20 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
         if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
             return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
         }
+        // The insertion point is in a table cell: the field goes into the cell's text as its
+        // marker, which the merge fills as it fills a typed one. A cell's text is a story of its
+        // own that a placeholder can't name, and the selection's offsets are the cell's, so they
+        // used to put the marker in the table's story instead (#2315).
+        if !explicit_story && let Some(t) = sel.text.filter(|t| t.cell.is_some()) {
+            if role != PlaceholderRole::Text {
+                return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell; insert it as text"));
+            }
+            let marker = format!("<<{name}>>");
+            let st = d.text_story_mut(t.story, t.cell).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
+            let at = designcraft_doc::floor_char_boundary(&st.text, t.range().start.min(st.text.len()));
+            st.replace(at..at, &marker);
+            return Ok(json!({"cell": true, "marker": marker}));
+        }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
         if d.story(story).is_none() {
             return Err(bad("data.placeholder.add", "no story"));

@@ -228,6 +228,7 @@ pub fn fill_row(
     let Pending { mut reps, links, parent, mut report } = pending;
     typed_reps(doc, fields, row, maps, &placeholders, &mut reps);
     apply_reps(doc, &reps);
+    fill_nested_markers(doc, fields, row, maps);
     for (anchor, dest, field) in links {
         let anchor = match anchor {
             PlaceholderAnchor::Text { story, start, end } => {
@@ -329,6 +330,44 @@ fn typed_reps(
             reps.push(Rep { story: mapped, start, end, text: cell_of(fields, row, &name).to_string() });
         }
     }
+}
+
+/// The `<<Field>>` markers in the table cells and footnotes of the stories being filled. A cell's
+/// or a footnote's text is a story of its own inside its story, which no placeholder can name and
+/// `typed_reps` doesn't read, so a field in a table was left as its marker (#2315). Only a table
+/// or note that holds a marker is copied.
+fn fill_nested_markers(doc: &mut designcraft_doc::Document, fields: &[DataField], row: &[String], maps: &Maps) {
+    let fill = |st: &mut Story| {
+        let found: Vec<(usize, usize, String)> =
+            find_markers(&st.text).into_iter().filter(|(_, _, name)| fields.iter().any(|f| f.name == *name)).collect();
+        for (start, end, name) in found.into_iter().rev() {
+            st.replace(start..end, cell_of(fields, row, &name));
+        }
+    };
+    let has = |st: &Story| find_markers(&st.text).iter().any(|(_, _, name)| fields.iter().any(|f| f.name == *name));
+    let mut mapped: Vec<StoryId> = maps.stories.values().copied().collect();
+    mapped.sort();
+    mapped.dedup();
+    for sid in mapped {
+        let Some(st) = doc.story_mut(sid) else { continue };
+        for t in st.tables.values_mut() {
+            if t.cells.iter().any(|c| nested_has(&c.text, &has)) {
+                for c in &mut Arc::make_mut(t).cells {
+                    c.text.for_each_text_mut(&mut |x| fill(x));
+                }
+            }
+        }
+        for n in &mut st.notes {
+            if nested_has(&n.text, &has) {
+                Arc::make_mut(n).text.for_each_text_mut(&mut |x| fill(x));
+            }
+        }
+    }
+}
+
+/// Whether `st` or a text inside it (its table cells and notes) satisfies `has`.
+fn nested_has(st: &Story, has: &impl Fn(&Story) -> bool) -> bool {
+    has(st) || st.tables.values().any(|t| t.cells.iter().any(|c| nested_has(&c.text, has))) || st.notes.iter().any(|n| nested_has(&n.text, has))
 }
 
 fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
