@@ -105,7 +105,7 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             return None;
         }
         let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| it.takes_graphic()))
+        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| it.path.encloses_area() && it.takes_graphic()))
     });
     // `"spread": null` counts as omitted, like the other placement parameters.
     let spread = match p.get("spread") {
@@ -672,6 +672,63 @@ pub(super) mod image_place_tests {
                 let [scale_x, _, _, scale_y, _, _] = content.xf.as_coeffs();
                 assert!(scale_x > 0.0 && scale_y > 0.0);
             }
+        }
+    }
+
+    fn assert_implicit_placement_preserves_geometry(command: &str, params: Value) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let image = image_file()?;
+        let mut session = Session::new();
+        session.execute("file.new", &json!({}))?;
+        let selected = session.execute(command, &params)?;
+        session.execute("object.stroke", &json!({"weight": 6}))?;
+        let id = ItemId(selected["id"].as_u64().ok_or("missing selected item id")?);
+        let original = serde_json::to_value(session.doc()?.doc.item(id).ok_or(designcraft_doc::DocError::NoItem(id))?)?;
+
+        let placed = session.execute("file.place", &json!({"path": image.path()}))?;
+
+        assert_ne!(placed["id"], selected["id"], "{command}");
+        let document = &session.doc()?.doc;
+        assert_eq!(serde_json::to_value(document.item(id).ok_or(designcraft_doc::DocError::NoItem(id))?)?, original, "{command}");
+        let placed_id = ItemId(placed["id"].as_u64().ok_or("missing placed item id")?);
+        let item = document.item(placed_id).ok_or(designcraft_doc::DocError::NoItem(placed_id))?;
+        assert_eq!(item.bounds(), Rect::new(36.0, 36.0, 76.0, 56.0));
+        assert!(matches!(item.content, Content::Graphic(_)));
+        assert_eq!(document.spreads[0].items.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn implicit_placement_preserves_selected_line() {
+        assert_implicit_placement_preserves_geometry("line.create", json!({"a": [18, 600], "b": [594, 600]})).unwrap();
+    }
+
+    #[test]
+    fn implicit_placement_preserves_selected_straight_open_path() {
+        assert_implicit_placement_preserves_geometry(
+            "path.create",
+            json!({"anchors": [{"p": [20, 30]}, {"p": [80, 90]}, {"p": [140, 150]}], "closed": false}),
+        )
+        .unwrap();
+    }
+
+    /// Paths with an area take the image: a closed empty frame, and an open V as before.
+    #[test]
+    fn implicit_placement_fills_selected_frames_and_open_paths_with_an_area() {
+        let image = image_file().unwrap();
+        for (command, params) in [
+            ("frame.create", json!({"rect": [100, 120, 200, 220]})),
+            ("path.create", json!({"anchors": [{"p": [20, 30]}, {"p": [80, 90]}, {"p": [140, 30]}], "closed": false})),
+        ] {
+            let mut session = Session::new();
+            session.execute("file.new", &json!({})).unwrap();
+            let selected = session.execute(command, &params).unwrap();
+
+            let placed = session.execute("file.place", &json!({"path": image.path()})).unwrap();
+
+            assert_eq!(placed["id"], selected["id"], "{command}");
+            let document = &session.doc().unwrap().doc;
+            assert!(matches!(document.item(ItemId(selected["id"].as_u64().unwrap())).unwrap().content, Content::Graphic(_)), "{command}");
+            assert_eq!(document.spreads[0].items.len(), 1, "{command}");
         }
     }
 

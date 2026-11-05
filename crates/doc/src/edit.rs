@@ -632,6 +632,22 @@ impl Document {
         None
     }
 
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either.
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        let sp = self.spread(sr)?;
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        items
+            .into_iter()
+            .rev()
+            .find(|it| {
+                let layer = self.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            })
+            .map(|it| it.id)
+    }
+
     /// The first item on a document or parent spread whose geometry isn't finite
     /// ([`Item::geometry_is_finite`]).
     pub fn non_finite_item(&self) -> Option<ItemId> {
