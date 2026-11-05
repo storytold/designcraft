@@ -246,6 +246,7 @@ fn start_at(d: &mut designcraft_doc::Document, n: u32) {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             },
         );
     }
