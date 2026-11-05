@@ -22,7 +22,7 @@ APP_ID=ai.storyteller.designcraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm arch tar"
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
@@ -43,8 +43,8 @@ BASENAME="designcraft-$VERSION-linux-$ARCH"
 
 echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS)"
 
-if [ "$SKIP_BUILD" = 0 ]; then
-  if [ -n "${CROSS_TARGET:-}" ]; then
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  if [[ -n "${CROSS_TARGET:-}" ]]; then
     (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli --target "$CROSS_TARGET")
   else
     (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
@@ -61,6 +61,7 @@ install -Dm755 "$BIN/designcraft-cli" "$STAGE/usr/bin/designcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/designcraft" "$STAGE/usr/bin/designcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
+install -Dm644 "$HERE/$APP_ID.thumbnailer" "$STAGE/usr/share/thumbnailers/$APP_ID.thumbnailer"
 mkdir -p "$STAGE/usr/share/metainfo"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$DESIGNCRAFT_BUILD_DATE/g" \
   "$HERE/$APP_ID.metainfo.xml.in" >"$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
@@ -76,7 +77,10 @@ if command -v appstreamcli >/dev/null; then
   appstreamcli validate --no-net --explain "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 fi
 
-has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+has() {
+  local fmt="$1"
+  case " $FORMATS " in *" $fmt "*) return 0 ;; *) return 1 ;; esac
+}
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
 if has tar; then
@@ -134,21 +138,24 @@ if has appimage; then
   case "$ARCH" in
     x86_64) APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 ;;
     aarch64) APPIMAGETOOL_SHA256=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158 ;;
+    # No pinned download (e.g. riscv64): set APPIMAGETOOL or put appimagetool on PATH.
+    *) APPIMAGETOOL_SHA256="" ;;
   esac
   APPDIR="$WORK/DesignCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
+  # Keep sctk-adwaita's MIT notice in the AppImage.
+  install -Dm644 "$ROOT/NOTICE" "$APPDIR/usr/share/doc/designcraft/NOTICE"
   ln -s usr/bin/designcraft "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
   cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
   ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
-  if [ -z "$TOOL" ]; then
+  if [[ -z "$TOOL" ]]; then
     TOOL="$CARGO_TARGET_DIR/appimagetool-$APPIMAGETOOL_VERSION-$ARCH.AppImage"
-    if [ ! -x "$TOOL" ]; then
+    if [[ ! -x "$TOOL" ]]; then
       download="$TOOL.download"
-      curl -fsSL -o "$download" \
+      curl --proto '=https' -fsSL -o "$download" \
         "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
       printf '%s  %s\n' "$APPIMAGETOOL_SHA256" "$download" | sha256sum -c -
       chmod 755 "$download"
@@ -174,16 +181,16 @@ if has appimage; then
   # package) appimagetool also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")
   echo "wrote $OUT"
-  if [ -s "$OUT.zsync" ]; then
+  if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"
   else
     warn "zsyncmake not found, so $OUT.zsync was not written; AppImage delta updates need it"
   fi
 fi
 
-if [ -z "${CROSS_TARGET:-}" ]; then
+if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/designcraft-cli" --version
-elif [ -n "${EMULATOR:-}" ]; then
+elif [[ -n "${EMULATOR:-}" ]]; then
   "$EMULATOR" "$STAGE/usr/bin/designcraft-cli" --version
 fi
 echo "==> done"

@@ -1,8 +1,8 @@
 # Shared PDF backend
 
-DesignCraft pins `craft-pdf`, patched Krilla 0.8.2 and the four Hayro reader crates to
-craft-libs revision `89dcbb3060377a26c99a6d80caa16084366704c4`. Existing `craft-ui` and `craft-print` revisions
-remain unchanged. The reader migration is reviewed on top of the separate writer change.
+DesignCraft pins `craft-pdf`, patched Krilla 0.8.2 and the six Hayro reader crates (with
+`hayro-cmap` and `hayro-postscript`) to craft-libs revision `92d392cff132eaf53e13afff77f38b5c11b73aa0`. `craft-ui`,
+`craft-print` and the other craft-libs crates are pinned to the same revision. The reader migration is reviewed on top of the separate writer change.
 
 ## Writing
 
@@ -49,6 +49,12 @@ are recorded separately in ASSETS.md.
 DesignCraft retains placement, layer-name policy, document state and the application render
 cache. Render output is premultiplied RGBA8. Page boxes use the same crop, rotation and
 UserUnit transform as raster output, including fractional placed-PDF dimensions.
+Layer choices are validated for every selected PDF before any document/undo state changes;
+a selection containing an unsupported or layerless PDF is refused rather than partially edited.
+Stale persisted/relinked choices that cannot be honored suppress the graphic on canvas rather
+than reveal hidden source content; resetting to file defaults remains available. All-content
+cropping keeps the whole page when real optional-content state cannot be rewritten, while
+layerless files and empty/null optional-content properties retain measured bounds.
 Layered-PDF export stops on failed layer rewriting, missing pages or reported incomplete
 content rather than saving an unchanged or incomplete placed page. Shared diagnostics only
 report known backend warnings; they do not certify all PDF fidelity.
@@ -56,8 +62,8 @@ report known backend warnings; they do not certify all PDF fidelity.
 DesignCraft uses a 512 MiB reader input bound, checked before parsing or copying.
 Raster output has shared geometry/allocation bounds. Native unwind guards turn escaped
 backend panics into errors; WASM aborts and process-wide allocation failures are not recoverable.
-Application fonts, image assets, editing and export presets remain app-owned. Existing
-craft-ui/craft-print versions are preserved. The reader migration builds on the independently qualified writer change.
+Application fonts, image assets, editing and export presets remain app-owned. craft-ui and
+craft-print are pinned separately. The reader migration builds on the independently qualified writer change.
 
 The shared commit must be published before a fresh public checkout can resolve these pins.
 No sibling checkout is required. Licences and existing backend asset notices are recorded in

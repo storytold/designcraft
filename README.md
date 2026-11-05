@@ -8,6 +8,10 @@
 </p>
 
 
+<p align="center">
+  <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png" width="128" height="128" alt="DesignCraft icon: an engraved cat in a polka-dot scarf on a green tile">
+</p>
+
 <h1 align="center">DesignCraft</h1>
 
 <p align="center">
@@ -65,7 +69,7 @@
 ## The sample magazine
 
 Every page below was laid out by DesignCraft from code (`crates/engine/src/sample.rs`) and exported
-by its own renderer. Try it yourself with `File → New → Sample Document`, or start the app with
+by its own renderer. Try it yourself with `Help → Sample Document`, or start the app with
 `--sample`.
 
 <table>
@@ -119,9 +123,7 @@ Japanese text (UI and documents) uses fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts), an optional build input (font
 files are never committed here; see the public
 [craft-fonts integration guide](https://github.com/storytold/craft-fonts/blob/main/docs/integration.md)
-for build instructions and craftrules
-[`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)
-for the shared standard):
+for build instructions):
 
 ```sh
 git clone https://github.com/storytold/craft-fonts ../craft-fonts
@@ -246,11 +248,11 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 |---|---|
 | L0 | `geom` (paths, units & measurement parsing, corner options) · `color` (CMYK/RGB/Lab, swatches, tints, gradients) |
 | L1 | `doc` (spreads, pages, parents, layers, frames, stories, styles) · `fonts` (font DB, shaping, outlines) |
-| L2 | `compose` (the text engine) |
-| L3 | `render` (vello_cpu) |
+| L2 | `compose` (the text engine) · `images` |
+| L3 | `render` (vello_cpu) · `pdf` · `idml` · `epub` · `pptx` · `textimport` · `format` |
 | L4 | `tools` (pointer events → commands + overlays) |
 | L5 | `engine` (session, history, command registry) |
-| L6 | `ui-egui` (publishing UI, control channel) |
+| L6 | `ui-egui` (publishing UI, control channel) · `mcp` |
 | L7 | `apps/designcraft`, `apps/designcraft-cli`, `apps/designcraft-web` |
 
 - **Status and milestones:** [ROADMAP.md](ROADMAP.md) (stage: pre-alpha); feature assessment: [`docs/target-app-parity.md`](docs/target-app-parity.md); known gaps: [`docs/gaps.md`](docs/gaps.md)
@@ -278,7 +280,7 @@ Installers and executables are code-signed.
 
 | Build | File | Notes |
 |---|---|---|
-| App, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
+| App and bundled CLI, universal (Apple silicon + Intel) | `designcraft-<ver>-macos-universal.dmg` | Signed and notarized |
 | Command-line tool, universal | `designcraft-cli-<ver>-macos-universal.zip` | Signed and notarized |
 
 ### Linux
@@ -334,7 +336,16 @@ stand on its own.
 | <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/pdfcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.pdfcraft.png" alt="" width="32" height="32"> | **PdfCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/pdfcraft) | [Website](https://getartcraft.com/apps/pdfcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | **Page layout and publishing · you are here** | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/figcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.figcraft.png" alt="" width="32" height="32"> | **FigCraft** | Interface design and prototyping | [GitHub](https://github.com/storytold/figcraft) | [Website](https://getartcraft.com/apps/figcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/wordcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.wordcraft.png" alt="" width="32" height="32"> | **WordCraft** | Word processing and documents | [GitHub](https://github.com/storytold/wordcraft) | [Website](https://getartcraft.com/apps/wordcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/soundcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.soundcraft.png" alt="" width="32" height="32"> | **SoundCraft** | Audio recording and editing | [GitHub](https://github.com/storytold/soundcraft) | [Website](https://getartcraft.com/apps/soundcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/deckcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.deckcraft.png" alt="" width="32" height="32"> | **DeckCraft** | Presentations and slide decks | [GitHub](https://github.com/storytold/deckcraft) | [Website](https://getartcraft.com/apps/deckcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.cadcraft.png" alt="" width="32" height="32"> | **CADCraft** | Computer-aided design | [GitHub](https://github.com/storytold/cadcraft) | [Website](https://getartcraft.com/apps/cadcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/gridcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png" alt="" width="32" height="32"> | **GridCraft** | Spreadsheets and data | [GitHub](https://github.com/storytold/gridcraft) | [Website](https://getartcraft.com/apps/gridcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/texturecraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.texturecraft.png" alt="" width="32" height="32"> | **TextureCraft** | 3D texture painting | [GitHub](https://github.com/storytold/texturecraft) | [Website](https://getartcraft.com/apps/texturecraft) |
+| <img src="https://raw.githubusercontent.com/storytold/craft-anything/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.craft-anything.png" alt="" width="32" height="32"> | **Craft Anything** | See how any software works, then build your own | [GitHub](https://github.com/storytold/craft-anything) | [Website](https://getartcraft.com/apps/craft-anything) |
+| <img src="https://raw.githubusercontent.com/tangency-labs/solidcraft/main/assets/icons/app/linux/exports/hicolor/64x64/apps/io.tangencylabs.solidcraft.png" alt="" width="32" height="32"> | **SolidCraft** | Parametric 3D CAD by Tangency Labs (community app) | [GitHub](https://github.com/tangency-labs/solidcraft) | |
 
 And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
 

@@ -80,10 +80,10 @@ fn eye_lock(
     if locked {
         icons::paint(ui.painter(), Rect::from_center_size(lock.center(), vec2(13.0, 13.0)), "lock", col);
     }
-    let e = ui.interact(eye, ui.id().with(("eye", key)), Sense::click()).on_hover_ui(|ui| {
+    let e = ui.interact(eye, ui.scope_id().with(("eye", key)), Sense::click()).on_hover_ui(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(language, if visible { "Hide" } else { "Show" }));
     });
-    let l = ui.interact(lock, ui.id().with(("lock", key)), Sense::click()).on_hover_ui(|ui| {
+    let l = ui.interact(lock, ui.scope_id().with(("lock", key)), Sense::click()).on_hover_ui(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(language, if locked { "Unlock" } else { "Lock" }));
     });
     (e.clicked(), l.clicked())
@@ -103,7 +103,7 @@ fn selection_square(
     let s = if small { 7.0 } else { 8.0 };
     let r = Rect::from_center_size(pos2(row.max.x - 12.0, row.center().y), vec2(s, s));
     let sense = if selected && !small { Sense::click_and_drag() } else { Sense::click() };
-    let resp = ui.interact(r.expand(4.0), ui.id().with(("selsq", key)), sense);
+    let resp = ui.interact(r.expand(4.0), ui.scope_id().with(("selsq", key)), sense);
     if selected {
         ui.painter().rect_filled(r, 0.0, color);
     } else if resp.hovered() {
@@ -267,16 +267,16 @@ fn object_rows(
         let (eye, lock) = eye_lock(ui, ls.language, row, !it.hidden, it.locked, !ls.layer_visible, ("item", it.id.0));
         let indent = 14.0 * depth as f32;
         let expandable = !it.children().is_empty() && it.states.is_empty() && depth < MAX_DEPTH;
-        let open_id = egui::Id::new(("group_open", it.id.0));
+        let open_id = egui::Id::unique(("group_open", it.id.0));
         let open = expandable && ui.data(|d| d.get_temp(open_id)).unwrap_or(false);
         let mut tri_clicked = false;
         if expandable {
             let tri = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 14.0 + indent, 0.0), vec2(14.0, ROW_H));
             disclosure(ui, tri, open, t.icon);
-            tri_clicked = ui.interact(tri, ui.id().with(("gtri", it.id.0)), Sense::click()).clicked();
+            tri_clicked = ui.interact(tri, ui.scope_id().with(("gtri", it.id.0)), Sense::click()).clicked();
         }
         let name = item_label(ls.doc, it);
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_sel, &name));
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_sel, &name));
         let field = Rect::from_min_max(row.min + vec2(2.0 * COL_W + 28.0 + indent, 3.0), pos2(row.max.x - 28.0, row.max.y - 3.0));
         let renaming = match rename_field(ui, field, it.id.0) {
             // An empty name goes back to the automatic label.
@@ -287,7 +287,7 @@ fn object_rows(
                 false
             }
             Some(None) => false,
-            None => ui.data(|d| d.get_temp::<RenameState>(egui::Id::new(RENAME))).is_some_and(|(k, ..)| k == it.id.0),
+            None => ui.data(|d| d.get_temp::<RenameState>(egui::Id::unique(RENAME))).is_some_and(|(k, ..)| k == it.id.0),
         };
         if !renaming {
             let clip = Rect::from_min_max(row.min, pos2(row.max.x - 26.0, row.max.y));
@@ -323,7 +323,7 @@ fn object_rows(
             // after the double-click delay) renames it; a quick double-click only selects.
             let (now, add) = ui.input(|i| (i.time, i.modifiers.shift || i.modifiers.command));
             let delay = ui.ctx().options(|o| o.input_options.max_double_click_delay);
-            let last_id = egui::Id::new(("layers_last_click", it.id.0));
+            let last_id = egui::Id::unique(("layers_last_click", it.id.0));
             let last: Option<f64> = ui.data(|d| d.get_temp(last_id));
             ui.data_mut(|d| d.insert_temp(last_id, now));
             let slow = !sq && !add && !resp.double_clicked() && last.is_some_and(|t| now - t > delay && now - t < SLOW_RENAME_WINDOW);
@@ -377,7 +377,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let shown: Vec<ItemId> = selected.iter().map(|i| doc.top_level_of(*i).unwrap_or(*i)).collect();
     // A new selection (made on the canvas or anywhere else) is revealed: its layer opens and its row
     // scrolls into view, once, so the panel can still be scrolled and closed freely afterwards.
-    let last_id = egui::Id::new("layers_revealed_selection");
+    let last_id = egui::Id::unique("layers_revealed_selection");
     let now: Vec<u64> = shown.iter().map(|i| i.0).collect();
     let reveal = !now.is_empty() && ui.data(|d| d.get_temp::<Vec<u64>>(last_id)).as_ref() != Some(&now);
     ui.data_mut(|d| d.insert_temp(last_id, now));
@@ -391,7 +391,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
     // `doc.layers` runs top (frontmost) to bottom, as the panel lists them.
     for (li, l) in doc.layers.iter().enumerate() {
-        let open_id = egui::Id::new(("layer_open", l.id.0));
+        let open_id = egui::Id::unique(("layer_open", l.id.0));
         let mut open: bool = ui.data(|d| d.get_temp(open_id)).unwrap_or(l.id == active);
         if reveal && sel_layers.contains(&l.id) && !open {
             open = true;
@@ -399,7 +399,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         }
         let lc = c32(l.color);
         let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &l.name));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &l.name));
         if l.id == active {
             ui.painter().rect_filled(row, 0.0, t.row_selected);
         } else if resp.hovered() {
@@ -408,7 +408,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
         let (eye, lock) = eye_lock(ui, &language, row, l.visible, l.locked, false, ("layer", l.id.0));
         let tri = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 2.0, 0.0), vec2(14.0, ROW_H));
         disclosure(ui, tri, open, t.icon);
-        let tri_r = ui.interact(tri, ui.id().with(("tri", l.id.0)), Sense::click());
+        let tri_r = ui.interact(tri, ui.scope_id().with(("tri", l.id.0)), Sense::click());
         // Layer colour chip and name.
         let chip = Rect::from_min_size(row.min + vec2(2.0 * COL_W + 18.0, 7.0), vec2(4.0, 10.0));
         ui.painter().rect_filled(chip, 0.0, lc);
@@ -570,7 +570,7 @@ const RENAME: &str = "layers_rename";
 /// or a click elsewhere confirms it with a changed text, `Some(None)` when Esc cancels or the text
 /// is the one it started with, `None` while typing or when this row isn't being renamed.
 fn rename_field(ui: &mut Ui, r: Rect, key: RenameKey) -> Option<Option<String>> {
-    let id = egui::Id::new(RENAME);
+    let id = egui::Id::unique(RENAME);
     let (k, mut text, start): RenameState = ui.data(|d| d.get_temp(id))?;
     if k != key {
         return None;
@@ -601,7 +601,7 @@ fn rename_field(ui: &mut Ui, r: Rect, key: RenameKey) -> Option<Option<String>> 
 
 /// Start renaming row `key`, its field showing `name`.
 fn start_rename(ui: &Ui, key: RenameKey, name: &str) {
-    ui.data_mut(|d| d.insert_temp(egui::Id::new(RENAME), (key, name.to_string(), name.to_string())));
+    ui.data_mut(|d| d.insert_temp(egui::Id::unique(RENAME), (key, name.to_string(), name.to_string())));
 }
 
 #[cfg(test)]
@@ -739,13 +739,13 @@ mod tests {
         app.run("selection.set", json!({"ids": []})).unwrap();
         let mut h = Harness::builder().with_size(egui::vec2(260.0, 400.0)).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
         h.run_steps(2);
-        let open = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("layer_open", first.0)))).unwrap_or(false);
+        let open = |h: &Harness<'_, DesignApp>| h.ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(("layer_open", first.0)))).unwrap_or(false);
         assert!(!open(&h), "closed while nothing on it is selected");
         h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
         h.run_steps(2);
         assert!(open(&h), "selecting the object opens its layer");
         // Closed again by hand, it stays closed while the selection stays the same.
-        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("layer_open", first.0)), false));
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("layer_open", first.0)), false));
         h.run_steps(2);
         assert!(!open(&h));
     }
@@ -760,7 +760,7 @@ mod tests {
         app.run("selection.set", json!({"ids": []})).unwrap();
         let mut h =
             Harness::builder().with_size(egui::vec2(260.0, 400.0)).with_step_dt(0.05).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
-        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("layer_open", h.state().session.active().unwrap().active_layer.0)), true));
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("layer_open", h.state().session.active().unwrap().active_layer.0)), true));
         h.run_steps(2);
         let row = h.get_by_label("<rectangle>").rect().center();
         let click = |h: &mut Harness<'_, DesignApp>| {
@@ -799,7 +799,7 @@ mod tests {
         h.run_steps(2);
         let rename = |h: &mut Harness<'_, DesignApp>, key: RenameKey, typed: &str| {
             // As a slow double-click starts it (with an emptied field here, so the typing is the name).
-            h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(RENAME), (key, String::new(), String::new())));
+            h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(RENAME), (key, String::new(), String::new())));
             h.run_steps(2);
             h.get_by_role(egui::accesskit::Role::TextInput).type_text(typed);
             h.run_steps(1);
@@ -809,7 +809,7 @@ mod tests {
         rename(&mut h, id, "Hero bottle");
         assert_eq!(h.state().session.active().unwrap().doc.item(ItemId(id)).unwrap().name, "Hero bottle");
         // Esc leaves the name as it was.
-        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(RENAME), (id, String::new(), String::new())));
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(RENAME), (id, String::new(), String::new())));
         h.run_steps(2);
         h.get_by_role(egui::accesskit::Role::TextInput).type_text("Oops");
         h.key_press(egui::Key::Escape);
@@ -828,7 +828,7 @@ mod tests {
         let name = |h: &Harness<'_, DesignApp>| h.state().session.active().unwrap().doc.item(ItemId(id)).unwrap().name.clone();
         // As a slow double-click on the unnamed row starts it: the field shows the automatic label.
         let start = |h: &mut Harness<'_, DesignApp>| {
-            h.ctx.data_mut(|d| d.insert_temp(egui::Id::new(RENAME), (id, "Rectangle".to_string(), "Rectangle".to_string())));
+            h.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(RENAME), (id, "Rectangle".to_string(), "Rectangle".to_string())));
             h.run_steps(2);
         };
         start(&mut h);

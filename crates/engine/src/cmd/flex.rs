@@ -82,44 +82,49 @@ pub(crate) fn sync(d: &mut Document) {
     }
 }
 
-/// InDesign's detection when objects become a container: objects in a row (or column) keep it,
-/// with Auto size and Space Between at their own spacing; others wrap in a row of their width.
-fn detect(bounds: &[Rect]) -> FlexLayout {
-    let tol = 0.5;
-    let in_line = |row: bool| {
-        let mut v: Vec<&Rect> = bounds.iter().collect();
-        v.sort_by(|a, b| if row { a.x0.total_cmp(&b.x0) } else { a.y0.total_cmp(&b.y0) });
-        let apart = v.windows(2).all(|w| if row { w[1].x0 >= w[0].x1 - tol } else { w[1].y0 >= w[0].y1 - tol });
-        let gaps: Vec<f64> = v.windows(2).map(|w| if row { w[1].x0 - w[0].x1 } else { w[1].y0 - w[0].y1 }).collect();
-        (apart && bounds.len() > 1).then(|| gaps.iter().sum::<f64>() / gaps.len().max(1) as f64)
-    };
+fn in_line_gap(bounds: &[Rect], row: bool, tol: f64) -> Option<f64> {
+    let mut v: Vec<&Rect> = bounds.iter().collect();
+    v.sort_by(|a, b| if row { a.x0.total_cmp(&b.x0) } else { a.y0.total_cmp(&b.y0) });
+    let apart = v.windows(2).all(|w| if row { w[1].x0 >= w[0].x1 - tol } else { w[1].y0 >= w[0].y1 - tol });
+    let gaps: Vec<f64> = v.windows(2).map(|w| if row { w[1].x0 - w[0].x1 } else { w[1].y0 - w[0].y1 }).collect();
+    (apart && bounds.len() > 1).then(|| gaps.iter().sum::<f64>() / gaps.len().max(1) as f64)
+}
+
+fn detect_align(bounds: &[Rect], row: bool, tol: f64) -> FlexAlign {
     let same = |f: &dyn Fn(&Rect) -> f64| bounds.windows(2).all(|w| (f(&w[0]) - f(&w[1])).abs() <= tol);
-    let align = |row: bool| {
-        let (a, c, e): (&dyn Fn(&Rect) -> f64, &dyn Fn(&Rect) -> f64, &dyn Fn(&Rect) -> f64) =
-            if row { (&|r| r.y0, &|r| r.center().y, &|r| r.y1) } else { (&|r| r.x0, &|r| r.center().x, &|r| r.x1) };
-        if same(a) {
-            FlexAlign::Start
-        } else if same(c) {
-            FlexAlign::Center
-        } else if same(e) {
-            FlexAlign::End
-        } else {
-            FlexAlign::Start
-        }
-    };
-    let auto = |gap: f64, row: bool| FlexLayout {
+    let (a, c, e): (&dyn Fn(&Rect) -> f64, &dyn Fn(&Rect) -> f64, &dyn Fn(&Rect) -> f64) =
+        if row { (&|r| r.y0, &|r| r.center().y, &|r| r.y1) } else { (&|r| r.x0, &|r| r.center().x, &|r| r.x1) };
+    if same(a) {
+        FlexAlign::Start
+    } else if same(c) {
+        FlexAlign::Center
+    } else if same(e) {
+        FlexAlign::End
+    } else {
+        FlexAlign::Start
+    }
+}
+
+fn auto_flex(gap: f64, row: bool, align: FlexAlign) -> FlexLayout {
+    FlexLayout {
         direction: if row { FlexDirection::Row } else { FlexDirection::Column },
         justify: FlexJustify::SpaceBetween,
-        align: align(row),
+        align,
         width: FlexSize::Auto,
         height: FlexSize::Auto,
         gap_h: if row { gap.max(0.0) } else { 0.0 },
         gap_v: if row { 0.0 } else { gap.max(0.0) },
         ..Default::default()
-    };
-    match (in_line(true), in_line(false)) {
-        (Some(gap), _) => auto(gap, true),
-        (None, Some(gap)) => auto(gap, false),
+    }
+}
+
+/// InDesign's detection when objects become a container: objects in a row (or column) keep it,
+/// with Auto size and Space Between at their own spacing; others wrap in a row of their width.
+fn detect(bounds: &[Rect]) -> FlexLayout {
+    let tol = 0.5;
+    match (in_line_gap(bounds, true, tol), in_line_gap(bounds, false, tol)) {
+        (Some(gap), _) => auto_flex(gap, true, detect_align(bounds, true, tol)),
+        (None, Some(gap)) => auto_flex(gap, false, detect_align(bounds, false, tol)),
         _ => FlexLayout { wrap: true, height: FlexSize::Auto, ..Default::default() },
     }
 }
