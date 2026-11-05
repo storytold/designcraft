@@ -73,7 +73,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let combo = craft_ui::ComboBox::from_id_salt(("tp_style", kind)).selected_text(&cur).width(130.0).show_ui(ui, |ui| {
                     for n in &names {
                         if ui.selectable_label(*n == cur, n).clicked() {
-                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "story": sid, "table": tid}));
+                            run(app, &format!("style.{kind}.apply"), json!({"name": n, "story": sid, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]}));
                         }
                     }
                 });
