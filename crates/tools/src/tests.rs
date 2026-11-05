@@ -2441,3 +2441,40 @@ fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
     assert_eq!(out, single_out);
     assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
 }
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
+}

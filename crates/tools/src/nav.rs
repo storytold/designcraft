@@ -197,11 +197,16 @@ impl Tool for PlaceGun {
         // no frame is drawn yet, the loaded cursor shows what lands.
         let click = (self.cur - a).hypot() < cx.tol(3.0);
         // A grid draws its cells; one too small for them falls back to the single frame, as the
-        // release does.
-        if !click {
-            let cells = grid_cells(designcraft_geom::Rect::from_points(a, self.cur), self.columns, self.rows);
+        // release does. The cells are the release's, worked out on the spread: on a rotated spread
+        // its columns don't run across the canvas.
+        if !click && let Some((sr, sa)) = cx.layout.spread_at(a) {
+            let cells = grid_cells(designcraft_geom::Rect::from_points(sa, cx.layout.to_spread(sr, self.cur)), self.columns, self.rows);
             if !cells.is_empty() {
-                return cells.into_iter().map(crate::Overlay::Marquee).collect();
+                let on_canvas = |x: f64, y: f64| cx.layout.to_canvas(sr, Point::new(x, y));
+                return cells
+                    .into_iter()
+                    .map(|c| crate::Overlay::Marquee(designcraft_geom::Rect::from_points(on_canvas(c.x0, c.y0), on_canvas(c.x1, c.y1))))
+                    .collect();
             }
         }
         let Some(size) = cx.loaded else {
