@@ -280,6 +280,54 @@ fn long_document_names_keep_tabs_short_and_close_buttons_visible() {
     assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
 }
 
+#[test]
+fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    app.run("file.activate", serde_json::json!({"index": 0})).unwrap();
+    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+    h.run_steps(4);
+    let window = h.ctx.content_rect();
+    let last = |h: &egui_kittest::Harness<'static, test_window::Window>| h.query_by_label("Doc 12").map(|n| n.rect());
+    assert!(last(&h).is_none_or(|r| r.max.x > window.max.x), "the last tab starts off screen");
+
+    // A tab clipped by the bar is narrower than its 150 pt minimum.
+    let whole = |h: &egui_kittest::Harness<'static, test_window::Window>, n: usize| {
+        h.query_by_label(&format!("Doc {n}")).is_some_and(|tab| tab.rect().width() > 149.0)
+    };
+    let shown = (1..=12).take_while(|n| whole(&h, *n)).count();
+    let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+    test_window::click_at(&mut h, arrow);
+    assert!(whole(&h, shown + 1), "one click brings the next tab fully into view");
+    assert!(!whole(&h, shown + 2), "and no more than that one");
+
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let tab = last(&h).expect("the last tab scrolled into view");
+    assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
+    test_window::click_at(&mut h, tab.right_center() - vec2(10.0, 0.0));
+    assert_eq!(h.state().app.session.active_index(), Some(11));
+
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Left").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let (first, left) = (h.get_by_label("Doc 1").rect(), h.get_by_label("Scroll Tabs Left").rect());
+    assert!((first.min.x - left.max.x).abs() < 1.0, "{first:?} is not the first tab, next to {left:?}");
+
+    let list = h.query_all_by_label("▾").map(|n| n.rect()).find(|r| first.y_range().contains(r.center().y)).expect("the document list").center();
+    test_window::click_at(&mut h, list);
+    h.run_steps(3);
+    h.query_all_by_label("Doc 7").find(|n| !first.y_range().contains(n.rect().center().y)).expect("the list's entry").click();
+    h.run_steps(3);
+    assert_eq!(h.state().app.session.active_index(), Some(6));
+    assert!(window.contains_rect(h.get_by_label("Doc 7").rect()), "the chosen document's tab is scrolled into view");
+}
+
 /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size
 /// has a list of sizes; the instructor picks 72 pt from it. Leading has the same list.
 #[test]

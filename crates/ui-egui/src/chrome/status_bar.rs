@@ -4,6 +4,9 @@ use super::{Color32, DesignApp, Sense, Stroke, Tokens, icons, json, panels, semi
 /// tabs after it stay in view.
 pub(super) const DOC_TAB_MAX_W: f32 = 260.0;
 
+/// Width of the scroll arrows and the document list button at the ends of an overflowing tab bar.
+const DOC_TAB_BUTTON_W: f32 = 22.0;
+
 /// Close button and padding around a tab's title.
 const DOC_TAB_PAD: f32 = 44.0;
 
@@ -15,11 +18,26 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     let close_label = crate::i18n::tr(&app.ui.language, "Close");
     ui.painter().rect_filled(bar, 0.0, t.tab_strip);
     ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, t.border));
-    let mut x = bar.min.x;
+    // Tabs past the bar scroll sideways: trackpad, shift or a plain wheel, and the active tab is kept in view.
+    let scroll_id = ui.scope_id().with("doctabs_scroll");
+    let (mut offset, total_w, seen_active): (f32, f32, Option<usize>) = ui.data(|d| d.get_temp(scroll_id)).unwrap_or_default();
+    if ui.rect_contains_pointer(bar) {
+        let d = ui.input(|i| i.smooth_scroll_delta);
+        offset -= if d.x.abs() > d.y.abs() { d.x } else { d.y };
+    }
+    // Arrows and the document list take the bar's ends once the tabs overflow.
+    let overflow = total_w > bar.width();
+    let tabs =
+        if overflow { egui::Rect::from_min_max(bar.min + vec2(DOC_TAB_BUTTON_W, 0.0), bar.max - vec2(2.0 * DOC_TAB_BUTTON_W, 0.0)) } else { bar };
+    offset = offset.clamp(0.0, (total_w - tabs.width()).max(0.0));
+    let painter = ui.painter().with_clip_rect(tabs);
+    let origin = tabs.min.x - offset;
+    let mut x = origin;
     let active = app.session.active_index();
     let zoom = app.view().map(|v| v.zoom).unwrap_or(1.0);
     let mut activate = None;
     let mut close = None;
+    let mut edges = Vec::new();
     let titles: Vec<(String, bool)> = app.session.documents().iter().map(|d| (d.title(), d.is_dirty())).collect();
     for (i, (title, dirty)) in titles.iter().enumerate() {
         let is_active = Some(i) == active;
@@ -34,7 +52,11 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         let elided = galley.elided;
         let w = (galley.size().x + zoom_label.size().x + DOC_TAB_PAD).max(if is_active { 210.0 } else { 150.0 }).min(max_w);
         let r = egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(w, 28.0));
-        let resp = ui.interact(r, ui.scope_id().with(("doctab", i)), Sense::click());
+        if is_active && Some(i) != seen_active {
+            offset += (r.max.x - tabs.max.x).max(0.0) + (r.min.x - tabs.min.x).min(0.0);
+            ui.request_repaint();
+        }
+        let resp = ui.interact(r.intersect(tabs), ui.scope_id().with(("doctab", i)), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, title));
         let resp = if elided {
             resp.on_hover_ui(|ui| {
@@ -43,11 +65,11 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         } else {
             resp
         };
-        ui.painter().rect_filled(r, 0.0, if is_active { t.panel } else { t.tab_strip });
+        painter.rect_filled(r, 0.0, if is_active { t.panel } else { t.tab_strip });
         let cr = egui::Rect::from_center_size(egui::pos2(r.min.x + 18.0, r.center().y), vec2(14.0, 14.0));
-        let cresp = ui.interact(cr, ui.scope_id().with(("docclose", i)), Sense::click());
+        let cresp = ui.interact(cr.intersect(tabs), ui.scope_id().with(("docclose", i)), Sense::click());
         cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{close_label} {title}")));
-        ui.painter().text(
+        painter.text(
             cr.center(),
             egui::Align2::CENTER_CENTER,
             "×",
@@ -56,17 +78,67 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
         let name_w = galley.size().x;
         // Clipped too, for a window narrower than the zoom label.
-        let text = ui.painter().with_clip_rect(r);
+        let text = painter.with_clip_rect(r.intersect(tabs));
         text.galley(egui::pos2(r.min.x + 32.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
         text.galley(egui::pos2(r.min.x + 32.0 + name_w, r.center().y - zoom_label.size().y / 2.0), zoom_label, Color32::WHITE);
-        ui.painter().line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.border));
+        painter.line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.border));
         if cresp.clicked() {
             close = Some(i);
         } else if resp.clicked() {
             activate = Some(i);
         }
+        edges.push((r.min.x, r.max.x));
         x += w;
     }
+    if overflow {
+        let button = |i: f32| {
+            egui::Rect::from_min_size(
+                egui::pos2(if i < 0.0 { bar.min.x } else { bar.max.x - (i + 1.0) * DOC_TAB_BUTTON_W }, bar.min.y),
+                vec2(DOC_TAB_BUTTON_W, 28.0),
+            )
+        };
+        let max_offset = (x - origin - tabs.width()).max(0.0);
+        for (rect, glyph, label, dir, enabled) in
+            [(button(-1.0), "‹", "Scroll Tabs Left", -1.0, offset > 0.0), (button(1.0), "›", "Scroll Tabs Right", 1.0, offset < max_offset)]
+        {
+            let label = crate::i18n::tr(&app.ui.language, label);
+            let resp = ui.interact(rect, ui.scope_id().with(("doctab_scroll", glyph)), Sense::click()).on_hover_text(label);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+            let color = if !enabled {
+                t.text_dim.gamma_multiply(0.4)
+            } else if resp.hovered() {
+                t.text_strong
+            } else {
+                t.text_dim
+            };
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(16.0), color);
+            if enabled && resp.clicked() {
+                // One tab at a time: the next one hidden on that side comes fully into view.
+                offset += if dir > 0.0 {
+                    edges.iter().find(|e| e.1 > tabs.max.x + 0.5).map(|e| e.1 - tabs.max.x)
+                } else {
+                    edges.iter().rev().find(|e| e.0 < tabs.min.x - 0.5).map(|e| e.0 - tabs.min.x)
+                }
+                .unwrap_or(0.0);
+            }
+        }
+        let mut list =
+            ui.new_child(egui::UiBuilder::new().max_rect(button(0.0)).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+        let widgets = &mut list.visuals_mut().widgets;
+        for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active, &mut widgets.open] {
+            state.weak_bg_fill = Color32::TRANSPARENT;
+            state.bg_stroke = Stroke::NONE;
+        }
+        crate::menus::menu_button(&mut list, egui::RichText::new("▾").size(14.0).color(t.text_dim), |ui| {
+            for (i, (title, _)) in titles.iter().enumerate() {
+                if ui.selectable_label(Some(i) == active, crate::rtl::isolate(title)).clicked() {
+                    activate = Some(i);
+                    ui.close();
+                }
+            }
+        });
+    }
+    ui.data_mut(|d| d.insert_temp(scroll_id, (offset, x - origin, active)));
     if let Some(i) = close {
         crate::menus::close_document(app, Some(i));
     } else if let Some(i) = activate {
