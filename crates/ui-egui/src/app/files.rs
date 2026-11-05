@@ -61,6 +61,8 @@ impl DesignApp {
     /// returned, so automation doesn't carry on as if the batch had loaded.
     pub(crate) fn place_paths(&mut self, paths: Vec<String>) -> Result<(), String> {
         let mut images = Vec::new();
+        // Several files go to the place cursor, even a PDF first with a frame selected.
+        let batch = paths.len() > 1;
         // Images already in the place cursor stay: the batch queues after them.
         let mut loaded = self.session.loaded.is_some();
         let mut paths = paths.into_iter();
@@ -85,7 +87,7 @@ impl DesignApp {
                 loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
             }
             let Some(p) = path else { return Ok(()) };
-            let r = self.place_path(&p, loaded)?;
+            let r = self.place_path(&p, batch || loaded)?;
             loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
             if let Some(d) = self.ui.dialog.as_mut().filter(|d| d.id == "pdfImport") {
                 d.fields.insert(dialogs::PDF_IMPORT_REST.into(), json!(paths.collect::<Vec<_>>()));
@@ -138,16 +140,28 @@ impl DesignApp {
     }
 
     pub(crate) fn cancel_pdf_import(&mut self) {
+        self.release_pending_pdf();
+    }
+
+    fn release_pending_pdf(&mut self) {
         self.pending_pdf = None;
+        self.pending_pdf_rest = Vec::new();
     }
 
     /// Import Options confirmed for the delivered PDF; a placed one is added to the place cursor
-    /// when `append`, so the images loaded before it stay.
+    /// when `append`, so the images loaded before it stay. The files of its batch that waited for
+    /// the options carry on; if it can't be placed, the batch ends, as a native one does.
     pub(crate) fn confirm_pdf_import(&mut self, page: u64, crop: String, append: bool) -> Result<Value, String> {
         let file = self.pending_pdf.take().ok_or("PDF import cancelled: no pending file")?;
+        let rest = std::mem::take(&mut self.pending_pdf_rest);
         self.activate_import_target(&file.request)?;
         let params = json!({"name": file.name, "base64": designcraft_engine::cmd::base64_encode(&file.bytes), "pdfPage": page, "pdfCrop": crop, "append": append});
-        if file.request.purpose == "place" { self.place_file(params) } else { self.open_file("file.place", params) }
+        if file.request.purpose != "place" {
+            return self.open_file("file.place", params);
+        }
+        let placed = self.place_file(params)?;
+        self.import_delivered(rest, true);
+        Ok(placed)
     }
 
     /// A single unresolved PDF owns its bytes. Later deliveries cancel explicitly rather than
@@ -158,7 +172,7 @@ impl DesignApp {
             let owns_dialog =
                 self.ui.dialog.as_ref().is_some_and(|d| d.id == "pdfImport" && d.fields.get("async").and_then(Value::as_bool) == Some(true));
             if !target_exists || !owns_dialog {
-                self.pending_pdf = None;
+                self.release_pending_pdf();
                 if !target_exists {
                     if owns_dialog {
                         self.ui.dialog = None;
@@ -169,14 +183,23 @@ impl DesignApp {
         }
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        // A browser delivers one Place's files together. Several go to the place cursor, even a
+        // PDF first with a frame selected, as a native batch's do.
+        let batch = files.iter().filter(|f| f.request.purpose == "place").count() > 1;
+        self.import_delivered(files, batch);
+    }
+
+    /// Imports `files` in the order they came; placed ones are added to the place cursor when
+    /// `append`, and after the first that loads it. A multi-page PDF's Import Options pause a
+    /// Place: the files after it wait with it and carry on when it is confirmed, and Cancel ends
+    /// the batch.
+    fn import_delivered(&mut self, files: Vec<ImportedFile>, mut append: bool) {
         let cursor_image = |file: &ImportedFile| {
             file.request.purpose == "place"
                 && !file.name.to_ascii_lowercase().ends_with(".pdf")
                 && (is_cursor_image(&file.name) || designcraft_render::image_size(&file.bytes).is_some())
         };
-        // In the order they came: consecutive images for the same document load the place
-        // cursor together; after the first placement into it, the later ones are added to it.
-        let mut append = false;
+        // Consecutive images for the same document load the place cursor together.
         let mut files = files.into_iter().peekable();
         while let Some(file) = files.next() {
             if file.request.purpose == "shortcuts" {
@@ -220,10 +243,16 @@ impl DesignApp {
                 continue;
             }
             let name = file.name.clone();
+            let target = file.request.target;
             match self.import_file(file, append) {
                 Ok(_) if placing => append = true,
                 Ok(_) => {}
                 Err(e) => self.status(format!("{name}: {e}")),
+            }
+            if placing && self.pending_pdf.is_some() {
+                while let Some(next) = files.next_if(|n| n.request.purpose == "place" && n.request.target == target) {
+                    self.pending_pdf_rest.push(next);
+                }
             }
         }
     }
@@ -916,6 +945,108 @@ pub(crate) mod browser_import_tests {
         }
         app.drain_inbox();
         assert_eq!(loaded_names(&app), ["a.png", "one.pdf", "b.png"], "in the order dropped, all in the cursor");
+    }
+
+    /// A graphic frame, holding a picture and selected, with an empty place cursor; the frame's id.
+    fn select_a_graphic_frame(app: &mut DesignApp) -> u64 {
+        let frame = app.run("frame.create", json!({"rect": [10, 10, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        let b64 = designcraft_engine::cmd::base64_encode(&image());
+        app.run("file.place", json!({"base64": b64, "name": "old.svg", "frame": frame})).unwrap();
+        app.run("selection.set", json!({"ids": [frame]})).unwrap();
+        assert!(app.session.loaded.is_none());
+        frame
+    }
+
+    fn frame_asset(app: &DesignApp, frame: u64) -> String {
+        let doc = &app.session.active().unwrap().doc;
+        let designcraft_doc::Content::Graphic(g) = &doc.item(designcraft_doc::ItemId(frame)).unwrap().content else { panic!("a graphic") };
+        doc.assets[&g.asset].name.clone()
+    }
+
+    /// A PDF first in a native batch joins the cursor like the rest; the selected frame keeps its
+    /// picture. A PDF alone still fills it.
+    #[test]
+    fn native_batch_starting_with_a_pdf_leaves_the_selected_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let frame = select_a_graphic_frame(&mut app);
+        app.place_paths(vec![path("one.pdf"), path("a.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["one.pdf", "a.svg"]);
+        assert_eq!(frame_asset(&app, frame), "old.svg");
+
+        let mut app = self::app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let frame = select_a_graphic_frame(&mut app);
+        app.place_paths(vec![path("one.pdf")]).unwrap();
+        assert!(app.session.loaded.is_none());
+        assert_eq!(frame_asset(&app, frame), "one.pdf");
+    }
+
+    /// The same for files a host delivers (a browser's Place), with a PDF or an image first.
+    #[test]
+    fn inbox_batch_leaves_the_selected_frame() {
+        for names in [["one.pdf", "a.png"], ["a.png", "one.pdf"]] {
+            let mut app = app();
+            let frame = select_a_graphic_frame(&mut app);
+            let request = app.import_request("place");
+            for name in names {
+                let bytes = if name.ends_with(".pdf") { pdf_pages(1) } else { png(200) };
+                app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+            }
+            app.drain_inbox();
+            assert_eq!(loaded_names(&app), names);
+            assert_eq!(frame_asset(&app, frame), "old.svg");
+        }
+        // One file alone still fills it.
+        let mut app = app();
+        let frame = select_a_graphic_frame(&mut app);
+        let request = app.import_request("place");
+        app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: "one.pdf".into(), bytes: pdf_pages(1) });
+        app.drain_inbox();
+        assert_eq!(frame_asset(&app, frame), "one.pdf");
+    }
+
+    /// The files a host delivered after a multi-page PDF wait for its Import Options, through a
+    /// second such PDF too, keep their order and don't replace what the cursor holds.
+    #[test]
+    fn inbox_batch_continues_after_a_multi_page_pdf_is_confirmed() {
+        let mut app = app();
+        let request = app.import_request("place");
+        let files =
+            [("a.png", png(200)), ("three.pdf", pdf_pages(3)), ("b.png", png(90)), ("c.png", png(40)), ("two.pdf", pdf_pages(2)), ("d.png", png(20))];
+        for (name, bytes) in files {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(loaded_names(&app), ["a.png"], "waiting for the first PDF's options");
+        assert_eq!(app.pending_pdf_rest.len(), 4);
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"), "the second PDF asks in its turn");
+        assert_eq!(loaded_names(&app), ["a.png", "three.pdf", "b.png", "c.png"]);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.png", "three.pdf", "b.png", "c.png", "two.pdf", "d.png"]);
+        assert!(app.pending_pdf.is_none() && app.pending_pdf_rest.is_empty());
+    }
+
+    /// Cancel ends a delivered batch, as a native one's does: what it loaded stays, the waiting
+    /// files are released.
+    #[test]
+    fn inbox_batch_ends_when_a_multi_page_pdf_is_cancelled() {
+        let mut app = app();
+        let request = app.import_request("place");
+        for (name, bytes) in [("a.png", png(200)), ("three.pdf", pdf_pages(3)), ("b.png", png(90))] {
+            app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request: request.clone(), name: name.into(), bytes });
+        }
+        app.drain_inbox();
+        assert_eq!(app.pending_pdf_rest.len(), 1);
+        dialogs::cancel(&mut app);
+        assert!(app.pending_pdf.is_none() && app.pending_pdf_rest.is_empty());
+        assert_eq!(loaded_names(&app), ["a.png"]);
     }
 
     /// A multi-page PDF after images in a native batch asks which page, then queues after them.

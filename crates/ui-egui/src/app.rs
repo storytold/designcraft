@@ -39,6 +39,7 @@ impl DesignApp {
         let dialog_wake = std::sync::Arc::new(std::sync::OnceLock::new());
         DesignApp {
             pending_pdf: None,
+            pending_pdf_rest: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
             #[cfg(not(target_arch = "wasm32"))]
