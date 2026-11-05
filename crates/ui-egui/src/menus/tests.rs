@@ -174,6 +174,7 @@ fn file_exports_live_under_the_export_submenu() {
     }
     for id in [
         "app.exportPdf",
+        "app.exportBatch",
         "app.exportInteractivePdf",
         "app.exportPng",
         "app.exportIdml",
@@ -190,6 +191,7 @@ fn file_exports_live_under_the_export_submenu() {
     let exports = menu_ids_under("File", "Export");
     for id in [
         "app.exportPdf",
+        "app.exportBatch",
         "app.exportInteractivePdf",
         "app.exportPng",
         "app.exportIdml",
