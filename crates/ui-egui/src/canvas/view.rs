@@ -235,7 +235,6 @@ pub fn reveal_text(app: &mut DesignApp, story: designcraft_doc::StoryId, start: 
     if let Some(v) = app.view_mut() {
         let centre = Xf::new(rect, v).unrotate(rect.center());
         v.origin = Point::new(at.x - (centre.x - rect.min.x) as f64 / v.zoom, at.y - (centre.y - rect.min.y) as f64 / v.zoom);
-        v.fitted = false;
     }
     note_jump(app, true);
 }
