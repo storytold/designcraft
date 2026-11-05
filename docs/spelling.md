@@ -46,10 +46,11 @@ Khmer; an explicit other language or [No Language] is respected. Word boundaries
 honorifics are handled in the shared engine, and offsets always address the original text: nothing is
 normalized or inserted.
 
-The default build contains no Khmer dictionaries. It never reports Khmer as checked without them: the
-panel says the text was not checked, and `spelling.status` reports availability. Build with the data as
-[`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/main/crates/khmer/DATA.md) in
-craft-libs describes, setting `CRAFT_KHMER_DIR` and `CRAFT_KHMER_REQUIRED=1`.
+Builds contain no Khmer dictionaries for now. They never report Khmer as checked without them: the
+panel says the text was not checked, and `spelling.status` reports availability. `craft-khmer` refuses
+`CRAFT_KHMER_DIR`, with no bypass, until maintainers sign off on the data's licence classification and the
+policy for trained models and converted configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/main/crates/khmer/PROVENANCE.md).
+[`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/main/crates/khmer/DATA.md) in craft-libs describes the build for after that approval.
 
 SBBIC identifies its internal work, the SEAlang frequency lists and SIL NRSI's khmerlbdict as the data's
 sources; their MIT notices are in `NOTICE`. The tagger was trained on internal documents that SBBIC has
