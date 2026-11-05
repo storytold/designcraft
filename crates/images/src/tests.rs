@@ -105,6 +105,17 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
+/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+#[test]
+fn nested_svg_data_shares_one_budget() {
+    NESTED_SVG_BYTES.set(0);
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
+    assert!(charge_nested_svg(1).is_none());
+    assert!(svg_tree(SVG.as_bytes()).is_some());
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+}
+
 #[test]
 fn svg_sniff_size_and_render() {
     let b = SVG.as_bytes();

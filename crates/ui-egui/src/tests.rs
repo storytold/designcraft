@@ -877,6 +877,36 @@ fn dropped_png(name: &str) -> std::path::PathBuf {
     path
 }
 
+/// A frame holding its image as an item pasted into it (how a document from InDesign keeps a
+/// photo) takes a dropped graphic like a graphic frame: the new image replaces the nested one.
+#[test]
+fn a_graphic_dropped_on_a_frame_with_a_nested_image_replaces_it() {
+    let (mut app, frame, inside, _) = app_with_drop_frame();
+    let path = dropped_png("drop-nested-old");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let id = designcraft_doc::ItemId(frame);
+    app.session
+        .edit(|d, _| {
+            let it = d.item_mut(id).unwrap();
+            let mut image = it.clone();
+            image.id = designcraft_doc::ItemId(9_999);
+            image.xf = designcraft_geom::Affine::IDENTITY;
+            it.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(image)] };
+            Ok(())
+        })
+        .unwrap();
+    assert!(app.session.doc().unwrap().doc.item(id).unwrap().has_nested_items());
+    assert_eq!(canvas::drop_frame(&app, Some(inside)), Some(id));
+    let path = dropped_png("drop-nested-new");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(id).unwrap().content else { panic!("the frame holds the new graphic") };
+    assert!(d.assets[&g.asset].name.contains("drop-nested-new"));
+}
+
 #[test]
 fn a_graphic_dropped_on_a_frame_fills_it() {
     let (mut app, frame, inside, outside) = app_with_drop_frame();

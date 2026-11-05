@@ -220,6 +220,25 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 120.0, 120.0), None);
 }
 
+/// While editing parent pages, a click doesn't pick items on a hidden or locked layer (#2221).
+#[test]
+fn parent_mode_hit_skips_hidden_and_locked_layers() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (id, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, true));
+        let p = l.to_canvas(SpreadRef::Parent(0), Point::new(150.0, 150.0));
+        ctx(d, &s, &c, &l).hit(p)
+    };
+    assert_eq!(hit(&d), Some((SpreadRef::Parent(0), id)));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(hit(&d), None, "hidden layer");
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(hit(&d), None, "locked layer");
+}
+
 #[test]
 fn gradient_tool_drag_sets_the_vector() {
     let mut d = Document::new(&NewDocument::default());
@@ -476,6 +495,28 @@ fn turned_spread_maps_points_both_ways() {
     // A canvas drag rightwards is a drag down the spread.
     let dv = slot.delta_to_spread(designcraft_geom::Vec2::new(10.0, 0.0));
     assert!(dv.x.abs() < 1e-9 && (dv.y + 10.0).abs() < 1e-9 || (dv.y - 10.0).abs() < 1e-9, "{dv:?}");
+}
+
+#[test]
+fn place_gun_click_places_into_frames_but_not_onto_lines() {
+    let mut d = Document::new(&NewDocument::default());
+    let frame = add_rect(&mut d, Rect::new(100.0, 100.0, 200.0, 200.0));
+    let lid = d.default_layer();
+    let line = ItemId(d.alloc());
+    let mut it = Item::new(line, lid, Shape::GraphicLine, shapes::line(Point::new(100.0, 300.0), Point::new(300.0, 300.0)));
+    it.stroke = Stroke::default();
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let click = |t: &mut Box<dyn Tool>, x: f64, y: f64| {
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, x + off.x, y + off.y));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, x + off.x, y + off.y))
+    };
+    let mut t = create("placeGun");
+    assert_eq!(click(&mut t, 150.0, 150.0), vec![Action::Exec("place.drop".into(), serde_json::json!({"frame": frame.0}))]);
+    let a = click(&mut t, 200.0, 300.0);
+    assert!(matches!(&a[..], [Action::Exec(cmd, p)] if cmd == "place.drop" && p.get("frame").is_none()), "{a:?}");
 }
 
 fn add_rect(doc: &mut Document, rect: Rect) -> ItemId {
@@ -2368,4 +2409,72 @@ fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
         assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
     }
     assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }

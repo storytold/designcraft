@@ -140,7 +140,7 @@ impl Tool for PlaceGun {
                 let click = (ev.pos - a).hypot() < cx.tol(3.0);
                 if click
                     && let Some((_, id)) = cx.hit(a)
-                    && cx.doc.item(id).is_some_and(designcraft_doc::Item::takes_graphic)
+                    && cx.doc.item(id).is_some_and(|i| i.path.encloses_area() && i.takes_graphic())
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
@@ -149,9 +149,10 @@ impl Tool for PlaceGun {
                 if click {
                     return vec![Action::Exec("place.drop".into(), json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y}))];
                 }
-                // Arrow keys during the drag set a grid: the queued images fill its cells.
-                if self.columns > 1 || self.rows > 1 {
-                    let r = designcraft_geom::Rect::from_points(sa, b);
+                // Arrow keys during the drag set a grid: the queued images fill its cells. A drag
+                // too small for the grid's cells places one frame instead, as the overlay shows.
+                let r = designcraft_geom::Rect::from_points(sa, b);
+                if !grid_cells(r, self.columns, self.rows).is_empty() {
                     return vec![Action::Exec(
                         "place.grid".into(),
                         json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows}),
@@ -195,8 +196,18 @@ impl Tool for PlaceGun {
         // Under the drag threshold the release is a click (actual size where it was pressed):
         // no frame is drawn yet, the loaded cursor shows what lands.
         let click = (self.cur - a).hypot() < cx.tol(3.0);
-        if !click && (self.columns > 1 || self.rows > 1) {
-            return grid_overlays(designcraft_geom::Rect::from_points(a, self.cur), self.columns, self.rows);
+        // A grid draws its cells; one too small for them falls back to the single frame, as the
+        // release does. The cells are the release's, worked out on the spread: on a rotated spread
+        // its columns don't run across the canvas.
+        if !click && let Some((sr, sa)) = cx.layout.spread_at(a) {
+            let cells = grid_cells(designcraft_geom::Rect::from_points(sa, cx.layout.to_spread(sr, self.cur)), self.columns, self.rows);
+            if !cells.is_empty() {
+                let on_canvas = |x: f64, y: f64| cx.layout.to_canvas(sr, Point::new(x, y));
+                return cells
+                    .into_iter()
+                    .map(|c| crate::Overlay::Marquee(designcraft_geom::Rect::from_points(on_canvas(c.x0, c.y0), on_canvas(c.x1, c.y1))))
+                    .collect();
+            }
         }
         let Some(size) = cx.loaded else {
             return vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))];
@@ -228,21 +239,28 @@ Y: {pct}"
     }
 }
 
-/// The cells of a `columns` × `rows` place grid drawn over `rect`, 6 pt apart, as `place.grid`
-/// lays them out; the whole rect when the cells would vanish.
-fn grid_overlays(rect: designcraft_geom::Rect, columns: usize, rows: usize) -> Vec<crate::Overlay> {
+/// The gutter between place-grid cells, in points: `place.grid`'s default.
+const PLACE_GRID_GUTTER: f64 = 6.0;
+
+/// The cells of a `columns` × `rows` place grid drawn over `rect`, [`PLACE_GRID_GUTTER`] apart, as
+/// `place.grid` lays them out. None for a 1 × 1 grid, or when `rect` is too small for the cells to
+/// have a positive size: then the drag places one frame.
+fn grid_cells(rect: designcraft_geom::Rect, columns: usize, rows: usize) -> Vec<designcraft_geom::Rect> {
     let (columns, rows) = (columns.clamp(1, 100), rows.clamp(1, 100));
-    let w = (rect.width() - 6.0 * (columns - 1) as f64) / columns as f64;
-    let h = (rect.height() - 6.0 * (rows - 1) as f64) / rows as f64;
+    if columns == 1 && rows == 1 {
+        return vec![];
+    }
+    let w = (rect.width() - PLACE_GRID_GUTTER * (columns - 1) as f64) / columns as f64;
+    let h = (rect.height() - PLACE_GRID_GUTTER * (rows - 1) as f64) / rows as f64;
     if !(w > 0.0 && h > 0.0) {
-        return vec![crate::Overlay::Marquee(rect)];
+        return vec![];
     }
     (0..rows)
         .flat_map(|row| {
             (0..columns).map(move |column| {
-                let x = rect.x0 + column as f64 * (w + 6.0);
-                let y = rect.y0 + row as f64 * (h + 6.0);
-                crate::Overlay::Marquee(designcraft_geom::Rect::new(x, y, x + w, y + h))
+                let x = rect.x0 + column as f64 * (w + PLACE_GRID_GUTTER);
+                let y = rect.y0 + row as f64 * (h + PLACE_GRID_GUTTER);
+                designcraft_geom::Rect::new(x, y, x + w, y + h)
             })
         })
         .collect()
