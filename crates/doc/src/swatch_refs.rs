@@ -400,11 +400,8 @@ impl Document {
             used.borrow_mut().insert(v.clone());
         };
         let n = Names { visit: &collect };
-        let mut st = text.clone();
-        st.for_each_text_mut(&mut |x| n.story(x));
-        for e in &mut st.endnotes {
-            Arc::make_mut(e).text.for_each_text_mut(&mut |x| n.story(x));
-        }
+        // Read as a pasted frame's story is, without copying its tables (noted in review).
+        collect_names(&n, text, 0, &mut BTreeSet::new());
         self.adopt_named(src, used.into_inner())
     }
 
