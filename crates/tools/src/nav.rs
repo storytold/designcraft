@@ -155,7 +155,7 @@ impl Tool for PlaceGun {
                 if !grid_cells(r, self.columns, self.rows).is_empty() {
                     return vec![Action::Exec(
                         "place.grid".into(),
-                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows}),
+                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows, "gutter": PLACE_GRID_GUTTER}),
                     )];
                 }
                 // The frame the drag drew: at the graphic's proportions from where it started.
@@ -239,7 +239,8 @@ Y: {pct}"
     }
 }
 
-/// The gutter between place-grid cells, in points: `place.grid`'s default.
+/// The gutter between place-grid cells, in points. The tool sends it with `place.grid`, so the
+/// preview and what lands can't disagree if the command's default changes.
 const PLACE_GRID_GUTTER: f64 = 6.0;
 
 /// The cells of a `columns` × `rows` place grid drawn over `rect`, [`PLACE_GRID_GUTTER`] apart, as

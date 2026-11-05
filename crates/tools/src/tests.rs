@@ -2459,7 +2459,7 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
     let shown = t.overlays(&cx);
     let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
-    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2), "{out:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2 && p["gutter"] == 6.0), "{out:?}");
     // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
     let r = Rect::from_points(a, b);
     let w = (r.width() - 6.0) / 2.0;
