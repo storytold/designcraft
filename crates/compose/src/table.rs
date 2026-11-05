@@ -322,14 +322,9 @@ pub(crate) fn place_table(
         }
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        // Start Row: the row begins a new column, frame or page, unless it already starts one.
-        let start = table.rows[r].start;
-        if start != StartParagraph::Anywhere && !(body_placed == 0 && at_col_top) {
-            forced = Some(start);
-        }
-        let kept = keep_end[r].min(body_end).max(r + 1);
+        forced = forced.or(row_start(table.rows[r].start, body_placed == 0 && at_col_top));
         let room = bottom - (col.y0 + if first_frag || o.repeat_header { sum(0, header) } else { 0.0 });
-        let ge = if sum(r, kept) + footer_h <= room + 0.01 { kept } else { group_end[r].min(body_end).max(r + 1) };
+        let ge = next_group(&heights, r, keep_end[r].min(body_end), group_end[r].min(body_end), room - footer_h);
         let gh = sum(r, ge);
         if forced.is_none() && (y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0)) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
@@ -376,6 +371,18 @@ pub(crate) fn place_table(
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     true
+}
+
+/// Start Row: where a row must begin, unless it already starts a column (`at_top`).
+fn row_start(start: StartParagraph, at_top: bool) -> Option<StartParagraph> {
+    (start != StartParagraph::Anywhere && !at_top).then_some(start)
+}
+
+/// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
+/// fit `room` (an empty column's), else those its merged cells hold together (`held`).
+fn next_group(heights: &[f64], r: usize, kept: usize, held: usize, room: f64) -> usize {
+    let (kept, held) = (kept.max(r + 1), held.max(r + 1));
+    if heights[r..kept].iter().sum::<f64>() <= room + 0.01 { kept } else { held }
 }
 
 /// Keep with Next Row: where each row's group ends when the rows kept with the next stay with
