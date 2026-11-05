@@ -209,13 +209,7 @@ pub(crate) fn place_table(
         if spans_in(cur) { crate::span_rect(&cols[cur.fi], col, pp.span_columns) } else { col }
     };
     if spans_in(cur) {
-        let deepest = out.frames[cur.fi].lines.get(cur.band.line0..).unwrap_or_default().iter().map(|l| l.baseline + l.descent).reduce(f64::max);
-        if let Some(bottom) = deepest {
-            cur.col = 0;
-            cur.last_baseline = Some(bottom);
-            cur.last_descent = 0.0;
-            cur.pending = cur.pending.max(pp.span_space_before);
-        }
+        go_below_band(cur, out, pp);
     }
     let mut col = col_rect(cur);
     // Column widths: scaled to fit the measure.
@@ -393,11 +387,27 @@ pub(crate) fn place_table(
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     if spans_in(cur) {
-        cur.pending = cur.pending.max(pp.span_space_after);
-        let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending };
-        cur.band = Band { para: pi + 1, line0: out.frames[cur.fi].lines.len(), above: Some(above), tail: None };
+        start_band_below(cur, out, pp, pi, y);
     }
     true
+}
+
+/// A spanning table goes below the deepest of the columns above it, in the first column.
+fn go_below_band(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps) {
+    let deepest = out.frames[cur.fi].lines.get(cur.band.line0..).unwrap_or_default().iter().map(|l| l.baseline + l.descent).reduce(f64::max);
+    if let Some(bottom) = deepest {
+        cur.col = 0;
+        cur.last_baseline = Some(bottom);
+        cur.last_descent = 0.0;
+        cur.pending = cur.pending.max(pp.span_space_before);
+    }
+}
+
+/// The columns below a spanning table (paragraph `pi`, ending at `y`) start under it.
+fn start_band_below(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps, pi: usize, y: f64) {
+    cur.pending = cur.pending.max(pp.span_space_after);
+    let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending };
+    cur.band = Band { para: pi + 1, line0: out.frames[cur.fi].lines.len(), above: Some(above), tail: None };
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
