@@ -526,6 +526,78 @@ mod anchored_text_frame_tests {
     }
 
     #[test]
+    fn removing_a_frame_unthreads_text_frames_anchored_in_its_story() {
+        let (mut s, host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        s.execute("selection.set", &json!({"ids": [host.0]})).unwrap();
+        s.execute("edit.clear", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.story(host_sid).is_none());
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none(), "the nested frame's story goes too");
+        d.check().unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.story(host_sid).unwrap().objects[0].item.id, note);
+        assert_eq!(d.story(note_sid).unwrap().text, "Note");
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn pasting_objects_over_a_text_selection_unthreads_the_old_anchor() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        let rect = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let mark = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": mark, "focus": mark + OBJECT_MARK.len_utf8()})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.story(note_sid).is_none(), "the replaced anchor's story goes too");
+        assert_eq!(d.story(host_sid).unwrap().objects.len(), 1);
+        assert!(d.story(host_sid).unwrap().objects[0].item.text_frame().is_none());
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn replacing_an_anchor_through_story_or_find_change_unthreads_its_story() {
+        for find_change in [false, true] {
+            let (mut s, _host, host_sid) = setup("Before after and more words.");
+            let (note, note_sid) = add_note(&mut s, "Note");
+            anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+            if find_change {
+                s.execute("find.change", &json!({"find": "Before.*after", "grep": true, "change": "x", "scope": "story", "story": host_sid.0}))
+                    .unwrap();
+            } else {
+                let mark = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap();
+                s.execute("story.replaceRange", &json!({"story": host_sid.0, "start": mark, "end": mark + OBJECT_MARK.len_utf8(), "text": ""}))
+                    .unwrap();
+            }
+            let d = s.doc().unwrap().doc.clone();
+            assert!(d.anchored_item(note).is_none(), "find_change={find_change}");
+            assert!(d.story(note_sid).is_none(), "find_change={find_change}");
+            d.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn delete_surrounding_unthreads_a_removed_anchor() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        let after = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap() + OBJECT_MARK.len_utf8();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": after, "focus": after})).unwrap();
+        s.execute("text.deleteSurrounding", &json!({"before": 1})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none());
+        d.check().unwrap();
+    }
+
+    #[test]
     fn removing_a_story_text_removes_its_anchored_frames_and_the_frames_they_hold() {
         let (mut s, _host, host_sid) = setup("Before after and more words.");
         let (outer, outer_sid) = add_note(&mut s, "Outer");

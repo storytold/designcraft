@@ -251,19 +251,10 @@ impl Document {
         let mut frames = Vec::new();
         removed.walk(&mut |i| {
             if let Some(t) = i.text_frame() {
-                frames.push((i.id, t.story));
+                frames.push((t.story, i.id));
             }
         });
-        for (fid, sid) in frames {
-            let empty = {
-                let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
-                st.frames.retain(|f| *f != fid);
-                st.frames.is_empty()
-            };
-            if empty {
-                self.stories.remove(&sid);
-            }
-        }
+        self.unthread_anchored_text_frames(&frames);
         Ok(removed)
     }
 

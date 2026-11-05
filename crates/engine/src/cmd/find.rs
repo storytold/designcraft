@@ -652,6 +652,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let mut count = 0usize;
         let mut changed = None;
+        let mut doomed = Vec::new();
         for (sid, cell, r) in targets {
             if found.as_ref().is_some_and(|(at, in_cell, _)| *at != sid || *in_cell != cell) {
                 continue;
@@ -679,6 +680,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 let changed = if format_only {
                     range.clone()
                 } else {
+                    doomed.extend(st.anchored_text_frames_in(range.clone()));
                     st.replace(range.clone(), new);
                     range.start..range.start + new.len()
                 };
@@ -719,6 +721,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 break;
             }
         }
+        d.unthread_anchored_text_frames(&doomed);
         Ok((count, changed))
     })?;
     // Change: Find Next goes on after the changed text, in the search's domain.

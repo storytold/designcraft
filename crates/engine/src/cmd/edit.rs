@@ -103,7 +103,9 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             return s.edit(|d, sel| {
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                let r = r.start.min(st.len())..r.end.min(st.len());
+                let doomed = st.anchored_text_frames_in(r.clone());
+                st.delete(r.clone());
                 // Fresh ids, story and asset copies for every paste, as on the page.
                 let mut stories = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list
@@ -118,6 +120,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                     })
                     .collect();
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
+                d.unthread_anchored_text_frames(&doomed);
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
             });
@@ -582,6 +585,20 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     // Parent spreads aren't part of a clipping; stories keep only the copied frames.
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
+    }
+    // A kept story's anchored text frames need their own stories too, however deeply nested.
+    loop {
+        let anchored: Vec<ItemId> = d
+            .stories
+            .values()
+            .filter(|st| st.frames.iter().any(|f| frames.contains(f)))
+            .flat_map(|st| st.anchored_text_frames().into_iter().map(|(_, id)| id))
+            .collect();
+        let before = frames.len();
+        frames.extend(anchored);
+        if frames.len() == before {
+            break;
+        }
     }
     d.stories.retain(|_, st| st.frames.iter().any(|f| frames.contains(f)));
     for st in d.stories.values_mut() {

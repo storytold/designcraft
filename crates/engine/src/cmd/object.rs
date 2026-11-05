@@ -6074,6 +6074,22 @@ mod anchored_copy_tests {
     }
 
     #[test]
+    fn copying_a_host_frame_keeps_the_story_of_the_text_frame_anchored_in_its_text() {
+        let mut s = Session::new();
+        let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
+        }
+        assert_reopens(d);
+    }
+
+    #[test]
     fn duplicating_a_frame_with_an_anchored_text_frame_keeps_ids_and_stories_unique() {
         let mut s = Session::new();
         let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);

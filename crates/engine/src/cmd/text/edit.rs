@@ -146,10 +146,12 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.deleteSurrounding", "no text insertion point"))?;
         let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let mut doomed = Vec::new();
         if !after_range.is_empty() {
             if tracking {
                 crate::cmd::changes::mark_deleted(story, after_range.clone());
             } else {
+                doomed.extend(story.anchored_text_frames_in(after_range.clone()));
                 story.delete(after_range.clone());
             }
         }
@@ -161,9 +163,11 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
                 shift = before_range.end.saturating_sub(new_end);
             } else {
                 shift = before_range.len();
+                doomed.extend(story.anchored_text_frames_in(before_range.clone()));
                 story.delete(before_range.clone());
             }
         }
+        d.unthread_anchored_text_frames(&doomed);
         sel.text = Some(TextSel { anchor: t.anchor.saturating_sub(shift), focus: t.focus.saturating_sub(shift), ..t });
         Ok(())
     })?;
