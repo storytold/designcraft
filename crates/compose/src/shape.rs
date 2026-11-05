@@ -805,6 +805,20 @@ fn segment_features(p: &CharProps, styles: &StyleRuns<'_>, range: std::ops::Rang
     feats
 }
 
+/// The features of upright glyphs in vertical text: with Horizontal Kana on they take the vertical
+/// kana alternates instead. A group whose pieces differ in another switch carries hkna per piece
+/// (ranged): every hkna entry goes, or a ranged one would still apply over its piece.
+fn upright_features(feats: &[Feature], horizontal_kana: bool) -> Vec<Feature> {
+    let mut out = feats.to_vec();
+    if horizontal_kana {
+        let hkna = feature("hkna").map(|h| h.tag);
+        out.retain(|f| Some(f.tag) != hkna);
+        out.extend(feature("-hkna"));
+        out.extend(feature("vkna"));
+    }
+    out
+}
+
 /// Whether the style change at story byte `cut` falls between two Arabic characters (letters or
 /// marks), which a ligature such as lam-alif may join across it.
 fn between_arabic_characters(text: &str, cut: usize) -> bool {
@@ -1289,12 +1303,7 @@ fn shape_segment(
     let src = replacement.unwrap_or(&text[range.clone()]);
     let caps = p.capitalization == Capitalization::AllCaps;
     let feats = segment_features(p, styles, range.clone(), replacement.is_some());
-    // Upright in vertical text, Horizontal Kana takes the vertical kana alternates instead.
-    let mut upright_feats = feats.clone();
-    if vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna") {
-        upright_feats.extend(feature("-hkna"));
-        upright_feats.extend(feature("vkna"));
-    }
+    let upright_feats = upright_features(&feats, vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna"));
     let space = face.advance(face.glyph_for(' ')) * k * hs;
     // The language picks the font's localized forms (`locl`); the text around the run lets
     // letters join across a change of style.
@@ -1606,7 +1615,20 @@ fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, O
 
 #[cfg(test)]
 mod tests {
-    use super::{cuts_inside, overlay_bands};
+    use super::{cuts_inside, overlay_bands, upright_features};
+    use designcraft_fonts::{Feature, feature};
+
+    /// Upright with Horizontal Kana on, no hkna stays on, not even one over a piece's bytes (two
+    /// hkna pieces that differ in another switch shape as one, each switch ranged): vkna takes over.
+    #[test]
+    fn upright_kana_drops_a_ranged_horizontal_kana() {
+        let (Some(hkna), Some(vkna)) = (feature("hkna"), feature("vkna")) else { panic!("valid tags") };
+        let feats = [Feature { start: 0, end: 3, ..hkna }, Feature { start: 3, end: 6, ..hkna }];
+        let up = upright_features(&feats, true);
+        assert!(up.iter().all(|f| f.tag != hkna.tag || f.value == 0), "{up:?}");
+        assert!(up.iter().any(|f| f.tag == vkna.tag && f.value == 1 && f.start == 0 && f.end == u32::MAX));
+        assert_eq!(upright_features(&feats, false), feats.to_vec());
+    }
 
     /// The binary search finds the same cuts inside a cluster as checking every cut.
     #[test]

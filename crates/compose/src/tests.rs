@@ -332,10 +332,13 @@ fn tracking_skips_a_letter_whose_mark_is_shaped_apart() {
 /// over its own piece: the kerning across them stays.
 #[test]
 fn a_feature_switch_keeps_kerning() {
-    let (mut d, sid, _) = doc_with("ayay", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
-    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.font_style = Some("Bold".into()));
+    let (mut d, sid, _) = doc_with("AVAV", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     let xs = |d: &Document| all_lines(&compose_story(d, sid, &ComposeOptions::default()))[0].glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
     let kerned = xs(&d);
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::None));
+    assert_ne!(xs(&d), kerned, "the bundled font kerns A and V");
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::Metrics));
+    assert_eq!(xs(&d), kerned);
     d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.ligatures = Some(false));
     assert_eq!(xs(&d), kerned);
 }
