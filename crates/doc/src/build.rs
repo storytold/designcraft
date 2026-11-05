@@ -167,6 +167,7 @@ impl Document {
                 prefix: String::new(),
                 marker: String::new(),
                 include_prefix: false,
+                layout: None,
             }],
             assets: BTreeMap::new(),
             hyperlinks: vec![],
@@ -278,6 +279,31 @@ impl Document {
         id
     }
 
+    /// Add an empty copy of parent `id` after the last parent: the same pages (size, margins, columns,
+    /// guides) and base parent, fresh ids, prefix `prefix`. Returns the copy's id and index; the
+    /// caller copies the items.
+    pub fn duplicate_parent_shell(&mut self, id: SpreadId, prefix: &str) -> Result<(SpreadId, usize)> {
+        let src = self.parent_index(id).and_then(|i| self.parents.get(i)).ok_or_else(|| DocError::Invalid(format!("no parent {id}")))?;
+        let mut sp = Spread::clone(src);
+        sp.items.clear();
+        for pg in &mut sp.pages {
+            pg.overridden.clear();
+        }
+        sp.id = SpreadId(self.alloc());
+        for k in 0..sp.pages.len() {
+            let pid = PageId(self.alloc());
+            if let Some(pg) = sp.pages.get_mut(k) {
+                pg.id = pid;
+            }
+        }
+        if let Some(info) = sp.parent.as_mut() {
+            info.prefix = prefix.into();
+        }
+        let new = sp.id;
+        self.parents.push(Arc::new(sp));
+        Ok((new, self.parents.len().saturating_sub(1)))
+    }
+
     /// Delete a parent spread and unapply it wherever it is used. Local overrides survive as
     /// ordinary items; the deleted parent's own items leave their text threads normally.
     pub fn delete_parent(&mut self, id: SpreadId) -> Result<()> {
@@ -359,6 +385,9 @@ impl Document {
     /// a left page moves it to the right and the pages after it follow.
     pub fn repaginate(&mut self) {
         let odd: Vec<bool> = (0..self.page_count()).map(|i| self.page_number(i) % 2 == 1).collect();
+        // A layout starts a spread of its own.
+        let layout_starts: HashSet<usize> = self.sections.iter().filter(|s| s.layout.is_some() && s.start > 0).map(|s| s.start).collect();
+        let mut breaks: Vec<bool> = Vec::new();
         // Collect pages with their items (items in page-relative coordinates) and their numbers' parity.
         let mut pages: Vec<(Page, Vec<Arc<Item>>)> = Vec::new();
         let mut parity: Vec<bool> = Vec::new();
@@ -374,6 +403,7 @@ impl Document {
             }
             for p in &sp.pages {
                 parity.push(odd.get(abs).copied().unwrap_or(abs % 2 == 0));
+                breaks.push(layout_starts.contains(&abs));
                 was_left.insert(p.id, p.side == PageSide::Left);
                 abs += 1;
             }
@@ -438,7 +468,8 @@ impl Document {
                 // A right page closes its spread, so two right pages in a row (a section restart
                 // at an even position) never share one.
                 let after_ending = cur.last().is_some_and(|(q, _)| q.side != starts);
-                if (p.side == starts || after_ending) && !cur.is_empty() {
+                let new_layout = breaks.get(i).copied().unwrap_or(false);
+                if (p.side == starts || after_ending || new_layout) && !cur.is_empty() {
                     let id = SpreadId(self.alloc());
                     flush(&mut cur, &mut spreads, id);
                 }
@@ -492,6 +523,13 @@ impl Document {
         }
         let n = self.page_count();
         let at = after.map_or(0, |a| a.saturating_add(1).min(n));
+        // Sections (and the layouts they start) stay with their first page: the ones after the
+        // insertion point move along. Pages inserted after a layout's last page join that layout.
+        for sec in &mut self.sections {
+            if sec.start >= at && sec.start > 0 {
+                sec.start = sec.start.saturating_add(count);
+            }
+        }
         let template = self.page(at.saturating_sub(1).min(n.saturating_sub(1))).cloned();
         let (cols, gutter, margins) =
             template.as_ref().map(|t| (t.columns.count, t.columns.gutter, t.margins)).unwrap_or((1, 12.0, Margins::uniform(36.0)));
@@ -594,6 +632,18 @@ impl Document {
             sp.relayout();
         }
         self.spreads.retain(|s| !s.pages.is_empty());
+        // Sections follow their pages: a section whose first page is deleted starts at the next
+        // page left, unless another section already starts there (or no page is left).
+        let mut gone: Vec<usize> = pages.to_vec();
+        gone.sort_unstable();
+        gone.dedup();
+        let left = self.page_count();
+        let mut sections = std::mem::take(&mut self.sections);
+        for sec in &mut sections {
+            let before = gone.partition_point(|g| *g < sec.start);
+            sec.start = sec.start.saturating_sub(before);
+        }
+        self.sections = settle_sections(sections, left);
         self.repaginate();
         Ok(())
     }
@@ -613,6 +663,23 @@ impl Document {
         self.repaginate();
         let sp = self.spreads.remove(from);
         self.spreads.insert(to, sp);
+        // Sections (and the layouts they start) keep their first page wherever it moved; one whose
+        // first page moves away starts at its next page, as when that page is deleted.
+        let moved = |i: usize| {
+            if from < to && i > from && i <= to {
+                i.saturating_sub(1)
+            } else if to < from && i >= to && i < from {
+                i.saturating_add(1)
+            } else {
+                i
+            }
+        };
+        let mut sections = std::mem::take(&mut self.sections);
+        for sec in sections.iter_mut().filter(|s| s.start > 0) {
+            sec.start = if sec.start == from { moved(from.saturating_add(1)) } else { moved(sec.start) };
+        }
+        sections.sort_by_key(|s| s.start);
+        self.sections = settle_sections(sections, n);
         self.settings.facing_pages = facing;
         self.repaginate();
         Ok(())
@@ -883,6 +950,33 @@ impl Document {
 
 /// Deepest `based_on` chain followed.
 pub const MAX_PARENT_DEPTH: usize = 64;
+
+/// Sections after their starts moved (pages deleted or moved), in page order: of sections that now
+/// share a start the last is kept, those past the last of `left` pages go, and when the first
+/// layout lost its pages the next one begins the document.
+fn settle_sections(sections: Vec<Section>, left: usize) -> Vec<Section> {
+    let mut kept: Vec<Section> = Vec::with_capacity(sections.len());
+    for sec in sections.into_iter().filter(|s| s.start < left) {
+        if let Some(last) = kept.last_mut().filter(|l| l.start == sec.start) {
+            // A layout's name outlives its first page: it moves onto the section kept.
+            let layout = last.layout.take();
+            *last = sec;
+            if last.layout.is_none() {
+                last.layout = layout;
+            }
+        } else {
+            kept.push(sec);
+        }
+    }
+    if let Some(first) = kept.first_mut()
+        && first.start != 0
+        && first.layout.is_some()
+    {
+        // The first layout lost its pages: the next one begins the document.
+        first.start = 0;
+    }
+    kept
+}
 
 #[cfg(test)]
 mod tests {
