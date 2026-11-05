@@ -251,6 +251,19 @@ pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
     out
 }
 
+/// Ensure that the dictionaries required by this story are available. English
+/// retains its existing checker; Hungarian data is loaded only for Hungarian runs.
+pub fn ensure_story_dictionary(doc: &designcraft_doc::Document, story: &designcraft_doc::Story) -> std::result::Result<(), &'static str> {
+    ensure_run_dictionaries(&language_runs(doc, story))
+}
+
+fn ensure_run_dictionaries(runs: &[(std::ops::Range<usize>, Language)]) -> std::result::Result<(), &'static str> {
+    if runs.iter().any(|(_, language)| *language == Language::Hungarian) {
+        hungarian::initialize()?;
+    }
+    Ok(())
+}
+
 /// Misspelled words of a story: byte ranges (acronyms skipped; the user dictionary counts).
 pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String]) -> Vec<std::ops::Range<usize>> {
     misspellings_in_runs(story, user, &language_runs(doc, story))
@@ -408,9 +421,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
     for sid in stories {
         let Some(story) = d.story(sid) else { continue };
         let runs = language_runs(d, story);
-        if runs.iter().any(|(_, language)| *language == Language::Hungarian) {
-            hungarian::initialize().map_err(|e| bad("spelling.check", e))?;
-        }
+        ensure_run_dictionaries(&runs).map_err(|e| bad("spelling.check", e))?;
         for r in misspellings_in_runs(story, &d.user_words, &runs) {
             let Some(word) = story.text.get(r.clone()) else { continue };
             let sugg = if want_sugg {

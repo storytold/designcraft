@@ -1,7 +1,8 @@
-//! Spelling uses one background check at a time; stale document snapshots are never displayed.
+//! Spelling uses one check at a time; unchanged stories keep their last valid underlines.
 use crate::DesignApp;
 use designcraft_doc::{Document, StoryId};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -18,14 +19,39 @@ pub(crate) struct Report {
     pub doc: Arc<Document>,
     pub words: Vec<(StoryId, Range<usize>)>,
     pub error: Option<String>,
+    by_story: BTreeMap<StoryId, Vec<Range<usize>>>,
+}
+impl Report {
+    fn new(doc: Arc<Document>, words: Vec<(StoryId, Range<usize>)>, error: Option<String>) -> Self {
+        let mut report = Self { doc, words, error, by_story: BTreeMap::new() };
+        report.index_words();
+        report
+    }
+    fn index_words(&mut self) {
+        self.by_story.clear();
+        for (sid, range) in &self.words {
+            self.by_story.entry(*sid).or_default().push(range.clone());
+        }
+    }
+    /// Reuse offsets only when the story, styles and user dictionary still match.
+    pub(crate) fn story_words(&self, doc: &Document, sid: StoryId) -> Option<&[Range<usize>]> {
+        if !Arc::ptr_eq(&self.doc.styles, &doc.styles) || self.doc.user_words != doc.user_words {
+            return None;
+        }
+        let (old, current) = self.doc.stories.get(&sid).zip(doc.stories.get(&sid))?;
+        Arc::ptr_eq(old, current).then(|| self.by_story.get(&sid).map(Vec::as_slice).unwrap_or(&[]))
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn build(doc: Arc<Document>) -> Report {
     let mut words = Vec::new();
     for story in doc.stories.values() {
+        if let Err(error) = designcraft_engine::cmd::spelling::ensure_story_dictionary(&doc, story) {
+            return Report::new(doc, vec![], Some(error.into()));
+        }
         words.extend(designcraft_engine::cmd::spelling::misspellings(&doc, story, &doc.user_words).into_iter().map(|r| (story.id, r)));
     }
-    Report { doc, words, error: None }
+    Report::new(doc, words, None)
 }
 // The browser has no native worker thread. Keep the scan resumable even inside
 // one long story, and expose only complete results for the current revision.
@@ -35,12 +61,13 @@ struct IncrementalReport {
     story: Option<StoryId>,
     cursor: designcraft_engine::cmd::spelling::SpellingCursor,
     last_frame: Option<u64>,
+    validated: bool,
 }
 #[cfg(any(target_arch = "wasm32", test))]
 impl IncrementalReport {
     fn new(doc: Arc<Document>) -> Self {
         let story = doc.stories.keys().next().copied();
-        Self { report: Report { doc, words: vec![], error: None }, story, cursor: Default::default(), last_frame: None }
+        Self { report: Report::new(doc, vec![], None), story, cursor: Default::default(), last_frame: None, validated: false }
     }
     fn advance(&mut self, frame: u64) -> bool {
         // web_time uses Performance.now() in browsers; std::time::Instant panics
@@ -58,6 +85,20 @@ impl IncrementalReport {
         }
         self.last_frame = Some(frame);
         if let Some(sid) = self.story {
+            if !self.validated {
+                if let Some(error) = self
+                    .report
+                    .doc
+                    .story(sid)
+                    .and_then(|story| designcraft_engine::cmd::spelling::ensure_story_dictionary(&self.report.doc, story).err())
+                {
+                    self.report.error = Some(error.into());
+                    self.report.words.clear();
+                    self.story = None;
+                    return true;
+                }
+                self.validated = true;
+            }
             let mut words = Vec::new();
             let mut done = false;
             // At most 16,384 character/run steps and 1,024 completed words per
@@ -73,7 +114,11 @@ impl IncrementalReport {
             if done {
                 self.story = self.report.doc.stories.range((std::ops::Bound::Excluded(sid), std::ops::Bound::Unbounded)).next().map(|(id, _)| *id);
                 self.cursor = Default::default();
+                self.validated = false;
             }
+        }
+        if self.story.is_none() {
+            self.report.index_words();
         }
         self.story.is_none()
     }
@@ -111,16 +156,13 @@ pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>
             let failed_doc = doc.clone();
             let spawn = std::thread::Builder::new().name("spelling".into()).spawn(move || {
                 let fallback = doc.clone();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(doc))).unwrap_or_else(|_| Report {
-                    doc: fallback,
-                    words: vec![],
-                    error: Some("Spelling check failed".into()),
-                });
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(doc)))
+                    .unwrap_or_else(|_| Report::new(fallback, vec![], Some("Spelling check failed".into())));
                 let _ = tx.send(result);
                 repaint.request_repaint();
             });
             if let Err(e) = spawn {
-                let result = Arc::new(Report { doc: failed_doc, words: vec![], error: Some(e.to_string()) });
+                let result = Arc::new(Report::new(failed_doc, vec![], Some(e.to_string())));
                 state.cached = Some((key, result.clone()));
                 return Some(result);
             }
@@ -129,7 +171,7 @@ pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>
     }
     #[cfg(target_arch = "wasm32")]
     {
-        if state.pending.as_ref().is_none_or(|(pending_key, _)| *pending_key != key) {
+        if state.pending.as_ref().is_none_or(|(pending_key, _)| pending_key.0 != key.0) {
             state.pending = Some((key, IncrementalReport::new(active.doc.clone())));
         }
         if state.pending.as_mut().is_some_and(|(_, work)| work.advance(ctx.cumulative_frame_nr()))
@@ -142,7 +184,7 @@ pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>
         ctx.request_repaint();
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    None
+    state.cached.as_ref().filter(|(cached_key, _)| cached_key.0 == key.0).map(|(_, result)| result.clone())
 }
 
 type SuggestionKey = (u64, u64, u64, usize, usize);
@@ -237,6 +279,11 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 ui.label(tr("Checking spelling…"));
                 return;
             };
+            if app.session.active().is_none_or(|active| !Arc::ptr_eq(&result.doc, &active.doc)) {
+                ui.spinner();
+                ui.label(tr("Checking spelling…"));
+                return;
+            }
             if let Some(error) = &result.error {
                 ui.label(error);
                 return;
@@ -342,13 +389,85 @@ mod tests {
     fn checked(app: &DesignApp, ctx: &egui::Context) -> Arc<Report> {
         let start = std::time::Instant::now();
         loop {
-            if let Some(r) = report(app, ctx) {
+            if let Some(r) = report(app, ctx)
+                && app.session.active().is_some_and(|active| Arc::ptr_eq(&r.doc, &active.doc))
+            {
                 return r;
             }
             assert!(start.elapsed().as_secs() < 15, "background spelling timed out");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+    #[test]
+    fn missing_hungarian_pack_is_an_error_in_both_scanners() {
+        let mut session = SessionForTest::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let mut doc = (*session.doc().unwrap().doc).clone();
+        doc.stories.insert(StoryId(1), designcraft_doc::Story::with_text(StoryId(1), "qzxw", Default::default()).into());
+        let english = build(Arc::new(doc.clone()));
+        assert!(english.error.is_none());
+        assert!(!english.words.is_empty());
+        let mut hu = designcraft_doc::Story::with_text(StoryId(2), "hejesírás", Default::default());
+        hu.format_chars(0..hu.text.len(), |f| f.over.language = Some("Hungarian".into()));
+        if designcraft_engine::cmd::spelling::ensure_story_dictionary(&doc, &hu).is_ok() {
+            return; // Exercised by the explicit no-pack test configuration.
+        }
+        doc.stories.insert(StoryId(2), hu.into());
+        let doc = Arc::new(doc);
+        let native = build(doc.clone());
+        assert!(native.error.is_some());
+        assert!(native.words.is_empty());
+        assert!(native.by_story.is_empty());
+        let mut browser = IncrementalReport::new(doc);
+        assert!(!browser.advance_until(0, || false));
+        assert!(!browser.report.words.is_empty(), "positive English scan before the missing pack");
+        assert!(browser.advance_until(1, || false));
+        assert_eq!(browser.report.error, native.error);
+        assert!(browser.report.words.is_empty());
+        assert!(browser.report.by_story.is_empty());
+    }
+
+    #[test]
+    fn cached_underlines_are_reused_only_for_unchanged_stories_and_settings() {
+        let mut session = SessionForTest::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let mut doc = (*session.doc().unwrap().doc).clone();
+        for sid in [StoryId(1), StoryId(2)] {
+            doc.stories.insert(sid, designcraft_doc::Story::with_text(sid, "qzxw", Default::default()).into());
+        }
+        let report = build(Arc::new(doc.clone()));
+        assert_eq!(report.story_words(&doc, StoryId(1)).unwrap(), std::slice::from_ref(&(0..4)));
+        doc.story_mut(StoryId(2)).unwrap().text = "hello".into();
+        assert_eq!(report.story_words(&doc, StoryId(1)).unwrap(), std::slice::from_ref(&(0..4)));
+        assert!(report.story_words(&doc, StoryId(2)).is_none());
+        let mut changed = doc.clone();
+        changed.user_words.push("qzxw".into());
+        assert!(report.story_words(&changed, StoryId(1)).is_none());
+        changed = doc.clone();
+        Arc::make_mut(&mut changed.styles);
+        assert!(report.story_words(&changed, StoryId(1)).is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn revision_changes_keep_the_last_report_but_document_switches_do_not() {
+        let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect":[0,0,300,300],"content":"text","text":"qzxw"})).unwrap();
+        let active = app.session.active().unwrap();
+        let key = (active.uid, active.revision);
+        let old = Arc::new(build(active.doc.clone()));
+        let (_tx, rx) = mpsc::channel(); // Keep a deterministic pending job; no thread/timing dependency.
+        let state = State { running: Some((key, rx)), cached: Some((key, old.clone())) };
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("spelling_worker"), Arc::new(Mutex::new(state))));
+        app.run("frame.create", json!({"rect":[0,0,300,300],"content":"text","text":"hello"})).unwrap();
+        assert!(Arc::ptr_eq(&report(&app, &ctx).unwrap(), &old));
+        assert!(!Arc::ptr_eq(&old.doc, &app.session.active().unwrap().doc), "dialog must wait for the current snapshot");
+        app.run("file.new", json!({})).unwrap();
+        assert!(report(&app, &ctx).is_none());
+    }
+
     #[test]
     fn browser_scan_yields_once_per_frame_and_keeps_complete_results() {
         let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());

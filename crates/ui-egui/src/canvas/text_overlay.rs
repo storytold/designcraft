@@ -346,7 +346,7 @@ pub(super) fn hidden_marks(text: &str, l: &compose::Line) -> Vec<(f64, &'static 
 pub(super) fn draw_dynamic_spelling(app: &DesignApp, ctx: &egui::Context, painter: &egui::Painter, xf: &Xf, doc: &Document, layout: &CanvasLayout) {
     let Some(report) = crate::spelling_ui::report(app, ctx) else { return };
     for story in doc.stories.values() {
-        let bad: Vec<_> = report.words.iter().filter(|(sid, _)| *sid == story.id).map(|(_, r)| r.clone()).collect();
+        let Some(bad) = report.story_words(doc, story.id) else { continue };
         if bad.is_empty() {
             continue;
         }

@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "craft-proof"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=4cb633dc2899704006c36a4490e680eda2bef822#4cb633dc2899704006c36a4490e680eda2bef822"
+source = "git+https://github.com/storytold/craft-libs?rev=decf1d078bdc616aef6899290a9dfa74d91c54ab#decf1d078bdc616aef6899290a9dfa74d91c54ab"
 dependencies = [
  "log",
  "miniz_oxide 0.9.1",

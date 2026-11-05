@@ -96,7 +96,7 @@ mod tests {
     fn incremental_scan_matches_full_scan_across_every_boundary() {
         let mut session = Session::new();
         session.execute("file.new", &json!({})).unwrap();
-        let text = "hejesírás 2026-ban árvi\u{301}z qzxw can't dog’s -- 42-ok\nhello qzxw\nhejesírás";
+        let text = "hejesírás 2026-ban árvi\u{301}z qzxw can't dog’s -- 42-ok\nhello qzxx\nhejesírás";
         let r = session.execute("frame.create", &json!({"rect":[0,0,300,300],"content":"text","text":text})).unwrap();
         let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
         let mut doc = (*session.doc().unwrap().doc).clone();
@@ -109,7 +109,7 @@ mod tests {
         story.format_chars(english..english + 10, |f| f.over.language = Some("English".into()));
         let story = doc.story(sid).unwrap();
         let expected = super::super::misspellings(&doc, story, &doc.user_words);
-        assert!(!expected.is_empty());
+        assert!(expected.contains(&(english + 6..english + 10)), "the English positive control must work without the optional hu pack");
         for budget in [1, 2, 7, 256] {
             let mut cursor = SpellingCursor::default();
             let mut actual = Vec::new();

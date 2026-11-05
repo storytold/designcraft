@@ -555,9 +555,14 @@ mod tests {
         assert_eq!(ops.iter().map(|p| p.at).collect::<Vec<_>>(), expected);
         assert!(ops.iter().all(|p| &*p.suffix == "z"));
         let oversized = "á".repeat(600);
-        assert!(hyphen_points_in(&oversized, &lim, Lang::Hungarian).is_empty());
+        let fallback = craft_proof::hyphen::hyphen_points_in(&oversized, &proof_limits(&lim), hu_language());
+        assert!(!fallback.is_empty(), "over-limit words keep the safe point-based fallback");
+        assert_eq!(hyphen_points_in(&oversized, &lim, Lang::Hungarian), fallback);
+        let oversized_ops = opportunities_in(&oversized, &lim, Lang::Hungarian);
+        assert!(oversized_ops.iter().all(|p| p.suffix.is_empty()));
         let mixed = format!("asszony {oversized} könnyen");
-        assert_eq!(hyphen_points_in(&mixed, &lim, Lang::Hungarian), vec![2, 8 + 600 + 1 + 3]);
+        let expected: Vec<_> = std::iter::once(2).chain(fallback.iter().map(|at| at + 8)).chain(std::iter::once(8 + 600 + 1 + 3)).collect();
+        assert_eq!(hyphen_points_in(&mixed, &lim, Lang::Hungarian), expected);
         assert!(hyphen_points_in(&text, &Limits { min_word: 8, ..lim }, Lang::Hungarian).is_empty());
     }
 
