@@ -388,7 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
-- **2026-11-05** · Anchored text frames can be inserted with `anchored.insert` in the inline, above-line and custom positions (#2338). Their own stories stay threaded to the frame and compose where the host story places them, so a note or callout moves with the text it is anchored in, renders and exports to PDF and IDML. Release moves the thread to the released frame, and text pasted twice gives every anchored object a fresh id and story (#2284). No readiness percentage change.
+- **2026-11-05** · Anchored text frames can be inserted with `anchored.insert` in the inline, above-line and custom positions (#2338). Their own stories stay threaded to the frame and compose where the host story places them, so a note or callout moves with the text it is anchored in, renders and exports to PDF and IDML. Release moves the thread to the released frame; deleting or typing over the mark removes the frame and its story; PDF keeps hyperlinks inside the frame; and text pasted twice gives every anchored object a fresh id and story (#2284). No readiness percentage change.
 
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 

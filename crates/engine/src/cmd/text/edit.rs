@@ -1,6 +1,7 @@
 use super::caret::{next_char, next_word, prev_char, prev_word, story_of};
 use super::format::{apply_typing_format, format_targets, typing_format};
 use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, id_param, json, ok, str_param};
+use crate::cmd::anchored::{anchored_text_frames_in, unthread_deleted};
 #[cfg(test)]
 use designcraft_doc::StoryId;
 
@@ -98,12 +99,14 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
         let b = floor_char_boundary(&st.text, r.end.min(st.len())).max(a);
         reserve_command_text(st, text.len().saturating_sub(b - a))?;
+        let doomed = anchored_text_frames_in(st, r.clone());
         st.replace(r.clone(), &text);
         if let Some(f) = &typing
             && !text.is_empty()
         {
             st.format_chars(r.start..r.start + text.len(), |fmt| apply_typing_format(fmt, f));
         }
+        unthread_deleted(d, &doomed);
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"pos": pos}))
@@ -264,13 +267,16 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
         let r = t.range();
+        let mut doomed = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
                 crate::cmd::changes::mark_deleted(st, r.clone());
             } else {
+                doomed = anchored_text_frames_in(st, r.clone());
                 st.delete(r.clone());
             }
         }
+        unthread_deleted(d, &doomed);
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
@@ -301,7 +307,9 @@ pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return ok();
         }
+        let doomed = anchored_text_frames_in(st, r.clone());
         st.delete(r.clone());
+        unthread_deleted(d, &doomed);
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })

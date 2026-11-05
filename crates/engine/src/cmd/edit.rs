@@ -5,6 +5,7 @@ use std::sync::Arc;
 use designcraft_doc::{ItemId, Selection, SpreadRef};
 use serde_json::{Value, json};
 
+use super::anchored::{anchored_text_frames_in, unthread_deleted};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
@@ -223,29 +224,6 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0, "story": sid.0}))
     })
-}
-
-/// The anchored text frames whose marks `r` deletes, with their own story ids. Their stories must
-/// leave the replaced text's threads, or the document would refer to frames that no longer exist.
-fn anchored_text_frames_in(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> Vec<(designcraft_doc::StoryId, ItemId)> {
-    let first = st.text[..r.start.min(st.len())].matches(designcraft_doc::OBJECT_MARK).count();
-    let n = st.text[r.start.min(st.len())..r.end.min(st.len())].matches(designcraft_doc::OBJECT_MARK).count();
-    st.objects.get(first..first + n).unwrap_or_default().iter().filter_map(|o| o.item.text_frame().map(|tf| (tf.story, o.item.id))).collect()
-}
-
-fn unthread_deleted(d: &mut designcraft_doc::Document, doomed: &[(designcraft_doc::StoryId, ItemId)]) {
-    for &(sid, id) in doomed {
-        let empty = match d.story_mut(sid) {
-            Some(st) => {
-                st.frames.retain(|f| *f != id);
-                st.frames.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            d.stories.remove(&sid);
-        }
-    }
 }
 
 fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
