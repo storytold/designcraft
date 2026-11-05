@@ -340,7 +340,7 @@ fn rasterize_where_with_links(
             })
             // Cross-references get link annotations through their story's frames too.
             || keep_links
-                && d.stories.values().any(|st| !st.xrefs.is_empty() && st.frames.iter().any(|frame| d.top_level_of(*frame) == Some(id)));
+                && d.stories.values().any(|st| (!st.xrefs.is_empty() || !st.anchors.is_empty()) && st.frames.iter().any(|frame| d.top_level_of(*frame) == Some(id)));
         // Same place in the stacking order.
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
