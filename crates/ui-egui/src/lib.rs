@@ -115,6 +115,9 @@ struct PendingDrop {
     /// for a drop that brought no pointer events ([`crate::Services::pointer`]). Each drop keeps
     /// its own, converted with the window's place and the UI scale of that input.
     system: Option<egui::Pos2>,
+    /// Which drop this file came with: files of one raw input share it, so drops that arrive
+    /// before the same UI pass stay separate.
+    batch: u64,
     generation: InputGeneration,
 }
 

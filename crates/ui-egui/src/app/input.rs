@@ -62,10 +62,11 @@ impl DesignApp {
             // A drop without pointer events (dragged in from another application) asks the
             // system now, while the pointer is still where the files were let go.
             let system = if pointer.is_none() && !raw.dropped_files.is_empty() { self.system_pointer(ctx, raw) } else { None };
+            let batch = self.pending_drops.last().map_or(0, |d| d.batch.wrapping_add(1));
             for file in std::mem::take(&mut raw.dropped_files) {
                 let path = file.path().to_string_lossy().to_string();
                 if !path.is_empty() {
-                    self.pending_drops.push(PendingDrop { path, pointer, system, generation });
+                    self.pending_drops.push(PendingDrop { path, pointer, system, batch, generation });
                 }
             }
         }
@@ -154,12 +155,12 @@ impl DesignApp {
         // suppress later files that belong to the same captured batch.
         let current = self.input_generation();
         let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
-        if drops.is_empty() {
-            return;
-        }
         // Dropped together, they go together: several images load the place cursor at once. Each
-        // file keeps the pointer it was dropped at, or the system's from when it arrived.
-        self.open_dropped_batch(drops.into_iter().map(|d| (d.path, d.pointer.or(d.system))).collect());
+        // file keeps the pointer it was dropped at, or the system's from when it arrived. Separate
+        // drops stay separate, so a single image still fills the frame it was dropped on.
+        for batch in drops.chunk_by(|a, b| a.batch == b.batch) {
+            self.open_dropped_batch(batch.iter().map(|d| (d.path.clone(), d.pointer.or(d.system))).collect());
+        }
     }
 
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),

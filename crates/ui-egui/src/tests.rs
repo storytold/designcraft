@@ -1011,6 +1011,37 @@ fn a_pointerless_drop_keeps_the_system_pointer_of_its_own_input() {
     assert!(d.assets[&g.asset].name.contains("drop-own-input"));
 }
 
+/// Two drops that arrive before one UI pass stay separate: the first still fills the frame it was
+/// dropped on, and the second, off any frame, loads the place cursor. Merged, they'd both queue.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn separate_drops_before_one_pass_are_not_one_batch() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let at = std::rc::Rc::new(std::cell::Cell::new(inside));
+    let reported = at.clone();
+    app.services.pointer = Some(Box::new(move || Some(reported.get())));
+    let ctx = egui::Context::default();
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let (first, second) = (dropped_png("separate-drop-a"), dropped_png("separate-drop-b"));
+    let mut raw = pointerless_drop(&first, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    at.set(outside);
+    let mut raw = pointerless_drop(&second, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    assert_eq!(app.pending_drops.len(), 2);
+    ctx.run_ui(raw, |_| app.take_pending_drops()).textures_delta.clear();
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+    let d = &app.session.doc().unwrap().doc;
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+        panic!("the first drop fills the frame it was dropped on")
+    };
+    assert!(d.assets[&g.asset].name.contains("separate-drop-a"));
+    let loaded = app.session.loaded.as_ref().expect("the second drop loads the place cursor");
+    assert!(d.assets[&loaded.asset].name.contains("separate-drop-b"));
+    assert!(app.session.loaded_queue.is_empty());
+}
+
 /// A filled compound path (Object > Compound Paths > Make) is a frame a dropped image fills, as
 /// in InDesign, through its ring and not its hole.
 #[test]
