@@ -1,6 +1,11 @@
 name: probe called
 on:
   workflow_call:
+    secrets:
+      LINUX_SIGNING_KEY:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
 jobs:
   check:
     runs-on: ubuntu-latest
