@@ -144,6 +144,9 @@ pub struct PdfOptions {
     pub tagged: bool,
     /// Interactive PDF: placed video and sound are embedded and play in Screen annotations.
     pub media: bool,
+    /// Text drawn as its glyphs' outlines, so no font is embedded and the file prints the same
+    /// everywhere. The text can't be selected, searched or read aloud any more.
+    pub outline_text: bool,
     /// PDF/X-1a: the resolution (pixels per inch) craft-prepress's flattener rasterizes complex
     /// transparent regions at.
     pub flatten_dpi: f32,
@@ -177,6 +180,7 @@ impl Default for PdfOptions {
             created: None,
             tagged: false,
             media: false,
+            outline_text: false,
             flatten_dpi: 300.0,
             shadows: Default::default(),
         }

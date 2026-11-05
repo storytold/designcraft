@@ -204,6 +204,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "Стили символов"),
     ("Paragraph Styles", "Стили абзацев"),
     ("Create Outlines", "Преобразовать в кривые"),
+    ("Convert text to outlines", "Преобразовать текст в кривые"),
     ("Show Hidden Characters", "Показать скрытые символы"),
     ("Transform", "Трансформирование"),
     ("Arrange", "Упорядочить"),

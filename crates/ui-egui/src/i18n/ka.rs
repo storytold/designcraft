@@ -225,6 +225,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "სიმბოლოს სტილები"),
     ("Paragraph Styles", "აბზაცის სტილები"),
     ("Create Outlines", "კონტურებად გარდაქმნა"),
+    ("Convert text to outlines", "ტექსტის კონტურებად გარდაქმნა"),
     ("Show Hidden Characters", "დამალული სიმბოლოების ჩვენება"),
     ("Transform", "გარდაქმნა"),
     ("Arrange", "დალაგება"),

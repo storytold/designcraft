@@ -1581,6 +1581,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Kenten", "Kenten"),
     ("Story", "Matéria"),
     ("Create Outlines", "Criar contornos"),
+    ("Convert text to outlines", "Converter texto em contornos"),
     ("Unmerge Cells", "Desfazer mesclagem de células"),
     ("Snap to Guides", "Alinhar às guias"),
     ("Snap to Document Grid", "Alinhar à grade do documento"),

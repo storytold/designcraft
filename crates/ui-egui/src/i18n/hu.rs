@@ -348,6 +348,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Create New Layer", "Új réteg létrehozása"),
     ("Create New Style from Selection", "Új stílus létrehozása a kijelölésből"),
     ("Create Outlines", "Görbévé alakítás"),
+    ("Convert text to outlines", "Szöveg görbévé alakítása"),
     ("Create Path", "Görbe létrehozása"),
     ("Create Table", "Táblázat létrehozása"),
     ("Create Table…", "Táblázat létrehozása…"),
