@@ -3989,6 +3989,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Greek", ["Greek", "Grec", "Greek", "Greek", "希腊语"]),
     ("Hebrew", ["Hebrew", "Hébreu", "Hebrew", "Hebrew", "希伯来语"]),
+    ("Esperanto", ["Esperanto", "Espéranto", "Esperanto", "エスペラント語", "世界语"]),
     ("Hindi", ["Hindi", "Hindi", "Hindi", "Hindi", "印地语"]),
     ("Hungarian", ["Hungarian", "Hongrois", "Hungarian", "Hungarian", "匈牙利语"]),
     (

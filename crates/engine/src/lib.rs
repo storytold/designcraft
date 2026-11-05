@@ -147,7 +147,7 @@ fn next_revision() -> u64 {
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
     pub fn new(doc: Document, path: Option<String>) -> Self {
-        let active_layer = doc.default_layer();
+        let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
         let identity_epoch = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -243,6 +243,8 @@ pub struct Prefs {
     pub recovery_minutes: f64,
     /// File › New › Document › Save Document Preset: saved document presets, by name (`title`).
     pub document_presets: Vec<designcraft_doc::build::NewDocument>,
+    /// File › Export Layouts and Versions › Save Preset: saved export jobs, by name.
+    pub export_presets: Vec<cmd::export_batch::ExportPreset>,
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
@@ -357,6 +359,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             document_presets: Vec::new(),
+            export_presets: Vec::new(),
             show_hidden_characters: false,
             typographers_quotes: true,
             polygon_sides: 6,
@@ -635,7 +638,7 @@ impl Session {
         if let Some(st) = self.active_mut()
             && st.doc.layer(st.active_layer).is_none()
         {
-            st.active_layer = st.doc.default_layer();
+            st.active_layer = st.doc.working_layer();
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
