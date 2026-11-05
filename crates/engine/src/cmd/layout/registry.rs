@@ -1,7 +1,9 @@
 use super::layers::set_layer;
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
-use super::parents::{parent_options, parent_page_size, parent_page_target, parent_ref, parent_spread_index};
+use super::parents::{
+    parent_label_taken, parent_name_param, parent_options, parent_page_size, parent_page_target, parent_prefix_param, parent_ref, parent_spread_index,
+};
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
@@ -178,27 +180,69 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("layout.parents.new", "New Parent…", ["Layout", "Pages"], None, "{prefix?, name?: \"Parent\"}", has_doc, |s, p| {
-            let name = str_param(p, "name").unwrap_or("Parent").to_string();
-            s.edit(|d, _| {
-                let prefix = str_param(p, "prefix").map(str::to_string).unwrap_or_else(|| d.next_parent_prefix());
-                let src = d.page(0).cloned();
-                let (columns, margins) =
-                    src.as_ref().map_or_else(|| (designcraft_doc::Columns::default(), Margins::uniform(36.0)), |p| (p.columns.clone(), p.margins));
-                let id = d.add_parent(&prefix, &name, columns.count, columns.gutter, margins);
-                // Dragged column guides carry over to the parent pages they still fit, mirrored
-                // on the parent page across the spine from the first page.
-                if let (Some(src), Some(sp)) = (&src, d.parents.iter_mut().find(|x| x.id == id)) {
-                    for pg in &mut std::sync::Arc::make_mut(sp).pages {
-                        let columns = pg.columns_from(src);
-                        if columns.valid_positions(pg.margin_rect().width()).is_some() {
-                            pg.columns.positions = columns.positions;
+        cmd!(
+            "layout.parents.new",
+            "New Parent…",
+            ["Layout", "Pages"],
+            None,
+            "{prefix?: 1–4 characters without `-` (default: the next free letter), name?: \"Parent\", basedOn?: id|\"A-Parent\"|\"A\"|null} → {id, prefix}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.parents.new";
+                let name = parent_name_param(ID, p)?.unwrap_or_else(|| "Parent".into());
+                let prefix = parent_prefix_param(ID, p)?;
+                let base = parent_ref(ID, &s.doc()?.doc, p.get("basedOn"))?.flatten();
+                s.edit(|d, _| {
+                    let prefix = prefix.unwrap_or_else(|| d.next_parent_prefix());
+                    let label = designcraft_doc::ParentInfo { prefix: prefix.clone(), name: name.clone(), based_on: None }.label();
+                    if parent_label_taken(d, &label, None) {
+                        return Err(bad(ID, format!("a parent named {label} exists")));
+                    }
+                    let src = d.page(0).cloned();
+                    let (columns, margins) = src
+                        .as_ref()
+                        .map_or_else(|| (designcraft_doc::Columns::default(), Margins::uniform(36.0)), |p| (p.columns.clone(), p.margins));
+                    let id = d.add_parent(&prefix, &name, columns.count, columns.gutter, margins);
+                    // Dragged column guides carry over to the parent pages they still fit, mirrored
+                    // on the parent page across the spine from the first page.
+                    if let (Some(src), Some(sp)) = (&src, d.parents.iter_mut().find(|x| x.id == id)) {
+                        for pg in &mut std::sync::Arc::make_mut(sp).pages {
+                            let columns = pg.columns_from(src);
+                            if columns.valid_positions(pg.margin_rect().width()).is_some() {
+                                pg.columns.positions = columns.positions;
+                            }
                         }
                     }
-                }
-                Ok(json!({"id": id.0, "prefix": prefix}))
-            })
-        }),
+                    if let Some(info) = d.parents.iter_mut().find(|x| x.id == id).map(std::sync::Arc::make_mut).and_then(|x| x.parent.as_mut()) {
+                        info.based_on = base;
+                    }
+                    Ok(json!({"id": id.0, "prefix": prefix}))
+                })
+            }
+        ),
+        cmd!(
+            "layout.parents.duplicate",
+            "Duplicate Parent Spread",
+            ["Layout", "Pages"],
+            None,
+            "{parent: id|\"A-Parent\"|\"A\"} — a copy with the next free prefix, its pages and items → {id, prefix}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.parents.duplicate";
+                let Some(Some(id)) = parent_ref(ID, &s.doc()?.doc, p.get("parent"))? else {
+                    return Err(bad(ID, "`parent` names the parent to duplicate"));
+                };
+                s.edit(|d, _| {
+                    let prefix = d.next_parent_prefix();
+                    let src = d.clone();
+                    let ids: Vec<_> =
+                        src.parent_index(id).and_then(|i| src.parents.get(i)).map(|sp| sp.items.iter().map(|i| i.id).collect()).unwrap_or_default();
+                    let (new, at) = d.duplicate_parent_shell(id, &prefix)?;
+                    crate::cmd::object::duplicate_from(d, &src, &ids, designcraft_doc::SpreadRef::Parent(at), designcraft_geom::Vec2::ZERO)?;
+                    Ok(json!({"id": new.0, "prefix": prefix}))
+                })
+            }
+        ),
         cmd!(
             "layout.parents.delete",
             "Delete Parent",
@@ -261,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Parent Options…",
             [],
             None,
-            "{parent: id|\"B-Parent\"|\"B\", basedOn: id|\"A-Parent\"|\"A\"|null (= [None])} — the parent shows its base's items under its own, and so do the pages that use it → {parent, basedOn}",
+            "{parent: id|\"B-Parent\"|\"B\", prefix?: 1–4 characters without `-`, name?, basedOn?: id|\"A-Parent\"|\"A\"|null (= [None])} — rename the parent; with a base it shows the base's items under its own, and so do the pages that use it → {parent, prefix, name, basedOn}",
             has_doc,
             parent_options
         ),
@@ -391,6 +435,7 @@ pub fn specs() -> Vec<CommandSpec> {
                                     prefix: String::new(),
                                     marker: String::new(),
                                     include_prefix: false,
+                                    layout: None,
                                 },
                             );
                         }
