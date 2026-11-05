@@ -3389,6 +3389,34 @@ fn warichu_hit_caret_and_selection_follow_each_row() {
     assert!(!z_style.warichu && (rule_baseline(z_style, l, z) - l.baseline).abs() < 1e-9);
 }
 
+/// A click on a warichu row never puts the caret between a letter and a mark in a colour of its
+/// own (a cluster of its own), as on a line without stacked rows.
+#[test]
+fn a_click_in_a_warichu_row_keeps_a_mark_with_its_letter() {
+    let text = "A\u{301}BCDEFGHZ";
+    let note = text.len() - 1;
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..note, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    story.format_chars(1..3, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert!(crate::line_has_stacked_rows(l), "the note is set in two rows");
+    let mark = l.glyphs.iter().find(|g| g.byte == 1 && g.len > 0).expect("the mark is a cluster of its own");
+    let row: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && (g.y - mark.y).abs() < 0.01).collect();
+    let x0 = row.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
+    let x1 = row.iter().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    let y = l.baseline + mark.y;
+    let hits: Vec<usize> = (0..=200).filter_map(|i| hit(&cs, 0, Point::new(x0 + (x1 - x0) * f64::from(i) / 200.0, y))).collect();
+    assert!(hits.contains(&0) && hits.contains(&3), "{hits:?}");
+    assert!(!hits.contains(&1), "{hits:?}");
+}
+
 #[test]
 fn tate_chu_yoko_sets_digits_across_one_em() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());

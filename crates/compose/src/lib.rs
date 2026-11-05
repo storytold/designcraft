@@ -5895,7 +5895,8 @@ fn glyph_contains(l: &Line, g: &PlacedGlyph, p: Point) -> bool {
 }
 
 /// Midpoint walk over `glyphs` (visual order). Past the last glyph yields the byte after it, or
-/// the line end when that glyph closes the line.
+/// the line end when that glyph closes the line. A mark in a cluster of its own ([`own_mark`])
+/// is no candidate.
 fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
     let last_byte = l.glyphs.iter().rev().find(|g| g.len > 0).map(|g| g.byte);
@@ -5905,6 +5906,11 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     for g in &glyphs {
         if last_byte == Some(g.byte) {
             saw_last = true;
+        }
+        if before_own_mark(l, g.byte) {
+            // No caret position between a letter and its mark, as on a line without stacked rows.
+            best = g.byte + g.len;
+            continue;
         }
         let mid = g.x + g.adv / 2.0;
         if p_x < mid && p_x >= prev_mid {
