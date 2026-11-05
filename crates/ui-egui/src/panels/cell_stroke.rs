@@ -186,13 +186,13 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
     egui::Grid::new((id, "cell_stroke")).num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, tr(&lang, "Weight:"));
         let wid = format!("{id}_weight");
-        if let Some(w) = NumField::number(&wid, v["weight"].as_f64(), " pt", 3).width(86.0).spinner().presets(WEIGHTS).range(0.0, 1000.0).show(ui) {
+        if let Some(w) = NumField::points(&wid, v["weight"].as_f64(), 3).width(86.0).spinner().presets(WEIGHTS).range(0.0, 1000.0).show(ui) {
             out = Some(("weight", json!(w)));
         }
         ui.end_row();
         caption(ui, tr(&lang, "Type:"));
         let shown = type_label(&lang, &v["type"]);
-        let combo = egui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+        let combo = craft_ui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
             for kind in TYPES {
                 let text = tr(&lang, builtin(kind).label());
                 if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {

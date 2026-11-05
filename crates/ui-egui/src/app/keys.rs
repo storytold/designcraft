@@ -1,4 +1,4 @@
-use super::*;
+use super::DesignApp;
 
 impl DesignApp {
     /// Applies `ui.shortcuts` to the keymap when they differ, e.g. after preferences were loaded,

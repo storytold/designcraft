@@ -1,4 +1,4 @@
-use super::*;
+use super::{EngineError, Result};
 
 /// Does this object (or anything in it) need the transparency flattener?
 pub(super) fn transparent(it: &designcraft_doc::Item) -> bool {
@@ -100,8 +100,7 @@ pub(super) fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose
                 &below,
                 cache,
                 &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
-                w,
-                h,
+                (w, h),
                 view,
                 &opts,
             );
@@ -148,7 +147,7 @@ pub(super) fn rasterize_effects(
     cache: &designcraft_compose::Cache,
     skip: &std::collections::HashMap<designcraft_doc::ItemId, designcraft_pdf::ShadowMask>,
 ) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
+    rasterize_where_with_links(d, cache, 300.0, true, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
 }
 
 /// A drop shadow is the object's only soft effect, and the PDF writer draws its shadow itself
@@ -220,7 +219,7 @@ pub(super) fn shadow_masks(
             let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
             let opts = designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
             let placed = [designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::IDENTITY }];
-            rr.render(&solo, cache, &placed, w, h, view, &opts).pixels.as_chunks::<4>().0.iter().map(|px| px[3]).collect::<Vec<u8>>()
+            rr.render(&solo, cache, &placed, (w, h), view, &opts).pixels.as_chunks::<4>().0.iter().map(|px| px[3]).collect::<Vec<u8>>()
         };
         let (with, without) = (alpha(true), alpha(false));
         let n = w as usize * h as usize;
@@ -253,6 +252,17 @@ pub(super) fn rasterize_where(
     cache: &designcraft_compose::Cache,
     ppi: f64,
     keep_wrap: bool,
+    pred: impl Fn(&designcraft_doc::Item) -> bool,
+) -> (Option<designcraft_doc::Document>, usize) {
+    rasterize_where_with_links(d, cache, ppi, keep_wrap, false, pred)
+}
+
+fn rasterize_where_with_links(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    ppi: f64,
+    keep_wrap: bool,
+    keep_links: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
@@ -289,8 +299,7 @@ pub(super) fn rasterize_where(
             &solo,
             cache,
             &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
-            w,
-            h,
+            (w, h),
             view,
             &opts,
         );
@@ -322,11 +331,24 @@ pub(super) fn rasterize_where(
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
         img_item.export_options = it.export_options.clone();
+        let linked = keep_links
+            && d.hyperlinks.iter().any(|link| match &link.source {
+                designcraft_doc::HyperlinkSource::Item { id: source } => d.top_level_of(*source) == Some(id),
+                designcraft_doc::HyperlinkSource::Text { story, .. } => {
+                    d.story(*story).is_some_and(|st| st.frames.iter().any(|frame| d.top_level_of(*frame) == Some(id)))
+                }
+            });
         // Same place in the stacking order.
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
             osp.items[pos] = std::sync::Arc::new(img_item);
-            if keep_wrap && has_wrap(it, 0) {
+            if linked {
+                // Annotation bounds and text composition still need the original frame, not
+                // the image's larger effect bounds. This copy also keeps any text wrap. It keeps
+                // the frame's ItemId, which hyperlink sources and the story's frame list name,
+                // while the image takes a fresh id.
+                osp.items.insert(pos, std::sync::Arc::new(link_stand_in(it, 0)));
+            } else if keep_wrap && has_wrap(it, 0) {
                 osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
             }
             n += 1;
@@ -349,8 +371,28 @@ fn has_wrap(it: &designcraft_doc::Item, depth: usize) -> bool {
         }
 }
 
-/// Nesting depth past which groups inside a rasterised object keep no wrap stand-ins.
+/// Nesting depth past which groups inside a rasterised object keep no stand-in children.
 const MAX_STAND_IN_DEPTH: usize = 64;
+
+/// Nonprinting link geometry, retaining text stories and wrap but no interactive annotations.
+fn link_stand_in(it: &designcraft_doc::Item, depth: usize) -> designcraft_doc::Item {
+    use designcraft_doc::Content;
+    let mut c = it.clone();
+    c.nonprinting = true;
+    c.form_field = None;
+    c.button = None;
+    c.media = None;
+    if let Content::Group { items } = &it.content {
+        c.content = Content::Group {
+            items: if depth < MAX_STAND_IN_DEPTH {
+                items.iter().map(|i| std::sync::Arc::new(link_stand_in(i, depth + 1))).collect()
+            } else {
+                Vec::new()
+            },
+        };
+    }
+    c
+}
 
 /// A nonprinting copy of `it` that keeps its text wrap (and its graphic's and its items') and
 /// nothing else that reaches the PDF: no text, form field, button or media. The image of the

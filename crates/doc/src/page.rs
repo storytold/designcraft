@@ -452,6 +452,16 @@ impl Spread {
             PageSide::Single => Some(0),
         }
     }
+    /// The parent page shown behind page `index` of a document spread, on `side`: by side for
+    /// facing pages ([`Self::parent_page_for_side`]); by position for single-sided pages in a
+    /// spread of several, as InDesign does, so the second page of a two-page spread shows the
+    /// parent's second page (the last one, for spreads longer than the parent).
+    pub fn parent_page_at(&self, side: PageSide, index: usize) -> Option<usize> {
+        match side {
+            PageSide::Single if self.pages.len() >= 2 => Some(index.min(self.pages.len() - 1)),
+            _ => self.parent_page_for_side(side),
+        }
+    }
     /// Index of the page under spread x (nearest page for the pasteboard).
     pub fn page_at_x(&self, x: f64) -> Option<usize> {
         if self.pages.is_empty() {
@@ -502,6 +512,10 @@ pub struct Section {
     pub marker: String,
     #[serde(default)]
     pub include_prefix: bool,
+    /// The name of the alternate layout this section starts (Pages panel: a column of its own).
+    /// A layout runs from its section to the next section that starts a layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use designcraft_geom::{Affine, Rect, shapes};
 use designcraft_render::{RenderOptions, Renderer, color_of};
 use image::{ExtendedColorType, ImageEncoder};
 
-const RED: &str = "C=0 M=100 Y=100 K=0";
+const RED: &str = "C=15 M=100 Y=100 K=0";
 const CYAN: &str = "C=100 M=0 Y=0 K=0";
 
 fn encode(px: &[u8], w: u32, ct: ExtendedColorType, gif: bool) -> Vec<u8> {

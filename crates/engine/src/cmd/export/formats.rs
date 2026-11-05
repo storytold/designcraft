@@ -1,6 +1,6 @@
 use super::flatten::{rasterize_where, threaded};
 use super::pdf::pages_param;
-use super::*;
+use super::{Arc, Cow, EngineError, Result, Session, Value, bad, json, str_param};
 
 pub(super) fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.printBooklet";
@@ -110,6 +110,8 @@ pub(super) fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     if rasterized > 0 {
         r.warnings.push(format!("{rasterized} object(s) went in as images"));
     }
+    // A slide has no room for the overset text either (#1465).
+    r.warnings.extend(crate::cmd::preflight::overset_warnings(s, opts.pages.as_deref()));
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]

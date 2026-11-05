@@ -202,19 +202,40 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
 
 /// Most entries a `.designcraft` archive may hold.
 const MAX_ENTRIES: usize = 100_000;
-/// Most bytes `meta.json` or `document.json` may expand to.
-const MAX_JSON_BYTES: u64 = 256 << 20;
-/// Most bytes one embedded asset may expand to.
-const MAX_ASSET_BYTES: u64 = 1 << 30;
-/// Most bytes all the entries read from one archive may expand to together.
-const MAX_TOTAL_BYTES: u64 = 4 << 30;
+
+/// How much a `.designcraft` archive may expand to when read. The sizes an archive claims are
+/// not trusted, so deflated entries are capped; a *stored* entry can't expand (its size is its
+/// bytes in the archive, which is already in memory, and all stored entries read together are
+/// held to the archive's own size), so a placed image — stored as is by [`save`] — opens whatever
+/// its size and doesn't count against the budget. Saving has no cap, and this keeps every saved
+/// document openable (#2166).
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    /// Most bytes `meta.json` or `document.json` may expand to.
+    json: u64,
+    /// Most bytes one deflated asset may expand to.
+    asset: u64,
+    /// Most bytes all the deflated entries read from one archive may expand to together.
+    total: u64,
+}
+
+impl Limits {
+    const DEFAULT: Limits = Limits { json: 256 << 20, asset: 1 << 30, total: 4 << 30 };
+}
 
 /// Read entry `name` of `z`, or `None` when it is missing; [`FormatError::Unreadable`] when it is
-/// present but cannot be read. Refuses an entry that
-/// expands past `limit` bytes or past what is `left` of the archive's budget, without
-/// decompressing more than that: the sizes the archive claims are not trusted.
-fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, left: &mut u64) -> Result<Option<Vec<u8>>, FormatError> {
-    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive is larger than {MAX_TOTAL_BYTES} bytes)"));
+/// present but cannot be read. Refuses a deflated entry
+/// that expands past `limit` bytes or past what is `left` of the archive's budget, without
+/// decompressing more than that: the sizes the archive claims are not trusted. A stored entry
+/// is read at its size in the archive and charged to `stored_left`, the archive's own size; only a
+/// stored asset is free of `limit`.
+fn read_entry(
+    z: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    limit: u64,
+    left: &mut u64,
+    stored_left: &mut u64,
+) -> Result<Option<Vec<u8>>, FormatError> {
     let f = match z.by_name(name) {
         Ok(f) => f,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
@@ -222,7 +243,15 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
         // have the caller carry on without it, as for a bad CRC below.
         Err(e) => return Err(FormatError::Unreadable(format!("{name} is in the file but could not be opened: {e}"))),
     };
-    let limit = limit.min(*left);
+    let stored = f.compression() == zip::CompressionMethod::Stored;
+    let limit = if !stored {
+        limit.min(*left)
+    } else if name.starts_with("assets/") {
+        f.compressed_size().min(*stored_left)
+    } else {
+        f.compressed_size().min(*stored_left).min(limit)
+    };
+    let too_big = || FormatError::Io(format!("{name} is larger than the {limit}-byte limit (or the archive expands past its {}-byte budget)", *left));
     if f.size() > limit {
         return Err(too_big());
     }
@@ -231,32 +260,46 @@ fn read_entry(z: &mut zip::ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64, le
         // The entry is there and cannot be read: a bad CRC, a truncated archive. Reporting it as
         // absent made the caller carry on with nothing, which for an asset meant the image opened
         // empty and the next save dropped it (#1592). What was decompressed before the failure
-        // still counts, or every damaged entry could expand to the per-entry limit.
-        *left = left.saturating_sub(v.len() as u64);
+        // still counts, against the budget the entry draws on, or every damaged entry could
+        // expand to the per-entry limit.
+        let spent = if stored { &mut *stored_left } else { &mut *left };
+        *spent = spent.saturating_sub(v.len() as u64);
         return Err(FormatError::Unreadable(format!("{name} is in the file but could not be read: {e}")));
     }
     let n = v.len() as u64;
     if n > limit {
         return Err(too_big());
     }
-    *left = left.saturating_sub(n);
+    if stored {
+        *stored_left = stored_left.saturating_sub(n);
+    } else {
+        *left = left.saturating_sub(n);
+    }
     Ok(Some(v))
 }
 
 fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
+    load_zip_within(bytes, Limits::DEFAULT)
+}
+
+fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     if z.len() > MAX_ENTRIES {
         return Err(FormatError::NotOurs(format!("{} entries (at most {MAX_ENTRIES})", z.len())));
     }
-    let mut left = MAX_TOTAL_BYTES;
-    let version = read_entry(&mut z, "meta.json", MAX_JSON_BYTES, &mut left)?
+    let mut left = limits.total;
+    // Stored entries can't expand, but a crafted zip can point several at the same bytes: together
+    // they get the archive's own size.
+    let mut stored_left = bytes.len() as u64;
+    let version = read_entry(&mut z, "meta.json", limits.json, &mut left, &mut stored_left)?
         .and_then(|meta| serde_json::from_slice::<Value>(&meta).ok())
         .and_then(|m| m.get("version").and_then(Value::as_u64))
         .unwrap_or(1);
     if version > u64::from(VERSION) {
         return Err(FormatError::TooNew(version));
     }
-    let json = read_entry(&mut z, "document.json", MAX_JSON_BYTES, &mut left)?.ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
+    let json = read_entry(&mut z, "document.json", limits.json, &mut left, &mut stored_left)?
+        .ok_or_else(|| FormatError::NotOurs("missing document.json".into()))?;
     let mut v: Value = serde_json::from_slice(&json).map_err(|e| FormatError::NotOurs(e.to_string()))?;
     upgrade_json(&mut v);
     let mut doc: Document = serde_json::from_value(v).map_err(|e| FormatError::NotOurs(e.to_string()))?;
@@ -275,7 +318,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
         // An asset that cannot be read must not stop the document opening -- the rest of the
         // layout is still there -- but it is marked so that saving does not quietly drop it
         // (#1592).
-        let entry = match read_entry(&mut z, &name, MAX_ASSET_BYTES, &mut left) {
+        let entry = match read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left) {
             Ok(e) => e,
             Err(FormatError::Unreadable(message)) => {
                 log::warn!("{message}");
@@ -302,6 +345,7 @@ fn load_zip(bytes: &[u8]) -> Result<Document, FormatError> {
     upgrade(&mut doc, u32::try_from(version).unwrap_or(u32::MAX));
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
+    doc.renumber_duplicate_items();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
@@ -369,6 +413,7 @@ fn load_legacy_json(bytes: &[u8]) -> Result<Document, FormatError> {
     upgrade(&mut doc, 1);
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
+    doc.renumber_duplicate_items();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
