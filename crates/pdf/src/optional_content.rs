@@ -1,6 +1,7 @@
 use hayro_syntax::Pdf;
 use hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object, ObjectIdentifier, Stream};
 use hayro_syntax::reader::{Reader, ReaderExt};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{PdfError, Result};
@@ -218,10 +219,12 @@ pub(crate) fn prepare(bytes: &Arc<Vec<u8>>, choice: Option<&[String]>) -> Result
         }
         Err(error) => return Err(error),
     };
-    if on.iter().any(|id| off.contains(id)) {
+    let off_set: HashSet<_> = off.iter().copied().collect();
+    if on.iter().any(|id| off_set.contains(id)) {
         return Err(invalid());
     }
-    let incomplete = on.iter().chain(&off).any(|id| !groups.contains(id));
+    let group_set: HashSet<_> = groups.iter().copied().collect();
+    let incomplete = on.iter().chain(&off).any(|id| !group_set.contains(id));
     groups.extend(on.iter().chain(&off).copied());
     groups.sort();
     groups.dedup();

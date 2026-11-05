@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -124,23 +124,35 @@ fn can_be_value(v: &str) -> bool {
     !(v.starts_with('-') && v.len() > 1 && v.parse::<f64>().is_err())
 }
 
-/// The usage lines for one subcommand, for `<sub> --help`: each line of [`USAGE`] names its
-/// subcommand, and the indented lines after it belong to it. `None` when no line describes `sub`,
-/// which is how `<sub> --help` tells a real subcommand from a typo; falling back to the whole usage
-/// made `bogus --help` print it and succeed, bypassing the unknown-command failure.
-fn usage_for(sub: &str) -> Option<String> {
+/// Whether `sub` is a subcommand [`USAGE`] lists. Read from the usage text rather than written
+/// out again, so a subcommand added there cannot be missing here.
+fn is_subcommand(sub: &str) -> bool {
+    !sub.starts_with('-') && USAGE.lines().any(|line| usage_subcommand(line) == Some(sub))
+}
+
+/// The subcommand a `USAGE` line introduces, if it introduces one.
+fn usage_subcommand(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix("usage: designcraft-cli ")
+        .or_else(|| trimmed.strip_prefix("designcraft-cli "))
+        .and_then(|rest| rest.split_whitespace().next())
+}
+
+/// The usage lines for one subcommand, for `<sub> --help`. Each line of [`USAGE`] names its
+/// subcommand, and the indented lines after it belong to it.
+fn usage_for(sub: &str) -> String {
     let mut out = Vec::new();
     let mut keep = false;
     for line in USAGE.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("usage: designcraft-cli ").or_else(|| trimmed.strip_prefix("designcraft-cli ")) {
-            keep = rest.split_whitespace().next() == Some(sub);
+        if let Some(named) = usage_subcommand(line) {
+            keep = named == sub;
         }
         if keep {
             out.push(line);
         }
     }
-    (!out.is_empty()).then(|| out.join("\n"))
+    if out.is_empty() { USAGE.to_string() } else { out.join("\n") }
 }
 
 fn main() -> ExitCode {
@@ -159,16 +171,19 @@ fn main() -> ExitCode {
         }
     }
     // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
-    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does. It wins
-    // wherever it appears after the subcommand, even where an option would take it as its value
-    // (`run --in -h`): no file is named `-h`, and asking for help is what that line most likely
-    // means.
+    // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.
+    //
+    // Only for a subcommand that exists. Without that, `designcraft-cli typo --help` printed the
+    // whole usage and *succeeded*, so a misspelled command was an error on its own and not an
+    // error with `--help` after it -- and a script checking the exit status would carry on
+    // (noted in review). An unknown one now falls through to the dispatch, which fails as it
+    // does for `typo` alone.
     if let Some(sub) = args.first().map(String::as_str)
         && !matches!(sub, "--help" | "-h" | "help" | "script")
+        && is_subcommand(sub)
         && args[1..].iter().any(|a| a == "--help" || a == "-h")
-        && let Some(text) = usage_for(sub)
     {
-        outln!("{text}");
+        outln!("{}", usage_for(sub));
         return ExitCode::SUCCESS;
     }
     match args.first().map(String::as_str) {
@@ -330,7 +345,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
             continue;
         }
         match a.as_str() {
-            "--connect" => connect = Some(it.next().ok_or("--connect needs a port or host:port")?),
+            "--connect" => connect = Some(value(&a, it.next().as_ref())?),
             "--sample" => sample = true,
             other => {
                 return Err(format!(
@@ -442,15 +457,28 @@ impl Export {
     }
 }
 
-fn run(args: &[String]) -> Result<(), String> {
-    // Nothing runs on a line with an option missing its value: found here, before the first export
-    // writes anything, with the message `value()` gives. Left to `value()` alone, `--export a.png
-    // --scale --export b.png` wrote a.png and only then said `--scale needs a value`.
-    for (i, a) in args.iter().enumerate() {
-        if matches!(a.as_str(), "--page" | "--scale" | "--pdf-options" | "--export" | "--all-pages" | "--in" | "--cmd") {
-            value(a, args.get(i + 1))?;
+/// Every option that takes a value has one, checked before anything runs. Found later, a missing
+/// value is reported only after the exports before it have been written -- and `run --export
+/// first.png --scale --export second.png` would then have overwritten an existing `first.png` on
+/// an invocation that fails (noted in review).
+fn values_present(args: &[String]) -> Result<(), String> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        i += 1;
+        if !matches!(a.as_str(), "--in" | "--cmd" | "--export" | "--all-pages" | "--page" | "--scale" | "--pdf-options") {
+            continue;
         }
+        value(a, args.get(i))?;
+        // Step over the value, so one that looks like an option is not checked as one.
+        i += 1;
     }
+    Ok(())
+}
+
+fn run(args: &[String]) -> Result<(), String> {
+    // Before the order check and before any export: a value error is about the line as written,
+    // and reporting it must not cost a file that was already there.
+    values_present(args)?;
     if let Some(opt) = option_after_last_export(args) {
         return Err(format!(
             "{opt} has no --export or --all-pages after it; options apply to the exports that follow them, so put it before its --export"
@@ -677,7 +705,7 @@ fn script(args: &[String]) -> Result<(), String> {
         }
         for (kind, out) in &export {
             let p = json!({"path": out});
-            match kind {
+            let r = match kind {
                 // PNG / JPEG of the first page.
                 Export::Image => b.call("app.export", p)?,
                 Export::Pdf => exec(b, "file.exportPdf", p)?,
@@ -686,6 +714,11 @@ fn script(args: &[String]) -> Result<(), String> {
                 Export::Pptx => exec(b, "file.exportPptx", p)?,
                 Export::Command(cmd) => exec(b, cmd, p)?,
             };
+            // What the export itself reports (effects rasterised, transparency flattened…) goes
+            // to stderr, as `run --export` prints it: the report on stdout covers only the steps.
+            for w in r["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
         }
     }
     outln!("{}", serde_json::to_string_pretty(&report.to_json()).unwrap_or_default());
