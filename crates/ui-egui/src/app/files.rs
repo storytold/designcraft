@@ -295,7 +295,8 @@ impl DesignApp {
     /// cursor, each run of them where it came in the order, after any images it already holds,
     /// whatever is under the pointer: click to place them one by one, drag with the arrow keys for
     /// a grid. The rest of the drop is cancelled once a file opens a dialog (a multi-page PDF's
-    /// Import Options, an alert), as File › Place with several chosen is.
+    /// Import Options, an alert): unlike File › Place with several chosen, nothing waits for a
+    /// PDF's options to be confirmed.
     pub fn open_dropped_batch(&mut self, drops: Vec<(String, Option<egui::Pos2>)>) {
         let several = drops.iter().filter(|(p, _)| is_cursor_image(p)).count() > 1;
         // Only the first graphic of a drop fills the frame under the pointer.
