@@ -23,6 +23,7 @@
 //! aren't recorded: the restart caught their failure, and a later launch may try them again. When
 //! every candidate has failed the list starts over, and so does a new DesignCraft version (drivers
 //! and wgpu move on). `DESIGNCRAFT_NO_PREFS` records nothing.
+//! A start that finds no adapter at all while the record blames a backend forgets the record once ([`Fallback::forget`], see `gpu::finish`): a kill before the first frame looks the same as a crash.
 
 use std::path::{Path, PathBuf};
 

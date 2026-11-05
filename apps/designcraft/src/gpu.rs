@@ -33,6 +33,7 @@
 //! over them, and only once no hardware adapter of any backend could show the window does the app
 //! start again with them allowed. Each restart leaves out one more adapter or backend, or allows
 //! software once, so it ends when none is left.
+//! One exception: a start that finds no adapter at all while the record blames a backend forgets the record and starts over once ([`RETRIED`], see [`finish`]), keeping the adapters left out so far.
 //!
 //! An adapter can also hang instead of failing: on a hybrid laptop, the discrete GPU never put the
 //! window's first frame on the screen, with no error and no panic, and the app stayed in the

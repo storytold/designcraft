@@ -13,9 +13,6 @@
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
-- **2026-10-30** · A start that finds no graphics adapter at all no longer blames its backend: it
-  forgets the recorded failures and starts over once, so a launch killed while the window was
-  still starting cannot leave the app unable to start. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
@@ -400,6 +397,9 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 - **2026-11-02** · Windows: the custom title bar window stays borderless, so the content is no longer drawn offset by the caption and border (black bars at the top and left, clicks landing off target). The workaround goes when winit carries the fix (storytold/winit#17). No readiness percentage change.
 - **2026-10-30** · The Color Picker takes an eyedropper: dragged from the picker onto the page, it takes the colour the canvas shows (proofed under Proof Colors). No readiness percentage change.
 - **2026-10-30** · The Color Picker is laid out as the reference app's: a field and slider for the component chosen, HSB, Lab, RGB and CMYK values, the old colour, and Add CMYK Swatch; Enter and Esc close it once. No readiness percentage change.
+- **2026-10-30** · A start that finds no graphics adapter at all no longer blames its backend: it
+  forgets the recorded failures and starts over once, so a launch killed while the window was
+  still starting cannot leave the app unable to start. No readiness percentage change.
 - **2026-10-18** · Table of Contents gains Create PDF Bookmarks: included headings become nested page destinations, regenerated in their existing outline position on update without replacing or moving surrounding manual bookmarks. The setting survives native and IDML files. No readiness percentage change.
 
 Newest first.
