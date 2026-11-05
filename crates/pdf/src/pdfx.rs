@@ -3,7 +3,7 @@
 //! krilla's PDF 1.6 output, and a check of the PDF/X-4 requirements this exporter is responsible
 //! for.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use hayro_syntax::content::UntypedIter;
 use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
@@ -217,6 +217,7 @@ fn device_rgb(file: Option<&hayro_syntax::Pdf>) -> Vec<String> {
         return Vec::new();
     }
     let mut found: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
     for (i, page) in file.pages().iter().enumerate() {
         let mut scan = RgbScan::default();
         let res = page.resources();
@@ -227,9 +228,12 @@ fn device_rgb(file: Option<&hayro_syntax::Pdf>) -> Vec<String> {
             scan.content(content, res, 0);
         }
         for what in scan.found {
-            match found.iter_mut().find(|(w, _)| *w == what) {
+            match at.get(&what).and_then(|k| found.get_mut(*k)) {
                 Some((_, pages)) => pages.push(i + 1),
-                None => found.push((what, vec![i + 1])),
+                None => {
+                    at.insert(what.clone(), found.len());
+                    found.push((what, vec![i + 1]));
+                }
             }
         }
     }
@@ -274,14 +278,16 @@ pub(crate) const MAX_DEPTH: usize = 16;
 /// What one page uses in device RGB, in the order found.
 #[derive(Default)]
 struct RgbScan {
+    /// What was found, in the order found; `known` is the same as a set.
     found: Vec<String>,
+    known: HashSet<String>,
     /// Forms, images and patterns already looked at on this page.
     seen: HashSet<ObjectIdentifier>,
 }
 
 impl RgbScan {
     fn add(&mut self, what: String) {
-        if !self.found.contains(&what) {
+        if self.known.insert(what.clone()) {
             self.found.push(what);
         }
     }

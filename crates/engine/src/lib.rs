@@ -147,7 +147,7 @@ fn next_revision() -> u64 {
 impl DocState {
     /// Initialize saved/live document identity, revision, epoch, active default layer, empty history with limit 1,000 and the initial path.
     pub fn new(doc: Document, path: Option<String>) -> Self {
-        let active_layer = doc.default_layer();
+        let active_layer = doc.working_layer();
         let doc = Arc::new(doc);
         let revision = next_revision();
         let identity_epoch = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -435,6 +435,10 @@ pub struct Session {
     /// Linked text files checked by the Links panel: path → the size and modification time the
     /// file had and the hash of its contents then, so a file touched but not changed is read once.
     pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
+    /// Linked images checked against their files this session (`links.list` polls twice a second):
+    /// a file of the recorded size and time isn't read again.
+    pub(crate) image_link_checks:
+        std::collections::HashMap<(designcraft_doc::AssetId, usize, std::path::PathBuf), (designcraft_doc::Fingerprint, bool)>,
 }
 
 impl Default for Session {
@@ -467,6 +471,7 @@ impl Session {
             recovery_dir: None,
             text_clipboard: None,
             text_link_checks: Default::default(),
+            image_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),
@@ -634,7 +639,7 @@ impl Session {
         if let Some(st) = self.active_mut()
             && st.doc.layer(st.active_layer).is_none()
         {
-            st.active_layer = st.doc.default_layer();
+            st.active_layer = st.doc.working_layer();
         }
         self.record_transform(id, params);
         if self.prefs.smart_text_reflow && spec.undoable {
