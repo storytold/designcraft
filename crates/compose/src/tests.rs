@@ -8695,3 +8695,76 @@ fn a_table_in_a_spanning_paragraph_spans_the_columns() {
         }
     }
 }
+
+#[test]
+fn a_spanning_table_spaces_and_column_starts_as_spanning_text() {
+    // Intro text, then a table across two columns with space before/after, then text.
+    let body = [LOREM; 4].join(
+        "
+",
+    );
+    let (mut d, sid, fid) = doc_with(
+        &format!(
+            "Intro
+{body}"
+        ),
+        Rect::new(0.0, 0.0, 400.0, 450.0),
+        ParaAttrs::default(),
+    );
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let st = d.story_mut(sid).unwrap();
+    st.paras[0].para.space_after = Some(3.0);
+    let mut t = filled(1, 1, 0, 380.0);
+    t.options.space_before = 0.0;
+    t.options.space_after = 0.0;
+    st.insert_table(
+        "Intro
+"
+        .len(),
+        t,
+    );
+    let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+    let p = &mut st.paras[tp].para;
+    p.span_columns = Some(SpanColumns::Span(0));
+    p.span_space_before = Some(6.0);
+    p.space_after = Some(4.0);
+    p.span_space_after = Some(10.0);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let intro = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    let tf = &ft.tables[0];
+    // Space before the span adds to the intro's space after (below its descenders).
+    assert!((tf.rect.y0 - (intro.baseline + intro.descent + 3.0 + 6.0)).abs() < 1e-6, "{} after {}", tf.rect.y0, intro.baseline);
+    // Both columns below start the larger space after (10 pt) under the table, on one baseline.
+    let firsts: Vec<f64> = (0..2).map(|c| ft.lines.iter().find(|l| l.para > tp && l.column == c).unwrap().baseline).collect();
+    assert!((firsts[0] - firsts[1]).abs() < 1e-6, "{firsts:?}");
+    let gap = |b: f64| b - tf.rect.y1;
+    let alone = {
+        let st = d.story_mut(sid).unwrap();
+        st.paras[tp].para.span_space_after = Some(0.0);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        ft.lines.iter().find(|l| l.para > tp && l.column == 0).unwrap().baseline - ft.tables[0].rect.y1
+    };
+    assert!((gap(firsts[0]) - alone - 6.0).abs() < 1e-6, "span space after replaces the 4 pt space after: {} vs {alone}", gap(firsts[0]));
+
+    // Start in Next Column moves a spanning table on to the next frame, as for spanning text.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 400.0, 300.0), lid, "Intro", ParaFormat::default()).unwrap();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, 400.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(f1, f2).unwrap();
+    for f in [f1, f2] {
+        d.item_mut(f).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    }
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    st.insert_table(end, filled(1, 1, 0, 380.0));
+    let tp = (0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap();
+    st.paras[tp].para.span_columns = Some(SpanColumns::Span(0));
+    st.paras[tp].para.start_paragraph = Some(designcraft_doc::StartParagraph::NextColumn);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].tables.is_empty() && cs.frames[1].tables.len() == 1);
+}

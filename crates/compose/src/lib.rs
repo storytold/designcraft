@@ -1121,6 +1121,9 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         info,
         boxes,
     } = input;
+    // A table set across the columns moves on to the next frame where others move on to the next
+    // column, as spanning text does.
+    let start = if spans_columns(props) && start == StartParagraph::NextColumn { StartParagraph::NextFrame } else { start };
     if cursor.last_baseline.is_some() {
         cursor.start(start, columns, frames, doc);
     } else {

@@ -399,14 +399,19 @@ fn go_below_band(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps) {
         cur.col = 0;
         cur.last_baseline = Some(bottom);
         cur.last_descent = 0.0;
-        cur.pending = cur.pending.max(pp.span_space_before);
+        // As for spanning text: the space before a span adds to the space after the text above.
+        cur.pending += pp.span_space_before;
     }
 }
 
-/// The columns below a spanning table (paragraph `pi`, ending at `y`) start under it.
+/// The columns below a spanning table (paragraph `pi`, ending at `y`) start under it. As for
+/// spanning text, they all start the larger of the paragraph's space after and its span space
+/// after below it (plus the table's own space after); the paragraph's space after is added to
+/// this column's pending space once the table is placed.
 fn start_band_below(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps, pi: usize, y: f64) {
-    cur.pending = cur.pending.max(pp.span_space_after);
-    let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending };
+    let after = pp.space_after.max(pp.span_space_after);
+    cur.pending += after - pp.space_after;
+    let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending + pp.space_after };
     cur.band = Band { para: pi + 1, line0: out.frames[cur.fi].lines.len(), above: Some(above), tail: None };
 }
 
