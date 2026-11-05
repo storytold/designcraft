@@ -395,12 +395,17 @@ pub(crate) fn place_table(
 /// A spanning table goes below the deepest of the columns above it, in the first column.
 fn go_below_band(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps) {
     let deepest = out.frames[cur.fi].lines.get(cur.band.line0..).unwrap_or_default().iter().map(|l| l.baseline + l.descent).reduce(f64::max);
-    if let Some(bottom) = deepest {
-        cur.col = 0;
-        cur.last_baseline = Some(bottom);
-        cur.last_descent = 0.0;
-        // As for spanning text: the space before a span adds to the space after the text above.
-        cur.pending += pp.space_before.max(pp.span_space_before);
+    match deepest {
+        Some(bottom) => {
+            cur.col = 0;
+            cur.last_baseline = Some(bottom);
+            cur.last_descent = 0.0;
+            // As for spanning text: the space before a span adds to the space after the text above.
+            cur.pending += pp.space_before.max(pp.span_space_before);
+        }
+        // Right below another span (its band still empty): the paragraph's own space before.
+        None if cur.last_baseline.is_some() => cur.pending += pp.space_before,
+        None => {}
     }
 }
 

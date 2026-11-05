@@ -8777,3 +8777,30 @@ fn a_spanning_table_spaces_and_column_starts_as_spanning_text() {
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert!(cs.frames[0].tables.is_empty() && cs.frames[1].tables.len() == 1);
 }
+
+#[test]
+fn a_spanning_table_right_below_another_keeps_its_space_before() {
+    let (mut d, sid, fid) = doc_with(&LOREM.to_string(), Rect::new(0.0, 0.0, 400.0, 450.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    let st = d.story_mut(sid).unwrap();
+    let table = |id: u64| {
+        let mut t = filled(1, 1, 0, 380.0);
+        t.options.space_before = 0.0;
+        t.options.space_after = 0.0;
+        t.id = id;
+        t
+    };
+    st.insert_table(0, table(77));
+    let after = st.para_ranges()[(0..st.paras.len()).find(|&i| st.para_table(i).is_some()).unwrap()].end + 1;
+    st.insert_table(after, table(78));
+    let tables: Vec<usize> = (0..st.paras.len()).filter(|&i| st.para_table(i).is_some()).collect();
+    for &p in &tables {
+        st.paras[p].para.span_columns = Some(SpanColumns::Span(0));
+    }
+    st.paras[tables[1]].para.space_before = Some(8.0);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    let (a, b) = (&ft.tables[0], &ft.tables[1]);
+    assert!((b.rect.y0 - a.rect.y1 - 8.0).abs() < 1e-6, "{} below {}", b.rect.y0, a.rect.y1);
+}
