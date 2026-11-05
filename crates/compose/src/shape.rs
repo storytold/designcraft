@@ -612,8 +612,7 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         // A cluster that spans two styles (a letter with a mark in a colour of its own, a
         // ligature) would paint one of them in the other's colour.
         let cuts = runs.get(1..).unwrap_or_default();
-        let spans_cut = |g: &Glyph, cut: usize| g.byte < cut && cut < g.byte + g.len;
-        if glyphs[start..].iter().any(|g| cuts.iter().any(|&(cut, _)| spans_cut(g, cut))) {
+        if glyphs[start..].iter().any(|g| cuts_inside(cuts, g.byte, g.len).next().is_some()) {
             // Every character in a cluster of its own: a mark keeps its colour and still sits on
             // its letter, as in InDesign.
             glyphs.truncate(start);
@@ -622,7 +621,7 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
             // What still spans a cut is a ligature. Between Arabic characters (lam-alif) it
             // stays, in its first character's style, as in InDesign; elsewhere a change of style
             // ends it, so each letter keeps its colour: those pieces are shaped apart.
-            if glyphs[start..].iter().any(|g| cuts.iter().any(|&(cut, _)| spans_cut(g, cut) && !between_arabic_characters(&story.text, cut))) {
+            if glyphs[start..].iter().any(|g| cuts_inside(cuts, g.byte, g.len).any(|cut| !between_arabic_characters(&story.text, cut))) {
                 glyphs.truncate(start);
                 for p in group {
                     shape_run(db, &story.text, p.range.clone(), &p.props, p.env, &StyleRuns::of(&[(p.range.start, p.style)]), sub, &mut glyphs);
@@ -632,6 +631,14 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         i = j;
     }
     glyphs
+}
+
+/// The style cuts strictly inside a glyph's cluster, found by binary search: `cuts` is sorted by
+/// story byte (the pieces of a group are contiguous). A ligature can span several cuts.
+fn cuts_inside(cuts: &[(usize, u32)], byte: usize, len: usize) -> impl Iterator<Item = usize> + '_ {
+    let end = byte.saturating_add(len);
+    let from = cuts.partition_point(|&(cut, _)| cut <= byte);
+    cuts.get(from..).unwrap_or_default().iter().map(|&(cut, _)| cut).take_while(move |&cut| cut < end)
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
@@ -1541,7 +1548,20 @@ fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, O
 
 #[cfg(test)]
 mod tests {
-    use super::overlay_bands;
+    use super::{cuts_inside, overlay_bands};
+
+    /// The binary search finds the same cuts inside a cluster as checking every cut.
+    #[test]
+    fn cuts_inside_match_a_scan_of_every_cut() {
+        let cuts: Vec<(usize, u32)> = [3, 4, 7, 10, 11, 12, 20].into_iter().map(|c| (c, 0)).collect();
+        for byte in 0..24 {
+            for len in 0..12 {
+                let want: Vec<usize> = cuts.iter().map(|c| c.0).filter(|&c| byte < c && c < byte + len).collect();
+                assert_eq!(cuts_inside(&cuts, byte, len).collect::<Vec<_>>(), want, "{byte}+{len}");
+            }
+        }
+        assert_eq!(cuts_inside(&cuts, usize::MAX - 1, 5).count(), 0);
+    }
 
     /// The band sweep picks the same top overlay as checking every overlay at each boundary.
     #[test]
