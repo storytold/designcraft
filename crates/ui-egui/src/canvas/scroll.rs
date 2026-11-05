@@ -1,6 +1,10 @@
 #[cfg(test)]
+use super::json;
+#[cfg(test)]
 use super::view::set_zoom;
-use super::*;
+use super::{CanvasLayout, DesignApp, Mods, Point, PointerEvent, PointerKind, Rect, SCROLLBAR, Sense, Tokens, Xf, pos2, vec2};
+#[cfg(test)]
+use egui::Pos2;
 
 /// Shortest scrollbar thumb.
 const MIN_THUMB: f32 = 18.0;

@@ -14,9 +14,10 @@ use std::borrow::Cow;
 
 use craft_keymap::ui::{DialogState, Format, Options, Outcome, ShortcutsDialog, Text};
 use craft_keymap::{Bindable, Overrides};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::DesignApp;
+use crate::app::file_dialogs::Bound;
 use crate::i18n::tr;
 
 /// The `app.ui.dialog` id while the dialog is open.
@@ -28,7 +29,7 @@ pub static BUILTINS: [(&str, Overrides); 1] = [("Default", Overrides::new())];
 /// The name edits of the built-in set are saved under (translated, made unique).
 pub const CUSTOM_SET: &str = "Custom";
 
-/// The file-picker purpose of the dialog's Import (`Services::pick_open`, `open_async`).
+/// The file-picker purpose of the dialog's Import (`DesignApp::ask_open`, `open_async`).
 pub const PURPOSE: &str = "shortcuts";
 
 /// A set saved by InDesign's Show Set, read by `shortcut_import`.
@@ -176,20 +177,26 @@ pub(crate) fn close(app: &mut DesignApp, ok: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Import: a native picker reads the file at once; in a browser it arrives later through
-/// [`deliver`].
+/// Import: the chosen file is read when the open dialog answers, or arrives later through
+/// [`deliver`] in a browser.
 fn request_import(app: &mut DesignApp, host: &mut Host) {
-    if let Some(pick) = app.services.pick_open.as_mut() {
-        let Some(path) = pick(PURPOSE) else { return };
-        match crate::shortcut_import::read_file(&path) {
-            Ok(text) => review(app, host, &text),
-            Err(e) => host.state.show_error(e),
-        }
-        return;
-    }
     let request = app.import_request(PURPOSE);
     if let Some(open) = app.services.open_async.as_mut() {
         open(request);
+        return;
+    }
+    let asked = app.ask_open(PURPOSE, Bound::App, |app, path| {
+        // The dialog closed meanwhile: nothing to import into.
+        let Some(mut host) = app.shortcut_dialog.take() else { return Ok(Value::Null) };
+        match crate::shortcut_import::read_file(&path) {
+            Ok(text) => review(app, &mut host, &text),
+            Err(e) => host.state.show_error(e),
+        }
+        app.shortcut_dialog = Some(host);
+        Ok(Value::Null)
+    });
+    if let Err(e) = asked {
+        host.state.show_error(e);
     }
 }
 
@@ -228,14 +235,20 @@ fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
 /// Writes a file the dialog made where the user chooses (a download on the web).
 fn save_file(app: &mut DesignApp, name: &str, bytes: &[u8]) {
     let name: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
-    let Some(path) = app.services.pick_save.as_mut().and_then(|f| f(&name)) else { return };
-    let result = match app.services.write.as_mut() {
-        Some(write) => write(&path, bytes),
-        None => Err("no writer".into()),
-    };
-    match result {
-        Ok(()) => app.status(tr(&app.ui.language, "Saved to {path}").replace("{path}", &path)),
-        Err(e) => app.status(e),
+    let bytes = bytes.to_vec();
+    let asked = app.ask_save(&name, Bound::App, move |app, path| {
+        let result = match app.services.write.as_mut() {
+            Some(write) => write(&path, &bytes),
+            None => Err("no writer".into()),
+        };
+        match result {
+            Ok(()) => app.status(tr(&app.ui.language, "Saved to {path}").replace("{path}", &path)),
+            Err(e) => app.status(e),
+        }
+        Ok(Value::Null)
+    });
+    if let Err(e) = asked {
+        app.status(e);
     }
 }
 
@@ -424,10 +437,12 @@ mod tests {
         .unwrap();
         let picked = path.to_string_lossy().to_string();
         let mut app = app();
-        app.services.pick_open = Some(Box::new(move |purpose| (purpose == PURPOSE).then(|| picked.clone())));
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
         app.run("app.keyboardShortcuts", json!({})).unwrap();
         let mut h = harness(app);
         click(&mut h, "Import…");
+        h.state_mut().settle_dialogs();
+        h.run();
         assert!(has(&h, "Import “Studio”"));
         assert!(h.state().ui.shortcuts.is_empty(), "the review changes nothing");
         click(&mut h, "Import as New Set");
