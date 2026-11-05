@@ -124,28 +124,23 @@ impl CellLineExtent {
 }
 
 /// How far line `l`'s drawn glyphs reach below its baseline (0 when none does): their outlines
-/// and the underline and strikethrough bars of their runs (`styles`, the composed story's).
+/// as drawn (scaled, shatai applied) with the stroke outside them, and the underline and
+/// strikethrough bars of their runs (`styles`, the composed story's).
 ///
 /// Every term is a distance below the baseline in the frame's y-down space, so they compare:
 /// a glyph's `y` is its offset from the line's baseline (y-down, as the renderer places it at
 /// `baseline + y`), its outline is in font units y-down ([`designcraft_fonts::FontDb::outline`]),
 /// scaled to the frame by `sy`; a bar's rect is in frame space, so the baseline is subtracted.
-/// A glyph with no outline (a space, an empty glyph) has no ink and adds nothing.
+/// A glyph with no outline (a space, an empty glyph) has no ink and adds nothing; a tab draws
+/// nothing but carries its run's bars across its width ([`crate::PlacedGlyph::spans_rules`]).
 fn ink_depth(l: &crate::Line, styles: &[crate::RunStyle]) -> f64 {
-    let fonts = designcraft_fonts::FontDb::global();
     l.glyphs
         .iter()
-        .filter(|g| g.visible)
+        .filter(|g| g.spans_rules())
         .map(|g| {
-            let outline = fonts.outline(g.face.get(), g.gid);
-            let letter = if outline.elements().is_empty() {
-                f64::NEG_INFINITY
-            } else {
-                let b = designcraft_geom::Shape::bounding_box(&*outline);
-                // The lower edge whichever way `sy` scales the outline.
-                g.y + (b.y0 * g.sy).max(b.y1 * g.sy)
-            };
-            let bars = styles.get(g.style as usize).map_or(f64::NEG_INFINITY, |st| {
+            let style = styles.get(g.style as usize);
+            let letter = if g.visible { letter_depth(l, g, style) } else { f64::NEG_INFINITY };
+            let bars = style.map_or(f64::NEG_INFINITY, |st| {
                 st.rules(g.x, g.x + g.adv, crate::rule_baseline(st, l, g)).map(|(_, r)| r.y1 - l.baseline).fold(f64::NEG_INFINITY, f64::max)
             });
             letter.max(bars)
@@ -153,6 +148,27 @@ fn ink_depth(l: &crate::Line, styles: &[crate::RunStyle]) -> f64 {
         // Glyphs with neither ink nor bars stay at NEG_INFINITY; NaN from a degenerate scale too.
         .filter(|d| d.is_finite())
         .fold(0.0, f64::max)
+}
+
+/// How far glyph `g`'s outline reaches below the baseline as the renderer draws it: scaled by
+/// `sx`/`sy`, turned by its run's shatai, and with the visible part of its stroke outside it
+/// (half the weight, all of it when the stroke goes behind the fill at double width). Skew
+/// slants the glyph sideways and moves no ink down. `NEG_INFINITY` when it has no outline.
+fn letter_depth(l: &crate::Line, g: &crate::PlacedGlyph, style: Option<&crate::RunStyle>) -> f64 {
+    let outline = designcraft_fonts::FontDb::global().outline(g.face.get(), g.gid);
+    if outline.elements().is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    let place = designcraft_geom::Affine::translate((g.x, l.baseline + g.y)) * designcraft_geom::Affine::scale_non_uniform(g.sx, g.sy);
+    let bottom = match style.and_then(|st| st.shatai_xf(g, l.baseline)) {
+        Some(shatai) => designcraft_geom::Shape::bounding_box(&(shatai * place * (*outline).clone())).y1,
+        // The lower edge whichever way `sy` scales the outline.
+        None => place.transform_rect_bbox(designcraft_geom::Shape::bounding_box(&*outline)).y1,
+    };
+    let stroke = style
+        .filter(|st| st.stroke != designcraft_color::swatch::NONE && st.stroke_weight > 0.0)
+        .map_or(0.0, |st| if st.stroke_behind_fill { st.stroke_weight } else { st.stroke_weight / 2.0 });
+    bottom + stroke - l.baseline
 }
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
@@ -198,10 +214,24 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
                 }
             }
             // Paragraph shading, borders and rules are drawn too (shading and borders reach the
-            // font's descent): each counts with the deepest line above its bottom edge.
+            // font's descent): each counts with the deepest line of its own paragraphs above its
+            // bottom edge, or their first line (a rule above them). A rule above a later
+            // paragraph is never charged to the line before it, so cutting the text where that
+            // paragraph doesn't fit keeps the line.
             for deco in &f.decos {
                 let y = deco.rect.y1;
-                if let Some(extent) = extents.iter_mut().rev().find(|e| y.is_finite() && e.baseline <= y) {
+                if !y.is_finite() {
+                    continue;
+                }
+                let at = match &deco.paras {
+                    Some(paras) => f
+                        .lines
+                        .iter()
+                        .rposition(|l| paras.contains(&l.para) && l.baseline <= y)
+                        .or_else(|| f.lines.iter().position(|l| paras.contains(&l.para))),
+                    None => f.lines.iter().rposition(|l| l.baseline <= y),
+                };
+                if let Some(extent) = at.and_then(|i| extents.get_mut(i)) {
                     extent.bottom = extent.bottom.max(y);
                 }
             }
@@ -419,6 +449,9 @@ fn clip_overset(lay: &CellLayout, clip_height: f64) -> Arc<ComposedStory> {
         frame.lines.truncate(keep);
         frame.objects.retain(|o| o.line < keep);
         frame.tables.retain(|table| table.line < keep);
+        // The rules, shading and borders of paragraphs that are all overset go with them.
+        let shown: Vec<usize> = frame.lines.iter().map(|l| l.para).collect();
+        frame.decos.retain(|d| d.paras.as_ref().is_none_or(|paras| shown.iter().any(|p| paras.contains(p))));
         frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
     }
     if let Some(at) = overset_at {
@@ -1029,11 +1062,112 @@ mod height_tests {
         );
     }
 
-    /// A rule above a later paragraph is drawn between the lines: it counts with the line above
-    /// it (the deepest line above its bottom edge), which grows nothing the next line doesn't, so
-    /// the row keeps its height and the rule stays inside the cell.
+    /// An underlined tab draws no ink but its bar: the bar stays inside the cell too.
     #[test]
-    fn a_rule_above_a_later_paragraph_counts_with_the_line_above_it() {
+    fn an_underlined_tab_stays_inside_the_cell() {
+        let mut cell = text_cell("x\tx", 0.0);
+        cell.text.format_chars(1..2, |f| f.over.underline = Some(true));
+        let layout = measure(&cell, 92.0);
+        let line = &layout.text.frames[0].lines[0];
+        let tab = line.glyphs.iter().find(|g| g.rendered_char == '\t').unwrap();
+        assert!(!tab.visible && tab.spans_rules());
+        let rule = &layout.text.styles[tab.style as usize].underline_rule;
+        let bar = line.baseline + rule.offset + rule.weight / 2.0;
+        assert!(bar > line.baseline + ink_depth(line, &[]), "the bar is below the letters");
+        assert!(line.baseline + ink_depth(line, &layout.text.styles) >= bar - 1e-6, "the tab's bar counts");
+        let composed = compose_table(single_table(cell), 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        assert!(
+            placed.origin.y + bar <= placed.rect.y1 + 1e-6,
+            "the bar at {} hangs out of the cell ending at {}",
+            placed.origin.y + bar,
+            placed.rect.y1
+        );
+    }
+
+    /// A stroke reaches outside the letters, half its weight (all of it behind the fill): it
+    /// counts with their ink.
+    #[test]
+    fn a_stroke_counts_with_the_ink() {
+        let depth = |behind: bool| {
+            let mut cell = text_cell("xxx", 0.0);
+            cell.text.format_chars(0..3, |f| {
+                f.over.stroke = Some("[Black]".into());
+                f.over.stroke_weight = Some(4.0);
+                f.over.stroke_behind_fill = Some(behind);
+            });
+            let layout = measure(&cell, 92.0);
+            let line = &layout.text.frames[0].lines[0];
+            (ink_depth(line, &[]), ink_depth(line, &layout.text.styles))
+        };
+        let (plain, straddling) = depth(false);
+        assert!((straddling - plain - 2.0).abs() < 1e-6, "{plain} {straddling}");
+        let (plain, behind) = depth(true);
+        assert!((behind - plain - 4.0).abs() < 1e-6, "{plain} {behind}");
+    }
+
+    /// Shatai compresses the letters about their em box centre, which can take the corner of a
+    /// flat-bottomed letter below the baseline: the depth is that of the outline as drawn.
+    #[test]
+    fn shatai_ink_counts_as_drawn() {
+        let mut cell = text_cell("WW", 0.0);
+        cell.text.format_chars(0..2, |f| {
+            f.over.size = Some(72.0);
+            f.over.shatai_magnification = Some(40.0);
+            f.over.shatai_angle = Some(60.0);
+        });
+        let layout = measure(&cell, 92.0);
+        let line = &layout.text.frames[0].lines[0];
+        let styles = &layout.text.styles;
+        let drawn = line
+            .glyphs
+            .iter()
+            .filter(|g| g.visible)
+            .map(|g| {
+                let st = &styles[g.style as usize];
+                let outline = designcraft_fonts::FontDb::global().outline(g.face.get(), g.gid);
+                let place = designcraft_geom::Affine::translate((g.x, line.baseline + g.y)) * designcraft_geom::Affine::scale_non_uniform(g.sx, g.sy);
+                designcraft_geom::Shape::bounding_box(&(st.shatai_xf(g, line.baseline).unwrap() * place * (*outline).clone())).y1 - line.baseline
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(drawn > ink_depth(line, &[]) + 0.1, "the shatai takes the ink lower: {drawn} {}", ink_depth(line, &[]));
+        assert!((ink_depth(line, styles) - drawn).abs() < 1e-6);
+    }
+
+    /// A rule above a later paragraph is drawn between the lines but belongs to that paragraph:
+    /// it counts with that paragraph's first line, not the line above it, so an exact-height row
+    /// that fits the first line keeps it, and the rule goes with its overset paragraph.
+    #[test]
+    fn a_rule_above_an_overset_paragraph_keeps_the_line_above_it() {
+        let mut cell = text_cell("xxx\nxxx", 0.0);
+        let second = cell.text.text.find('\n').unwrap() + 1;
+        let rule = designcraft_doc::Rule { on: true, weight: 1.0, offset: 12.0, ..Default::default() };
+        cell.text.format_paras(second..cell.text.len(), |p| p.para.rule_above = Some(rule.clone()));
+        let layout = measure(&cell, 92.0);
+        let ft = &layout.text.frames[0];
+        let first = &ft.lines[0];
+        let rule_bottom =
+            ft.decos.iter().map(|d| d.rect.y1).filter(|y| *y > first.baseline && *y < ft.lines[1].baseline).fold(f64::NEG_INFINITY, f64::max);
+        assert!(rule_bottom.is_finite() && rule_bottom > layout.line_heights[0], "the rule reaches below the first line's fit");
+        let mut table = single_table(cell.clone());
+        table.rows[0].mode = RowHeightMode::Exactly;
+        table.rows[0].height = cell.insets[0] + (layout.line_heights[0] + rule_bottom) / 2.0;
+        let composed = compose_table(table, 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        assert!(placed.overset);
+        let shown = &placed.text.frames[0];
+        assert_eq!(shown.lines.len(), 1, "the first line fits and stays");
+        assert!(
+            shown.decos.iter().all(|d| d.rect.y1 <= first.baseline + 1e-6 || d.rect.y1 >= ft.lines[1].baseline),
+            "the overset paragraph's rule goes with it"
+        );
+    }
+
+    /// A rule above a later paragraph is drawn between the lines: it counts with its own
+    /// paragraph, which grows nothing that paragraph's lines don't, so the row keeps its height
+    /// and the rule stays inside the cell.
+    #[test]
+    fn a_rule_above_a_later_paragraph_counts_with_its_paragraph() {
         let plain = text_cell("xxx\nxxx", 0.0);
         let mut ruled = plain.clone();
         let second = ruled.text.text.find('\n').unwrap() + 1;
@@ -1044,7 +1178,7 @@ mod height_tests {
         let (first, last) = (&ft.lines[0], &ft.lines[1]);
         let rule_bottom = ft.decos.iter().map(|d| d.rect.y1).filter(|y| *y > first.baseline && *y < last.baseline).fold(f64::NEG_INFINITY, f64::max);
         assert!(rule_bottom.is_finite(), "the rule is drawn between the lines: {:?}", ft.decos.iter().map(|d| d.rect).collect::<Vec<_>>());
-        assert!(layout.line_heights[0] >= rule_bottom - plain.insets[2] - 1e-6, "the rule counts with the first line");
+        assert_eq!(layout.line_heights[0], measure(&plain, 92.0).line_heights[0], "the rule counts with its own paragraph, not the first line");
         let height = |cell: Cell| compose_table(single_table(cell), 200.0).frames[0].tables[0].cell(0, 0).unwrap().rect.height();
         assert!((height(ruled.clone()) - height(plain)).abs() < 1e-6, "the row keeps its height");
         let composed = compose_table(single_table(ruled), 200.0);
