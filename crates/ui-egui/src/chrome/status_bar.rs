@@ -138,7 +138,13 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         });
     }
-    ui.data_mut(|d| d.insert_temp(scroll_id, (offset, x - origin, active)));
+    // The arrows come or go once this frame's width is known: the active tab is brought into view again in the new layout.
+    let overflows = x - origin > bar.width();
+    if overflows != overflow {
+        ui.request_repaint();
+    }
+    let seen = if overflows == overflow { active } else { seen_active };
+    ui.data_mut(|d| d.insert_temp(scroll_id, (offset, x - origin, seen)));
     if let Some(i) = close {
         crate::menus::close_document(app, Some(i));
     } else if let Some(i) = activate {
