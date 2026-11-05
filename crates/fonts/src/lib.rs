@@ -655,6 +655,7 @@ mod resolution_tests {
             ("KozMinPr6N-Regular", "Noto Serif JP"),
             ("小塚ゴシック Pr6N", "Noto Sans JP"),
             ("Koz Go Pr6N", "Noto Sans JP"),
+            ("游明朝 Demo", "Noto Serif JP"),
             ("Minion Pro", "Source Serif 4"),
             ("Myriad Pro", "Source Sans 3"),
         ] {

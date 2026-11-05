@@ -1635,7 +1635,8 @@ impl ScopedFonts<'_> {
             _ if lower.contains("arabic") || lower.contains("naskh") => &["Amiri", "Noto Naskh Arabic", "Geeza Pro"],
             // Adobe's Japanese and Latin faces (not installed without a Creative Cloud licence) → their
             // open-source counterparts: Source Han / Noto CJK are Adobe-Google's, Source Serif / Sans
-            // are Adobe's own answers to Minion and Myriad.
+            // are Adobe's own answers to Minion and Myriad. 明朝 (Japanese serif) is matched here, before the
+            // Chinese 宋 arm below, which therefore no longer needs it.
             _ if family.contains("明朝") || (lower.starts_with("koz") && lower.contains("min")) || lower.starts_with("ryumin") => {
                 &["Source Han Serif JP", "Noto Serif JP", "Noto Serif CJK JP", "Yu Mincho", "BIZ UDMincho", "MS Mincho"]
             }
@@ -1646,7 +1647,7 @@ impl ScopedFonts<'_> {
             _ if lower.starts_with("myriad") => &["Source Sans 3", "Source Sans Pro", "Liberation Sans"],
             _ if family.contains('楷') => &["Kaiti SC", "STKaiti", "KaiTi", "Songti SC"],
             _ if family.contains("仿宋") => &["STFangsong", "FangSong", "Songti SC"],
-            _ if family.contains('宋') || family.contains("明朝") => &["Songti SC", "Noto Serif CJK SC", "SimSun"],
+            _ if family.contains('宋') => &["Songti SC", "Noto Serif CJK SC", "SimSun"],
             _ if family.contains('黑') || family.contains("雅黑") => &["PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei"],
             _ if family.chars().any(|c| ('\u{3400}'..='\u{9fff}').contains(&c)) => &["Songti SC", "Noto Serif CJK SC", "PingFang SC"],
             _ => &[],
