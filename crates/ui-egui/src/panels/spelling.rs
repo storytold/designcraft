@@ -1,6 +1,12 @@
 //! The Spelling panel and right-click suggestions: the shared review (`craft-proof-ui`) over this
 //! document's stories and the read-only spelling queries.
-use std::{borrow::Cow, collections::HashMap, ops::Range, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    ops::Range,
+    sync::Arc,
+};
 
 use craft_proof_ui::{Action, ContextChoice, Host, Issue, IssueKind, Review, Text};
 use serde_json::{Value, json};
@@ -50,7 +56,8 @@ impl Host for AppHost<'_> {
         Some(self.0.session.active()?.doc.story(designcraft_doc::StoryId(story))?.text.as_str())
     }
 
-    /// A story is replaced on any edit, formatting too; that can only ask for a needless re-check.
+    /// Changes with a story's text and formatting and with the styles that give it a language. Either
+    /// can only ask for a needless re-check.
     fn version(&self, story: u64) -> Option<u64> {
         story_version(&self.0.session.active()?.doc, story)
     }
@@ -89,7 +96,9 @@ impl Host for AppHost<'_> {
 }
 
 fn story_version(doc: &designcraft_doc::Document, story: u64) -> Option<u64> {
-    Some(Arc::as_ptr(doc.stories.get(&designcraft_doc::StoryId(story))?) as usize as u64)
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (Arc::as_ptr(doc.stories.get(&designcraft_doc::StoryId(story))?), Arc::as_ptr(&doc.styles)).hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 /// While the review's panel shows, the issues left to underline in each story it still speaks for:

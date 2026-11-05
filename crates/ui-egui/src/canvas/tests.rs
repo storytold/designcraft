@@ -3037,7 +3037,6 @@ fn a_review_brings_its_word_into_view() {
     );
     h.run_steps(4);
     let app = h.state_mut();
-    let rect = app.canvas_rect.unwrap();
     let v = app.view_mut().unwrap();
     v.origin = Point::new(-9000.0, -9000.0);
     v.zoom = 3.0;

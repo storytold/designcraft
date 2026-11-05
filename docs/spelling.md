@@ -14,8 +14,8 @@ underline.
 **Change** or Enter corrects the word and moves on; double-clicking a suggestion does both. Corrections
 are ordinary undoable edits. **Ignore Once** and **Ignore All** last for this pass, and **Add to
 Dictionary** adds to the document's user dictionary. The document stays editable: if the text under the
-current issue changes, the panel asks to check again instead of applying a correction to the wrong place,
-and that story's underlines go until it does.
+current issue or the styles that give it a language change, the panel asks to check again instead of applying
+a correction to the wrong place, and the affected underlines go until it does.
 
 Right-clicking a misspelled word while typing offers its suggestions, Add to Dictionary and Check
 Spelling…. **Edit > Spelling > Dynamic Spelling** underlines issues as you type, and proofs a story again

@@ -105,6 +105,18 @@ fn the_user_dictionary_and_an_edit_reach_the_review() {
 }
 
 #[test]
+fn a_style_edit_asks_for_a_new_check() {
+    let (mut app, sid) = app_with(TEXT);
+    open(&mut app).unwrap();
+    assert!(review_marks(&app).contains_key(&sid.0));
+    let name = "[Basic Paragraph]";
+    app.run("style.paragraph.edit", json!({"name": name, "chars": {"language": "[No Language]"}})).unwrap();
+    assert!(review_marks(&app).is_empty(), "the language these words were checked in has gone");
+    action(&mut app, "check", None).unwrap();
+    assert!(app.spelling.current().is_none());
+}
+
+#[test]
 fn another_document_ends_the_review() {
     let (mut app, _) = app_with(TEXT);
     open(&mut app).unwrap();
