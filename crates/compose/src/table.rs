@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
+use designcraft_doc::{
+    Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, StartParagraph, Table, TextFrameOptions, VerticalJustification,
+};
 use designcraft_geom::{Point, Rect};
 
 use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
@@ -286,6 +288,7 @@ pub(crate) fn place_table(
     let header = table.header_rows();
     let footer = table.footer_rows();
     let body_end = nr - footer;
+    let keep_end = keep_groups(table, &group_end, body_end);
     let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
     let footer_h = sum(body_end, nr);
     let o = &table.options;
@@ -312,15 +315,23 @@ pub(crate) fn place_table(
     };
     let mut reserve = column_reserve(notes, cur, col);
     let mut r = header;
+    let mut forced: Option<StartParagraph> = None;
     loop {
         if r >= body_end {
             break;
         }
-        let ge = group_end[r].min(body_end).max(r + 1);
-        let gh = sum(r, ge);
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
+        // Start Row: the row begins a new column, frame or page, unless it already starts one.
+        let start = table.rows[r].start;
+        if start != StartParagraph::Anywhere && !(body_placed == 0 && at_col_top) {
+            forced = Some(start);
+        }
+        let kept = keep_end[r].min(body_end).max(r + 1);
+        let room = bottom - (col.y0 + if first_frag || o.repeat_header { sum(0, header) } else { 0.0 });
+        let ge = if sum(r, kept) + footer_h <= room + 0.01 { kept } else { group_end[r].min(body_end).max(r + 1) };
+        let gh = sum(r, ge);
+        if forced.is_none() && (y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0)) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
                 return false;
@@ -339,7 +350,10 @@ pub(crate) fn place_table(
             first_frag = false;
         }
         let was_first = first_frag;
-        cur.next_column(cols);
+        match forced.take() {
+            Some(start) => cur.start(start, cols, frames, doc),
+            None => cur.next_column(cols),
+        }
         if cur.fi >= frames.len() {
             return false;
         }
@@ -362,6 +376,21 @@ pub(crate) fn place_table(
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     true
+}
+
+/// Keep with Next Row: where each row's group ends when the rows kept with the next stay with
+/// it (`group_end`: the groups merged cells hold together). A row moves on to the next column
+/// only with the rows after it; unlike merged cells, InDesign lets go of the keep when the rows
+/// can't fit an empty column.
+fn keep_groups(table: &Table, group_end: &[usize], body_end: usize) -> Vec<usize> {
+    let mut keep_end = group_end.to_vec();
+    for r in (0..body_end).rev() {
+        let e = group_end[r];
+        if e < body_end && table.rows[e - 1].keep_with_next {
+            keep_end[r] = keep_end[e];
+        }
+    }
+    keep_end
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.

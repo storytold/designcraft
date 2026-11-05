@@ -144,14 +144,19 @@ impl<'a> Ex<'a> {
         }
         for (r, row) in t.rows.iter().enumerate() {
             let exact = row.mode == designcraft_doc::RowHeightMode::Exactly;
-            el.push(
-                El::new("Row")
-                    .attr("Self", format!("{id}Row{r}"))
-                    .attr("Name", r)
-                    .attr("SingleRowHeight", num(row.height.max(3.0)))
-                    .attr("MinimumHeight", num(row.height.max(0.0)))
-                    .attr("AutoGrow", bool_s(!exact)),
-            );
+            let mut re = El::new("Row")
+                .attr("Self", format!("{id}Row{r}"))
+                .attr("Name", r)
+                .attr("SingleRowHeight", num(row.height.max(3.0)))
+                .attr("MinimumHeight", num(row.height.max(0.0)))
+                .attr("AutoGrow", bool_s(!exact));
+            if row.start != designcraft_doc::StartParagraph::Anywhere {
+                re.set("StartRow", names::start_para_out(row.start));
+            }
+            if row.keep_with_next {
+                re.set("KeepWithNextRow", "true");
+            }
+            el.push(re);
         }
         for (c, col) in t.columns.iter().enumerate() {
             el.push(El::new("Column").attr("Self", format!("{id}Column{c}")).attr("Name", c).attr("SingleColumnWidth", num(col.width)));
