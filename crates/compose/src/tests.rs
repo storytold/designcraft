@@ -4426,6 +4426,24 @@ fn drop_cap_caret_and_hit_testing() {
     assert!(x >= dc.x + dc.adv - 1e-6 && (bl - lines[0].baseline).abs() < 1e-6);
 }
 
+/// A click in a drop cap never puts the caret between its letter and a mark in a colour of its
+/// own (a cluster of its own), as on the line.
+#[test]
+fn a_click_in_a_drop_cap_keeps_a_mark_with_its_letter() {
+    let text = format!("A\u{301}{LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    d.story_mut(sid).unwrap().format_chars(1..3, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    let dc = l.drop_cap.unwrap();
+    assert!(dc.end >= 3, "the mark is in the drop cap: {dc:?}");
+    assert!(l.glyphs.iter().any(|g| g.byte == 1 && g.len > 0), "the mark is a cluster of its own");
+    let y = (dc.rect.y0 + dc.rect.y1) / 2.0;
+    let hits: Vec<usize> = (0..=40).filter_map(|i| hit(&cs, 0, Point::new(dc.rect.x0 + dc.rect.width() * f64::from(i) / 40.0, y))).collect();
+    assert!(hits.contains(&0) && hits.contains(&3), "{hits:?}");
+    assert!(!hits.contains(&1), "{hits:?}");
+}
+
 #[test]
 fn drop_cap_on_a_baseline_grid_reaches_down_by_grid_steps() {
     // Lines on a 15 pt baseline grid (not the 12 pt leading): the drop cap reaches down two grid

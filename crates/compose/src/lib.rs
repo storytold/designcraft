@@ -5841,6 +5841,8 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
             .flat_map(|g| [g.byte, g.byte + g.len])
+            // No caret position between a letter and a mark in a cluster of its own, as on the line.
+            .filter(|&at| !before_own_mark(l, at))
             .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
     }
     let l = hit_line(ft, p)?;
