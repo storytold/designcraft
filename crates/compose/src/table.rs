@@ -316,6 +316,7 @@ pub(crate) fn place_table(
     let mut reserve = column_reserve(notes, cur, col);
     let mut r = header;
     let mut forced: Option<StartParagraph> = None;
+    let mut loose = 0;
     loop {
         if r >= body_end {
             break;
@@ -324,7 +325,7 @@ pub(crate) fn place_table(
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
         forced = forced.or(row_start(table.rows[r].start, body_placed == 0 && at_col_top));
         let room = bottom - (col.y0 + if first_frag || o.repeat_header { sum(0, header) } else { 0.0 });
-        let ge = next_group(&heights, r, keep_end[r].min(body_end), group_end[r].min(body_end), room - footer_h);
+        let ge = next_group(&heights, r, (keep_end[r].min(body_end), group_end[r].min(body_end)), room - footer_h, &mut loose);
         let gh = sum(r, ge);
         if forced.is_none() && (y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0)) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
@@ -379,10 +380,16 @@ fn row_start(start: StartParagraph, at_top: bool) -> Option<StartParagraph> {
 }
 
 /// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
-/// fit `room` (an empty column's), else those its merged cells hold together (`held`).
-fn next_group(heights: &[f64], r: usize, kept: usize, held: usize, room: f64) -> usize {
+/// fit `room` (an empty column's), else those its merged cells hold together (`held`). Rows of a
+/// kept run that can't fit then all break as if not kept (up to `loose`), as in InDesign: the
+/// run fills the column rather than moving its later rows on.
+fn next_group(heights: &[f64], r: usize, (kept, held): (usize, usize), room: f64, loose: &mut usize) -> usize {
     let (kept, held) = (kept.max(r + 1), held.max(r + 1));
-    if heights[r..kept].iter().sum::<f64>() <= room + 0.01 { kept } else { held }
+    if r >= *loose && heights[r..kept].iter().sum::<f64>() <= room + 0.01 {
+        return kept;
+    }
+    *loose = (*loose).max(kept);
+    held
 }
 
 /// Keep with Next Row: where each row's group ends when the rows kept with the next stay with

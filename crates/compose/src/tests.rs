@@ -1894,11 +1894,10 @@ fn table_rows_keep_with_next_row_and_start_in_the_next_frame() {
     let (a3, b3) = rows_per_frame(|t| t.rows[2].start = designcraft_doc::StartParagraph::NextFrame);
     assert_eq!(a3, vec![1]);
     assert_eq!(b3.first(), Some(&2));
-    // A kept run taller than an empty frame breaks anyway (no overset), where the rest of it fits
-    // an empty frame it moves on together.
+    // A kept run taller than an empty frame breaks as if not kept, all of it (as InDesign does): it
+    // fills the first frame rather than moving its later rows on.
     let (a4, b4) = rows_per_frame(|t| t.rows.iter_mut().for_each(|r| r.keep_with_next = true));
-    assert!(a4.len() < a.len() && !a4.is_empty(), "{a4:?} {b4:?}");
-    assert_eq!([a4, b4].concat(), (1..10).collect::<Vec<_>>());
+    assert_eq!((a4, b4), (a, b));
 }
 
 #[test]
