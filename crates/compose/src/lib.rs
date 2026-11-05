@@ -833,16 +833,31 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
 /// objects ([`wrap`]).
 /// Anchored frames are composed where their host story places them (unless `opts` places them).
 pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> ComposedStory {
-    compose_story_at(doc, sid, opts, 0)
+    compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
-/// [`compose_story`] for a story `depth` hosts down from the story asked for.
-fn compose_story_at(doc: &Document, sid: StoryId, opts: &ComposeOptions, depth: usize) -> ComposedStory {
+/// [`compose_story`] for a story `depth` hosts down from the story asked for. `hosts` holds the
+/// hosts already composed (by story and depth) while composing the story asked for, so a host
+/// that many anchored frames lead to is composed once.
+fn compose_story_at(
+    doc: &Document,
+    sid: StoryId,
+    opts: &ComposeOptions,
+    depth: usize,
+    hosts: &mut HashMap<(StoryId, usize), Arc<ComposedStory>>,
+) -> ComposedStory {
     let others: Vec<ComposedStory> =
         wrap::neighbours(doc, sid).into_iter().map(|o| wrap::compose_among(doc, o, &ComposeOptions::default(), &[])).collect();
     let others: Vec<&ComposedStory> = others.iter().collect();
     if opts.placed.is_empty() && depth < placed::MAX_DEPTH {
-        let placed = placed::placements(doc, sid, &mut |host| Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1)));
+        let placed = placed::placements(doc, sid, &mut |host| {
+            if let Some(c) = hosts.get(&(host, depth + 1)) {
+                return c.clone();
+            }
+            let c = Arc::new(compose_story_at(doc, host, &ComposeOptions::default(), depth + 1, hosts));
+            hosts.insert((host, depth + 1), c.clone());
+            c
+        });
         if !placed.is_empty() {
             return wrap::compose_among(doc, sid, &ComposeOptions { placed, ..opts.clone() }, &others);
         }
@@ -3331,15 +3346,22 @@ pub fn column_rule_rects(columns: &[Rect], lines: &[Line], opts: &TextFrameOptio
             continue;
         }
         // Vertical bands of the paragraphs whose lines cross this gutter.
+        // Grouped by paragraph through an index, in first-seen order: searching the bands for
+        // each line was quadratic in the number of paragraphs.
         let mut spans: Vec<(usize, f64, f64)> = Vec::new();
+        let mut band_of: HashMap<usize, usize> = HashMap::new();
         for l in lines.iter().filter(|l| l.x0 < cx && l.x1 > cx) {
             let (t, z) = (l.baseline - l.ascent, l.baseline + l.descent);
-            match spans.iter_mut().find(|s| s.0 == l.para) {
-                Some(s) => {
+            match band_of.get(&l.para) {
+                Some(&k) => {
+                    let s = &mut spans[k];
                     s.1 = s.1.min(t);
                     s.2 = s.2.max(z);
                 }
-                None => spans.push((l.para, t, z)),
+                None => {
+                    band_of.insert(l.para, spans.len());
+                    spans.push((l.para, t, z));
+                }
             }
         }
         spans.sort_by(|p, q| p.1.total_cmp(&q.1));
@@ -5310,6 +5332,40 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     }
 }
 
+/// Hyphenation points of `word`, remembered per set of limits: words repeat a lot. The points of
+/// a word not seen yet are worked out without holding the cache's lock, so a long word in one
+/// paragraph doesn't hold up hyphenation in others.
+fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) -> Arc<[usize]> {
+    type Words = HashMap<(hyphen::Lang, Box<str>), Arc<[usize]>>;
+    static CACHE: Mutex<Vec<(LimitsKey, Words)>> = Mutex::new(Vec::new());
+    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
+    let word_key = (lang, Box::<str>::from(word));
+    {
+        let guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pts) = guard.iter().find(|e| e.0 == key).and_then(|e| e.1.get(&word_key)) {
+            return pts.clone();
+        }
+    }
+    let pts: Arc<[usize]> = hyphen::hyphen_points_in(word, lim, lang).into();
+    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let idx = match guard.iter().position(|e| e.0 == key) {
+        Some(i) => i,
+        None => {
+            if guard.len() > 32 {
+                guard.clear();
+            }
+            guard.push((key, HashMap::new()));
+            guard.len() - 1
+        }
+    };
+    let cache = &mut guard[idx].1;
+    if cache.len() > 100_000 {
+        cache.clear();
+    }
+    cache.insert(word_key, pts.clone());
+    pts
+}
+
 fn hyphenation_points(
     text: &str,
     glyphs: &[Glyph],
@@ -5339,24 +5395,6 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
-    // Words repeat a lot: remember their points per set of limits.
-    static CACHE: Mutex<Vec<(LimitsKey, HashMap<(hyphen::Lang, Box<str>), Box<[usize]>>)>> = Mutex::new(Vec::new());
-    let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
-    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let idx = match guard.iter().position(|e| e.0 == key) {
-        Some(i) => i,
-        None => {
-            if guard.len() > 32 {
-                guard.clear();
-            }
-            guard.push((key, HashMap::new()));
-            guard.len() - 1
-        }
-    };
-    let cache = &mut guard[idx].1;
-    if cache.len() > 100_000 {
-        cache.clear();
-    }
     // The token the last word run sat in, and whether it is kept whole (see below).
     let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
@@ -5402,16 +5440,29 @@ fn hyphenation_points(
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
             if !is_last_word && let Some(lang) = lang {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
+                let cached;
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
-                    None => cache.entry((lang, word.into())).or_insert_with(|| hyphen::hyphen_points_in(word, &lim, lang).into_boxed_slice()),
+                    None => {
+                        cached = cached_hyphen_points(&lim, lang, word);
+                        &cached
+                    }
                 };
-                for &p in pts.iter() {
-                    // char index p → byte → glyph whose cluster ends at that byte.
-                    let byte = a + word.char_indices().nth(p).map(|(bi, _)| bi).unwrap_or(word.len());
-                    if let Some(k) = (i..j).find(|&k| glyphs[k].byte + glyphs[k].len == byte && glyphs[k].len > 0) {
-                        out[k] = true;
+                if !pts.is_empty() {
+                    // char index p → byte → the first glyph whose cluster ends at that byte. Both
+                    // indexed once per word: looking each point up by scanning was quadratic in
+                    // a long word's length.
+                    let char_bytes: Vec<usize> = word.char_indices().map(|(bi, _)| bi).collect();
+                    let mut glyph_ending_at: HashMap<usize, usize> = HashMap::new();
+                    for k in (i..j).filter(|&k| glyphs[k].len > 0) {
+                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(k);
+                    }
+                    for &p in pts.iter() {
+                        let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                        if let Some(&k) = glyph_ending_at.get(&byte) {
+                            out[k] = true;
+                        }
                     }
                 }
             }

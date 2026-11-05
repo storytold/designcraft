@@ -3,6 +3,7 @@
 //! `hyph-es.tex` 5.0 from hyph-utf8, MIT; Portuguese is `hyph-pt.tex` 1.4 from hyph-utf8 (Pedro J.
 //! de Rezende, J. Joao Dias Almeida, Leonardo Araujo, Aline Benevides), BSD-3-Clause; Norwegian is
 //! `hyph-no.tex` from hyph-utf8 (Rune Kleveland, Ole Michael Selberg), permissive (see NOTICE);
+//! Danish is `hyph-da.tex` 2011-01-11 from hyph-utf8 (Frank Jensen), LPPL or MIT, taken under MIT;
 //! Dutch is Piet Tutelaers's `hyph-nl.tex` 1.1 from hyph-utf8, MIT; Greek is `hyph-el-monoton.tex` 5.0 from hyph-utf8 (Dimitrios Filippou), LPPL or MIT, taken
 //! under MIT. Those are the **monotonic** patterns, which is what `hypher` maps `el` to, so
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
@@ -452,6 +453,25 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
         return vec![];
     }
     let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+    // A trailing silent `ed`, `es` or `e` comes off the right part. Which one depends only on how
+    // the word ends, so the right part's core is `c[i..n - silent]` (nothing comes off a right
+    // part shorter than the ending). Prefix sums of vowels and UTF-8 lengths then answer "does the
+    // core have a vowel" and "is it longer than one byte" without building each suffix, which was
+    // quadratic in the word's length.
+    let ends = |s: &str| c.ends_with(&s.chars().collect::<Vec<char>>());
+    let silent = if ends("ed") || ends("es") {
+        2
+    } else if ends("e") {
+        1
+    } else {
+        0
+    };
+    let mut vowels = vec![0_usize; n + 1];
+    let mut bytes = vec![0_usize; n + 1];
+    for (k, ch) in c.iter().enumerate() {
+        vowels[k + 1] = vowels[k] + usize::from(v[k]);
+        bytes[k + 1] = bytes[k] + ch.len_utf8();
+    }
     let mut out = vec![];
     for i in 1..n {
         let ok = if v[i - 1] && !v[i] {
@@ -462,9 +482,8 @@ fn heuristic_points(c: &[char]) -> Vec<usize> {
             false
         };
         // Both parts need a sounded vowel: a trailing silent `e`, `ed` or `es` doesn't count.
-        let right: String = c[i..].iter().collect();
-        let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
-        if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+        let core_end = if n - i >= silent { n - silent } else { n };
+        if ok && vowels[core_end] > vowels[i] && bytes[core_end] - bytes[i] > 1 && vowels[i] > 0 {
             out.push(i);
         }
     }
@@ -716,6 +735,18 @@ mod tests {
     }
 
     #[test]
+    fn danish_uses_the_hyph_da_patterns() {
+        let da = Lang::for_language("Danish").unwrap();
+        assert_eq!(da, Lang::Patterns(hypher::Lang::Danish));
+        assert_eq!(da, Lang::for_language("da").unwrap());
+        assert_ne!(da, Lang::English);
+        assert_ne!(da, Lang::for_language("Norwegian").unwrap());
+        for w in ["bacheloruddannelser", "industrialiseringens", "samarbejdspartnere"] {
+            assert!(!hyphen_points_in(w, &Limits::default(), da).is_empty(), "{w} gets break points");
+        }
+    }
+
+    #[test]
     fn norwegian_uses_the_hyph_no_patterns() {
         let nb = Lang::for_language("Norwegian: Bokmål").unwrap();
         assert_eq!(nb, Lang::for_language("Norwegian").unwrap());
@@ -806,6 +837,79 @@ mod tests {
     fn heuristic_fallback() {
         let c: Vec<char> = "happen".chars().collect();
         assert_eq!(heuristic_points(&c), vec![3]);
+    }
+
+    /// The heuristic as it was written before the prefix sums, building each right part.
+    fn heuristic_by_suffixes(c: &[char]) -> Vec<usize> {
+        let n = c.len();
+        if n < 4 || !c.iter().all(|c| c.is_alphabetic()) {
+            return vec![];
+        }
+        let v: Vec<bool> = c.iter().map(|&x| is_vowel(x)).collect();
+        let mut out = vec![];
+        for i in 1..n {
+            let ok = if v[i - 1] && !v[i] {
+                (i + 1 < n && v[i + 1]) || (i + 2 < n && onset_pair(c[i], c[i + 1]) && v[i + 2])
+            } else if !v[i - 1] && !v[i] {
+                i >= 2 && v[i - 2] && i + 1 < n && v[i + 1] && !onset_pair(c[i - 1], c[i]) && c[i - 1] != c[i]
+                    || (c[i - 1] == c[i] && i >= 2 && v[i - 2])
+            } else {
+                false
+            };
+            let right: String = c[i..].iter().collect();
+            let core = right.strip_suffix("ed").or_else(|| right.strip_suffix("es")).or_else(|| right.strip_suffix('e')).unwrap_or(&right);
+            if ok && core.chars().any(is_vowel) && core.len() > 1 && v[..i].iter().any(|x| *x) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn heuristic_matches_building_each_suffix() {
+        for w in [
+            "happen",
+            "typography",
+            "zzzzed",
+            "bakes",
+            "baked",
+            "flute",
+            "strengths",
+            "aeiou",
+            "rhythms",
+            "bookkeeper",
+            "naïveté",
+            "çabcde",
+            "ABCDE",
+            "plopped",
+            "staples",
+            "queued",
+            "ed",
+            "eded",
+            "abed",
+            "abes",
+            "cafés",
+            "aed",
+            "xaxed",
+            "xaxes",
+            "xaxe",
+            "ŝtupoe",
+            "ŝtupoed",
+            "ababababed",
+        ] {
+            let c: Vec<char> = w.chars().collect();
+            assert_eq!(heuristic_points(&c), heuristic_by_suffixes(&c), "{w}");
+        }
+    }
+
+    /// A very long word (no dictionary or pattern entry) takes time linear in its length.
+    #[test]
+    fn heuristic_on_a_long_word_is_linear() {
+        let c: Vec<char> = "taco".repeat(100_000).chars().collect();
+        let t = std::time::Instant::now();
+        let pts = heuristic_points(&c);
+        assert!(!pts.is_empty());
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 }
 
