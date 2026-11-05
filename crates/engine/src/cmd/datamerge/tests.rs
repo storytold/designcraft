@@ -1337,3 +1337,116 @@ fn a_field_converted_into_a_table_is_filled_in_its_cell() {
     exec(&mut s, "data.preview", json!({"record": 1}));
     assert_eq!(cell_texts(&s), ["Name", "Ada"], "the field is filled in its cell");
 }
+
+/// A table `Who⇥Where` with the caret in its second cell, and a source with `Name` and `City`.
+fn table_with_caret_in_cell(s: &mut Session, csv: &str) -> Value {
+    new_doc(s, 1);
+    select_csv(s, csv);
+    let made = text_frame(s, [36.0, 36.0, 400.0, 200.0], "Who\tWhere", None);
+    exec(s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 9}));
+    exec(s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+    exec(s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    made
+}
+
+/// After a field goes into a cell the caret is after it, in that cell, and the cell selection is
+/// gone: typing goes on after the field instead of replacing the cell, field and all.
+#[test]
+fn typing_after_a_field_inserted_in_a_cell_goes_on_after_it() {
+    let mut s = Session::new();
+    table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let sel = &s.documents()[s.active_index().unwrap()].selection;
+    assert!(sel.cells.is_none(), "no cell selection left");
+    exec(&mut s, "text.insert", json!({"text": ", "}));
+    assert_eq!(cell_texts(&s), ["Who", "<<City>>, Where"]);
+}
+
+/// A position that a merged cell covers is the merged cell's: the field goes into the merged cell,
+/// where it shows, not into the hidden one under it.
+#[test]
+fn a_field_inserted_in_a_merged_cell_goes_where_it_shows() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Name,City\nAda,London\n");
+    exec(&mut s, "table.merge", json!({"story": made["story"], "rows": [0, 0], "cols": [0, 1]}));
+    exec(&mut s, "table.select", json!({"story": made["story"], "rows": [0, 0], "cols": [1, 1]}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let cells = cell_texts(&s);
+    assert!(cells[0].contains("<<City>>"), "in the merged cell: {cells:?}");
+    assert!(!cells[1].contains("<<City>>"), "not in the covered one: {cells:?}");
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert!(cell_texts(&s)[0].contains("London"), "and filled: {:?}", cell_texts(&s));
+}
+
+/// A field whose name a marker can't hold (it has `<` or `>`) can't be filled from a cell, so it
+/// isn't inserted there; in body text it still becomes an anchored placeholder.
+#[test]
+fn a_field_named_with_angle_brackets_is_refused_in_a_cell() {
+    let mut s = Session::new();
+    let made = table_with_caret_in_cell(&mut s, "Customer <ID>,City\n7,London\n");
+    let e = s.execute("data.placeholder.add", &json!({"field": "Customer <ID>"})).expect_err("refused").to_string();
+    assert!(e.contains("can't be inserted in a table cell"), "{e}");
+    assert_eq!(cell_texts(&s), ["Who", "Where"], "nothing inserted");
+    let other = text_frame(&mut s, [36.0, 300.0, 400.0, 400.0], "No. ", None);
+    exec(&mut s, "text.select", json!({"story": other["story"], "anchor": 4, "focus": 4}));
+    assert!(exec(&mut s, "data.placeholder.add", json!({"field": "Customer <ID>"}))["id"].is_u64(), "body text still takes it");
+    let _ = made;
+}
+
+/// Endnote text is filled too: it is a text inside its story, like a footnote's.
+#[test]
+fn a_field_in_an_endnote_is_filled() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "See the note", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 12, "focus": 12}));
+    exec(&mut s, "endnote.insert", json!({"text": "From <<City>>"}));
+    let endnotes = |s: &Session| -> Vec<String> {
+        s.documents()[s.active_index().unwrap()].doc.stories.values().flat_map(|st| st.endnotes.iter().map(|e| e.text.text.clone())).collect()
+    };
+    assert_eq!(endnotes(&s), ["From <<City>>"]);
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    assert_eq!(endnotes(&s), ["From London"]);
+}
+
+/// Tables nested in cells far deeper than any document goes are filled down to the merge's depth
+/// limit, and the preview returns instead of exhausting the stack.
+#[test]
+fn deeply_nested_tables_are_filled_down_to_the_limit_without_overflowing() {
+    use designcraft_doc::{Cell, ParaFormat, Table};
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,City\nAda,London\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], "x", None);
+    let sid = StoryId(made["story"].as_u64().unwrap());
+    // `depth` tables, each in the one cell of the next, each cell's own text `<<Name>>`.
+    let nest = |depth: usize| {
+        let mut inner: Option<Table> = None;
+        for i in 0..depth {
+            let mut t = Table::new(1000 + i as u64, 1, 1, 0, 0, 100.0);
+            t.cells[0] = Cell::with_text("<<Name>>", ParaFormat::default());
+            if let Some(child) = inner.take() {
+                t.cells[0].text.insert_table(0, child);
+            }
+            inner = Some(t);
+        }
+        inner.unwrap()
+    };
+    s.edit(|d, _| {
+        d.story_mut(sid).unwrap().insert_table(0, nest(500));
+        Ok(())
+    })
+    .unwrap();
+    exec(&mut s, "data.preview", json!({"record": 1}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let mut t = doc.story(sid).unwrap().tables.values().next().unwrap().clone();
+    let mut filled = Vec::new();
+    for _ in 0..40 {
+        filled.push(t.cells[0].text.text.contains("Ada"));
+        let Some(next) = t.cells[0].text.tables.values().next().cloned() else { break };
+        t = next;
+    }
+    assert!(filled[..super::fill::MAX_NESTED_DEPTH].iter().all(|f| *f), "filled down to the limit: {filled:?}");
+    assert!(!filled[super::fill::MAX_NESTED_DEPTH], "and not past it");
+}
