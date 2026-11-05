@@ -91,6 +91,8 @@ fn language_names_map_to_bcp47_tags() {
     assert_eq!(language_tag("Farsi"), Some("fa"));
     assert_eq!(language_tag("Urdu"), Some("ur"));
     assert_eq!(language_tag("Hebrew"), Some("he"));
+    assert_eq!(language_tag("Esperanto"), Some("eo"));
+    assert_eq!(language_tag("$ID/Esperanto"), Some("eo"));
     assert_eq!(language_tag("[No Language]"), None);
     assert_eq!(language_tag("Klingon"), None);
     assert_eq!(language_tag(""), None);

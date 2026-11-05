@@ -390,6 +390,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 ## Progress log
 
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
+- **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 - **2026-11-03 · KM6:** The Story Editor counts Khmer words by their word boundaries, not real spaces. No readiness percentage change.
 - **2026-11-03 · KM3:** Justified Khmer fills lines through real word spaces and Glyph Scaling, the industry-standard behavior: word boundaries open no gaps, and a line without a real space keeps its natural width. No readiness percentage change.
 - **2026-11-03 · KM1:** Shared Khmer segmentation, authored ZWSP and cluster-safe composition in both composers. Data is an explicit optional build input; see [Khmer support](docs/khmer.md). No readiness percentage change.
