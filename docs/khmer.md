@@ -9,6 +9,8 @@ contributions must land before official release integration.
 
 ## User behavior
 
+Builds don't include the Khmer data yet; see [Build and data](#build-and-data).
+
 With the Khmer data included, unspaced Khmer receives dictionary/model word
 boundaries for wrapping. The model can segment unknown or misspelled words, and it
 never inserts spaces or normalizes document text. Spelling and proofreading are a
@@ -64,28 +66,17 @@ compound is incorrectly segmented.
 
 ## Build and data
 
-The default build contains no Khmer dictionaries, so only real and authored
-zero-width spaces separate Khmer words. There is no runtime pack downloader in this change. For an explicit build,
-check out craft-i18n revision `305a53fc197cce0e7b2c90b86c9c37083ae216bd` beside this
-repository and, from this repository's root, stage its verified source pack:
+Builds contain no Khmer dictionaries, so only real and authored zero-width spaces
+separate Khmer words. There is no runtime pack downloader in this change.
 
-```sh
-cargo run --manifest-path ../craft-i18n/Cargo.toml --bin language-packs -- stage --locale km --out ../khmer-pack
-CRAFT_KHMER_DIR="$(cd ../khmer-pack && pwd)" CRAFT_KHMER_REQUIRED=1 cargo xtask ci
-CRAFT_KHMER_DIR="$(cd ../khmer-pack && pwd)" CRAFT_KHMER_REQUIRED=1 cargo run --locked -p designcraft
-```
+Embedding the data is disabled for now. `craft-khmer` classifies the pack Download-only until
+maintainers sign off on its licence classification and the policy for trained models and converted
+configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/main/crates/khmer/PROVENANCE.md). Until then a build that sets `CRAFT_KHMER_DIR` fails, with no bypass, so
+build and test with `CRAFT_KHMER_DIR` and `CRAFT_KHMER_REQUIRED` unset. Staging with craft-i18n's
+`language-packs` rejects the pack for the same reason. [`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/main/crates/khmer/DATA.md) describes the build for after that
+approval, and the descriptions of data builds on this page apply from then on.
 
-In PowerShell:
-
-```powershell
-cargo run --manifest-path ..\craft-i18n\Cargo.toml --bin language-packs -- stage --locale km --out ..\khmer-pack
-$env:CRAFT_KHMER_DIR = (Resolve-Path ..\khmer-pack).Path
-$env:CRAFT_KHMER_REQUIRED = "1"
-cargo xtask ci
-cargo run --locked -p designcraft
-```
-
-`CRAFT_KHMER_DIR` must be an absolute path. Source
+Once enabled, `CRAFT_KHMER_DIR` must be an absolute path. Source
 hashes and the upstream MIT notice are checked during the offline build;
 `CRAFT_KHMER_REQUIRED=1` rejects missing data. The six losslessly compressed
 resources total 714,343 bytes, with no dictionary pruning or model quantization.
