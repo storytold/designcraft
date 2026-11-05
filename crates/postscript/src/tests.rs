@@ -426,3 +426,16 @@ fn the_web_gets_smaller_default_limits() {
         assert!(l.memory <= 1 << 30 && l.steps <= 50_000_000);
     }
 }
+
+#[test]
+fn a_program_that_paints_nothing_leaves_the_preview_to_show() {
+    // A DOS EPS whose PostScript is only its header: it runs, but shows nothing of its own, so
+    // the screen and the exports fall back to its preview.
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n%%EOF\n";
+    let c = eps_to_pdf(eps, Limits::default()).unwrap();
+    assert!(!c.painted);
+    assert!(cached_pdf(eps).is_none());
+    let painting = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 10\n0 0 10 10 rectfill\n%%EOF\n";
+    assert!(eps_to_pdf(painting, Limits::default()).unwrap().painted);
+    assert!(cached_pdf(painting).is_some());
+}

@@ -40,6 +40,8 @@ pub struct Converted {
     /// The work and memory the conversion used, as [`Limits`] counts them.
     pub steps: u64,
     pub memory: usize,
+    /// Whether the program painted anything.
+    pub painted: bool,
 }
 
 fn u32le(b: &[u8], at: usize) -> Option<usize> {
@@ -86,7 +88,8 @@ fn cache() -> &'static std::sync::Mutex<Cache> {
 }
 
 /// [`eps_to_pdf`] with the default limits, remembered by content: the screen, thumbnails and
-/// every export convert an EPS once. None when it can't be converted (callers show its preview).
+/// every export convert an EPS once. None when it can't be converted or paints nothing: callers
+/// then show its preview, which is all such a file shows.
 pub fn cached_pdf(eps: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -96,7 +99,7 @@ pub fn cached_pdf(eps: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
         return hit.clone();
     }
     // Convert outside the lock: other EPS files keep drawing meanwhile.
-    let pdf = eps_to_pdf(eps, Limits::default()).ok().map(|c| std::sync::Arc::new(c.pdf));
+    let pdf = eps_to_pdf(eps, Limits::default()).ok().filter(|c| c.painted).map(|c| std::sync::Arc::new(c.pdf));
     let mut c = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if c.len() >= CACHE_ENTRIES {
         c.clear();
@@ -126,8 +129,8 @@ pub fn eps_to_pdf(bytes: &[u8], limits: Limits) -> Result<Converted, String> {
         warnings.push(e);
     }
     let size = (bbox[2] - bbox[0], bbox[3] - bbox[1]);
-    let (steps, memory) = (ip.steps, ip.memory);
-    Ok(Converted { pdf: ip.out.finish(size), bbox, warnings, steps, memory })
+    let (steps, memory, painted) = (ip.steps, ip.memory, ip.out.painted);
+    Ok(Converted { pdf: ip.out.finish(size), bbox, warnings, steps, memory, painted })
 }
 
 #[cfg(test)]

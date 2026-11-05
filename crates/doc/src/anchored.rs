@@ -60,6 +60,11 @@ pub enum AnchorPosition {
         /// Keep Within Top/Bottom Column Boundaries.
         #[serde(default)]
         keep_within_column: bool,
+        /// Relative to Spine: the settings describe a left-hand page, and on a right-hand page
+        /// the reference point, the object point and the X offset mirror horizontally, so an
+        /// object in the outside margin stays in the outside margin.
+        #[serde(default)]
+        spine_relative: bool,
     },
 }
 

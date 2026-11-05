@@ -91,7 +91,7 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
         return Err(PptxError::NoPages);
     }
     if let Some(bad) = pages.iter().find(|p| **p >= count) {
-        return Err(PptxError::BadPage(bad + 1));
+        return Err(PptxError::BadPage(bad.saturating_add(1)));
     }
     let mut ex = slide::Exporter::new(doc, cache, opts);
     let mut slides = Vec::with_capacity(pages.len());

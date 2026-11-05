@@ -75,6 +75,41 @@ impl Reader {
     }
 }
 
+/// The mesh's `DataSource` into `r`: numbers from an array, bits from a string or a file (read
+/// up to 64 MB).
+fn read_data_source(ip: &mut Interp, d: &PDict, r: &mut Reader) -> R<()> {
+    match d.get_name(b"DataSource") {
+        Some(Obj::Array(a, _)) => r.nums = a.items().iter().filter_map(Obj::num).collect(),
+        Some(Obj::Str(s, _)) => r.bits = Some((s.bytes(), 0)),
+        Some(Obj::File(id)) => {
+            let mut v = Vec::new();
+            while let Some(c) = ip.srcs.read(id) {
+                v.push(c);
+                if v.len() > 64 << 20 {
+                    break;
+                }
+            }
+            r.bits = Some((v, 0));
+        }
+        _ => return err("typecheck"),
+    }
+    Ok(())
+}
+
+/// The triangles of a lattice-form mesh (type 5) of `n` vertices, `per_row` (at least 2) a row:
+/// two to each cell between neighbouring rows.
+fn lattice_triangles(n: usize, per_row: usize, tris: &mut Vec<[usize; 3]>) {
+    let rows = n / per_row;
+    for row in 0..rows.saturating_sub(1) {
+        for i in 0..per_row - 1 {
+            let a = row * per_row + i;
+            let (b, c, e) = (a + 1, a + per_row, a + per_row + 1);
+            tris.push([a, b, c]);
+            tris.push([b, e, c]);
+        }
+    }
+}
+
 pub fn build(ip: &mut Interp, d: &PDict, kind: i64, space: &Space, func: Option<&Func>) -> R<Option<Shading>> {
     let num = |k: &[u8]| d.get_name(k).and_then(|o| o.num()).unwrap_or(0.0);
     let ncomp = if func.is_some() { 1 } else { space.comps() };
@@ -91,21 +126,7 @@ pub fn build(ip: &mut Interp, d: &PDict, kind: i64, space: &Space, func: Option<
         bpflag: num(b"BitsPerFlag").clamp(2.0, 8.0) as usize,
         decode,
     };
-    match d.get_name(b"DataSource") {
-        Some(Obj::Array(a, _)) => r.nums = a.items().iter().filter_map(Obj::num).collect(),
-        Some(Obj::Str(s, _)) => r.bits = Some((s.bytes(), 0)),
-        Some(Obj::File(id)) => {
-            let mut v = Vec::new();
-            while let Some(c) = ip.srcs.read(id) {
-                v.push(c);
-                if v.len() > 64 << 20 {
-                    break;
-                }
-            }
-            r.bits = Some((v, 0));
-        }
-        _ => return err("typecheck"),
-    }
+    read_data_source(ip, d, &mut r)?;
     let to_dev = |ip: &mut Interp, c: &[f64]| -> R<DevColor> {
         let comps = match func {
             Some(f) => eval(ip, f, c, 0)?,
@@ -157,15 +178,7 @@ pub fn build(ip: &mut Interp, d: &PDict, kind: i64, space: &Space, func: Option<
                 }
             }
             if kind == 5 {
-                let rows = verts.len() / per_row;
-                for row in 0..rows.saturating_sub(1) {
-                    for i in 0..per_row - 1 {
-                        let a = row * per_row + i;
-                        let (b, c, e) = (a + 1, a + per_row, a + per_row + 1);
-                        tris.push([a, b, c]);
-                        tris.push([b, e, c]);
-                    }
-                }
+                lattice_triangles(verts.len(), per_row, &mut tris);
             }
             for t in tris {
                 for i in t {

@@ -20,7 +20,7 @@ APP_ID=ai.storyteller.designcraft
 
 SKIP_BUILD=0
 DRY_RUN=0
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --dry-run) DRY_RUN=1; SKIP_BUILD=1; shift ;;
@@ -29,14 +29,26 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# FreeBSD's uname says amd64; release file names use x86_64 like the Linux and Windows ones.
-MACHINE="$(uname -m)"
-case "$MACHINE" in
-  amd64 | x86_64) ARCH=x86_64 ;;
-  arm64 | aarch64) ARCH=aarch64 ;;
-  *) echo "unsupported architecture $MACHINE" >&2; exit 2 ;;
+# Release file names use x86_64 and aarch64 like the Linux and Windows ones.
+release_arch() {
+  local arch="$1"
+  case "$arch" in
+    amd64 | x86_64) echo x86_64 ;;
+    arm64 | aarch64) echo aarch64 ;;
+    *) echo "unsupported architecture $arch" >&2; return 2 ;;
+  esac
+  return
+}
+# The release workflow cross-compiles aarch64 in an x86_64 VM with CARGO_BUILD_TARGET set to
+# aarch64-unknown-freebsd: name the archive after the target, not the host's uname -m.
+case "${CARGO_BUILD_TARGET:-}" in
+  "") ARCH="$(release_arch "$(uname -m)")" ;;
+  aarch64-unknown-freebsd | x86_64-unknown-freebsd) ARCH="$(release_arch "${CARGO_BUILD_TARGET%%-*}")" ;;
+  *) echo "CARGO_BUILD_TARGET=$CARGO_BUILD_TARGET is not a supported FreeBSD target" >&2; exit 2 ;;
 esac
-if [ "$DRY_RUN" = 0 ] && [ "$(uname -s)" != FreeBSD ]; then
+# Only binaries for this machine can run here (the --version check at the end).
+HOST_ARCH="$(release_arch "$(uname -m)" 2>/dev/null)" || HOST_ARCH=""
+if [[ "$DRY_RUN" = 0 ]] && [[ "$(uname -s)" != FreeBSD ]]; then
   echo "error: build on FreeBSD (or pass --dry-run to check the tree layout)" >&2
   exit 2
 fi
@@ -46,17 +58,18 @@ echo "==> DesignCraft $VERSION for FreeBSD $ARCH"
 
 # The release VM has 12 GB; full parallelism on the biggest crates runs it out of memory.
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
-if [ "$SKIP_BUILD" = 0 ]; then
-  (cd "$ROOT" && cargo build --release --locked -p designcraft -p designcraft-cli)
+if [[ "$SKIP_BUILD" = 0 ]]; then
+  (cd "$ROOT" && cargo build --release --locked ${CARGO_BUILD_TARGET:+--target "$CARGO_BUILD_TARGET"} \
+    -p designcraft -p designcraft-cli)
 fi
 WORK="$CARGO_TARGET_DIR/freebsd-package"
 STAGE="$WORK/$BASENAME"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 
-BIN="$CARGO_TARGET_DIR/release"
+BIN="$CARGO_TARGET_DIR/${CARGO_BUILD_TARGET:+$CARGO_BUILD_TARGET/}release"
 OUT_DIR="$DIST"
-if [ "$DRY_RUN" = 1 ]; then
+if [[ "$DRY_RUN" = 1 ]]; then
   # Stub binaries, and the tarball stays in the work dir so dist/ only ever holds real builds.
   BIN="$WORK/stub-bin"
   OUT_DIR="$WORK"
@@ -81,13 +94,13 @@ sed -e "s/@VERSION@/$VERSION/g" -e "s/@DATE@/$DESIGNCRAFT_BUILD_DATE/g" \
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/share/icons/"
 copy_docs "$STAGE/share/doc/designcraft"
 for f in NOTICE ATTRIBUTION.md; do
-  if [ -f "$ROOT/$f" ]; then install -m 644 "$ROOT/$f" "$STAGE/share/doc/designcraft/"; fi
+  if [[ -f "$ROOT/$f" ]]; then install -m 644 "$ROOT/$f" "$STAGE/share/doc/designcraft/"; fi
 done
 
 for f in bin/designcraft bin/designcraft-cli "share/applications/$APP_ID.desktop" \
   "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/icons/hicolor/scalable/apps/$APP_ID.svg" \
   share/doc/designcraft/LICENSE-MIT share/doc/designcraft/LICENSE-APACHE; do
-  if [ ! -e "$STAGE/$f" ]; then echo "error: $f is missing from the package" >&2; exit 1; fi
+  if [[ ! -e "$STAGE/$f" ]]; then echo "error: $f is missing from the package" >&2; exit 1; fi
 done
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
@@ -95,8 +108,12 @@ mkdir -p "$OUT_DIR"
 tar -C "$WORK" -czf "$OUT_DIR/$BASENAME.tar.gz" "$BASENAME"
 echo "wrote $OUT_DIR/$BASENAME.tar.gz"
 
-"$STAGE/bin/designcraft-cli" --version
-if [ "$DRY_RUN" = 1 ]; then
+if [[ "$ARCH" = "$HOST_ARCH" ]]; then
+  "$STAGE/bin/designcraft-cli" --version
+else
+  echo "skipping --version: $ARCH binaries do not run on this $HOST_ARCH host"
+fi
+if [[ "$DRY_RUN" = 1 ]]; then
   echo "==> dry run: tarball contents"
   tar -tzvf "$OUT_DIR/$BASENAME.tar.gz"
 fi

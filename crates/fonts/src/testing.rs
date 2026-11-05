@@ -72,15 +72,19 @@ pub fn font_mapping(family: &str, glyphs: &[(char, char)]) -> Option<Vec<u8>> {
 /// ("Kepler Std" / "Light Display" and "Kepler Std Display" / "Light"). `None` if the bundled font
 /// can't be read.
 pub fn font_with_wws(family: &str, style: &str, wws_family: &str, wws_style: &str, chars: &[char]) -> Option<Vec<u8>> {
-    let base = font_with(family, chars)?;
-    let entries = [(1u16, family), (2, style), (16, family), (17, style), (21, wws_family), (22, wws_style)];
+    font_with_names(&[(1, family), (2, style), (16, family), (17, style), (21, wws_family), (22, wws_style)], chars)
+}
+
+/// [`font_with`] whose name table holds exactly `entries`: (name ID, Windows English name).
+pub fn font_with_names(entries: &[(u16, &str)], chars: &[char]) -> Option<Vec<u8>> {
+    let base = font_with(entries.first()?.1, chars)?;
     let count = u16::try_from(entries.len()).ok()?;
     let mut name = Vec::new();
     for v in [0u16, count, 6 + count * 12] {
         name.extend_from_slice(&v.to_be_bytes());
     }
     let mut at = 0usize;
-    for (id, s) in entries {
+    for &(id, s) in entries {
         let len = s.encode_utf16().count() * 2;
         for v in [3u16, 1, 0x409, id, u16::try_from(len).ok()?, u16::try_from(at).ok()?] {
             name.extend_from_slice(&v.to_be_bytes());
@@ -186,6 +190,36 @@ pub fn with_vorg(font: &[u8], default: i16, overrides: &[(u16, i16)]) -> Option<
     with_tables(font, vec![(*b"VORG", vorg)])
 }
 
+/// `font` with a `BASE` table whose horizontal axis gives the default script the `baselines`
+/// (tag, coordinate in font units). `None` if `font` can't be read.
+pub fn with_base(font: &[u8], baselines: &[([u8; 4], i16)]) -> Option<Vec<u8>> {
+    let mut lines = baselines.to_vec();
+    lines.sort_unstable_by_key(|l| l.0);
+    lines.dedup_by_key(|l| l.0);
+    let n = u16::try_from(lines.len()).ok()?;
+    let u16s = |out: &mut Vec<u8>, vs: &[u16]| vs.iter().for_each(|v| out.extend_from_slice(&v.to_be_bytes()));
+    // Header (version 1.0, horizontal axis at 8), the axis (tag list at 4, script list after it),
+    // the tag list, one `DFLT` script record, its BaseScript (values at 6) and the BaseValues
+    // with one format-1 BaseCoord per baseline.
+    let mut base = Vec::new();
+    u16s(&mut base, &[1, 0, 8, 0]);
+    u16s(&mut base, &[4, 4 + 2 + 4 * n]);
+    u16s(&mut base, &[n]);
+    lines.iter().for_each(|(tag, _)| base.extend_from_slice(tag));
+    u16s(&mut base, &[1]);
+    base.extend_from_slice(b"DFLT");
+    u16s(&mut base, &[8, 6, 0, 0]);
+    u16s(&mut base, &[0, n]);
+    for k in 0..n {
+        u16s(&mut base, &[4 + 2 * n + 4 * k]);
+    }
+    for (_, y) in &lines {
+        u16s(&mut base, &[1]);
+        base.extend_from_slice(&y.to_be_bytes());
+    }
+    with_tables(font, vec![(*b"BASE", base)])
+}
+
 /// `font` with its OS/2 `fsType` (embedding licence bits) set to `fs_type`. `None` if the font has
 /// no OS/2 table.
 pub fn with_fs_type(mut font: Vec<u8>, fs_type: u16) -> Option<Vec<u8>> {
@@ -285,4 +319,10 @@ pub fn with_meta(font: &[u8], dlng: Option<&str>, slng: Option<&str>) -> Option<
     }
     maps.iter().for_each(|(_, v)| meta.extend_from_slice(v.as_bytes()));
     with_tables(font, vec![(*b"meta", meta)])
+}
+
+/// The first face of the font `bytes` as if installed from `path` (which isn't read).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn installed_face(bytes: Vec<u8>, path: std::path::PathBuf) -> Option<crate::FontFace> {
+    crate::FontDb::with_font_dirs(vec![]).new_faces(bytes, crate::FontSource::Installed(path)).into_iter().next()
 }

@@ -9,985 +9,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{AssetId, ItemId, LayerId, StoryId};
 
-/// Fill: a swatch reference and tint (InDesign fills always go through swatches or unnamed colours).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Fill {
-    pub swatch: String,
-    pub tint: f32,
-    /// Gradient angle (degrees) and length override for gradient swatches (`None` = fit to bounds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gradient_angle: Option<f64>,
-    /// Gradient Swatch tool vector in the item's own space: start and end of a linear gradient,
-    /// centre and radius point of a radial one (`None` = fit to bounds at `gradient_angle`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gradient_vector: Option<[f64; 4]>,
-    pub overprint: bool,
-}
+mod content;
+mod effects;
+mod graphic;
+mod paint;
+mod text_frame;
 
-impl Default for Fill {
-    fn default() -> Self {
-        Fill::none()
-    }
-}
-
-impl Fill {
-    /// A radial gradient's ellipse on an object whose bounds (in its own space) are `b`: centre and
-    /// horizontal and vertical radii. As in InDesign, a radial gradient stretches with the object's
-    /// box: by default it's centred and reaches the box's sides (an ellipse in a non-square box);
-    /// with a Gradient Swatch tool vector it's centred at the vector's start, and the vector's
-    /// length, measured with the box made square, sets its size.
-    pub fn radial_ellipse(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, f64, f64) {
-        let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
-        match self.gradient_vector {
-            Some([x0, y0, x1, y1]) => {
-                let r = designcraft_geom::Vec2::new(x1 - x0, (y1 - y0) / k).hypot();
-                (designcraft_geom::Point::new(x0, y0), r, r * k)
-            }
-            // A box with no width or height (a straight line's) has no ellipse: a circle across
-            // its length.
-            None if b.width() <= 1e-9 || b.height() <= 1e-9 => {
-                let r = b.width().max(b.height()).max(1e-3) / 2.0;
-                (b.center(), r, r)
-            }
-            None => (b.center(), b.width() / 2.0, b.height() / 2.0),
-        }
-    }
-
-    /// A linear gradient's axis on an object whose bounds (in its own space) are `b`: the
-    /// Gradient Swatch tool's vector, or the box's extent along the gradient's angle through its
-    /// centre. A box with no extent along that angle (a straight line, across it) takes its longer
-    /// side.
-    pub fn linear_axis(&self, b: Rect) -> (Point, Point) {
-        if let Some([x0, y0, x1, y1]) = self.gradient_vector {
-            return (Point::new(x0, y0), Point::new(x1, y1));
-        }
-        let a = self.gradient_angle.unwrap_or(0.0).to_radians();
-        let half = (b.width() * a.cos().abs() + b.height() * a.sin().abs()) / 2.0;
-        let half = if half > 1e-9 { half } else { b.width().max(b.height()).max(1e-3) / 2.0 };
-        let d = designcraft_geom::Vec2::new(a.cos(), -a.sin()) * half;
-        (b.center() - d, b.center() + d)
-    }
-
-    pub fn none() -> Self {
-        Fill { swatch: designcraft_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
-    }
-    pub fn swatch(name: &str) -> Self {
-        Fill { swatch: name.into(), ..Fill::none() }
-    }
-    pub fn is_none(&self) -> bool {
-        self.swatch == designcraft_color::swatch::NONE
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StrokeAlign {
-    #[default]
-    Center,
-    Inside,
-    Outside,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Cap {
-    #[default]
-    Butt,
-    Round,
-    Projecting,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Join {
-    #[default]
-    Miter,
-    Round,
-    Bevel,
-}
-
-/// Stroke types (Stroke panel → Type). Dash/gap arrays are in points.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum StrokeType {
-    #[default]
-    Solid,
-    Dashed {
-        pattern: Vec<f64>,
-    },
-    Dotted,
-    ThickThin,
-    ThinThick,
-    ThinThin,
-    ThickThick,
-    ThinThickThin,
-    ThickThinThick,
-    Wavy,
-    Hashed,
-    /// A custom striped stroke: bands (start, width) as fractions of the weight from the left edge.
-    Stripes {
-        bands: Vec<(f64, f64)>,
-    },
-    /// A named stroke style of the document (Stroke Styles), by name.
-    Style {
-        name: String,
-    },
-}
-
-impl StrokeType {
-    pub fn label(&self) -> &'static str {
-        match self {
-            StrokeType::Solid => "Solid",
-            StrokeType::Dashed { .. } => "Dashed",
-            StrokeType::Dotted => "Dotted",
-            StrokeType::ThickThin => "Thick - Thin",
-            StrokeType::ThinThick => "Thin - Thick",
-            StrokeType::ThinThin => "Thin - Thin",
-            StrokeType::ThickThick => "Thick - Thick",
-            StrokeType::ThinThickThin => "Thin - Thick - Thin",
-            StrokeType::ThickThinThick => "Thick - Thin - Thick",
-            StrokeType::Wavy => "Wavy",
-            StrokeType::Hashed => "Straight Hash",
-            StrokeType::Stripes { .. } => "Stripes",
-            StrokeType::Style { .. } => "Custom",
-        }
-    }
-
-    /// The bands of a striped type (start, width as fractions of the weight).
-    pub fn bands(&self) -> Option<Vec<(f64, f64)>> {
-        Some(match self {
-            StrokeType::ThickThin => vec![(0.0, 0.5), (0.75, 0.25)],
-            StrokeType::ThinThick => vec![(0.0, 0.25), (0.5, 0.5)],
-            StrokeType::ThinThin => vec![(0.0, 1.0 / 3.0), (2.0 / 3.0, 1.0 / 3.0)],
-            StrokeType::ThickThick => vec![(0.0, 0.4), (0.6, 0.4)],
-            StrokeType::ThinThickThin => vec![(0.0, 0.2), (0.35, 0.3), (0.8, 0.2)],
-            StrokeType::ThickThinThick => vec![(0.0, 0.35), (0.45, 0.1), (0.65, 0.35)],
-            StrokeType::Stripes { bands } => bands.clone(),
-            _ => return None,
-        })
-    }
-
-    /// The filled area for types drawn as fills (stripes, wavy, hash); `None` for solid, dashed
-    /// and dotted strokes (and unresolved named styles).
-    pub fn outline(&self, bp: &designcraft_geom::BezPath, weight: f64, tol: f64) -> Option<designcraft_geom::BezPath> {
-        use designcraft_geom::stroke_style as ss;
-        match self {
-            StrokeType::Wavy => Some(ss::wavy(bp, weight, tol)),
-            StrokeType::Hashed => Some(ss::hashed(bp, weight, tol)),
-            t => t.bands().map(|b| ss::stripes(bp, weight, &b, tol)),
-        }
-    }
-}
-
-/// A named custom stroke style (Stroke Styles dialog): dashes, dots or stripes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StrokeStyleDef {
-    pub name: String,
-    pub kind: StrokeType,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Arrowhead {
-    #[default]
-    None,
-    SimpleWide,
-    Simple,
-    Triangle,
-    TriangleWide,
-    Barbed,
-    Curved,
-    Circle,
-    CircleSolid,
-    Square,
-    SquareSolid,
-    Bar,
-}
-
-impl Arrowhead {
-    pub const ALL: [Arrowhead; 12] = [
-        Arrowhead::None,
-        Arrowhead::Simple,
-        Arrowhead::SimpleWide,
-        Arrowhead::Triangle,
-        Arrowhead::TriangleWide,
-        Arrowhead::Barbed,
-        Arrowhead::Curved,
-        Arrowhead::Circle,
-        Arrowhead::CircleSolid,
-        Arrowhead::Square,
-        Arrowhead::SquareSolid,
-        Arrowhead::Bar,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Arrowhead::None => "None",
-            Arrowhead::Simple => "Simple",
-            Arrowhead::SimpleWide => "Simple - Wide",
-            Arrowhead::Triangle => "Triangle",
-            Arrowhead::TriangleWide => "Triangle - Wide",
-            Arrowhead::Barbed => "Barbed",
-            Arrowhead::Curved => "Curved",
-            Arrowhead::Circle => "Circle",
-            Arrowhead::CircleSolid => "Circle - Solid",
-            Arrowhead::Square => "Square",
-            Arrowhead::SquareSolid => "Square - Solid",
-            Arrowhead::Bar => "Bar",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Stroke {
-    pub swatch: String,
-    pub tint: f32,
-    pub weight: f64,
-    #[serde(rename = "type")]
-    pub kind: StrokeType,
-    pub align: StrokeAlign,
-    pub cap: Cap,
-    pub join: Join,
-    pub miter_limit: f64,
-    pub start: Arrowhead,
-    pub end: Arrowhead,
-    /// Gap colour for dashed/striped strokes.
-    pub gap_swatch: String,
-    pub gap_tint: f32,
-    pub overprint: bool,
-    /// Overprint Gap (Attributes panel).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub gap_overprint: bool,
-    /// A gradient swatch's angle on the stroke, as [`Fill::gradient_angle`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gradient_angle: Option<f64>,
-    /// The Gradient Swatch tool's vector on the stroke, as [`Fill::gradient_vector`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gradient_vector: Option<[f64; 4]>,
-}
-
-impl Default for Stroke {
-    /// InDesign's default for drawn shapes: 1 pt black.
-    fn default() -> Self {
-        Stroke {
-            swatch: designcraft_color::swatch::BLACK.into(),
-            tint: 1.0,
-            weight: 1.0,
-            kind: StrokeType::Solid,
-            align: StrokeAlign::Center,
-            cap: Cap::Butt,
-            join: Join::Miter,
-            miter_limit: 4.0,
-            start: Arrowhead::None,
-            end: Arrowhead::None,
-            gap_swatch: designcraft_color::swatch::NONE.into(),
-            gap_tint: 1.0,
-            overprint: false,
-            gap_overprint: false,
-            gradient_angle: None,
-            gradient_vector: None,
-        }
-    }
-}
-
-impl Stroke {
-    /// The stroke's paint (swatch, tint and gradient geometry) as a fill, to paint it the same way:
-    /// a gradient swatch on a stroke runs across the object's box as on its fill.
-    pub fn as_fill(&self) -> Fill {
-        Fill {
-            swatch: self.swatch.clone(),
-            tint: self.tint,
-            gradient_angle: self.gradient_angle,
-            gradient_vector: self.gradient_vector,
-            overprint: self.overprint,
-        }
-    }
-
-    /// How far the painted stroke can reach beyond the path (arrowheads reach further).
-    pub fn extent(&self) -> f64 {
-        if self.start == Arrowhead::None && self.end == Arrowhead::None { self.weight } else { self.weight.max(0.5) * 5.5 }
-    }
-
-    pub fn none() -> Self {
-        Stroke { swatch: designcraft_color::swatch::NONE.into(), ..Stroke::default() }
-    }
-    pub fn is_none(&self) -> bool {
-        self.swatch == designcraft_color::swatch::NONE || self.weight <= 0.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum VerticalJustification {
-    #[default]
-    Top,
-    Center,
-    Bottom,
-    Justify,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FirstBaseline {
-    #[default]
-    Ascent,
-    CapHeight,
-    Leading,
-    XHeight,
-    Fixed,
-    /// The top of the font's em box: its `BASE` em box; else, for a CJK font, its OS/2 typo
-    /// ascender when the typo ascender and descender span one em; else half an em above half the
-    /// cap height.
-    EmboxHeight,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AutoSize {
-    #[default]
-    Off,
-    HeightOnly,
-    WidthOnly,
-    HeightAndWidth,
-    HeightAndWidthProportionally,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ColumnsKind {
-    #[default]
-    FixedNumber,
-    FixedWidth,
-    FlexibleWidth,
-}
-
-/// Text Frame Options.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct TextFrameOptions {
-    pub columns: u32,
-    pub columns_kind: ColumnsKind,
-    pub gutter: f64,
-    /// Column width for fixed/flexible width columns.
-    pub column_width: f64,
-    pub balance_columns: bool,
-    /// Inset spacing: top, left, bottom, right.
-    pub inset: [f64; 4],
-    pub vertical_justification: VerticalJustification,
-    pub vj_paragraph_spacing_limit: f64,
-    pub first_baseline: FirstBaseline,
-    pub first_baseline_min: f64,
-    pub ignore_wrap: bool,
-    pub auto_size: AutoSize,
-    /// Reference point (0..9, row-major from the top left) that stays fixed when auto-sizing.
-    pub auto_size_ref: u8,
-    pub column_rule: bool,
-    pub column_rule_weight: f64,
-    pub column_rule_color: String,
-    /// 0..1.
-    pub column_rule_tint: f32,
-    /// Horizontal offset of each rule from the middle of its gutter.
-    pub column_rule_offset: f64,
-    /// The rule starts this far below the column top and ends this far above its bottom.
-    pub column_rule_top_inset: f64,
-    pub column_rule_bottom_inset: f64,
-    /// Use a custom baseline grid for this frame.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub baseline_grid: Option<(f64, f64)>,
-    /// Type on a Path: the text runs along the item's path instead of filling it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<PathType>,
-}
-
-/// Type on a Path Options.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct PathType {
-    /// Where the text starts, as a distance along the path (the start bracket).
-    pub start: f64,
-    /// Where the text ends, as a distance along the path (the end bracket); `None` is the path's
-    /// end. Text past it is overset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub end: Option<f64>,
-    /// Run the other way (the text sits on the other side).
-    pub flip: bool,
-    pub align: PathAlign,
-}
-
-/// Which part of the type sits on the path.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PathAlign {
-    #[default]
-    Baseline,
-    Ascender,
-    Descender,
-    Center,
-}
-
-impl Default for TextFrameOptions {
-    fn default() -> Self {
-        TextFrameOptions {
-            columns: 1,
-            columns_kind: ColumnsKind::FixedNumber,
-            gutter: 12.0,
-            column_width: 0.0,
-            balance_columns: false,
-            inset: [0.0; 4],
-            vertical_justification: VerticalJustification::Top,
-            vj_paragraph_spacing_limit: 0.0,
-            first_baseline: FirstBaseline::Ascent,
-            first_baseline_min: 0.0,
-            ignore_wrap: false,
-            auto_size: AutoSize::Off,
-            auto_size_ref: 4,
-            column_rule: false,
-            column_rule_weight: 1.0,
-            column_rule_color: designcraft_color::swatch::BLACK.into(),
-            column_rule_tint: 1.0,
-            column_rule_offset: 0.0,
-            column_rule_top_inset: 0.0,
-            column_rule_bottom_inset: 0.0,
-            baseline_grid: None,
-            path: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WrapMode {
-    #[default]
-    None,
-    BoundingBox,
-    Contour,
-    JumpObject,
-    JumpToNextColumn,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WrapSide {
-    #[default]
-    BothSides,
-    RightSide,
-    LeftSide,
-    TowardsSpine,
-    AwayFromSpine,
-    LargestArea,
-}
-
-/// Text Wrap panel settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct TextWrap {
-    pub mode: WrapMode,
-    /// Top, left, bottom, right offsets.
-    pub offsets: [f64; 4],
-    pub invert: bool,
-    pub side: WrapSide,
-}
-
-/// Frame fitting options (Object → Fitting → Frame Fitting Options).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Fitting {
-    #[default]
-    None,
-    FillProportionally,
-    FitProportionally,
-    FitContentToFrame,
-    CenterContent,
-}
-
-/// A placed graphic inside a frame.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Graphic {
-    pub asset: AssetId,
-    /// Natural size of the graphic in points (pixels at its resolution, or PDF page size).
-    pub size: (f64, f64),
-    /// Graphic space (0,0)-(w,h) → frame inner space.
-    pub xf: Affine,
-    #[serde(default)]
-    pub auto_fit: Fitting,
-    /// Frame Fitting Options › Align From: the reference point (0–8, row-major; 4 = centre).
-    #[serde(default = "center_ref")]
-    pub fit_align: u8,
-    /// Frame Fitting Options › Crop Amount: top, left, bottom, right (negative adds space).
-    #[serde(default)]
-    pub crop: [f64; 4],
-}
-
-fn center_ref() -> u8 {
-    4
-}
-
-/// Liquid Layout object rules: which edges stay at their distance from the page edge, and
-/// whether the object may stretch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ObjectLiquid {
-    pub resize_width: bool,
-    pub resize_height: bool,
-    pub pin_top: bool,
-    pub pin_bottom: bool,
-    pub pin_left: bool,
-    pub pin_right: bool,
-}
-
-/// Object Export Options: tagged PDF and EPUB/HTML handling of one object.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ExportOptions {
-    /// Tagged PDF: the object is decoration (an artifact), not content.
-    pub artifact: bool,
-    /// EPUB/HTML: export the object as an image (whatever it is).
-    pub rasterize: bool,
-    /// EPUB/HTML: "left", "center" or "right" ("" = as the flow puts it).
-    pub align: String,
-    /// EPUB/HTML: start a new page (screen) before the object.
-    pub page_break_before: bool,
-}
-
-impl ExportOptions {
-    pub fn is_default(&self) -> bool {
-        *self == ExportOptions::default()
-    }
-}
-
-/// A PDF form field.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FormField {
-    pub kind: FieldKind,
-    /// Field name (unique in the exported PDF).
-    pub name: String,
-    /// Default value: the text, the chosen option, or "On"/"" for a check box.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub value: String,
-    /// Choices of a combo box or list box.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub multiline: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub required: bool,
-    /// Font size of the field's text (0 = auto).
-    #[serde(default)]
-    pub font_size: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FieldKind {
-    TextField,
-    CheckBox,
-    ComboBox,
-    ListBox,
-    Signature,
-}
-
-/// The source and template of a live caption.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LiveCaption {
-    pub source: ItemId,
-    pub template: String,
-}
-
-/// Media panel options for a placed video or sound.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct MediaOptions {
-    pub play_on_page_load: bool,
-    #[serde(rename = "loop")]
-    pub looping: bool,
-    /// Show the player controls.
-    pub controls: bool,
-    /// Poster image (shown on the page and in print); `None` = a placeholder frame.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub poster: Option<AssetId>,
-}
-
-impl Item {
-    /// The graphic to draw for this frame: a media frame with a poster draws the poster
-    /// stretched over the media rectangle.
-    pub fn drawn_graphic(&self, assets: &std::collections::BTreeMap<AssetId, Arc<crate::Asset>>) -> Option<Graphic> {
-        let Content::Graphic(g) = &self.content else { return None };
-        if let Some(poster) = self.media.as_ref().and_then(|m| m.poster)
-            && let Some((pw, ph)) = assets.get(&poster).and_then(|a| a.pixels)
-        {
-            let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
-            return Some(Graphic { asset: poster, size: (pw, ph), xf: g.xf * Affine::scale_non_uniform(g.size.0 / pw, g.size.1 / ph), ..g.clone() });
-        }
-        Some(g.clone())
-    }
-}
-
-/// Vertical text: composed in a box `area.height()` wide and `area.width()` tall at the origin,
-/// placed so lines go down and follow each other leftwards (a clockwise quarter turn).
-pub fn vertical_text_xf(area: Rect) -> Affine {
-    Affine::new([0.0, 1.0, -1.0, 0.0, area.x1, area.y0])
-}
-
-/// "video" or "audio" for a media MIME type.
-pub fn media_kind(mime: &str) -> Option<&'static str> {
-    if mime.starts_with("video/") {
-        Some("video")
-    } else if mime.starts_with("audio/") {
-        Some("audio")
-    } else {
-        None
-    }
-}
-
-/// MIME type of a media file by its extension.
-pub fn media_mime(name: &str) -> Option<&'static str> {
-    let ext = name.rsplit('.').next()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "mp4" | "m4v" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "ogv" => "video/ogg",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        "wav" => "audio/wav",
-        "ogg" | "oga" => "audio/ogg",
-        "aac" => "audio/aac",
-        _ => return None,
-    })
-}
-
-/// A button's On Release action.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
-pub enum ButtonAction {
-    GoToPage { page: usize },
-    GoToFirstPage,
-    GoToLastPage,
-    GoToNextPage,
-    GoToPreviousPage,
-    GoToUrl { url: String },
-}
+pub use content::{Content, Shape};
+pub use effects::{
+    Bevel, DirectionalFeather, DropShadow, Effects, FeatherCorners, FeatherOptions, GlowTechnique, GradientFeather, InnerGlow, InnerShadow,
+    OuterGlow, Satin,
+};
+pub use graphic::{
+    ButtonAction, ClippingKind, ClippingPath, ExportOptions, FieldKind, Fitting, FormField, GRAPHIC_LAYER_RENDERING_WARNING, Graphic,
+    GraphicLayerOptions, LiveCaption, MAX_CLIP_ANCHORS, MediaOptions, ObjectLiquid, media_kind, media_mime,
+};
+pub use paint::{
+    Arrowhead, Cap, Fill, Join, MAX_DASH, MAX_DASH_ENTRIES, MAX_DASH_PERIODS, MIN_DASH, Stroke, StrokeAlign, StrokeStyleDef, StrokeType,
+    path_length_bound,
+};
+pub use text_frame::{
+    AutoSize, ColumnsKind, ContourType, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame, TextFrameOptions,
+    TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+};
 
 fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
 
-impl Graphic {
-    /// The graphic transform that fits it into `frame` (the frame's inner rect) with `mode`,
-    /// honouring the crop amounts and the reference point.
-    pub fn fitted(&self, frame: Rect, mode: Fitting) -> Option<Affine> {
-        let (nw, nh) = self.size;
-        if nw <= 0.0 || nh <= 0.0 {
-            return None;
-        }
-        let [t, l, b, r] = self.crop;
-        let area = Rect::new(frame.x0 - l, frame.y0 - t, frame.x1 + r, frame.y1 + b);
-        if area.width() <= 0.0 || area.height() <= 0.0 {
-            return None;
-        }
-        let (fx, fy) = ([0.0, 0.5, 1.0][(self.fit_align % 3) as usize], [0.0, 0.5, 1.0][(self.fit_align / 3).min(2) as usize]);
-        let place = |w: f64, h: f64| (area.x0 + (area.width() - w) * fx, area.y0 + (area.height() - h) * fy);
-        Some(match mode {
-            Fitting::None => return None,
-            Fitting::FillProportionally | Fitting::FitProportionally => {
-                let k = if mode == Fitting::FillProportionally {
-                    (area.width() / nw).max(area.height() / nh)
-                } else {
-                    (area.width() / nw).min(area.height() / nh)
-                };
-                Affine::translate(place(nw * k, nh * k)) * Affine::scale(k)
-            }
-            Fitting::FitContentToFrame => Affine::translate((area.x0, area.y0)) * Affine::scale_non_uniform(area.width() / nw, area.height() / nh),
-            Fitting::CenterContent => {
-                let cur = self.xf.transform_rect_bbox(Rect::new(0.0, 0.0, nw, nh));
-                let (x, y) = place(cur.width(), cur.height());
-                Affine::translate((x - cur.x0, y - cur.y0)) * self.xf
-            }
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TextFrame {
-    pub story: StoryId,
-    #[serde(default)]
-    pub options: TextFrameOptions,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub enum Content {
-    #[default]
-    Unassigned,
-    Text(TextFrame),
-    Graphic(Graphic),
-    Group {
-        items: Vec<Arc<Item>>,
-    },
-}
-
-/// What kind of spline the item was drawn as (labels in the Layers panel, tool behaviours).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Shape {
-    #[default]
-    Rectangle,
-    Oval,
-    Polygon,
-    GraphicLine,
-    Path,
-    Group,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DropShadow {
-    pub on: bool,
-    pub color: String,
-    pub opacity: f32,
-    pub angle: f64,
-    /// Use Global Light (the document angle instead of `angle`).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub global_light: bool,
-    pub distance: f64,
-    pub size: f64,
-    pub spread: f64,
-}
-
-impl Default for DropShadow {
-    fn default() -> Self {
-        DropShadow {
-            on: false,
-            color: designcraft_color::swatch::BLACK.into(),
-            opacity: 0.75,
-            angle: 135.0,
-            distance: 7.0,
-            size: 5.0,
-            spread: 0.0,
-            global_light: false,
-        }
-    }
-}
-
-/// Inner shadow: a blurred, offset shadow inside the object's edge.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct InnerShadow {
-    pub on: bool,
-    pub color: String,
-    pub opacity: f32,
-    pub angle: f64,
-    /// Use Global Light (the document angle instead of `angle`).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub global_light: bool,
-    pub distance: f64,
-    pub size: f64,
-    /// Percentage (0–100) of `size` that hardens the edge instead of blurring it.
-    pub choke: f64,
-}
-
-impl Default for InnerShadow {
-    fn default() -> Self {
-        InnerShadow {
-            on: false,
-            color: designcraft_color::swatch::BLACK.into(),
-            opacity: 0.75,
-            angle: 135.0,
-            distance: 7.0,
-            size: 7.0,
-            choke: 0.0,
-            global_light: false,
-        }
-    }
-}
-
-/// Outer glow: a blurred silhouette around the object, without offset.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct OuterGlow {
-    pub on: bool,
-    pub color: String,
-    pub opacity: f32,
-    pub size: f64,
-    /// Percentage (0–100) of `size` that grows the silhouette instead of blurring it.
-    pub spread: f64,
-}
-
-impl Default for OuterGlow {
-    fn default() -> Self {
-        OuterGlow { on: false, color: designcraft_color::swatch::BLACK.into(), opacity: 0.75, size: 7.0, spread: 0.0 }
-    }
-}
-
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Effects {
-    /// Drop shadow. `size` is the blur size; `spread` is a percentage (0–100) of it that grows
-    /// the silhouette instead of blurring it.
-    pub drop_shadow: DropShadow,
-    /// Basic feather width (0 = off).
-    pub feather: f64,
-    #[serde(skip_serializing_if = "is_default")]
-    pub inner_shadow: InnerShadow,
-    #[serde(skip_serializing_if = "is_default")]
-    pub outer_glow: OuterGlow,
-    #[serde(skip_serializing_if = "is_default")]
-    pub gradient_feather: GradientFeather,
-    #[serde(skip_serializing_if = "is_default")]
-    pub inner_glow: InnerGlow,
-    #[serde(skip_serializing_if = "is_default")]
-    pub bevel: Bevel,
-    #[serde(skip_serializing_if = "is_default")]
-    pub satin: Satin,
-    #[serde(skip_serializing_if = "is_default")]
-    pub directional_feather: DirectionalFeather,
-}
-
-/// Directional Feather: each side fades over its own width (item space, before rotation).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DirectionalFeather {
-    pub on: bool,
-    /// Top, left, bottom, right widths in points.
-    pub widths: [f64; 4],
-}
-
-/// Inner Glow: a glow inside the edge (or from the centre).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct InnerGlow {
-    pub on: bool,
-    pub color: String,
-    pub opacity: f32,
-    pub size: f64,
-    /// Percentage (0–100) of `size` that hardens the glow.
-    pub choke: f64,
-    /// Glow from the centre instead of the edges.
-    pub center: bool,
-}
-
-impl Default for InnerGlow {
-    fn default() -> Self {
-        InnerGlow { on: false, color: designcraft_color::swatch::PAPER.into(), opacity: 0.75, size: 7.0, choke: 0.0, center: false }
-    }
-}
-
-/// Bevel and Emboss (inner bevel): a highlight on the lit edges, a shadow on the others.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Bevel {
-    pub on: bool,
-    pub size: f64,
-    /// Depth in percent (scales the highlight and shadow offset).
-    pub depth: f64,
-    pub angle: f64,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub global_light: bool,
-    pub highlight: String,
-    pub highlight_opacity: f32,
-    pub shadow: String,
-    pub shadow_opacity: f32,
-}
-
-impl Default for Bevel {
-    fn default() -> Self {
-        Bevel {
-            on: false,
-            size: 7.0,
-            depth: 100.0,
-            angle: 120.0,
-            global_light: true,
-            highlight: designcraft_color::swatch::PAPER.into(),
-            highlight_opacity: 0.75,
-            shadow: designcraft_color::swatch::BLACK.into(),
-            shadow_opacity: 0.75,
-        }
-    }
-}
-
-/// Satin: soft interior shading from two offset copies of the shape.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Satin {
-    pub on: bool,
-    pub color: String,
-    pub opacity: f32,
-    pub angle: f64,
-    pub distance: f64,
-    pub size: f64,
-    pub invert: bool,
-}
-
-impl Default for Satin {
-    fn default() -> Self {
-        Satin { on: false, color: designcraft_color::swatch::BLACK.into(), opacity: 0.5, angle: 120.0, distance: 7.0, size: 7.0, invert: false }
-    }
-}
-
-/// Gradient Feather: the object fades from `start` to `end` opacity along a gradient.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct GradientFeather {
-    pub on: bool,
-    pub radial: bool,
-    /// Degrees (linear), when no vector was dragged.
-    pub angle: f64,
-    pub start: f32,
-    pub end: f32,
-    /// Gradient Feather tool vector in the item's space: start and end (linear), centre and
-    /// radius point (radial).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vector: Option<[f64; 4]>,
-}
-
-impl Default for GradientFeather {
-    fn default() -> Self {
-        GradientFeather { on: false, radial: false, angle: 0.0, start: 1.0, end: 0.0, vector: None }
-    }
-}
-
-impl GradientFeather {
-    /// The gradient's two points in item space for an object with inner bounds `b`.
-    pub fn points(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, designcraft_geom::Point) {
-        use designcraft_geom::{Point, Vec2};
-        if let Some([x0, y0, x1, y1]) = self.vector {
-            return (Point::new(x0, y0), Point::new(x1, y1));
-        }
-        let c = b.center();
-        if self.radial {
-            return (c, c + Vec2::new(b.width().max(b.height()) / 2.0, 0.0));
-        }
-        let a = self.angle.to_radians();
-        let d = Vec2::new(a.cos(), -a.sin());
-        let half = (b.width() * d.x.abs() + b.height() * d.y.abs()) / 2.0;
-        (c - d * half, c + d * half)
-    }
-}
-
-impl Effects {
-    /// Any effect drawn with soft (raster) filters?
-    pub fn any(&self) -> bool {
-        self.drop_shadow.on
-            || self.feather > 0.0
-            || self.inner_shadow.on
-            || self.outer_glow.on
-            || self.gradient_feather.on
-            || self.inner_glow.on
-            || self.bevel.on
-            || self.satin.on
-            || self.directional_feather.on
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1053,6 +104,10 @@ pub struct Item {
     /// Object › Object Layer Options: layers of a placed PDF that are hidden.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pdf_hidden_layers: Vec<String>,
+    /// Explicit placed-PDF visibility, including an all-on override with no hidden names.
+    /// False with an empty hidden list retains the file's own settings (legacy behavior).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pdf_layer_override: bool,
     /// Window › Interactive › Media: options of a placed video or sound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaOptions>,
@@ -1085,7 +140,15 @@ fn one() -> f32 {
     1.0
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl Item {
+    pub fn has_pdf_layer_override(&self) -> bool {
+        self.pdf_layer_override || !self.pdf_hidden_layers.is_empty()
+    }
+
     pub fn new(id: ItemId, layer: LayerId, shape: Shape, path: PathData) -> Self {
         Item {
             id,
@@ -1112,6 +175,7 @@ impl Item {
             xml_tag: String::new(),
             button: None,
             pdf_hidden_layers: Vec::new(),
+            pdf_layer_override: false,
             live_caption: None,
             form_field: None,
             export_options: ExportOptions::default(),
@@ -1139,6 +203,10 @@ impl Item {
             Content::Text(t) => Some(t),
             _ => None,
         }
+    }
+    /// Does this item, or the graphic it holds, wrap text?
+    pub fn has_wrap(&self) -> bool {
+        self.wrap.mode != WrapMode::None || self.graphic().is_some_and(|g| g.wrap.mode != WrapMode::None)
     }
     pub fn graphic(&self) -> Option<&Graphic> {
         match &self.content {
@@ -1214,18 +282,31 @@ impl Item {
         self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
     }
 
+    /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
+    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    pub fn takes_graphic(&self) -> bool {
+        match &self.content {
+            Content::Unassigned | Content::Graphic(_) => true,
+            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            _ => false,
+        }
+    }
+
     pub fn bounds(&self) -> Rect {
+        self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
+    }
+
+    /// Bounds of the outline under `outer` (then this item's own transform). A group's are its
+    /// children's outlines transformed by the full transform, which a rotated group's box of its
+    /// children's boxes would overstate.
+    fn bounds_under(&self, outer: Affine) -> Option<Rect> {
+        let xf = outer * self.xf;
         if self.shape == Shape::Group
             && let Content::Group { items } = &self.content
         {
-            let mut r: Option<Rect> = None;
-            for c in items {
-                let b = self.xf.transform_rect_bbox(c.bounds());
-                r = Some(r.map_or(b, |r| r.union(b)));
-            }
-            return r.unwrap_or(Rect::ZERO);
+            return items.iter().filter_map(|c| c.bounds_under(xf)).reduce(|a, b| a.union(b));
         }
-        self.path.transformed(self.xf).bounds().unwrap_or(Rect::ZERO)
+        self.path.transformed(xf).bounds()
     }
 
     /// Visible bounds including stroke weight (approximate for inside/outside alignment).
@@ -1275,7 +356,8 @@ impl Item {
     /// The Layers-panel label: `<rectangle>`, the first words of a text frame, the placed file name…
     pub fn default_label(&self) -> &'static str {
         match (&self.content, self.shape) {
-            (Content::Group { .. }, _) => "<group>",
+            // A frame with items pasted into it is named by its shape, as in InDesign.
+            (Content::Group { .. }, Shape::Group) => "<group>",
             (Content::Text(_), _) => "<text frame>",
             (Content::Graphic(_), _) => "<image>",
             (_, Shape::Rectangle) => "<rectangle>",
@@ -1284,6 +366,19 @@ impl Item {
             (_, Shape::GraphicLine) => "<line>",
             (_, Shape::Path) | (_, Shape::Group) => "<path>",
         }
+    }
+
+    /// Whether the item's own geometry (path, transform, a placed graphic's size and transform)
+    /// is finite. JSON has no infinity or NaN, so a document holding one can't be saved.
+    pub fn geometry_is_finite(&self) -> bool {
+        let pt = |p: Point| p.x.is_finite() && p.y.is_finite();
+        let affine = |a: &Affine| a.as_coeffs().iter().all(|c| c.is_finite());
+        let path = self.path.subpaths.iter().flat_map(|s| &s.anchors).all(|a| pt(a.p) && pt(a.h_in) && pt(a.h_out));
+        let graphic = match &self.content {
+            Content::Graphic(g) => g.size.0.is_finite() && g.size.1.is_finite() && affine(&g.xf),
+            _ => true,
+        };
+        path && affine(&self.xf) && graphic
     }
 
     /// Visit this item and descendants (pre-order).
@@ -1299,6 +394,70 @@ impl Item {
 mod tests {
     use super::*;
     use designcraft_geom::shapes;
+
+    /// Shadows and glows saved before they had a blend mode read Normal, as they were drawn;
+    /// new ones start as InDesign's: Multiply for shadows, Screen for the outer glow.
+    #[test]
+    fn effect_blend_modes_default_as_indesign_and_keep_old_documents() {
+        let old: DropShadow =
+            serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "angle": 120, "distance": 7, "size": 5, "spread": 0}"#)
+                .unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        let old: OuterGlow = serde_json::from_str(r#"{"on": true, "color": "[Black]", "opacity": 0.75, "size": 7, "spread": 0}"#).unwrap();
+        assert_eq!(old.mode, BlendMode::Normal);
+        assert_eq!(DropShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(InnerShadow::default().mode, BlendMode::Multiply);
+        assert_eq!(OuterGlow::default().mode, BlendMode::Screen);
+        let saved = serde_json::to_value(DropShadow { mode: BlendMode::Screen, ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<DropShadow>(saved).unwrap().mode, BlendMode::Screen, "round trip");
+    }
+
+    #[test]
+    fn graphics_without_a_clipping_path_load_and_save_as_before() {
+        let g = Graphic {
+            layer_options: None,
+            asset: AssetId(3),
+            size: (40.0, 30.0),
+            xf: Affine::translate((5.0, 5.0)),
+            clip: None,
+            auto_fit: Fitting::None,
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        };
+        let v = serde_json::to_value(&g).unwrap();
+        assert!(v.get("layerOptions").is_none(), "legacy graphics keep their existing representation");
+        assert!(v.get("clip").is_none(), "{v}");
+        assert_eq!(serde_json::from_value::<Graphic>(v.clone()).unwrap(), g);
+        // A clip written with only its type and path gets the default options.
+        let mut v = v;
+        v["clip"] = serde_json::json!({"kind": "alphaChannel", "path": {"subpaths": []}});
+        let c = serde_json::from_value::<Graphic>(v).unwrap().clip.unwrap();
+        assert_eq!(*c, ClippingPath::new(ClippingKind::AlphaChannel, PathData::default()));
+    }
+
+    #[test]
+    fn frame_baseline_grid_saves_as_start_then_increment() {
+        // A file saved before Relative To existed: the grid starts from the top of the page and
+        // saves back unchanged.
+        let v = serde_json::json!({"baselineGrid": [6.0, 14.0]});
+        let o = serde_json::from_value::<TextFrameOptions>(v).unwrap();
+        assert_eq!(o.baseline_grid, Some(FrameBaselineGrid { start: 6.0, increment: 14.0, relative_to: FrameGridRelative::TopOfPage }));
+        assert_eq!(serde_json::to_value(&o).unwrap()["baselineGrid"], serde_json::json!([6.0, 14.0]));
+        for r in [FrameGridRelative::TopMargin, FrameGridRelative::TopOfFrame, FrameGridRelative::TopInset] {
+            let o = TextFrameOptions {
+                baseline_grid: Some(FrameBaselineGrid { relative_to: r, ..FrameBaselineGrid::new(6.0, 14.0) }),
+                ..Default::default()
+            };
+            let v = serde_json::to_value(&o).unwrap();
+            assert_eq!(v["baselineGrid"], serde_json::json!([6.0, 14.0, r.name()]));
+            assert_eq!(serde_json::from_value::<TextFrameOptions>(v).unwrap().baseline_grid, o.baseline_grid);
+        }
+        for bad in [serde_json::json!([6.0]), serde_json::json!([6.0, 14.0, "frame", 1]), serde_json::json!([6.0, 14.0, "spine"])] {
+            assert!(serde_json::from_value::<TextFrameOptions>(serde_json::json!({"baselineGrid": bad})).is_err());
+        }
+    }
 
     #[test]
     fn bounds_and_text_area() {
@@ -1347,6 +506,34 @@ mod tests {
         let mut n = 0;
         g.walk(&mut |_| n += 1);
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn rotated_group_bounds_follow_the_children_outlines() {
+        let rects = [Rect::new(0.0, 0.0, 120.0, 20.0), Rect::new(10.0, 40.0, 200.0, 70.0)];
+        let child_xf = Affine::rotate(-20f64.to_radians());
+        let items = rects
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut c = Item::new(ItemId(i as u64 + 1), LayerId(1), Shape::Rectangle, shapes::rectangle(*r));
+                c.xf = child_xf;
+                Arc::new(c)
+            })
+            .collect();
+        let mut g = Item::new(ItemId(9), LayerId(1), Shape::Group, PathData::default());
+        g.content = Content::Group { items };
+        g.xf = Affine::translate((50.0, 60.0)) * Affine::rotate(30f64.to_radians());
+        let full = g.xf * child_xf;
+        let corners = rects.iter().flat_map(|r| [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)]).map(|(x, y)| full * Point::new(x, y));
+        let want = corners.fold(None::<Rect>, |acc, p| Some(acc.map_or(Rect::from_points(p, p), |r| r.union_pt(p)))).unwrap();
+        let got = g.bounds();
+        for (a, b) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((a - b).abs() < 1e-9, "{got:?} != {want:?}");
+        }
+        // The box of the children's rotated boxes is larger.
+        let boxes = rects.iter().map(|r| g.xf.transform_rect_bbox(child_xf.transform_rect_bbox(*r))).reduce(|a, b| a.union(b)).unwrap();
+        assert!(boxes.height() > got.height() + 1.0);
     }
 
     #[test]

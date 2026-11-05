@@ -376,220 +376,265 @@ impl Sources {
         }
     }
 
+    /// ASCIIHexDecode: `fill` for one filter kind; false once its data has ended.
+    fn fill_hex(&mut self, id: usize, up: usize, depth: usize, mut hi: Option<u8>, produced: &mut Vec<u8>) -> bool {
+        let mut more = true;
+        while produced.is_empty() {
+            let Some(c) = self.read_depth(up, depth + 1) else {
+                more = false;
+                break;
+            };
+            if c == b'>' {
+                more = false;
+                break;
+            }
+            let Some(v) = hex_val(c) else { continue };
+            match hi.take() {
+                Some(h) => produced.push(h << 4 | v),
+                None => hi = Some(v),
+            }
+        }
+        if !more && let Some(h) = hi.take() {
+            produced.push(h << 4);
+        }
+        if let Some(Source { kind: Kind::Filter { dec: Dec::Hex { hi: slot }, .. }, .. }) = self.list.get_mut(id) {
+            *slot = hi;
+        }
+        more
+    }
+
+    /// ASCII85Decode, as `fill_hex`.
+    fn fill_a85(
+        &mut self,
+        id: usize,
+        up: usize,
+        depth: usize,
+        (mut group, mut n, mut first): ([u8; 5], usize, bool),
+        produced: &mut Vec<u8>,
+    ) -> bool {
+        let mut more = true;
+        while produced.is_empty() {
+            let Some(c) = self.read_depth(up, depth + 1) else {
+                more = false;
+                break;
+            };
+            if is_ws(c) {
+                continue;
+            }
+            if c == b'<' && first {
+                // A leading `<~`.
+                if self.read_depth(up, depth + 1) == Some(b'~') {
+                    first = false;
+                    continue;
+                }
+                more = false;
+                break;
+            }
+            first = false;
+            if c == b'~' {
+                let _ = self.read_depth(up, depth + 1);
+                more = false;
+                break;
+            }
+            if c == b'z' && n == 0 {
+                produced.extend([0; 4]);
+                continue;
+            }
+            if !(b'!'..=b'u').contains(&c) {
+                more = false;
+                break;
+            }
+            if let Some(slot) = group.get_mut(n) {
+                *slot = c - b'!';
+            }
+            n += 1;
+            if n == 5 {
+                let v = group.iter().fold(0u64, |a, &d| a * 85 + u64::from(d)).min(u64::from(u32::MAX));
+                produced.extend(u32::try_from(v).unwrap_or(u32::MAX).to_be_bytes());
+                n = 0;
+            }
+        }
+        if !more && n > 1 {
+            for slot in group.iter_mut().skip(n) {
+                *slot = 84;
+            }
+            let v = group.iter().fold(0u64, |a, &d| a * 85 + u64::from(d)).min(u64::from(u32::MAX));
+            produced.extend(u32::try_from(v).unwrap_or(u32::MAX).to_be_bytes().iter().take(n - 1));
+            n = 0;
+        }
+        if let Some(Source { kind: Kind::Filter { dec: Dec::A85 { group: g, n: nn, first: f }, .. }, .. }) = self.list.get_mut(id) {
+            *g = group;
+            *nn = n;
+            *f = first;
+        }
+        more
+    }
+
+    /// RunLengthDecode, as `fill_hex`.
+    fn fill_run_length(&mut self, up: usize, depth: usize, produced: &mut Vec<u8>) -> bool {
+        let mut more = true;
+        match self.read_depth(up, depth + 1) {
+            None | Some(128) => more = false,
+            Some(len @ 0..=127) => {
+                for _ in 0..=len {
+                    match self.read_depth(up, depth + 1) {
+                        Some(c) => produced.push(c),
+                        None => {
+                            more = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            Some(len) => match self.read_depth(up, depth + 1) {
+                Some(c) => produced.extend(std::iter::repeat_n(c, 257 - usize::from(len))),
+                None => more = false,
+            },
+        }
+        more
+    }
+
+    /// SubFileDecode, as `fill_hex`.
+    fn fill_subfile(
+        &mut self,
+        id: usize,
+        up: usize,
+        depth: usize,
+        (eod, mut count, mut left, mut window): (Vec<u8>, usize, Option<usize>, VecDeque<u8>),
+        produced: &mut Vec<u8>,
+    ) -> bool {
+        let mut more = true;
+        if let Some(n) = left.as_mut() {
+            if *n == 0 {
+                more = false;
+            } else if let Some(c) = self.read_depth(up, depth + 1) {
+                *n -= 1;
+                produced.push(c);
+            } else {
+                more = false;
+            }
+        } else if eod.is_empty() {
+            match self.read_depth(up, depth + 1) {
+                Some(c) => produced.push(c),
+                None => more = false,
+            }
+        } else {
+            while produced.is_empty() && more {
+                let Some(c) = self.read_depth(up, depth + 1) else {
+                    produced.extend(window.drain(..));
+                    more = false;
+                    break;
+                };
+                window.push_back(c);
+                if window.len() >= eod.len() && window.iter().skip(window.len() - eod.len()).eq(eod.iter()) {
+                    if count == 0 {
+                        let keep = window.len() - eod.len();
+                        produced.extend(window.drain(..keep));
+                        window.clear();
+                        more = false;
+                        break;
+                    }
+                    count -= 1;
+                }
+                while window.len() > eod.len() {
+                    if let Some(b) = window.pop_front() {
+                        produced.push(b);
+                    }
+                }
+            }
+        }
+        if let Some(Source { kind: Kind::Filter { dec: Dec::SubFile { count: c, left: l, window: w, .. }, .. }, .. }) = self.list.get_mut(id) {
+            *c = count;
+            *l = left;
+            *w = window;
+        }
+        more
+    }
+
+    /// FlateDecode and LZWDecode, as `fill_hex`.
+    fn fill_stream(&mut self, id: usize, up: usize, depth: usize, produced: &mut Vec<u8>) -> bool {
+        let mut more = true;
+        // Feed what is pending, or a chunk from beneath; keep what wasn't used.
+        let mut input = match self.list.get_mut(id).map(|s| &mut s.kind) {
+            Some(Kind::Filter { dec: Dec::Flate { pending, .. } | Dec::Lzw { pending, .. }, .. }) => std::mem::take(pending),
+            _ => Vec::new(),
+        };
+        let mut eof = false;
+        if input.is_empty() {
+            while input.len() < 4096 {
+                match self.read_depth(up, depth + 1) {
+                    Some(c) => input.push(c),
+                    None => {
+                        eof = true;
+                        break;
+                    }
+                }
+            }
+        }
+        let mut buf = vec![0u8; 64 * 1024];
+        let (used, written, finished) = match self.list.get_mut(id).map(|s| &mut s.kind) {
+            Some(Kind::Filter { dec: Dec::Flate { state, .. }, .. }) => {
+                let r = miniz_oxide::inflate::stream::inflate(state, &input, &mut buf, miniz_oxide::MZFlush::None);
+                let finished = matches!(r.status, Ok(miniz_oxide::MZStatus::StreamEnd) | Err(_));
+                (r.bytes_consumed, r.bytes_written, finished)
+            }
+            Some(Kind::Filter { dec: Dec::Lzw { dec, .. }, .. }) => {
+                // One byte at a time: the decoder must not read past its end code.
+                let (mut used, mut written, mut finished) = (0, 0, false);
+                while used < input.len() && written + 4096 < buf.len() {
+                    let r = dec.decode_bytes(input.get(used..used + 1).unwrap_or(&[]), buf.get_mut(written..).unwrap_or(&mut []));
+                    used += r.consumed_in;
+                    written += r.consumed_out;
+                    if matches!(r.status, Ok(weezl::LzwStatus::Done) | Err(_)) {
+                        finished = true;
+                        break;
+                    }
+                    if r.consumed_in == 0 && r.consumed_out == 0 {
+                        break;
+                    }
+                }
+                (used, written, finished)
+            }
+            _ => (0, 0, true),
+        };
+        produced.extend_from_slice(buf.get(..written).unwrap_or(&[]));
+        let rest = input.get(used..).unwrap_or(&[]).to_vec();
+        if finished {
+            // The stream ended inside this chunk: what follows belongs to the file.
+            self.unread_many(up, &rest);
+            more = false;
+        } else if used == 0 && written == 0 && (eof || input.is_empty()) {
+            more = false;
+        } else if let Some(Source { kind: Kind::Filter { dec: Dec::Flate { pending, .. } | Dec::Lzw { pending, .. }, .. }, .. }) =
+            self.list.get_mut(id)
+        {
+            *pending = rest;
+        }
+        more
+    }
+
     /// Decode some more of filter `id`; false once its data has ended.
     fn fill(&mut self, id: usize, depth: usize) -> bool {
         let Some(Source { kind: Kind::Filter { up, dec, .. }, .. }) = self.list.get(id) else { return false };
         let up = *up;
         let mut produced: Vec<u8> = Vec::new();
-        let mut more = true;
-        match dec {
-            Dec::Dct => more = false,
+        let more = match dec {
+            Dec::Dct => false,
             Dec::Hex { hi } => {
-                let mut hi = *hi;
-                while produced.is_empty() {
-                    let Some(c) = self.read_depth(up, depth + 1) else {
-                        more = false;
-                        break;
-                    };
-                    if c == b'>' {
-                        more = false;
-                        break;
-                    }
-                    let Some(v) = hex_val(c) else { continue };
-                    match hi.take() {
-                        Some(h) => produced.push(h << 4 | v),
-                        None => hi = Some(v),
-                    }
-                }
-                if !more && let Some(h) = hi.take() {
-                    produced.push(h << 4);
-                }
-                if let Some(Source { kind: Kind::Filter { dec: Dec::Hex { hi: slot }, .. }, .. }) = self.list.get_mut(id) {
-                    *slot = hi;
-                }
+                let hi = *hi;
+                self.fill_hex(id, up, depth, hi, &mut produced)
             }
             Dec::A85 { group, n, first } => {
-                let (mut group, mut n, mut first) = (*group, *n, *first);
-                while produced.is_empty() {
-                    let Some(c) = self.read_depth(up, depth + 1) else {
-                        more = false;
-                        break;
-                    };
-                    if is_ws(c) {
-                        continue;
-                    }
-                    if c == b'<' && first {
-                        // A leading `<~`.
-                        if self.read_depth(up, depth + 1) == Some(b'~') {
-                            first = false;
-                            continue;
-                        }
-                        more = false;
-                        break;
-                    }
-                    first = false;
-                    if c == b'~' {
-                        let _ = self.read_depth(up, depth + 1);
-                        more = false;
-                        break;
-                    }
-                    if c == b'z' && n == 0 {
-                        produced.extend([0; 4]);
-                        continue;
-                    }
-                    if !(b'!'..=b'u').contains(&c) {
-                        more = false;
-                        break;
-                    }
-                    if let Some(slot) = group.get_mut(n) {
-                        *slot = c - b'!';
-                    }
-                    n += 1;
-                    if n == 5 {
-                        let v = group.iter().fold(0u64, |a, &d| a * 85 + u64::from(d)).min(u64::from(u32::MAX));
-                        produced.extend(u32::try_from(v).unwrap_or(u32::MAX).to_be_bytes());
-                        n = 0;
-                    }
-                }
-                if !more && n > 1 {
-                    for slot in group.iter_mut().skip(n) {
-                        *slot = 84;
-                    }
-                    let v = group.iter().fold(0u64, |a, &d| a * 85 + u64::from(d)).min(u64::from(u32::MAX));
-                    produced.extend(u32::try_from(v).unwrap_or(u32::MAX).to_be_bytes().iter().take(n - 1));
-                    n = 0;
-                }
-                if let Some(Source { kind: Kind::Filter { dec: Dec::A85 { group: g, n: nn, first: f }, .. }, .. }) = self.list.get_mut(id) {
-                    *g = group;
-                    *nn = n;
-                    *f = first;
-                }
+                let state = (*group, *n, *first);
+                self.fill_a85(id, up, depth, state, &mut produced)
             }
-            Dec::RunLength => match self.read_depth(up, depth + 1) {
-                None | Some(128) => more = false,
-                Some(len @ 0..=127) => {
-                    for _ in 0..=len {
-                        match self.read_depth(up, depth + 1) {
-                            Some(c) => produced.push(c),
-                            None => {
-                                more = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                Some(len) => match self.read_depth(up, depth + 1) {
-                    Some(c) => produced.extend(std::iter::repeat_n(c, 257 - usize::from(len))),
-                    None => more = false,
-                },
-            },
+            Dec::RunLength => self.fill_run_length(up, depth, &mut produced),
             Dec::SubFile { eod, count, left, window } => {
-                let (eod, mut count, mut left, mut window) = (eod.clone(), *count, *left, window.clone());
-                if let Some(n) = left.as_mut() {
-                    if *n == 0 {
-                        more = false;
-                    } else if let Some(c) = self.read_depth(up, depth + 1) {
-                        *n -= 1;
-                        produced.push(c);
-                    } else {
-                        more = false;
-                    }
-                } else if eod.is_empty() {
-                    match self.read_depth(up, depth + 1) {
-                        Some(c) => produced.push(c),
-                        None => more = false,
-                    }
-                } else {
-                    while produced.is_empty() && more {
-                        let Some(c) = self.read_depth(up, depth + 1) else {
-                            produced.extend(window.drain(..));
-                            more = false;
-                            break;
-                        };
-                        window.push_back(c);
-                        if window.len() >= eod.len() && window.iter().skip(window.len() - eod.len()).eq(eod.iter()) {
-                            if count == 0 {
-                                let keep = window.len() - eod.len();
-                                produced.extend(window.drain(..keep));
-                                window.clear();
-                                more = false;
-                                break;
-                            }
-                            count -= 1;
-                        }
-                        while window.len() > eod.len() {
-                            if let Some(b) = window.pop_front() {
-                                produced.push(b);
-                            }
-                        }
-                    }
-                }
-                if let Some(Source { kind: Kind::Filter { dec: Dec::SubFile { count: c, left: l, window: w, .. }, .. }, .. }) = self.list.get_mut(id)
-                {
-                    *c = count;
-                    *l = left;
-                    *w = window;
-                }
+                let state = (eod.clone(), *count, *left, window.clone());
+                self.fill_subfile(id, up, depth, state, &mut produced)
             }
-            Dec::Flate { .. } | Dec::Lzw { .. } => {
-                // Feed what is pending, or a chunk from beneath; keep what wasn't used.
-                let mut input = match self.list.get_mut(id).map(|s| &mut s.kind) {
-                    Some(Kind::Filter { dec: Dec::Flate { pending, .. } | Dec::Lzw { pending, .. }, .. }) => std::mem::take(pending),
-                    _ => Vec::new(),
-                };
-                let mut eof = false;
-                if input.is_empty() {
-                    while input.len() < 4096 {
-                        match self.read_depth(up, depth + 1) {
-                            Some(c) => input.push(c),
-                            None => {
-                                eof = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                let mut buf = vec![0u8; 64 * 1024];
-                let (used, written, finished) = match self.list.get_mut(id).map(|s| &mut s.kind) {
-                    Some(Kind::Filter { dec: Dec::Flate { state, .. }, .. }) => {
-                        let r = miniz_oxide::inflate::stream::inflate(state, &input, &mut buf, miniz_oxide::MZFlush::None);
-                        let finished = matches!(r.status, Ok(miniz_oxide::MZStatus::StreamEnd) | Err(_));
-                        (r.bytes_consumed, r.bytes_written, finished)
-                    }
-                    Some(Kind::Filter { dec: Dec::Lzw { dec, .. }, .. }) => {
-                        // One byte at a time: the decoder must not read past its end code.
-                        let (mut used, mut written, mut finished) = (0, 0, false);
-                        while used < input.len() && written + 4096 < buf.len() {
-                            let r = dec.decode_bytes(input.get(used..used + 1).unwrap_or(&[]), buf.get_mut(written..).unwrap_or(&mut []));
-                            used += r.consumed_in;
-                            written += r.consumed_out;
-                            if matches!(r.status, Ok(weezl::LzwStatus::Done) | Err(_)) {
-                                finished = true;
-                                break;
-                            }
-                            if r.consumed_in == 0 && r.consumed_out == 0 {
-                                break;
-                            }
-                        }
-                        (used, written, finished)
-                    }
-                    _ => (0, 0, true),
-                };
-                produced.extend_from_slice(buf.get(..written).unwrap_or(&[]));
-                let rest = input.get(used..).unwrap_or(&[]).to_vec();
-                if finished {
-                    // The stream ended inside this chunk: what follows belongs to the file.
-                    self.unread_many(up, &rest);
-                    more = false;
-                } else if used == 0 && written == 0 && (eof || input.is_empty()) {
-                    more = false;
-                } else if let Some(Source { kind: Kind::Filter { dec: Dec::Flate { pending, .. } | Dec::Lzw { pending, .. }, .. }, .. }) =
-                    self.list.get_mut(id)
-                {
-                    *pending = rest;
-                }
-            }
-        }
+            Dec::Flate { .. } | Dec::Lzw { .. } => self.fill_stream(id, up, depth, &mut produced),
+        };
         // Predictors work on whole rows.
         let predicted = match self.list.get_mut(id).and_then(|s| s.predictor.as_mut()) {
             Some(pr) => unpredict(pr, &produced, !more),
