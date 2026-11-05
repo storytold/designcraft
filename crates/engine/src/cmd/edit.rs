@@ -1047,4 +1047,44 @@ mod paste_swatch_tests {
         let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
         assert_eq!(added, ["Highlight", "Shade"]);
     }
+
+    /// Text in a frame nested in groups comes along as deep as the swatch walk goes, and no
+    /// deeper: the frames whose text is read are the ones whose own swatches are, and nesting past
+    /// the limit is left alone instead of recursing without bound.
+    #[test]
+    fn nested_frames_bring_their_text_swatches_down_to_the_walks_depth() {
+        for (depth, comes) in [(5usize, true), (70, false)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("swatch.create", &json!({"name": "Text Green", "color": "#108040"})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+            let (frame, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+            s.execute("type.char", &json!({"attrs": {"fill": "Text Green"}})).unwrap();
+            // The frame inside `depth` groups, each the only member of the next.
+            let top = s
+                .edit(|d, _| {
+                    let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+                    let at = sp.items.iter().position(|i| i.id == ItemId(frame)).unwrap();
+                    let mut inner = (*sp.items.remove(at)).clone();
+                    for _ in 0..depth {
+                        let mut group = inner.clone();
+                        group.id = ItemId(d.alloc());
+                        group.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(inner)] };
+                        inner = group;
+                    }
+                    let top = inner.id.0;
+                    std::sync::Arc::make_mut(&mut d.spreads[0]).items.push(std::sync::Arc::new(inner));
+                    Ok(top)
+                })
+                .unwrap();
+            s.execute("selection.set", &json!({"ids": [top]})).unwrap();
+            s.execute("edit.copy", &json!({})).unwrap();
+            s.execute("file.new", &json!({})).unwrap();
+            let before = names(&s);
+            s.execute("edit.paste", &json!({})).unwrap();
+            let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+            assert_eq!(added.contains(&"Text Green".to_string()), comes, "{depth} groups deep: {added:?}");
+        }
+    }
 }
