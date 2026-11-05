@@ -400,7 +400,8 @@ fn duplicate_alternate(s: &mut crate::Session, p: &Value) -> Result<Value> {
     let from = layout_param(ID, &s.doc()?.doc, p.get("layout"))?;
     let name = match str_param(p, "name") {
         Some(v) => layout_name(ID, v)?,
-        None => format!("{} copy", from.name),
+        // Kept within a layout name's 100 characters.
+        None => format!("{} copy", from.name.chars().take(95).collect::<String>()),
     };
     s.edit(|d, _| copy_layout(ID, d, &from, &name, None, None))
 }
@@ -443,8 +444,13 @@ fn alternate_options(s: &mut crate::Session, p: &Value) -> Result<Value> {
                 sec.layout = Some(out.clone());
             }
         }
-        if w.is_some() || h.is_some() {
-            let pages: Vec<usize> = (layout.start + 1..=layout.end).collect();
+        // Only pages whose size changes: the options dialog sends the size with every rename.
+        let differs = |a: f64, b: Option<f64>| b.is_some_and(|b| (a - b).abs() > 1e-6);
+        let pages: Vec<usize> = (layout.start..layout.end)
+            .filter(|&i| d.page(i).is_some_and(|pg| differs(pg.width, w) || differs(pg.height, h)))
+            .map(|i| i.saturating_add(1))
+            .collect();
+        if !pages.is_empty() {
             super::layout::resize_pages(d, &pages, w, h);
         }
         Ok(json!({"layout": out}))
@@ -603,6 +609,38 @@ mod tests {
         assert_eq!(names, vec![("Layout 1".into(), 0, 2), ("Wide".into(), 2, 3)]);
         // The kept section's numbering stays.
         assert_eq!(s.doc().unwrap().doc.page_number(2), 7);
+    }
+
+    #[test]
+    fn layouts_keep_their_pages_when_a_page_moves_across_them() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": false})).unwrap();
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        assert_eq!(layouts(&s), vec![("Layout 1".into(), 0, 3), ("Wide".into(), 3, 6)]);
+        let wide = |s: &Session, i: usize| (s.doc().unwrap().doc.page(i).unwrap().width - 900.0).abs() < 1e-6;
+        // The first page to the end: it joins the last layout, and Wide keeps its own 3 pages.
+        s.execute("layout.pages.move", &json!({"from": 0, "to": 5})).unwrap();
+        assert_eq!(layouts(&s), vec![("Layout 1".into(), 0, 2), ("Wide".into(), 2, 6)]);
+        assert!((2..5).all(|i| wide(&s, i)) && !wide(&s, 5) && !wide(&s, 1));
+        // Wide's first page to the front: Wide starts at its next page.
+        s.execute("layout.pages.move", &json!({"from": 2, "to": 0})).unwrap();
+        assert_eq!(layouts(&s), vec![("Layout 1".into(), 0, 3), ("Wide".into(), 3, 6)]);
+        assert!(wide(&s, 0) && (3..5).all(|i| wide(&s, i)));
+    }
+
+    #[test]
+    fn renaming_a_layout_keeps_its_page_sizes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "width": 600, "height": 800, "facingPages": false})).unwrap();
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        s.execute("layout.pages.insert", &json!({"after": 1, "count": 1})).unwrap();
+        s.execute("layout.pageSize", &json!({"pages": [3], "width": 400, "height": 400})).unwrap();
+        let sizes = |s: &Session| (1..3).map(|i| s.doc().unwrap().doc.page(i).map(|p| (p.width, p.height))).collect::<Vec<_>>();
+        let before = sizes(&s);
+        // What the Alternate Layout Options dialog sends: the first page's size with the new name.
+        s.execute("layout.alternate.options", &json!({"layout": "Wide", "name": "Landscape", "width": 900, "height": 600})).unwrap();
+        assert_eq!(sizes(&s), before);
+        assert_eq!(layouts(&s)[1].0, "Landscape");
     }
 
     #[test]

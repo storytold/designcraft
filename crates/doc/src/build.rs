@@ -624,28 +624,7 @@ impl Document {
             let before = gone.partition_point(|g| *g < sec.start);
             sec.start = sec.start.saturating_sub(before);
         }
-        // Keep the last of sections that now share a start (its first page survived).
-        let mut kept: Vec<Section> = Vec::with_capacity(sections.len());
-        for sec in sections.into_iter().filter(|s| s.start < left) {
-            if let Some(last) = kept.last_mut().filter(|l| l.start == sec.start) {
-                // A layout's name outlives its first page: it moves onto the section kept.
-                let layout = last.layout.take();
-                *last = sec;
-                if last.layout.is_none() {
-                    last.layout = layout;
-                }
-            } else {
-                kept.push(sec);
-            }
-        }
-        if let Some(first) = kept.first_mut()
-            && first.start != 0
-            && first.layout.is_some()
-        {
-            // The first layout lost its pages: the next one begins the document.
-            first.start = 0;
-        }
-        self.sections = kept;
+        self.sections = settle_sections(sections, left);
         self.repaginate();
         Ok(())
     }
@@ -665,6 +644,23 @@ impl Document {
         self.repaginate();
         let sp = self.spreads.remove(from);
         self.spreads.insert(to, sp);
+        // Sections (and the layouts they start) keep their first page wherever it moved; one whose
+        // first page moves away starts at its next page, as when that page is deleted.
+        let moved = |i: usize| {
+            if from < to && i > from && i <= to {
+                i.saturating_sub(1)
+            } else if to < from && i >= to && i < from {
+                i.saturating_add(1)
+            } else {
+                i
+            }
+        };
+        let mut sections = std::mem::take(&mut self.sections);
+        for sec in sections.iter_mut().filter(|s| s.start > 0) {
+            sec.start = if sec.start == from { moved(from.saturating_add(1)) } else { moved(sec.start) };
+        }
+        sections.sort_by_key(|s| s.start);
+        self.sections = settle_sections(sections, n);
         self.settings.facing_pages = facing;
         self.repaginate();
         Ok(())
@@ -935,6 +931,33 @@ impl Document {
 
 /// Deepest `based_on` chain followed.
 pub const MAX_PARENT_DEPTH: usize = 64;
+
+/// Sections after their starts moved (pages deleted or moved), in page order: of sections that now
+/// share a start the last is kept, those past the last of `left` pages go, and when the first
+/// layout lost its pages the next one begins the document.
+fn settle_sections(sections: Vec<Section>, left: usize) -> Vec<Section> {
+    let mut kept: Vec<Section> = Vec::with_capacity(sections.len());
+    for sec in sections.into_iter().filter(|s| s.start < left) {
+        if let Some(last) = kept.last_mut().filter(|l| l.start == sec.start) {
+            // A layout's name outlives its first page: it moves onto the section kept.
+            let layout = last.layout.take();
+            *last = sec;
+            if last.layout.is_none() {
+                last.layout = layout;
+            }
+        } else {
+            kept.push(sec);
+        }
+    }
+    if let Some(first) = kept.first_mut()
+        && first.start != 0
+        && first.layout.is_some()
+    {
+        // The first layout lost its pages: the next one begins the document.
+        first.start = 0;
+    }
+    kept
+}
 
 #[cfg(test)]
 mod tests {

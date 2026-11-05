@@ -3017,13 +3017,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument"
-            | "updateLink"
-            | "deletePages"
-            | "newWorkspace"
-            | "pagesPanelOptions"
-            | "parentOptions"
-            | "insertTable"
+            "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "parentOptions" | "insertTable"
             | "convertTableToText" => 380.0,
             "insertPages" => 440.0,
             "convertTextToTable" => 420.0,
@@ -3668,6 +3662,9 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             combo(ui, &mut d, "basedOn", &opts);
                             ui.end_row();
                         });
+                        if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
+                            crate::rtl::label(ui, st);
+                        }
                     }
                     "updateLink" => {
                         let text = crate::i18n::tr(
@@ -4734,7 +4731,16 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 params["layouts"] = chosen;
                 params["separateJobs"] = json!(d.b("separateJobs"));
             }
-            let r = app.run("file.print", params)?;
+            let r = match app.run("file.print", params) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Keep the dialog (and the layouts chosen) open, saying why.
+                    let mut d = d;
+                    d.fields.insert("status".into(), json!(e));
+                    app.ui.dialog = Some(d);
+                    return Err(e);
+                }
+            };
             let printer = r["printer"].as_str().unwrap_or_else(|| crate::i18n::tr(&app.ui.language, "the default printer"));
             app.status(
                 crate::i18n::tr(&app.ui.language, "Sent {count} page(s) to {printer}")
@@ -4964,7 +4970,14 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             let base = d.s("basedOn");
             let base = base.parse::<u64>().map_or(Value::Null, |id| json!(id));
             let parent = d.fields.get("parent").cloned().unwrap_or(Value::Null);
-            app.run("layout.parents.options", json!({"parent": parent, "prefix": d.s("prefix"), "name": d.s("name"), "basedOn": base}))
+            let r = app.run("layout.parents.options", json!({"parent": parent, "prefix": d.s("prefix"), "name": d.s("name"), "basedOn": base}));
+            if let Err(e) = &r {
+                // A refused prefix or name: the dialog stays, with what was typed, saying why.
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+            }
+            r
         }
         "pagesPanelOptions" => {
             use crate::panels::pages::{IconSize, PanelResize};

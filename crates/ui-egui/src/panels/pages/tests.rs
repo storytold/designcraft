@@ -430,6 +430,14 @@ fn layout_menu_options_open_the_pages_panel_dialogs() {
     select_parent(&mut app, Some(b));
     app.run("app.parentOptions", json!({})).unwrap();
     assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("prefix") == "B"));
+    // A prefix the engine refuses (A is taken): the dialog stays, with what was typed and why.
+    if let Some(d) = app.ui.dialog.as_mut() {
+        d.fields.insert("prefix".into(), json!("A"));
+    }
+    assert!(crate::dialogs::confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().expect("the dialog stays open");
+    assert!(d.id == "parentOptions" && d.s("prefix") == "A" && !d.s("status").is_empty());
+    app.ui.dialog = None;
     app.run("layout.createAlternate", json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
     app.run("app.alternateLayoutOptions", json!({})).unwrap();
     assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "cmd:layout.alternate.options" && d.s("layout") == "Layout 1"));

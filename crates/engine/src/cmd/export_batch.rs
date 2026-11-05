@@ -19,6 +19,8 @@ const MAX_VERSIONS: usize = 24;
 const MAX_PIXELS: f64 = 8.0e7;
 /// The most characters in a file or folder name.
 const MAX_NAME: usize = 120;
+/// The most bytes an export returns in its reply (no `dir`): past it, export to a folder.
+const MAX_INLINE_BYTES: usize = 512 << 20;
 /// The most saved export presets, and the longest preset name.
 const MAX_PRESETS: usize = 100;
 const MAX_PRESET_NAME: usize = 80;
@@ -249,7 +251,8 @@ pub(crate) fn layout_pages(cmd: &str, d: &designcraft_doc::Document, names: &[St
 }
 
 /// `s` as a file or folder name: no path separators, reserved or control characters, no leading
-/// dots, at most [`MAX_NAME`] characters; "Untitled" when nothing is left.
+/// dots, no Windows device name (`CON`, `NUL`… get a leading `_`), at most [`MAX_NAME`]
+/// characters; "Untitled" when nothing is left.
 pub fn safe_name(s: &str) -> String {
     let cleaned: String = s.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { ' ' } else { c }).collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
@@ -257,7 +260,13 @@ pub fn safe_name(s: &str) -> String {
     let trimmed = joined.trim_start_matches('.').trim();
     let capped: String = trimmed.chars().take(MAX_NAME).collect();
     let capped = capped.trim_end_matches(['.', ' ']).to_string();
-    if capped.is_empty() { "Untitled".into() } else { capped }
+    if capped.is_empty() {
+        "Untitled".into()
+    } else if crate::file_access::is_device_name(&capped) {
+        format!("_{capped}")
+    } else {
+        capped
+    }
 }
 
 /// `name.ext`, or `name 2.ext`, `name 3.ext`… when `taken` has it (case-insensitively).
@@ -387,6 +396,11 @@ fn render(s: &Session, v: &ExportVersion, f: &Planned) -> Result<(Vec<u8>, Vec<S
     }
 }
 
+/// `e` for the file at `path`, saying how many files were written to disk before it (they stay).
+fn partly(e: EngineError, path: &str, written: usize, to_disk: bool) -> EngineError {
+    if to_disk && written > 0 { bad(ID, format!("{path}: {e}; the {written} file(s) before it were written")) } else { e }
+}
+
 /// Write `bytes` at `rel` inside `dir`, making the version's folder.
 #[cfg(not(target_arch = "wasm32"))]
 fn write_into(dir: &str, rel: &str, bytes: &[u8]) -> Result<String> {
@@ -425,6 +439,7 @@ fn export_batch(s: &mut Session, p: &Value) -> Result<Value> {
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
     let mut files = Vec::with_capacity(planned.len());
     let mut warnings: Vec<String> = Vec::new();
+    let mut inline = 0usize;
     for f in &planned {
         let v = job.versions.get(f.version).ok_or_else(|| bad(ID, "no such version"))?;
         let mut entry = json!({
@@ -434,7 +449,7 @@ fn export_batch(s: &mut Session, p: &Value) -> Result<Value> {
             "pages": f.pages.iter().map(|p| p.saturating_add(1)).collect::<Vec<_>>(),
         });
         if !dry {
-            let (bytes, w) = render(s, v, f)?;
+            let (bytes, w) = render(s, v, f).map_err(|e| partly(e, &f.path, files.len(), dir.is_some()))?;
             for w in w {
                 let w = format!("{}: {w}", f.path);
                 if !warnings.contains(&w) {
@@ -443,8 +458,14 @@ fn export_batch(s: &mut Session, p: &Value) -> Result<Value> {
             }
             entry["bytes"] = json!(bytes.len());
             match &dir {
-                Some(dir) => entry["path"] = json!(write_into(dir, &f.path, &bytes)?),
-                None => entry["base64"] = json!(super::base64_encode(&bytes)),
+                Some(dir) => entry["path"] = json!(write_into(dir, &f.path, &bytes).map_err(|e| partly(e, &f.path, files.len(), true))?),
+                None => {
+                    inline = inline.saturating_add(bytes.len());
+                    if inline > MAX_INLINE_BYTES {
+                        return Err(bad(ID, format!("the files come to more than {} MB: give a `dir` to export to", MAX_INLINE_BYTES >> 20)));
+                    }
+                    entry["base64"] = json!(super::base64_encode(&bytes));
+                }
             }
         }
         files.push(entry);
@@ -541,6 +562,10 @@ mod tests {
         assert_eq!(safe_name("../a/b:c*?"), "a b c");
         assert_eq!(safe_name("  ...  "), "Untitled");
         assert_eq!(safe_name(&"x".repeat(500)).chars().count(), MAX_NAME);
+        // Windows device names name no file.
+        for (name, safe) in [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("Console", "Console")] {
+            assert_eq!(safe_name(name), safe);
+        }
         let mut s = two_layouts();
         let mut j = job(&["PNG", "PNG"]);
         j["fileName"] = json!("../{document}");
