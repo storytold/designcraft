@@ -41,8 +41,20 @@ pub(super) struct Tgt {
     pub(super) range: CellRange,
 }
 
-fn find_table(doc: &Document, id: u64) -> Option<StoryId> {
-    doc.stories.iter().find(|(_, s)| s.tables.contains_key(&id)).map(|(k, _)| *k)
+fn find_table(doc: &Document, id: u64, cmd: &str) -> Result<StoryId> {
+    let mut stories = doc.stories.iter().filter(|(_, story)| story.tables.contains_key(&id)).map(|(sid, _)| *sid);
+    let first = stories.next().ok_or_else(|| bad(cmd, format!("no table {id}")))?;
+    if stories.next().is_some() {
+        return Err(bad(cmd, format!("table {id} exists in multiple stories; specify `story`")));
+    }
+    Ok(first)
+}
+
+fn id_param(p: &Value, key: &str, cmd: &str) -> Result<Option<u64>> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be a nonnegative integer"))),
+    }
 }
 
 fn pair(p: &Value, many: &str, one: &str) -> Option<(usize, usize)> {
@@ -57,10 +69,13 @@ fn pair(p: &Value, many: &str, one: &str) -> Option<(usize, usize)> {
 pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<Tgt> {
     let st = s.doc()?;
     let doc = &st.doc;
-    let explicit_table = p.get("table").and_then(Value::as_u64);
-    let explicit_story = p.get("story").and_then(Value::as_u64).map(StoryId);
+    let explicit_table = id_param(p, "table", cmd)?;
+    let explicit_story = id_param(p, "story", cmd)?.map(StoryId);
     let (story, table, range) = if let Some(tid) = explicit_table {
-        let sid = explicit_story.or_else(|| find_table(doc, tid)).ok_or_else(|| bad(cmd, format!("no table {tid}")))?;
+        let sid = match explicit_story {
+            Some(sid) => sid,
+            None => find_table(doc, tid, cmd)?,
+        };
         (sid, tid, None)
     } else if let Some(c) = st.selection.cells {
         (c.story, c.table, Some(c.range))
