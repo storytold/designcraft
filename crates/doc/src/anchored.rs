@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Document;
+use crate::ids::{ItemId, StoryId};
 use crate::item::Item;
 use crate::story::Story;
 
@@ -135,5 +137,79 @@ impl Story {
             return None;
         }
         self.objects.get(self.text[..pos].matches(OBJECT_MARK).count()).map(|o| &**o)
+    }
+
+    /// The text frames anchored in `range`, including frames inside groups, with their stories.
+    pub fn anchored_text_frames_in(&self, range: std::ops::Range<usize>) -> Vec<(StoryId, ItemId)> {
+        let a = range.start.min(self.len());
+        let b = range.end.min(self.len()).max(a);
+        let (Some(before), Some(inside)) = (self.text.get(..a), self.text.get(a..b)) else { return Vec::new() };
+        let first = before.matches(OBJECT_MARK).count();
+        let n = inside.matches(OBJECT_MARK).count();
+        let mut out = Vec::new();
+        for o in self.objects.get(first..first.saturating_add(n)).unwrap_or_default() {
+            o.item.walk(&mut |i| {
+                if let Some(tf) = i.text_frame() {
+                    out.push((tf.story, i.id));
+                }
+            });
+        }
+        out
+    }
+
+    /// Every text frame anchored in this story, its table cells, footnotes and endnotes.
+    pub fn anchored_text_frames(&self) -> Vec<(StoryId, ItemId)> {
+        let mut out = Vec::new();
+        self.collect_anchored_text_frames(0, &mut out);
+        out
+    }
+
+    /// Depth-bounded collection for [`Story::anchored_text_frames`].
+    fn collect_anchored_text_frames(&self, depth: usize, out: &mut Vec<(StoryId, ItemId)>) {
+        if depth > 64 {
+            return;
+        }
+        for o in &self.objects {
+            o.item.walk(&mut |i| {
+                if let Some(tf) = i.text_frame() {
+                    out.push((tf.story, i.id));
+                }
+            });
+        }
+        for t in self.tables.values() {
+            for c in &t.cells {
+                c.text.collect_anchored_text_frames(depth + 1, out);
+            }
+        }
+        for n in self.notes.iter().chain(&self.endnotes) {
+            n.text.collect_anchored_text_frames(depth + 1, out);
+        }
+    }
+}
+
+impl Document {
+    /// Take `doomed` anchored text frames out of their stories' threads. A story left without a
+    /// frame is deleted, and the text frames anchored in it are unthreaded too.
+    pub fn unthread_anchored_text_frames(&mut self, doomed: &[(StoryId, ItemId)]) {
+        let mut queue = doomed.to_vec();
+        let mut seen = std::collections::HashSet::new();
+        while let Some((sid, id)) = queue.pop() {
+            if !seen.insert((sid, id)) {
+                continue;
+            }
+            let mut nested = Vec::new();
+            let mut empty = false;
+            if let Some(st) = self.story_mut(sid) {
+                st.frames.retain(|f| *f != id);
+                if st.frames.is_empty() {
+                    nested = st.anchored_text_frames();
+                    empty = true;
+                }
+            }
+            if empty {
+                self.stories.remove(&sid);
+                queue.extend(nested);
+            }
+        }
     }
 }

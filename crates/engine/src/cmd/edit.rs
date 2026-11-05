@@ -5,7 +5,6 @@ use std::sync::Arc;
 use designcraft_doc::{ItemId, Selection, SpreadRef};
 use serde_json::{Value, json};
 
-use super::anchored::{anchored_text_frames_in, unthread_deleted};
 use super::{CommandSpec, bool_or, cmd, has_doc, has_selection, ids_param, ok};
 use crate::{HistoryEntry, Result, Session};
 
@@ -139,10 +138,10 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
-            let doomed = anchored_text_frames_in(st, r.clone());
+            let doomed = st.anchored_text_frames_in(r.clone());
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
-            unthread_deleted(d, &doomed);
+            d.unthread_anchored_text_frames(&doomed);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });

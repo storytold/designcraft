@@ -127,29 +127,6 @@ fn check_anchored(d: &Document, cmd: &str) -> Result<()> {
     d.check().map_err(|e| bad(cmd, format!("these items cannot be anchored here: {e}")))
 }
 
-/// The anchored text frames whose marks `r` deletes, with their own story ids. Their stories must
-/// leave the replaced text's threads, or the document would refer to frames that no longer exist.
-pub(crate) fn anchored_text_frames_in(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> Vec<(StoryId, ItemId)> {
-    let first = st.text[..r.start.min(st.len())].matches(OBJECT_MARK).count();
-    let n = st.text[r.start.min(st.len())..r.end.min(st.len())].matches(OBJECT_MARK).count();
-    st.objects.get(first..first + n).unwrap_or_default().iter().filter_map(|o| o.item.text_frame().map(|tf| (tf.story, o.item.id))).collect()
-}
-
-pub(crate) fn unthread_deleted(d: &mut Document, doomed: &[(StoryId, ItemId)]) {
-    for &(sid, id) in doomed {
-        let empty = match d.story_mut(sid) {
-            Some(st) => {
-                st.frames.retain(|f| *f != id);
-                st.frames.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            d.stories.remove(&sid);
-        }
-    }
-}
-
 /// Anchor copies of `items` (in spread coordinates) at `pos` of `sid`; returns the end position.
 pub(crate) fn anchor_items(d: &mut Document, sid: StoryId, pos: usize, items: Vec<Item>, position: &AnchorPosition) -> Result<usize> {
     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
@@ -161,6 +138,7 @@ pub(crate) fn anchor_items(d: &mut Document, sid: StoryId, pos: usize, items: Ve
     Ok(at)
 }
 
+/// `anchored.insert`: move items into story text at a position, inline, above the line or custom.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = super::ids_param(p, "ids").ok_or_else(|| bad("anchored.insert", "missing ids"))?;
     let position = position_param(p, &AnchorPosition::default())?;
@@ -180,21 +158,6 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     for id in &ids {
         let loc = st.doc.find(*id).ok_or_else(|| bad("anchored.insert", format!("no item {}", id.0)))?;
         let it = st.doc.item(*id).ok_or_else(|| bad("anchored.insert", format!("no item {}", id.0)))?;
-        let mut threaded = None;
-        it.walk(&mut |i| {
-            if threaded.is_none()
-                && let Some(tf) = i.text_frame()
-                && st.doc.story(tf.story).is_some_and(|story| story.frames.len() > 1)
-            {
-                threaded = Some(tf.story);
-            }
-        });
-        if let Some(story) = threaded {
-            return Err(bad(
-                "anchored.insert",
-                format!("text frame {} is in a threaded story; an anchored text frame needs a story of its own", story.0),
-            ));
-        }
         // Into spread coordinates (items inside groups carry their parents' transforms).
         let mut it = it.clone();
         it.xf = st.doc.parent_xf(&loc) * it.xf;
@@ -249,6 +212,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `anchored.release`: put an anchored item back on its spread and remove its text mark.
 fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.release")?;
     let d0 = s.doc()?.doc.clone();
@@ -537,6 +501,64 @@ mod anchored_text_frame_tests {
     }
 
     #[test]
+    fn deleting_a_grouped_anchor_unthreads_the_text_frame_inside_it() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        let rect = s.execute("frame.create", &json!({"rect": [0, 0, 20, 20]})).unwrap()["id"].as_u64().unwrap();
+        let group = s.execute("object.group", &json!({"ids": [note.0, rect]})).unwrap()["id"].as_u64().unwrap();
+        anchor(&mut s, ItemId(group), host_sid, 7, json!({"position": "inline"}));
+        let mark = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": mark, "focus": mark + OBJECT_MARK.len_utf8()})).unwrap();
+        s.execute("edit.clear", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none(), "the nested frame's story goes with it");
+        d.check().unwrap();
+        // Typing over the grouped anchor does the same.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let mark = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": mark, "focus": mark + OBJECT_MARK.len_utf8()})).unwrap();
+        s.execute("text.insert", &json!({"text": "x"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none());
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn removing_a_story_text_removes_its_anchored_frames_and_the_frames_they_hold() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (outer, outer_sid) = add_note(&mut s, "Outer");
+        anchor(&mut s, outer, host_sid, 7, json!({"position": "inline"}));
+        let (inner, inner_sid) = add_note(&mut s, "Inner");
+        anchor(&mut s, inner, outer_sid, 0, json!({"position": "inline"}));
+        assert!(s.doc().unwrap().doc.story(inner_sid).is_some());
+        s.execute("story.setText", &json!({"story": host_sid.0, "text": "Replaced"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.story(host_sid).unwrap().text, "Replaced");
+        assert!(d.anchored_item(outer).is_none());
+        assert!(d.story(outer_sid).is_none());
+        assert!(d.story(inner_sid).is_none(), "an emptied story's own anchored frame is unthreaded too");
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn tracked_deletion_of_an_anchor_cleans_up_when_accepted() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        s.execute("changes.track", &json!({"on": true})).unwrap();
+        let mark = s.doc().unwrap().doc.story(host_sid).unwrap().text.find(OBJECT_MARK).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": mark, "focus": mark + OBJECT_MARK.len_utf8()})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        s.execute("changes.accept", &json!({"story": host_sid.0, "start": mark})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none());
+        d.check().unwrap();
+    }
+
+    #[test]
     fn overset_text_in_an_anchored_frame_is_reported() {
         let (mut s, _host, host_sid) = setup("Before after and more words.");
         let r = s
@@ -589,15 +611,25 @@ mod anchored_text_frame_tests {
     }
 
     #[test]
-    fn a_text_frame_in_a_threaded_story_is_refused_without_changing_the_document() {
-        let (mut s, _host, host_sid) = setup("Before after");
-        let (note, note_sid) = add_note(&mut s, "Note");
-        s.execute("text.thread", &json!({"from": note.0, "rect": [72, 400, 200, 450]})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.story(note_sid).unwrap().frames.len(), 2);
-        let before = s.doc().unwrap().doc.clone();
-        let e = s.execute("anchored.insert", &json!({"ids": [note.0], "story": host_sid.0, "pos": 0})).unwrap_err().to_string();
-        assert!(e.contains("threaded story"), "{e}");
-        assert_eq!(s.doc().unwrap().doc, before, "a refused edit changes nothing");
+    fn anchoring_a_text_frame_from_a_threaded_story_keeps_the_thread_valid() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "One\nTwo\nThree\nFour");
+        let r = s.execute("frame.create", &json!({"rect": [300, 400, 500, 600], "content": "unassigned"})).unwrap();
+        let next = ItemId(r["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": note.0, "to": next.0})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(note_sid).unwrap().frames, [note, next]);
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.story(note_sid).unwrap().frames, [note, next], "the rest of the thread stays");
+        assert!(d.item(note).is_none(), "the anchored frame left the spread");
+        assert!(d.item(next).is_some(), "the next frame stays on its spread");
+        let cs = s.cache.get(&d, note_sid, None);
+        assert_eq!(cs.frames.len(), 2);
+        assert!(cs.frames.iter().any(|f| f.frame == note));
+        assert!(cs.frames.iter().any(|f| f.frame == next));
+        assert_eq!(cs.frames.iter().map(|f| f.range.end).max(), Some(d.story(note_sid).unwrap().len()), "the thread keeps its text");
+        assert!(!cs.is_overset());
+        d.check().unwrap();
     }
 
     #[test]

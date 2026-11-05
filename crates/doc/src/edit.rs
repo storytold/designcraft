@@ -779,6 +779,7 @@ impl Document {
     /// Replace a story's text and formatting wholesale (agents / import).
     pub fn set_story_text(&mut self, sid: StoryId, text: &str) -> Result<()> {
         let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
+        let doomed = st.anchored_text_frames();
         let para = st.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
         let fmt = st.chars.first().map(|r| r.format.clone()).unwrap_or_default();
         let n = text.matches('\n').count() + 1;
@@ -797,6 +798,7 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.unthread_anchored_text_frames(&doomed);
         Ok(())
     }
 }

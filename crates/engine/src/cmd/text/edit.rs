@@ -1,7 +1,6 @@
 use super::caret::{next_char, next_word, prev_char, prev_word, story_of};
 use super::format::{apply_typing_format, format_targets, typing_format};
 use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, id_param, json, ok, str_param};
-use crate::cmd::anchored::{anchored_text_frames_in, unthread_deleted};
 #[cfg(test)]
 use designcraft_doc::StoryId;
 
@@ -12,6 +11,7 @@ fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> R
     st.text.try_reserve_exact(additional).map_err(|e| crate::EngineError::Other(format!("could not reserve text insertion: {e}")))
 }
 
+/// `text.insert`: type text at the caret or replace the selection, unthreading deleted anchors.
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = crate::cmd::text_param(p, "text");
     // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`). Footnote text is
@@ -99,14 +99,14 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
         let b = floor_char_boundary(&st.text, r.end.min(st.len())).max(a);
         reserve_command_text(st, text.len().saturating_sub(b - a))?;
-        let doomed = anchored_text_frames_in(st, r.clone());
+        let doomed = st.anchored_text_frames_in(r.clone());
         st.replace(r.clone(), &text);
         if let Some(f) = &typing
             && !text.is_empty()
         {
             st.format_chars(r.start..r.start + text.len(), |fmt| apply_typing_format(fmt, f));
         }
-        unthread_deleted(d, &doomed);
+        d.unthread_anchored_text_frames(&doomed);
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"pos": pos}))
@@ -262,6 +262,7 @@ pub fn quote_marks(language: &str) -> [char; 4] {
     }
 }
 
+/// `edit.clear` on text: delete the selection and unthread anchored frames it removed.
 pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     let tracking = s.doc()?.doc.settings.track_changes;
     s.edit(|d, sel| {
@@ -272,16 +273,17 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
             if tracking && t.cell.is_none() {
                 crate::cmd::changes::mark_deleted(st, r.clone());
             } else {
-                doomed = anchored_text_frames_in(st, r.clone());
+                doomed = st.anchored_text_frames_in(r.clone());
                 st.delete(r.clone());
             }
         }
-        unthread_deleted(d, &doomed);
+        d.unthread_anchored_text_frames(&doomed);
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
 }
 
+/// `text.delete`: remove the selection or the adjacent character/word, and unthread deleted anchors.
 pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let forward = bool_or(p, "forward", false);
     let word = bool_or(p, "word", false);
@@ -307,9 +309,9 @@ pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return ok();
         }
-        let doomed = anchored_text_frames_in(st, r.clone());
+        let doomed = st.anchored_text_frames_in(r.clone());
         st.delete(r.clone());
-        unthread_deleted(d, &doomed);
+        d.unthread_anchored_text_frames(&doomed);
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })

@@ -34,7 +34,11 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
                     Some(loc) if loc.spread == SpreadRef::Doc(si) => doc.parent_xf(&loc) * doc.text_xf(it),
                     Some(_) => continue,
                     None => {
-                        let Some(placement) = designcraft_compose::frame_placement(doc, *story, ft.frame) else { continue };
+                        let Some(placement) =
+                            designcraft_compose::frame_placement_with(doc, *story, ft.frame, &mut |host| cache.get(doc, host, None))
+                        else {
+                            continue;
+                        };
                         if placement.spread != SpreadRef::Doc(si) {
                             continue;
                         }
