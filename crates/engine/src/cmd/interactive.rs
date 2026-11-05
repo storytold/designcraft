@@ -115,11 +115,11 @@ fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Opti
                 false => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
             };
         }
-        // A name need not. `anchor.create` does not require one to be unique -- and an IDML
-        // import can bring a document that already has two of the same -- so taking the first
-        // match stored whichever anchor happened to come first, and a link on a name shared by
-        // anchors on two pages went to the wrong page with nothing to say so (noted in review).
-        // The id still reaches either of them.
+        // A name need not. `anchor.create` refuses a name in use, but an IDML import can bring a
+        // document that already has two of the same, so taking the first match stored whichever
+        // anchor happened to come first, and a link on a name shared by anchors on two pages went
+        // to the wrong page with nothing to say so (noted in review). The id still reaches either
+        // of them.
         let Some(name) = a.as_str() else { return Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))) };
         let mut named = anchors().filter(|x| x.name == name);
         return match (named.next(), named.next()) {
@@ -239,16 +239,29 @@ mod anchor_dest_tests {
         let mut s = Session::new();
         s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": false, "margins": 0})).unwrap();
 
-        // Two anchors with one name, in text on different pages.
+        // Two anchors with one name, in text on different pages. `anchor.create` refuses a name
+        // in use, but a document opened from a file can still hold two, so the second is renamed
+        // in the document directly.
         let mut made = Vec::new();
-        for page in [1usize, 2] {
+        for (page, name) in [(1usize, "Photo 1"), (2, "Photo 1 (second)")] {
             let sp = s.doc().unwrap().doc.page_loc(page).unwrap().0;
             let f = s
                 .execute("frame.create", &json!({"spread": sp, "rect": [20, 20, 280, 100], "content": "text", "text": "Photo 1 full size"}))
                 .unwrap();
             s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 7})).unwrap();
-            made.push(s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap());
+            made.push(s.execute("anchor.create", &json!({"name": name})).unwrap());
         }
+        s.edit(|d, _| {
+            for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+                for a in &mut d.story_mut(sid).unwrap().anchors {
+                    if a.name == "Photo 1 (second)" {
+                        std::sync::Arc::make_mut(a).name = "Photo 1".into();
+                    }
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
         assert_ne!(made[0]["id"], made[1]["id"], "two anchors, one name");
         let thumb = s.execute("frame.create", &json!({"rect": [20, 20, 120, 80], "content": "unassigned"})).unwrap();
 
