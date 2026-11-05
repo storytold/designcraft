@@ -52,18 +52,21 @@ impl DesignApp {
         self.place_file(if append { json!({"path": path, "append": true}) } else { json!({"path": path}) })
     }
 
-    /// Place an ordered batch of files, as File › Place with several chosen. The batch stops when
-    /// a file opens a dialog (a multi-page PDF's Import Options, an alert), as the inbox's does;
-    /// every file that loads the cursor adds to what the earlier ones loaded, in the order the
-    /// files were chosen (images in a row load together, before the file after them). A file that
-    /// can't be placed gets an alert and stops the batch; its error is returned, so automation
-    /// doesn't carry on as if the batch had loaded.
+    /// Place an ordered batch of files, as File › Place with several chosen. A multi-page PDF's
+    /// Import Options pause the batch: the files after it wait in the dialog and carry on when it
+    /// is confirmed, and Cancel ends the batch. Any other dialog (an alert, one already open) stops
+    /// it, as the inbox's does. Every file that loads the cursor adds to what the earlier ones
+    /// loaded, in the order the files were chosen (images in a row load together, before the file
+    /// after them). A file that can't be placed gets an alert and stops the batch; its error is
+    /// returned, so automation doesn't carry on as if the batch had loaded.
     pub(crate) fn place_paths(&mut self, paths: Vec<String>) -> Result<(), String> {
         let mut images = Vec::new();
         // Images already in the place cursor stay: the batch queues after them.
         let mut loaded = self.session.loaded.is_some();
-        // `None` at the end loads the images left.
-        for path in paths.into_iter().map(Some).chain([None]) {
+        let mut paths = paths.into_iter();
+        loop {
+            // `None` at the end loads the images left.
+            let path = paths.next();
             if let Some(p) = &path
                 && is_cursor_image(p)
             {
@@ -71,7 +74,7 @@ impl DesignApp {
                 continue;
             }
             if path.is_none() && images.is_empty() {
-                break;
+                return Ok(());
             }
             if self.ui.dialog.is_some() {
                 self.status(crate::i18n::tr(&self.ui.language, "Place cancelled while a dialog is open"));
@@ -81,12 +84,14 @@ impl DesignApp {
                 let r = self.load_place_cursor(std::mem::take(&mut images), loaded)?;
                 loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
             }
-            if let Some(p) = path {
-                let r = self.place_path(&p, loaded)?;
-                loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            let Some(p) = path else { return Ok(()) };
+            let r = self.place_path(&p, loaded)?;
+            loaded |= r.get("loaded").and_then(Value::as_bool) == Some(true);
+            if let Some(d) = self.ui.dialog.as_mut().filter(|d| d.id == "pdfImport") {
+                d.fields.insert(dialogs::PDF_IMPORT_REST.into(), json!(paths.collect::<Vec<_>>()));
+                return Ok(());
             }
         }
-        Ok(())
     }
 
     /// `place.load` of `files` (`{path}` or `{name, base64}` each), queued after the images
@@ -945,6 +950,57 @@ pub(crate) mod browser_import_tests {
         assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"));
         dialogs::confirm(&mut app).unwrap();
         assert_eq!(loaded_names(&app), ["a.png", "b.png", "three.pdf"]);
+    }
+
+    /// The files after a multi-page PDF in a native batch wait for its Import Options, through a
+    /// second such PDF too, and keep the order chosen.
+    #[test]
+    fn native_batch_continues_after_a_multi_page_pdf_is_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        for name in ["a.svg", "b.svg", "c.svg", "d.svg"] {
+            std::fs::write(path(name), image()).unwrap();
+        }
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        std::fs::write(path("two.pdf"), pdf_pages(2)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let batch = ["a.svg", "three.pdf", "b.svg", "c.svg", "two.pdf", "d.svg"].map(path).to_vec();
+        app.place_paths(batch).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg"], "waiting for the first PDF's options");
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("pdfImport"), "the second PDF asks in its turn");
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg", "c.svg"]);
+        dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg", "c.svg", "two.pdf", "d.svg"]);
+    }
+
+    /// A refused page number keeps the rest of the batch waiting; Cancel ends the batch, and what
+    /// loaded before the PDF stays.
+    #[test]
+    fn native_batch_waits_through_a_refused_page_and_ends_at_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        std::fs::write(path("three.pdf"), pdf_pages(3)).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let batch = ["a.svg", "three.pdf", "b.svg"].map(path).to_vec();
+        app.place_paths(batch.clone()).unwrap();
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("4-5"));
+        assert!(dialogs::confirm(&mut app).is_err());
+        app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
+        dialogs::confirm(&mut app).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "three.pdf", "b.svg"]);
+
+        let mut app = self::app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        app.place_paths(batch).unwrap();
+        dialogs::cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(loaded_names(&app), ["a.svg"]);
     }
 
     /// A single multi-page PDF still replaces what the cursor holds, as any single Place does.
