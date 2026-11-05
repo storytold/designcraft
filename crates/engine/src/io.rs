@@ -21,8 +21,7 @@ use std::path::{Path, PathBuf};
 /// refused path is never handed to the file system; callers treat it as a missing file.
 pub fn document_path(stored: &str, document: Option<&Path>) -> Result<PathBuf, Refused> {
     let document = document.map(|d| std::path::absolute(d).unwrap_or_else(|_| d.to_path_buf()));
-    let path = craft_docpath::resolve(stored, document.as_deref())?;
-    if path.is_absolute() { Ok(path) } else { Err(Refused::Invalid) }
+    craft_docpath::resolve_absolute(stored, document.as_deref())
 }
 
 /// [`document_path`] for a path stored in a file inside `folder` (a data file's image names).

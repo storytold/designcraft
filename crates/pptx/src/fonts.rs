@@ -18,7 +18,6 @@ pub struct RunFont {
 #[derive(Default)]
 pub struct Fonts {
     names: HashMap<u32, RunFont>,
-    cmaps: HashMap<u32, HashMap<char, u32>>,
     /// Glyph → the lowest character mapping to it.
     reverse: HashMap<u32, HashMap<u32, char>>,
     /// Faces the slides use, by (family, bold, italic), in first-use order.
@@ -106,11 +105,13 @@ impl Fonts {
     /// Nominal advance of `c` in font units (no kerning or features), as an application without
     /// the composer's spacing would set it.
     pub fn advance(&mut self, face: &FontFace, c: char) -> Option<f64> {
-        self.cmap(face).get(&c).map(|g| face.advance(*g))
+        self.glyph(face, c).map(|g| face.advance(g))
     }
 
+    /// The glyph for `c`, looked up in the face's character map directly: expanding the whole map
+    /// into a table made one lookup cost (and keep) every mapping of the font.
     pub fn glyph(&mut self, face: &FontFace, c: char) -> Option<u32> {
-        self.cmap(face).get(&c).copied()
+        Some(face.glyph_for(c)).filter(|g| *g != 0)
     }
 
     /// The character a glyph shows (the lowest code point mapping to it).
@@ -123,10 +124,6 @@ impl Fonts {
             m
         });
         map.get(&gid).copied()
-    }
-
-    fn cmap(&mut self, face: &FontFace) -> &HashMap<char, u32> {
-        self.cmaps.entry(face.id()).or_insert_with(|| face.chars().into_iter().collect())
     }
 }
 
