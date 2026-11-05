@@ -563,7 +563,9 @@ mod tests {
         assert_eq!(safe_name("  ...  "), "Untitled");
         assert_eq!(safe_name(&"x".repeat(500)).chars().count(), MAX_NAME);
         // Windows device names name no file.
-        for (name, safe) in [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("Console", "Console")] {
+        for (name, safe) in
+            [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("COM¹", "_COM¹"), ("lpt³.x", "_lpt³.x"), ("Console", "Console")]
+        {
             assert_eq!(safe_name(name), safe);
         }
         let mut s = two_layouts();
