@@ -30,8 +30,20 @@ fn main() -> Result<(), String> {
     }
     let doc = stress::synthetic(&spec)?;
     let bytes = designcraft_format::save(&doc).map_err(|e| e.to_string())?;
-    let dir = std::env::temp_dir().join(format!("designcraft-pdf-bench-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // A new private folder (never one that was there already, which someone else could have
+    // made with a link in it): the files written here are the benchmark's alone.
+    let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("designcraft-pdf-bench-{}-{nanos}", std::process::id()));
+    #[cfg(unix)]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let file = dir.join("stress.designcraft");
     let keep = out.is_some();
     let pdf = out.map_or_else(|| dir.join("stress.pdf"), std::path::PathBuf::from);
