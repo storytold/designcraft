@@ -400,7 +400,7 @@ fn go_below_band(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps) {
         cur.last_baseline = Some(bottom);
         cur.last_descent = 0.0;
         // As for spanning text: the space before a span adds to the space after the text above.
-        cur.pending += pp.span_space_before;
+        cur.pending += pp.space_before.max(pp.span_space_before);
     }
 }
 

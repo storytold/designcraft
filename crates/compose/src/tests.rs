@@ -8736,6 +8736,15 @@ fn a_spanning_table_spaces_and_column_starts_as_spanning_text() {
     let tf = &ft.tables[0];
     // Space before the span adds to the intro's space after (below its descenders).
     assert!((tf.rect.y0 - (intro.baseline + intro.descent + 3.0 + 6.0)).abs() < 1e-6, "{} after {}", tf.rect.y0, intro.baseline);
+    // The larger of the space before and the span space before, as for spanning text.
+    let below = |d: &Document| {
+        let cs = compose_story(d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        ft.tables[0].rect.y0 - ft.lines.iter().find(|l| l.para == 0).map(|l| l.baseline + l.descent).unwrap()
+    };
+    d.story_mut(sid).unwrap().paras[tp].para.space_before = Some(8.0);
+    assert!((below(&d) - (3.0 + 8.0)).abs() < 1e-6, "{}", below(&d));
+    d.story_mut(sid).unwrap().paras[tp].para.space_before = None;
     // Both columns below start the larger space after (10 pt) under the table, on one baseline.
     let firsts: Vec<f64> = (0..2).map(|c| ft.lines.iter().find(|l| l.para > tp && l.column == c).unwrap().baseline).collect();
     assert!((firsts[0] - firsts[1]).abs() < 1e-6, "{firsts:?}");
