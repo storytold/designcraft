@@ -66,7 +66,7 @@ pub(crate) struct Held {
 
 #[cfg(not(target_arch = "wasm32"))]
 enum Step {
-    /// Open: run `then` with the file chosen.
+    /// Open (or a folder): run `then` with the file or folder chosen.
     Open(Then),
     /// Open several: run `then` with the files chosen.
     OpenMany(ThenMany),
@@ -145,6 +145,31 @@ impl DesignApp {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (purpose, bound, then);
+            Err(NO_PICKER.into())
+        }
+    }
+
+    /// Ask for a folder, the dialog titled `title` (File › Export Layouts and Versions). `then`
+    /// runs with its path on a later frame; Cancel runs nothing.
+    #[track_caller]
+    pub(crate) fn ask_folder(
+        &mut self,
+        title: &str,
+        bound: Bound,
+        then: impl FnOnce(&mut DesignApp, String) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut dialog = craft_dialogs::FileDialog::folder().title(title);
+            if let Some(folder) = self.session.active().and_then(|d| d.path.as_deref()).and_then(folder_of) {
+                dialog = dialog.directory(folder);
+            }
+            self.ask_file(dialog, bound, Step::Open(Box::new(then)));
+            Ok(Value::Null)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (title, bound, then);
             Err(NO_PICKER.into())
         }
     }
