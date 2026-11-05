@@ -565,17 +565,17 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     // pointed at a story the clipping didn't have and pasted the anchored frame empty.
     let mut kept: std::collections::HashSet<designcraft_doc::StoryId> =
         d.stories.iter().filter(|(_, st)| st.frames.iter().any(|f| frames.contains(f))).map(|(id, _)| *id).collect();
-    loop {
+    // Nothing to scan when no story is kept (a copied graphic).
+    while !kept.is_empty() {
         let mut found = Vec::new();
+        // Every anchored item once, group members included: `anchored_items` lists them.
         for (owner, it) in d.anchored_items() {
             if !kept.contains(&owner) {
                 continue;
             }
-            it.walk(&mut |i| {
-                if let designcraft_doc::Content::Text(tf) = &i.content {
-                    found.push((i.id, tf.story));
-                }
-            });
+            if let designcraft_doc::Content::Text(tf) = &it.content {
+                found.push((it.id, tf.story));
+            }
         }
         let before = kept.len();
         for (frame, story) in found {
@@ -889,6 +889,57 @@ mod paste_tests {
                 }
             }
         }
+    }
+
+    /// The same for a text frame inside a group anchored in the copied frame's text, as IDML
+    /// import anchors an InDesign group: the group's members are anchored items too.
+    #[test]
+    fn a_text_frame_in_an_anchored_group_keeps_its_text() {
+        use designcraft_doc::{AnchoredObject, Content, Item, ParaFormat, Shape, SpreadRef};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = ItemId(
+            s.execute("frame.create", &json!({"rect": [36, 36, 400, 400], "content": "text", "text": "Host"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        s.edit(|d, _| {
+            let layer = d.default_layer();
+            let host_sid = d.item(host).and_then(|i| i.text_frame()).map(|t| t.story).unwrap();
+            let (id, sid) = d
+                .add_text_frame(SpreadRef::Doc(0), designcraft_geom::Rect::new(0.0, 0.0, 80.0, 40.0), layer, "Grouped", ParaFormat::default())
+                .unwrap();
+            let child = d.item(id).unwrap().clone();
+            let story = d.stories.get(&sid).unwrap().clone();
+            d.remove_item(id).unwrap();
+            d.stories.insert(sid, story);
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(child)] };
+            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default() });
+            d.check().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        // The texts of the text frames in the groups anchored in frame `f`'s story.
+        let grouped = |s: &Session, f: ItemId| -> Vec<String> {
+            let d = &s.doc().unwrap().doc;
+            let st = d.story(d.item(f).unwrap().text_frame().unwrap().story).unwrap();
+            st.objects
+                .iter()
+                .flat_map(|o| {
+                    o.item
+                        .children()
+                        .iter()
+                        .filter_map(|c| c.text_frame())
+                        .map(|tf| d.story(tf.story).map_or("<missing story>".into(), |x| x.text.clone()))
+                })
+                .collect()
+        };
+        assert_eq!(grouped(&s, host), ["Grouped"]);
+        s.execute("selection.set", &json!({"ids": [host.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        let pasted = ItemId(s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+        assert_eq!(grouped(&s, pasted), ["Grouped"]);
+        s.doc().unwrap().doc.check().unwrap();
     }
 
     #[test]
