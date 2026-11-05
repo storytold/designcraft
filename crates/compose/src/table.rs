@@ -317,13 +317,15 @@ pub(crate) fn place_table(
     let mut r = header;
     let mut forced: Option<StartParagraph> = None;
     let mut loose = 0;
+    let mut started = None;
     loop {
         if r >= body_end {
             break;
         }
         let bottom = col.y1 - reserve;
         let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
-        forced = forced.or(row_start(table.rows[r].start, body_placed == 0 && at_col_top));
+        let at_top = (body_placed == 0 && at_col_top) || started == Some(r);
+        forced = forced.or(row_start(table.rows[r].start, at_top, frames.get(cur.fi).and_then(|f| f.page).map(|p| doc.page_number(p) % 2 == 1)));
         let room = bottom - (col.y0 + if first_frag || o.repeat_header { sum(0, header) } else { 0.0 });
         let ge = next_group(&heights, r, (keep_end[r].min(body_end), group_end[r].min(body_end)), room - footer_h, &mut loose);
         let gh = sum(r, ge);
@@ -347,7 +349,10 @@ pub(crate) fn place_table(
         }
         let was_first = first_frag;
         match forced.take() {
-            Some(start) => cur.start(start, cols, frames, doc),
+            Some(start) => {
+                cur.start(start, cols, frames, doc);
+                started = Some(r);
+            }
             None => cur.next_column(cols),
         }
         if cur.fi >= frames.len() {
@@ -374,9 +379,14 @@ pub(crate) fn place_table(
     true
 }
 
-/// Start Row: where a row must begin, unless it already starts a column (`at_top`).
-fn row_start(start: StartParagraph, at_top: bool) -> Option<StartParagraph> {
-    (start != StartParagraph::Anywhere && !at_top).then_some(start)
+/// Start Row: where a row must begin, unless it already starts a column (`at_top`) and, for an odd or even page start, its page (`odd`: its number is odd) has that parity.
+fn row_start(start: StartParagraph, at_top: bool, odd: Option<bool>) -> Option<StartParagraph> {
+    let parity = match start {
+        StartParagraph::NextOddPage => odd != Some(false),
+        StartParagraph::NextEvenPage => odd != Some(true),
+        _ => true,
+    };
+    (start != StartParagraph::Anywhere && !(at_top && parity)).then_some(start)
 }
 
 /// The end of the rows placed together from row `r`: the rows kept with it (`kept`) when they
