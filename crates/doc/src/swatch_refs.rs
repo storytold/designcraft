@@ -11,7 +11,7 @@ use crate::attrs::{CharAttrs, ParaAttrs};
 use crate::item::{Fill, Item, Stroke, TextFrameOptions};
 use crate::story::Story;
 use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs};
-use crate::table::{AltFills, AltStrokes, CellStroke, Table};
+use crate::table::{AltFills, AltStrokes, Cell, CellStroke, Table, TableOptions};
 use crate::{Document, ItemId};
 
 /// How deep into groups the walks here go: past it a hostile document's nesting is left alone
@@ -29,6 +29,36 @@ fn frame_stories(it: &Item, depth: u32, out: &mut BTreeSet<crate::StoryId>) {
     }
     for k in it.children() {
         frame_stories(k, depth + 1, out);
+    }
+}
+
+/// Collect, as `n` sees them, the swatch names in story `st` and the texts inside it (its table
+/// cells, footnotes and endnotes, and theirs), and into `frames` the stories of the text frames
+/// anchored in any of them. `st` is borrowed from the document and nothing of it is changed or
+/// copied whole: its own runs go through a copy that leaves its tables and notes out, and a table
+/// is read through its options and then one cell at a time, so a 250 000-cell table is never
+/// copied to be read (noted in review).
+fn collect_names(n: &Names, st: &Story, depth: u32, frames: &mut BTreeSet<crate::StoryId>) {
+    if depth > MAX_ITEM_DEPTH {
+        return;
+    }
+    let mut own = st.clone();
+    own.tables.clear();
+    own.notes.clear();
+    own.endnotes.clear();
+    n.story(&mut own);
+    for o in &st.objects {
+        frame_stories(&o.item, 0, frames);
+    }
+    for t in st.tables.values() {
+        n.table_options(&mut t.options.clone());
+        for c in &t.cells {
+            n.cell(&mut c.clone());
+            collect_names(n, &c.text, depth + 1, frames);
+        }
+    }
+    for note in st.notes.iter().chain(&st.endnotes) {
+        collect_names(n, &note.text, depth + 1, frames);
     }
 }
 
@@ -171,6 +201,10 @@ impl Names<'_> {
         if let Some(tf) = it.text_frame_mut() {
             self.frame(&mut tf.options);
         }
+        // The swatch a greyscale or bitmap image is coloured with (#2306).
+        if let crate::item::Content::Graphic(g) = &mut it.content {
+            self.fill(&mut g.fill);
+        }
         if let Some(kids) = it.children_mut() {
             for k in kids {
                 self.item(Arc::make_mut(k), depth + 1);
@@ -178,7 +212,13 @@ impl Names<'_> {
         }
     }
     fn table(&self, t: &mut Table) {
-        let o = &mut t.options;
+        self.table_options(&mut t.options);
+        for c in &mut t.cells {
+            self.cell(c);
+        }
+    }
+    /// A table's own borders, alternating fills and strokes.
+    fn table_options(&self, o: &mut TableOptions) {
         self.cell_stroke(&mut o.border);
         for b in o.borders.iter_mut().flatten() {
             self.cell_stroke(b);
@@ -189,11 +229,15 @@ impl Names<'_> {
         for s in [&mut o.row_strokes, &mut o.column_strokes].into_iter().flatten() {
             self.alt_strokes(s);
         }
-        for c in &mut t.cells {
-            self.s(&mut c.fill);
-            for s in &mut c.strokes {
-                self.cell_stroke(s);
-            }
+    }
+    /// One cell's fill, strokes and image (its text is visited separately).
+    fn cell(&self, c: &mut Cell) {
+        self.s(&mut c.fill);
+        for s in &mut c.strokes {
+            self.cell_stroke(s);
+        }
+        if let Some(g) = &mut c.graphic {
+            self.fill(&mut g.fill);
         }
     }
     /// One story's own text, objects and tables (cell and note text are visited separately).
@@ -257,11 +301,10 @@ impl Document {
     }
 
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
-    /// styles, page items (fills, strokes, gaps, effects, column rules), text, kenten and ruby
-    /// colours, rules, shading, borders and border gaps, tables (with stroke gaps), footnotes,
-    /// gradient stops,
-    /// endnotes and the footnote rule. The swatch itself is renamed by the
-    /// caller.
+    /// styles, page items (fills, strokes, gaps, effects, column rules, the swatch an image is
+    /// coloured with), text, kenten and ruby colours, rules, shading, borders and border gaps,
+    /// tables (with stroke gaps and cell images), footnotes, gradient stops, endnotes and the
+    /// footnote rule. The swatch itself is renamed by the caller.
     pub fn rename_swatch_refs(&mut self, from: &str, to: &str) {
         if from == to {
             return;
@@ -336,14 +379,14 @@ impl Document {
             // A copy: collecting changes nothing, but the walk takes what it visits mutably.
             n.item(&mut it.clone(), 0);
         }
-        for sid in stories {
-            if let Some(st) = self.story(sid) {
-                let mut st = st.clone();
-                st.for_each_text_mut(&mut |x| n.story(x));
-                for e in &mut st.endnotes {
-                    Arc::make_mut(e).text.for_each_text_mut(&mut |x| n.story(x));
-                }
-            }
+        // Text frames anchored in those stories bring their own stories' text too.
+        let mut todo: Vec<crate::StoryId> = stories.iter().copied().collect();
+        let mut seen = stories;
+        while let Some(sid) = todo.pop() {
+            let Some(st) = self.story(sid) else { continue };
+            let mut inner = BTreeSet::new();
+            collect_names(&n, st, 0, &mut inner);
+            todo.extend(inner.into_iter().filter(|s| seen.insert(*s)));
         }
         self.adopt_named(&src.swatches, used.into_inner())
     }
