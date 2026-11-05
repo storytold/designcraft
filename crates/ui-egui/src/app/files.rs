@@ -1010,6 +1010,27 @@ pub(crate) mod browser_import_tests {
         assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg", "c.svg", "a.svg"]);
     }
 
+    /// A PDF later in a batch joins the place cursor with the images around it, even with a
+    /// graphic frame selected: it doesn't fill that frame and leave the others queued.
+    #[test]
+    fn a_pdf_in_a_batch_queues_rather_than_filling_the_selected_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        std::fs::write(path("a.svg"), image()).unwrap();
+        std::fs::write(path("one.pdf"), pdf_pages(1)).unwrap();
+        std::fs::write(path("b.svg"), image()).unwrap();
+        let mut app = app();
+        app.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
+        let f = designcraft_doc::ItemId(
+            app.run("frame.create", json!({"rect": [200, 200, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        assert!(app.session.active().unwrap().selection.items.contains(&f));
+        app.place_paths(vec![path("a.svg"), path("one.pdf"), path("b.svg")]).unwrap();
+        assert_eq!(loaded_names(&app), ["a.svg", "one.pdf", "b.svg"]);
+        let frame = app.session.active().unwrap().doc.item(f).unwrap();
+        assert!(!matches!(frame.content, designcraft_doc::Content::Graphic(_)), "the selected frame stays empty");
+    }
+
     /// File › Place with several files chosen in the dialog loads them all into the place
     /// cursor, in the order chosen; with one, it is placed as before.
     #[test]
