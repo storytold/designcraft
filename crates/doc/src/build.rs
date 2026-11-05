@@ -853,15 +853,20 @@ impl Document {
                 c
             }
         };
-        // Front to back, so that a parent page hiding its parent's items can end the walk.
+        // Front to back, so that a parent page hiding its parent's items can end the walk. Each
+        // parent page is mapped from the page in front of it (C's right page to B's only page,
+        // and that one to A's first), not from the page the walk started on.
         let mut out = Vec::new();
+        let (mut side, mut index) = (pg.side, page);
         for i in chain.into_iter().rev() {
             let Some(ps) = self.parents.get(i) else { continue };
-            let Some(j) = ps.parent_page_at(pg.side, page) else { continue };
+            let Some(j) = ps.parent_page_at(side, index) else { continue };
             out.push((i, j));
-            if ps.pages.get(j).is_some_and(|p| !p.show_parent_items) {
+            let Some(ppg) = ps.pages.get(j) else { continue };
+            if !ppg.show_parent_items {
                 break;
             }
+            (side, index) = (ppg.side, j);
         }
         out.reverse();
         out
@@ -1269,6 +1274,38 @@ mod tests {
         // A cycle (A based on C, as a damaged file may have it) ends the walk.
         base(&mut d, 0, Some(c));
         assert_eq!(shown(&d, SpreadRef::Doc(1), 1), ids);
+    }
+
+    /// Each parent in the chain is mapped from the parent page in front of it: C (two pages) based
+    /// on B (one page) based on A (two pages). C's right page shows B's only page, and that one
+    /// shows A's first page, not A's right page.
+    #[test]
+    fn nested_parents_map_each_page_from_the_one_in_front() {
+        let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+        let lid = d.default_layer();
+        let a = d.parents[0].id;
+        let b = d.add_parent("B", "Parent", 1, 0.0, Margins::uniform(36.0));
+        let c = d.add_parent("C", "Parent", 1, 0.0, Margins::uniform(36.0));
+        base(&mut d, 1, Some(a));
+        base(&mut d, 2, Some(b));
+        // B keeps one single-sided page.
+        let bs = Arc::make_mut(&mut d.parents[1]);
+        bs.pages.truncate(1);
+        bs.pages[0].side = PageSide::Single;
+        bs.relayout();
+        // One box on each of A's pages.
+        let mut ids = Vec::new();
+        for x in [100.0, 700.0] {
+            let id = ItemId(d.alloc());
+            let r = designcraft_geom::Rect::new(x, 100.0, x + 100.0, 140.0);
+            d.insert_item(SpreadRef::Parent(0), Item::new(id, lid, crate::Shape::Rectangle, designcraft_geom::shapes::rectangle(r)), None).unwrap();
+            ids.push(id);
+        }
+        d.apply_parent(&[2], Some(c)).unwrap();
+        assert_eq!(d.shown_parent_pages(SpreadRef::Doc(1), 1), vec![(0, 0), (1, 0), (2, 1)]);
+        assert_eq!(d.shown_parent_items(SpreadRef::Doc(1), 1).iter().map(|s| s.item.id).collect::<Vec<_>>(), vec![ids[0]]);
+        assert_eq!(d.shown_parent_pages(SpreadRef::Parent(2), 1), vec![(0, 0), (1, 0)]);
+        assert_eq!(d.shown_parent_items(SpreadRef::Parent(2), 1).iter().map(|s| s.item.id).collect::<Vec<_>>(), vec![ids[0]]);
     }
 
     /// A cycle or a dangling base from a file is cleared with a warning; walks stay bounded before that.
