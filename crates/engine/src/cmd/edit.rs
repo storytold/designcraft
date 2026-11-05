@@ -560,6 +560,33 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     if let Some(sp) = d.spreads.first_mut() {
         Arc::make_mut(sp).items = items;
     }
+    // A text frame anchored in a copied frame's text (as IDML import makes them) is in its host's
+    // story, not among the items: keep it, and the ones anchored in its text in turn, or the copy
+    // pointed at a story the clipping didn't have and pasted the anchored frame empty.
+    let mut kept: std::collections::HashSet<designcraft_doc::StoryId> =
+        d.stories.iter().filter(|(_, st)| st.frames.iter().any(|f| frames.contains(f))).map(|(id, _)| *id).collect();
+    // Nothing to scan when no story is kept (a copied graphic).
+    while !kept.is_empty() {
+        let mut found = Vec::new();
+        // Every anchored item once, group members included: `anchored_items` lists them.
+        for (owner, it) in d.anchored_items() {
+            if !kept.contains(&owner) {
+                continue;
+            }
+            if let designcraft_doc::Content::Text(tf) = &it.content {
+                found.push((it.id, tf.story));
+            }
+        }
+        let before = kept.len();
+        for (frame, story) in found {
+            frames.insert(frame);
+            kept.insert(story);
+        }
+        // Each pass keeps at least one more story or stops: there are finitely many.
+        if kept.len() == before {
+            break;
+        }
+    }
     // Parent spreads aren't part of a clipping; stories keep only the copied frames.
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
@@ -777,6 +804,141 @@ mod paste_tests {
         let w = s.doc().unwrap().doc.settings.page_width;
         assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({})), (SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 136.0)));
         assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
+    }
+
+    /// A frame with `Host` text and, anchored at its start, a text frame with `Inner`; anchored
+    /// in that one's text, if `nested`, another with `Deepest`, as IDML import makes them (the
+    /// commands don't anchor text frames). Returns the host frame.
+    fn host_with_anchored_text_frames(s: &mut Session, nested: bool) -> ItemId {
+        use designcraft_doc::{AnchoredObject, ParaFormat, SpreadRef};
+        s.execute("file.new", &json!({})).unwrap();
+        let host =
+            s.execute("frame.create", &json!({"rect": [36, 36, 400, 400], "content": "text", "text": "Host"})).unwrap()["id"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let layer = d.default_layer();
+            let host_sid = d.item(ItemId(host)).and_then(|i| i.text_frame()).map(|t| t.story).unwrap();
+            // Anchor a new text frame holding `text` in story `into`, and give back its story.
+            let anchor_frame = |d: &mut designcraft_doc::Document, into: designcraft_doc::StoryId, text: &str| {
+                let (id, sid) = d
+                    .add_text_frame(SpreadRef::Doc(0), designcraft_geom::Rect::new(0.0, 0.0, 80.0, 40.0), layer, text, ParaFormat::default())
+                    .unwrap();
+                let item = d.item(id).unwrap().clone();
+                let story = d.stories.get(&sid).unwrap().clone();
+                d.remove_item(id).unwrap();
+                d.stories.insert(sid, story);
+                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+                sid
+            };
+            let inner = anchor_frame(d, host_sid, "Inner");
+            if nested {
+                anchor_frame(d, inner, "Deepest");
+            }
+            d.check().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        ItemId(host)
+    }
+
+    /// The text of every text frame anchored in the story of frame `host` of the active document,
+    /// and in theirs, depth first.
+    fn anchored_texts(s: &Session, host: ItemId) -> Vec<String> {
+        let d = &s.doc().unwrap().doc;
+        // Without the marks the text holds for what is anchored in it.
+        let text = |x: &designcraft_doc::Story| -> String { x.text.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect() };
+        let mut out = Vec::new();
+        let mut todo = vec![d.item(host).unwrap().text_frame().unwrap().story];
+        while let Some(sid) = todo.pop() {
+            let Some(st) = d.story(sid) else {
+                out.push("<missing story>".into());
+                continue;
+            };
+            for o in &st.objects {
+                if let Some(tf) = o.item.text_frame() {
+                    out.push(d.story(tf.story).map_or("<missing story>".into(), text));
+                    todo.push(tf.story);
+                }
+            }
+        }
+        out
+    }
+
+    /// A text frame anchored in a copied frame's text keeps its text through copy and paste, into
+    /// another document or the same one, and so does one anchored in that. The clipboard used to
+    /// keep only the stories of the frames among the copied items, so an anchored frame pasted
+    /// empty: its story wasn't on the clipboard and the paste made it an empty one.
+    #[test]
+    fn a_text_frame_anchored_in_a_copied_frame_keeps_its_text() {
+        for nested in [false, true] {
+            let mut s = Session::new();
+            let host = host_with_anchored_text_frames(&mut s, nested);
+            let expected: Vec<String> = if nested { vec!["Inner".into(), "Deepest".into()] } else { vec!["Inner".into()] };
+            assert_eq!(anchored_texts(&s, host), expected, "the original");
+            s.execute("selection.set", &json!({"ids": [host.0]})).unwrap();
+            s.execute("edit.copy", &json!({})).unwrap();
+            for other in [true, false] {
+                if other {
+                    s.execute("file.new", &json!({})).unwrap();
+                }
+                let pasted = ItemId(s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+                assert_eq!(anchored_texts(&s, pasted), expected, "nested {nested}, into another document {other}");
+                s.doc().unwrap().doc.check().unwrap();
+                if other {
+                    s.execute("file.close", &json!({})).unwrap();
+                }
+            }
+        }
+    }
+
+    /// The same for a text frame inside a group anchored in the copied frame's text, as IDML
+    /// import anchors an InDesign group: the group's members are anchored items too.
+    #[test]
+    fn a_text_frame_in_an_anchored_group_keeps_its_text() {
+        use designcraft_doc::{AnchoredObject, Content, Item, ParaFormat, Shape, SpreadRef};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = ItemId(
+            s.execute("frame.create", &json!({"rect": [36, 36, 400, 400], "content": "text", "text": "Host"})).unwrap()["id"].as_u64().unwrap(),
+        );
+        s.edit(|d, _| {
+            let layer = d.default_layer();
+            let host_sid = d.item(host).and_then(|i| i.text_frame()).map(|t| t.story).unwrap();
+            let (id, sid) = d
+                .add_text_frame(SpreadRef::Doc(0), designcraft_geom::Rect::new(0.0, 0.0, 80.0, 40.0), layer, "Grouped", ParaFormat::default())
+                .unwrap();
+            let child = d.item(id).unwrap().clone();
+            let story = d.stories.get(&sid).unwrap().clone();
+            d.remove_item(id).unwrap();
+            d.stories.insert(sid, story);
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(child)] };
+            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default() });
+            d.check().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        // The texts of the text frames in the groups anchored in frame `f`'s story.
+        let grouped = |s: &Session, f: ItemId| -> Vec<String> {
+            let d = &s.doc().unwrap().doc;
+            let st = d.story(d.item(f).unwrap().text_frame().unwrap().story).unwrap();
+            st.objects
+                .iter()
+                .flat_map(|o| {
+                    o.item
+                        .children()
+                        .iter()
+                        .filter_map(|c| c.text_frame())
+                        .map(|tf| d.story(tf.story).map_or("<missing story>".into(), |x| x.text.clone()))
+                })
+                .collect()
+        };
+        assert_eq!(grouped(&s, host), ["Grouped"]);
+        s.execute("selection.set", &json!({"ids": [host.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        let pasted = ItemId(s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+        assert_eq!(grouped(&s, pasted), ["Grouped"]);
+        s.doc().unwrap().doc.check().unwrap();
     }
 
     /// A copied text frame's clipping holds the files its anchored graphics show.
