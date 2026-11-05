@@ -141,7 +141,10 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                     );
                     let Some(rect) = rect.filter(|_| r.width() > 0.0 && r.height() > 0.0) else { continue };
                     let target = Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into());
-                    out.push(Annotation::new_link(LinkAnnotation::new(rect, target), Some(format!("Cross-reference: {}", x.format))));
+                    tagged.push((
+                        Annotation::new_link(LinkAnnotation::new(rect, target), Some(format!("Cross-reference: {}", x.format))),
+                        (st.id, st.para_at(pos)),
+                    ));
                 }
             }
         }
