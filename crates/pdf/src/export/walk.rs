@@ -19,15 +19,22 @@ fn table_group(
     }
     let mut any = false;
     let mut group = TagGroup::new(Tag::Table);
+    let owners = table.owners();
     for (row_index, row) in table.rows.iter().enumerate() {
         let mut row_group = TagGroup::new(Tag::TR);
         for (col_index, _) in table.columns.iter().enumerate() {
-            if table.owner(row_index, col_index) != (row_index, col_index) {
+            if owners.get(row_index * table.ncols() + col_index).copied().unwrap_or((row_index, col_index)) != (row_index, col_index) {
                 continue;
             }
             let cell = table.cell(row_index, col_index);
-            let row_span = cell.and_then(|cell| (cell.row_span > 1).then_some(cell.row_span)).and_then(std::num::NonZeroU32::new);
-            let col_span = cell.and_then(|cell| (cell.col_span > 1).then_some(cell.col_span)).and_then(std::num::NonZeroU32::new);
+            let row_span = cell
+                .map(|cell| cell.row_span.min(u32::try_from(table.nrows().saturating_sub(row_index)).unwrap_or(u32::MAX)))
+                .filter(|span| *span > 1)
+                .and_then(std::num::NonZeroU32::new);
+            let col_span = cell
+                .map(|cell| cell.col_span.min(u32::try_from(table.ncols().saturating_sub(col_index)).unwrap_or(u32::MAX)))
+                .filter(|span| *span > 1)
+                .and_then(std::num::NonZeroU32::new);
             let mut cell_group = if row.kind == designcraft_doc::RowKind::Header {
                 TagGroup::new(Tag::TH(krilla::tagging::TableHeaderScope::Column).with_row_span(row_span).with_col_span(col_span))
             } else {
