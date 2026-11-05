@@ -1,6 +1,8 @@
 name: probe
 on:
   workflow_dispatch:
+  push:
+    paths: [".github/workflows/probe.yml"]
 jobs:
   inherited:
     uses: ./.github/workflows/probe-called.yml
