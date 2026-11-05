@@ -567,6 +567,17 @@ mod tests {
     }
 
     #[test]
+    fn huge_hungarian_runs_are_bounded_without_losing_neighbour_breaks() {
+        if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
+            return;
+        }
+        let giant = "á".repeat(craft_proof::hyphen::MAX_HYPHENATION_RUN_BYTES);
+        let text = format!("asszony {giant} könnyen");
+        let lim = Limits::default();
+        assert!(opportunities_in(&giant, &lim, Lang::Hungarian).is_empty());
+        assert_eq!(hyphen_points_in(&text, &lim, Lang::Hungarian), vec![2, 8 + giant.chars().count() + 1 + 3]);
+    }
+    #[test]
     fn hungarian_limits_apply_to_each_separator_separated_run() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
             eprintln!("requires the optional hu Language pack; see docs/hungarian-language-support.md");

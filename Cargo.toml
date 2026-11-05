@@ -12,7 +12,7 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared Hunspell reader and nonstandard hyphenation; hu data comes from a Language pack.
-craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "decf1d078bdc616aef6899290a9dfa74d91c54ab" }
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "fa0b99d2b35ba323b4ab70914e2799f8cce26679" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", default-features = false }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
@@ -101,7 +101,8 @@ craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs",
 # The application bar as the window's title bar (craft-libs).
 craft-window = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["egui"] }
 egui = "0.37"
-egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
+# Resizable table columns (About ▸ Contributors / Models); no image loaders.
+egui_extras = { version = "0.37", default-features = false }
 eframe = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
 # Monotonic clock on native and web (`Instant`); screenshot settlement must not use wall time.

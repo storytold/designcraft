@@ -117,7 +117,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let area = egui::Id::unique("about");
     let instance = area.with("placement");
     let resp = crate::modal_drag::modal(ctx, area, instance).show(ctx, |ui| {
-        ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 640.0 });
+        ui.set_width(if app.ui.about_tab == 0 { 460.0 } else { 820.0_f32.min(ctx.content_rect().width() - 40.0).max(460.0) });
         // The tab row is the title row. The tabs register after the drag area, so they stay clickable.
         let margin = egui::Frame::popup(ui.style()).inner_margin;
         let top = ui.cursor().top();

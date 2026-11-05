@@ -11,7 +11,7 @@ type Key = (u64, u64);
 struct State {
     #[cfg(not(target_arch = "wasm32"))]
     running: Option<(Key, mpsc::Receiver<Report>)>,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pending: Option<(Key, IncrementalReport)>,
     cached: Option<(Key, Arc<Report>)>,
 }
@@ -123,6 +123,28 @@ impl IncrementalReport {
         self.story.is_none()
     }
 }
+#[cfg(any(target_arch = "wasm32", test))]
+impl State {
+    fn advance_browser(&mut self, key: Key, doc: Arc<Document>, ctx: &egui::Context) -> Option<Arc<Report>> {
+        if self.pending.as_ref().is_none_or(|(pending_key, _)| pending_key.0 != key.0) {
+            self.pending = Some((key, IncrementalReport::new(doc)));
+        }
+        if self.pending.as_mut().is_some_and(|(_, work)| work.advance(ctx.cumulative_frame_nr()))
+            && let Some((finished_key, work)) = self.pending.take()
+        {
+            let result = Arc::new(work.report);
+            self.cached = Some((finished_key, result.clone()));
+            if finished_key == key {
+                return Some(result);
+            }
+        }
+        // A stale completion is not the current result. The dialog may be the
+        // only caller, so it must get another frame to start the current scan.
+        ctx.request_repaint();
+        None
+    }
+}
+
 pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>> {
     let active = app.session.active()?;
     let key = (active.uid, active.revision);
@@ -170,18 +192,8 @@ pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>
         state.running = Some((key, rx));
     }
     #[cfg(target_arch = "wasm32")]
-    {
-        if state.pending.as_ref().is_none_or(|(pending_key, _)| pending_key.0 != key.0) {
-            state.pending = Some((key, IncrementalReport::new(active.doc.clone())));
-        }
-        if state.pending.as_mut().is_some_and(|(_, work)| work.advance(ctx.cumulative_frame_nr()))
-            && let Some((finished_key, work)) = state.pending.take()
-        {
-            let result = Arc::new(work.report);
-            state.cached = Some((finished_key, result.clone()));
-            return Some(result);
-        }
-        ctx.request_repaint();
+    if let Some(result) = state.advance_browser(key, active.doc.clone(), ctx) {
+        return Some(result);
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
     state.cached.as_ref().filter(|(cached_key, _)| cached_key.0 == key.0).map(|(_, result)| result.clone())
@@ -459,7 +471,7 @@ mod tests {
         let key = (active.uid, active.revision);
         let old = Arc::new(build(active.doc.clone()));
         let (_tx, rx) = mpsc::channel(); // Keep a deterministic pending job; no thread/timing dependency.
-        let state = State { running: Some((key, rx)), cached: Some((key, old.clone())) };
+        let state = State { running: Some((key, rx)), cached: Some((key, old.clone())), ..Default::default() };
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("spelling_worker"), Arc::new(Mutex::new(state))));
         app.run("frame.create", json!({"rect":[0,0,300,300],"content":"text","text":"hello"})).unwrap();
         assert!(Arc::ptr_eq(&report(&app, &ctx).unwrap(), &old));
@@ -468,6 +480,27 @@ mod tests {
         assert!(report(&app, &ctx).is_none());
     }
 
+    #[test]
+    fn stale_browser_completion_requests_a_frame_for_the_current_scan() {
+        let ctx = egui::Context::default();
+        for _ in 0..8 {
+            ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+        }
+        assert!(!ctx.has_requested_repaint(), "the idle dialog has no scheduled frame");
+        let mut session = SessionForTest::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let doc = session.doc().unwrap().doc.clone();
+        let old_key = (1, 1);
+        let key = (1, 2);
+        let mut state = State { pending: Some((old_key, IncrementalReport::new(doc.clone()))), ..Default::default() };
+        assert!(state.advance_browser(key, doc.clone(), &ctx).is_none());
+        assert!(ctx.has_requested_repaint(), "a stale result must not leave the dialog waiting indefinitely");
+        assert_eq!(state.cached.as_ref().unwrap().0, old_key);
+        ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+        let current = state.advance_browser(key, doc.clone(), &ctx).unwrap();
+        assert!(Arc::ptr_eq(&current.doc, &doc));
+        assert_eq!(state.cached.as_ref().unwrap().0, key);
+    }
     #[test]
     fn browser_scan_yields_once_per_frame_and_keeps_complete_results() {
         let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());

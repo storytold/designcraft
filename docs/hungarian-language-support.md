@@ -42,6 +42,9 @@ For example: `asszony` -> `asz-szony`, `könnyen` -> `köny-nyen`, and `hosszú`
 rendering and PDF export include those letters only at a selected break. Source
 text is unchanged; PDF ActualText retains the original text. User exceptions,
 soft hyphens, no-break ranges and language boundaries keep their existing rules.
+Automatic hyphenation bounds each letter run to 4096 UTF-8 bytes before allocating
+matching tables. Larger runs stay unbroken; neighbouring words and explicit soft
+hyphens retain their existing handling. The source text is never truncated.
 Native checks and suggestions run in the existing background workers. Browser
 checking retains the existing resumable scan and frame-budget tests.
 
