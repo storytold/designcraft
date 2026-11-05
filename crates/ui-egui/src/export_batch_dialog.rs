@@ -6,6 +6,7 @@ use designcraft_engine::cmd::export_batch::{ExportFormat, ExportJob, ExportPrese
 use serde_json::{Value, json};
 
 use crate::DesignApp;
+use crate::app::file_dialogs::Bound;
 use crate::dialogs::Dialog;
 
 pub const ID: &str = "exportBatch";
@@ -82,7 +83,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, tr("Preset:"));
         let shown = if preset.is_empty() { tr("[Custom]") } else { preset.clone() };
-        egui::ComboBox::from_id_salt("export_batch_preset").selected_text(shown).width(200.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("export_batch_preset").selected_text(shown).width(200.0).show_ui(ui, |ui| {
             for p in &all {
                 if ui.selectable_label(p.name == preset, &p.name).clicked() {
                     job = p.job.clone();
@@ -166,7 +167,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.push_id(("export_version", i), |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut v.name).desired_width(170.0).hint_text(tr("Folder name")));
-                egui::ComboBox::from_id_salt("format").selected_text(v.format.ext().to_uppercase().replace("JPG", "JPEG")).width(70.0).show_ui(
+                craft_ui::ComboBox::from_id_salt("format").selected_text(v.format.ext().to_uppercase().replace("JPG", "JPEG")).width(70.0).show_ui(
                     ui,
                     |ui| {
                         for (f, label) in [(ExportFormat::Pdf, "PDF"), (ExportFormat::Png, "PNG"), (ExportFormat::Jpeg, "JPEG")] {
@@ -185,7 +186,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                             "screen" => tr("Screen"),
                             _ => tr("Custom"),
                         };
-                        egui::ComboBox::from_id_salt("pdf_kind").selected_text(label(kind)).width(150.0).show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_id_salt("pdf_kind").selected_text(label(kind)).width(150.0).show_ui(ui, |ui| {
                             for k in ["print", "bleed", "screen", "custom"] {
                                 if ui.selectable_label(kind == k, label(k)).clicked() {
                                     expanded.retain(|x| *x != i as u64);
@@ -224,7 +225,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     ui.checkbox(&mut v.marks.page_info, crate::rtl::widget(ui, tr("Page Information")));
                     ui.checkbox(&mut v.compress_images, crate::rtl::widget(ui, tr("Compress Images")));
                     ui.checkbox(&mut v.spreads, crate::rtl::widget(ui, tr("Spreads")));
-                    egui::ComboBox::from_id_salt("standard")
+                    craft_ui::ComboBox::from_id_salt("standard")
                         .selected_text(match v.standard.as_str() {
                             "x4" => "PDF/X-4",
                             "a2b" => "PDF/A-2b",
@@ -328,33 +329,39 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     d.fields.insert("preset".into(), json!(preset));
 }
 
+/// The dialog `d` open again, saying `e`.
+fn reopen(app: &mut DesignApp, d: &Dialog, e: &str) {
+    let mut d = d.clone();
+    d.fields.insert("status".into(), json!(e));
+    app.ui.dialog = Some(d);
+}
+
 /// Export: ask for a folder (the web downloads each file), write every file, remember the job.
+/// The folder dialog answers on a later frame; the export runs then.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let job = job_of(d);
-    let reopen = |app: &mut DesignApp, e: &str| {
-        let mut d = d.clone();
-        d.fields.insert("status".into(), json!(e));
-        app.ui.dialog = Some(d);
-    };
     if job.layouts.iter().any(String::is_empty) {
         let e = crate::i18n::tr(&app.ui.language, "Choose at least one layout.").to_string();
-        reopen(app, &e);
+        reopen(app, d, &e);
         return Err(e);
     }
     if job.versions.is_empty() {
         let e = crate::i18n::tr(&app.ui.language, "Add at least one version.").to_string();
-        reopen(app, &e);
+        reopen(app, d, &e);
         return Err(e);
     }
     app.ui.export_batch = Some(job.clone());
+    if app.services.download.is_some() {
+        return export_files(app, d, job, None);
+    }
     let title = crate::i18n::tr(&app.ui.language, "Export to Folder").to_string();
-    let dir = match app.services.pick_folder.as_mut() {
-        Some(pick) => match pick(&title) {
-            Some(dir) => Some(dir),
-            None => return Ok(Value::Null),
-        },
-        None => None,
-    };
+    let d = d.clone();
+    app.ask_folder(&title, Bound::Document, move |app, dir| export_files(app, &d, job, Some(dir)))
+}
+
+/// Run `job` into folder `dir`, or (no folder: the web) download each file. A failure opens the
+/// dialog `d` again, saying why.
+fn export_files(app: &mut DesignApp, d: &Dialog, job: ExportJob, dir: Option<String>) -> Result<Value, String> {
     let mut params = json!({"job": job});
     if let Some(dir) = &dir {
         params["dir"] = json!(dir);
@@ -362,17 +369,17 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let r = match app.run("file.exportBatch", params) {
         Ok(r) => r,
         Err(e) => {
-            reopen(app, &e);
+            reopen(app, d, &e);
             return Err(e);
         }
     };
     let files = r["files"].as_array().cloned().unwrap_or_default();
     if dir.is_none() {
         // No folders on the web: each file downloads as "Folder - Name.ext".
-        let write = app.services.write.as_mut().ok_or("no writer")?;
+        let download = app.services.download.as_mut().ok_or("no download")?;
         for f in &files {
             let (Some(path), Some(b64)) = (f["path"].as_str(), f["base64"].as_str()) else { continue };
-            write(&path.replace('/', " - "), &designcraft_engine::cmd::base64_decode(b64))?;
+            download(&path.replace('/', " - "), &designcraft_engine::cmd::base64_decode(b64))?;
         }
     }
     app.ui.status = crate::i18n::tr(&app.ui.language, "Exported {n} files").replace("{n}", &files.len().to_string());
@@ -430,11 +437,13 @@ mod tests {
     fn export_writes_into_the_chosen_folder_and_remembers_the_job() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app();
-        let folder = dir.path().to_string_lossy().to_string();
-        app.services.pick_folder = Some(Box::new(move |_| Some(folder.clone())));
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.path().to_string_lossy().to_string())));
         open(&mut app, Some(vec!["Tablet H".into()]));
-        let r = crate::dialogs::confirm(&mut app).unwrap();
-        assert_eq!(r["files"].as_array().unwrap().len(), 1 + 1 + 2);
+        // The folder dialog answers on a later frame.
+        assert_eq!(crate::dialogs::confirm(&mut app).unwrap(), Value::Null);
+        assert!(!dir.path().join("PNG").exists());
+        app.settle_dialogs();
+        assert_eq!(app.ui.status, "Exported 4 files");
         assert!(dir.path().join("PDF Print (marks + bleed)/Mag - Tablet H.pdf").is_file());
         assert!(dir.path().join("PNG/Mag - Tablet H - 1.png").is_file());
         assert_eq!(app.ui.export_batch.as_ref().unwrap().layouts, ["Tablet H"]);
@@ -447,16 +456,16 @@ mod tests {
     fn a_cancelled_folder_writes_nothing_and_the_web_downloads_each_file() {
         let written = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut app = app();
-        app.services.pick_folder = Some(Box::new(|_| None));
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
+        open(&mut app, None);
+        assert_eq!(crate::dialogs::confirm(&mut app).unwrap(), Value::Null);
+        app.settle_dialogs();
+        assert!(!app.ui.status.starts_with("Exported"), "{}", app.ui.status);
         let w = written.clone();
-        app.services.write = Some(Box::new(move |p: &str, _: &[u8]| {
+        app.services.download = Some(Box::new(move |p: &str, _: &[u8]| {
             w.lock().unwrap().push(p.to_string());
             Ok(())
         }));
-        open(&mut app, None);
-        assert_eq!(crate::dialogs::confirm(&mut app).unwrap(), Value::Null);
-        assert!(written.lock().unwrap().is_empty());
-        app.services.pick_folder = None;
         open(&mut app, Some(vec!["Print".into()]));
         crate::dialogs::confirm(&mut app).unwrap();
         let names = written.lock().unwrap().clone();

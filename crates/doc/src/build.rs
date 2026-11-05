@@ -125,6 +125,7 @@ impl Document {
         };
         let mut d = Document {
             title: nd.title.clone(),
+            file_info: Default::default(),
             settings,
             spreads: vec![],
             parents: vec![],
@@ -372,6 +373,8 @@ impl Document {
         let mut pages: Vec<(Page, Vec<Arc<Item>>)> = Vec::new();
         let mut parity: Vec<bool> = Vec::new();
         let mut kept: Vec<(usize, Arc<Spread>)> = Vec::new();
+        // Whether each shuffled page was a left page, to mirror its dragged columns if it moves.
+        let mut was_left: BTreeMap<PageId, bool> = BTreeMap::new();
         let mut abs = 0;
         for sp in self.spreads.drain(..) {
             if !sp.allow_shuffle && sp.pages.len() > 1 {
@@ -379,9 +382,10 @@ impl Document {
                 kept.push((pages.len(), sp));
                 continue;
             }
-            for _ in &sp.pages {
+            for p in &sp.pages {
                 parity.push(odd.get(abs).copied().unwrap_or(abs % 2 == 0));
                 breaks.push(layout_starts.contains(&abs));
+                was_left.insert(p.id, p.side == PageSide::Left);
                 abs += 1;
             }
             let mut sp = Arc::unwrap_or_clone(sp);
@@ -476,6 +480,19 @@ impl Document {
             out.insert(at, sp);
         }
         self.spreads = out;
+        // A page that crosses the spine keeps its inside and outside margins, so its margin box
+        // mirrors; its dragged column guides mirror with it, as in InDesign.
+        let crossed = |p: &Page| was_left.get(&p.id).is_some_and(|&l| l != (p.side == PageSide::Left)) && p.columns.positions.is_some();
+        for sp in &mut self.spreads {
+            if !sp.pages.iter().any(crossed) {
+                continue;
+            }
+            for p in &mut Arc::make_mut(sp).pages {
+                if crossed(&*p) {
+                    p.columns = p.columns.mirrored(p.margin_rect().width());
+                }
+            }
+        }
         // Pages can change sides, and so parent pages.
         self.sync_parent_margins();
     }
@@ -504,6 +521,10 @@ impl Document {
                 if let Some(t) = &template {
                     p.width = t.width;
                     p.height = t.height;
+                    // Dragged column guides too: the same width and margins keep them valid.
+                    // They are taken as for this single page; repaginating mirrors them if the
+                    // page lands on a left page.
+                    p.columns.positions = p.columns_from(t).positions;
                 }
                 ids.push(p.id);
                 p
@@ -711,11 +732,18 @@ impl Document {
     }
 
     /// Parent page (spread index, page index) applied to `page`: the page on its side of its
-    /// parent spread.
+    /// parent spread, or in its place for single-sided pages ([`Spread::parent_page_at`]).
     pub fn parent_page_of(&self, page: &Page) -> Option<(usize, usize)> {
         let pi = self.parent_index(page.parent?)?;
         // A parent spread can come without pages from a file.
-        Some((pi, self.parents.get(pi)?.parent_page_for_side(page.side)?))
+        let parent = self.parents.get(pi)?;
+        // Only a single-sided page's position matters: look for it only then.
+        let index = if page.side == PageSide::Single && parent.pages.len() >= 2 {
+            self.spreads.iter().find_map(|s| s.pages.iter().position(|p| p.id == page.id)).unwrap_or(0)
+        } else {
+            0
+        };
+        Some((pi, parent.parent_page_at(page.side, index)?))
     }
 
     /// The parent page applied to `page`.
@@ -746,7 +774,7 @@ impl Document {
                 if page.local_margins {
                     continue;
                 }
-                let Some(src) = self.parent_page(page).filter(|q| !q.same_margins(page)).map(|q| (q.margins, q.columns.clone())) else {
+                let Some(src) = self.parent_page(page).filter(|q| !q.same_margins(page)).map(|q| (q.margins, page.columns_from(q))) else {
                     continue;
                 };
                 if let Some(page) = Arc::make_mut(&mut self.spreads[si]).pages.get_mut(pi) {
@@ -827,7 +855,7 @@ impl Document {
                 c
             }
         };
-        chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_for_side(pg.side)?))).collect()
+        chain.into_iter().filter_map(|i| Some((i, self.parents.get(i)?.parent_page_at(pg.side, page)?))).collect()
     }
 
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).
@@ -851,18 +879,51 @@ impl Document {
     /// Clear `based_on` links that name a missing parent or close a cycle (hand-edited or damaged
     /// files). Returns one warning per link cleared.
     pub fn fix_parent_bases(&mut self) -> Vec<String> {
+        // One id index and one walk over the `based_on` graph (each parent has at most one base),
+        // not an ancestor walk per parent. `parent_index` takes the first of duplicate ids; so does this.
+        let mut index = std::collections::HashMap::new();
+        for (i, p) in self.parents.iter().enumerate() {
+            index.entry(p.id).or_insert(i);
+        }
+        let n = self.parents.len();
+        let base = |i: usize| self.parents.get(i).and_then(|ps| ps.parent.as_ref()).and_then(|info| info.based_on);
+        // `clear[pi]`: why the link is cleared. 0 = unvisited, 1 = on the current walk, 2 = done.
+        let mut state = vec![0u8; n];
+        let mut clear: Vec<Option<&str>> = vec![None; n];
+        for start in 0..n {
+            let mut path = Vec::new();
+            let mut cur = start;
+            loop {
+                if state[cur] == 2 {
+                    break;
+                }
+                if state[cur] == 1 {
+                    // A cycle: breaking its lowest-numbered link is what clearing in order does.
+                    let at = path.iter().position(|&x| x == cur).unwrap_or(0);
+                    if let Some(&low) = path[at..].iter().min() {
+                        clear[low] = Some("makes a cycle");
+                    }
+                    break;
+                }
+                state[cur] = 1;
+                path.push(cur);
+                let Some(b) = base(cur) else { break };
+                match index.get(&b) {
+                    Some(&next) => cur = next,
+                    None => {
+                        clear[cur] = Some("names a missing parent");
+                        break;
+                    }
+                }
+            }
+            for x in path {
+                state[x] = 2;
+            }
+        }
         let mut warnings = Vec::new();
-        for pi in 0..self.parents.len() {
-            let Some(ps) = self.parents.get(pi) else { continue };
-            let Some(base) = ps.parent.as_ref().and_then(|info| info.based_on) else { continue };
-            let label = ps.parent.as_ref().map(ParentInfo::label).unwrap_or_default();
-            let why = if self.parent_index(base).is_none() {
-                "names a missing parent"
-            } else if self.parent_base_cycles(pi, base) {
-                "makes a cycle"
-            } else {
-                continue;
-            };
+        for (pi, why) in clear.into_iter().enumerate() {
+            let Some(why) = why else { continue };
+            let label = self.parents.get(pi).and_then(|ps| ps.parent.as_ref()).map(ParentInfo::label).unwrap_or_default();
             if let Some(info) = self.parents.get_mut(pi).map(Arc::make_mut).and_then(|ps| ps.parent.as_mut()) {
                 info.based_on = None;
             }
@@ -948,6 +1009,65 @@ mod tests {
         assert_eq!(d.page_count(), 2);
         assert_eq!(d.spreads.iter().map(|s| s.pages.len()).collect::<Vec<_>>(), vec![1, 1]);
         assert!(d.delete_pages(&[0, 1]).is_err());
+    }
+
+    /// Pages inserted after a page with dragged column guides keep them, as they keep its column
+    /// count and gutter; pages that follow a parent take the parent's.
+    #[test]
+    fn inserted_pages_keep_dragged_columns() {
+        let dragged = Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 130.0, 540.0]) };
+        let widths = |p: &Page| p.column_rects().iter().map(|r| r.width()).collect::<Vec<_>>();
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        let pg = &mut Arc::make_mut(&mut d.spreads[0]).pages[0];
+        (pg.columns, pg.local_margins) = (dragged.clone(), true);
+        d.insert_pages(Some(0), 2, None).unwrap();
+        for i in 1..3 {
+            let p = d.page(i).unwrap();
+            assert_eq!(p.columns, dragged, "page {i}");
+            assert_eq!(widths(p), vec![100.0, 410.0], "page {i}");
+        }
+
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        Arc::make_mut(&mut d.parents[0]).pages[0].columns = dragged.clone();
+        d.sync_parent_margins();
+        d.insert_pages(Some(0), 1, d.parents.first().map(|p| p.id)).unwrap();
+        assert_eq!(d.page(1).map(widths), Some(vec![100.0, 410.0]));
+    }
+
+    /// A right page whose gutter was dragged toward the spine keeps it there when inserting a
+    /// page before it makes it a left page: its dragged columns mirror across the margin box.
+    #[test]
+    fn dragged_columns_mirror_when_a_page_changes_side() {
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: true, ..Default::default() });
+        let pg = &mut Arc::make_mut(&mut d.spreads[0]).pages[0];
+        assert_eq!(pg.side, PageSide::Right);
+        let w = pg.margin_rect().width();
+        (pg.columns, pg.local_margins) = (Columns { count: 2, gutter: 12.0, positions: Some(vec![0.0, 100.0, 112.0, w]) }, true);
+        let id = pg.id;
+        // How far the gutter's spine-side edge is from the margin on the spine side.
+        let from_spine = |p: &Page| {
+            let (m, c) = (p.margin_rect(), p.column_rects());
+            match p.side {
+                PageSide::Left => m.x1 - c[1].x0,
+                _ => c[0].x1 - m.x0,
+            }
+        };
+        assert!((from_spine(d.page(0).unwrap()) - 100.0).abs() < 1e-9);
+
+        d.insert_pages(None, 1, None).unwrap();
+        let moved = d.page(1).unwrap();
+        assert_eq!((moved.id, moved.side), (id, PageSide::Left));
+        assert!((from_spine(moved) - 100.0).abs() < 1e-9, "{:?}", moved.column_rects());
+        let widths: Vec<f64> = moved.column_rects().iter().map(|r| r.width()).collect();
+        assert!((widths[0] - (w - 112.0)).abs() < 1e-9 && (widths[1] - 100.0).abs() < 1e-9, "{widths:?}");
+        // The inserted page is a right page like the one it copies: no mirroring.
+        assert_eq!(d.page(0).unwrap().columns.positions, Some(vec![0.0, 100.0, 112.0, w]));
+
+        // Moving it back to the right undoes the mirror.
+        d.delete_pages(&[0]).unwrap();
+        let back = d.page(0).unwrap();
+        assert_eq!(back.side, PageSide::Right);
+        assert!((from_spine(back) - 100.0).abs() < 1e-9, "{:?}", back.column_rects());
     }
 
     #[test]
@@ -1043,5 +1163,22 @@ mod tests {
         assert_eq!(w.len(), 1, "{w:?}");
         assert_eq!(d.parents[0].parent.as_ref().unwrap().based_on, None);
         assert!((0..65).all(|i| d.parent_base_cycles(i, ids[(i + 1) % 65]) == (i == 0)), "only the cleared link would close it again");
+    }
+
+    /// A long acyclic chain is left alone (this was cubic work before); closing it clears one link.
+    #[test]
+    fn fix_parent_bases_long_chain() {
+        let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+        for i in 1..2000 {
+            d.add_parent(&format!("P{i}"), "Parent", 1, 12.0, Margins::uniform(36.0));
+        }
+        let ids: Vec<SpreadId> = d.parents.iter().map(|p| p.id).collect();
+        for i in 1..ids.len() {
+            base(&mut d, i, Some(ids[i - 1]));
+        }
+        assert!(d.fix_parent_bases().is_empty());
+        base(&mut d, 0, Some(ids[ids.len() - 1]));
+        assert_eq!(d.fix_parent_bases().len(), 1);
+        assert_eq!(d.parents[0].parent.as_ref().unwrap().based_on, None);
     }
 }

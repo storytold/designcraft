@@ -130,7 +130,7 @@ pub(crate) fn ruler(ui: &mut Ui, salt: &str, r: &Ruler) -> Option<RulerEdit> {
         Some(nearest.map_or(Grab::New, |(i, _)| Grab::Tab(i)))
     };
 
-    let key = ui.id().with(("tab_ruler", salt));
+    let key = ui.scope_id().with(("tab_ruler", salt));
     let mut drag: Option<Drag> = ui.data(|d| d.get_temp(key));
     let mut edit = None;
     if resp.drag_started()
@@ -266,11 +266,14 @@ pub(crate) fn align_buttons(ui: &mut Ui, lang: &str, current: TabAlign) -> Optio
 }
 
 /// A one-line text field that commits on Enter or when it loses focus.
-pub(crate) fn text_commit(ui: &mut Ui, id: &str, current: &str, width: f32, enabled: bool) -> Option<String> {
-    let tid = ui.id().with(("tabs_text", id));
+///
+/// `name` is the visible caption's text (`Leader:`, `Align On:`): the field has no label widget of
+/// its own, so screen readers and tests need it named here.
+pub(crate) fn text_commit(ui: &mut Ui, id: &str, current: &str, width: f32, enabled: bool, name: &str) -> Option<String> {
+    let tid = ui.scope_id().with(("tabs_text", id));
     let focused = ui.memory(|m| m.has_focus(tid));
     let mut buf: String = if focused { ui.data(|d| d.get_temp(tid)).unwrap_or_else(|| current.to_string()) } else { current.to_string() };
-    let r = ui.add_enabled(enabled, egui::TextEdit::singleline(&mut buf).id(tid).desired_width(width));
+    let r = ui.add_enabled(enabled, egui::TextEdit::singleline(&mut buf).id(tid).desired_width(width)).accessible_name(name.to_owned());
     ui.data_mut(|d| d.insert_temp(tid, buf.clone()));
     (r.lost_focus() && buf != current).then_some(buf)
 }
@@ -321,7 +324,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     let zoom = app.view().map(|v| v.zoom as f32);
 
     // Panel position above the frame: on request (the magnet, or opening the panel).
-    let win = ui.ctx().memory(|m| m.area_rect(egui::Id::new(("floating_panel", "tabs"))));
+    let win = ui.ctx().memory(|m| m.area_rect(egui::Id::unique(("floating_panel", "tabs"))));
     let state = &mut app.ui.tabs_panel;
     if state.selected.is_some_and(|i| i >= tabs.len()) {
         state.selected = None;
@@ -364,12 +367,14 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
         crate::rtl::label(ui, tr("Leader:"));
-        if let (Some(l), Some(i)) = (text_commit(ui, "leader", sel.map_or("", |s| s.leader.as_str()), 36.0, sel.is_some()), selected) {
+        let leader = text_commit(ui, "leader", sel.map_or("", |s| s.leader.as_str()), 36.0, sel.is_some(), tr("Leader:"));
+        if let (Some(l), Some(i)) = (leader, selected) {
             cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
         }
         crate::rtl::label(ui, tr("Align On:"));
         let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
-        if let (Some(c), Some(i)) = (text_commit(ui, "alignOn", sel.map_or("", |s| s.align_on.as_str()), 18.0, char_tab), selected) {
+        let align_on = text_commit(ui, "alignOn", sel.map_or("", |s| s.align_on.as_str()), 18.0, char_tab, tr("Align On:"));
+        if let (Some(c), Some(i)) = (align_on, selected) {
             cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
         }
         ui.add_space(6.0);

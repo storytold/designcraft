@@ -273,23 +273,12 @@ fn unique(taken: &mut Vec<String>, name: &str, ext: &str) -> String {
     }
 }
 
-/// Today as YYYY-MM-DD (UTC), where there is a clock.
+/// Today as YYYY-MM-DD (UTC), where there is a clock (chrono, through `designcraft_doc::time`).
 fn today() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let days = i64::try_from(secs / 86_400).unwrap_or(0);
-        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z.rem_euclid(146_097);
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = yoe + era * 400 + i64::from(m <= 2);
-        format!("{y:04}-{m:02}-{d:02}")
+        let (y, date) = designcraft_doc::time::date_parts(designcraft_doc::vars::now().div_euclid(86_400));
+        format!("{y:04}-{}", date.format("%m-%d"))
     }
     #[cfg(target_arch = "wasm32")]
     String::new()
@@ -380,7 +369,7 @@ fn render(s: &Session, v: &ExportVersion, f: &Planned) -> Result<(Vec<u8>, Vec<S
     let d = &s.doc()?.doc;
     match v.format {
         ExportFormat::Pdf => {
-            let r = super::export::pdf_report(s, &pdf_params(v, &f.pages, &d.title))?;
+            let r = super::export::pdf_report(d, &s.cache, &pdf_params(v, &f.pages, &d.title))?;
             Ok((r.bytes, r.warnings))
         }
         ExportFormat::Png | ExportFormat::Jpeg => {
@@ -406,7 +395,7 @@ fn write_into(dir: &str, rel: &str, bytes: &[u8]) -> Result<String> {
         crate::io::create_dir_all(parent).map_err(EngineError::Other)?;
     }
     let s = path.to_string_lossy().into_owned();
-    super::export::write_file(&s, bytes)?;
+    crate::io::write_file(&s, bytes).map_err(EngineError::Other)?;
     Ok(s)
 }
 #[cfg(target_arch = "wasm32")]

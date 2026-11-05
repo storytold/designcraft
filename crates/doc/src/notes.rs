@@ -262,7 +262,7 @@ impl crate::Document {
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
         let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
-        o.start_at + before as u32
+        o.start_at.saturating_add(before as u32)
     }
 
     /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.

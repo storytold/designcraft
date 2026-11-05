@@ -54,7 +54,7 @@ code points in the text. Threading is the story's ordered frame list.
 Every user-visible action is a `CommandSpec` (`id`, `label`, menu path, shortcut, parameter
 doc, `enabled`, `run`, journaled, undoable) in `crates/engine/src/cmd/*`. The UI, the CLI, MCP
 and the control channel all call `Session::execute(id, params)`. UI-only commands (windows,
-panels, zoom, dialogs) are `UI_COMMANDS` in `crates/ui-egui/src/menus.rs`, reachable the same way.
+panels, zoom, dialogs) are `UI_COMMANDS` in `crates/ui-egui/src/menus/ui_commands.rs`, reachable the same way.
 Tool gestures emit Begin/Preview/Commit commands so a drag is one undo step. Every journaled
 command is replayable as a script. Escaped panics during a command or an import/export become an
 error (`engine/src/guard.rs`), never a lost document; native recovery is written periodically
@@ -113,3 +113,5 @@ builds (on manifest changes), packaging lint and the release workflow; `xtask ci
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
 | 2026-10-12 | minor | Documented orderly native exit recovery and the remaining cancelable Dock Quit gap |
 | 2026-10-10 | major | Created from the code on main (92649ff) and `plan/architecture.md` |
+
+PDF parsing and placed-page rasterization use the pinned `craft-pdf` reader. DesignCraft retains document, placement, layer and export policy; dependency checks and bounds are described in [pdf-backend.md](pdf-backend.md).

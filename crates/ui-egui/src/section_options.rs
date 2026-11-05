@@ -36,13 +36,17 @@ pub(crate) fn open(app: &mut DesignApp) {
     let doc = &st.doc;
     let page = current.min(doc.page_count().saturating_sub(1));
     let own = doc.sections.iter().find(|s| s.start == page);
-    // A new section starts from the one the page is in.
+    // A new section starts from the one the page is in. As in InDesign, the window opened on a
+    // page that doesn't start a section is New Section: Start Section checked, Start Page
+    // Numbering at offering 1, Automatic Page Numbering chosen.
     let base = own.or_else(|| doc.section_of(page));
+    let new = page != 0 && own.is_none();
     let fields = json!({
         "page": page + 1,
-        "startSection": page == 0 || own.is_some(),
+        "newSection": new,
+        "startSection": true,
         "automatic": own.is_none_or(|s| s.start_number.is_none()),
-        "startNumber": doc.page_number(page).to_string(),
+        "startNumber": if new { "1".to_string() } else { doc.page_number(page).to_string() },
         "prefix": base.map(|s| s.prefix.clone()).unwrap_or_default(),
         "style": base.map(|s| s.style).unwrap_or_default(),
         "marker": base.map(|s| s.marker.clone()).unwrap_or_default(),
@@ -105,7 +109,7 @@ fn text(ui: &mut Ui, d: &mut Dialog, key: &str, width: f32) {
 fn style_menu(ui: &mut Ui, d: &mut Dialog, key: &str) {
     let current: NumberStyle = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     let shown = STYLES.iter().find(|(s, _)| *s == current).map_or(STYLES[0].1, |(_, l)| l);
-    egui::ComboBox::from_id_salt(("section_style", key)).selected_text(shown).width(150.0).show_ui(ui, |ui| {
+    craft_ui::ComboBox::from_id_salt(("section_style", key)).selected_text(shown).width(150.0).show_ui(ui, |ui| {
         for (style, label) in STYLES {
             if ui.selectable_label(style == current, label).clicked() {
                 d.fields.insert(key.into(), json!(style));
@@ -160,7 +164,12 @@ pub(crate) fn body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 if ui.radio(!automatic, crate::rtl::widget(ui, tr("Start Page Numbering at:"))).clicked() {
                     d.fields.insert("automatic".into(), json!(false));
                 }
-                ui.add_enabled_ui(!automatic, |ui| text(ui, d, "startNumber", FIELD_W));
+                // As in InDesign, the number stays editable; typing one chooses Start Page Numbering at.
+                let mut n = d.s("startNumber");
+                if ui.add(egui::TextEdit::singleline(&mut n).desired_width(FIELD_W)).changed() {
+                    d.fields.insert("startNumber".into(), Value::String(n));
+                    d.fields.insert("automatic".into(), json!(false));
+                }
             });
             ui.add_space(4.0);
             group(ui, rtl, tr("Page Numbering"), |ui| {
@@ -200,7 +209,12 @@ pub(crate) fn body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                     }
                 });
                 if value == ChapterSource::UserDefined {
-                    ui.add_enabled_ui(source == value, |ui| text(ui, d, "chapterStart", FIELD_W));
+                    // Editable whichever is chosen, as in InDesign; typing a number chooses it.
+                    let mut n = d.s("chapterStart");
+                    if ui.add(egui::TextEdit::singleline(&mut n).desired_width(FIELD_W)).changed() {
+                        d.fields.insert("chapterStart".into(), Value::String(n));
+                        d.fields.insert("chapterSource".into(), json!(value));
+                    }
                 }
             });
         }
