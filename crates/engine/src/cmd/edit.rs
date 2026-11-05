@@ -1087,4 +1087,70 @@ mod paste_swatch_tests {
             assert_eq!(added.contains(&"Text Green".to_string()), comes, "{depth} groups deep: {added:?}");
         }
     }
+
+    /// A pasted frame's text brings the swatches of everything inside it: a table cell's fill and
+    /// text, a footnote's text, and the text of a text frame anchored in it (aiongg's
+    /// `ce4068b1`; text frames can come anchored from a file even though `anchored.insert`
+    /// refuses them).
+    #[test]
+    fn the_texts_inside_a_pasted_frames_story_bring_their_swatches() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, Content, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, color) in [("Cell Fill", "#e0c000"), ("Cell Text", "#c000e0"), ("Note Text", "#00a0e0"), ("Inner Text", "#e05000")] {
+            s.execute("swatch.create", &json!({"name": name, "color": color})).unwrap();
+        }
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host"})).unwrap();
+        let (host_id, host_sid) = (host["id"].as_u64().unwrap(), host["story"].as_u64().unwrap());
+        let inner = s.execute("frame.create", &json!({"rect": [450, 72, 550, 150], "content": "text", "text": "Inner"})).unwrap();
+        let (inner_id, inner_sid) = (inner["id"].as_u64().unwrap(), inner["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": inner_sid, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Inner Text"}})).unwrap();
+        s.edit(|d, _| {
+            // The inner frame anchored at the start of the host's text.
+            let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+            let at = sp.items.iter().position(|i| i.id == ItemId(inner_id)).unwrap();
+            let item = (*sp.items.remove(at)).clone();
+            assert!(matches!(item.content, Content::Text(_)));
+            let st = d.story_mut(StoryId(host_sid)).unwrap();
+            st.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+            // A one-cell table: a filled cell with coloured text.
+            let mut t = designcraft_doc::Table::new(9001, 1, 1, 0, 0, 100.0);
+            t.cells[0] = designcraft_doc::Cell::with_text("cell", designcraft_doc::ParaFormat::default());
+            t.cells[0].fill = "Cell Fill".into();
+            let n = t.cells[0].text.len();
+            t.cells[0].text.format_chars(0..n, |f| f.over.fill = Some("Cell Text".into()));
+            let end = st.len();
+            st.insert_table(end, t);
+            // A footnote whose text is coloured.
+            let end = st.len();
+            let id = st.insert_note(end, "note", designcraft_doc::ParaFormat::default()).unwrap();
+            let note = std::sync::Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap());
+            let n = note.text.len();
+            note.text.format_chars(0..n, |f| f.over.fill = Some("Note Text".into()));
+            Ok(())
+        })
+        .unwrap();
+        // From the whole document, as placing one of its pages or a snippet copies: the anchored
+        // frame's story is there to be read.
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+        let before: Vec<String> = dst.swatches.iter().map(|w| w.name.clone()).collect();
+        super::super::object::duplicate_from(&mut dst, &src, &[ItemId(host_id)], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO)
+            .unwrap();
+        let mut added: Vec<String> = dst.swatches.iter().map(|w| w.name.clone()).filter(|n| !before.contains(n)).collect();
+        added.sort();
+        assert_eq!(added, ["Cell Fill", "Cell Text", "Inner Text", "Note Text"]);
+        // Through the clipboard the table and the footnote come along too. (The clipboard keeps
+        // the stories of the frames it copies, not of a text frame anchored in one, so that
+        // frame's text doesn't reach the paste at all yet.)
+        s.execute("selection.set", &json!({"ids": [host_id]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let mut added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        added.sort();
+        assert_eq!(added, ["Cell Fill", "Cell Text", "Note Text"]);
+    }
 }
