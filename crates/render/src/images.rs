@@ -282,9 +282,10 @@ mod background {
 
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+    use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 
-    /// Decode threads. Each full decode of a large photo briefly holds several hundred MB.
+    /// Decode threads. Each full decode of a large photo briefly holds several hundred MB, outside
+    /// the cache's budget, so three at once can peak above 1 GB (a 9600 × 12000 JPEG is 460 MB).
     const THREADS: usize = 3;
     /// Requests kept waiting; the oldest are dropped beyond this (they are asked for again if
     /// they are still in view).
@@ -312,12 +313,28 @@ mod background {
         }
     }
 
+    /// A decode that finished. The `Weak` keeps its address reserved, so an image allocated later
+    /// can't match this record by address, as in the cache's `dims`.
+    struct Done {
+        bytes: Weak<Vec<u8>>,
+        key: (usize, u32),
+        level: Option<u8>,
+        at: std::time::Instant,
+    }
+
+    impl Done {
+        /// Whether this is `key` at `level`, finished too recently to decode in the background again.
+        fn is_recent(&self, key: (usize, u32), level: Option<u8>) -> bool {
+            self.key == key && self.level == level && self.bytes.strong_count() > 0 && self.at.elapsed() < RECENT
+        }
+    }
+
     struct Queue {
         jobs: VecDeque<Job>,
         /// Being decoded now (one per thread).
         busy: Vec<(usize, u32)>,
         /// The last decodes finished, newest last.
-        done: VecDeque<((usize, u32), Option<u8>, std::time::Instant)>,
+        done: VecDeque<Done>,
         threads: usize,
     }
 
@@ -333,7 +350,7 @@ mod background {
             // Finishing it advances the generation; a different size is asked for then.
             return true;
         }
-        if q.done.iter().any(|(k, l, at)| *k == key && *l == level && at.elapsed() < RECENT) {
+        if q.done.iter().any(|d| d.is_recent(key, level)) {
             return false;
         }
         q.jobs.retain(|j| j.key() != key);
@@ -374,7 +391,7 @@ mod background {
             {
                 let mut q = QUEUE.lock().unwrap_or_else(PoisonError::into_inner);
                 q.busy.retain(|k| *k != key);
-                q.done.push_back((key, job.level, std::time::Instant::now()));
+                q.done.push_back(Done { bytes: Arc::downgrade(&job.bytes), key, level: job.level, at: std::time::Instant::now() });
                 while q.done.len() > 64 {
                     q.done.pop_front();
                 }
@@ -384,6 +401,25 @@ mod background {
             if let Some(wake) = waker {
                 wake();
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A record of an image that's gone doesn't count: a new image at its address is decoded
+        /// in the background, not in place on the canvas thread.
+        #[test]
+        fn a_finished_decode_counts_only_while_its_image_lives() {
+            let bytes = Arc::new(vec![1u8]);
+            let key = (Arc::as_ptr(&bytes) as usize, 0);
+            let done = Done { bytes: Arc::downgrade(&bytes), key, level: Some(1), at: std::time::Instant::now() };
+            assert!(done.is_recent(key, Some(1)));
+            assert!(!done.is_recent(key, Some(2)), "another level");
+            assert!(!done.is_recent((key.0, 1), Some(1)), "another page");
+            drop(bytes);
+            assert!(!done.is_recent(key, Some(1)), "the image is gone");
         }
     }
 }
