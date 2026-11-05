@@ -187,14 +187,17 @@ fn fill_index(s: &mut Session, spec: IndexSpec, new_frame: Option<(usize, Option
             }
         };
         let text = paras.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-        let st = d.story_mut(story).ok_or(designcraft_doc::DocError::NoStory(story))?;
-        let len = st.len();
-        st.replace(0..len, &text);
-        for (pi, r) in st.para_ranges().into_iter().enumerate() {
-            if let Some((name, _)) = paras.get(pi) {
-                st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+        {
+            let st = d.story_mut(story).ok_or(designcraft_doc::DocError::NoStory(story))?;
+            let len = st.len();
+            st.replace(0..len, &text);
+            for (pi, r) in st.para_ranges().into_iter().enumerate() {
+                if let Some((name, _)) = paras.get(pi) {
+                    st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+                }
             }
         }
+        d.prune_story_text_ranges(story);
         d.index = Some(IndexSpec { story, ..spec.clone() });
         Ok(json!({"story": story.0, "entries": paras.iter().filter(|(s, _)| s.starts_with("Index Level")).count()}))
     })

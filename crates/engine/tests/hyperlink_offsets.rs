@@ -643,3 +643,69 @@ fn delete_surrounding_adjusts_hyperlink_ranges() {
     assert_eq!(text_hyperlink_range(&s, hid), (link_start - 10, link_end - 10));
     assert_eq!(&text[link_start - 10..link_end - 10], "LinkText");
 }
+
+#[test]
+fn regenerating_toc_prunes_story_hyperlinks() {
+    let mut s = Session::new();
+    s.execute("file.newSample", &json!({})).unwrap();
+    let pages = s.doc().unwrap().doc.page_count();
+    s.execute("layout.pages.insert", &json!({"count": 1})).unwrap();
+    let r = s.execute("toc.generate", &json!({"styles": ["Headline", "Cover Title"], "page": pages + 1})).unwrap();
+    let sid = StoryId(r["story"].as_u64().unwrap());
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 8})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().any(|h| h.id == hid));
+
+    let d = &s.doc().unwrap().doc;
+    let hid_heading = d.stories.iter().find(|(_, st)| st.text.starts_with("Notes on the Grid")).map(|(id, _)| *id).unwrap();
+    s.execute("story.replaceRange", &json!({"story": hid_heading.0, "start": 0, "end": 5, "text": "Thoughts"})).unwrap();
+    s.execute("toc.update", &json!({})).unwrap();
+
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().all(|h| h.id != hid));
+    s.doc().unwrap().doc.check().unwrap();
+}
+
+#[test]
+fn regenerating_index_prunes_story_hyperlinks() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let sp = s.doc().unwrap().doc.page_loc(0).unwrap().0;
+    let r = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 300], "content": "text", "text": "Typography topic here."})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 10})).unwrap();
+    s.execute("index.addReference", &json!({})).unwrap();
+
+    let r_idx = s.execute("index.generate", &json!({"page": 2})).unwrap();
+    let idx_sid = StoryId(r_idx["story"].as_u64().unwrap());
+
+    s.execute("text.select", &json!({"story": idx_sid.0, "anchor": 0, "focus": 5})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().any(|h| h.id == hid));
+
+    s.execute("index.update", &json!({})).unwrap();
+
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().all(|h| h.id != hid));
+    s.doc().unwrap().doc.check().unwrap();
+}
+
+#[test]
+fn refreshing_live_caption_prunes_story_hyperlinks() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.altText", &json!({"text": "Initial photo caption", "ids": [a]})).unwrap();
+    let r = s.execute("object.caption", &json!({"ids": [a], "text": "Photo: {altText}", "live": true})).unwrap();
+    let cid = designcraft_doc::ItemId(r["ids"][0].as_u64().unwrap());
+    let sid = s.doc().unwrap().doc.item(cid).unwrap().text_frame().unwrap().story;
+
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 5})).unwrap();
+    let hid = s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap()["ids"][0].as_u64().unwrap();
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().any(|h| h.id == hid));
+
+    s.execute("object.altText", &json!({"text": "Updated photo caption", "ids": [a]})).unwrap();
+
+    assert!(s.doc().unwrap().doc.hyperlinks.iter().all(|h| h.id != hid));
+    s.doc().unwrap().doc.check().unwrap();
+}
