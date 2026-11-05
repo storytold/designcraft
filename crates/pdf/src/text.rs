@@ -482,10 +482,14 @@ impl Exporter<'_> {
                 ranges[ranges.len() - 1].clone()
             } else if let Some(t) = g.generated_text.as_deref().filter(|t| !t.is_empty() && !t.chars().any(is_marker)) {
                 // Generated text (page numbers, list labels): its own characters, which a glyph
-                // the font substituted (small-cap or old-style figures) can't be mapped back to.
+                // the font substituted (small-cap or old-style figures) can't be mapped back to;
+                // an All Caps letter is its capital, as in story text.
                 prev_src = None;
                 let a = text.len();
-                text.push_str(t);
+                match all_caps_char(g, t) {
+                    Some(u) => text.push(u),
+                    None => text.push_str(t),
+                }
                 a..text.len()
             } else if g.generated_text.as_deref() == Some("") && !ranges.is_empty() {
                 // Later glyph of a generated cluster.
