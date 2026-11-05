@@ -193,7 +193,7 @@ pub fn class(c: char) -> i16 {
         '\u{30a0}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' => 33,
         // Symbols that Japanese text sets full width as ideographs do (※ → ○ ★ ① Ⅱ § †): no space against
         // kana, a quarter em against digits and Roman letters (checked against InDesign).
-        '§' | '¶' | '‖' | '†' | '‡' | '※' | '\u{2150}'..='\u{218f}' | '\u{2190}'..='\u{22ff}' | '\u{2460}'..='\u{24ff}' | '\u{25a0}'..='\u{27bf}' => {
+        '§' | '¶' | '‖' | '†' | '‡' | '※' | '\u{2150}'..='\u{218f}' | '\u{2190}'..='\u{2211}' | '\u{2213}'..='\u{22ff}' | '\u{2460}'..='\u{24ff}' | '\u{25a0}'..='\u{27bf}' => {
             12
         }
         '０'..='９' => 24,
@@ -223,6 +223,8 @@ mod tests {
             assert_eq!(rules.pair(class(c), class('こ')).desired, 0.0, "{c}こ");
             assert_eq!(rules.pair(class(c), digit).desired, 0.25, "{c}6");
         }
+        // The minus sign U+2212 is not among them: whether InDesign spaces it as an ideograph is unchecked.
+        assert_ne!(class('\u{2212}'), 12);
         assert_eq!(rules.pair(digit, kanji).desired, 0.25);
     }
 
