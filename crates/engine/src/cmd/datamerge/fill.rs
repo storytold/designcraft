@@ -349,6 +349,11 @@ fn fill_nested_markers(doc: &mut designcraft_doc::Document, fields: &[DataField]
     mapped.sort();
     mapped.dedup();
     for sid in mapped {
+        if !doc.story(sid).is_some_and(|st| {
+            st.tables.values().any(|t| t.cells.iter().any(|c| nested_has(&c.text, &has))) || st.notes.iter().any(|n| nested_has(&n.text, &has))
+        }) {
+            continue;
+        }
         let Some(st) = doc.story_mut(sid) else { continue };
         for t in st.tables.values_mut() {
             if t.cells.iter().any(|c| nested_has(&c.text, &has)) {
