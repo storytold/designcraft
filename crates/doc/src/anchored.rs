@@ -421,7 +421,7 @@ impl Document {
                     changed += 1;
                 }
             });
-            st.rev += 1;
+            st.rev = st.rev.wrapping_add(1);
             self.next_id = next;
         }
         // Frames that are gone (deleted with their text or their host's frame) leave their
@@ -498,7 +498,7 @@ impl Document {
                         t.story = story;
                     }
                 });
-                st.rev += 1;
+                st.rev = st.rev.wrapping_add(1);
             }
             changed += 1;
         }
@@ -658,6 +658,22 @@ mod tests {
         assert_eq!(shown.iter().map(|(s, _)| *s).collect::<HashSet<_>>().len(), 4, "a story of its own each");
         assert_eq!(shown.iter().filter(|(_, t)| t == "Deeper").count(), 2, "{shown:?}");
         assert_eq!(shown.iter().filter(|(_, t)| t.starts_with("Inner ")).count(), 2, "{shown:?}");
+    }
+
+    /// The repair bumps the revisions of the stories it changes; a revision at its maximum wraps
+    /// around instead of overflowing.
+    #[test]
+    fn the_repair_wraps_story_revisions_at_their_maximum() {
+        let (mut d, host) = doc();
+        anchor(&mut d, host, "Inner ");
+        let copy = d.story(host).unwrap().extract(0..d.story(host).unwrap().len());
+        let h = d.story_mut(host).unwrap();
+        let n = h.len();
+        h.insert_story(n, &copy);
+        Arc::make_mut(d.stories.get_mut(&host).unwrap()).rev = u64::MAX;
+        assert!(d.fix_anchored_text_frames() > 0);
+        d.check().unwrap();
+        assert_ne!(d.story(host).unwrap().rev, u64::MAX);
     }
 
     #[test]
