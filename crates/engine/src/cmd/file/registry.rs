@@ -68,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(crate::recovery::list(&dir).into_iter().map(|(uid, mut m)| { m["uid"] = json!(uid); m }).collect()))
         }),
         cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None,
-            "{dir?, background?} — write every unsaved document to the recovery folder (the app does this on a timer; `background` queues the writes and returns at once) → {saved}` or {queued}",
+            "{dir?, background?} — write every unsaved document to the recovery folder (the app does this on a timer; `background` queues the writes and returns at once) → {saved} or {queued}",
             always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Write)?;
             if p.get("background").and_then(Value::as_bool).unwrap_or(false) {

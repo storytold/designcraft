@@ -532,6 +532,9 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             continue;
         }
         // The caller asked for this write now: nothing has cancelled it.
+        // A background write of an older state must not land over this one.
+        #[cfg(not(target_arch = "wasm32"))]
+        worker::cancel(dir, d.uid);
         if let Some(e) = write_snapshot(&Snapshot::of(&access, dir, d), || false).error {
             return Err(e);
         }
@@ -557,6 +560,9 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             continue;
         }
         let Some(document) = s.docs.get(index) else { continue };
+        // A background write of an older state must not land over this one.
+        #[cfg(not(target_arch = "wasm32"))]
+        worker::cancel(dir, document.uid);
         let entry = Snapshot::of(&access, dir, document);
         let written = write_snapshot(&entry, || false);
         // The primary is the recovery data; its metadata is optional. Track the primary before
@@ -734,10 +740,9 @@ pub(crate) struct Finished {
 pub(crate) fn finished(s: &mut Session) -> Finished {
     let mut out = Finished { written: 0, errors: Vec::new(), busy: false };
     let Some(w) = worker::started() else { return out };
-    let Ok(done) = w.done.lock() else {
-        out.busy = w.busy();
-        return out;
-    };
+    // Before draining: the worker sends a result before it clears the document as running, so a writer idle now has every result in the channel already.
+    let busy = w.busy();
+    let done = w.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     while let Ok(d) = done.try_recv() {
         // A primary that landed belongs to this run even if its optional metadata failed: record
         // it, so Save and Close remove the snapshot instead of leaving it in the folder for ever.
@@ -748,9 +753,7 @@ pub(crate) fn finished(s: &mut Session) -> Finished {
             out.errors.push(e);
         }
     }
-    // After draining: the worker delivers a result before it clears the document as running, so
-    // "not busy" means every result is already in the channel, not on its way.
-    out.busy = w.busy();
+    out.busy = busy;
     out
 }
 
