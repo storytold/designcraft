@@ -14,7 +14,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Hyperlink…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{url? | email? | page? (1-based), name?, ids?} — from the selected text, or the selected frames",
+            "{url? | email? | page? (1-based) | anchor? (a text anchor's id or name; the link follows it as the text reflows), name?, ids?} — from the selected text, or the selected frames",
             has_doc,
             create
         ),
@@ -26,9 +26,9 @@ pub fn specs() -> Vec<CommandSpec> {
             })
         }),
         cmd!(query "hyperlink.list", "Hyperlinks", [], None, "{}", has_doc, |s, _| Ok(serde_json::to_value(&s.doc()?.doc.hyperlinks).unwrap_or_default())),
-        cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based)}", has_doc, |s, p| {
+        cmd!("hyperlink.edit", "Hyperlink Options…", [], None, "{id, name?, url? | email? | page? (1-based) | anchor?}", has_doc, |s, p| {
             let id = p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("hyperlink.edit", "missing id"))?;
-            let dest = dest_param(p);
+            let dest = dest_param("hyperlink.edit", &s.doc()?.doc, p)?;
             let name = str_param(p, "name").map(str::to_string);
             s.edit(|d, _| {
                 let h = d.hyperlinks.iter_mut().find(|h| h.id == id).ok_or_else(|| bad("hyperlink.edit", format!("no hyperlink {id}")))?;
@@ -91,19 +91,76 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn dest_param(p: &Value) -> Option<HyperlinkDest> {
+/// `url`, `email`, `page` (1-based) or `anchor` (a text anchor's id, or its name).
+///
+/// `None` is "no destination given", which `hyperlink.edit` needs for an edit that only renames.
+/// A destination that *is* given and cannot be used is an error.
+///
+/// The anchor half of that landed with the anchor feature (#1555): an unknown id was stored as it
+/// stood and an unknown name read as no destination at all.
+///
+/// The page half is this one. A page number is 1-based and the document has as many pages as it
+/// has, so `page 0` became page 1 (`saturating_sub`) and a page past the end was accepted and
+/// then left out of the export, since no sheet shows it.
+fn dest_param(id: &str, d: &designcraft_doc::Document, p: &Value) -> Result<Option<HyperlinkDest>> {
     if let Some(u) = str_param(p, "url") {
-        Some(HyperlinkDest::Url(u.to_string()))
-    } else if let Some(e) = str_param(p, "email") {
-        Some(HyperlinkDest::Email(e.to_string()))
-    } else {
-        p.get("page").and_then(Value::as_u64).map(|pg| HyperlinkDest::Page((pg as usize).saturating_sub(1)))
+        return Ok(Some(HyperlinkDest::Url(u.to_string())));
+    }
+    if let Some(e) = str_param(p, "email") {
+        return Ok(Some(HyperlinkDest::Email(e.to_string())));
+    }
+    if let Some(a) = p.get("anchor").filter(|a| !a.is_null()) {
+        let anchors = || d.stories.values().flat_map(|st| st.anchors.iter());
+        // An id names one anchor or none.
+        if let Some(n) = a.as_u64() {
+            return match anchors().any(|x| x.id == n) {
+                true => Ok(Some(HyperlinkDest::Anchor(n))),
+                false => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
+            };
+        }
+        // A name need not. `anchor.create` refuses a name in use, but an IDML import can bring a
+        // document that already has two of the same, so taking the first match stored whichever
+        // anchor happened to come first, and a link on a name shared by anchors on two pages went
+        // to the wrong page with nothing to say so (noted in review). The id still reaches either
+        // of them.
+        let Some(name) = a.as_str() else { return Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))) };
+        let mut named = anchors().filter(|x| x.name == name);
+        return match (named.next(), named.next()) {
+            (Some(x), None) => Ok(Some(HyperlinkDest::Anchor(x.id))),
+            (Some(_), Some(_)) => {
+                let ids: Vec<String> = anchors().filter(|x| x.name == name).map(|x| x.id.to_string()).collect();
+                Err(bad(id, format!("more than one text anchor is named {name:?} ({}); give the id instead", ids.join(", "))))
+            }
+            (None, _) => Err(bad(id, format!("no text anchor {a} (anchor.list names them)"))),
+        };
+    }
+    match p.get("page").filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(pg) => {
+            let pages = d.page_count();
+            // Compared as it arrived: `n as usize` is lossy where usize is 32 bits, so on wasm
+            // 4294967297 became 1 and a one-page document accepted it (noted in review).
+            match pg.as_u64() {
+                Some(n) if n >= 1 && n <= pages as u64 => Ok(Some(HyperlinkDest::Page(n as usize - 1))),
+                _ => Err(bad(id, format!("page {pg}: the document has {pages} page(s), numbered from 1"))),
+            }
+        }
     }
 }
 
+/// The anchor's own name, for a link to one that was not given a name.
+fn dest_label(d: &designcraft_doc::Document, dest: &HyperlinkDest) -> String {
+    if let HyperlinkDest::Anchor(a) = dest
+        && let Some(x) = d.stories.values().flat_map(|st| st.anchors.iter()).find(|x| x.id == *a)
+    {
+        return x.name.clone();
+    }
+    dest.label()
+}
+
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
-    let dest = dest_param(p).ok_or_else(|| bad("hyperlink.create", "give `url`, `email` or `page`"))?;
     let st = s.doc()?;
+    let dest = dest_param("hyperlink.create", &st.doc, p)?.ok_or_else(|| bad("hyperlink.create", "give `url`, `email`, `page` or `anchor`"))?;
     let sources: Vec<HyperlinkSource> = if let Some(ids) = super::ids_param(p, "ids") {
         ids.into_iter().map(|id| HyperlinkSource::Item { id }).collect()
     } else if let Some(t) = st.selection.text.filter(|t| !t.is_caret()) {
@@ -119,11 +176,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         let mut ids = vec![];
         for src in sources {
             let id = d.alloc();
-            let name = name.clone().unwrap_or_else(|| match &dest {
-                HyperlinkDest::Url(u) => u.clone(),
-                HyperlinkDest::Email(e) => e.clone(),
-                HyperlinkDest::Page(p) => format!("Page {}", p + 1),
-            });
+            let name = name.clone().unwrap_or_else(|| dest_label(d, &dest));
             d.hyperlinks.push(Hyperlink { id, name, source: src, dest: dest.clone() });
             ids.push(id);
         }
@@ -155,5 +208,192 @@ mod panel_tests {
         s.execute("bookmark.add", &json!({"page": 2})).unwrap();
         s.execute("bookmark.rename", &json!({"index": 0, "name": "Back"})).unwrap();
         assert_eq!(s.execute("bookmark.list", &json!({})).unwrap()[0]["name"], "Back");
+    }
+}
+
+#[cfg(test)]
+mod anchor_dest_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// The page object numbers of a PDF, in order, and the page each link annotation points at
+    /// (as an index into that list).
+    fn link_pages(s: &mut Session) -> Vec<usize> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let pdf = String::from_utf8_lossy(&bytes).into_owned();
+        let kids: Vec<&str> = pdf
+            .split("/Kids[")
+            .nth(1)
+            .and_then(|k| k.split(']').next())
+            .map(|k| k.split(" 0 R").map(str::trim).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let object =
+            |n: &str| -> String { pdf.split(&format!("\n{n} 0 obj\n")).nth(1).and_then(|o| o.split("\nendobj").next()).unwrap_or("").to_string() };
+        let mut out = Vec::new();
+        for part in pdf.split("/Subtype/Link").skip(1) {
+            let Some(dest) = part.split("/Dest ").nth(1).and_then(|d| d.split(" 0 R").next()) else { continue };
+            // `[<page> 0 R/XYZ …]`
+            let page = object(dest.trim());
+            let Some(page) = page.trim_start_matches('[').split(" 0 R").next() else { continue };
+            if let Some(i) = kids.iter().position(|k| *k == page.trim()) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// `anchor.create` does not require a name to be unique -- and an IDML import can bring a
+    /// document that already has two of the same -- so the lookup taking the first match meant a
+    /// link made on a shared name went to whichever anchor came first, a different page, with
+    /// nothing to say so (noted in review). The id still reaches either of them.
+    #[test]
+    fn a_name_two_anchors_share_cannot_pick_one_of_them() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": false, "margins": 0})).unwrap();
+
+        // Two anchors with one name, in text on different pages. `anchor.create` refuses a name
+        // in use, but a document opened from a file can still hold two, so the second is renamed
+        // in the document directly.
+        let mut made = Vec::new();
+        for (page, name) in [(1usize, "Photo 1"), (2, "Photo 1 (second)")] {
+            let sp = s.doc().unwrap().doc.page_loc(page).unwrap().0;
+            let f = s
+                .execute("frame.create", &json!({"spread": sp, "rect": [20, 20, 280, 100], "content": "text", "text": "Photo 1 full size"}))
+                .unwrap();
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 7})).unwrap();
+            made.push(s.execute("anchor.create", &json!({"name": name})).unwrap());
+        }
+        s.edit(|d, _| {
+            for sid in d.stories.keys().copied().collect::<Vec<_>>() {
+                for a in &mut d.story_mut(sid).unwrap().anchors {
+                    if a.name == "Photo 1 (second)" {
+                        std::sync::Arc::make_mut(a).name = "Photo 1".into();
+                    }
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_ne!(made[0]["id"], made[1]["id"], "two anchors, one name");
+        let thumb = s.execute("frame.create", &json!({"rect": [20, 20, 120, 80], "content": "unassigned"})).unwrap();
+
+        // Creating on the shared name is refused, and says what to do instead.
+        let e = s.execute("hyperlink.create", &json!({"anchor": "Photo 1", "ids": [thumb["id"].clone()]})).expect_err("ambiguous").to_string();
+        assert!(e.contains("more than one text anchor"), "{e}");
+        assert!(e.contains("give the id instead"), "it says what to do instead: {e}");
+        assert!(s.execute("hyperlink.list", &json!({})).unwrap().as_array().is_some_and(|l| l.is_empty()), "and no link was made");
+
+        // By id it works, and the id picks the one that was asked for.
+        s.execute("hyperlink.create", &json!({"anchor": made[1]["id"].clone(), "ids": [thumb["id"].clone()]})).unwrap();
+        let live = s.execute("hyperlink.list", &json!({})).unwrap()[0]["id"].clone();
+        let dest = |s: &mut Session| s.execute("hyperlink.list", &json!({})).unwrap()[0]["dest"].clone();
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[1]["id"].clone()}));
+
+        // An edit on the shared name is refused and leaves the destination as it was.
+        let e = s.execute("hyperlink.edit", &json!({"id": live.clone(), "anchor": "Photo 1"})).expect_err("ambiguous").to_string();
+        assert!(e.contains("more than one text anchor"), "{e}");
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[1]["id"].clone()}), "the refused edit changed nothing");
+
+        // And the other anchor is still reachable by its id.
+        s.execute("hyperlink.edit", &json!({"id": live, "anchor": made[0]["id"].clone()})).unwrap();
+        assert_eq!(dest(&mut s), json!({"kind": "anchor", "value": made[0]["id"].clone()}));
+    }
+
+    /// A frame can link to a text anchor, as a cross-reference refers to one, and the link lands
+    /// on whichever page the anchor's text is on when the PDF is written — IDML files link photo
+    /// thumbnails to their full-size pictures that way (#1446).
+    #[test]
+    fn a_frame_can_link_to_a_text_anchor_and_follows_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": false, "margins": 0})).unwrap();
+        // The destination: an anchor in text on page 3.
+        let sp = s.doc().unwrap().doc.page_loc(2).unwrap().0;
+        let dest =
+            s.execute("frame.create", &json!({"spread": sp, "rect": [20, 20, 280, 100], "content": "text", "text": "Photo 1 full size"})).unwrap();
+        s.execute("text.select", &json!({"story": dest["story"].clone(), "anchor": 0, "focus": 7})).unwrap();
+        let anchor = s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap();
+        // The source: a thumbnail frame on page 1, linked by the anchor's name.
+        let thumb = s.execute("frame.create", &json!({"rect": [20, 20, 120, 80], "content": "unassigned"})).unwrap();
+        s.execute("hyperlink.create", &json!({"anchor": "Photo 1", "ids": [thumb["id"].clone()]})).unwrap();
+        let links = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(links[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "{links}");
+        // Named after the anchor, since no name was given.
+        assert_eq!(links[0]["name"], "Photo 1");
+        assert_eq!(link_pages(&mut s), vec![2], "the link lands on the anchor's page (the third)");
+
+        // A page inserted in front moves the anchor's text to page 4, and the link follows it
+        // without being edited.
+        s.execute("layout.pages.insert", &json!({"count": 1, "after": 0})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap()[0]["page"], "4");
+        assert_eq!(link_pages(&mut s), vec![3], "the link follows the text");
+
+        // A page number the document does not have is refused, rather than becoming page 1 or a
+        // link the export quietly leaves out.
+        let dest_err = |s: &mut Session, dest: serde_json::Value| {
+            let mut params = dest;
+            params["ids"] = json!([thumb["id"].clone()]);
+            s.execute("hyperlink.create", &params).expect_err("refused").to_string()
+        };
+        for (params, wanted) in [
+            (json!({"page": 0}), "numbered from 1"),
+            (json!({"page": 99}), "the document has 4 page(s)"),
+            // Compared before it is narrowed: where usize is 32 bits this value truncates to 1
+            // and the document accepted it as its own first page (noted in review). On a 64-bit
+            // host the comparison is the same either way, so this case discriminates on wasm.
+            (json!({"page": 4_294_967_297u64}), "the document has 4 page(s)"),
+            (json!({"page": u64::MAX}), "the document has 4 page(s)"),
+            (json!({"anchor": 12345}), "no text anchor"),
+            (json!({"anchor": "No Such Anchor"}), "no text anchor"),
+        ] {
+            let e = dest_err(&mut s, params.clone());
+            assert!(e.contains(wanted), "{params}: {e}");
+        }
+        // The pages it does have still work, 1-based.
+        let made = s.execute("hyperlink.create", &json!({"page": 4, "ids": [thumb["id"].clone()]})).unwrap()["ids"][0].clone();
+        let links = s.execute("hyperlink.list", &json!({})).unwrap();
+        let link = links.as_array().unwrap().iter().find(|h| h["id"] == made).expect("the new link");
+        assert_eq!(link["dest"], json!({"kind": "page", "value": 3}), "page 4 is index 3");
+        s.execute("hyperlink.delete", &json!({"id": made})).unwrap();
+
+        // An anchor's id works as well as its name, and an unknown name is refused.
+        s.execute("hyperlink.delete", &json!({"id": links[0]["id"].clone()})).unwrap();
+        s.execute("hyperlink.create", &json!({"anchor": anchor["id"].clone(), "ids": [thumb["id"].clone()], "name": "Thumbnail"})).unwrap();
+        assert_eq!(s.execute("hyperlink.list", &json!({})).unwrap()[0]["name"], "Thumbnail");
+        assert_eq!(link_pages(&mut s), vec![3]);
+        let e = s.execute("hyperlink.create", &json!({"anchor": "No Such Anchor", "ids": [thumb["id"].clone()]})).expect_err("refused").to_string();
+        assert!(e.contains("no text anchor"), "and it says why, rather than that no destination was given: {e}");
+
+        // An unknown anchor *id* is refused as well. `as_u64` answered for any number, so a link
+        // was stored to an anchor nobody has and the export quietly left it out (noted in review).
+        let live = s.execute("hyperlink.list", &json!({})).unwrap()[0]["id"].clone();
+        let missing = anchor["id"].as_u64().expect("the anchor's id") + 9_999;
+        let e = s.execute("hyperlink.create", &json!({"anchor": missing, "ids": [thumb["id"].clone()]})).expect_err("refused").to_string();
+        assert!(e.contains("no text anchor"), "an unknown id is refused: {e}");
+
+        // And `hyperlink.edit` reports it rather than reading it as "no destination given", which
+        // made the command succeed and keep the old destination (noted in review).
+        for unknown in [json!(missing), json!("No Such Anchor")] {
+            let e = s.execute("hyperlink.edit", &json!({"id": live.clone(), "anchor": unknown.clone()})).expect_err("refused").to_string();
+            assert!(e.contains("no text anchor"), "{unknown}: {e}");
+        }
+        let after = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(after[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "the destination is unchanged: {after}");
+        assert_eq!(after[0]["name"], "Thumbnail", "and so is the name");
+        assert_eq!(link_pages(&mut s), vec![3], "and the export still lands on the anchor's page");
+
+        // A rename that names no destination still works: that is what `None` is for, and it must
+        // not have become an error on the way.
+        s.execute("hyperlink.edit", &json!({"id": live.clone(), "name": "Thumb"})).unwrap();
+        let renamed = s.execute("hyperlink.list", &json!({})).unwrap();
+        assert_eq!(renamed[0]["name"], "Thumb");
+        assert_eq!(renamed[0]["dest"], json!({"kind": "anchor", "value": anchor["id"].clone()}), "the destination survives a rename");
+
+        // A link to a deleted anchor is not exported, rather than pointing at the wrong page.
+        s.execute("text.select", &json!({"story": dest["story"].clone(), "anchor": 0, "focus": 8})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert!(s.execute("anchor.list", &json!({})).unwrap().as_array().unwrap().is_empty());
+        assert_eq!(link_pages(&mut s), Vec::<usize>::new(), "no link rather than a wrong one");
     }
 }
