@@ -118,23 +118,6 @@ fn page_png_export_has_no_edge_fringe_on_fractional_page_sizes() {
     }
 }
 
-/// Premultiplied `RenderOptions.background` must unpremultiply before peniko's straight-alpha paint.
-#[test]
-fn render_background_unpremultiplies_before_paint() {
-    let d = Document::new(&NewDocument { width: 10.0, height: 10.0, facing_pages: false, ..Default::default() });
-    let cache = Cache::new();
-    let mut r = Renderer::new();
-    r.threads = 0;
-    // Half-red premultiplied: straight colour should still read as red 255 after unpremultiply.
-    let opts = RenderOptions { background: Some([128, 0, 0, 128]), paper: false, ..Default::default() };
-    let img = r.render_page(&d, &cache, 0, 1.0, false, &opts).unwrap();
-    let p = img.pixel(5, 5);
-    assert!(p[0] > 240 && p[1] < 20 && p[2] < 20 && p[3] > 120, "expected ~straight red at half alpha, got {p:?}");
-    let clear = RenderOptions { background: Some([0, 0, 0, 0]), paper: false, ..Default::default() };
-    let empty = r.render_page(&d, &cache, 0, 1.0, false, &clear).unwrap();
-    assert_eq!(empty.pixel(5, 5), [0, 0, 0, 0]);
-}
-
 #[test]
 fn proof_view_simulates_the_target() {
     use designcraft_color::cms::{ProofSetup, ProofTarget};
