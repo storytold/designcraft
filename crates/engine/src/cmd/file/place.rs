@@ -251,7 +251,8 @@ fn replacing_graphic(frame: &Item, asset: AssetId, size: (f64, f64), xf: Affine)
 /// Where a graphic of natural `size` goes when it replaces the one `frame` shows (in the frame, or
 /// as the one graphic pasted into it): over the same area, scaled to cover it and centred on it,
 /// so the frame's crop and zoom carry over. An edited copy of the same picture lands exactly where
-/// the old one was. `None` when the frame shows no graphic, or the result isn't finite.
+/// the old one was. With Auto-Fit on, the frame's fitting and Align From place it instead, as they
+/// would on the next resize. `None` when the frame shows no graphic, or the result isn't finite.
 fn in_place_of(frame: &Item, size: (f64, f64)) -> Option<Affine> {
     let (old, outer) = shown_graphic(frame)?;
     let ((ow, oh), (nw, nh)) = (old.size, size);
@@ -261,6 +262,11 @@ fn in_place_of(frame: &Item, size: (f64, f64)) -> Option<Affine> {
     }
     let k = (ow / nw).max(oh / nh);
     let xf = outer * old.xf * Affine::translate(((ow - nw * k) / 2.0, (oh - nh * k) / 2.0)) * Affine::scale(k);
+    let xf = if old.auto_fit == designcraft_doc::Fitting::None {
+        xf
+    } else {
+        Graphic { size, xf, ..old.clone() }.fitted(frame.inner_bounds(), old.auto_fit)?
+    };
     xf.as_coeffs().iter().all(|n| n.is_finite()).then_some(xf)
 }
 
@@ -957,6 +963,64 @@ mod nested_frame_tests {
             assert_eq!(g.auto_fit, designcraft_doc::Fitting::FitProportionally, "{cmd}");
             assert_eq!((g.fit_align, g.crop), (0, [1.0, 2.0, 3.0, 4.0]), "{cmd}");
         }
+    }
+
+    /// With Auto-Fit on, the frame's fitting and Align From place the new graphic, not the old one's
+    /// area: at once, not only on the next resize.
+    #[test]
+    fn a_replaced_graphic_follows_auto_fit_and_align_from() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap());
+        for cmd in ["file.place", "place.drop"] {
+            s.execute("file.place", &json!({"base64": png(200), "name": "a.png", "frame": frame.0})).unwrap();
+            s.edit(|d, _| {
+                let Content::Graphic(g) = &mut d.item_mut(frame).unwrap().content else { panic!("a graphic") };
+                g.auto_fit = designcraft_doc::Fitting::FitProportionally;
+                g.fit_align = 8;
+                g.xf = Affine::translate((90.0, 95.0)) * Affine::scale(5.0);
+                Ok(())
+            })
+            .unwrap();
+            if cmd == "place.drop" {
+                s.execute("place.load", &json!({"base64": png(40), "name": "c.png"})).unwrap();
+                s.execute(cmd, &json!({"frame": frame.0})).unwrap();
+            } else {
+                s.execute(cmd, &json!({"base64": png(20), "name": "b.png", "frame": frame.0})).unwrap();
+            }
+            let d = &s.doc().unwrap().doc;
+            let Content::Graphic(g) = &d.item(frame).unwrap().content else { panic!("a graphic") };
+            // 40×20 fitted in 100×60, against the bottom right.
+            let shown = g.xf.transform_rect_bbox(Rect::new(0.0, 0.0, g.size.0, g.size.1));
+            assert_eq!(shown, Rect::new(100.0, 110.0, 200.0, 160.0), "{cmd}");
+        }
+    }
+
+    /// A frame holding several pasted graphics isn't replaced by one placed with it selected.
+    #[test]
+    fn placing_with_a_frame_of_several_nested_images_selected_leaves_them() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = ItemId(s.execute("file.place", &json!({"base64": png(200), "name": "old.png", "x": 0, "y": 0})).unwrap()["id"].as_u64().unwrap());
+        let frame = s
+            .edit(|d, _| {
+                let image = (*d.item(first).unwrap()).clone();
+                d.remove_item(first)?;
+                let id = ItemId(d.alloc());
+                let mut second = image.clone();
+                second.id = ItemId(d.alloc());
+                let mut frame = Item::new(id, image.layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 90.0)));
+                frame.content = Content::Group { items: vec![Arc::new(image), Arc::new(second)] };
+                d.insert_item(SpreadRef::Doc(0), frame, None)?;
+                Ok(id)
+            })
+            .unwrap();
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("file.place", &json!({"base64": png(20), "name": "new.png"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let Content::Group { items } = &d.item(frame).unwrap().content else { panic!("the frame keeps its images") };
+        assert_eq!(items.len(), 2);
+        assert_eq!(d.spreads[0].items.len(), 2, "the new graphic is its own object");
     }
 
     /// A graphic replacing the one a frame shows keeps the frame's crop and zoom: one of the same
