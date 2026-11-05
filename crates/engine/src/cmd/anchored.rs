@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use designcraft_doc::{
-    AnchorPosition, AnchoredObject, Content, Document, Item, ItemId, OBJECT_MARK, SpreadRef, StoryId, TextSel, anchored::AnchorAlign,
-};
+use designcraft_doc::{AnchorPosition, AnchoredObject, Document, Item, ItemId, OBJECT_MARK, SpreadRef, StoryId, TextSel, anchored::AnchorAlign};
 use designcraft_geom::Affine;
 use serde_json::{Value, json};
 
@@ -116,11 +114,17 @@ fn position_param(p: &Value, base: &AnchorPosition) -> Result<AnchorPosition> {
     })
 }
 
-/// Text frames can't be anchored yet (their stories need frames on a spread).
-pub(crate) fn check_item(it: &Item) -> Result<()> {
-    let mut ok = true;
-    it.walk(&mut |i| ok &= !matches!(i.content, Content::Text(_)));
-    if ok { Ok(()) } else { Err(bad("anchored.insert", "text frames can't be anchored yet")) }
+/// Whether `it`, a group or an anchored object inside it holds a text frame.
+fn contains_text_frame(it: &Item) -> bool {
+    let mut found = false;
+    it.walk(&mut |i| found |= i.text_frame().is_some());
+    found
+}
+
+/// Anchored text frames need their stories and threads to stay valid (no self-anchoring or
+/// cycles). Checked after the edit, which is discarded when this fails.
+fn check_anchored(d: &Document, cmd: &str) -> Result<()> {
+    d.check().map_err(|e| bad(cmd, format!("these items cannot be anchored here: {e}")))
 }
 
 /// Anchor copies of `items` (in spread coordinates) at `pos` of `sid`; returns the end position.
@@ -153,17 +157,21 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     for id in &ids {
         let loc = st.doc.find(*id).ok_or_else(|| bad("anchored.insert", format!("no item {}", id.0)))?;
         let it = st.doc.item(*id).ok_or_else(|| bad("anchored.insert", format!("no item {}", id.0)))?;
-        check_item(it)?;
         // Into spread coordinates (items inside groups carry their parents' transforms).
         let mut it = it.clone();
         it.xf = st.doc.parent_xf(&loc) * it.xf;
         items.push(it);
     }
+    let has_text = items.iter().any(contains_text_frame);
     s.edit(|d, sel| {
+        // A text frame keeps its own story threaded to its id; only the frame leaves the spread.
         for id in &ids {
-            d.remove_item(*id)?;
+            d.take_item(*id)?;
         }
         let end = anchor_items(d, sid, pos, items.clone(), &position)?;
+        if has_text {
+            check_anchored(d, "anchored.insert")?;
+        }
         *sel = designcraft_doc::Selection::text(TextSel { story: sid, anchor: end, focus: end, frame: None, cell: None });
         Ok(json!({"story": sid.0, "pos": end}))
     })
@@ -209,6 +217,8 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let st = d0.story(sid).ok_or_else(|| bad("anchored.release", "no such story"))?;
     let obj = st.objects.get(k).cloned().ok_or_else(|| bad("anchored.release", "no such anchored object"))?;
     let pos = st.text.match_indices(OBJECT_MARK).nth(k).map(|(i, _)| i).ok_or_else(|| bad("anchored.release", "no mark"))?;
+    // Its own story stays threaded to the frame; releasing moves that thread to the new id.
+    let inner = obj.item.text_frame().map(|t| (t.story, obj.item.id));
     // Where it shows now: its frame's transform and its placement.
     let cs = s.cache.get(&d0, sid, None);
     let placed = cs.frames.iter().find_map(|ft| ft.objects.iter().find(|o| o.index == k).map(|o| (ft.frame, o.origin)));
@@ -228,8 +238,19 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
             it.layer = d.default_layer();
         }
         let id = d.insert_item(spread, it, None)?;
-        let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        st.delete(pos..pos + OBJECT_MARK.len_utf8());
+        {
+            let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+            st.delete(pos..pos + OBJECT_MARK.len_utf8());
+        }
+        if let Some((inner, old)) = inner {
+            let st = d.story_mut(inner).ok_or(designcraft_doc::DocError::NoStory(inner))?;
+            match st.frames.iter().position(|f| *f == old) {
+                Some(at) => st.frames[at] = id,
+                None => st.frames.push(id),
+            }
+            st.rev = st.rev.wrapping_add(1);
+            check_anchored(d, "anchored.release")?;
+        }
         *sel = designcraft_doc::Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })
@@ -286,6 +307,159 @@ mod tests {
         // (The frame's inner space is spread space here.)
         assert!((b.width() - 24.0).abs() < 1e-6 && (b.x0 - o.origin.x).abs() < 1e-6 && (b.y0 - o.origin.y).abs() < 1e-6, "{b:?}");
         d.check().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod anchored_text_frame_tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::Session;
+
+    fn setup(text: &str) -> (Session, ItemId, StoryId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": text})).unwrap();
+        (s, ItemId(r["id"].as_u64().unwrap()), StoryId(r["story"].as_u64().unwrap()))
+    }
+
+    fn add_note(s: &mut Session, text: &str) -> (ItemId, StoryId) {
+        let r = s.execute("frame.create", &json!({"rect": [72, 400, 140, 450], "content": "text", "text": text})).unwrap();
+        (ItemId(r["id"].as_u64().unwrap()), StoryId(r["story"].as_u64().unwrap()))
+    }
+
+    fn anchor(s: &mut Session, note: ItemId, host: StoryId, pos: u64, extra: Value) {
+        let mut p = json!({"ids": [note.0], "story": host.0, "pos": pos});
+        if let (Some(dst), Some(src)) = (p.as_object_mut(), extra.as_object()) {
+            dst.extend(src.clone());
+        }
+        s.execute("anchored.insert", &p).unwrap();
+    }
+
+    #[test]
+    fn inline_anchored_text_frame_composes_and_moves_with_its_anchor() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note A\nNote B");
+        let r = s.execute("anchored.insert", &json!({"ids": [note.0], "story": host_sid.0, "pos": 7})).unwrap();
+        assert_eq!(r["pos"], json!(7 + OBJECT_MARK.len_utf8()));
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.item(note).is_none(), "moved into the text");
+        assert!(d.anchored_item(note).is_some());
+        assert_eq!(d.story(note_sid).unwrap().frames, [note]);
+        d.check().unwrap();
+        let host = s.cache.get(&d, host_sid, None);
+        let first = host.frames[0].objects[0].origin;
+        let note_frames = s.cache.get(&d, note_sid, None);
+        assert_eq!(note_frames.frames.len(), 1);
+        assert!(!note_frames.is_overset());
+        assert!(note_frames.frames[0].lines.len() >= 2);
+        // Typing before the anchor moves the anchored frame with its line.
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": "Words "})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let moved = s.cache.get(&d, host_sid, None).frames[0].objects[0].origin;
+        assert!(moved.x > first.x + 1e-6, "{first:?} -> {moved:?}");
+        let note_frames = s.cache.get(&d, note_sid, None);
+        assert!(!note_frames.is_overset());
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn anchored_text_frame_supports_inline_above_line_and_custom_positions() {
+        let positions = [
+            ("inline", json!({"position": "inline"})),
+            ("aboveLine", json!({"position": "aboveLine", "align": "center", "spaceAfter": 4.0})),
+            (
+                "custom",
+                json!({"position": "custom", "xRelative": "textFrame", "yRelative": "anchor", "xOffset": 190.0, "objectPoint": 0, "refPoint": 0}),
+            ),
+        ];
+        for (name, position) in positions {
+            let (mut s, _host, host_sid) = setup("Anchor line here");
+            let (note, note_sid) = add_note(&mut s, "Note");
+            anchor(&mut s, note, host_sid, 6, position);
+            let d = s.doc().unwrap().doc.clone();
+            d.check().unwrap();
+            let cs = s.cache.get(&d, note_sid, None);
+            assert_eq!(cs.frames.len(), 1, "{name}");
+            assert!(!cs.is_overset(), "{name}");
+            assert!(!cs.frames[0].lines.is_empty(), "{name}");
+            assert_eq!(d.story(host_sid).unwrap().objects.len(), 1, "{name}");
+            assert!(d.anchored_item(note).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_group_holding_a_text_frame_anchors_and_composes_it() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        let rect = s.execute("frame.create", &json!({"rect": [0, 0, 20, 20]})).unwrap()["id"].as_u64().unwrap();
+        let group = s.execute("object.group", &json!({"ids": [note.0, rect]})).unwrap()["id"].as_u64().unwrap();
+        anchor(&mut s, ItemId(group), host_sid, 7, json!({"position": "inline"}));
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        assert!(d.item(ItemId(group)).is_none());
+        assert!(d.anchored_item(note).is_some());
+        assert_eq!(d.story(note_sid).unwrap().frames, [note]);
+        let cs = s.cache.get(&d, note_sid, None);
+        assert_eq!(cs.frames.len(), 1);
+        assert!(!cs.is_overset());
+    }
+
+    #[test]
+    fn releasing_an_anchored_text_frame_keeps_its_story_threaded() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        s.execute("anchored.release", &json!({"story": host_sid.0, "index": 0})).unwrap();
+        let id = s.doc().unwrap().selection.items[0];
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.story(host_sid).unwrap().objects.is_empty());
+        assert!(d.anchored_item(note).is_none());
+        assert_eq!(d.item(id).unwrap().text_frame().unwrap().story, note_sid);
+        assert_eq!(d.story(note_sid).unwrap().frames, [id]);
+        d.check().unwrap();
+        // Undo puts the frame back in the text; redo releases it under its new id.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.story(host_sid).unwrap().objects[0].item.id, note);
+        assert_eq!(d.story(note_sid).unwrap().frames, [note]);
+        d.check().unwrap();
+        s.execute("edit.redo", &json!({})).unwrap();
+        let id = s.doc().unwrap().selection.items[0];
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.story(note_sid).unwrap().frames, [id]);
+        d.check().unwrap();
+    }
+
+    #[test]
+    fn anchoring_a_text_frame_in_its_own_story_is_refused() {
+        let (mut s, host, host_sid) = setup("Before after");
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("anchored.insert", &json!({"ids": [host.0], "story": host_sid.0, "pos": 0})).unwrap_err().to_string();
+        assert!(e.contains("cyclic") || e.contains("cannot be anchored"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "a refused edit changes nothing");
+    }
+
+    #[test]
+    fn an_anchored_text_frame_exports_to_pdf_and_idml() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, _note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        let d = s.doc().unwrap().doc.clone();
+        let pdf = designcraft_pdf::export_pdf(&d, &s.cache, &Default::default()).unwrap();
+        let text = crate::tests::pdf_text(&pdf).join("\n");
+        assert!(text.contains("Before") && text.contains("after"), "{text}");
+        assert!(text.contains("Note"), "{text}");
+        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+        back.check().unwrap();
+        let host = back.stories.values().find(|st| !st.objects.is_empty()).unwrap();
+        assert_eq!(host.objects.len(), 1);
+        let anchored = &host.objects[0].item;
+        let inner = anchored.text_frame().unwrap();
+        assert_eq!(back.story(inner.story).unwrap().text, "Note");
+        assert!(back.story(inner.story).unwrap().frames.contains(&anchored.id));
     }
 }
 

@@ -1174,6 +1174,21 @@ fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories
     }
 }
 
+/// Fresh ids, stories and assets for the objects anchored in a pasted text slice (#2284),
+/// including its table cells, footnotes, endnotes and anchored text-frame stories. Unlike
+/// [`renumber_anchored`], a slice is not a copy whose assets were already adopted.
+pub(crate) fn renumber_slice(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+    let mut fresh = |t: &mut Story| {
+        for o in &mut t.objects {
+            renumber(dst, src, &mut Arc::make_mut(o).item, stories);
+        }
+    };
+    st.for_each_text_mut(&mut fresh);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+}
+
 fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
     let (dx, dy) = (f64_or(p, "dx", 0.0), f64_or(p, "dy", 0.0));
@@ -6044,6 +6059,102 @@ mod anchored_copy_tests {
         let doc = &s.doc().unwrap().doc;
         assert_eq!(doc.anchored_items().len(), 3);
         assert_reopens(doc);
+    }
+
+    fn frame_with_inline_text_frame(s: &mut Session) -> (ItemId, ItemId, designcraft_doc::StoryId, designcraft_doc::StoryId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+        let frame = ItemId(r["id"].as_u64().unwrap());
+        let host = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "Note"})).unwrap();
+        let inner = ItemId(r["id"].as_u64().unwrap());
+        let inner_story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("anchored.insert", &json!({"ids": [inner.0], "story": host.0, "pos": 7})).unwrap();
+        (frame, inner, host, inner_story)
+    }
+
+    // #2284: text pasted twice shared the anchored object's id and story.
+    #[test]
+    fn pasting_copied_text_with_an_anchored_text_frame_twice_keeps_ids_and_stories_unique() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
+        assert_eq!(s.execute("edit.paste", &json!({})).unwrap()["formatted"], true);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 3);
+        assert_eq!(
+            items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "each paste has a story of its own"
+        );
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner], "the original stays threaded");
+        for item in items {
+            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
+        }
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_copied_text_with_an_anchored_text_frame_as_a_new_frame_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 2);
+        assert_eq!(items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(), 2);
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_over_the_copied_range_keeps_the_anchored_text_frame_valid() {
+        let mut s = Session::new();
+        let (_frame, _inner, host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 1);
+        let tf = items[0].text_frame().unwrap();
+        assert_eq!(d.story(tf.story).unwrap().text, "Note");
+        assert_eq!(d.story(tf.story).unwrap().frames, [items[0].id]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn copied_text_pasted_into_another_document_keeps_its_anchored_text_frame_story() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let items: Vec<_> = s.doc().unwrap().doc.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 1);
+        let tf = items[0].text_frame().unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().text, "Note");
+        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().frames, [items[0].id]);
+        assert_reopens(&s.doc().unwrap().doc);
+        s.set_active(0);
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(inner_story).unwrap().text, "Note");
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
     }
 
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.

@@ -54,7 +54,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
+    let source = st.doc.clone();
     s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    s.text_clipboard_doc = Some(source);
     Ok(Some(text))
 }
 
@@ -86,8 +88,8 @@ fn is_objects_placeholder(s: &Session, text: &str) -> bool {
 /// Paste text at the insertion point: the formatted copy when the system clipboard still holds
 /// what was copied here (or `formatted` is forced), else plain text in the insertion format.
 /// With `formatted`, objects copied last paste as anchored objects when `text` is absent or their
-/// placeholder; other text was copied in another app since. Objects that can't be anchored (text
-/// frames, into a table cell) paste as their placeholder text.
+/// placeholder; other text was copied in another app since. Objects pasted into a table cell
+/// paste as their placeholder text.
 fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| super::bad("edit.paste", "no insertion point"))?;
     let clip = s.text_clipboard.clone();
@@ -97,7 +99,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         && let Some(items) = s.clipboard.clone()
     {
         let list: Vec<designcraft_doc::Item> = items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
-        if !list.is_empty() && list.iter().all(|i| super::anchored::check_item(i).is_ok()) {
+        if !list.is_empty() {
             return s.edit(|d, sel| {
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
@@ -124,13 +126,22 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     let use_clip = formatted && clip.as_ref().is_some_and(|(_, p)| text.as_ref().is_none_or(|x| x.replace("\r\n", "\n") == *p));
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
     if use_clip && let Some((slice, _)) = clip {
-        let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
-        return s.edit(|d, sel| {
+        let mut slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        // Each paste gets its own anchored ids and stories (#2284).
+        let source = match &s.text_clipboard_doc {
+            Some(d) => d.clone(),
+            None => s.doc()?.doc.clone(),
+        };
+        return s.edit(move |d, sel| {
+            let mut stories = std::collections::HashMap::new();
+            super::object::renumber_slice(d, &source, &mut slice, &mut stories);
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
+            let doomed = anchored_text_frames_in(st, r.clone());
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
+            unthread_deleted(d, &doomed);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
@@ -163,6 +174,10 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         .map(|a| Point::new(a.x.clamp(-LIMIT, LIMIT), a.y.clamp(-LIMIT, LIMIT)));
     let lid = s.doc()?.active_layer;
     let cache = s.cache.clone();
+    let source = match &s.text_clipboard_doc {
+        Some(d) => d.clone(),
+        None => s.doc()?.doc.clone(),
+    };
     let text = if slice.is_some() { String::new() } else { outside_text(text)? };
     s.edit(|d, sel| {
         let sp = d.spread(sr).ok_or_else(|| super::bad("edit.paste", "no such spread"))?;
@@ -180,7 +195,10 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
         if let Some(sl) = slice {
-            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+            let mut sl = sl.clone();
+            let mut stories = std::collections::HashMap::new();
+            super::object::renumber_slice(d, &source, &mut sl, &mut stories);
+            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
@@ -205,6 +223,29 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0, "story": sid.0}))
     })
+}
+
+/// The anchored text frames whose marks `r` deletes, with their own story ids. Their stories must
+/// leave the replaced text's threads, or the document would refer to frames that no longer exist.
+fn anchored_text_frames_in(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> Vec<(designcraft_doc::StoryId, ItemId)> {
+    let first = st.text[..r.start.min(st.len())].matches(designcraft_doc::OBJECT_MARK).count();
+    let n = st.text[r.start.min(st.len())..r.end.min(st.len())].matches(designcraft_doc::OBJECT_MARK).count();
+    st.objects.get(first..first + n).unwrap_or_default().iter().filter_map(|o| o.item.text_frame().map(|tf| (tf.story, o.item.id))).collect()
+}
+
+fn unthread_deleted(d: &mut designcraft_doc::Document, doomed: &[(designcraft_doc::StoryId, ItemId)]) {
+    for &(sid, id) in doomed {
+        let empty = match d.story_mut(sid) {
+            Some(st) => {
+                st.frames.retain(|f| *f != id);
+                st.frames.is_empty()
+            }
+            None => false,
+        };
+        if empty {
+            d.stories.remove(&sid);
+        }
+    }
 }
 
 fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
@@ -392,6 +433,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             copy_items(s)?;
             s.text_clipboard = None;
+            s.text_clipboard_doc = None;
             ok()
         }),
         cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection_or_text, |s, p| {
