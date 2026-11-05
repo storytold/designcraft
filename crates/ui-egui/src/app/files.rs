@@ -177,17 +177,26 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let mut frame_free = true;
         for f in files {
             let p = f.path().to_string_lossy().to_string();
             if !p.is_empty() {
-                let _ = self.open_dropped_at(&p, pointer);
+                let _ = self.place_dropped(&p, pointer, &mut frame_free);
             }
         }
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
+    /// new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
+        self.place_dropped(path, pointer, &mut true)
+    }
+
+    /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
+    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
+    /// the files after it land at the pointer instead of replacing that graphic.
+    pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
         }
@@ -199,6 +208,12 @@ impl DesignApp {
             return self.open_file("file.open", json!({"path": path}));
         }
         let mut params = json!({"path": path});
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
+        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
+            o.insert("frame".into(), json!(frame.0));
+        }
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -208,7 +223,11 @@ impl DesignApp {
                 o.insert("page".into(), json!(st.doc.first_page_of_spread(si) + pi + 1));
             }
         }
-        self.open_file("file.place", params)
+        let placed = self.open_file("file.place", params);
+        if frame.is_some() && placed.is_ok() {
+            *frame_free = false;
+        }
+        placed
     }
 
     /// Queue files the operating system asked the app to open. They can arrive before the window
@@ -435,20 +454,28 @@ pub(crate) mod browser_import_tests {
                 ("Brochure.designcraft", "Brochure"),
                 ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
                 ("Brochure.v2.designcraft", "Brochure.v2"),
+                ("Brochure.indd", "Brochure.indd"),
+                ("Brochure.INDT", "Brochure.INDT"),
                 ("日本.DESIGNCRAFT", "日本"),
                 (".designcraft", ".designcraft"),
                 ("Brochure", "Brochure"),
             ] {
+                let before = app.session.documents().len();
                 let request = app.import_request(purpose);
                 deliver(&mut app, request, name, native.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
                 assert_eq!(app.session.doc().unwrap().doc.title, title, "{purpose}: {name}");
             }
         }
         let idml = designcraft_idml::export_idml(&app.session.doc().unwrap().doc);
         for purpose in ["open", "drop"] {
-            let request = app.import_request(purpose);
-            deliver(&mut app, request, "Brochure.idml", idml.clone());
-            assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: IDML");
+            for name in ["Brochure.idml", "Brochure.indd", "Brochure.INDT"] {
+                let before = app.session.documents().len();
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, idml.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
+                assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: {name}");
+            }
         }
     }
     fn image() -> Vec<u8> {

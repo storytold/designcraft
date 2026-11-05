@@ -62,7 +62,7 @@ pub(crate) struct Held {
 
 #[cfg(not(target_arch = "wasm32"))]
 enum Step {
-    /// Open: run `then` with the file chosen.
+    /// Open (or a folder): run `then` with the file or folder chosen.
     Open(Then),
     /// Save: `ext` is added to a name typed without it, then `then` runs, after the replace-file
     /// question when the added extension names a file that exists.
@@ -114,6 +114,31 @@ impl DesignApp {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (purpose, bound, then);
+            Err(NO_PICKER.into())
+        }
+    }
+
+    /// Ask for a folder, the dialog titled `title` (File › Export Layouts and Versions). `then`
+    /// runs with its path on a later frame; Cancel runs nothing.
+    #[track_caller]
+    pub(crate) fn ask_folder(
+        &mut self,
+        title: &str,
+        bound: Bound,
+        then: impl FnOnce(&mut DesignApp, String) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut dialog = craft_dialogs::FileDialog::folder().title(title);
+            if let Some(folder) = self.session.active().and_then(|d| d.path.as_deref()).and_then(folder_of) {
+                dialog = dialog.directory(folder);
+            }
+            self.ask_file(dialog, bound, Step::Open(Box::new(then)));
+            Ok(Value::Null)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (title, bound, then);
             Err(NO_PICKER.into())
         }
     }
@@ -337,6 +362,7 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
         "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
+        "coverImage" => &[OpenFilter { name: "Cover image (PNG, JPEG)", extensions: &["png", "jpg", "jpeg"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
         "xml" => &[OpenFilter { name: "XML", extensions: &["xml"] }],
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],

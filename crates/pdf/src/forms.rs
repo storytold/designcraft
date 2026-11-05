@@ -144,14 +144,22 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
     let mut per_page: Vec<Vec<usize>> = vec![Vec::new(); kids.len()];
     // Media: the file embedded, a rendition of it, and a screen annotation that plays it (on
     // click, and on page open when asked).
+    let mut embedded: std::collections::HashMap<(*const Vec<u8>, &str), usize> = std::collections::HashMap::new();
     for (page, r, name, mime, data, m) in media {
         let Some(&page_ref) = kids.get(*page) else { continue };
-        let (file, spec, rendition, screen) = (next, next + 1, next + 2, next + 3);
-        next += 4;
-        let mut body = format!("<</Type/EmbeddedFile/Subtype/{}/Length {}>>\nstream\n", pdf_name(mime), data.len()).into_bytes();
-        body.extend_from_slice(data);
-        body.extend_from_slice(b"\nendstream");
-        put(&mut out, file, &body);
+        // One embedded file per asset: placements of the same asset share it (a copy of the whole
+        // asset per placement multiplied a large one by its placements).
+        let file = *embedded.entry((std::sync::Arc::as_ptr(data), mime.as_str())).or_insert_with(|| {
+            let file = next;
+            next += 1;
+            let mut body = format!("<</Type/EmbeddedFile/Subtype/{}/Length {}>>\nstream\n", pdf_name(mime), data.len()).into_bytes();
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\nendstream");
+            put(&mut out, file, &body);
+            file
+        });
+        let (spec, rendition, screen) = (next, next + 1, next + 2);
+        next += 3;
         put(&mut out, spec, format!("<</Type/Filespec/F{}/UF{}/EF<</F {file} 0 R>>>>", pdf_string(name), pdf_string(name)).as_bytes());
         // Play parameters: player controls, and a repeat count of 0 (forever) when looping.
         let params = format!("<</BE<</C {}/RC {}>>>>", m.controls, if m.looping { 0 } else { 1 });
@@ -306,5 +314,24 @@ mod tests {
         assert_eq!(pdf_name("[1 0 R]"), "#5B1#200#20R#5D");
         assert_eq!(pdf_name("application-x_test.v2"), "application-x_test.v2");
         assert_eq!(pdf_name("\u{e9}"), "#C3#A9");
+    }
+
+    /// Placements of one asset share one embedded file (`/EmbeddedFile`), each with its own screen annotation.
+    #[test]
+    fn placements_of_one_asset_embed_it_once() {
+        let mut pdf = b"%PDF-1.4\n1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n3 0 obj\n<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]>>\nendobj\n".to_vec();
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 4\n0000000000 65535 f \ntrailer\n<</Size 4/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let data = std::sync::Arc::new(vec![7u8; 5000]);
+        let other = std::sync::Arc::new(vec![9u8; 3000]);
+        let m = |d: &std::sync::Arc<Vec<u8>>| {
+            (0, [0.0, 0.0, 10.0, 10.0], "a.mp4".to_string(), "video/mp4".to_string(), d.clone(), MediaOptions::default())
+        };
+        let media = [m(&data), m(&data), m(&data), m(&other)];
+        let out = add_fields(&pdf, &[], &media).unwrap();
+        let count = |needle: &[u8]| out.windows(needle.len()).filter(|w| *w == needle).count();
+        assert_eq!(count(b"/Type/EmbeddedFile"), 2);
+        assert_eq!(count(b"/Subtype/Screen"), 4);
+        assert_eq!(count(&[7u8; 5000]), 1);
     }
 }

@@ -520,7 +520,9 @@ fn disallowed(cs: &Object<'_>, res: &Resources<'_>, depth: usize) -> Option<Stri
 /// What one page has that PDF/X-1a doesn't allow, in the order found.
 #[derive(Default)]
 struct Scan {
+    /// What was found, in the order found; `known` is the same as a set.
     found: Vec<String>,
+    known: HashSet<String>,
     font_issues: Vec<String>,
     seen: HashSet<ObjectIdentifier>,
     fonts: HashSet<ObjectIdentifier>,
@@ -528,7 +530,7 @@ struct Scan {
 
 impl Scan {
     fn add(&mut self, what: String) {
-        if !self.found.contains(&what) {
+        if self.known.insert(what.clone()) {
             self.found.push(what);
         }
     }

@@ -195,6 +195,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
+    asset_index: designcraft_doc::AssetIndex,
     /// Assets read from a link path at a page and crop, so later placements of that path, page
     /// and crop reuse them unread.
     linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
@@ -277,6 +279,7 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            asset_index: designcraft_doc::AssetIndex::new(),
             linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
@@ -330,11 +333,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            designcraft_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
@@ -531,9 +540,14 @@ impl<'r> Importer<'r> {
             let sp = self.spread(e, id, false);
             self.spreads.push(sp);
         }
-        // Sections.
+        // Sections. A section whose AlternateLayout differs from the one before starts that layout.
+        let mut last_layout: Option<String> = None;
         for e in top.iter().filter(|e| e.local() == "Section") {
             let Some(start) = e.get("PageStart").and_then(|p| self.page_index.get(p)).copied() else { continue };
+            let layout = e.get("AlternateLayout").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+            let starts_layout = layout.clone().filter(|l| last_layout.as_ref() != Some(l));
+            // A section without one stays in the layout before it.
+            last_layout = layout.or(last_layout.take());
             let cont = e.get("ContinueNumbering") != Some("false");
             self.sections.push(Section {
                 start,
@@ -542,6 +556,7 @@ impl<'r> Importer<'r> {
                 prefix: e.get("SectionPrefix").unwrap_or("").to_string(),
                 marker: e.get("Marker").unwrap_or("").to_string(),
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
+                layout: starts_layout,
             });
         }
         if self.rotated_cells > 0 {
@@ -561,6 +576,7 @@ impl<'r> Importer<'r> {
                     style: Default::default(),
                     prefix: String::new(),
                     marker: String::new(),
+                    layout: None,
                     include_prefix: false,
                 },
             );

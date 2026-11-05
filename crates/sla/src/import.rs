@@ -671,7 +671,15 @@ impl<'a> Importer<'a> {
                     _ => NumberStyle::Arabic,
                 };
                 let start_number = e.num(&["Start"]).map(|n| n.clamp(1.0, 1e9) as u32);
-                sections.push(Section { start, start_number, style, prefix: String::new(), marker: String::new(), include_prefix: false });
+                sections.push(Section {
+                    start,
+                    start_number,
+                    style,
+                    prefix: String::new(),
+                    marker: String::new(),
+                    include_prefix: false,
+                    layout: None,
+                });
             }
         }
         sections.sort_by_key(|s| s.start);
@@ -686,6 +694,7 @@ impl<'a> Importer<'a> {
                     prefix: String::new(),
                     marker: String::new(),
                     include_prefix: false,
+                    layout: None,
                 },
             );
         }

@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-21 · **Change:** minor (Scribus text shadows; Scribus .sla import; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (Scribus text shadows; Scribus .sla import; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -45,7 +45,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | PDF (print) | `.pdf` | ✓ all presets, PDF/X-1a/3/4, PDF/A, PDF/UA | ✓ krilla: real text with subset fonts, DeviceCMYK/RGB, spot Separations, bleed/slug, marks, spreads, compression options, remembered settings (#196); **PDF/X-4** with output intent and a validator (#223, #200); **PDF/A-2b**; tagged PDF; **PDF/X-1a:2003** flattened in its inks by craft-prepress | 53 tests in `crates/pdf`; no PDF/X-3; no presets / `.joboptions`; no external validator (veraPDF / callas) in CI | 18% |
 | PDF (interactive) | `.pdf` | ✓ | ✓ links, bookmarks, buttons, AcroForm fields, page transitions, object states | | 2% |
 | JPEG / PNG | `.jpg`, `.png` | ✓ | PNG from the UI; JPEG from the CLI only | no resolution / colour space options dialog for JPEG | 3% |
-| EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | | 2% |
+| EPUB reflowable | `.epub` | ✓ | ✓ stories in article order, tables, footnotes and endnotes, CSS from styles, images, nav | the cover is the first page, or a PNG or JPEG file named in EPUB Export Options (#1934) | 2% |
 | EPUB fixed layout | `.epub` | ✓ (live HTML/CSS) | ~ page images with text kept for search | not live text | 1% |
 | HTML | `.html` | ✓ | ~ one self-contained page (#314) | | 1% |
 | HTML5 ZIP / Publish Online | | ✓ | ✗ (Publish Online out of scope) | | <1% |
@@ -54,7 +54,7 @@ layer survive interchange; literal XML and round-trip tests are in
 | Text Only / RTF / Tagged Text | `.txt`, `.rtf` | ✓ | ✓ (`file.exportText` txt, rtf, tagged) | | 1% |
 | XML | `.xml` | ✓ | ✓ export and import, DTD validate | depth unmeasured | 1% |
 | Print / PostScript | | ✓ printers, PPDs, separations | ~ PDF to CUPS/Windows (craft-print; no PostScript) | | 3% |
-| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | | 2% |
+| Package | folder | ✓ fonts, links, IDML, PDF, report | ✓ (#340: IDML inside links to absolute paths) | PDF export warnings appear in the result and report. Frame and text-range hyperlinks keep their source bounds through rasterization, including inside groups. Synthetic shadow/feather/link regression in `crates/engine/src/cmd/package/tests.rs` | 2% |
 
 PDF/X-4 export warns about unembedded fonts that draw visible text, including inside placed PDF
 forms; `designcraft-cli validate-pdf FILE.pdf` reports the same issues, with font names and pages
