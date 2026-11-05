@@ -324,6 +324,32 @@ fn flattener_rasterises_spreads_with_transparency() {
     assert_eq!(text.matches("/S/Transparency/CS/DeviceCMYK").count(), 1, "only the page with transparency");
 }
 
+/// The flattener rasterises a spread for the parent items that show on it: parent A's
+/// transparent item makes page 1 (using A) an image, but not page 2, whose parent B is based
+/// on A with Show Parent Items off on B's page.
+#[test]
+fn flattener_judges_the_parent_items_that_show() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+    let id = s.execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [100, 100, 300, 300]})).unwrap()["id"].clone();
+    s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [id]})).unwrap();
+    s.execute("object.opacity", &json!({"ids": [id], "opacity": 0.5})).unwrap();
+    s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
+    s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "B"})).unwrap();
+    let flattened = |s: &mut Session| -> Vec<String> {
+        let r = s.execute("file.exportPdf", &json!({"flatten": "low"})).unwrap();
+        r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).filter(|w| w.contains("flattened")).map(str::to_string).collect()
+    };
+    assert!(flattened(&mut s).iter().any(|w| w.contains("flattened: 2 ")), "both pages show A's item: {:?}", flattened(&mut s));
+    s.edit(|d, _| {
+        std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].show_parent_items = false;
+        Ok(())
+    })
+    .unwrap();
+    assert!(flattened(&mut s).iter().any(|w| w.contains("flattened: 1 ")), "{:?}", flattened(&mut s));
+}
+
 #[test]
 fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
     let mut s = Session::new();
