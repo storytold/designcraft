@@ -117,6 +117,7 @@ impl Lang {
 /// A source-character boundary and letters added only when this break is selected.
 pub(crate) use craft_proof::hyphen::Opportunity;
 
+/// Return source-indexed breaks and display-only insertions for the selected language.
 pub(crate) fn opportunities_in(word: &str, lim: &Limits, lang: Lang) -> Vec<Opportunity> {
     if lang == Lang::Hungarian {
         return craft_proof::hyphen::hyphen_opportunities_including_all_caps(word, &proof_limits(lim), hu_language());
@@ -124,9 +125,11 @@ pub(crate) fn opportunities_in(word: &str, lim: &Limits, lang: Lang) -> Vec<Oppo
     hyphen_points_in(word, lim, lang).into_iter().map(|at| Opportunity { at, suffix: "".into() }).collect()
 }
 
+/// Select the Hungarian Language pack in the shared proofing library.
 fn hu_language() -> craft_proof::ProofLang {
     craft_proof::ProofLang::from_tag(Some("hu"))
 }
+/// Translate paragraph limits to the shared hyphenation contract.
 fn proof_limits(lim: &Limits) -> craft_proof::hyphen::Limits {
     craft_proof::hyphen::Limits { min_word: lim.min_word, after_first: lim.after_first, before_last: lim.before_last, capitalized: lim.capitalized }
 }

@@ -22,11 +22,13 @@ pub(crate) struct Report {
     by_story: BTreeMap<StoryId, Vec<Range<usize>>>,
 }
 impl Report {
+    /// Create a report and index its misspellings by story.
     fn new(doc: Arc<Document>, words: Vec<(StoryId, Range<usize>)>, error: Option<String>) -> Self {
         let mut report = Self { doc, words, error, by_story: BTreeMap::new() };
         report.index_words();
         report
     }
+    /// Rebuild the story index after collecting a complete scan.
     fn index_words(&mut self) {
         self.by_story.clear();
         for (sid, range) in &self.words {
@@ -43,6 +45,7 @@ impl Report {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
+/// Check all stories off the UI thread, stopping with any dictionary-load error.
 fn build(doc: Arc<Document>) -> Report {
     let mut words = Vec::new();
     for story in doc.stories.values() {
@@ -65,16 +68,19 @@ struct IncrementalReport {
 }
 #[cfg(any(target_arch = "wasm32", test))]
 impl IncrementalReport {
+    /// Start a resumable scan over an immutable document snapshot.
     fn new(doc: Arc<Document>) -> Self {
         let story = doc.stories.keys().next().copied();
         Self { report: Report::new(doc, vec![], None), story, cursor: Default::default(), last_frame: None, validated: false }
     }
+    /// Spend one browser frame's bounded scan budget.
     fn advance(&mut self, frame: u64) -> bool {
         // web_time uses Performance.now() in browsers; std::time::Instant panics
         // on wasm32-unknown-unknown. A single lookup/initialization is indivisible.
         let start = web_time::Instant::now();
         self.advance_until(frame, || start.elapsed() >= std::time::Duration::from_millis(2))
     }
+    /// Resume at most once per frame and yield when the time or work budget expires.
     fn advance_until(&mut self, frame: u64, mut expired: impl FnMut() -> bool) -> bool {
         if self.story.is_none() {
             return true;
@@ -125,6 +131,7 @@ impl IncrementalReport {
 }
 #[cfg(any(target_arch = "wasm32", test))]
 impl State {
+    /// Advance the pending snapshot and schedule another frame after stale completion.
     fn advance_browser(&mut self, key: Key, doc: Arc<Document>, ctx: &egui::Context) -> Option<Arc<Report>> {
         if self.pending.as_ref().is_none_or(|(pending_key, _)| pending_key.0 != key.0) {
             self.pending = Some((key, IncrementalReport::new(doc)));
@@ -145,6 +152,7 @@ impl State {
     }
 }
 
+/// Return the current report or safe cached underlines while scheduling a fresh scan.
 pub(crate) fn report(app: &DesignApp, ctx: &egui::Context) -> Option<Arc<Report>> {
     let active = app.session.active()?;
     let key = (active.uid, active.revision);
@@ -205,6 +213,7 @@ struct SuggestionState {
     running: Option<(SuggestionKey, mpsc::Receiver<Vec<String>>)>,
     cached: Option<(SuggestionKey, Vec<String>)>,
 }
+/// Generate suggestions outside the native UI thread and cache only the matching request.
 fn suggestions_async(ctx: &egui::Context, key: SuggestionKey, doc: Arc<Document>, sid: StoryId, range: Range<usize>) -> Option<Vec<String>> {
     let cell: Arc<Mutex<SuggestionState>> =
         ctx.data_mut(|d| d.get_temp_mut_or_default::<Arc<Mutex<SuggestionState>>>(egui::Id::unique("spelling_suggestions")).clone());
@@ -254,6 +263,7 @@ fn suggestions_async(ctx: &egui::Context, key: SuggestionKey, doc: Arc<Document>
     None
 }
 
+/// Open spelling for the active document after releasing any previous dialog scope.
 pub(crate) fn open(app: &mut DesignApp) -> Result<Value, String> {
     app.session.active().ok_or("no document open")?;
     crate::dialogs::cancel(app);
@@ -264,10 +274,12 @@ pub(crate) fn open(app: &mut DesignApp) -> Result<Value, String> {
 
 // Reports follow the document's BTreeMap story order. Keep skipped occurrences behind
 // the cursor when this dialog changes a word; unrelated revisions restart the check.
+/// Find the first occurrence at or after an accepted spelling replacement.
 fn resume_index(words: &[(StoryId, Range<usize>)], sid: StoryId, byte: usize) -> usize {
     words.iter().position(|(story, r)| *story > sid || (*story == sid && r.start >= byte)).unwrap_or(words.len())
 }
 
+/// Render spelling controls only for the current snapshot and apply requested corrections.
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut dialog) = app.ui.dialog.clone() else { return };
     let lang = app.ui.language.clone();

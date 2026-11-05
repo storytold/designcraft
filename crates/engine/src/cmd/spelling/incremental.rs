@@ -16,6 +16,7 @@ pub struct SpellingCursor {
 }
 
 impl SpellingCursor {
+    /// Finish a pending token and append its source range only when it is misspelled.
     fn flush(&mut self, story: &Story, user: &[String], out: &mut Vec<Range<usize>>) {
         if let Some((range, lang)) = self.token.take()
             && let Some(word) = story.text.get(range.clone())

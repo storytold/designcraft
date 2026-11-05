@@ -108,6 +108,7 @@ fn link(ui: &mut egui::Ui, text: &str, url: &str, color: Color32) -> bool {
     resp.clicked()
 }
 
+/// Show application information and the licences of language data used by proofing.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if !app.ui.about {
         return;

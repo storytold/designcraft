@@ -1181,6 +1181,7 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     shaped: &'a mut shape::ShapedPara,
 }
 
+/// Apply nested line styles using the same hyphenation opportunities as final composition.
 fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
     let NestedLineStyleInput {
         db,
@@ -2272,6 +2273,7 @@ struct ShapedParagraph {
     para_box: Option<ParaBox>,
 }
 
+/// Shape a paragraph and prepare its break opportunities, generated labels and line metrics.
 fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let ParagraphShapeInput {
         db,
@@ -5027,6 +5029,7 @@ fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64,
     Some(props)
 }
 
+/// Preserve source addresses and display-only insertion metadata when placing a glyph.
 fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     let visible = !(g.ch == '\t'
         || g.ch == '\n'
@@ -5372,6 +5375,7 @@ fn cached_hyphen_opportunities(lim: &hyphen::Limits, lang: hyphen::Lang, word: &
     pts
 }
 
+/// Mark eligible glyph breaks and attach replacement suffixes without changing source text.
 fn hyphenation_points(
     text: &str,
     glyphs: &mut [Glyph],

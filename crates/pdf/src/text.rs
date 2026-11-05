@@ -505,6 +505,7 @@ impl Exporter<'_> {
         (text, ranges)
     }
 
+    /// Paint a nonempty glyph run, outlining inserted letters so PDF text retains the source.
     fn run(&mut self, s: &mut Surface, cs: &ComposedStory, glyphs: &[PlacedGlyph], baseline: f64, story: &str) {
         let g0 = &glyphs[0];
         let st = &cs.styles[g0.style as usize];

@@ -1109,6 +1109,7 @@ fn effective_size(p: &CharProps, adv: &designcraft_doc::AdvancedType) -> (f64, f
     }
 }
 
+/// Create a nonprinting control glyph with source offsets and paragraph metrics.
 fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, style: u32, byte: usize, ch: char) -> Glyph {
     let (size, k, ascent, descent, leading, cap, xh, shift) = metrics(face, p, auto_leading);
     Glyph {
@@ -1163,6 +1164,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Shape a source segment or generated replacement while preserving its source carrier.
 fn shape_segment(
     db: &ScopedFonts<'_>,
     text: &str,

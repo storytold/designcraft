@@ -17,6 +17,7 @@ pub fn language_data_licences() -> Vec<(String, String)> {
     craft_proof::packs::licence_texts()
 }
 
+/// Register spelling commands and their accepted parameters.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "spelling.check", "Check Spelling…", ["Edit", "Spelling"], Some("Cmd+I"),
@@ -257,6 +258,7 @@ pub fn ensure_story_dictionary(doc: &designcraft_doc::Document, story: &designcr
     ensure_run_dictionaries(&language_runs(doc, story))
 }
 
+/// Load Hungarian data only when at least one checked run requires it.
 fn ensure_run_dictionaries(runs: &[(std::ops::Range<usize>, Language)]) -> std::result::Result<(), &'static str> {
     if runs.iter().any(|(_, language)| *language == Language::Hungarian) {
         hungarian::initialize()?;
@@ -269,6 +271,7 @@ pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::St
     misspellings_in_runs(story, user, &language_runs(doc, story))
 }
 
+/// Collect source byte ranges, reusing verdicts only within the same language and spelling.
 fn misspellings_in_runs(story: &designcraft_doc::Story, user: &[String], runs: &[(std::ops::Range<usize>, Language)]) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut checked = std::collections::HashMap::new();
@@ -290,6 +293,7 @@ fn misspellings_in_runs(story: &designcraft_doc::Story, user: &[String], runs: &
     out
 }
 
+/// Check a token with its language checker and the document user dictionary.
 fn valid_word(language: Language, word: &str, user: &[String]) -> bool {
     match language {
         Language::English => {
@@ -318,6 +322,7 @@ enum Language {
     Unsupported,
 }
 
+/// Resolve a document language name or tag to a supported spelling checker.
 fn language(name: &str) -> Language {
     if designcraft_doc::language_tag(name).is_some_and(|t| designcraft_doc::language_subtag(t) == "hu") {
         Language::Hungarian
@@ -396,6 +401,7 @@ pub fn suggestions(doc: &designcraft_doc::Document, story: &designcraft_doc::Sto
     suggestions_in_language(lang.unwrap_or(Language::Unsupported), word)
 }
 
+/// Generate language-specific suggestions without sharing results across languages.
 fn suggestions_in_language(language: Language, word: &str) -> Vec<String> {
     #[cfg(test)]
     SUGGESTION_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -406,6 +412,7 @@ fn suggestions_in_language(language: Language, word: &str) -> Vec<String> {
     }
 }
 
+/// Check the requested stories, optionally caching suggestions for repeated tokens.
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let d = &st.doc;
