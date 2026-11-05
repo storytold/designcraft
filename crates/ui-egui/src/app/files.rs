@@ -1,82 +1,65 @@
-use super::*;
+use super::{DesignApp, ImportRequest, ImportedFile, Value, canvas, dialogs, file_dialogs, json, shortcut_import};
+#[cfg(test)]
+use super::{Services, Session};
+#[cfg(test)]
+use crate::Inbox;
+#[cfg(test)]
+use crate::test_window;
 
 impl DesignApp {
-    /// The host's save dialog for `name`, started beside the active document once it has been
-    /// saved, else in the folder of the last file saved or exported (#1653). The answer's folder
-    /// is remembered for the next one.
-    pub(crate) fn pick_save(&mut self, name: &str) -> Option<String> {
-        use std::path::{Path, PathBuf};
-        let folder_of = |path: &str| Path::new(path).parent().filter(|f| !f.as_os_str().is_empty()).map(Path::to_path_buf);
-        let folder = self
-            .session
-            .active()
-            .and_then(|d| d.path.as_deref())
-            .and_then(folder_of)
-            .or_else(|| self.ui.last_save_folder.as_ref().map(PathBuf::from));
-        // Only the last part of a name goes after the folder: a title may hold a slash, and an
-        // empty name would make the folder itself the suggested file.
-        let file = Path::new(name).file_name();
-        let suggested = match (folder, file) {
-            (Some(f), Some(file)) => f.join(file).to_string_lossy().to_string(),
-            _ => name.to_string(),
-        };
-        let picked = self.services.pick_save.as_mut().and_then(|f| f(&suggested))?;
-        if let Some(folder) = folder_of(&picked) {
-            self.ui.last_save_folder = Some(folder.to_string_lossy().to_string());
+    /// Ask the host for a file to open (`open`) or place (`place`). A native dialog answers on a
+    /// later frame ([`Self::open_picked`]); in a browser the file arrives through the inbox.
+    #[track_caller]
+    pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
+        if let Some(open) = self.services.open_async.as_mut() {
+            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) };
+            open(request);
+            return Ok(Value::Null);
         }
-        Some(picked)
+        let bound = if purpose == "place" { file_dialogs::Bound::Document } else { file_dialogs::Bound::App };
+        let purpose_owned = purpose.to_string();
+        self.ask_open(purpose, bound, move |app, path| app.open_picked(&purpose_owned, path))
     }
 
-    /// Ask the host for a file to open (`open`) or place (`place`). Synchronous pickers run the
-    /// command right away; asynchronous ones (web) deliver the file through the inbox.
-    pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
-        let target = self.session.active().map(|d| d.uid);
-        if let Some(pick) = self.services.pick_open.as_mut() {
-            return match pick(purpose) {
-                // Image Import Options: a multi-page PDF asks which page.
-                Some(path) if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") => {
-                    let pages =
-                        self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
-                    if pages > 1 {
-                        self.ui.dialog =
-                            Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
-                        Ok(Value::Null)
-                    } else {
-                        self.place_file(json!({"path": path}))
-                    }
-                }
-                Some(path) if purpose == "place" => self.place_file(json!({"path": path})),
-                Some(path) => self.open_file("file.open", json!({"path": path})),
-                None => Ok(Value::Null),
-            };
+    /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.
+    pub(crate) fn open_picked(&mut self, purpose: &str, path: String) -> Result<Value, String> {
+        // Image Import Options: a multi-page PDF asks which page.
+        if purpose == "place" && path.to_ascii_lowercase().ends_with(".pdf") {
+            let target = self.session.active().map(|d| d.uid);
+            let pages = self.services.read.as_mut().and_then(|r| r(&path).ok()).and_then(|b| designcraft_render::pdf_page_count(&b)).unwrap_or(1);
+            if pages > 1 {
+                self.ui.dialog = Some(dialogs::Dialog::new("pdfImport", json!({"path": path, "page": "1", "pages": pages, "target": target})));
+                return Ok(Value::Null);
+            }
+            return self.place_file(json!({"path": path}));
         }
-        let request = self.import_request(purpose);
-        if let Some(open) = self.services.open_async.as_mut() {
-            open(request);
+        if purpose == "place" {
+            return self.place_file(json!({"path": path}));
         }
-        Ok(Value::Null)
+        self.open_file("file.open", json!({"path": path}))
     }
 
     /// Load Styles: ask the host for a document whose styles to load; `kind` is `paragraph`,
-    /// `character` or empty for both. A synchronous picker opens the dialog that chooses among
-    /// the file's styles; an asynchronous one (web) loads them all when the file arrives.
+    /// `character` or empty for both. A native dialog's answer opens the dialog that chooses
+    /// among the file's styles; in a browser they all load when the file arrives.
+    #[track_caller]
     pub fn pick_styles(&mut self, kind: &str) -> Result<Value, String> {
         designcraft_engine::cmd::has_doc(&self.session)?;
-        if let Some(pick) = self.services.pick_open.as_mut() {
-            let Some(path) = pick("styles") else { return Ok(Value::Null) };
-            let found = self.run("style.load.list", json!({"path": path}))?;
+        if let Some(open) = self.services.open_async.as_mut() {
+            let purpose = if kind.is_empty() { "styles".to_string() } else { format!("styles:{kind}") };
+            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid) });
+            return Ok(Value::Null);
+        }
+        let kind = kind.to_string();
+        self.ask_open("styles", file_dialogs::Bound::Document, move |app, path| {
+            let found = app.run("style.load.list", json!({"path": path}))?;
             let of = |k: &str| if kind.is_empty() || kind == k { found[k].clone() } else { json!([]) };
-            self.ui.dialog = Some(dialogs::Dialog::new(
+            app.ui.dialog = Some(dialogs::Dialog::new(
                 "loadStyles",
                 json!({"path": path, "paragraph": of("paragraph"), "character": of("character"), "conflicts": "redefine"}),
             ));
-            return Ok(Value::Null);
-        }
-        let request = self.import_request(&if kind.is_empty() { "styles".to_string() } else { format!("styles:{kind}") });
-        if let Some(open) = self.services.open_async.as_mut() {
-            open(request);
-        }
-        Ok(Value::Null)
+            Ok(Value::Null)
+        })
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
@@ -178,8 +161,7 @@ impl DesignApp {
         } else if place {
             self.open_file("file.place", json!({"name": file.name, "base64": b64}))
         } else {
-            let title = file.name.rsplit_once('.').map_or(file.name.as_str(), |(stem, _)| stem);
-            self.open_file("file.openBytes", json!({"name": title, "base64": b64}))
+            self.open_file("file.openBytes", json!({"name": file.name, "base64": b64}))
         }
     }
 
@@ -195,17 +177,26 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let mut frame_free = true;
         for f in files {
             let p = f.path().to_string_lossy().to_string();
             if !p.is_empty() {
-                let _ = self.open_dropped_at(&p, pointer);
+                let _ = self.place_dropped(&p, pointer, &mut frame_free);
             }
         }
     }
 
-    /// [`Self::open_dropped`] at the pointer: a graphic's top left lands where the file was
-    /// dropped on the canvas, text goes to a new frame on the document page there.
+    /// [`Self::open_dropped`] at the pointer: a graphic dropped on an empty or graphic frame fills
+    /// it, elsewhere its top left lands where the file was dropped on the canvas; text goes to a
+    /// new frame on the document page there.
     pub fn open_dropped_at(&mut self, path: &str, pointer: Option<egui::Pos2>) -> Result<Value, String> {
+        self.place_dropped(path, pointer, &mut true)
+    }
+
+    /// [`Self::open_dropped_at`] for one file of a drop. `frame_free` is whether the frame under the
+    /// pointer can still be filled: the first graphic of a drop takes it (and clears the flag), so
+    /// the files after it land at the pointer instead of replacing that graphic.
+    pub(crate) fn place_dropped(&mut self, path: &str, pointer: Option<egui::Pos2>, frame_free: &mut bool) -> Result<Value, String> {
         if path.to_ascii_lowercase().ends_with(".ase") {
             return self.run("swatch.load", json!({"path": path}));
         }
@@ -217,6 +208,12 @@ impl DesignApp {
             return self.open_file("file.open", json!({"path": path}));
         }
         let mut params = json!({"path": path});
+        // A graphic dropped on an empty or graphic frame fills it, as File > Place does. Text keeps
+        // getting a frame of its own, so it never replaces the image in a graphic frame.
+        let frame = if *frame_free && !designcraft_textimport::is_text_file(path) { canvas::drop_frame(self, pointer) } else { None };
+        if let (Some(frame), Some(o)) = (frame, params.as_object_mut()) {
+            o.insert("frame".into(), json!(frame.0));
+        }
         if let (Some((sr, at)), Some(o)) = (canvas::drop_point(self, pointer), params.as_object_mut()) {
             o.insert("spread".into(), serde_json::to_value(sr).unwrap_or(Value::Null));
             o.insert("x".into(), json!(at.x));
@@ -226,7 +223,11 @@ impl DesignApp {
                 o.insert("page".into(), json!(st.doc.first_page_of_spread(si) + pi + 1));
             }
         }
-        self.open_file("file.place", params)
+        let placed = self.open_file("file.place", params);
+        if frame.is_some() && placed.is_ok() {
+            *frame_free = false;
+        }
+        placed
     }
 
     /// Queue files the operating system asked the app to open. They can arrive before the window
@@ -275,21 +276,27 @@ impl DesignApp {
             }
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         } else if let Ok(result) = &r {
-            let warnings: Vec<&str> = result
+            // Each warning with the frame it is about (`warningItems`), if any.
+            let items = result.get("warningItems").and_then(Value::as_array);
+            let (warnings, lines): (Vec<&str>, Vec<Value>) = result
                 .get("warnings")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_str)
-                .filter(|warning| !warning.is_empty())
-                .collect();
+                .enumerate()
+                .filter_map(|(i, w)| Some((i, w.as_str()?)))
+                .filter(|(_, warning)| !warning.is_empty())
+                .map(|(i, w)| (w, json!({"text": w, "item": items.and_then(|a| a.get(i)).cloned().unwrap_or(Value::Null)})))
+                .unzip();
             if !warnings.is_empty() {
                 self.status(format!("{file}: {}", warnings.join("; ")));
                 // Find Font, offered for the document's missing fonts, stays up: the status line
                 // keeps the warnings.
                 if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
-                    self.ui.dialog =
-                        Some(dialogs::Dialog::new("alert", json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n")})));
+                    self.ui.dialog = Some(dialogs::Dialog::new(
+                        "alert",
+                        json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n"), "lines": lines}),
+                    ));
                 }
             }
         }
@@ -343,6 +350,7 @@ mod import_warning_tests {
         assert_eq!(dialog.id, "alert");
         assert_eq!(dialog.fields["title"], "Import Warnings");
         assert_eq!(dialog.fields["file"], file);
+        assert!(dialog.fields["lines"].as_array().unwrap().iter().all(|l| l["item"].is_null()), "missing parts name no frame");
         for part in ["Spreads/missing.xml", "Stories/missing.xml"] {
             assert!(dialog.fields["message"].as_str().unwrap().contains(part), "every missing part is named");
             assert!(app.ui.status.contains(part), "the status line retains the warning");
@@ -374,8 +382,7 @@ mod import_warning_tests {
         std::fs::write(&path, idml(true)).unwrap();
         let picked = path.to_string_lossy().to_string();
         let mut app = app();
-        app.services.pick_open = Some(Box::new(move |_| Some(picked.clone())));
-        let result = app.run("app.openDialog", json!({}));
+        let result = app.run("app.openDialog", json!({"path": picked}));
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(path.parent().unwrap()).unwrap();
         assert_eq!(result.unwrap()["warnings"].as_array().unwrap().len(), 2);
@@ -388,7 +395,7 @@ mod import_warning_tests {
         let request = app.import_request("open");
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: "partial.idml".into(), bytes: idml(true) });
         app.drain_inbox();
-        assert_partial_import_warning(&mut app, "partial");
+        assert_partial_import_warning(&mut app, "partial.idml");
     }
 
     #[test]
@@ -434,6 +441,42 @@ pub(crate) mod browser_import_tests {
     fn deliver(app: &mut DesignApp, request: ImportRequest, name: &str, bytes: Vec<u8>) {
         app.services.inbox.as_ref().unwrap().lock().unwrap().push(ImportedFile { request, name: name.into(), bytes });
         app.drain_inbox();
+    }
+
+    /// A document chosen or dropped in the browser is titled by its file name less one extension,
+    /// as on the desktop: the extension comes off once, in the engine.
+    #[test]
+    fn browser_opens_title_a_document_by_its_name_without_one_extension() {
+        let mut app = app();
+        let native = designcraft_engine::cmd::base64_decode(app.run("file.serialize", json!({})).unwrap()["base64"].as_str().unwrap());
+        for purpose in ["open", "drop"] {
+            for (name, title) in [
+                ("Brochure.designcraft", "Brochure"),
+                ("Brochure.designcraft.designcraft", "Brochure.designcraft"),
+                ("Brochure.v2.designcraft", "Brochure.v2"),
+                ("Brochure.indd", "Brochure.indd"),
+                ("Brochure.INDT", "Brochure.INDT"),
+                ("日本.DESIGNCRAFT", "日本"),
+                (".designcraft", ".designcraft"),
+                ("Brochure", "Brochure"),
+            ] {
+                let before = app.session.documents().len();
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, native.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
+                assert_eq!(app.session.doc().unwrap().doc.title, title, "{purpose}: {name}");
+            }
+        }
+        let idml = designcraft_idml::export_idml(&app.session.doc().unwrap().doc);
+        for purpose in ["open", "drop"] {
+            for name in ["Brochure.idml", "Brochure.indd", "Brochure.INDT"] {
+                let before = app.session.documents().len();
+                let request = app.import_request(purpose);
+                deliver(&mut app, request, name, idml.clone());
+                assert_eq!(app.session.documents().len(), before + 1, "{purpose}: {name}");
+                assert_eq!(app.session.doc().unwrap().doc.title, "Brochure", "{purpose}: {name}");
+            }
+        }
     }
     fn image() -> Vec<u8> {
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##.to_vec()
@@ -681,9 +724,10 @@ pub(crate) mod browser_import_tests {
         let path = std::env::temp_dir().join(format!("designcraft-native-import-{}-{}.pdf", std::process::id(), app.session.doc().unwrap().uid));
         std::fs::write(&path, pdf()).unwrap();
         let pick_path = path.to_string_lossy().to_string();
-        app.services.pick_open = Some(Box::new(move |_| Some(pick_path.clone())));
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(pick_path)));
         app.services.read = Some(Box::new(|path| std::fs::read(path).map_err(|e| e.to_string())));
         app.pick_and_open("place").unwrap();
+        app.settle_dialogs();
         assert_eq!(app.ui.dialog.as_ref().unwrap().id, "pdfImport");
         app.run("file.new", json!({"title": "B"})).unwrap();
         app.ui.dialog.as_mut().unwrap().fields.insert("page".into(), json!("2"));
@@ -738,8 +782,8 @@ mod load_styles_tests {
         let path = std::env::temp_dir().join(format!("designcraft-load-styles-{}-{test}.designcraft", std::process::id()));
         std::fs::write(&path, client_bytes()).unwrap();
         let picked = path.to_string_lossy().to_string();
-        let services = Services { pick_open: Some(Box::new(move |purpose| (purpose == "styles").then(|| picked.clone()))), ..Default::default() };
-        let mut app = DesignApp::new(Session::new(), services);
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked)));
         app.run("file.new", json!({})).unwrap();
         app.run("style.paragraph.create", json!({"name": "Body", "chars": {"size": 8}})).unwrap();
         (app, path)
@@ -754,6 +798,7 @@ mod load_styles_tests {
     fn load_all_text_styles_asks_which_styles_of_the_picked_file_to_load() {
         let (mut app, path) = app_and_file("all");
         app.run("app.loadTextStyles", json!({})).unwrap();
+        app.settle_dialogs();
         let d = app.ui.dialog.as_mut().expect("the Load Styles dialog");
         let row = |name: &str, conflict: bool| json!({"name": name, "conflict": conflict});
         assert_eq!(d.id, "loadStyles");
@@ -772,6 +817,7 @@ mod load_styles_tests {
     fn the_dialog_applies_the_chosen_conflict_rule() {
         let (mut app, path) = app_and_file("rename");
         app.run("app.loadParagraphStyles", json!({})).unwrap();
+        app.settle_dialogs();
         let d = app.ui.dialog.as_mut().unwrap();
         assert_eq!(d.fields["character"], json!([]), "Load Paragraph Styles offers no character styles");
         assert_eq!(d.fields["conflicts"], "redefine");
@@ -786,6 +832,7 @@ mod load_styles_tests {
     fn load_character_styles_offers_only_character_styles() {
         let (mut app, path) = app_and_file("character");
         app.run("app.loadCharacterStyles", json!({})).unwrap();
+        app.settle_dialogs();
         assert_eq!(app.ui.dialog.as_ref().unwrap().fields["paragraph"], json!([]));
         dialogs::confirm(&mut app).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -814,18 +861,22 @@ mod load_styles_tests {
     fn no_file_or_no_document_opens_no_dialog() {
         let (mut app, path) = app_and_file("none");
         std::fs::remove_file(&path).unwrap();
-        // The picked file can't be read.
-        assert!(app.run("app.loadTextStyles", json!({})).is_err());
+        // The picked file can't be read: the status line says so.
+        app.run("app.loadTextStyles", json!({})).unwrap();
+        app.settle_dialogs();
         assert!(app.ui.dialog.as_ref().is_none_or(|d| d.id != "loadStyles"));
+        assert!(!app.ui.status.is_empty());
         // The picker is cancelled.
         app.ui.dialog = None;
-        app.services.pick_open = Some(Box::new(|_| None));
+        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
         app.run("app.loadTextStyles", json!({})).unwrap();
+        app.settle_dialogs();
         assert!(app.ui.dialog.is_none());
         // No document: the picker isn't shown at all.
         app.run("file.close", json!({})).unwrap();
-        app.services.pick_open = Some(Box::new(|_| panic!("asked for a file without a document")));
+        app.answer_dialogs(|_| panic!("asked for a file without a document"));
         assert!(app.run("app.loadTextStyles", json!({})).is_err());
+        app.settle_dialogs();
     }
 
     #[test]

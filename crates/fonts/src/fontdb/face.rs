@@ -1,7 +1,7 @@
 use super::db::NEXT_ID;
 use super::names::{aliases, face_names, name, norm, style_italic, style_weight, wws_names};
 use super::outline::has_serifs;
-use super::*;
+use super::{Arc, DrawSettings, FileRef, FontGroup, GlyphId, Location, LocationRef, MetadataProvider, Ordering, OutlinePen, Size, StringId};
 
 /// The family used when a requested family is unknown (the UI sans).
 pub const FALLBACK_FAMILY: &str = "Source Sans 3";
@@ -297,16 +297,21 @@ impl FontFace {
     /// (bit 1) without a less restrictive bit (Preview & Print, Editable). Fonts without an OS/2
     /// table aren't restricted.
     pub fn restricted_licence(&self) -> bool {
-        use skrifa::raw::TableProvider;
-        let fs_type = self.skrifa().and_then(|f| f.os2().ok()).map_or(0, |t| t.fs_type());
+        let fs_type = self.fs_type().unwrap_or(0);
         fs_type & 0x0002 != 0 && fs_type & 0x000C == 0
     }
 
     /// Does the font's licence allow embedding bitmaps only? OS/2 `fsType` bit 9: the outlines
     /// may not be passed on, so the font file can't be packaged whole.
     pub fn bitmap_only(&self) -> bool {
+        self.fs_type().is_some_and(|t| t & 0x0200 != 0)
+    }
+
+    /// The font's OS/2 `fsType` (embedding licence bits), None when the font has no OS/2 table it
+    /// can read: the font doesn't say, which isn't the same as 0 (installable).
+    pub fn fs_type(&self) -> Option<u16> {
         use skrifa::raw::TableProvider;
-        self.skrifa().and_then(|f| f.os2().ok()).is_some_and(|t| t.fs_type() & 0x0200 != 0)
+        self.skrifa().and_then(|f| f.os2().ok()).map(|t| t.fs_type())
     }
 }
 
@@ -324,17 +329,30 @@ pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
         Ok(FileRef::Collection(c)) => c.len().min(MAX_FACES),
         Err(_) => 0,
     };
+    /// Named instances listed from one file, all its faces together: each is a face of its own,
+    /// and a collection's faces can share one table of thousands.
+    const MAX_INSTANCES: usize = 4096;
     let mut out = Vec::new();
+    let mut instances = 0usize;
+    // Records looked at, kept or not: duplicate or unnamed ones cost a name lookup too.
+    let mut inspected = 0usize;
     for i in 0..count {
         let Ok(f) = skrifa::FontRef::from_index(data, i) else { continue };
         let Some((family, style)) = face_names(&f) else { continue };
         let axes = f.axes();
         let mut named = Vec::new();
+        // The styles taken, ASCII-lowercased: a lookup, not a search of those before.
+        let mut taken = std::collections::HashSet::new();
         for ni in f.named_instances().iter() {
+            if instances >= MAX_INSTANCES || inspected >= MAX_INSTANCES {
+                break;
+            }
+            inspected += 1;
             let Some(style) = name(&f, &[ni.subfamily_name_id()]) else { continue };
-            if named.iter().any(|(_, s, _): &(u32, String, _)| s.eq_ignore_ascii_case(&style)) {
+            if !taken.insert(style.to_ascii_lowercase()) {
                 continue;
             }
+            instances += 1;
             let coords: Vec<([u8; 4], f32)> = axes.iter().zip(ni.user_coords()).map(|(a, v)| (a.tag().to_be_bytes(), v)).collect();
             named.push((i, style, coords));
         }

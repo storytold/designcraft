@@ -1,4 +1,4 @@
-use super::*;
+use super::{Affine, Cache, Document, Item, Rect, SpreadRef, fx};
 
 /// How far (points) an object's soft effects reach outside its geometry.
 pub fn effect_outset(it: &Item) -> f64 {

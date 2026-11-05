@@ -1,5 +1,5 @@
 use super::common::{anchor_self, bool_s, p, uid, with_props, xref_format_self};
-use super::*;
+use super::{CHAR_BUILTINS, DOM_VERSION, Document, El, Ex, HashSet, PARA_BUILTINS, PKG_NS, document_with_pi, escape_id, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -117,10 +117,14 @@ impl<'a> Ex<'a> {
                     prefix: String::new(),
                     marker: String::new(),
                     include_prefix: false,
+                    layout: None,
                 },
             );
         }
         let total = d.page_count();
+        // Alternate layouts: every section names the layout it is in (InDesign's AlternateLayout).
+        let layouts = d.layouts();
+        let alternates = layouts.len() > 1 || secs.iter().any(|s| s.layout.is_some());
         for (i, s) in secs.iter().enumerate() {
             if s.start >= total {
                 continue;
@@ -137,6 +141,9 @@ impl<'a> Ex<'a> {
                 el.set("PageNumberStart", n);
             }
             el = el.attr("Marker", &s.marker).attr("PageStart", uid(page.id.0)).attr("SectionPrefix", &s.prefix);
+            if alternates && let Some(l) = layouts.iter().rfind(|l| l.start <= s.start) {
+                el = el.attr("AlternateLayout", &l.name).attr("AlternateLayoutLength", l.end.saturating_sub(l.start));
+            }
             root.push(with_props(el, vec![p("PageNumberStyle", "enumeration", names::number_style_out(s.style))]));
         }
         if !self.index_topics.is_empty() || !self.index_xrefs.is_empty() {
@@ -206,10 +213,10 @@ fn xref_format_el(i: usize, f: &designcraft_doc::XrefFormat) -> El {
     };
     let mut rest = f.definition.as_str();
     while let Some(a) = rest.find('<') {
+        let Some(b) = rest[a..].find('>') else { break };
         if a > 0 {
             block(&mut el, "CustomStringBuildingBlock", &rest[..a], "", false);
         }
-        let Some(b) = rest[a..].find('>') else { break };
         let tag = rest[a + 1..a + b].trim().trim_end_matches('/').trim();
         let attr = |k: &str| tag.find(&format!("{k}=\"")).and_then(|i| tag[i + k.len() + 2..].split('"').next()).unwrap_or("").to_string();
         match tag.split_whitespace().next().unwrap_or("") {
@@ -349,4 +356,32 @@ fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
         e.push(s);
     }
     e
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::xml::Node;
+
+    fn custom_text(definition: &str) -> String {
+        let f = designcraft_doc::XrefFormat { name: "x".into(), definition: definition.into() };
+        xref_format_el(0, &f)
+            .children
+            .iter()
+            .filter_map(|n| match n {
+                Node::El(e) if e.get("BlockType") == Some("CustomStringBuildingBlock") => e.get("CustomText").map(str::to_string),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn xref_format_unclosed_angle_bracket_keeps_text_once() {
+        assert_eq!(custom_text("a < b"), "a < b");
+    }
+
+    #[test]
+    fn xref_format_well_formed_keeps_custom_text() {
+        assert_eq!(custom_text("p <pageNum /> of <chapNum />"), "p  of ");
+    }
 }

@@ -44,7 +44,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use anchored::{AnchorPosition, AnchoredObject, OBJECT_MARK};
-pub use assets::{find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
+pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
     DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
@@ -194,6 +194,14 @@ pub struct Condition {
     pub visible: bool,
 }
 
+/// One layout of the document: absolute pages `start..end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutRange {
+    pub name: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl Document {
     /// A stroke type with named styles resolved (unknown names draw solid).
     pub fn stroke_kind(&self, t: &StrokeType) -> StrokeType {
@@ -216,17 +224,23 @@ impl Document {
             .iter()
             .map(|e| {
                 let mut word = String::new();
+                // The word's length in chars, kept as it grows (counting it again at every `~`
+                // was quadratic in the exception's length).
+                let mut len = 0;
                 let mut breaks = Vec::new();
                 for c in e.trim().chars() {
                     if c == '~' {
-                        if breaks.last() != Some(&word.chars().count()) && !word.is_empty() {
-                            breaks.push(word.chars().count());
+                        if breaks.last() != Some(&len) && len > 0 {
+                            breaks.push(len);
                         }
                     } else {
-                        word.extend(c.to_lowercase());
+                        for l in c.to_lowercase() {
+                            word.push(l);
+                            len += 1;
+                        }
                     }
                 }
-                breaks.retain(|b| *b < word.chars().count());
+                breaks.retain(|b| *b < len);
                 (word, breaks)
             })
             .collect()
@@ -831,6 +845,9 @@ pub struct Toc {
     /// Paragraph style of the title; `None` is the generated "TOC Title" style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_style: Option<String>,
+    /// Generate a nested PDF outline from the included paragraphs when the TOC is updated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub create_bookmarks: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -841,6 +858,16 @@ pub struct Bookmark {
     pub page: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Bookmark>,
+    /// Owned by the document's generated TOC, so updating it preserves manual bookmarks.
+    ///
+    /// Stored only in native files. Bookmarks (and so this flag) are not written to or read
+    /// from IDML yet, so after an IDML round trip the next TOC update builds the outline fresh.
+    /// If IDML bookmark import is added, imported bookmarks arrive with this flag false and the
+    /// next update would keep them as manual and add a second, duplicate outline. That import
+    /// must set this flag on the bookmarks the TOC generated (for example by matching them to
+    /// the TOC entries) when the TOC has `create_bookmarks` on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub generated_by_toc: bool,
 }
 
 impl Document {
@@ -879,6 +906,32 @@ impl Document {
     /// Iterate all pages with their absolute index and spread index.
     pub fn pages(&self) -> impl Iterator<Item = (usize, usize, &Page)> {
         self.spreads.iter().enumerate().flat_map(|(si, s)| s.pages.iter().map(move |p| (si, p))).enumerate().map(|(i, (si, p))| (i, si, p))
+    }
+
+    /// The document's layouts (Layout › Create Alternate Layout), in page order: the pages up to
+    /// the first section that starts a layout are the first layout. Always at least one; a layout
+    /// whose pages are gone is skipped.
+    pub fn layouts(&self) -> Vec<LayoutRange> {
+        let n = self.page_count();
+        let mut starts: Vec<(usize, Option<&str>)> =
+            self.sections.iter().filter_map(|s| s.layout.as_deref().map(|l| (s.start, Some(l)))).filter(|(st, _)| *st < n).collect();
+        starts.sort_by_key(|(st, _)| *st);
+        starts.dedup_by_key(|(st, _)| *st);
+        if starts.first().is_none_or(|(st, _)| *st != 0) {
+            starts.insert(0, (0, None));
+        }
+        let mut out: Vec<LayoutRange> = Vec::with_capacity(starts.len());
+        for (k, (start, name)) in starts.iter().enumerate() {
+            let end = starts.get(k + 1).map_or(n, |(e, _)| *e);
+            let name = name.map_or_else(|| format!("Layout {}", k + 1), str::to_string);
+            out.push(LayoutRange { name, start: *start, end });
+        }
+        out
+    }
+
+    /// The layout holding absolute page `abs` (an index into [`Document::layouts`]).
+    pub fn layout_of(&self, abs: usize) -> usize {
+        self.layouts().iter().rposition(|l| l.start <= abs).unwrap_or(0)
     }
 
     /// The section containing absolute page `abs`.
@@ -933,6 +986,12 @@ impl Document {
     pub fn default_layer(&self) -> LayerId {
         self.layers.first().map(|l| l.id).unwrap_or_default()
     }
+    /// The layer new objects go to when a document opens: the topmost one shown and unlocked, so
+    /// a document whose top layer is a hidden, locked dieline doesn't put what is placed or drawn
+    /// where it can't be seen or selected. The top layer when every layer is hidden or locked.
+    pub fn working_layer(&self) -> LayerId {
+        self.layers.iter().find(|l| l.visible && !l.locked).map_or_else(|| self.default_layer(), |l| l.id)
+    }
 
     pub fn story(&self, id: StoryId) -> Option<&Story> {
         self.stories.get(&id).map(|s| &**s)
@@ -953,6 +1012,91 @@ impl Document {
 
     pub fn resolve_color(&self, swatch: &str, tint: f32) -> Option<designcraft_color::Color> {
         designcraft_color::swatch::resolve(&self.swatches, swatch, tint)
+    }
+
+    /// Give items that reuse an earlier item's id (spreads, then parents, then items anchored in
+    /// stories) fresh ids, so a file holding such duplicates opens. The first item keeps the id and
+    /// what refers to it by id; a renumbered text frame takes its place in its story's thread.
+    pub fn renumber_duplicate_items(&mut self) {
+        fn walk_mut(it: &mut Item, f: &mut impl FnMut(&mut Item)) {
+            f(it);
+            for c in it.children_mut().into_iter().flatten() {
+                walk_mut(Arc::make_mut(c), f);
+            }
+        }
+        fn story_items(st: &mut Story, f: &mut impl FnMut(&mut Item)) {
+            for o in &mut st.objects {
+                walk_mut(&mut Arc::make_mut(o).item, f);
+            }
+            for t in st.tables.values_mut() {
+                for c in &mut Arc::make_mut(t).cells {
+                    story_items(&mut c.text, f);
+                }
+            }
+            for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+                story_items(&mut Arc::make_mut(n).text, f);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut dups = std::collections::HashSet::new();
+        let mut next = self.next_id;
+        let mut note = |id: ItemId| {
+            next = next.max(id.0);
+            if !seen.insert(id) {
+                dups.insert(id);
+            }
+        };
+        for sp in self.spreads.iter().chain(self.parents.iter()) {
+            for it in &sp.items {
+                it.walk(&mut |i| note(i.id));
+            }
+        }
+        for (_, i) in self.anchored_items() {
+            note(i.id);
+        }
+        if dups.is_empty() {
+            return;
+        }
+        let mut seen = std::collections::HashSet::new();
+        // (story, id in the file) → the ids its frames carry now, in walk order.
+        let mut threads: std::collections::HashMap<(StoryId, ItemId), Vec<ItemId>> = std::collections::HashMap::new();
+        let mut fix = |it: &mut Item| {
+            let old = it.id;
+            if !dups.contains(&old) {
+                return;
+            }
+            if !seen.insert(old) {
+                // An id at the top of the range has no successor: leave the duplicate for
+                // `check()` to refuse rather than overflow.
+                let Some(n) = next.checked_add(1) else { return };
+                next = n;
+                it.id = ItemId(next);
+            }
+            if let Some(t) = it.text_frame() {
+                threads.entry((t.story, old)).or_default().push(it.id);
+            }
+        };
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            for it in &mut Arc::make_mut(sp).items {
+                walk_mut(Arc::make_mut(it), &mut fix);
+            }
+        }
+        for st in self.stories.values_mut() {
+            story_items(Arc::make_mut(st), &mut fix);
+        }
+        self.next_id = next;
+        for ((sid, old), ids) in threads {
+            let Some(st) = self.stories.get_mut(&sid) else { continue };
+            let st = Arc::make_mut(st);
+            let mut ids = ids.into_iter();
+            for f in st.frames.iter_mut().filter(|f| **f == old) {
+                match ids.next() {
+                    Some(id) => *f = id,
+                    None => break,
+                }
+            }
+            st.frames.extend(ids);
+        }
     }
 
     /// Validate structural invariants (ids unique, threads consistent, stories well-formed).

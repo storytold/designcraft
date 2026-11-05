@@ -1,4 +1,5 @@
-use super::*;
+use super::{DesignApp, Value, json};
+use crate::app::file_dialogs::{Bound, with_path};
 
 pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
     let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).ok_or("no document")?;
@@ -10,9 +11,27 @@ pub(super) fn download_document(app: &mut DesignApp) -> Result<Value, String> {
     app.run("file.saveAs", json!({"path": name}))
 }
 
+/// Asks where to save `name`, then runs `export` with `p` and the chosen path.
+#[track_caller]
+fn ask_then_export(
+    app: &mut DesignApp,
+    name: &str,
+    p: Value,
+    export: impl FnOnce(&mut DesignApp, &Value) -> Result<Value, String> + 'static,
+) -> Result<Value, String> {
+    app.ask_save(name, Bound::Document, move |app, path| export(app, &with_path(&p, "path", path)))
+}
+
 pub(super) fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
     let page = crate::control::page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count())?;
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        // The page in view now is the one exported once the dialog answers.
+        let name = format!("{}-p{}.png", st.doc.title, page + 1);
+        let mut q = if p.is_object() { p.clone() } else { json!({}) };
+        q["page"] = json!(page);
+        return ask_then_export(app, &name, q, export_png);
+    };
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(2.0);
     let mut r = designcraft_render::Renderer::new();
     let img = r
@@ -26,14 +45,6 @@ pub(super) fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String
         )
         .ok_or("no such page")?;
     let png = img.to_png();
-    let path = match p.get("path").and_then(Value::as_str) {
-        Some(s) => Some(s.to_string()),
-        None => {
-            let name = format!("{}-p{}.png", st.doc.title, page + 1);
-            app.pick_save(&name)
-        }
-    };
-    let Some(path) = path else { return Ok(Value::Null) };
     match app.services.write.as_mut() {
         Some(w) => w(&path, &png).map(|_| json!({"path": path, "width": img.width, "height": img.height})),
         None => Err("no writer".into()),
@@ -44,14 +55,10 @@ pub(super) fn export_png(app: &mut DesignApp, p: &Value) -> Result<Value, String
 /// the platform writer (a download on the web).
 pub(super) fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let path = match p.get("path").and_then(Value::as_str) {
-        Some(s) => Some(s.to_string()),
-        None => {
-            let name = format!("{}.idml", st.doc.title);
-            app.pick_save(&name)
-        }
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        let name = format!("{}.idml", st.doc.title);
+        return ask_then_export(app, &name, p.clone(), export_idml);
     };
-    let Some(path) = path else { return Ok(Value::Null) };
     let r = app.run("file.exportIdml", json!({}))?;
     let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
     match app.services.write.as_mut() {
@@ -74,14 +81,11 @@ pub(crate) fn export_epub(app: &mut DesignApp, p: &Value) -> Result<Value, Strin
 
 pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let path = match p.get("path").and_then(Value::as_str) {
-        Some(s) => Some(s.to_string()),
-        None => {
-            let name = format!("{}.{ext}", st.doc.title);
-            app.pick_save(&name)
-        }
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        let name = format!("{}.{ext}", st.doc.title);
+        let (ext, cmd) = (ext.to_string(), cmd.to_string());
+        return ask_then_export(app, &name, p.clone(), move |app, q| export_bytes(app, q, &ext, &cmd));
     };
-    let Some(path) = path else { return Ok(Value::Null) };
     // The caller's options go to the engine command; the path is ours.
     let mut params = match p {
         Value::Object(o) => Value::Object(o.iter().filter(|(k, _)| k.as_str() != "path").map(|(k, v)| (k.clone(), v.clone())).collect()),
@@ -161,14 +165,10 @@ pub(super) fn separations_view(app: &mut DesignApp, p: &Value) -> Result<Value, 
 /// platform writer (a download on the web).
 pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
-    let path = match p.get("path").and_then(Value::as_str) {
-        Some(s) => Some(s.to_string()),
-        None => {
-            let name = format!("{}.pdf", st.doc.title);
-            app.pick_save(&name)
-        }
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        let name = format!("{}.pdf", st.doc.title);
+        return ask_then_export(app, &name, p.clone(), export_pdf);
     };
-    let Some(path) = path else { return Ok(Value::Null) };
     let mut params = if p.is_object() { p.clone() } else { json!({}) };
     if let Some(o) = params.as_object_mut() {
         o.remove("path");
