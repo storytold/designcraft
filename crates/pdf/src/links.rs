@@ -11,6 +11,9 @@ use krilla::outline::{Outline, OutlineNode};
 
 use crate::export::Sheet;
 
+/// A link annotation on text with the story and paragraph it starts in, which tag it.
+pub(crate) type StoryLink = (Annotation, (designcraft_doc::StoryId, usize));
+
 /// Index of the output sheet showing absolute page `abs`.
 pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Option<usize> {
     let (si, pi) = doc.page_loc(abs)?;
@@ -49,11 +52,16 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
     }
 }
 
-/// Link annotations for the sheet at `idx`.
-pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sheets: &[Sheet], idx: usize) -> Vec<Annotation> {
+/// Link annotations for the sheet at `idx`; those on text come apart, with their paragraph.
+pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sheets: &[Sheet], idx: usize) -> (Vec<Annotation>, Vec<StoryLink>) {
     let sh = &sheets[idx];
     let mut out = Vec::new();
+    let mut tagged = Vec::new();
     for h in &doc.hyperlinks {
+        let para = match &h.source {
+            HyperlinkSource::Text { story, start, .. } => doc.story(*story).map(|st| (*story, st.para_at((*start).min(st.len())))),
+            HyperlinkSource::Item { .. } => None,
+        };
         for r in source_rects(doc, cache, &h.source, sh.spread) {
             let r = r.intersect(sh.bleed);
             if r.width() <= 0.0 || r.height() <= 0.0 {
@@ -74,7 +82,11 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                     None => continue,
                 },
             };
-            out.push(Annotation::new_link(LinkAnnotation::new(rect, target), Some(h.name.clone())));
+            let a = Annotation::new_link(LinkAnnotation::new(rect, target), Some(h.name.clone()));
+            match para {
+                Some(key) => tagged.push((a, key)),
+                None => out.push(a),
+            }
         }
     }
     // Buttons: their bounds act on release.
@@ -134,7 +146,7 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
             }
         }
     }
-    out
+    (out, tagged)
 }
 
 /// The document outline from the bookmarks (bookmarks to pages that weren't exported are skipped).
