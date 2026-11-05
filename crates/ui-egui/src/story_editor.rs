@@ -107,8 +107,21 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         let line = egui::Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
                         ui.painter().rect_filled(line, 0.0, if drag.hovered() || drag.dragged() { t.text_dim } else { t.section_divider });
                         let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        // The width follows the pointer from where the drag started, so the bar comes back
+                        // with the pointer after the drag passes the narrowest or widest width.
+                        if drag.drag_started() {
+                            let origin = ui.input(|i| i.pointer.press_origin()).or(drag.interact_pointer_pos());
+                            if let Some(origin) = origin {
+                                ui.data_mut(|d| d.insert_temp(drag.id, (column.width(), origin.x)));
+                            }
+                        }
                         if drag.dragged() {
-                            dragged_width = Some(style_column_width(column.width() + drag.drag_delta().x));
+                            let start = ui.data(|d| d.get_temp::<(f32, f32)>(drag.id));
+                            let width = match (start, drag.interact_pointer_pos()) {
+                                (Some((width, origin)), Some(pos)) => width + pos.x - origin,
+                                _ => column.width() + drag.drag_delta().x,
+                            };
+                            dragged_width = Some(style_column_width(width));
                         }
                         drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
                     }
@@ -587,6 +600,27 @@ mod tests {
         assert!((after - before - 60.0).abs() < 1.0, "the text moves with the bar: {before} → {after}");
         let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
         assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().story_editor_style_width, width);
+    }
+
+    /// After a drag passes the widest width, moving the pointer back brings the bar back with it:
+    /// the width is the starting width plus how far the pointer moved, kept in range.
+    #[test]
+    fn the_style_column_bar_follows_the_pointer_back_from_a_limit() {
+        use egui::{Event, Modifiers, PointerButton};
+        let mut h = story_editor_harness("Limit story");
+        let a = h.get_by_label("Style name column divider").rect().center();
+        h.input_mut().events.push(Event::PointerMoved(a));
+        h.input_mut().events.push(Event::PointerButton { pos: a, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        for dx in [100.0, 200.0, 300.0, 400.0, 300.0, 200.0] {
+            h.input_mut().events.push(Event::PointerMoved(a + egui::vec2(dx, 0.0)));
+            h.step();
+        }
+        let b = a + egui::vec2(200.0, 0.0);
+        h.input_mut().events.push(Event::PointerButton { pos: b, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(3);
+        let width = h.state().app.ui.story_editor_style_width;
+        assert!((width - super::STYLE_COLUMN_WIDTH - 200.0).abs() < 1.0, "the column is 200 points wider: {width}");
     }
 
     /// A saved width out of range, or not a number, gives a column the bar can still be dragged in.
