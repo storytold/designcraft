@@ -8,7 +8,10 @@
 //! - no TCP control channel (browsers can't listen on sockets);
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
-//! - Save and Export trigger a browser download;
+//! - Save and Export trigger a browser download (Save in the format Preferences › File Handling
+//!   chooses);
+//! - the Preferences dialog's settings live in the browser's local storage (`prefs_store`), as
+//!   the desktop app keeps them in `prefs.json`;
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
@@ -24,6 +27,9 @@ mod web;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod graphics;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod prefs_store;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

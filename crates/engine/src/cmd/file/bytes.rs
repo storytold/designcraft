@@ -47,6 +47,9 @@ pub fn is_document(bytes: &[u8]) -> bool {
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
 pub const DOCUMENT_SNIFF_BYTES: u64 = 64 << 10;
 
+/// How a refused lossy IDML save's error starts (see [`bytes_for_path`]).
+pub const LOSSY_IDML_SAVE: &str = "saving as IDML would lose content";
+
 /// The longer side of the first-page picture saved in the file, in pixels.
 pub(super) const PREVIEW_PX: f64 = 320.0;
 
@@ -61,6 +64,37 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     let png =
         preview.and_then(|scale| designcraft_render::Renderer::new().render_page(d, cache, 0, scale, false, &Default::default())).map(|r| r.to_png());
     save_bytes(d, png.as_deref())
+}
+
+/// The bytes a save to `path` writes: an IDML package (images embedded) for a `.idml` name, else
+/// DesignCraft's own format with its first-page picture (Preferences › File Handling › Save
+/// documents as). An IDML save that would lose content IDML can't hold (editorial notes,
+/// endnotes) is refused unless `allow_loss`: the save marks the document saved and drops its
+/// recovery copy, so the loss would be silent and for good.
+pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache, allow_loss: bool) -> Result<Vec<u8>> {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => {
+            let lost = designcraft_idml::unwritten(d);
+            if !allow_loss && !lost.is_empty() {
+                return Err(EngineError::Other(format!(
+                    "{LOSSY_IDML_SAVE}: IDML can't keep {} editorial note(s) and {} endnote(s); pass allowLoss to save anyway",
+                    lost.editorial_notes, lost.endnotes
+                )));
+            }
+            crate::cmd::interchange::idml_bytes(d, &designcraft_idml::ExportOptions::default())
+        }
+        crate::SaveFormat::Designcraft => to_bytes_with_preview(d, cache),
+    }
+}
+
+/// The path a save writes to: a `.idml` name as given (written as IDML, see [`bytes_for_path`]),
+/// any other with the `.designcraft` extension added when it lacks it
+/// ([`with_document_extension`]).
+pub fn with_save_extension(path: &str) -> String {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => path.to_string(),
+        crate::SaveFormat::Designcraft => with_document_extension(path),
+    }
 }
 
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
