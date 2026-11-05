@@ -806,7 +806,6 @@ mod paste_tests {
         assert_eq!(pasted(&mut s, "edit.pasteInPlace", json!({"spread": 1})), (SpreadRef::Doc(1), Rect::new(w + 36.0, 36.0, w + 136.0, 136.0)));
     }
 
-    /// A copied text frame's clipping holds the files its anchored graphics show.
     /// A frame with `Host` text and, anchored at its start, a text frame with `Inner`; anchored
     /// in that one's text, if `nested`, another with `Deepest`, as IDML import makes them (the
     /// commands don't anchor text frames). Returns the host frame.
@@ -942,6 +941,7 @@ mod paste_tests {
         s.doc().unwrap().doc.check().unwrap();
     }
 
+    /// A copied text frame's clipping holds the files its anchored graphics show.
     #[test]
     fn copied_text_frames_keep_the_graphics_anchored_in_their_text() {
         let mut s = Session::new();
