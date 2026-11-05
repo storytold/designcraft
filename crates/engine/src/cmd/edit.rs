@@ -1018,4 +1018,33 @@ mod paste_swatch_tests {
         assert_eq!(gradient.stops[0].swatch.as_deref(), Some("Shared"));
         assert_eq!(gradient.stops[0].color, Color::rgb(0.0, 0.0, 1.0), "this document's Shared");
     }
+
+    /// A bevel's highlight and shadow name swatches too: pasted into another document they come
+    /// along, and renaming one renames it there, as for the other effects.
+    #[test]
+    fn a_bevels_highlight_and_shadow_swatches_come_along_and_follow_a_rename() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Glint", "color": "#f0e070"})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shade", "color": "#302010"})).unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let b = &mut d.item_mut(ItemId(rect)).unwrap().effects.bevel;
+            b.highlight = "Glint".into();
+            b.shadow = "Shade".into();
+            Ok(())
+        })
+        .unwrap();
+        s.execute("swatch.options", &json!({"name": "Glint", "to": "Highlight"})).unwrap();
+        let b = &s.doc().unwrap().doc.item(ItemId(rect)).unwrap().effects.bevel;
+        assert_eq!((b.highlight.as_str(), b.shadow.as_str()), ("Highlight", "Shade"), "the rename reaches the bevel");
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Highlight", "Shade"]);
+    }
 }
