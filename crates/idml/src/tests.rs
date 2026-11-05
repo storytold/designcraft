@@ -2262,6 +2262,29 @@ fn custom_glyph_imports_and_round_trips() {
     check(&import_idml(&export_idml(&d)).unwrap());
 }
 
+/// A U+E013 typed as text (no CustomGlyph) stays text on export: it used to go out as a custom
+/// glyph (`<?ACE 1a?>`) naming nothing.
+#[test]
+fn a_plain_u_e013_exports_as_text() {
+    let story = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <Story Self="s1">
+    <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/Text%3aBody">
+      <CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>a&#xE013;b</Content></CharacterStyleRange>
+    </ParagraphStyleRange>
+  </Story>
+</idPkg:Story>"#;
+    let d = import_idml_with(&fixture_with_story(story), &|_| None).unwrap();
+    assert_eq!(d.story(*d.stories.keys().next().unwrap()).unwrap().text, "a\u{E013}b");
+    let bytes = export_idml(&d);
+    let text = zip_text(&bytes, "Stories/");
+    assert!(!text.contains("ACE 1a"), "{text}");
+    let back = import_idml(&bytes).unwrap();
+    let st = back.story(*back.stories.keys().next().unwrap()).unwrap();
+    assert_eq!(st.text, "a\u{E013}b");
+    assert!(st.runs().all(|(_, f)| f.over.custom_glyph.is_none()));
+}
+
 /// A custom glyph given by glyph id (CustomGlyph of type long) keeps the id and goes back out as
 /// a long: it used to become a glyph name and go out as the string `$ID/68`.
 #[test]

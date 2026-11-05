@@ -897,8 +897,9 @@ fn shape_run_raw(
                 | designcraft_doc::ANCHOR_MARK
                 | designcraft_doc::INDEX_MARK
                 | designcraft_doc::OBJECT_MARK
-                | story::CUSTOM_GLYPH
-        ) || designcraft_doc::vars::var_index(c).is_some();
+        ) || designcraft_doc::vars::var_index(c).is_some()
+            // A U+E013 without the glyph it draws is ordinary text.
+            || (c == story::CUSTOM_GLYPH && !p.custom_glyph.is_empty());
         if special {
             flush(seg_start, i, &seg_face, out);
             seg_start = i + c.len_utf8();
@@ -1635,7 +1636,7 @@ fn joining_context<'p>(db: &ScopedFonts<'_>, text: &str, runs: impl Iterator<Ite
     for (r, p) in runs {
         let Some(s) = text.get(r.clone()) else { continue };
         for (i, c) in s.char_indices() {
-            if c == story::CUSTOM_GLYPH {
+            if c == story::CUSTOM_GLYPH && !p.custom_glyph.is_empty() {
                 let face = db.face(&p.font_family, &p.font_style);
                 let stand_in = match custom_glyph_role(&face, &p.custom_glyph) {
                     (_, true, true) => '\u{200D}',

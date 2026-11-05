@@ -363,6 +363,10 @@ impl<'a> Ex<'a> {
         for (k, (rr, f)) in segs.into_iter().enumerate() {
             let seg_start = rr.start;
             let text = &s.text[rr];
+            // A U+E013 is a custom glyph only with the glyph it draws; without one it is ordinary
+            // text (an icon font's character, say).
+            let custom_glyph =
+                text.contains(st::CUSTOM_GLYPH) && !self.d.styles.resolve_char(&self.d.styles.resolve_para(&pf).1, &f).custom_glyph.is_empty();
             // Split at break characters.
             let mut cur = String::new();
             let mut pending: Vec<Node> = Vec::new();
@@ -386,7 +390,7 @@ impl<'a> Ex<'a> {
                     st::SECTION_MARKER => Some("19"),
                     st::INDENT_HERE => Some("7"),
                     st::RIGHT_INDENT_TAB => Some("8"),
-                    st::CUSTOM_GLYPH => Some("1a"),
+                    st::CUSTOM_GLYPH if custom_glyph => Some("1a"),
                     _ => None,
                 };
                 let brk = match ch {

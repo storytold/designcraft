@@ -119,6 +119,21 @@ fn custom_glyph_draws_the_named_glyph() {
     assert!(g.visible && (g.adv - face.advance(g.gid) * g.sx).abs() < 1e-9 && g.adv > 0.0, "{g:?}");
 }
 
+/// A U+E013 without the glyph it draws is ordinary text (an icon font's character, say): a
+/// strong left-to-right character in Arabic text, as private-use characters are. It used to be
+/// taken for a custom glyph naming nothing: a neutral drawn as .notdef, set right to left.
+#[test]
+fn a_plain_u_e013_is_ordinary_text() {
+    let text = format!("\u{0628}\u{0628}{}\u{0628}\u{0628}", designcraft_doc::story::CUSTOM_GLYPH);
+    let at = text.find(designcraft_doc::story::CUSTOM_GLYPH).unwrap();
+    let glyphs = custom_glyph_glyphs(&text, None, |_, _| {});
+    let g = glyphs.iter().find(|g| g.byte == at).unwrap();
+    assert!(!g.rtl, "{g:?}");
+    // The same character as a custom glyph is a neutral and goes with the Arabic around it.
+    let glyphs = custom_glyph_glyphs(&text, Some((at, "65535")), |_, _| {});
+    assert!(glyphs.iter().find(|g| g.byte == at).unwrap().rtl);
+}
+
 /// The first line's glyphs of `text` in a 200 × 400 frame, the character at byte `at` a custom
 /// glyph `name` when there is one, after `edit`.
 fn custom_glyph_glyphs(text: &str, custom: Option<(usize, &str)>, edit: impl FnOnce(&mut Document, StoryId)) -> Vec<PlacedGlyph> {
