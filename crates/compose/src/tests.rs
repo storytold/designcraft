@@ -278,6 +278,56 @@ fn caret_positions_keep_a_mark_with_its_letter() {
     assert!(plain.frames[0].lines[0].glyphs.iter().all(|g| g.gid != 0));
 }
 
+/// A generated label (a text variable) that starts with a combining mark is not a mark of the
+/// source: the caret still stops before its marker.
+#[test]
+fn caret_stops_before_a_label_that_starts_with_a_mark() {
+    use designcraft_doc::vars::{TextVariable, VarKind, var_char};
+    let marker = var_char(Document::new(&NewDocument::default()).text_variables.len()).unwrap();
+    let text = format!("ab{marker}c");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.text_variables.push(TextVariable::new("Mark first", VarKind::Custom { text: "\u{301}x".into() }));
+    assert_eq!(designcraft_doc::vars::var_index(marker), Some(d.text_variables.len() - 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    let at = text.find(marker).unwrap();
+    assert!(l.glyphs.iter().any(|g| g.byte == at && g.generated_text.is_some()), "the label is laid out");
+    let stops: Vec<usize> = crate::caret_stops(l).into_iter().map(|(p, _)| p).collect();
+    assert!(stops.contains(&at), "{stops:?}");
+}
+
+/// Tracking and manual kerning stay off a letter whose mark is shaped apart: a ligature broken by
+/// a change of colour ("fi") shapes the group piece by piece, and a mark in a colour of its own is
+/// then a piece after its letter's. The letter took the spacing, and the mark took it again.
+#[test]
+fn tracking_skips_a_letter_whose_mark_is_shaped_apart() {
+    let text = "fix\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let place = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.kerning = Some(designcraft_doc::Kerning::Manual(300.0)));
+        story.format_chars(1..2, |f| f.over.fill = Some("Cyan".into()));
+        if colour {
+            story.format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let (plain, coloured) = (place(false), place(true));
+    // The letters (not the mark) are where they are with the mark in its letter's piece. The
+    // broken ligature proves the group was shaped piece by piece (tracking would turn ligatures
+    // off: manual kerning adds the same spacing).
+    assert!(all_lines(&plain)[0].glyphs.iter().any(|g| g.byte == 0 && g.len == 1), "f and i shaped apart");
+    let letters = |cs: &ComposedStory| {
+        all_lines(cs)[0].glyphs.iter().filter(|g| !g.face.get().glyph_is_mark(g.gid)).map(|g| (g.gid, g.x, g.adv)).collect::<Vec<_>>()
+    };
+    let (p, c) = (letters(&plain), letters(&coloured));
+    assert_eq!(p.len(), c.len());
+    for (a, b) in p.iter().zip(&c) {
+        assert!(a.0 == b.0 && (a.1 - b.1).abs() < 0.05 && (a.2 - b.2).abs() < 0.05, "{a:?} → {b:?}");
+    }
+}
+
 /// Lam-alif stays one ligature when its letters differ only in colour, as in InDesign: it takes
 /// the lam's colour. (Outside Arabic a change of style still ends a ligature, see
 /// `colour_change_keeps_kerning_and_ligatures_keep_colour`.)

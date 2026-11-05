@@ -1309,12 +1309,18 @@ fn shape_segment(
         // cluster of its own, and its glyphs come in text order: left to right a mark follows its
         // letter (the mark takes the tracking, not the letter before it); right to left the
         // shaper sets a mark before its letter, which is laid out last and takes it (a mark,
-        // never).
+        // never). Left to right the mark may also start the next segment (a piece shaped apart, a
+        // face of its own): the source text after this one says so. A generated label never
+        // looks past itself.
         let tracked = last_in_cluster
             && if sg.rtl {
                 !is_mark(ch)
             } else {
-                !shaped.get(gi + 1).is_some_and(|x| src.get(x.cluster..).and_then(|t| t.chars().next()).is_some_and(is_mark))
+                let next = match shaped.get(gi + 1) {
+                    Some(x) => src.get(x.cluster..),
+                    None => replacement.map_or_else(|| text.get(range.end..), |_| None),
+                };
+                !starts_with_mark(next)
             };
         if ch == SOFT_HYPHEN {
             adv = 0.0;
@@ -1378,6 +1384,11 @@ fn shape_segment(
             list_label: false,
         });
     }
+}
+
+/// Whether `text` starts with a combining mark.
+fn starts_with_mark(text: Option<&str>) -> bool {
+    text.and_then(|t| t.chars().next()).is_some_and(is_mark)
 }
 
 /// `src` cut into runs set upright in vertical text (CJK, and with `rotate_roman` half-width

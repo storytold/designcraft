@@ -5754,11 +5754,16 @@ fn caret_stops(l: &Line) -> Vec<(usize, f64)> {
 
 /// Whether glyph `i` of line `l` is a combining mark in a cluster of its own after a letter (a
 /// mark in a colour of its own, see `shape::StyleRuns::cluster_chars`): the caret stays with its
-/// letter, as it does when the mark is in the letter's cluster.
+/// letter, as it does when the mark is in the letter's cluster. Generated text (a label that
+/// starts with a mark) is not a mark of the source: the caret before its marker stays.
 fn own_mark(l: &Line, i: usize) -> bool {
-    l.glyphs
-        .get(i)
-        .is_some_and(|g| g.len > 0 && i > 0 && g.byte > l.range.start && unicode_bidi::bidi_class(g.rendered_char) == unicode_bidi::BidiClass::NSM)
+    l.glyphs.get(i).is_some_and(|g| {
+        g.len > 0
+            && i > 0
+            && g.byte > l.range.start
+            && g.generated_text.is_none()
+            && unicode_bidi::bidi_class(g.rendered_char) == unicode_bidi::BidiClass::NSM
+    })
 }
 
 /// Whether story byte `p` is where such a mark ([`own_mark`]) starts: no caret position.
