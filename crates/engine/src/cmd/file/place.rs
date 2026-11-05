@@ -100,8 +100,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             (nw, nh)
         }
     };
+    // A file joining the place cursor's queue goes after the ones already there, whatever is selected.
+    let load_cursor_param = p.get("loadCursor").and_then(Value::as_bool) == Some(true);
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
     let target_frame = crate::cmd::id_param(p, "frame").or_else(|| {
-        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
+        if (load_cursor_param && append) || ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
             return None;
         }
         let st = s.active()?;
@@ -115,8 +118,8 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let lid = s.doc()?.active_layer;
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
-    if target_frame.is_none() && px.is_none() && py.is_none() && p.get("loadCursor").and_then(Value::as_bool) == Some(true) {
-        return load_cursor(s, asset, (bw, bh), p.get("append").and_then(Value::as_bool) == Some(true));
+    if target_frame.is_none() && px.is_none() && py.is_none() && load_cursor_param {
+        return load_cursor(s, asset, (bw, bh), append);
     }
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
