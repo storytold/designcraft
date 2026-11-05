@@ -179,16 +179,16 @@ fn painted_bounds(it: &Item) -> Rect {
     b
 }
 
-/// The areas of changed frame `f` before and after an edit. None (repaint everything) for an
-/// anchored text frame: it isn't on a spread (so it has no area of its own here) but is drawn
-/// inside the text it is anchored in, wherever that is laid out. A frame that is neither on a
-/// spread nor anchored in either document is drawn nowhere and adds nothing.
+/// The areas of changed frame `f` before and after an edit. None (repaint everything) for a
+/// text frame anchored in either document: it isn't on a spread there (so it has no area of its
+/// own here) but is drawn inside the text it is anchored in, wherever that is laid out, also when
+/// it is on a spread in the other document. A frame that is neither on a spread nor anchored in
+/// either document is drawn nowhere and adds nothing.
 fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
-    let areas: Vec<(SpreadRef, Rect)> = [old, new].into_iter().filter(|d| d.find(f).is_some()).map(|d| frame_area(d, f)).collect::<Option<_>>()?;
-    if areas.is_empty() && [old, new].into_iter().any(|d| d.anchored_item(f).is_some()) {
+    if [old, new].into_iter().any(|d| d.anchored_item(f).is_some()) {
         return None;
     }
-    Some(areas)
+    [old, new].into_iter().filter(|d| d.find(f).is_some()).map(|d| frame_area(d, f)).collect()
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
@@ -386,6 +386,22 @@ mod tests {
         assert!(changed_frame_areas(&d, &d, fid).is_none(), "anchored");
         assert_eq!(changed_frame_areas(&d, &d, on_spread).map(|a| a.len()), Some(2), "before and after");
         assert_eq!(changed_frame_areas(&d, &d, ItemId(u64::MAX)), Some(Vec::new()), "nowhere");
+    }
+
+    /// A frame on a spread in one document and anchored in the other repaints everything, both
+    /// ways: its anchored placement is drawn inside its host's text, outside the spread area.
+    #[test]
+    fn a_frame_moving_between_a_spread_and_an_anchor_repaints_everything() {
+        let mut on_spread = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = on_spread.default_layer();
+        let (_, host) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let mut anchored = on_spread.clone();
+        let it = anchored.item(fid).unwrap().clone();
+        anchored.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        anchored.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&on_spread, &anchored, fid).is_none(), "spread to anchor");
+        assert!(changed_frame_areas(&anchored, &on_spread, fid).is_none(), "anchor to spread");
     }
 
     #[test]
