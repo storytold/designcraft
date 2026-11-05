@@ -60,7 +60,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder)",
             has_doc,
             placeholder_add
         ),
