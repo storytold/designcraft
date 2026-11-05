@@ -139,7 +139,15 @@ impl Names<'_> {
         self.fill(&mut it.fill);
         self.stroke(&mut it.stroke);
         let e = &mut it.effects;
-        for c in [&mut e.drop_shadow.color, &mut e.inner_shadow.color, &mut e.outer_glow.color, &mut e.inner_glow.color, &mut e.satin.color] {
+        for c in [
+            &mut e.drop_shadow.color,
+            &mut e.inner_shadow.color,
+            &mut e.outer_glow.color,
+            &mut e.inner_glow.color,
+            &mut e.satin.color,
+            &mut e.bevel.highlight,
+            &mut e.bevel.shadow,
+        ] {
             self.s(c);
         }
         if let Some(tf) = it.text_frame_mut() {
@@ -289,8 +297,8 @@ impl Document {
     /// Copy from `src` the swatches that `items` of this document (pasted from `src`) name and
     /// this document lacks: in their fills, strokes and effects, in the text, tables and anchored
     /// objects of their frames, and the swatches those are built from (a tint's base, a gradient's
-    /// stop swatches). A name this document already has keeps this document's definition, as when
-    /// InDesign pastes between documents. Returns how many were added.
+    /// stop swatches). A name this document already has keeps this document's definition.
+    /// Returns how many were added.
     pub fn adopt_swatches(&mut self, src: &Document, items: &[ItemId]) -> usize {
         let items: Vec<Item> = items.iter().filter_map(|id| self.item(*id).cloned()).collect();
         self.adopt_item_swatches(src, &items)
