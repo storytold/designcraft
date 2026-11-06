@@ -631,6 +631,24 @@ mod anchored_text_frame_tests {
     }
 
     #[test]
+    fn tracked_deletion_of_an_inserted_anchor_unthreads_it() {
+        let (mut s, _host, host_sid) = setup("Before after and more words.");
+        let (note, note_sid) = add_note(&mut s, "Note");
+        anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+        let d = std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let st = d.story_mut(host_sid).unwrap();
+        let mark = st.text.find(OBJECT_MARK).unwrap();
+        st.format_chars(mark..mark + OBJECT_MARK.len_utf8(), |f| f.over.change = Some(designcraft_doc::ChangeMark::Inserted));
+        s.execute("changes.track", &json!({"on": true})).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": mark, "focus": mark + OBJECT_MARK.len_utf8()})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        assert!(d.anchored_item(note).is_none());
+        assert!(d.story(note_sid).is_none());
+        d.check().unwrap();
+    }
+
+    #[test]
     fn overset_text_in_an_anchored_frame_is_reported() {
         let (mut s, _host, host_sid) = setup("Before after and more words.");
         let r = s

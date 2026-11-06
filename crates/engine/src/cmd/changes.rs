@@ -6,9 +6,10 @@ use serde_json::{Value, json};
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
 
-/// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
-/// the text after the range now starts.
-pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+/// Mark `r` deleted (text this session inserted while tracking is simply removed), collecting the
+/// anchored text frames whose inserted marks it removes. Returns where the text after the range
+/// now starts.
+pub(crate) fn mark_deleted_collecting(st: &mut Story, r: std::ops::Range<usize>, doomed: &mut Vec<(StoryId, ItemId)>) -> usize {
     if r.is_empty() {
         return r.start;
     }
@@ -21,6 +22,7 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
     let mut end = r.end;
     ins.sort_by_key(|x| std::cmp::Reverse(x.start));
     for x in ins {
+        doomed.extend(st.anchored_text_frames_in(x.clone()));
         st.delete(x.clone());
         end -= x.len();
     }

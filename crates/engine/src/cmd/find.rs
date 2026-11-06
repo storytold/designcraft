@@ -544,6 +544,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
 /// Most matches `find.find` returns.
 const MAX_MATCHES: usize = 10_000;
 
+/// `find.find`: find every match in the search scope.
 fn find(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;
@@ -595,6 +596,7 @@ fn char_overrides(attrs: Option<&Value>) -> Result<designcraft_doc::CharAttrs> {
     Ok(over)
 }
 
+/// `find.change`: replace or format every match in the search scope, unthreading deleted anchors.
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;

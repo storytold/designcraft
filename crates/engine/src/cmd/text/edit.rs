@@ -84,7 +84,8 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let mut doomed = Vec::new();
+            let at = crate::cmd::changes::mark_deleted_collecting(st, r.clone(), &mut doomed);
             reserve_command_text(st, text.len())?;
             let mut fmt = st.insert_format_at(at).clone();
             if let Some(f) = &typing {
@@ -92,6 +93,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             }
             fmt.over.change = Some(designcraft_doc::ChangeMark::Inserted);
             st.insert_with(at, &text, fmt);
+            d.unthread_anchored_text_frames(&doomed);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return Ok(json!({"pos": pos}));
@@ -149,7 +151,7 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
         let mut doomed = Vec::new();
         if !after_range.is_empty() {
             if tracking {
-                crate::cmd::changes::mark_deleted(story, after_range.clone());
+                crate::cmd::changes::mark_deleted_collecting(story, after_range.clone(), &mut doomed);
             } else {
                 doomed.extend(story.anchored_text_frames_in(after_range.clone()));
                 story.delete(after_range.clone());
@@ -159,7 +161,7 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
         if !before_range.is_empty() {
             if tracking {
                 // Tracked changes keep the text and mark it deleted: the selection does not move.
-                let new_end = crate::cmd::changes::mark_deleted(story, before_range.clone());
+                let new_end = crate::cmd::changes::mark_deleted_collecting(story, before_range.clone(), &mut doomed);
                 shift = before_range.end.saturating_sub(new_end);
             } else {
                 shift = before_range.len();
@@ -275,7 +277,7 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
         let mut doomed = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
-                crate::cmd::changes::mark_deleted(st, r.clone());
+                crate::cmd::changes::mark_deleted_collecting(st, r.clone(), &mut doomed);
             } else {
                 doomed = st.anchored_text_frames_in(r.clone());
                 st.delete(r.clone());
@@ -308,8 +310,10 @@ pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let mut doomed = Vec::new();
+            let at = crate::cmd::changes::mark_deleted_collecting(st, r.clone(), &mut doomed);
             let pos = if forward { at.max(r.end.min(st.len())) } else { r.start.min(at) };
+            d.unthread_anchored_text_frames(&doomed);
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
             return ok();
         }
@@ -699,7 +703,8 @@ mod reserve_tests {
             .edit(|d, sel| {
                 let st = d.story_mut(sid).unwrap();
                 st.format_chars(5..9, |f| f.over.change = Some(designcraft_doc::ChangeMark::Inserted));
-                let at = crate::cmd::changes::mark_deleted(st, 0..9);
+                let mut doomed = Vec::new();
+                let at = crate::cmd::changes::mark_deleted_collecting(st, 0..9, &mut doomed);
                 assert_eq!(at, 5);
                 assert_eq!(st.text, "Keep  text.");
                 assert_eq!(st.format_after(0).over.change, Some(designcraft_doc::ChangeMark::Deleted));
