@@ -1,6 +1,6 @@
 //! Live preflight (the Preflight panel and the status-bar indicator): overset text, missing
 //! fonts and glyphs, missing or low-resolution graphics, RGB content in print documents, empty
-//! text frames.
+//! text frames, white or [Paper] set to overprint.
 
 use designcraft_compose::ComposedStory;
 use designcraft_doc::{Content, Document, Intent, Item, SpreadRef};
@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
+
+mod white_overprint;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,6 +270,9 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
     let mut missing: Vec<(FaceRef, Vec<char>, designcraft_doc::ItemId)> = Vec::new();
+    // Ruby and kenten set to overprint in white, by the frame that shows them (`None`: a note's
+    // or a cell's story, which has no frame of its own).
+    let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
         let cs = s.cache.get(d, story.id, None);
         missing_glyphs(&cs, None, 0, &mut missing);
@@ -327,13 +332,10 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             }
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
-                {
-                    use designcraft_doc::cjk_settings::AdornmentOverprint as O;
-                    let kenten = props.kenten && (props.kenten_overprint_fill == O::On || props.kenten_overprint_stroke == O::On);
-                    let ruby = !props.ruby.is_empty() && (props.ruby_overprint_fill == O::On || props.ruby_overprint_stroke == O::On);
-                    if kenten || ruby {
-                        unsupported_typography
-                            .insert("Ruby and kenten overprint show in Overprint Preview, but PDF export doesn't write overprint".to_string());
+                for part in white_overprint::adornments(d, &props) {
+                    let parts = white_text.entry(story.frames.first().copied()).or_default();
+                    if !parts.contains(&part) {
+                        parts.push(part);
                     }
                 }
                 if has_rtl
@@ -376,6 +378,10 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     for message in unsupported_typography {
         out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
+    for (item, parts) in white_text {
+        let page = item.and_then(|id| d.find(id).zip(d.item(id))).and_then(|(loc, it)| page_of(d, loc.spread, it, d.parent_xf(&loc)));
+        out.extend(white_overprint::issue(&parts, item.map(|i| i.0), page));
+    }
     for (face, chars, item) in missing {
         let listed: Vec<String> = chars.iter().take(MISSING_GLYPHS_LISTED).map(char::to_string).collect();
         let more = chars.len().saturating_sub(MISSING_GLYPHS_LISTED);
@@ -395,6 +401,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let xf = parent * it.xf;
             pending.extend(it.children().iter().rev().map(|child| (child.as_ref(), xf)));
             let page = page_of(d, SpreadRef::Doc(si), it, parent);
+            out.extend(white_overprint::item_issue(d, it, page));
             if let Content::Graphic(g) = &it.content
                 && g.layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides)
             {
