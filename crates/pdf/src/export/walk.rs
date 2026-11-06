@@ -1,6 +1,6 @@
 use super::common::{TagEntry, blend, norm, rects_overlap, solid_fill, tf, to_path};
 use super::graphics::draw_coverage;
-use super::pipeline::{item_exported, layer_exported, shown_parent_items};
+use super::pipeline::{drawn_children, item_exported, layer_exported, shown_parent_items};
 use super::*;
 
 impl Exporter<'_> {
@@ -249,7 +249,7 @@ impl Exporter<'_> {
         if let Some(c) = &clip {
             s.push_clip_path(c, &FillRule::NonZero);
         }
-        for child in it.children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         if clip.is_some() {
@@ -269,7 +269,7 @@ impl Exporter<'_> {
 
     fn draw_group_children(&mut self, s: &mut Surface, it: &Item, xf: Affine, page: Option<usize>) {
         let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
-        for child in it.shown_children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         for _ in 0..pushes {

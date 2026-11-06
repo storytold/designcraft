@@ -235,3 +235,22 @@ fn what_pdf_export_leaves_out_is_not_reported() {
     s.execute("object.hide", &json!({"ids": [group]})).unwrap();
     assert_eq!(white_overprints(&mut s), [(PAPER_KENTEN.to_string(), r["id"].as_u64())]);
 }
+
+/// A multi-state object prints its active state only, but a frame made from one (Flex Layout's
+/// convert keeps the states) prints every object in it, as PDF export draws a frame's pasted-in
+/// objects: the inactive state's white overprint was left out (noted in review).
+#[test]
+fn a_frame_with_states_is_looked_at_as_pdf_export_draws_it() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = rect(&mut s, [72.0, 72.0, 200.0, 200.0]);
+    paper_overprint(&mut s, a);
+    let b = rect(&mut s, [300.0, 72.0, 400.0, 200.0]);
+    let ms = s.execute("states.create", &json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+    let at = s.doc().unwrap().doc.item(designcraft_doc::ItemId(ms)).unwrap().children().iter().position(|c| c.id.0 == a).unwrap();
+    s.execute("states.show", &json!({"id": ms, "index": 1 - at})).unwrap();
+    assert!(white_overprints(&mut s).is_empty(), "an inactive state doesn't print");
+    s.execute("flex.convert", &json!({"ids": [ms]})).unwrap();
+    assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(ms)).unwrap().states.is_empty(), "the frame keeps its states");
+    assert_eq!(white_overprints(&mut s), [(PAPER_FILL.to_string(), Some(a))]);
+}

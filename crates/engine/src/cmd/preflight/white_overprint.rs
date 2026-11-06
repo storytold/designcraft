@@ -15,7 +15,7 @@ use designcraft_color::{Color, ColorType, SwatchValue, swatch};
 use designcraft_doc::cjk_settings::AdornmentOverprint;
 use designcraft_doc::{AnchoredObject, CharProps, Content, Document, Item, ItemId, SpreadRef, Story, StrokeType};
 use designcraft_geom::Affine;
-use designcraft_pdf::{item_exported, layer_exported, shown_parent_items};
+use designcraft_pdf::{drawn_children, item_exported, layer_exported, shown_parent_items};
 
 use super::{Issue, page_of};
 use crate::Session;
@@ -126,7 +126,7 @@ pub(super) fn printed(s: &Session, d: &Document) -> (Vec<Issue>, BTreeMap<ItemId
                 On::Page(page) => (page, on),
             };
             issues.extend(item_issue(d, it, page));
-            let children: Vec<_> = it.shown_children().map(|c| (Node::Item(c.clone()), inside, composed)).collect();
+            let children: Vec<_> = drawn_children(it).map(|c| (Node::Item(c.clone()), inside, composed)).collect();
             if let Content::Text(tf) = &it.content {
                 frames.entry(it.id).or_insert(page);
                 let cs = s.cache.get(d, tf.story, composed);

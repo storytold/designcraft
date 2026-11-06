@@ -30,6 +30,14 @@ pub fn item_exported(it: &Item) -> bool {
     !it.hidden && !it.nonprinting
 }
 
+/// The items PDF export draws inside `it`: every item pasted into a frame (a frame keeps the
+/// states of a multi-state group converted to it, and draws them all), or a group's shown
+/// children (only the active state of a multi-state object).
+pub fn drawn_children(it: &Item) -> impl Iterator<Item = &Arc<Item>> {
+    let nested = it.has_nested_items();
+    it.children().iter().filter(move |_| nested).chain(it.shown_children().filter(move |_| !nested))
+}
+
 /// The parent pages' items that page `pi` of spread `si` shows, on exported layers, each with the
 /// offset that moves it onto the page: the parent's bases first, then the parent. None when the
 /// page hides parent items; the items the page overrides are left out (their overrides are the

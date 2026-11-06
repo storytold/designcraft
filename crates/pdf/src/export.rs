@@ -46,7 +46,9 @@ pub(crate) use images::SRGB_ICC;
 use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, embedded_icc, is_grey, is_grey_icc};
 pub(crate) use metadata::civil;
 pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
-pub use pipeline::{export_pdf, export_pdf_with_report, item_exported, layer_exported, print_color, sheet_spreads, shown_parent_items};
+pub use pipeline::{
+    drawn_children, export_pdf, export_pdf_with_report, item_exported, layer_exported, print_color, sheet_spreads, shown_parent_items,
+};
 #[cfg(test)]
 impl std::hash::Hasher for ConstantImageHasher {
     fn finish(&self) -> u64 {
