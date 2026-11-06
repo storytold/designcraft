@@ -6,6 +6,11 @@ use crate::Session;
 
 /// The `whiteOverprint` issues of the active document: (message, item).
 fn white_overprints(s: &mut Session) -> Vec<(String, Option<u64>)> {
+    white_overprints_on(s).into_iter().map(|(message, item, _)| (message, item)).collect()
+}
+
+/// The `whiteOverprint` issues of the active document: (message, item, page).
+fn white_overprints_on(s: &mut Session) -> Vec<(String, Option<u64>, Option<u64>)> {
     let r = s.execute("preflight.run", &json!({})).unwrap();
     r["issues"]
         .as_array()
@@ -13,8 +18,17 @@ fn white_overprints(s: &mut Session) -> Vec<(String, Option<u64>)> {
         .iter()
         .filter(|i| i["kind"] == "whiteOverprint")
         .inspect(|i| assert_eq!(i["severity"], "warning"))
-        .map(|i| (i["message"].as_str().unwrap().to_string(), i["item"].as_u64()))
+        .map(|i| (i["message"].as_str().unwrap().to_string(), i["item"].as_u64(), i["page"].as_u64()))
         .collect()
+}
+
+const PAPER_FILL: &str = "White or [Paper] fill set to overprint will not print";
+const PAPER_KENTEN: &str = "White or [Paper] kenten set to overprint will not print";
+
+/// A [Paper] fill set to overprint on `id`.
+fn paper_overprint(s: &mut Session, id: u64) {
+    s.execute("object.fill", &json!({"ids": [id], "swatch": "[Paper]"})).unwrap();
+    s.execute("object.attributes", &json!({"ids": [id], "overprintFill": true})).unwrap();
 }
 
 fn rect(s: &mut Session, r: [f64; 4]) -> u64 {
@@ -132,4 +146,92 @@ fn white_ruby_and_kenten_set_to_overprint_are_reported() {
     s.execute("type.char", &json!({"attrs": {"rubyOverprintFill": "on"}})).unwrap();
     let found = white_overprints(&mut s);
     assert_eq!(found, [("White or [Paper] kenten and ruby set to overprint will not print".to_string(), id)]);
+}
+
+/// Kenten in the second frame of a thread was reported against the first, which doesn't show
+/// it, and on the first frame's page (noted in review).
+#[test]
+fn ruby_and_kenten_are_reported_on_the_frame_that_shows_them() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let text = "漢字".repeat(200);
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 200, 100], "content": "text", "text": text})).unwrap();
+    let a = r["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    let d = s.doc().unwrap().doc.clone();
+    let sid = d.item(designcraft_doc::ItemId(a)).unwrap().text_frame().unwrap().story;
+    let cs = s.cache.get(&d, sid, None);
+    let second = cs.frames.iter().find(|f| f.frame.0 == b).unwrap().range.clone();
+    assert!(second.start > 0 && second.end > second.start, "{second:?}");
+    s.execute("text.select", &json!({"story": r["story"], "anchor": second.start, "focus": second.end})).unwrap();
+    s.execute("type.char", &json!({"attrs": {"kenten": true, "kentenFill": "[Paper]", "kentenOverprintFill": "on"}})).unwrap();
+    assert_eq!(white_overprints_on(&mut s), [(PAPER_KENTEN.to_string(), Some(b), Some(1))]);
+    // Across the threshold: both frames show some of it.
+    s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": second.end})).unwrap();
+    s.execute("type.char", &json!({"attrs": {"kenten": true, "kentenFill": "[Paper]", "kentenOverprintFill": "on"}})).unwrap();
+    let found = white_overprints_on(&mut s);
+    assert_eq!(found, [(PAPER_KENTEN.to_string(), Some(a), Some(0)), (PAPER_KENTEN.to_string(), Some(b), Some(1))]);
+}
+
+/// A parent page's item prints on every page that shows it: it was never looked at (noted in
+/// review). It is reported once, on the first page that shows it, and not when no page does.
+#[test]
+fn a_parent_page_item_is_reported_on_the_pages_that_show_it() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let parent = json!({"kind": "parent", "index": 0});
+    let id = s.execute("frame.create", &json!({"spread": parent, "rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    paper_overprint(&mut s, id);
+    assert_eq!(white_overprints_on(&mut s), [(PAPER_FILL.to_string(), Some(id), Some(0))]);
+    for page in &mut Arc::make_mut(&mut s.doc_mut().unwrap().doc).spreads {
+        Arc::make_mut(page).pages[0].show_parent_items = false;
+    }
+    assert!(white_overprints(&mut s).is_empty(), "no page shows the parent's items");
+}
+
+/// An anchored object prints in the frame that places it: it was never looked at (noted in
+/// review).
+#[test]
+fn an_anchored_object_is_reported() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+    let id = rect(&mut s, [450.0, 450.0, 474.0, 490.0]);
+    paper_overprint(&mut s, id);
+    let d = s.doc().unwrap().doc.clone();
+    let sid = d.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    s.execute("anchored.insert", &json!({"ids": [id], "story": sid.0, "pos": 7})).unwrap();
+    assert_eq!(white_overprints_on(&mut s), [(PAPER_FILL.to_string(), Some(id), Some(0))]);
+    s.execute("object.attributes", &json!({"ids": [r["id"]], "nonprinting": true})).unwrap();
+    assert!(white_overprints(&mut s).is_empty(), "its frame doesn't print");
+}
+
+/// PDF export leaves out a hidden or nonprintable layer and a hidden or nonprinting group with
+/// everything in it: what is in them doesn't print, and was reported (noted in review).
+#[test]
+fn what_pdf_export_leaves_out_is_not_reported() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let layer = s.execute("layer.new", &json!({"name": "Notes"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("layer.activate", &json!({"id": layer})).unwrap();
+    let id = rect(&mut s, [72.0, 72.0, 200.0, 200.0]);
+    paper_overprint(&mut s, id);
+    let r = s.execute("frame.create", &json!({"rect": [72, 300, 300, 400], "content": "text", "text": "漢字"})).unwrap();
+    s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": "漢字".len()})).unwrap();
+    s.execute("type.char", &json!({"attrs": {"kenten": true, "kentenFill": "[Paper]", "kentenOverprintFill": "on"}})).unwrap();
+    assert_eq!(white_overprints(&mut s).len(), 2);
+    for (key, value) in [("visible", false), ("printable", false)] {
+        s.execute("layer.set", &json!({"id": layer, key: value})).unwrap();
+        assert!(white_overprints(&mut s).is_empty(), "{key}: {value}");
+        s.execute("layer.set", &json!({"id": layer, key: !value})).unwrap();
+    }
+    let other = rect(&mut s, [300.0, 72.0, 400.0, 200.0]);
+    let group = s.execute("object.group", &json!({"ids": [id, other]})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(white_overprints(&mut s).len(), 2, "in a group");
+    s.execute("object.attributes", &json!({"ids": [group], "nonprinting": true})).unwrap();
+    assert_eq!(white_overprints(&mut s), [(PAPER_KENTEN.to_string(), r["id"].as_u64())]);
+    s.execute("object.attributes", &json!({"ids": [group], "nonprinting": false})).unwrap();
+    s.execute("object.hide", &json!({"ids": [group]})).unwrap();
+    assert_eq!(white_overprints(&mut s), [(PAPER_KENTEN.to_string(), r["id"].as_u64())]);
 }

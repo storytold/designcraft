@@ -270,8 +270,8 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
     let mut missing: Vec<(FaceRef, Vec<char>, designcraft_doc::ItemId)> = Vec::new();
-    // Ruby and kenten set to overprint in white, by the frame that shows them (`None`: a note's
-    // or a cell's story, which has no frame of its own).
+    // Ruby and kenten set to overprint in white, by the frame that shows them (`None`: a note's,
+    // a cell's or an unplaced story, which has no frame of its own).
     let mut white_text: std::collections::BTreeMap<Option<designcraft_doc::ItemId>, Vec<&'static str>> = std::collections::BTreeMap::new();
     for story in d.stories.values() {
         let cs = s.cache.get(d, story.id, None);
@@ -297,6 +297,8 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // Nested note and cell text uses paragraph rules too.
     super::fonts::for_each_story(d, &mut |story| {
         let ranges = story.para_ranges();
+        // The byte ranges its frames show, asked for at the first white ruby or kenten.
+        let mut shown = None;
         for (pi, pf) in story.paras.iter().enumerate() {
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
@@ -332,10 +334,16 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             }
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
-                for part in white_overprint::adornments(d, &props) {
-                    let parts = white_text.entry(story.frames.first().copied()).or_default();
-                    if !parts.contains(&part) {
-                        parts.push(part);
+                let white = white_overprint::adornments(d, &props);
+                if !white.is_empty() {
+                    let shown = shown.get_or_insert_with(|| white_overprint::frame_ranges(s, d, story));
+                    for frame in white_overprint::frames_showing(story, shown, run.start.max(range.start)..run.end.min(range.end)) {
+                        let parts = white_text.entry(frame).or_default();
+                        for part in &white {
+                            if !parts.contains(part) {
+                                parts.push(part);
+                            }
+                        }
                     }
                 }
                 if has_rtl
@@ -378,10 +386,20 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     for message in unsupported_typography {
         out.push(Issue { severity: "warning", kind: "unsupportedTypography", message, item: None, page: None });
     }
+    let (white_items, printed_frames) = white_overprint::printed(s, d);
     for (item, parts) in white_text {
-        let page = item.and_then(|id| d.find(id).zip(d.item(id))).and_then(|(loc, it)| page_of(d, loc.spread, it, d.parent_xf(&loc)));
+        // A frame PDF export leaves out (hidden, nonprinting, on a hidden or nonprintable layer,
+        // on a parent page no page shows) prints none of its text.
+        let page = match item {
+            Some(id) => match printed_frames.get(&id) {
+                Some(page) => *page,
+                None => continue,
+            },
+            None => None,
+        };
         out.extend(white_overprint::issue(&parts, item.map(|i| i.0), page));
     }
+    out.extend(white_items);
     for (face, chars, item) in missing {
         let listed: Vec<String> = chars.iter().take(MISSING_GLYPHS_LISTED).map(char::to_string).collect();
         let more = chars.len().saturating_sub(MISSING_GLYPHS_LISTED);
@@ -401,7 +419,6 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             let xf = parent * it.xf;
             pending.extend(it.children().iter().rev().map(|child| (child.as_ref(), xf)));
             let page = page_of(d, SpreadRef::Doc(si), it, parent);
-            out.extend(white_overprint::item_issue(d, it, page));
             if let Content::Graphic(g) = &it.content
                 && g.layer_options.as_ref().is_some_and(designcraft_doc::GraphicLayerOptions::has_visibility_overrides)
             {
