@@ -367,6 +367,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Custom", "Egyéni"),
     ("Custom Page Size…", "Egyéni oldalméret…"),
     ("Custom Tracking/Kerning", "Egyéni betűköz/alávágás"),
+    ("Croatian", "Horvát"),
     ("Cut", "Kivágás"),
     ("Cyan", "Cián"),
     ("Czech", "Cseh"),
