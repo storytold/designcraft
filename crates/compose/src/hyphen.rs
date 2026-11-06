@@ -587,7 +587,7 @@ mod tests {
         assert_eq!(h("Rock'n'Roll"), "Rock'n'Roll");
     }
 
-    /// The 1996 patterns split the long jat reflex ije (`a1je` … `u1je`) where the strict pravopis
+    /// The bundled patterns split the long jat reflex ije (`a1je` … `u1je`) where the strict pravopis
     /// (gramatika.hr, pravopis.hr) keeps it whole: rije-ka, mlije-ko, and one-syllable cvijet/bijel.
     /// InDesign 2026's Croatian dictionary shows the same cvi-jet/bi-jel breaks (observed black-box),
     /// so this pins the bundled behavior; a fix belongs upstream in hyph-utf8, not in the app.
