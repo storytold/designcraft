@@ -16,6 +16,11 @@ fn frame(id: &str, x0: f64, fitting: &str) -> String {
 /// Three empty graphic frames: one fitting proportionally from the top-left with Auto-Fit and a
 /// crop, one whose options set nothing, and one without options.
 fn package() -> Vec<u8> {
+    package_with(STYLES, "")
+}
+
+/// The package of [`package`] with `styles` as its styles part and `extra` frames on the page.
+fn package_with(styles: &str, extra: &str) -> Vec<u8> {
     let designmap = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Document {NS} Self="d"><idPkg:Graphic src="Resources/Graphic.xml"/><idPkg:Styles src="Resources/Styles.xml"/><idPkg:Preferences src="Resources/Preferences.xml"/><Layer Self="L1" Name="Layer 1" Visible="true" Locked="false"/><idPkg:Spread src="Spreads/Spread_sp1.xml"/></Document>"#
@@ -34,11 +39,12 @@ fn package() -> Vec<u8> {
             r#"<FrameFittingOption AutoFit="false" LeftCrop="0" TopCrop="0" RightCrop="0" BottomCrop="0" FittingOnEmptyFrame="None" FittingAlignment="CenterAnchor"/>"#
         ),
         frame("r3", 220.0, ""),
-    );
+    )
+    .replacen("</Spread>", &format!("{extra}</Spread>"), 1);
     zip_files(&[
         ("designmap.xml", &designmap),
         ("Resources/Graphic.xml", GRAPHIC),
-        ("Resources/Styles.xml", STYLES),
+        ("Resources/Styles.xml", styles),
         ("Resources/Preferences.xml", &prefs),
         ("Spreads/Spread_sp1.xml", &spread),
     ])
@@ -73,4 +79,22 @@ fn an_empty_frames_fitting_options_survive_a_round_trip() {
     assert_eq!(spreads.matches("<FrameFittingOption").count(), 1, "options that set nothing are not written: {spreads}");
     assert!(spreads.contains(r#"FittingOnEmptyFrame="Proportionally" FittingAlignment="TopLeftAnchor""#), "{spreads}");
     assert_eq!(fittings(&import_idml(&bytes).unwrap()), expected());
+}
+
+#[test]
+fn an_empty_frame_takes_fitting_options_from_its_object_style_unless_it_sets_its_own() {
+    let styles = STYLES.replace(
+        "</RootObjectStyleGroup>",
+        r#"<ObjectStyle Self="ObjectStyle/Logo" Name="Logo"><FrameFittingOption AutoFit="false" FittingOnEmptyFrame="FillProportionally" FittingAlignment="TopLeftAnchor"/></ObjectStyle></RootObjectStyleGroup>"#,
+    );
+    let styled = |id: &str, x0: f64, own: &str| frame(id, x0, own).replacen("<Rectangle ", r#"<Rectangle AppliedObjectStyle="ObjectStyle/Logo" "#, 1);
+    let extra = styled("r4", 320.0, "") + &styled("r5", 420.0, r#"<FrameFittingOption FittingOnEmptyFrame="Proportionally"/>"#);
+    let d = import_idml_with(&package_with(&styles, &extra), &|_| None).unwrap();
+    let f = |i: usize| d.spreads[0].items[i].empty_fitting;
+    let inherited = f(3).expect("the style's options");
+    assert_eq!((inherited.fitting, inherited.align), (designcraft_doc::Fitting::FillProportionally, 0));
+    let own = f(4).expect("the frame's own options over the style's");
+    assert_eq!((own.fitting, own.align), (designcraft_doc::Fitting::FitProportionally, 0), "unset attributes still come from the style");
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!((back.spreads[0].items[3].empty_fitting, back.spreads[0].items[4].empty_fitting), (f(3), f(4)));
 }

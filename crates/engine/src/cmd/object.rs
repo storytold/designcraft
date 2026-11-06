@@ -4585,6 +4585,26 @@ mod fitting_tests {
     }
 
     #[test]
+    fn clearing_fitting_options_clears_a_graphic_too_when_empty_frame_options_linger() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally", "align": 0, "crop": 5, "autoFit": true})).unwrap();
+        // Options an empty frame had and something left behind (as media or Data Merge did).
+        s.edit(|d, _| {
+            d.item_mut(ItemId(f)).unwrap().empty_fitting = Some(designcraft_doc::EmptyFrameFitting::default());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("object.clearFittingOptions", &json!({"ids": [f]})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(f)).unwrap().clone();
+        let Content::Graphic(g) = &it.content else { panic!("graphic") };
+        assert_eq!((g.auto_fit, g.crop, g.fit_align, it.empty_fitting), (designcraft_doc::Fitting::None, [0.0; 4], 4, None));
+    }
+
+    #[test]
     fn frame_fitting_options_align_crop_and_auto_fit() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();

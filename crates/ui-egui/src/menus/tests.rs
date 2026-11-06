@@ -3358,3 +3358,16 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     let kept = under(&app, rect.center());
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
 }
+
+/// Object › Fitting › Frame Fitting Options… opens for an empty frame, with the frame's own
+/// options, as well as for a frame with a placed graphic.
+#[test]
+fn frame_fitting_options_open_for_an_empty_frame() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+    app.run("object.fittingOptions", json!({"ids": [f], "fitting": "fitProportionally", "align": 0})).unwrap();
+    app.run("app.fittingOptions", json!({})).unwrap();
+    let d = app.ui.dialog.as_ref().expect("the dialog is open");
+    assert_eq!((d.id.as_str(), &d.fields["fitting"], &d.fields["align"]), ("fittingOptions", &json!("fitProportionally"), &json!(0)));
+}

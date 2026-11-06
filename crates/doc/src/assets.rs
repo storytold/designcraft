@@ -54,7 +54,8 @@ impl Document {
     /// Options with no graphic placed in it. Older readers would drop them. Exceeding the traversal
     /// budget conservatively says yes.
     pub fn has_empty_frame_fitting(&self) -> bool {
-        let set = |it: &Item| it.empty_fitting.is_some();
+        // Options left on a frame that now holds something are not written, so they don't count.
+        let set = |it: &Item| it.empty_fitting.is_some() && matches!(it.content, crate::Content::Unassigned);
         self.spreads.iter().chain(&self.parents).flat_map(|spread| &spread.items).any(|item| item_any(item, 0, &set))
             || self.stories.values().any(|story| story_any(story, 0, &set))
     }

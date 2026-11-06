@@ -250,8 +250,9 @@ impl<'r> Importer<'r> {
                         }
                     }
                 } else {
-                    // An empty frame keeps its own Frame Fitting Options for what is placed later.
-                    item.empty_fitting = e.find("FrameFittingOption").and_then(empty_fitting);
+                    // An empty frame keeps its Frame Fitting Options for what is placed later: its
+                    // own, over those of its object style chain, as for a frame with a graphic.
+                    item.empty_fitting = self.with_style(e, "FrameFittingOption").as_ref().and_then(empty_fitting);
                     // Page items pasted into this frame (Paste Into).
                     let kids: Vec<Arc<Item>> = e
                         .elements()

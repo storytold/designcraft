@@ -34,6 +34,8 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
             Some(fid) => {
                 let it = d.item_mut(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?;
                 let r = it.inner_bounds();
+                // Media is not fitted; an empty frame's fitting options don't outlive its emptiness.
+                it.empty_fitting = None;
                 it.content = Content::Graphic(Graphic {
                     layer_options: None,
                     asset: aid,
@@ -174,6 +176,20 @@ mod tests {
         let d = &s.doc().unwrap().doc;
         assert_eq!(serde_json::to_value(d.item(designcraft_doc::ItemId(line["id"].as_u64().unwrap())).unwrap()).unwrap(), original);
         assert_eq!(d.spreads[0].items.len(), 2);
+    }
+
+    #[test]
+    fn media_placed_into_an_empty_frame_drops_its_fitting_options() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fittingOptions", &json!({"ids": [f], "fitting": "fitProportionally"})).unwrap();
+        assert!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().empty_fitting.is_some());
+        let fake = super::super::file::base64_encode(b"\x00\x00\x00\x18ftypmp42");
+        s.execute("file.place", &json!({"base64": fake, "name": "clip.mp4", "frame": f})).unwrap();
+        let it = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+        assert!(it.graphic().is_some(), "the media sits in the frame");
+        assert!(it.empty_fitting.is_none());
     }
 
     #[test]

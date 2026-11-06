@@ -140,11 +140,12 @@ impl<'a> Ex<'a> {
                     el.push(e);
                 }
             }
-            _ => {
+            Content::Unassigned => {
                 if let Some(f) = &it.empty_fitting {
                     el.push(frame_fitting_el(f.auto_fit, f.fitting, f.crop, f.align));
                 }
             }
+            _ => {}
         }
         el
     }

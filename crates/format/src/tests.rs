@@ -291,6 +291,16 @@ fn an_empty_frames_fitting_options_need_version_5_and_survive_a_save() {
 }
 
 #[test]
+fn fitting_options_left_on_a_frame_that_now_holds_a_graphic_keep_the_older_reader() {
+    use designcraft_doc::{EmptyFrameFitting, Fitting};
+    let mut d = Document::new(&NewDocument::default());
+    let aid = png_asset(&mut d, &[1, 2, 3]);
+    let id = place(&mut d, aid, 0.0);
+    d.item_mut(id).unwrap().empty_fitting = Some(EmptyFrameFitting { fitting: Fitting::FitProportionally, ..Default::default() });
+    assert_eq!(required_version(&d), 2, "options a filled frame no longer uses don't need format 5");
+}
+
+#[test]
 fn roundtrip_with_assets() {
     let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
     let lid = d.default_layer();
