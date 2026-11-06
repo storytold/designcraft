@@ -611,7 +611,7 @@ pub fn specs() -> Vec<CommandSpec> {
             ["Object"],
             Some("Cmd+B"),
             "{columns?, gutter?, inset?: number|[t,l,b,r] (null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids?}",
-            has_selection,
+            has_selection_or_text,
             text_frame_options
         ),
         cmd!(
@@ -2562,14 +2562,28 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Text Frame Options act on the selected frames, or on the frames of the story being typed in.
+fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
+    if s.active().is_some_and(|d| d.selection.text.is_some()) {
+        return Ok(());
+    }
+    has_selection(s)
+}
+
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
     let mut ids = targets(s, p)?;
+    // A call that names its objects (even an empty `ids`) never falls back to the caret's story.
+    let named = p.get("ids").is_some() || p.get("id").is_some();
     if ids.is_empty()
+        && !named
         && let Some(t) = st.selection.text
     {
         ids = st.doc.story(t.story).map(|s| s.frames.clone()).unwrap_or_default();
+    }
+    if ids.is_empty() && st.selection.items.is_empty() {
+        return Err(bad(ID, "nothing selected"));
     }
     let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -4813,8 +4827,6 @@ mod named_target_tests {
         s.execute("file.new", &json!({})).unwrap();
         let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
         assert!(s.doc().unwrap().selection.items.is_empty(), "frame.create leaves a text caret");
-        let e = s.execute("object.textFrameOptions", &json!({"columns": 2})).unwrap_err().to_string();
-        assert!(e.contains("nothing selected"), "{e}");
         s.execute("object.textFrameOptions", &json!({"ids": [r["id"]], "columns": 2})).unwrap();
         let id = ItemId(r["id"].as_u64().unwrap());
         let columns = |s: &Session| s.doc().unwrap().doc.item(id).and_then(|i| i.text_frame().map(|t| t.options.columns));
