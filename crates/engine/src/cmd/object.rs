@@ -3078,11 +3078,11 @@ fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for id in &ids {
             let Some(it) = d.item_mut(*id) else { continue };
-            if it.empty_fitting.take().is_some() {
-                n += 1;
+            let had = it.empty_fitting.take().is_some();
+            let Content::Graphic(g) = &mut it.content else {
+                n += usize::from(had);
                 continue;
-            }
-            let Content::Graphic(g) = &mut it.content else { continue };
+            };
             g.auto_fit = designcraft_doc::Fitting::None;
             g.crop = [0.0; 4];
             g.fit_align = 4;
