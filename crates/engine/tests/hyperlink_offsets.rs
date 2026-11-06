@@ -671,7 +671,8 @@ fn regenerating_index_prunes_story_hyperlinks() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
     let sp = s.doc().unwrap().doc.page_loc(0).unwrap().0;
-    let r = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 300], "content": "text", "text": "Typography topic here."})).unwrap();
+    let r =
+        s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 300], "content": "text", "text": "Typography topic here."})).unwrap();
     let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
 
     s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 10})).unwrap();
