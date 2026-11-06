@@ -25,7 +25,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let style = d.endnote_options.para_style.clone();
                 let st = d.story_mut(sid).ok_or_else(|| bad("endnote.edit", "no such story"))?;
                 let n = st.endnote_mut(id).ok_or_else(|| bad("endnote.edit", format!("no endnote {id}")))?;
+                let doomed = n.text.anchored_text_frames_in(0..n.text.len());
                 n.text = designcraft_doc::Story::with_text(StoryId(0), &text, ParaFormat { style, ..Default::default() });
+                d.unthread_anchored_text_frames(&doomed);
                 ok()
             })
         }),
@@ -41,7 +43,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     .map(|(i, _)| i)
                     .ok_or_else(|| bad("endnote.delete", format!("endnote {id} has no reference in the text")))?;
                 super::notes::follow_delete(sel, sid, at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
-                st.delete(at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
+                let doomed = super::anchored::delete_range(st, at..at + designcraft_doc::ENDNOTE_REF.len_utf8());
+                d.unthread_anchored_text_frames(&doomed);
                 ok()
             })
         }),
