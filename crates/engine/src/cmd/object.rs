@@ -2576,6 +2576,9 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let mut ids = targets(s, p)?;
     // A call that names its objects (even an empty `ids`) never falls back to the caret's story.
     let named = p.get("ids").is_some() || p.get("id").is_some();
+    if named && let Some(gone) = ids.iter().find(|i| st.doc.item(**i).is_none()) {
+        return Err(bad(ID, format!("no object with id {}", gone.0)));
+    }
     if ids.is_empty()
         && !named
         && let Some(t) = st.selection.text
