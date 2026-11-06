@@ -447,9 +447,9 @@ pub(super) fn place_text(
         add_styles(d, &imp, conflict);
         let sid = if let Some(t) = caret {
             // Into the text at the insertion point (replacing the selection).
-            let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
-            let doomed = super::anchored::delete_range(story, r.clone());
+            d.delete_text_range(t.story, None, r.clone())?;
+            let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             // An insertion point in an empty paragraph takes the first imported paragraph's style
             // (insert_story would keep the empty paragraph's own, losing the styleMap result).
             let p0 = story.para_at(r.start);
@@ -458,7 +458,6 @@ pub(super) fn place_text(
             if blank && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0)) {
                 *p = ParaFormat { table: p.table, ..first.clone() };
             }
-            d.unthread_anchored_text_frames(&doomed);
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
             if link.is_some() {
                 warnings.push("not linked: a linked text file fills a whole story, not an insertion point".into());

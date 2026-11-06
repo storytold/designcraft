@@ -91,12 +91,12 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             t2.anchor += grew;
             t2.focus += grew;
         }
-        let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+        let len = d.story(t.story).map_or(0, |st| st.len());
         let r = t2.range();
-        let r = r.start.min(st.len())..r.end.min(st.len());
-        let doomed = super::anchored::delete_range(st, r.clone());
+        let r = r.start.min(len)..r.end.min(len);
+        d.delete_text_range(t.story, None, r.clone())?;
+        let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
-        d.unthread_anchored_text_frames(&doomed);
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))

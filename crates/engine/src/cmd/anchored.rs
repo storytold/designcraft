@@ -127,14 +127,6 @@ fn check_anchored(d: &Document, cmd: &str) -> Result<()> {
     d.check().map_err(|e| bad(cmd, format!("these items cannot be anchored here: {e}")))
 }
 
-/// Delete `range` from `st`, returning the anchored text frames whose marks it removed. Callers
-/// unthread the returned frames once the story borrow ends.
-pub(crate) fn delete_range(st: &mut designcraft_doc::Story, range: std::ops::Range<usize>) -> Vec<(StoryId, ItemId)> {
-    let doomed = st.anchored_text_frames_in(range.clone());
-    st.delete(range);
-    doomed
-}
-
 /// Anchor copies of `items` (in spread coordinates) at `pos` of `sid`; returns the end position.
 pub(crate) fn anchor_items(d: &mut Document, sid: StoryId, pos: usize, items: Vec<Item>, position: &AnchorPosition) -> Result<usize> {
     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
@@ -806,6 +798,64 @@ mod anchored_text_frame_tests {
         let e = s.execute("anchored.insert", &json!({"ids": [host.0], "story": host_sid.0, "pos": 0})).unwrap_err().to_string();
         assert!(e.contains("cyclic") || e.contains("cannot be anchored"), "{e}");
         assert_eq!(s.doc().unwrap().doc, before, "a refused edit changes nothing");
+    }
+
+    #[test]
+    fn the_business_plan_case_round_trips_through_pdfx4_and_idml() {
+        designcraft_fonts::FontDb::global()
+            .add_font(designcraft_fonts::testing::font_with("DC Test Business Korean", &['성', '장', '한', '국', '어']).unwrap());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": 400, "height": 400})).unwrap();
+        let sections: Vec<String> = (1..=10)
+            .map(|i| format!("SECTION {i}\nThis is the flowing business plan text for section {i}. It is long enough to move through the thread and across the page break."))
+            .collect();
+        let body = sections.join("\n");
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 364, 160], "content": "text", "text": body})).unwrap();
+        let host_sid = StoryId(r["story"].as_u64().unwrap());
+        let first = ItemId(r["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first.0, "rect": [36, 36, 364, 364], "spread": 1})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(host_sid).unwrap().frames.len(), 2);
+        // A rounded stat card with Korean text and a hyperlink, anchored in the threaded host.
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 150, 70], "content": "text", "text": "성장\n+120%"})).unwrap();
+        let card = ItemId(r["id"].as_u64().unwrap());
+        let card_sid = StoryId(r["story"].as_u64().unwrap());
+        let len = s.doc().unwrap().doc.story(card_sid).unwrap().len();
+        let korean = "성장".len();
+        s.execute("text.select", &json!({"story": card_sid.0, "anchor": 0, "focus": korean})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": "DC Test Business Korean", "language": "Korean", "size": 18.0})).unwrap();
+        s.execute("text.select", &json!({"story": card_sid.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("type.char", &json!({"size": 18.0})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
+        s.execute("object.cornerOptions", &json!({"ids": [card.0], "shape": "rounded", "size": 10.0})).unwrap();
+        s.execute("hyperlink.create", &json!({"url": "https://example.com/plan"})).unwrap();
+        let at = s.doc().unwrap().doc.story(host_sid).unwrap().text.find("SECTION 6").unwrap();
+        anchor(&mut s, card, host_sid, at as u64, json!({"position": "aboveLine", "align": "right", "spaceAfter": 6.0}));
+        let d = s.doc().unwrap().doc.clone();
+        d.check().unwrap();
+        let placed = designcraft_compose::frame_placement(&d, card_sid, card).unwrap();
+        assert_eq!(placed.spread, designcraft_doc::SpreadRef::Doc(1));
+        let cs = s.cache.get(&d, card_sid, None);
+        assert!(!cs.is_overset());
+        assert!(cs.frames[0].lines.iter().flat_map(|l| &l.glyphs).any(|g| g.rendered_char == '성' && g.gid != 0));
+        let report = s.execute("preflight.run", &json!({})).unwrap();
+        assert!(!report["issues"].as_array().unwrap().iter().any(|i| i["kind"] == "missingGlyphs"), "{report}");
+        // PDF/X-4 keeps its real text and hyperlink.
+        let r = s.execute("file.exportPdf", &json!({"standard": "x4"})).unwrap();
+        let pdf = crate::cmd::base64_decode(r["base64"].as_str().unwrap());
+        assert_eq!(designcraft_pdf::check_pdfx4(&pdf), Vec::<String>::new());
+        let text = crate::tests::pdf_text(&pdf).join("\n");
+        assert!(text.contains('성') && text.contains("+120%"), "{text}");
+        let raw = String::from_utf8_lossy(&pdf);
+        assert!(raw.contains("/Subtype/Link") && raw.contains("https://example.com/plan"));
+        // IDML reopens the threaded host and the anchored frame with its text and corners.
+        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&d)).unwrap();
+        back.check().unwrap();
+        let host = back.stories.values().find(|st| !st.objects.is_empty()).unwrap();
+        assert_eq!(host.frames.len(), 2, "the host stays threaded");
+        let anchored = &host.objects[0].item;
+        let inner = anchored.text_frame().unwrap();
+        assert_eq!(back.story(inner.story).unwrap().text, "성장\n+120%");
+        assert_eq!(anchored.corners, d.anchored_item(card).unwrap().corners);
     }
 
     #[test]

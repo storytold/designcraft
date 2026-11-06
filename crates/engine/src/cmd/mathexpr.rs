@@ -86,13 +86,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
             let r = t.range();
-            let doomed = if let Some(st) = d.story_mut(t.story) {
-                super::anchored::delete_range(st, r.start.min(st.len())..r.end.min(st.len()))
-            } else {
-                Vec::new()
-            };
+            let len = d.story(t.story).map_or(0, |st| st.len());
+            d.delete_text_range(t.story, None, r.start.min(len)..r.end.min(len))?;
             let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
-            d.unthread_anchored_text_frames(&doomed);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));
         }

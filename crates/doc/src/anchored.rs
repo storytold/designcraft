@@ -212,6 +212,38 @@ impl Story {
 }
 
 impl Document {
+    /// Delete a range from a story (or a cell or footnote of it), unthreading the anchored text
+    /// frames whose marks it removed.
+    pub fn delete_text_range(&mut self, sid: StoryId, cell: Option<crate::CellAddr>, range: std::ops::Range<usize>) -> Result<(), crate::DocError> {
+        let doomed = {
+            let story = self.text_story_mut(sid, cell).ok_or(crate::DocError::NoStory(sid))?;
+            let doomed = story.anchored_text_frames_in(range.clone());
+            story.delete(range);
+            doomed
+        };
+        self.unthread_anchored_text_frames(&doomed);
+        Ok(())
+    }
+
+    /// Replace a range in a story (or a cell or footnote of it), unthreading the anchored text
+    /// frames whose marks it removed.
+    pub fn replace_text_range(
+        &mut self,
+        sid: StoryId,
+        cell: Option<crate::CellAddr>,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Result<(), crate::DocError> {
+        let doomed = {
+            let story = self.text_story_mut(sid, cell).ok_or(crate::DocError::NoStory(sid))?;
+            let doomed = story.anchored_text_frames_in(range.clone());
+            story.replace(range, text);
+            doomed
+        };
+        self.unthread_anchored_text_frames(&doomed);
+        Ok(())
+    }
+
     /// Take `doomed` anchored text frames out of their stories' threads. A story left without a
     /// frame is deleted, and the text frames anchored in it are unthreaded too.
     pub fn unthread_anchored_text_frames(&mut self, doomed: &[(StoryId, ItemId)]) {
