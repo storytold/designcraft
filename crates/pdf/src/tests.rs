@@ -1009,6 +1009,7 @@ fn a_swatch_colours_a_greyscale_image() {
     assert!(!s.contains("PANTONE#20Test"), "a colour image keeps its colours");
 }
 
+/// Regression: hungarian hyphenation pdf keeps original text.
 #[test]
 fn hungarian_hyphenation_pdf_keeps_original_text() {
     if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {

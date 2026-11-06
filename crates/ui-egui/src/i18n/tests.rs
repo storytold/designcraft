@@ -592,6 +592,7 @@ fn translation_report_keys(keys: impl IntoIterator<Item = &'static str>) -> Vec<
     keys
 }
 
+/// Regression: translation report excludes native names from interface and catalog keys.
 #[test]
 fn translation_report_excludes_native_names_from_interface_and_catalog_keys() {
     let interface = interface_strings();

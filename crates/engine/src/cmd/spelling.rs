@@ -577,6 +577,7 @@ mod hyphenation_exception_tests {
 #[cfg(test)]
 mod hungarian_integration_tests {
     use super::*;
+    /// Build a small mixed-language document for spelling regressions.
     fn document(text: &str, lang: &str) -> (Session, u64) {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
@@ -586,6 +587,7 @@ mod hungarian_integration_tests {
         s.execute("type.char", &json!({"attrs":{"language":lang}})).unwrap();
         (s, sid)
     }
+    /// Extract reported spelling words for readable assertions.
     fn words(s: &mut Session) -> Vec<String> {
         s.execute("spelling.check", &json!({"suggestions":false}))
             .unwrap()
@@ -595,6 +597,7 @@ mod hungarian_integration_tests {
             .map(|v| v["word"].as_str().unwrap().to_string())
             .collect()
     }
+    /// Regression: suggestions are cached across occurrences and stories.
     #[test]
     fn suggestions_are_cached_across_occurrences_and_stories() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -631,6 +634,7 @@ mod hungarian_integration_tests {
         assert_eq!(SUGGESTION_CALLS.get() - calls, 1);
     }
 
+    /// Regression: suggestion cache preserves language case and unsupported runs.
     #[test]
     fn suggestion_cache_preserves_language_case_and_unsupported_runs() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -665,6 +669,7 @@ mod hungarian_integration_tests {
         }
     }
 
+    /// Regression: non hungarian checks do not initialize hungarian.
     #[test]
     fn non_hungarian_checks_do_not_initialize_hungarian() {
         let mut empty = Session::new();
@@ -683,6 +688,7 @@ mod hungarian_integration_tests {
         }
     }
 
+    /// Regression: hungarian initialization respects story scope.
     #[test]
     fn hungarian_initialization_respects_story_scope() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -708,6 +714,7 @@ mod hungarian_integration_tests {
         }
     }
 
+    /// Regression: mixed story initializes hungarian.
     #[test]
     fn mixed_story_initializes_hungarian() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -722,6 +729,7 @@ mod hungarian_integration_tests {
         assert!(hungarian::initialization_calls() > before);
     }
 
+    /// Regression: hungarian text preserves compounds numbers case and byte ranges.
     #[test]
     fn hungarian_text_preserves_compounds_numbers_case_and_byte_ranges() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -741,6 +749,7 @@ mod hungarian_integration_tests {
             assert!(result[1]["suggestions"].as_array().unwrap().contains(&json!("helyesírás")));
         }
     }
+    /// Regression: formatting does not split a word but language does.
     #[test]
     fn formatting_does_not_split_a_word_but_language_does() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -755,6 +764,7 @@ mod hungarian_integration_tests {
         s.execute("type.char", &json!({"attrs":{"language":"English: USA"}})).unwrap();
         assert_eq!(words(&mut s), ["typograpy"]);
     }
+    /// Regression: user words changes and undo work in hungarian.
     #[test]
     fn user_words_changes_and_undo_work_in_hungarian() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -773,6 +783,7 @@ mod hungarian_integration_tests {
         assert!(s.execute("spelling.change", &json!({"story":sid,"start":6,"end":7,"to":"x"})).is_err());
         assert_eq!(s.doc().unwrap().doc.story(StoryId(sid)).unwrap().text, before);
     }
+    /// Regression: decomposed accents are checked without changing document offsets.
     #[test]
     fn decomposed_accents_are_checked_without_changing_document_offsets() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -785,6 +796,7 @@ mod hungarian_integration_tests {
         let result = s.execute("spelling.check", &json!({"suggestions":false})).unwrap();
         assert_eq!(result[0]["start"], json!(text.find("hejesírás").unwrap()));
     }
+    /// Regression: unsupported languages are not checked with a hungarian dictionary.
     #[test]
     fn unsupported_languages_are_not_checked_with_a_hungarian_dictionary() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -795,6 +807,7 @@ mod hungarian_integration_tests {
         assert!(words(&mut s).is_empty());
     }
 
+    /// Regression: hungarian user words match both unicode forms and legacy case.
     #[test]
     fn hungarian_user_words_match_both_unicode_forms_and_legacy_case() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {

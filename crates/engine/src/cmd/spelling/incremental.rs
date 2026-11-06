@@ -93,6 +93,7 @@ mod tests {
     use crate::Session;
     use serde_json::json;
 
+    /// Regression: incremental scan matches full scan across every boundary.
     #[test]
     fn incremental_scan_matches_full_scan_across_every_boundary() {
         let mut session = Session::new();
@@ -126,6 +127,7 @@ mod tests {
         }
     }
 
+    /// Regression: long tokens and punctuation yield without scanning the story.
     #[test]
     fn long_tokens_and_punctuation_yield_without_scanning_the_story() {
         for text in [".".repeat(20_000), "á".repeat(20_000)] {

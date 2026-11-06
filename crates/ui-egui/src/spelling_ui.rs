@@ -410,6 +410,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Build a completed spelling snapshot for scanner and dialog regressions.
     fn checked(app: &DesignApp, ctx: &egui::Context) -> Arc<Report> {
         let start = std::time::Instant::now();
         loop {
@@ -422,6 +423,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+    /// Regression: missing hungarian pack is an error in both scanners.
     #[test]
     fn missing_hungarian_pack_is_an_error_in_both_scanners() {
         let mut session = SessionForTest::new();
@@ -451,6 +453,7 @@ mod tests {
         assert!(browser.report.by_story.is_empty());
     }
 
+    /// Regression: cached underlines are reused only for unchanged stories and settings.
     #[test]
     fn cached_underlines_are_reused_only_for_unchanged_stories_and_settings() {
         let mut session = SessionForTest::new();
@@ -472,6 +475,7 @@ mod tests {
         assert!(report.story_words(&changed, StoryId(1)).is_none());
     }
 
+    /// Regression: revision changes keep the last report but document switches do not.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn revision_changes_keep_the_last_report_but_document_switches_do_not() {
@@ -492,6 +496,7 @@ mod tests {
         assert!(report(&app, &ctx).is_none());
     }
 
+    /// Regression: stale browser completion requests a frame for the current scan.
     #[test]
     fn stale_browser_completion_requests_a_frame_for_the_current_scan() {
         let ctx = egui::Context::default();
@@ -513,6 +518,7 @@ mod tests {
         assert!(Arc::ptr_eq(&current.doc, &doc));
         assert_eq!(state.cached.as_ref().unwrap().0, key);
     }
+    /// Regression: browser scan yields once per frame and keeps complete results.
     #[test]
     fn browser_scan_yields_once_per_frame_and_keeps_complete_results() {
         let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());
@@ -536,6 +542,7 @@ mod tests {
         assert!(finished);
         assert_eq!(work.report.words, expected);
     }
+    /// Regression: browser scan deadline yields and preserves results.
     #[test]
     fn browser_scan_deadline_yields_and_preserves_results() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -570,6 +577,7 @@ mod tests {
         assert!(work.story.is_none());
         assert_eq!(work.report.words, expected);
     }
+    /// Regression: browser scan work cap bounds correct words and punctuation.
     #[test]
     fn browser_scan_work_cap_bounds_correct_words_and_punctuation() {
         for text in ["hello ".repeat(5000), ".".repeat(50_000), "a".repeat(50_000)] {
@@ -643,6 +651,7 @@ mod tests {
             );
         }
     }
+    /// Regression: background cache tracks user words and language changes.
     #[test]
     fn background_cache_tracks_user_words_and_language_changes() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -666,6 +675,7 @@ mod tests {
         app.run("type.char", json!({"attrs":{"language":"German"}})).unwrap();
         assert!(checked(&app, &ctx).words.is_empty());
     }
+    /// Regression: spelling cursor does not revisit skipped occurrences after its own edit.
     #[test]
     fn spelling_cursor_does_not_revisit_skipped_occurrences_after_its_own_edit() {
         let words = vec![(StoryId(9), 0..5), (StoryId(9), 16..20), (StoryId(11), 0..4)];
@@ -675,6 +685,7 @@ mod tests {
     }
     use designcraft_engine::Session as SessionForTest;
 
+    /// Regression: parameterized spelling calls return reports without opening a dialog.
     #[test]
     fn parameterized_spelling_calls_return_reports_without_opening_a_dialog() {
         for control in [false, true] {
@@ -696,6 +707,7 @@ mod tests {
         }
     }
 
+    /// Regression: opening spelling cancels existing dialog previews on both routes.
     #[test]
     fn opening_spelling_cancels_existing_dialog_previews_on_both_routes() {
         for menu in [false, true] {
@@ -721,6 +733,7 @@ mod tests {
         }
     }
 
+    /// Regression: opening spelling without a document preserves the existing dialog.
     #[test]
     fn opening_spelling_without_a_document_preserves_the_existing_dialog() {
         let mut app = DesignApp::new(SessionForTest::new(), crate::Services::default());

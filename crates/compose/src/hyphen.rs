@@ -543,6 +543,7 @@ mod tests {
         assert!(!hyphen_points_in("silbentrennung", &lim, de).is_empty());
     }
 
+    /// Regression: hungarian size limit is per word in long input.
     #[test]
     fn hungarian_size_limit_is_per_word_in_long_input() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -569,6 +570,7 @@ mod tests {
         assert!(hyphen_points_in(&text, &Limits { min_word: 8, ..lim }, Lang::Hungarian).is_empty());
     }
 
+    /// Regression: huge hungarian runs are bounded without losing neighbour breaks.
     #[test]
     fn huge_hungarian_runs_are_bounded_without_losing_neighbour_breaks() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -580,6 +582,7 @@ mod tests {
         assert!(opportunities_in(&giant, &lim, Lang::Hungarian).is_empty());
         assert_eq!(hyphen_points_in(&text, &lim, Lang::Hungarian), vec![2, 8 + giant.chars().count() + 1 + 3]);
     }
+    /// Regression: hungarian limits apply to each separator separated run.
     #[test]
     fn hungarian_limits_apply_to_each_separator_separated_run() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -603,6 +606,7 @@ mod tests {
         assert_eq!(hyphen_points_in("ASSZONY-asszony", &lim, Lang::Hungarian), vec![10]);
     }
 
+    /// Regression: hungarian run offsets preserve insertions and combining marks.
     #[test]
     fn hungarian_run_offsets_preserve_insertions_and_combining_marks() {
         if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {

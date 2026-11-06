@@ -8363,6 +8363,7 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+/// Regression: hungarian layout breaks and unbroken text preserve source.
 #[test]
 fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
     if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -8436,6 +8437,7 @@ fn hungarian_layout_breaks_and_unbroken_text_preserve_source() {
         }
     }
 }
+/// Regression: hungarian manual no break and language boundaries.
 #[test]
 fn hungarian_manual_no_break_and_language_boundaries() {
     if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -8475,6 +8477,7 @@ fn hungarian_manual_no_break_and_language_boundaries() {
     assert!(all_lines(&cs).iter().flat_map(|l| &l.glyphs).all(|g| g.generated_text.is_none()));
 }
 
+/// Regression: hungarian all caps formatting applies to inserted letters.
 #[test]
 fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
     if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {
@@ -8503,6 +8506,7 @@ fn hungarian_all_caps_formatting_applies_to_inserted_letters() {
     assert!(found);
 }
 
+/// Regression: hungarian small caps insertions use shaped glyphs.
 #[test]
 fn hungarian_small_caps_insertions_use_shaped_glyphs() {
     if !option_env!("CRAFT_PROOF_EMBED_PACKS").is_some_and(|locales| locales.split(',').any(|locale| locale.trim() == "hu")) {

@@ -241,9 +241,8 @@ Optional Hungarian Language pack (craft-i18n / craft-proof)
 --------------------------------------------------------
 Hungarian spelling data: Magyar Ispell, selected MPL-2.0; original authors and
 complete notices are retained in the hu pack. Hungarian hyphenation: Huhyphn /
-hyph-hu, Bence Nagy and László Németh, selected MPL-1.1. Two malformed Huhyphn
-replacement records are corrected by the shared pack builder and explicitly
-marked in its MODIFICATIONS notice. Dictionaries and patterns are downloaded
+hyph-hu, Bence Nagy and László Németh, selected MPL-1.1. Upstream pattern bytes remain
+unchanged; the shared reader diagnoses and skips malformed replacement records. Dictionaries and patterns are downloaded
 and verified when building the pack, not committed to this application. Builds
 embedding the hu pack include its full licence texts; distribution packages
 must retain the pack's LICENCES directory as well.

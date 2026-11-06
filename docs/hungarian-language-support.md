@@ -13,9 +13,11 @@ branch's dependency with the final shared revision.
 ## Data and build inputs
 
 craft-i18n's hu pack retains the existing Hunspell aff/dic and standard hyph-hu
-patterns, adding an optional Huhyphn nonstandard file. Older consumers retain
-the standard file. The pack builder verifies every original source pin and
-records its two narrow malformed-rule corrections in a modification notice.
+patterns, adding an optional Huhyphn nonstandard file with exact upstream bytes.
+The standard file is required alongside it. The shared reader logs and skips
+two malformed upstream replacement records; the builder never repairs data.
+Older installers reject the added filename, so release updated craft-proof and
+craft-font-store first, update consumers, then publish a new immutable pack/index.
 Original authors, full MPL-2.0/MPL-1.1 texts and source information travel with
 the pack. No language data is added to this repository.
 
@@ -54,6 +56,9 @@ The shared library keeps the original 550 Hunspell verdicts, ten expected
 corrections and 857 native Hyphen cases (with the original 2/2 minima), plus
 provenance and licences. Two raw decomposed-accent verdicts intentionally differ
 from the application's NFC-aware result; the original TSVs are unchanged.
+With unchanged upstream data, the native comparison retains two known differences:
+`masszázszokni` and `giccsetek` reference the skipped malformed records. These are
+reported explicitly; the other 855 rows must still agree.
 Small synthetic rule, malformed input, casing and normalization regressions are
 also retained. Spellbook storage-specific tests are historical evidence of the
 removed implementation, not tests of craft-proof. Application layout, source

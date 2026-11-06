@@ -5009,6 +5009,7 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }
 
+/// Regression: find scope spelling replacement releases bounds.
 #[test]
 fn find_scope_spelling_replacement_releases_bounds() {
     for through_menu in [false, true] {
