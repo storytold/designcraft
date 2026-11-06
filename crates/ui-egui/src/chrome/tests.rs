@@ -328,6 +328,21 @@ fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
     assert!(window.contains_rect(h.get_by_label("Doc 7").rect()), "the chosen document's tab is scrolled into view");
 }
 
+#[test]
+fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    let mut h = test_window::open(app, vec2(1800.0, 600.0));
+    h.run_steps(4);
+    h.set_size(vec2(900.0, 600.0));
+    h.run_steps(6);
+    let window = h.ctx.content_rect();
+    let tab = h.get_by_label("Doc 12").rect();
+    assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
+}
+
 /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size
 /// has a list of sizes; the instructor picks 72 pt from it. Leading has the same list.
 #[test]
