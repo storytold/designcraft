@@ -293,6 +293,7 @@ fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError
     doc.merge_duplicate_assets();
     doc.mark_differing_margins_local();
     doc.renumber_duplicate_items();
+    doc.drop_dangling_story_frames();
     doc.check().map_err(|e| FormatError::NotOurs(e.to_string()))?;
     Ok(doc)
 }
