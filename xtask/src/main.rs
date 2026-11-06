@@ -293,7 +293,7 @@ Tests that use a corpus skip cleanly when it is absent.
         return Ok(());
     }
     let dest = corpus.join("pngsuite");
-    std::fs::create_dir_all(&corpus).map_err(|e| format!("create {}: {e}", corpus.display()))?;
+    std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     let tgz = corpus.join("PngSuite-2017jul19.tgz");
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--max-filesize"]).arg(PNGSUITE_MAX_ARCHIVE.to_string()).arg("-o").arg(&tgz).arg(PNGSUITE_URL);
@@ -309,47 +309,18 @@ Tests that use a corpus skip cleanly when it is absent.
     if !listing.status.success() || listing.stdout.iter().filter(|b| **b == b'\n').count() > PNGSUITE_MAX_ENTRIES {
         return refuse(format!("the PngSuite download isn't a tar.gz of at most {PNGSUITE_MAX_ENTRIES} entries"));
     }
-    // Extract into a staging directory and only publish it once every check has passed, so a
-    // failed download or a hostile archive never damages an existing corpus.
-    let staging = corpus.join(format!("pngsuite.staging-{}", std::process::id()));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| format!("remove stale {}: {e}", staging.display()))?;
-    }
-    std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
-    let discard_staging = || {
-        let _ = std::fs::remove_dir_all(&staging);
-    };
     let mut tar = Command::new("tar");
-    tar.arg("-xzf").arg(&tgz).arg("-C").arg(&staging);
+    tar.arg("-xzf").arg(&tgz).arg("-C").arg(&dest);
     if let Err(e) = run(tar, "tar -xzf PngSuite-2017jul19.tgz") {
-        discard_staging();
+        let _ = std::fs::remove_dir_all(&dest);
         return refuse(e);
     }
     let _ = std::fs::remove_file(&tgz);
-    if dir_bytes(&staging) > PNGSUITE_MAX_EXTRACTED {
-        discard_staging();
-        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", staging.display()));
+    if dir_bytes(&dest) > PNGSUITE_MAX_EXTRACTED {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(format!("the PngSuite archive expanded to more than {PNGSUITE_MAX_EXTRACTED} bytes; removed {}", dest.display()));
     }
-    let n = std::fs::read_dir(&staging).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
-    if n == 0 {
-        discard_staging();
-        return Err("no PNG files extracted".into());
-    }
-    let backup = corpus.join(format!("pngsuite.old-{}", std::process::id()));
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup).map_err(|e| format!("remove stale {}: {e}", backup.display()))?;
-    }
-    if dest.exists() {
-        std::fs::rename(&dest, &backup).map_err(|e| format!("move {} aside: {e}", dest.display()))?;
-    }
-    if let Err(e) = std::fs::rename(&staging, &dest) {
-        if backup.exists() {
-            let _ = std::fs::rename(&backup, &dest);
-        }
-        discard_staging();
-        return Err(format!("publish {}: {e}", dest.display()));
-    }
-    let _ = std::fs::remove_dir_all(&backup);
+    let n = std::fs::read_dir(&dest).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count()).unwrap_or(0);
     println!("PngSuite: {n} PNG files in {}", dest.display());
-    Ok(())
+    if n == 0 { Err("no PNG files extracted".into()) } else { Ok(()) }
 }
