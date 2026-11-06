@@ -346,6 +346,28 @@ fn cmd_click_skips_hidden_objects() {
     assert_eq!(a, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [back.0], "content": false}))]);
 }
 
+/// A parent page that overrode an item of its base and deleted the override hides it on the pages
+/// that use it, so a click there finds nothing to override: the hit list is what the renderer
+/// draws, and it looked only at the page's own overrides (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_hit() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let (a_item, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, false));
+        let off = l.xf(SpreadRef::Doc(0)).translation();
+        ctx(d, &s, &c, &l).hit_parent_on_page(Point::new(150.0 + off.x, 150.0 + off.y))
+    };
+    assert_eq!(hit(&d).map(|(_, id)| id), Some(a_item), "A's item shows through B and is hit");
+    Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(a_item);
+    assert_eq!(hit(&d), None, "removed on B: nothing there to hit");
+}
+
 /// On a page whose parent B is based on A, A's items are hit too, B's win where they overlap, and
 /// nothing is hit when the page hides parent items.
 #[test]
