@@ -280,6 +280,7 @@ fn long_document_names_keep_tabs_short_and_close_buttons_visible() {
     assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
 }
 
+/// Tabs past the bar are reached with the arrows (one tab per click) and the document list.
 #[test]
 fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
     let mut app = app();
@@ -328,6 +329,7 @@ fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
     assert!(window.contains_rect(h.get_by_label("Doc 7").rect()), "the chosen document's tab is scrolled into view");
 }
 
+/// A narrower window must not leave the active tab hidden.
 #[test]
 fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
     let mut app = app();
@@ -345,6 +347,7 @@ fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
     assert!(window.contains_rect(tab) && (tab.width() - full_width).abs() < 1.0, "{tab:?} (was {full_width} wide) outside {window:?}");
 }
 
+/// The successor of a closed active tab takes its index, so identity decides what to reveal.
 #[test]
 fn closing_an_active_tab_scrolled_out_of_view_reveals_its_successor() {
     let mut app = app();
