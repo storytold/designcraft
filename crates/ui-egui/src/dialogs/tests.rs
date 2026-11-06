@@ -5039,6 +5039,7 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
 
+/// A dialog move is one edit whose page identities and content survive reopening and Undo.
 #[test]
 fn move_pages_dialog_moves_the_displayed_last_page_and_undo_restores_it() {
     for (from, to, source, destination) in
@@ -5091,6 +5092,7 @@ fn move_pages_dialog_moves_the_displayed_last_page_and_undo_restores_it() {
     }
 }
 
+/// Keyboard entry must apply the same one-based conversion as direct dialog confirmation.
 #[test]
 fn move_pages_dialog_shows_the_page_range_and_moves_after_keyboard_entry() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -5116,6 +5118,7 @@ fn move_pages_dialog_shows_the_page_range_and_moves_after_keyboard_entry() {
     assert_eq!(app.session.doc().unwrap().doc.page(0).unwrap().id, last);
 }
 
+/// Invalid positions preserve the document, history and pending input for correction.
 #[test]
 fn move_pages_dialog_rejects_invalid_positions_without_changing_the_document() {
     for invalid in [json!(0), json!(20), json!(-1), json!(1.5), json!(true), Value::Null, json!(""), json!("abc"), json!("18446744073709551616")] {

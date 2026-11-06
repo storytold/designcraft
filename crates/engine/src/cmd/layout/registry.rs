@@ -7,6 +7,7 @@ use super::parents::{
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
+/// Register Layout commands; page-index parameters exposed to automation are zero-based.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(

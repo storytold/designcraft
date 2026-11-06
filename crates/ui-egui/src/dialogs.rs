@@ -5068,6 +5068,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
 }
 
 /// One slice of the dialogs' Apply; later slices take the ids this one doesn't.
+/// Apply the remaining dialog-specific validation before dispatching generic command forms.
 fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
     match d.id.as_str() {
         "insertXref" => {
@@ -8405,6 +8406,7 @@ fn drop_unchanged_size(d: &Dialog, p: &mut Map<String, Value>) {
 
 const MOVE_PAGES: &str = "cmd:layout.pages.move";
 
+/// Describe the absolute, one-based positions accepted by the Move Pages dialog.
 fn page_range_hint(app: &DesignApp, count: usize) -> String {
     crate::i18n::tr(&app.ui.language, "Page (1–{count}):").replace("{count}", &count.to_string())
 }

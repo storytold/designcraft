@@ -1129,6 +1129,7 @@ mod tests {
         d.check().unwrap();
     }
 
+    /// Absolute page indices must never index a list that still contains fixed multi-page spreads.
     #[test]
     fn moving_pages_with_an_unshuffled_spread_returns_an_error_without_changing_the_document() {
         for (from, to) in [(4, 0), (1, 2), (0, 4)] {

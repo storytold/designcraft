@@ -1017,6 +1017,7 @@ fn parent_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Do
     }
 }
 
+/// Offer commands for the clicked document page, using dialog positions for editable fields.
 fn page_menu(
     app: &mut DesignApp,
     ui: &mut egui::Ui,

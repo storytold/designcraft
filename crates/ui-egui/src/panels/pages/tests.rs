@@ -120,6 +120,7 @@ fn menu_harness(app: DesignApp, abs: usize, si: usize) -> Harness<'static, Desig
     h
 }
 
+/// Page-menu defaults must identify the visible page when the dialog is confirmed unchanged.
 #[test]
 fn move_pages_dialog_prefills_one_based_positions_from_the_page_menu() {
     for page in [0, 18] {
