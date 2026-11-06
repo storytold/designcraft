@@ -336,11 +336,37 @@ fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
     }
     let mut h = test_window::open(app, vec2(1800.0, 600.0));
     h.run_steps(4);
+    let full_width = h.get_by_label("Doc 12").rect().width();
     h.set_size(vec2(900.0, 600.0));
     h.run_steps(6);
     let window = h.ctx.content_rect();
+    // The reported rect is clipped to the bar, so a half-hidden tab would be narrower.
     let tab = h.get_by_label("Doc 12").rect();
-    assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
+    assert!(window.contains_rect(tab) && (tab.width() - full_width).abs() < 1.0, "{tab:?} (was {full_width} wide) outside {window:?}");
+}
+
+#[test]
+fn closing_an_active_tab_scrolled_out_of_view_reveals_its_successor() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    app.run("file.activate", serde_json::json!({"index": 2})).unwrap();
+    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+    h.run_steps(4);
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let left_edge = h.get_by_label("Scroll Tabs Left").rect().max.x;
+    assert!(h.get_by_label("Doc 3").rect().max.x <= left_edge + 1.0, "the active tab is scrolled out of view");
+    crate::menus::close_document(&mut h.state_mut().app, Some(2));
+    h.run_steps(6);
+    // The next document takes the closed one's index, so only its identity tells them apart.
+    assert_eq!(h.state().app.session.active_index(), Some(2));
+    let window = h.ctx.content_rect();
+    let tab = h.get_by_label("Doc 4").rect();
+    assert!(window.contains_rect(tab) && tab.width() > 149.0, "{tab:?} not fully in view in {window:?}");
 }
 
 /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size

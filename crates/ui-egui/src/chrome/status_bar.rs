@@ -20,7 +20,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0, t.border));
     // Tabs past the bar scroll sideways: trackpad, shift or a plain wheel, and the active tab is kept in view.
     let scroll_id = ui.scope_id().with("doctabs_scroll");
-    let (mut offset, total_w, seen_active, seen_w): (f32, f32, Option<usize>, f32) = ui.data(|d| d.get_temp(scroll_id)).unwrap_or_default();
+    let (mut offset, total_w, seen_active, seen_w): (f32, f32, Option<u64>, f32) = ui.data(|d| d.get_temp(scroll_id)).unwrap_or_default();
     if ui.rect_contains_pointer(bar) {
         let d = ui.input(|i| i.smooth_scroll_delta);
         offset -= if d.x.abs() > d.y.abs() { d.x } else { d.y };
@@ -38,8 +38,8 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut activate = None;
     let mut close = None;
     let mut edges = Vec::new();
-    let titles: Vec<(String, bool)> = app.session.documents().iter().map(|d| (d.title(), d.is_dirty())).collect();
-    for (i, (title, dirty)) in titles.iter().enumerate() {
+    let titles: Vec<(String, bool, u64)> = app.session.documents().iter().map(|d| (d.title(), d.is_dirty(), d.uid)).collect();
+    for (i, (title, dirty, uid)) in titles.iter().enumerate() {
         let is_active = Some(i) == active;
         // `*` = unsaved; the view-mode suffix only in Preview (InDesign shows its GPU mode there).
         let suffix = if is_active && app.ui.screen_mode == crate::ScreenMode::Preview { " [Preview]" } else { "" };
@@ -52,7 +52,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
         let elided = galley.elided;
         let w = (galley.size().x + zoom_label.size().x + DOC_TAB_PAD).max(if is_active { 210.0 } else { 150.0 }).min(max_w);
         let r = egui::Rect::from_min_size(egui::pos2(x, bar.min.y), vec2(w, 28.0));
-        if is_active && (Some(i) != seen_active || (tabs.width() - seen_w).abs() > 0.5) {
+        if is_active && (Some(*uid) != seen_active || (tabs.width() - seen_w).abs() > 0.5) {
             offset += (r.max.x - tabs.max.x).max(0.0) + (r.min.x - tabs.min.x).min(0.0);
             ui.request_repaint();
         }
@@ -131,7 +131,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
             state.bg_stroke = Stroke::NONE;
         }
         crate::menus::menu_button(&mut list, egui::RichText::new("▾").size(14.0).color(t.text_dim), |ui| {
-            for (i, (title, _)) in titles.iter().enumerate() {
+            for (i, (title, ..)) in titles.iter().enumerate() {
                 if ui.selectable_label(Some(i) == active, crate::rtl::isolate(title)).clicked() {
                     activate = Some(i);
                     ui.close();
@@ -144,7 +144,7 @@ pub fn doc_tabs(app: &mut DesignApp, ui: &mut egui::Ui) {
     if overflows != overflow {
         ui.request_repaint();
     }
-    let seen = if overflows == overflow { active } else { seen_active };
+    let seen = if overflows == overflow { active.and_then(|i| titles.get(i)).map(|t| t.2) } else { seen_active };
     ui.data_mut(|d| d.insert_temp(scroll_id, (offset, x - origin, seen, tabs.width())));
     if let Some(i) = close {
         crate::menus::close_document(app, Some(i));
