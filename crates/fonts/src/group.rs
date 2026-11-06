@@ -141,10 +141,10 @@ fn name_group(f: &skrifa::FontRef<'_>) -> Option<FontGroup> {
 /// Name IDs of the family name: typographic family, then family.
 const FAMILY_IDS: [u16; 2] = [16, 1];
 
-/// From the OS/2 code page ranges: `Some(Some(group))` for the CJK code pages (JIS, Chinese
-/// Simplified, Korean Wansung, Chinese Traditional, Korean Johab), `Some(None)` when the font
-/// lists code pages but no CJK one, `None` when it lists none.
-fn code_page_group(f: &skrifa::FontRef<'_>) -> Option<Option<FontGroup>> {
+/// The CJK groups of the OS/2 code page ranges the font lists (JIS, Chinese Simplified, Korean
+/// Wansung, Chinese Traditional, Korean Johab), in menu order: empty when it lists code pages
+/// but no CJK one, `None` when it lists none at all.
+fn code_page_groups(f: &skrifa::FontRef<'_>) -> Option<Vec<FontGroup>> {
     let os2 = f.os2().ok()?;
     let (r1, r2) = (os2.ul_code_page_range_1()?, os2.ul_code_page_range_2().unwrap_or(0));
     if r1 == 0 && r2 == 0 {
@@ -157,17 +157,37 @@ fn code_page_group(f: &skrifa::FontRef<'_>) -> Option<Option<FontGroup>> {
         (20, FontGroup::ChineseTraditional),
         (21, FontGroup::Korean),
     ];
-    Some(first(bits.into_iter().filter(|(b, _)| r1 & (1 << b) != 0).map(|(_, g)| g)))
+    let mut groups: Vec<FontGroup> = bits.into_iter().filter(|(b, _)| r1 & (1 << b) != 0).map(|(_, g)| g).collect();
+    groups.sort();
+    groups.dedup();
+    Some(groups)
+}
+
+/// The CJK group a family name's region tag names, as the pan-CJK families carry one per
+/// language ("Noto Sans CJK SC", "Source Han Serif TC", "PingFang HK", "Hiragino Sans GB"): a
+/// whole word of the name, in capitals.
+fn family_tag_group(family: &str) -> Option<FontGroup> {
+    family.split(|c: char| c.is_whitespace() || c == '-' || c == '_').find_map(|word| match word {
+        "JP" => Some(FontGroup::Japanese),
+        "SC" | "CN" | "GB" => Some(FontGroup::ChineseSimplified),
+        "TC" | "HK" | "TW" | "MO" | "HC" => Some(FontGroup::ChineseTraditional),
+        "KR" => Some(FontGroup::Korean),
+        _ => None,
+    })
 }
 
 /// The group the font declares: its `meta` languages, then its `name` table's languages, then its
-/// code pages (the strongest signal first). `None` when it declares nothing at all: no CJK
-/// language and no code pages.
-pub(crate) fn declared_group(f: &skrifa::FontRef<'_>) -> Option<FontGroup> {
+/// code pages (the strongest signal first). A font that lists the code pages of several CJK
+/// languages (one of a pan-CJK family, covering them all) is the one `family`'s region tag
+/// names, else the first in menu order. `None` when it declares nothing at all: no CJK language
+/// and no code pages.
+pub(crate) fn declared_group(f: &skrifa::FontRef<'_>, family: &str) -> Option<FontGroup> {
     if let Some(g) = meta_group(f).or_else(|| name_group(f)) {
         return Some(g);
     }
-    code_page_group(f).map(|g| g.unwrap_or(FontGroup::Western))
+    let pages = code_page_groups(f)?;
+    let tagged = if pages.len() > 1 { family_tag_group(family).filter(|g| pages.contains(g)) } else { None };
+    Some(tagged.or_else(|| pages.first().copied()).unwrap_or(FontGroup::Western))
 }
 
 /// The group by what the font covers: kana is Japanese, Hangul Korean, ideographs alone
@@ -190,7 +210,7 @@ pub(crate) fn covered_group(f: &skrifa::FontRef<'_>) -> FontGroup {
 /// The font's group and, for a CJK group, its family name in that language (typographic family,
 /// else family) when it differs from `family`.
 pub(crate) fn classify(f: &skrifa::FontRef<'_>, family: &str) -> (FontGroup, Option<String>) {
-    let group = declared_group(f).unwrap_or_else(|| covered_group(f));
+    let group = declared_group(f, family).unwrap_or_else(|| covered_group(f));
     (group, native_family(f, group).filter(|n| n != family))
 }
 
@@ -251,6 +271,39 @@ mod tests {
         // Several: Japanese, Simplified Chinese, Traditional Chinese, Korean.
         assert_eq!(group_of(&latin(1 << 17 | 1 << 19)).0, FontGroup::Japanese);
         assert_eq!(group_of(&latin(1 << 20 | 1 << 21)).0, FontGroup::ChineseTraditional);
+    }
+
+    /// A pan-CJK family's fonts list the code pages of every language they cover and name their
+    /// language only in the family name ("… CJK SC"): that tag decides, not the menu order.
+    #[test]
+    fn a_region_tag_in_the_family_name_decides_between_several_code_pages() {
+        let pan = 1 << 17 | 1 << 18 | 1 << 19 | 1 << 20 | 1 << 21;
+        let group = |family: &str, range1: u32| {
+            let font = with_code_pages(font_with(family, &['a', 'b']).unwrap(), range1, 0).unwrap();
+            classify(&skrifa::FontRef::new(&font).unwrap(), family).0
+        };
+        for (family, expected) in [
+            ("DC Sans CJK SC R", FontGroup::ChineseSimplified),
+            ("DC Sans CJK SC", FontGroup::ChineseSimplified),
+            ("DC Sans GB", FontGroup::ChineseSimplified),
+            ("DC Serif CJK TC", FontGroup::ChineseTraditional),
+            ("DC Sans HK", FontGroup::ChineseTraditional),
+            ("DC Sans CJK KR", FontGroup::Korean),
+            ("DC Sans CJK JP", FontGroup::Japanese),
+            ("DC-Sans-SC", FontGroup::ChineseSimplified),
+            // No tag, or not a whole word in capitals: the first in menu order, as before.
+            ("DC Sans", FontGroup::Japanese),
+            ("DC Script", FontGroup::Japanese),
+            ("DC Sans Sc", FontGroup::Japanese),
+        ] {
+            assert_eq!(group(family, pan), expected, "{family}");
+        }
+        // The tag names a language the font doesn't list: its code pages decide.
+        assert_eq!(group("DC Sans SC", 1 << 17 | 1 << 19), FontGroup::Japanese);
+        // One CJK code page is unambiguous, whatever the name says.
+        assert_eq!(group("DC Sans SC", 1 << 17), FontGroup::Japanese);
+        // No CJK code page: the tag alone doesn't make a font CJK.
+        assert_eq!(group("DC Sans SC", 1), FontGroup::Western);
     }
 
     #[test]

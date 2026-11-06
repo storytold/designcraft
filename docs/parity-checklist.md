@@ -16,12 +16,12 @@ of in-scope menu items (75% against the documented menu tree) (see [target-app-p
 bound.
 
 <!-- SUMMARY -->
-**Weighted breadth parity: 99%** over 276 features.
+**Weighted breadth parity: 99%** over 277 features.
 
 | Priority | Features | Done | Partial | Missing | Parity |
 |---|---|---|---|---|---|
 | P0 | 102 | 100 | 2 | 0 | 99% |
-| P1 | 98 | 98 | 0 | 0 | 100% |
+| P1 | 99 | 99 | 0 | 0 | 100% |
 | P2 | 76 | 72 | 4 | 0 | 97% |
 
 | Area | Parity |
@@ -95,6 +95,7 @@ Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print)
 | Documents, pages, spreads | Ruler guides | P0 | D |
 | Documents, pages, spreads | Guides on layers | P1 | D |
 | Documents, pages, spreads | Liquid guides | P2 | D |
+| Documents, pages, spreads | Flex Layout | P1 | D |
 | Documents, pages, spreads | Smart guides | P0 | D |
 | Documents, pages, spreads | Snap to guides / grid / baseline | P0 | D |
 | Layers | Layers panel | P0 | D |

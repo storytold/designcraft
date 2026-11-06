@@ -13,6 +13,12 @@ pub trait Backend {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String>;
     /// True when a real UI is attached (`ui.screenshot`, `ui.click`, dialogs… work).
     fn has_ui(&self) -> bool;
+    /// Write `bytes` to the file at `path` for a tool that was asked to keep a file (the PNG of
+    /// `render_page`). A backend that confines file access (see [`crate::Headless`]) applies it
+    /// here too.
+    fn write_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        designcraft_engine::io::write_file(path, bytes)
+    }
     /// Short human description ("headless", "connected to 127.0.0.1:7979").
     fn describe(&self) -> String;
 }
@@ -172,7 +178,8 @@ mod tests {
                     Err(e) => panic!("accept failed: {e}"),
                 }
             };
-            // The listener polls accept; the connection blocks while waiting for its request.
+            // The listener polls accept, and accepted sockets can inherit its nonblocking mode. The
+            // connection blocks with timeouts while waiting for its requests.
             stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();

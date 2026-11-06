@@ -5,12 +5,13 @@
 //! becomes the JSON value at `path` in the result of step `N` (0-based): after
 //! `frame.create → {"id": 8, "story": 9}`, `{"story": "$0.story"}` passes `9`. Paths are dotted
 //! keys and array indices (`$2.ids.0`). Inside longer strings `${N.path}` is replaced by the
-//! value's text (`"Frame ${0.id}"`).
+//! value's text (`"Frame ${0.id}"`). Any other string starting with `$` is plain text (`"$1-$2"`,
+//! `"$5 off"`), and `$$` anywhere writes a literal `$` (`"$$1"` passes `$1`, a GREP group).
 //!
 //! **Script text** ([`parse`]): a JSON array of steps, JSON lines (`{"command": …, "params": …}`),
 //! or compact lines `command.id {json}` / `command.id={json}` / `command.id`; blank lines and
 //! lines starting with `#` or `//` are ignored. A leading byte order mark and CRLF line endings are
-//! accepted.
+//! accepted. A JSON step takes only `command` and `params`; any other key is an error.
 
 use serde_json::{Value, json};
 
@@ -25,7 +26,8 @@ pub struct Step {
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
     // Windows tools save "UTF-8 with BOM"; `trim` keeps U+FEFF, which then became part of the
     // first command id.
-    let t = text.trim_start_matches('\u{feff}').trim();
+    let body = text.trim_start_matches('\u{feff}');
+    let t = body.trim();
     if t.starts_with('[') {
         let v: Value = serde_json::from_str(t).map_err(|e| format!("script: {e}"))?;
         return v
@@ -37,7 +39,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             .collect();
     }
     let mut out = Vec::new();
-    for (n, line) in t.lines().enumerate() {
+    // Number lines from the untrimmed text so leading blank lines still count.
+    for (n, line) in body.lines().enumerate() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') || l.starts_with("//") {
             continue;
@@ -50,7 +53,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             let (id, rest) = l.split_at(split);
             let rest = rest.trim_start_matches(['=', ' ', '\t']).trim();
             let params = if rest.is_empty() { Ok(json!({})) } else { serde_json::from_str(rest).map_err(|e| e.to_string()) };
-            params.map(|params| Step { command: id.to_string(), params })
+            params.map(|p: Value| if p.is_null() { json!({}) } else { p }).and_then(|params: Value| {
+                if params.is_object() { Ok(Step { command: id.to_string(), params }) } else { Err("`params` must be an object".to_string()) }
+            })
         };
         out.push(step.map_err(|e| format!("line {}: {e}", n + 1))?);
     }
@@ -58,6 +63,10 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
 }
 
 fn step_of(v: &Value) -> Result<Step, String> {
+    // A misspelt key (`parms`) would otherwise run the command with its defaults.
+    if let Some(key) = v.as_object().and_then(|o| o.keys().find(|k| !matches!(k.as_str(), "command" | "params"))) {
+        return Err(format!("unknown key `{key}` (a step takes `command` and `params`)"));
+    }
     let command = v.get("command").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or("missing `command`")?.to_string();
     let params = v.get("params").cloned().filter(|p| !p.is_null()).unwrap_or(json!({}));
     if !params.is_object() {
@@ -92,27 +101,44 @@ fn short(v: &Value) -> String {
     if s.len() > 120 { format!("{}…", &s[..s.floor_char_boundary(120)]) } else { s }
 }
 
+/// Whether `r` (the text after `$`) is a whole reference: digits or `last`, then zero or more
+/// `.segment` of ASCII letters, digits, `_` or `-`.
+fn is_reference(r: &str) -> bool {
+    let mut parts = r.split('.');
+    let head = parts.next().unwrap_or("");
+    let head_ok = head == "last" || (!head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()));
+    head_ok && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+}
+
 /// Replace references in `params` with values from earlier `results`.
 pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
     Ok(match params {
         Value::String(s) => {
-            if let Some(r) = s.strip_prefix('$').filter(|r| !r.is_empty() && !r.contains(['{', ' '])) {
+            if let Some(r) = s.strip_prefix('$').filter(|r| is_reference(r)) {
                 return lookup(r, results);
             }
-            if !s.contains("${") {
+            if !s.contains("${") && !s.contains("$$") {
                 return Ok(params.clone());
             }
             let mut out = String::new();
             let mut rest = s.as_str();
-            while let Some(i) = rest.find("${") {
+            while let Some(i) = rest.find('$') {
                 out.push_str(&rest[..i]);
-                let end = rest[i..].find('}').ok_or_else(|| format!("unclosed `${{` in {s:?}"))? + i;
-                let v = lookup(&rest[i + 2..end], results)?;
-                match v {
-                    Value::String(t) => out.push_str(&t),
-                    other => out.push_str(&other.to_string()),
+                let after = &rest[i + 1..];
+                if let Some(tail) = after.strip_prefix('$') {
+                    out.push('$');
+                    rest = tail;
+                } else if let Some(inner) = after.strip_prefix('{') {
+                    let end = inner.find('}').ok_or_else(|| format!("unclosed `${{` in {s:?}"))?;
+                    match lookup(&inner[..end], results)? {
+                        Value::String(t) => out.push_str(&t),
+                        other => out.push_str(&other.to_string()),
+                    }
+                    rest = &inner[end + 1..];
+                } else {
+                    out.push('$');
+                    rest = after;
                 }
-                rest = &rest[end + 1..];
             }
             out.push_str(rest);
             Value::String(out)
@@ -168,6 +194,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn leading_blank_lines_keep_line_numbers() {
+        let e = parse("\n\n# c\nfile.new\nframe.create {bad").unwrap_err();
+        assert!(e.contains("line 5"), "{e}");
+    }
+
+    #[test]
     fn parses_all_forms() {
         let a = parse(r#"[{"command": "file.new"}, {"command": "frame.create", "params": {"rect": [0, 0, 10, 10]}}]"#).unwrap();
         let b = parse("# comment\nfile.new\n\nframe.create {\"rect\": [0, 0, 10, 10]}\n").unwrap();
@@ -175,6 +207,25 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert!(parse("frame.create {bad").unwrap_err().contains("line 1"));
+    }
+
+    /// A misspelt step key ran the command with its defaults.
+    #[test]
+    fn a_step_with_an_unknown_key_is_refused() {
+        for text in [r#"[{"command": "file.new", "parms": {"width": 300}}]"#, r#"{"command": "file.new", "parms": {"width": 300}}"#] {
+            let e = parse(text).unwrap_err();
+            assert!(e.contains("unknown key `parms`"), "{e}");
+        }
+        assert!(parse(r#"[{"command": "file.new", "params": {"width": 300}}]"#).is_ok());
+    }
+
+    #[test]
+    fn compact_lines_require_object_params() {
+        for bad in ["a.b 5", "a.b [1]", "a.b \"x\"", "a.b=true"] {
+            assert_eq!(parse(bad), Err("line 1: `params` must be an object".to_string()), "{bad}");
+        }
+        assert_eq!(parse("\na.b={\"x\":1}").unwrap()[0].params, json!({"x": 1}));
+        assert_eq!(parse("a.b null").unwrap()[0].params, json!({}));
     }
 
     /// Windows editors and PowerShell 5.1 save "UTF-8 with BOM" with CRLF line endings; the BOM
@@ -196,6 +247,32 @@ mod tests {
         assert_eq!(r, json!({"story": 9, "id": 5, "label": "Frame 8 of A", "keep": "$", "list": ["A"]}));
         assert!(resolve(&json!({"x": "$5.id"}), &results).unwrap_err().contains("hasn't run"));
         assert!(resolve(&json!({"x": "$0.nope"}), &results).unwrap_err().contains("no `nope`"));
+        assert!(resolve(&json!({"x": "Frame ${0.id"}), &results).unwrap_err().contains("unclosed"));
+    }
+
+    /// GREP replacements start with `$` too; only a well-formed reference is looked up (#749).
+    #[test]
+    fn only_well_formed_references_resolve() {
+        let results = vec![json!({"id": 8})];
+        let p = json!({"a": "$1\u{a0}", "b": "$1-$2", "c": "$5 off", "d": "$$1", "e": "$${0.id}", "f": "$0.id", "g": "${0.id}x", "h": "$1$$", "i": "$1."});
+        let r = resolve(&p, &results).unwrap();
+        assert_eq!(r, json!({"a": "$1\u{a0}", "b": "$1-$2", "c": "$5 off", "d": "$1", "e": "${0.id}", "f": 8, "g": "8x", "h": "$1$", "i": "$1."}));
+    }
+
+    /// Czech typesetting: a nonbreaking space after one-letter prepositions.
+    #[test]
+    fn a_script_grep_change_keeps_its_group_reference() {
+        let mut s = crate::Session::new();
+        let steps = vec![
+            Step { command: "file.new".into(), params: json!({}) },
+            Step { command: "frame.create".into(), params: json!({"rect": [36, 36, 300, 300], "content": "text", "text": "a v Praze"}) },
+            Step { command: "find.change".into(), params: json!({"find": r"\b([av]) ", "change": "$1\u{a0}", "grep": true, "caseSensitive": true}) },
+            Step { command: "story.get".into(), params: json!({"story": "$1.story"}) },
+        ];
+        let r = s.run_script(&steps);
+        assert!(r.failed.is_none(), "{r:?}");
+        assert_eq!(r.results[2]["count"], 2);
+        assert_eq!(r.results[3]["text"], "a\u{a0}v\u{a0}Praze");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Text import (File › Place of text files): plain text, Word documents (`.docx`) and RTF become
 //! a frameless [`Story`] with paragraph and character styles, local bold/italic/underline/size,
-//! footnotes (Word) and tables (Word), ready to flow into text frames.
+//! footnotes, tables and bullets/numbering (Word), ready to flow into text frames.
 //!
 //! Word styles are imported by name (their font, size, bold/italic and space before/after become
 //! the style definition, like InDesign's "Use Word styles" import option). RTF keeps bold,
@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod docx;
+mod docx_numbering;
 pub mod export;
 mod rtf;
 pub mod tagged;
@@ -27,6 +28,17 @@ pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>
 }
 
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
+
+/// Characters kept of a style name read from a file: each paragraph that uses a style carries a
+/// copy of its name, so a long one would be multiplied by the paragraph count.
+pub(crate) const MAX_NAME_CHARS: usize = 256;
+
+pub(crate) fn capped_name(mut name: String) -> String {
+    if let Some((at, _)) = name.char_indices().nth(MAX_NAME_CHARS) {
+        name.truncate(at);
+    }
+    name
+}
 
 /// Joins UTF-16 code units that arrive one at a time (RTF `\uN`, Tagged Text `<0xNNNN>`) into
 /// characters. A character past U+FFFF comes as two units, a surrogate pair: the first half
@@ -113,12 +125,15 @@ pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
     if l.ends_with(".doc") {
         return Err(ImportError::Unsupported("legacy Word .doc (save it as .docx)".into()));
     }
-    Ok(plain(&String::from_utf8_lossy(bytes)))
+    Ok(plain(&tagged::decode(bytes)))
 }
 
-/// Plain text: line breaks become paragraphs (CRLF / CR normalised).
+/// Plain text: line breaks become paragraphs (CRLF / CR normalised). The private-use characters
+/// (U+E000–U+E1FF) that stories use as markers are dropped, since a stray one would be read as a
+/// marker without its payload.
 pub fn plain(text: &str) -> Imported {
     let t = text.trim_start_matches('\u{FEFF}').replace("\r\n", "\n").replace('\r', "\n");
+    let t: String = t.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect();
     let story = Story::with_text(designcraft_doc::StoryId(0), &t, Default::default());
     Imported { story, para_styles: vec![], char_styles: vec![], warnings: vec![] }
 }
@@ -134,5 +149,21 @@ mod tests {
         assert_eq!(i.story.paras.len(), 3);
         assert!(is_text_file("Report.DOCX") && !is_text_file("a.png"));
         assert!(matches!(import("x.doc", b"\xD0\xCF"), Err(ImportError::Unsupported(_))));
+    }
+
+    #[test]
+    fn plain_text_drops_story_markers() {
+        let i = import("a.txt", "a\u{E009}b\u{E000}c\u{E002}d".as_bytes()).unwrap();
+        assert_eq!(i.story.text, "abcd");
+    }
+
+    #[test]
+    fn plain_text_utf16() {
+        let mut le = vec![0xFF, 0xFE];
+        le.extend("Hi there".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(import("a.txt", &le).unwrap().story.text, "Hi there");
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("Hi there".encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(import("a.txt", &be).unwrap().story.text, "Hi there");
     }
 }
