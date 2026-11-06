@@ -93,8 +93,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let r = t2.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
-        st.delete(r.clone());
+        let doomed = super::anchored::delete_range(st, r.clone());
         st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
+        d.unthread_anchored_text_frames(&doomed);
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))

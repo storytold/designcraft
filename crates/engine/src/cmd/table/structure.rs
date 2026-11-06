@@ -67,8 +67,9 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             ts.apply_to(&mut table, cells);
         }
         let r = t.range();
-        st.delete(r.clone());
+        let doomed = super::super::anchored::delete_range(st, r.clone());
         st.insert_table(r.start, table);
+        d.unthread_anchored_text_frames(&doomed);
         *sel = Selection::text(TextSel { story: t.story, anchor: 0, focus: 0, frame: t.frame, cell: Some(CellAddr { table: id, row: 0, col: 0 }) });
         Ok(json!({"story": t.story.0, "table": id}))
     })
@@ -185,8 +186,9 @@ pub(super) fn delete_table(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             a..end
         };
-        st.delete(r.clone());
+        let doomed = super::super::anchored::delete_range(st, r.clone());
         *sel = Selection::text(TextSel::caret(g.story, r.start.min(st.len())));
+        d.unthread_anchored_text_frames(&doomed);
         ok()
     })
 }

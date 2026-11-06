@@ -127,6 +127,14 @@ fn check_anchored(d: &Document, cmd: &str) -> Result<()> {
     d.check().map_err(|e| bad(cmd, format!("these items cannot be anchored here: {e}")))
 }
 
+/// Delete `range` from `st`, returning the anchored text frames whose marks it removed. Callers
+/// unthread the returned frames once the story borrow ends.
+pub(crate) fn delete_range(st: &mut designcraft_doc::Story, range: std::ops::Range<usize>) -> Vec<(StoryId, ItemId)> {
+    let doomed = st.anchored_text_frames_in(range.clone());
+    st.delete(range);
+    doomed
+}
+
 /// Anchor copies of `items` (in spread coordinates) at `pos` of `sid`; returns the end position.
 pub(crate) fn anchor_items(d: &mut Document, sid: StoryId, pos: usize, items: Vec<Item>, position: &AnchorPosition) -> Result<usize> {
     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
@@ -579,6 +587,32 @@ mod anchored_text_frame_tests {
             let d = s.doc().unwrap().doc.clone();
             assert!(d.anchored_item(note).is_none(), "find_change={find_change}");
             assert!(d.story(note_sid).is_none(), "find_change={find_change}");
+            d.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn replacing_an_anchor_through_footnote_table_or_math_unthreads_it() {
+        for kind in ["footnote", "table", "math"] {
+            let (mut s, _host, host_sid) = setup("Before after and more words.");
+            let (note, note_sid) = add_note(&mut s, "Note");
+            anchor(&mut s, note, host_sid, 7, json!({"position": "inline"}));
+            let len = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+            s.execute("text.select", &json!({"story": host_sid.0, "anchor": 0, "focus": len})).unwrap();
+            match kind {
+                "footnote" => {
+                    s.execute("footnote.insert", &json!({"text": "Source"})).unwrap();
+                }
+                "table" => {
+                    s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+                }
+                _ => {
+                    s.execute("math.insert", &json!({"latex": "x"})).unwrap();
+                }
+            }
+            let d = s.doc().unwrap().doc.clone();
+            assert!(d.anchored_item(note).is_none(), "{kind}");
+            assert!(d.story(note_sid).is_none(), "{kind}");
             d.check().unwrap();
         }
     }

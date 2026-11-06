@@ -65,8 +65,9 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
-        st.delete(r.clone());
+        let doomed = super::anchored::delete_range(st, r.clone());
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
+        d.unthread_anchored_text_frames(&doomed);
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
     })?;
