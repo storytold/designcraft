@@ -9,7 +9,8 @@
 //! polytonic text hyphenates by them as well. French is `hyph-fr.tex` 2.13 from hyph-utf8 (Daniel
 //! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
 //! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
-//! hyphenates after its apostrophe.
+//! hyphenates after its apostrophe. Finnish is `hyph-fi.tex` 2.2 from hyph-utf8 (Kauko Saarinen),
+//! "Patterns may be freely distributed" (see NOTICE).
 //! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
@@ -552,6 +553,27 @@ mod tests {
         for w in ["bacheloruddannelser", "industrialiseringens", "samarbejdspartnere"] {
             assert!(!hyphen_points_in(w, &Limits::default(), da).is_empty(), "{w} gets break points");
         }
+    }
+
+    /// #2392: Finnish hyphenates by `hyph-fi.tex`, whatever names the language: the UI's name, an
+    /// ISO code or locale, or InDesign's.
+    #[test]
+    fn finnish_uses_the_hyph_fi_patterns() {
+        let fi = Lang::for_language("Finnish").unwrap();
+        assert_eq!(fi, Lang::Patterns(hypher::Lang::Finnish));
+        for name in ["fi", "fi-FI", "fi_FI", "$ID/Finnish"] {
+            assert_eq!(Lang::for_language(name), Some(fi), "{name}");
+        }
+        assert_ne!(Some(fi), Lang::for_language("Danish"));
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), fi);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("kirjastonhoitaja"), "kir-jas-ton-hoi-ta-ja");
+        assert_eq!(h("suomalainen"), "suo-ma-lai-nen");
+        assert_eq!(h("yliopisto"), "yli-o-pis-to");
+        assert_eq!(h("äänestäminen"), "ää-nes-tä-mi-nen");
+        assert_eq!(h("kaupunginvaltuusto"), "kau-pun-gin-val-tuus-to");
     }
 
     #[test]
