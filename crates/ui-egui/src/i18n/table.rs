@@ -4594,6 +4594,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Keep Options", ["Umbruchoptionen", "Options d'enchaînement", "Opciones de separación", "段落分離禁止オプション", "保持选项"]),
     ("Span Columns", ["Spalten überspannen", "Étendre sur les colonnes", "Abarcar columnas", "段抜きと段分割", "跨栏"]),
     ("Keep with Next:", ["Nicht trennen von nächsten:", "Lier aux suivantes:", "Conservar con siguientes:", "次の段落と分離禁止:", "与下一段保持："]),
+    ("Keep with Previous", ["Nicht trennen von vorherigem", "Lier au précédent", "Conservar con anterior", "前の段落と分離禁止", "与上一段保持"]),
     ("Keep Lines Together", ["Zeilen nicht trennen", "Lignes solidaires", "Conservar líneas juntas", "行を分離しない", "保持各行同页"]),
     (
         "All Lines in Paragraph",

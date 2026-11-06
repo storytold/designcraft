@@ -1887,6 +1887,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom:", "Знизу:"),
     ("Right:", "Праворуч:"),
     ("Keep with Next:", "Утримувати з наступним:"),
+    ("Keep with Previous", "Утримувати з попереднім"),
     ("Keep Lines Together", "Утримувати рядки разом"),
     ("All Lines in Paragraph", "Усі рядки абзацу"),
     ("At Start/End of Paragraph", "На початку і в кінці абзацу"),

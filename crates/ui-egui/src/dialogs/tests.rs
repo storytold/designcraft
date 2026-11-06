@@ -797,10 +797,11 @@ fn style_section_edit(sections: &[&str], fields: Value) -> Value {
 fn paragraph_style_options_keep_and_border_sections_reach_the_styled_paragraph() {
     let para = style_section_edit(
         &["keep", "border"],
-        json!({"p.keepWithNext": 2, "p.keepLinesTogether": true, "p.keepAllLines": false, "p.keepFirst": 3,
+        json!({"p.keepWithNext": 2, "p.keepWithPrevious": true, "p.keepLinesTogether": true, "p.keepAllLines": false, "p.keepFirst": 3,
             "p.startParagraph": "nextPage", "p.borderOn": true, "p.borderWeights": [2.0, 0.0, 2.0, 0.0]}),
     );
     assert_eq!(para["keepWithNext"], 2);
+    assert_eq!(para["keepWithPrevious"], true);
     assert_eq!(para["keepLinesTogether"], true);
     assert_eq!(para["keepAllLines"], false);
     assert_eq!(para["keepFirst"], 3);

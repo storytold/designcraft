@@ -2786,6 +2786,7 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let prange = para_ranges[pi].clone();
         let pf = &story.paras[pi];
         let (mut pp, base_chars) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, pi, &pp);
         // A break character that ends the previous paragraph sends this one on, like a start option.
         // Deleted paragraphs in between don't count, nor does a deleted or hidden break.
         let after_break = previous_visible_break(doc, story, &para_ranges, &deleted, pi);
@@ -3253,6 +3254,14 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
     Rect::new(a.x0.min(b.x0), col.y0, a.x1.max(b.x1), col.y1)
 }
 
+/// Lines paragraph `pi` keeps with the next one: its own Keep with Next, or at least one when the
+/// next paragraph has Keep with Previous (its first line stays with this paragraph's last line).
+fn keep_with_next(doc: &Document, story: &Story, pi: usize, pp: &designcraft_doc::ParaProps) -> u32 {
+    let next_keeps_with_previous =
+        pi.checked_add(1).and_then(|n| story.paras.get(n)).is_some_and(|p| doc.styles.resolve_para(p).0.keep_with_previous);
+    if next_keeps_with_previous { pp.keep_with_next.max(1) } else { pp.keep_with_next }
+}
+
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next paragraph separated from the next one.
@@ -3271,7 +3280,8 @@ fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) 
     let mut bad: Vec<usize> = Vec::new();
     for (&pi, v) in &cols {
         let Some(pf) = story.paras.get(pi) else { continue };
-        let (pp, _) = doc.styles.resolve_para(pf);
+        let (mut pp, _) = doc.styles.resolve_para(pf);
+        pp.keep_with_next = keep_with_next(doc, story, pi, &pp);
         if pp.keep_lines_together && v.len() > 1 {
             let (first, last) = (v[0].1, v[v.len() - 1].1);
             if pp.keep_all_lines || first < pp.keep_first.max(1) as usize || last < pp.keep_last.max(1) as usize {

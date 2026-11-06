@@ -1359,6 +1359,50 @@ fn keep_with_next_moves_a_heading() {
 }
 
 #[test]
+fn keep_with_previous_moves_the_heading_before_it() {
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let body = "Body text that follows the heading.";
+    let (mut d, sid, _) = keep_doc(n - 1, &["Heading", body], h);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![0], "without keeps the heading ends column 0");
+    d.story_mut(sid).unwrap().paras[n].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n - 1), vec![1], "the body pulls its heading along");
+    assert_eq!(column_of_para(&cs, n), vec![1]);
+    assert_eq!(column_of_para(&cs, n - 2), vec![0]);
+}
+
+#[test]
+fn keep_with_previous_chain_moves_together() {
+    // Heading, then a description and an example that each keep with the paragraph before them:
+    // when the example doesn't fit, all three go to the next column.
+    let h = 200.0;
+    let n = lines_per_column(h);
+    let (mut d, sid, _) = keep_doc(n - 2, &["Heading", "Description", "Example"], h);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, n), vec![1], "without keeps only the example moves");
+    {
+        let paras = &mut d.story_mut(sid).unwrap().paras;
+        paras[n - 1].para.keep_with_previous = Some(true);
+        paras[n].para.keep_with_previous = Some(true);
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for p in n - 2..=n {
+        assert_eq!(column_of_para(&cs, p), vec![1], "paragraph {p} moves with the chain");
+    }
+    assert_eq!(column_of_para(&cs, n - 3), vec![0]);
+}
+
+#[test]
+fn keep_with_previous_on_the_first_paragraph_is_harmless() {
+    let (mut d, sid, _) = keep_doc(3, &[], 200.0);
+    d.story_mut(sid).unwrap().paras[0].para.keep_with_previous = Some(true);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(column_of_para(&cs, 0), vec![0]);
+}
+
+#[test]
 fn keep_lines_together_moves_the_paragraph() {
     let h = 200.0;
     let n = lines_per_column(h);
