@@ -156,7 +156,7 @@ impl Story {
     /// Mutable footnote (copy-on-write); bumps the story revision.
     pub fn note_mut(&mut self, id: u64) -> Option<&mut Footnote> {
         let n = self.notes.iter_mut().find(|n| n.id == id)?;
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         Some(Arc::make_mut(n))
     }
 
@@ -166,19 +166,22 @@ impl Story {
         self.text.match_indices(FOOTNOTE_REF).nth(k).map(|(i, _)| i)
     }
 
-    /// Insert a footnote reference at `pos` with the given footnote text. Returns the footnote id.
-    pub fn insert_note(&mut self, pos: usize, text: &str, para: ParaFormat) -> u64 {
+    /// Insert a footnote reference at `pos` with the given footnote text. Returns the footnote
+    /// id, or `None` if the story has no footnote for the new reference.
+    pub fn insert_note(&mut self, pos: usize, text: &str, para: ParaFormat) -> Option<u64> {
         let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
         let fmt = self.char_format_at(pos).clone();
         self.insert_with(pos, &FOOTNOTE_REF.to_string(), fmt);
+        // A file may hold fewer footnotes than references; give every reference one.
+        self.fix_notes();
         let k = self.notes_before(pos);
-        let note = Arc::make_mut(&mut self.notes[k]);
+        let note = Arc::make_mut(self.notes.get_mut(k)?);
         note.text = Story::with_text(StoryId(0), text, para);
-        note.id
+        Some(note.id)
     }
 
     pub(crate) fn next_note_id(&self) -> u64 {
-        self.notes.iter().map(|n| n.id).max().unwrap_or(0) + 1
+        crate::ids::next_local_id(self.notes.iter().map(|n| n.id))
     }
 
     /// Insert empty footnotes for `n` new reference characters before which `k` references sit.
@@ -219,26 +222,26 @@ impl Story {
 }
 
 impl crate::Document {
-    /// How many numbers of list `name` stories before `sid` used (page order), so `sid`'s numbering
-    /// carries on — 0 for lists that don't continue across stories.
-    pub fn list_start(&self, sid: StoryId, name: &str) -> u32 {
+    /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
+    /// numbering carries on; a fresh count for lists that don't continue across stories.
+    pub fn list_start(&self, sid: StoryId, name: &str) -> crate::ListCounter {
+        let mut n = crate::ListCounter::default();
         if !self.settings.lists.iter().any(|l| l.name == name && l.continue_across_stories) {
-            return 0;
+            return n;
         }
         let key = |st: &Story| -> (usize, u64) {
             let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
             (page, st.id.0)
         };
-        let Some(me) = self.story(sid) else { return 0 };
+        let Some(me) = self.story(sid) else { return n };
         let mine = key(me);
         let mut before: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|st| st.id != sid && key(st) < mine).collect();
         before.sort_by_key(|st| key(st));
-        let mut n = 0u32;
         for st in before {
             for (p, r) in st.paras.iter().zip(st.para_ranges()) {
                 let (pp, _) = self.styles.resolve_para(p);
                 if pp.list_type == crate::ListType::Numbers && pp.list_name == name && !r.is_empty() {
-                    n = pp.start_at.map_or(n.saturating_add(1), |s| s.max(1));
+                    n.advance(&pp);
                 }
             }
         }
@@ -259,7 +262,7 @@ impl crate::Document {
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
         let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
-        o.start_at + before as u32
+        o.start_at.saturating_add(before as u32)
     }
 
     /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.
@@ -283,8 +286,8 @@ mod tests {
     #[test]
     fn references_own_notes_in_order() {
         let mut s = st("alpha beta gamma");
-        let b = s.insert_note(10, "second", ParaFormat::default());
-        let a = s.insert_note(5, "first", ParaFormat::default());
+        let b = s.insert_note(10, "second", ParaFormat::default()).unwrap();
+        let a = s.insert_note(5, "first", ParaFormat::default()).unwrap();
         s.check().unwrap();
         assert_eq!(s.notes.len(), 2);
         assert_eq!(s.notes[0].id, a);

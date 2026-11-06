@@ -19,15 +19,17 @@ pub fn has_xrefs(st: &Story) -> bool {
 }
 
 impl XrefIndex {
-    /// `get` composes a story (normally through the cache). Stories that themselves hold
-    /// cross-references are composed without resolving them (their anchors' pages hardly move).
+    /// `get` composes a story (normally through the cache). Stories that hold cross-references or
+    /// running headers are composed without resolving them (their anchors' pages hardly move):
+    /// through the cache they would build this index again, directly or by way of the running-header index.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> XrefIndex {
         let mut pages = HashMap::new();
         for (sid, st) in &doc.stories {
             if st.anchors.is_empty() {
                 continue;
             }
-            let cs = if has_xrefs(st) { Arc::new(crate::compose_story(doc, *sid, &Default::default())) } else { get(*sid) };
+            let indexed = has_xrefs(st) || crate::vars::has_running(doc, st);
+            let cs = if indexed { Arc::new(crate::compose_story(doc, *sid, &Default::default())) } else { get(*sid) };
             for a in &st.anchors {
                 let Some(pos) = st.anchor_pos(a.id) else { continue };
                 if let Some((page, ..)) = crate::vars::place(doc, &cs, pos) {
@@ -50,8 +52,14 @@ impl XrefIndex {
 }
 
 /// The text a cross-reference shows ("??" when its destination is gone, like an unresolved
-/// reference in typesetting).
+/// reference in typesetting, unless the text was edited).
 pub fn xref_text(doc: &Document, x: &xref::CrossRef, index: Option<&XrefIndex>) -> String {
+    // Edited text stays as typed; its page numbers still follow the destination, or show the
+    // page last shown when the destination is gone (as in InDesign).
+    if let Some(t) = &x.text {
+        let live = index.filter(|_| doc.xref_values(x.target).is_some()).and_then(|i| i.page(x.target));
+        return xref::expand_edited(t, live.or(x.page.as_deref()).unwrap_or("?"));
+    }
     let Some(mut v) = doc.xref_values(x.target) else { return "??".into() };
     v.page = index.and_then(|i| i.page(x.target)).unwrap_or("?").to_string();
     let def = doc.xref_format(&x.format).map_or("<fullPara />", |f| f.definition.as_str());

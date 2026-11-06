@@ -1,5 +1,7 @@
 # CJK import and composition
 
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+
 Task: CJK1. This is incremental support, not a claim of InDesign composition parity.
 
 ## Data flow
@@ -62,3 +64,10 @@ removing unsupported-rule warnings to produce a clean report is not acceptable.
 
 Tests use synthetic documents; user IDML files and proprietary application output
 are not committed as fixtures.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
+| 2026-10-07 | major | Created: CJK1: IDML CJK import and composition |

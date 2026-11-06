@@ -2,7 +2,9 @@
 //! selected frame, or a new frame on the page; with autoflow, pages and threaded frames are added
 //! until the whole story fits (InDesign's Shift-click with a loaded text cursor).
 
-use designcraft_doc::{CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, Story, StoryId, TextSel};
+use designcraft_doc::{
+    CharacterStyle, Content, Document, ParaFormat, ParagraphStyle, SpreadRef, StartParagraph, Story, StoryId, TextDirection, TextFileLink, TextSel,
+};
 use designcraft_geom::Rect;
 use serde_json::{Value, json};
 
@@ -22,8 +24,33 @@ enum Conflict {
     AutoRename,
 }
 
+impl Conflict {
+    fn parse(c: &str) -> Result<Self> {
+        match c {
+            "useExisting" | "" => Ok(Conflict::UseExisting),
+            "redefine" => Ok(Conflict::Redefine),
+            "autoRename" => Ok(Conflict::AutoRename),
+            c => Err(bad("file.place", format!("unknown styleConflicts `{c}` (useExisting, redefine, autoRename)"))),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Conflict::UseExisting => "useExisting",
+            Conflict::Redefine => "redefine",
+            Conflict::AutoRename => "autoRename",
+        }
+    }
+}
+
 /// Map imported style names (`styleMap`) and resolve name clashes in the import before it lands.
-fn map_styles(d: &Document, imp: &mut designcraft_textimport::Imported, map: &std::collections::HashMap<String, String>, conflict: Conflict) {
+/// Returns `map` with the names Auto Rename chose.
+fn map_styles(
+    d: &Document,
+    imp: &mut designcraft_textimport::Imported,
+    map: &std::collections::HashMap<String, String>,
+    conflict: Conflict,
+) -> std::collections::HashMap<String, String> {
     let mut rename: std::collections::HashMap<String, String> = map.clone();
     if conflict == Conflict::AutoRename {
         let st = &d.styles;
@@ -39,7 +66,7 @@ fn map_styles(d: &Document, imp: &mut designcraft_textimport::Imported, map: &st
         }
     }
     if rename.is_empty() {
-        return;
+        return rename;
     }
     // Mapped styles aren't imported; renamed ones come in under their new name.
     imp.para_styles.retain(|s| !map.contains_key(&s.name));
@@ -63,6 +90,7 @@ fn map_styles(d: &Document, imp: &mut designcraft_textimport::Imported, map: &st
             f.style = m.clone();
         }
     });
+    rename
 }
 
 fn add_styles(d: &mut Document, imp: &designcraft_textimport::Imported, conflict: Conflict) {
@@ -105,56 +133,282 @@ fn strip(story: &mut Story) {
     story.format_chars(0..n, |f| *f = Default::default());
 }
 
-/// Is the story overset in its frames, and how much text do its full frames hold (bytes, frames)?
+/// The story's whole text replaced by the import's (its frames stay).
+fn fill(story: &mut Story, from: &Story) {
+    let n = story.len();
+    story.delete(0..n);
+    story.insert_story(0, from);
+    if let (Some(first), Some(p0)) = (from.paras.first(), story.paras.first_mut()) {
+        *p0 = ParaFormat { table: p0.table, ..first.clone() };
+    }
+}
+
+/// The link a story placed from `path` keeps (Create Links When Placing Text Files).
+/// `before`: the file's size and time before `bytes` were read (its time is kept only when the
+/// size matches what was read and it can be trusted, see [`super::links::settled`]).
+fn text_link(
+    path: &str,
+    bytes: &[u8],
+    before: Option<designcraft_doc::Fingerprint>,
+    map: std::collections::HashMap<String, String>,
+    conflict: Conflict,
+    remove: bool,
+    story: &Story,
+) -> TextFileLink {
+    TextFileLink {
+        path: path.to_string(),
+        size: bytes.len() as u64,
+        hash: super::links::fnv_hex(bytes),
+        mtime: before.filter(|f| f.size == bytes.len() as u64 && super::links::settled(f)).map_or(0, |f| f.mtime),
+        style_map: map.into_iter().collect(),
+        style_conflicts: conflict.name().into(),
+        remove_styles: remove,
+        story_hash: super::links::story_hash(story),
+    }
+}
+
+/// Update Link of a linked text file: `bytes` (read from `path`) imported again into the story
+/// with the import options it was placed with, keeping its frames. Returns the import's warnings.
+pub(crate) fn reimport(
+    d: &mut Document,
+    sid: StoryId,
+    path: &str,
+    bytes: &[u8],
+    before: Option<designcraft_doc::Fingerprint>,
+) -> Result<Vec<String>> {
+    let link =
+        d.story(sid).and_then(|s| s.file_link.clone()).ok_or_else(|| bad("links.update", format!("story {} isn't linked to a file", sid.0)))?;
+    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().to_string());
+    let mut imp = designcraft_textimport::import(&name, bytes).map_err(|e| bad("links.update", format!("{name}: {e}")))?;
+    if link.remove_styles {
+        strip(&mut imp.story);
+        imp.para_styles.clear();
+        imp.char_styles.clear();
+    }
+    let conflict = Conflict::parse(&link.style_conflicts)?;
+    // A mapping to a style the document no longer has is dropped: that style is imported again.
+    let map: std::collections::HashMap<String, String> =
+        link.style_map.into_iter().filter(|(_, to)| d.styles.para(to).is_some() || d.styles.char_style(to).is_some()).collect();
+    let map = map_styles(d, &mut imp, &map, conflict);
+    add_styles(d, &imp, conflict);
+    let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    fill(story, &imp.story);
+    story.file_link = Some(text_link(path, bytes, before, map, conflict, link.remove_styles, story));
+    Ok(imp.warnings)
+}
+
+/// Is the story overset in its frames, how much text do its full frames hold (bytes, frames), and
+/// how many frames does the overset text start on its own (breaks, Start Paragraph options)?
 /// A frame a column, frame or page break ends early is left out: it says nothing about how much
-/// a frame holds.
-fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize) {
+/// a frame holds. So is one a Start Paragraph option ends early (#1209).
+fn fit(d: &Document, sid: StoryId) -> (Option<usize>, usize, usize, usize) {
     let cs = designcraft_compose::compose_story(d, sid, &Default::default());
-    let text = d.story(sid).map_or("", |s| s.text.as_str());
-    let is_break = |c: char| matches!(c, designcraft_doc::COLUMN_BREAK | designcraft_doc::FRAME_BREAK | designcraft_doc::PAGE_BREAK);
+    let Some(story) = d.story(sid) else { return (cs.overset_at, 0, 0, 0) };
+    let text = story.text.as_str();
+    let ranges = story.para_ranges();
+    let deleted = designcraft_compose::deleted_paras(story, &ranges);
+    let placed = |p: usize| !deleted.get(p).copied().unwrap_or(false);
+    let starts = |p: usize| placed(p) && story.paras.get(p).is_some_and(|pf| d.styles.resolve_para(pf).0.start_paragraph != StartParagraph::Anywhere);
+    // A frame's range stops before the paragraph's return; composing skips deleted paragraphs.
+    let moved_on = |end: usize| {
+        let next = if text.as_bytes().get(end) == Some(&b'\n') { end.saturating_add(1) } else { end };
+        next.checked_sub(1).is_some_and(|i| text.as_bytes().get(i) == Some(&b'\n'))
+            && (story.para_at(next)..story.paras.len()).find(|&p| placed(p)).is_some_and(starts)
+    };
     let (mut held, mut full) = (0, 0);
     for f in &cs.frames {
         let Some(shown) = text.get(f.range.clone()) else { continue };
-        if !shown.is_empty() && !shown.chars().any(is_break) {
+        if !shown.is_empty() && !shown.chars().any(designcraft_doc::is_break_char) && !moved_on(f.range.end) {
             held += shown.len();
             full += 1;
         }
     }
-    (cs.overset_at, held, full)
+    let forced = cs.overset_at.map_or(0, |at| {
+        let first = story.para_at(at);
+        // The paragraph the overset text starts with counts when it starts there.
+        let from = if at.checked_sub(1).is_none_or(|i| text.as_bytes().get(i) == Some(&b'\n')) { first } else { first.saturating_add(1) };
+        // Once per paragraph: after a break, its start option only fixes odd or even page parity.
+        let sent = (from..ranges.len())
+            .filter(|&p| starts(p) || (placed(p) && designcraft_compose::previous_visible_break(d, story, &ranges, &deleted, p).is_some()))
+            .count();
+        // A break inside a paragraph moves the rest of it.
+        let inside: usize = (first..ranges.len())
+            .filter(|&p| placed(p))
+            .filter_map(|p| Some((p, ranges.get(p)?.clone())))
+            .map(|(p, r)| {
+                let Some(t) = text.get(r.clone()) else { return 0 };
+                let last = t.char_indices().next_back().map(|(i, _)| i);
+                t.char_indices()
+                    .filter(|&(i, c)| {
+                        designcraft_doc::is_break_char(c)
+                            && Some(i) != last
+                            && r.start.saturating_add(i) >= at
+                            && designcraft_compose::visible_break(d, story, p, r.start.saturating_add(i)).is_some()
+                    })
+                    .count()
+            })
+            .sum();
+        sent.saturating_add(inside)
+    });
+    (cs.overset_at, held, full, forced)
 }
 
-/// Thread new frames on new pages (margin rectangles) until the story fits. Returns pages added.
-pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize) -> Result<usize> {
+/// The frames autoflow sets on a page: one per column inside the margins, in the order a story
+/// of direction `dir` runs through them. A vertical story gets one frame on the live area.
+fn flow_rects(d: &Document, dir: TextDirection, vertical: bool, page: usize) -> Vec<Rect> {
+    let Some(p) = d.page(page) else { return Vec::new() };
+    if vertical {
+        return vec![p.margin_rect()];
+    }
+    let mut cols = p.column_rects();
+    if dir == TextDirection::RightToLeft {
+        cols.reverse();
+    }
+    cols
+}
+
+fn same_rect(a: Rect, b: Rect) -> bool {
+    [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1].iter().all(|v| v.abs() < 0.01)
+}
+
+/// Thread new frames until the story fits: first into the columns after the last frame's column
+/// on its page (when it sits in one), then one frame per column on each page that follows it,
+/// whatever else the page holds, and on each page it adds at the end of the document, as InDesign
+/// does. With `primary` (Smart Text Reflow of the primary text frame), pages are added right after
+/// the last frame's page, each with one frame on the live area with the page's columns instead.
+/// Empty frames it made at the end of the thread are removed again; a page it added that holds
+/// only such a frame goes with it. Returns pages added.
+/// A story on a parent spread doesn't autoflow: its frames thread only on that parent. Errors
+/// name `cmd`, the command that autoflows.
+pub(crate) fn autoflow(d: &mut Document, sid: StoryId, max_pages: usize, cmd: &str, primary: bool) -> Result<usize> {
+    let last = d.story(sid).and_then(|s| s.frames.last().copied()).ok_or_else(|| bad(cmd, "the story has no frame"))?;
+    if !matches!(d.find(last).map(|l| l.spread), Some(SpreadRef::Doc(_))) {
+        return Err(bad(cmd, "autoflow works only from a frame on a document page"));
+    }
+    let (dir, story_vertical) = d.story(sid).map(|s| (s.direction, s.vertical)).ok_or_else(|| bad(cmd, "no such story"))?;
+    // One frame per page: on the live area, its columns those of the page.
+    let vertical = story_vertical || primary;
     let mut added = 0;
+    let mut made = Vec::new();
+    let mut new_pages = Vec::new();
+    let mut first = true;
+    // The next page of the document autoflow may set frames on; it only moves forward.
+    let mut following = 0;
     loop {
-        let (overset, held, full) = fit(d, sid);
-        let Some(at) = overset else { return Ok(added) };
-        if added >= max_pages {
-            return Err(bad("file.place", format!("autoflow stopped after {max_pages} pages")));
-        }
+        let (overset, held, full, forced) = fit(d, sid);
+        let Some(at) = overset else { break };
         let len = d.story(sid).map_or(0, |s| s.len());
-        // Frames still needed at the rate the full ones are filled (at least one); with no full
-        // frame to go by yet, one more page.
-        let want = held.checked_div(full).map_or(1, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1))).clamp(1, max_pages - added);
-        let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad("file.place", "the story has no frame"))?;
-        let mut page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
-        let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
-        d.insert_pages(Some(page), want, parent)?;
+        // Frames still needed at the rate the full ones are filled, plus one per frame the text
+        // starts on its own (at least one); with neither to go by yet, one more.
+        let rate = held.checked_div(full).map_or(0, |per_frame| len.saturating_sub(at).div_ceil(per_frame.max(1)));
+        let want = rate.saturating_add(forced).max(1);
+        let last = *d.story(sid).and_then(|s| s.frames.last()).ok_or_else(|| bad(cmd, "the story has no frame"))?;
+        let page = d.page_of_item(last).unwrap_or(d.page_count().saturating_sub(1));
         let layer = d.default_layer();
         let mut prev = last;
-        for _ in 0..want {
-            page += 1;
-            let (si, pi) = d.page_loc(page).ok_or_else(|| bad("file.place", "page insert failed"))?;
-            let r = d.spreads[si].pages[pi].margin_rect();
-            let (fid, _) = d.add_text_frame(SpreadRef::Doc(si), r, layer, "", ParaFormat::default())?;
-            d.thread(prev, fid)?;
-            prev = fid;
+        if std::mem::take(&mut first) {
+            let rects = flow_rects(d, dir, vertical, page);
+            let next = d.item(last).and_then(|it| rects.iter().position(|r| same_rect(*r, it.bounds()))).map_or(rects.len(), |k| k + 1);
+            if let (Some(rest), Some((si, _))) = (rects.get(next..).filter(|r| !r.is_empty()), d.page_loc(page)) {
+                // Whole pages: an estimate that stops inside one would leave its later columns out
+                // of the thread for good. The cleanup below takes the frames the text doesn't reach.
+                for r in rest {
+                    prev = add_flow_frame(d, si, *r, layer, prev)?;
+                    made.push(prev);
+                }
+                continue;
+            }
         }
-        added += want;
+        following = following.max(page + 1);
+        if !primary && following < d.page_count() {
+            let mut left = want;
+            while left > 0 && following < d.page_count() {
+                let Some((si, _)) = d.page_loc(following) else { break };
+                for r in flow_rects(d, dir, vertical, following) {
+                    prev = add_flow_frame(d, si, r, layer, prev)?;
+                    made.push(prev);
+                    left = left.saturating_sub(1);
+                }
+                following += 1;
+            }
+            continue;
+        }
+        if added >= max_pages {
+            return Err(bad(cmd, format!("autoflow stopped after {max_pages} pages")));
+        }
+        // Past the following pages, `page` is the document's last: autoflow adds pages at its end.
+        let per_page = if vertical { 1 } else { d.page(page).map_or(1, |p| p.column_rects().len().max(1)) };
+        let pages = want.div_ceil(per_page).clamp(1, max_pages - added);
+        let parent = d.page_loc(page).and_then(|(si, pi)| d.spreads[si].pages[pi].parent);
+        new_pages.extend(d.insert_pages(Some(page), pages, parent)?);
+        for pg in page + 1..=page + pages {
+            let (si, pi) = d.page_loc(pg).ok_or_else(|| bad(cmd, "page insert failed"))?;
+            let columns = d.spreads[si].pages[pi].columns.clone();
+            for r in flow_rects(d, dir, vertical, pg) {
+                prev = add_flow_frame(d, si, r, layer, prev)?;
+                made.push(prev);
+                if primary && let Some(tf) = d.item_mut(prev).and_then(|it| it.text_frame_mut()) {
+                    tf.options.columns = columns.count.max(1);
+                    tf.options.gutter = columns.gutter;
+                }
+            }
+        }
+        added += pages;
     }
+    let cs = designcraft_compose::compose_story(d, sid, &Default::default());
+    while let Some(&f) = made.last() {
+        let frames = d.story(sid).map_or(&[][..], |s| s.frames.as_slice());
+        let [.., before, tail] = frames else { break };
+        if *tail != f || cs.frame(f).is_some_and(|ft| !ft.range.is_empty()) {
+            break;
+        }
+        let page = d.page_of_item(f);
+        if d.page_of_item(*before) != page {
+            // The first frame on its page: the estimate asked for more pages than the text needs.
+            // Drop the page too when autoflow added it and the frame is all it holds; a page the
+            // document had keeps whatever else is on it.
+            match page.filter(|pg| d.page(*pg).is_some_and(|p| new_pages.contains(&p.id))) {
+                Some(pg) => {
+                    let alone = d.spreads.iter().flat_map(|sp| sp.items.iter()).all(|it| it.id == f || d.page_of_item(it.id) != Some(pg));
+                    if !alone {
+                        break;
+                    }
+                    d.remove_item(f)?;
+                    d.delete_pages(&[pg])?;
+                    added = added.saturating_sub(1);
+                }
+                None => {
+                    d.remove_item(f)?;
+                }
+            }
+        } else {
+            d.remove_item(f)?;
+        }
+        made.pop();
+    }
+    Ok(added)
 }
 
-pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -> Result<Value> {
+fn add_flow_frame(
+    d: &mut Document,
+    si: usize,
+    r: Rect,
+    layer: designcraft_doc::LayerId,
+    prev: designcraft_doc::ItemId,
+) -> Result<designcraft_doc::ItemId> {
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(si), r, layer, "", ParaFormat::default())?;
+    d.thread(prev, fid)?;
+    Ok(fid)
+}
+
+pub(super) fn place_text(
+    s: &mut Session,
+    p: &Value,
+    name: &str,
+    bytes: &[u8],
+    path: Option<String>,
+    before: Option<designcraft_doc::Fingerprint>,
+) -> Result<Value> {
     let mut imp = designcraft_textimport::import(name, bytes).map_err(|e| bad("file.place", e.to_string()))?;
     let remove = p.get("removeStyles").and_then(Value::as_bool).unwrap_or(false);
     if remove {
@@ -162,18 +416,20 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
         imp.para_styles.clear();
         imp.char_styles.clear();
     }
-    let conflict = match p.get("styleConflicts").and_then(Value::as_str).unwrap_or("useExisting") {
-        "useExisting" => Conflict::UseExisting,
-        "redefine" => Conflict::Redefine,
-        "autoRename" => Conflict::AutoRename,
-        c => return Err(bad("file.place", format!("unknown styleConflicts `{c}` (useExisting, redefine, autoRename)"))),
-    };
+    let conflict = Conflict::parse(p.get("styleConflicts").and_then(Value::as_str).unwrap_or("useExisting"))?;
     let map: std::collections::HashMap<String, String> = p
         .get("styleMap")
         .and_then(Value::as_object)
         .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
         .unwrap_or_default();
-    map_styles(&s.doc()?.doc, &mut imp, &map, conflict);
+    let map = map_styles(&s.doc()?.doc, &mut imp, &map, conflict);
+    // Create Links When Placing Text Files (only a file on disk can be linked).
+    let link = path.filter(|_| p.get("link").and_then(Value::as_bool).unwrap_or(s.prefs.link_text_files));
+    // A file too large for the Links panel to check isn't linked.
+    let (link, too_large) = match link {
+        Some(_) if !super::links::checkable_size(bytes.len()) => (None, true),
+        l => (l, false),
+    };
     let autoflow_on = p.get("autoflow").and_then(Value::as_bool).unwrap_or(false);
     let st = s.doc()?;
     let caret = st.selection.text.filter(|t| t.cell.is_none());
@@ -182,7 +438,10 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
     });
     let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1));
     let rect = super::rect_param(p, "rect");
-    let warnings = imp.warnings.clone();
+    let mut warnings = imp.warnings.clone();
+    if too_large {
+        warnings.push("not linked: the file is too large to keep linked".into());
+    }
     s.edit(|d, sel| {
         add_styles(d, &imp, conflict);
         let sid = if let Some(t) = caret {
@@ -190,8 +449,18 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
             let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             story.delete(r.clone());
+            // An insertion point in an empty paragraph takes the first imported paragraph's style
+            // (insert_story would keep the empty paragraph's own, losing the styleMap result).
+            let p0 = story.para_at(r.start);
+            let blank = story.para_ranges().get(p0).is_some_and(|x| x.is_empty());
             let end = story.insert_story(r.start, &imp.story);
+            if blank && let (Some(first), Some(p)) = (imp.story.paras.first(), story.paras.get_mut(p0)) {
+                *p = ParaFormat { table: p.table, ..first.clone() };
+            }
             sel.text = Some(TextSel { anchor: end, focus: end, ..t });
+            if link.is_some() {
+                warnings.push("not linked: a linked text file fills a whole story, not an insertion point".into());
+            }
             t.story
         } else {
             let fid = match frame {
@@ -199,7 +468,9 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
                 None => {
                     let pg = page.unwrap_or(0).min(d.page_count().saturating_sub(1));
                     let (si, pi) = d.page_loc(pg).ok_or_else(|| bad("file.place", "no such page"))?;
-                    let r: Rect = rect.unwrap_or_else(|| d.spreads[si].pages[pi].margin_rect());
+                    // An autoflowed story starts in the first column; a placed one on the live area.
+                    let first_column = autoflow_on.then(|| flow_rects(d, d.new_story_direction(), false, pg).first().copied()).flatten();
+                    let r: Rect = rect.or(first_column).unwrap_or_else(|| d.spreads[si].pages[pi].margin_rect());
                     let layer = d.default_layer();
                     d.add_text_frame(SpreadRef::Doc(si), r, layer, "", ParaFormat::default())?.0
                 }
@@ -221,77 +492,19 @@ pub(super) fn place_text(s: &mut Session, p: &Value, name: &str, bytes: &[u8]) -
                 None => return Err(bad("file.place", "no such frame")),
             };
             let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-            let n = story.len();
-            story.delete(0..n);
-            story.insert_story(0, &imp.story);
-            if let Some(first) = imp.story.paras.first() {
-                story.paras[0] = ParaFormat { table: story.paras[0].table, ..first.clone() };
-            }
+            fill(story, &imp.story);
+            story.file_link = link.as_deref().map(|path| text_link(path, bytes, before, map.clone(), conflict, remove, story));
             *sel = designcraft_doc::Selection::items(vec![fid]);
             sid
         };
-        let pages = if autoflow_on { autoflow(d, sid, 2000)? } else { 0 };
+        let pages = if autoflow_on { autoflow(d, sid, 2000, "file.place", false)? } else { 0 };
         let overset = fit(d, sid).0.is_some();
         Ok(json!({"story": sid.0, "pagesAdded": pages, "overset": overset, "warnings": warnings}))
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn place_text_file_with_autoflow() {
-        let dir = std::env::temp_dir().join(format!("dc-place-text-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("long.txt");
-        let para = "The quick brown fox jumps over the lazy dog, again and again, to fill the page. ".repeat(12);
-        std::fs::write(&path, vec![para.as_str(); 60].join("\n")).unwrap();
-        let mut s = Session::new();
-        s.execute("file.new", &json!({"pages": 1})).unwrap();
-        let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "autoflow": true})).unwrap();
-        assert!(r["pagesAdded"].as_u64().unwrap() >= 2, "{r}");
-        assert_eq!(r["overset"], false);
-        let d = &s.doc().unwrap().doc;
-        let sid = StoryId(r["story"].as_u64().unwrap());
-        assert_eq!(d.story(sid).unwrap().frames.len(), d.page_count());
-        assert_eq!(d.story(sid).unwrap().paras.len(), 60);
-        // Into the insertion point of another frame.
-        let fr = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Start  end"})).unwrap();
-        let sid2 = fr["story"].as_u64().unwrap();
-        s.execute("text.select", &json!({"story": sid2, "anchor": 6, "focus": 6})).unwrap();
-        let small = dir.join("small.rtf");
-        std::fs::write(&small, br"{\rtf1 {\b middle}}").unwrap();
-        s.execute("file.place", &json!({"path": small.to_string_lossy()})).unwrap();
-        let st = s.doc().unwrap().doc.story(StoryId(sid2)).unwrap().clone();
-        assert_eq!(st.text, "Start middle end");
-        assert_eq!(st.format_after(6).over.font_style.as_deref(), Some("Bold"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn autoflow_adds_only_the_pages_breaks_ask_for() {
-        // Regression (#262): a frame a break ends early made autoflow take it for a frame that
-        // holds a few characters, and add a page per few characters left (33 for this text).
-        let dir = std::env::temp_dir().join(format!("dc-place-breaks-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, rtf, pages) in [
-            ("lead.rtf", r"{\rtf1 \page\par A Short Heading\par First short paragraph.\par Second short paragraph.\par}", 2),
-            ("each.rtf", r"{\rtf1 One\par\page\par Two\par\page\par Three\par\page\par Four\par}", 4),
-        ] {
-            let path = dir.join(name);
-            std::fs::write(&path, rtf).unwrap();
-            let mut s = Session::new();
-            s.execute("file.new", &json!({"pages": 1})).unwrap();
-            let r = s.execute("file.place", &json!({"path": path.to_string_lossy(), "autoflow": true})).unwrap();
-            assert_eq!(r["overset"], false, "{name}: {r}");
-            let d = &s.doc().unwrap().doc;
-            assert_eq!(d.page_count(), pages, "{name}: {r}");
-            assert_eq!(d.story(StoryId(r["story"].as_u64().unwrap())).unwrap().frames.len(), pages, "{name}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod place_pdf_tests {
@@ -401,6 +614,61 @@ mod reflow_tests {
         s.execute("text.insert", &json!({"text": long})).unwrap();
         assert_eq!(s.doc().unwrap().doc.page_count(), 1);
     }
+
+    #[test]
+    fn smart_text_reflow_adds_primary_frames_with_the_page_columns() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "columns": 2, "gutter": 18, "primaryTextFrame": true})).unwrap();
+        let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story");
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("text.insert", &json!({"text": "Words keep coming and the page fills up quickly with them. ".repeat(250)})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let frames = &d.story(sid).unwrap().frames;
+        assert!(d.page_count() >= 2);
+        assert_eq!(frames.len(), d.page_count());
+        for f in frames {
+            let it = d.item(*f).unwrap();
+            assert_eq!(it.bounds(), d.page(d.page_of_item(*f).unwrap()).unwrap().margin_rect());
+            let tf = it.text_frame().unwrap();
+            assert_eq!((tf.options.columns, tf.options.gutter), (2, 18.0));
+        }
+        let n = d.story(sid).unwrap().len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": n})).unwrap();
+        s.execute("text.delete", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.page_count(), 1);
+    }
+
+    /// Placing text into the primary frame adds only the pages the text needs, also when a wrap
+    /// leaves page 1 little room or the text ends at a page boundary (#1165).
+    #[test]
+    fn smart_text_reflow_place_adds_no_empty_pages() {
+        let dir = std::env::temp_dir().join(format!("dc-reflow-place-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, wrap, want) in [(280, true, 5), (250, false, 3)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"preset": "Letter", "pages": 1, "primaryTextFrame": true})).unwrap();
+            if wrap {
+                let id = s.execute("frame.create", &json!({"rect": [36, 36, 576, 600]})).unwrap()["id"].as_u64().unwrap();
+                s.execute("object.textWrap", &json!({"ids": [id], "mode": "boundingBox"})).unwrap();
+            }
+            let sid = s.doc().unwrap().doc.settings.primary_story.expect("primary story");
+            s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+            let path = dir.join(format!("words-{n}.txt"));
+            std::fs::write(&path, "Words keep coming and the page fills up quickly with them. ".repeat(n)).unwrap();
+            s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap();
+            let d = s.doc().unwrap().doc.clone();
+            assert_eq!(d.page_count(), want, "{n} lines");
+            let frames = &d.story(sid).unwrap().frames;
+            assert_eq!(frames.len(), d.page_count(), "{n} lines");
+            let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+            assert!(cs.overset_at.is_none(), "{n} lines");
+            for f in frames {
+                assert!(cs.frame(*f).is_some_and(|ft| !ft.range.is_empty()), "{n} lines: empty frame {f:?}");
+            }
+            d.check().unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -480,5 +748,71 @@ mod pdf_page_tests {
         // Redefine: the imported definition replaces the document's.
         s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleConflicts": "redefine", "rect": [72, 400, 300, 500]})).unwrap();
         assert_eq!(s.doc().unwrap().doc.styles.para("Body").unwrap().chars.size, Some(10.0));
+    }
+
+    #[test]
+    fn word_first_paragraph_into_empty_caret_keeps_mapped_style() {
+        // Regression (#1208): placing into a new text frame (which leaves its caret selected) left the first paragraph unstyled.
+        let b64 = crate::cmd::base64_encode(&word_file());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Headline"})).unwrap();
+        let fr = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text"})).unwrap();
+        let sid = fr["story"].as_u64().unwrap();
+        s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "frame": fr["id"], "styleMap": {"Title": "Headline"}})).unwrap();
+        let st = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().clone();
+        assert_eq!(st.paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Headline", "Body"]);
+    }
+
+    #[test]
+    fn word_normal_comes_in_as_its_own_style() {
+        // Regression (#722): Normal's formatting (over Word's document defaults) was dropped.
+        use std::io::Write;
+        const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let styles = format!(
+            r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>
+            <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="Georgia"/><w:sz w:val="26"/></w:rPr></w:style></w:styles>"#
+        );
+        let doc = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Plain</w:t></w:r></w:p></w:body></w:document>"#);
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (n, c) in [("word/document.xml", doc), ("word/styles.xml", styles)] {
+            w.start_file(n, zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(c.as_bytes()).unwrap();
+        }
+        let b64 = crate::cmd::base64_encode(&w.finish().unwrap().into_inner());
+        let basic = designcraft_doc::story::BASIC_PARAGRAPH;
+        let placed = |s: &Session, story: &serde_json::Value| {
+            let d = &s.doc().unwrap().doc;
+            let st = d.story(designcraft_doc::StoryId(story["story"].as_u64().unwrap())).unwrap();
+            let (_, para_chars) = d.styles.resolve_para(&st.paras[0]);
+            let c = d.styles.resolve_char(&para_chars, st.format_after(0));
+            (st.paras[0].style.clone(), c.size, c.font_family)
+        };
+        let georgia = |style: &str| (style.to_string(), 13.0, "Georgia".to_string());
+        // Default options: the document gains Normal and the text looks as it did in Word.
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let info = s.execute("place.styles", &json!({"base64": b64, "name": "a.docx"})).unwrap();
+        assert_eq!(info["paragraph"], json!(["Normal"]));
+        assert_eq!(info["conflicts"], json!([]));
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "a.docx"})).unwrap();
+        assert_eq!(placed(&s, &r), georgia("Normal"));
+        assert!(s.doc().unwrap().doc.styles.para(basic).unwrap().chars.is_empty(), "[Basic Paragraph] untouched");
+        // Normal mapped to [Basic Paragraph]: no new style, and the document's definition is used
+        // (mapped styles aren't imported, whatever the conflict option).
+        s.execute("file.new", &json!({})).unwrap();
+        let r =
+            s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleMap": {"Normal": basic}, "styleConflicts": "redefine"})).unwrap();
+        assert!(s.doc().unwrap().doc.styles.para("Normal").is_none());
+        assert!(s.doc().unwrap().doc.styles.para(basic).unwrap().chars.is_empty());
+        let (style, size, _) = placed(&s, &r);
+        assert_eq!((style.as_str(), size), (basic, 12.0));
+        // A document with its own Normal: the usual conflict rules.
+        s.execute("style.paragraph.create", &json!({"name": "Normal", "chars": {"size": 9}})).unwrap();
+        let r = s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "rect": [72, 400, 300, 500]})).unwrap();
+        assert_eq!(placed(&s, &r).1, 9.0, "use existing");
+        let r =
+            s.execute("file.place", &json!({"base64": b64, "name": "a.docx", "styleConflicts": "autoRename", "rect": [72, 520, 300, 600]})).unwrap();
+        assert_eq!(placed(&s, &r), georgia("Normal_wrd_1"));
     }
 }

@@ -21,3 +21,24 @@ id_type!(SpreadId, "sp");
 id_type!(PageId, "p");
 id_type!(LayerId, "l");
 id_type!(AssetId, "a");
+
+/// Fresh story-local id. Keep monotonically increasing ids normally; a loaded MAX id must
+/// not make the next insertion overwrite it. In that case choose the first unused gap.
+pub(crate) fn next_local_id(ids: impl Iterator<Item = u64> + Clone) -> u64 {
+    if let Some(next) = ids.clone().max().unwrap_or(0).checked_add(1) {
+        return next;
+    }
+    let mut used: Vec<_> = ids.collect();
+    used.sort_unstable();
+    let mut next = 1u64;
+    for id in used {
+        if id > next {
+            break;
+        }
+        if id == next {
+            // An allocated Vec cannot contain every u64 id, so this always finds a gap.
+            next = next.saturating_add(1);
+        }
+    }
+    next
+}

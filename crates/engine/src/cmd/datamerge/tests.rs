@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, SourceStatus};
+use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, Selection, SourceStatus, StoryId, TextSel};
 use serde_json::{Value, json};
 
 use super::parse::{self, parse_csv};
@@ -83,6 +83,282 @@ fn csv_parsing() {
     assert_eq!(r, vec![vec!["Name", "Title"], vec!["Ada, Countess", "Analyst \"No. 1\""], vec!["Grace", "Admiral"]]);
     let quoted = parse_csv("Name\n\"Ada\nGrace\"\n");
     assert_eq!(quoted[1][0], "Ada\nGrace");
+}
+
+#[test]
+fn data_source_sniffs_quoted_logical_headers() {
+    for (body, delimiter, names) in [
+        ("\"Last, First\";City\nAda;London\n", Delimiter::Semicolon, ["Last, First", "City"]),
+        ("\"Name\tLabel\",City\nAda,London\n", Delimiter::Comma, ["Name\tLabel", "City"]),
+        ("\"Name\nLabel\";City\nAda;London\n", Delimiter::Semicolon, ["Name\nLabel", "City"]),
+        ("\r\n \r\nName;City\r\nAda;London\r\n", Delimiter::Semicolon, ["Name", "City"]),
+        ("\"Name \"\"label,\"\"\";City\nAda;London\n", Delimiter::Semicolon, ["Name \"label,\"", "City"]),
+    ] {
+        let mut s = Session::new();
+        new_doc(&mut s, 1);
+        let result = exec(&mut s, "data.source.select", json!({"bytes": crate::cmd::base64_encode(body.as_bytes()), "name": "people.txt"}));
+        assert_eq!(result["records"], 1, "{body:?}");
+        let source = &s.documents()[0].doc.data_merge.sources[0];
+        assert_eq!(source.delimiter, delimiter, "{body:?}");
+        assert_eq!(source.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), names, "{body:?}");
+        assert_eq!(source.rows, vec![vec!["Ada", "London"]], "{body:?}");
+    }
+}
+
+#[test]
+fn data_source_sniff_quote_state_belongs_to_the_candidate_delimiter() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for (body, delimiter, names) in [
+            (format!("Name,\"preferred\tCity\"{ending}Ada\tLondon{ending}"), Delimiter::Tab, ["Name,\"preferred", "City\""]),
+            (format!("\"Last, First\";City{ending}Ada;London{ending}"), Delimiter::Semicolon, ["Last, First", "City"]),
+            (format!("\"Name\tLabel\",City{ending}Ada,London{ending}"), Delimiter::Comma, ["Name\tLabel", "City"]),
+            (format!("\"\";\"\"{ending} \t{ending}\"Last, First\";City{ending}Ada;London{ending}"), Delimiter::Semicolon, ["Last, First", "City"]),
+        ] {
+            let automatic = parse::table_from_bytes(body.as_bytes(), "people.txt", None).unwrap();
+            let explicit = parse::table_from_bytes(body.as_bytes(), "people.txt", Some(delimiter)).unwrap();
+            let fields: Vec<_> = names.into_iter().map(|name| DataField { name: name.into(), kind: DataFieldKind::Text }).collect();
+            assert_eq!(automatic.delimiter, delimiter, "{body:?}");
+            assert_eq!(automatic.fields, fields, "{body:?}");
+            assert_eq!(automatic.rows, vec![vec!["Ada", "London"]], "{body:?}");
+            assert!(automatic.warnings.is_empty(), "{body:?}: {:?}", automatic.warnings);
+            assert_eq!(automatic, explicit, "{body:?}");
+        }
+    }
+}
+
+#[test]
+fn data_source_sniff_prefers_coherent_quoted_field_boundaries() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for (header, first, second, delimiter, names, rows, warnings) in [
+            (
+                "\"Name\";\"Last, First\"",
+                "\"Ada\";\"Lovelace, Countess\"",
+                "\"Grace\";\"Hopper, Admiral\"",
+                Delimiter::Semicolon,
+                vec!["Name", "Last, First"],
+                vec![vec!["Ada", "Lovelace, Countess"], vec!["Grace", "Hopper, Admiral"]],
+                vec![],
+            ),
+            (
+                "\"Name\",\"Region\tCity\"",
+                "\"Ada\",\"London\"",
+                "\"Grace\",\"Paris\"",
+                Delimiter::Comma,
+                vec!["Name", "Region\tCity"],
+                vec![vec!["Ada", "London"], vec!["Grace", "Paris"]],
+                vec![],
+            ),
+            (
+                "\"Name\";\"City\";\"Last, \"\"First\"\"\";\"Title\"",
+                "\"Ada\";\"London\";\"Lovelace, \"\"Countess\"\"\";\"Analyst\"",
+                "\"Grace\";\"Paris\";\"Hopper, \"\"Admiral\"\"\";\"Engineer\";\"ignored\"",
+                Delimiter::Semicolon,
+                vec!["Name", "City", "Last, \"First\"", "Title"],
+                vec![vec!["Ada", "London", "Lovelace, \"Countess\"", "Analyst"], vec!["Grace", "Paris", "Hopper, \"Admiral\"", "Engineer"]],
+                vec!["Row 3 has cells past the header. Those cells were ignored."],
+            ),
+            (
+                "\"Name\",\"Role\",\"Region\t\"\"City\"\"\",\"Title\"",
+                "\"Ada\",\"Analyst\",\"London\t\"\"West End\"\"\",\"Countess\"",
+                "\"Grace\",\"Engineer\",\"Paris\t\"\"Centre\"\"\",\"Admiral\",\"ignored\"",
+                Delimiter::Comma,
+                vec!["Name", "Role", "Region\t\"City\"", "Title"],
+                vec![vec!["Ada", "Analyst", "London\t\"West End\"", "Countess"], vec!["Grace", "Engineer", "Paris\t\"Centre\"", "Admiral"]],
+                vec!["Row 3 has cells past the header. Those cells were ignored."],
+            ),
+        ] {
+            let body = format!("{header}{ending}{first}{ending}{second}{ending}");
+            let automatic = parse::table_from_bytes(body.as_bytes(), "people.txt", None).unwrap();
+            let explicit = parse::table_from_bytes(body.as_bytes(), "people.txt", Some(delimiter)).unwrap();
+            let fields: Vec<_> = names.into_iter().map(|name| DataField { name: name.into(), kind: DataFieldKind::Text }).collect();
+            assert_eq!(automatic.delimiter, delimiter, "{body:?}");
+            assert_eq!(automatic.fields, fields, "{body:?}");
+            assert_eq!(automatic.rows, rows, "{body:?}");
+            assert_eq!(automatic.warnings, warnings, "{body:?}");
+            assert_eq!(automatic, explicit, "{body:?}");
+        }
+    }
+}
+
+#[test]
+fn data_source_sniff_retains_priority_and_permissive_fallback() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for (header, row, delimiter, names, cells) in [
+            // Equally coherent candidates retain Tab, then Comma, then Semicolon priority.
+            ("Name,Title\tCity", "Ada,Analyst\tLondon\tignored", Delimiter::Tab, ["Name,Title", "City"], ["Ada,Analyst", "London"]),
+            ("Name;Title,City", "Ada;Analyst,London,ignored", Delimiter::Comma, ["Name;Title", "City"], ["Ada;Analyst", "London"]),
+            // No coherent candidate separates fields here. Keep parsing the trailing text
+            // after a quoted field exactly as before, using the same delimiter priority.
+            (
+                "\"Name\"suffix,Title\tCity",
+                "\"Ada\"suffix,Analyst\tLondon\tignored",
+                Delimiter::Tab,
+                ["Namesuffix,Title", "City"],
+                ["Adasuffix,Analyst", "London"],
+            ),
+            (
+                "\"Name\"suffix;Title,City",
+                "\"Ada\"suffix;Analyst,London,ignored",
+                Delimiter::Comma,
+                ["Namesuffix;Title", "City"],
+                ["Adasuffix;Analyst", "London"],
+            ),
+            ("\"Name\"suffix;City", "\"Ada\"suffix;London;ignored", Delimiter::Semicolon, ["Namesuffix", "City"], ["Adasuffix", "London"]),
+        ] {
+            let body = format!("{header}{ending}{row}{ending}");
+            let automatic = parse::table_from_bytes(body.as_bytes(), "people.txt", None).unwrap();
+            let explicit = parse::table_from_bytes(body.as_bytes(), "people.txt", Some(delimiter)).unwrap();
+            let fields: Vec<_> = names.into_iter().map(|name| DataField { name: name.into(), kind: DataFieldKind::Text }).collect();
+            assert_eq!(automatic.delimiter, delimiter, "{body:?}");
+            assert_eq!(automatic.fields, fields, "{body:?}");
+            assert_eq!(automatic.rows, vec![cells.to_vec()], "{body:?}");
+            assert_eq!(automatic.warnings, vec!["Row 2 has cells past the header. Those cells were ignored."], "{body:?}");
+            assert_eq!(automatic, explicit, "{body:?}");
+        }
+    }
+}
+
+#[test]
+fn data_source_sniff_allows_post_quote_whitespace() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for space in [" ", "\u{00A0}", "\u{2003}"] {
+            for (header, separator, delimiter, names) in [
+                (format!("\"Name\"{space};\"Last, First\""), ';', Delimiter::Semicolon, ["Name", "Last, First"]),
+                (format!("\"Name\"{space},\"Region\tCity\"{space}"), ',', Delimiter::Comma, ["Name", "Region\tCity"]),
+                (format!("\"Name\"{space}\t\"Last, First; City\"{space}"), '\t', Delimiter::Tab, ["Name", "Last, First; City"]),
+            ] {
+                let body = format!(
+                    "{header}{ending}\"Ada\"{space}{separator}\"London\"{space}{ending}\"Grace\"{space}{separator}\"Paris\"{space}{separator}ignored{ending}"
+                );
+                let automatic = parse::table_from_bytes(body.as_bytes(), "people.txt", None).unwrap();
+                let explicit = parse::table_from_bytes(body.as_bytes(), "people.txt", Some(delimiter)).unwrap();
+                let fields: Vec<_> = names.into_iter().map(|name| DataField { name: name.into(), kind: DataFieldKind::Text }).collect();
+                assert_eq!(automatic.delimiter, delimiter, "{body:?}");
+                assert_eq!(automatic.fields, fields, "{body:?}");
+                // Header classification trims; record values must keep their whitespace.
+                assert_eq!(
+                    automatic.rows,
+                    vec![vec![format!("Ada{space}"), format!("London{space}")], vec![format!("Grace{space}"), format!("Paris{space}")]],
+                    "{body:?}"
+                );
+                assert_eq!(automatic.warnings, vec!["Row 3 has cells past the header. Those cells were ignored."], "{body:?}");
+                assert_eq!(automatic, explicit, "{body:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn data_source_sniff_post_quote_whitespace_keeps_closed_field_state() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for space in [" ", "\u{00A0}", "\u{2003}"] {
+            for suffix in ["suffix", "\"suffix\""] {
+                let body = format!("\"Name\"{space}{suffix};\"Last, First\"{ending}Ada,London,ignored{ending}");
+                // Both separated formats have incompatible post-quote suffixes. Keep
+                // the permissive Comma fallback, including literal quotes in the name.
+                let automatic = parse::table_from_bytes(body.as_bytes(), "people.txt", None).unwrap();
+                let explicit = parse::table_from_bytes(body.as_bytes(), "people.txt", Some(Delimiter::Comma)).unwrap();
+                assert_eq!(automatic.delimiter, Delimiter::Comma, "{body:?}");
+                assert_eq!(
+                    automatic.fields,
+                    vec![
+                        DataField { name: format!("Name{space}{suffix};\"Last"), kind: DataFieldKind::Text },
+                        DataField { name: "First\"".into(), kind: DataFieldKind::Text },
+                    ],
+                    "{body:?}"
+                );
+                assert_eq!(automatic.rows, vec![vec!["Ada", "London"]], "{body:?}");
+                assert_eq!(automatic.warnings, vec!["Row 2 has cells past the header. Those cells were ignored."], "{body:?}");
+                assert_eq!(automatic, explicit, "{body:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn data_source_literal_quote_header_merges_the_detected_column() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    let body = "Name,\"preferred\tCity\"\nAda\tLondon\nGrace\tParis\n";
+    let selected = exec(&mut s, "data.source.select", json!({"bytes": crate::cmd::base64_encode(body.as_bytes()), "name": "people.txt"}));
+    assert_eq!(selected["records"], 2);
+    let source = &s.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(source.delimiter, Delimiter::Tab);
+    assert_eq!(source.rows, vec![vec!["Ada", "London"], vec!["Grace", "Paris"]]);
+    exec(&mut s, "data.placeholder.add", json!({"field": "City\""}));
+    let merged = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(merged["records"], 2);
+    assert_eq!(merged["pages"], 2);
+    assert_eq!(texts(&s), vec!["London", "Paris"]);
+}
+
+#[test]
+fn data_source_preserves_quoted_newlines_and_counts_record_lines() {
+    for ending in ["\n", "\r\n", "\r"] {
+        let body = format!("Name,City{ending}\"Ada{ending}Lovelace\",London{ending}Grace,Paris,extra{ending}");
+        let mut s = Session::new();
+        new_doc(&mut s, 1);
+        let result = select_csv(&mut s, &body);
+        assert_eq!(result["records"], 2, "{ending:?}");
+        let source = &s.documents()[0].doc.data_merge.sources[0];
+        assert_eq!(source.rows, vec![vec![format!("Ada{ending}Lovelace"), "London".into()], vec!["Grace".into(), "Paris".into()]]);
+        assert_eq!(source.warnings.len(), 1);
+        assert!(source.warnings[0].contains("Row 4"), "{:?}", source.warnings);
+    }
+}
+
+#[test]
+fn data_source_quoted_header_and_cr_records_merge_independently() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    let body = "\u{FEFF}\"Last, First\";City\rAda;London\rGrace;Paris\r";
+    exec(&mut s, "data.source.select", json!({"bytes": crate::cmd::base64_encode(body.as_bytes()), "name": "people.txt"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Last, First"}));
+    let template = s.documents()[0].doc.clone();
+    let result = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(result["records"], 2);
+    assert_eq!(result["pages"], 2);
+    assert_eq!(texts(&s), vec!["Ada", "Grace"]);
+    assert_eq!(serde_json::to_value(&s.documents()[0].doc).unwrap(), serde_json::to_value(&template).unwrap());
+}
+
+#[test]
+fn data_source_discarded_quoted_fields_keep_records_and_warning_lines() {
+    for ending in ["\n", "\r\n", "\r"] {
+        for (discarded, following_line) in [(format!("\"Address \"\"line 1\"\"{ending}Address line 2\""), 4), ("literal\"quote".into(), 3)] {
+            let mut s = Session::new();
+            new_doc(&mut s, 1);
+            text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+            let body = format!("Name{ending}Ada,,,{discarded}{ending}Grace,extra{ending}");
+            let selected = select_csv(&mut s, &body);
+            assert_eq!(selected["records"], 2, "{body:?}");
+            let source = &s.documents()[0].doc.data_merge.sources[0];
+            assert_eq!(source.rows, vec![vec!["Ada"], vec!["Grace"]], "{body:?}");
+            assert_eq!(source.warnings.len(), 2, "{:?}", source.warnings);
+            assert!(source.warnings[0].contains("Row 2"), "{:?}", source.warnings);
+            assert!(source.warnings[1].contains(&format!("Row {following_line}")), "{:?}", source.warnings);
+            exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+            let merged = exec(&mut s, "data.merge", json!({}));
+            assert_eq!(merged["records"], 2);
+            assert_eq!(merged["pages"], 2);
+            assert_eq!(texts(&s), vec!["Ada", "Grace"]);
+        }
+    }
+}
+
+#[test]
+fn data_source_delimiter_override_and_known_extensions_win() {
+    let body = "Name;City\nAda;London\n";
+    let csv = parse::table_from_bytes(body.as_bytes(), "people.csv", None).unwrap();
+    assert_eq!(csv.delimiter, Delimiter::Comma);
+    assert_eq!(csv.rows, vec![vec!["Ada;London"]]);
+    let explicit = parse::table_from_bytes(body.as_bytes(), "people.csv", Some(Delimiter::Semicolon)).unwrap();
+    assert_eq!(explicit.rows, vec![vec!["Ada", "London"]]);
+    let tab = parse::table_from_bytes(b"Name,Title\tCity\nAda,Analyst\tLondon", "people.tsv", None).unwrap();
+    assert_eq!(tab.delimiter, Delimiter::Tab);
+    assert_eq!(tab.rows, vec![vec!["Ada,Analyst", "London"]]);
 }
 
 #[test]
@@ -241,6 +517,69 @@ fn typed_fields_keep_style_and_unknown_markers() {
     assert_eq!(story.text, "AdaAdmiral and <<Nope>>");
     let at = story.text.find("Ada").unwrap();
     assert_eq!(story.format_after(at).over.size, Some(21.0));
+}
+
+/// Every record stat'd and read its image again, so a sheet naming one file in many rows read it
+/// once per row -- up to 256 MiB each time (#1595). A merge reads a file once and the records
+/// share the bytes.
+#[test]
+fn one_image_named_by_many_records_is_read_once() {
+    let dir = scratch("image-reads");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    // 25 records, all naming the same file.
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 25);
+    assert_eq!(r["missingImages"].as_array().map(Vec::len).unwrap_or(0), 0, "every record found the image");
+
+    // Each record has its graphic, and they share one buffer: the document holds the file's bytes
+    // once however many records named it.
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let graphics: Vec<_> = doc
+        .spreads
+        .iter()
+        .flat_map(|sp| &sp.items)
+        .filter_map(|it| match &it.content {
+            Content::Graphic(g) => Some(g.asset),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(graphics.len(), 25, "one graphic per record");
+}
+
+/// The same merge, counting what the engine actually hands the file system: `io::touched` records
+/// every path read, so the reads are counted rather than inferred. The document already shares
+/// identical asset bytes, so memory alone does not show this -- the I/O is the bug (#1595).
+#[test]
+fn a_merge_reads_a_repeated_image_once_not_once_per_record() {
+    let dir = scratch("image-read-count");
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let shared = dir.join("shared.png");
+    write_png(&shared);
+    let rows: String = (0..25).map(|_| format!("{}\n", shared.display())).collect();
+    write(&data.join("many.csv"), &format!("@Photo\n{rows}"));
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"path": data.join("many.csv")}));
+    let frame = exec(&mut s, "frame.create", json!({"rect": [36.0, 36.0, 80.0, 80.0], "content": "graphic"}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo", "item": frame["id"]}));
+
+    let (r, seen) = crate::io::touched(|| exec(&mut s, "data.merge", json!({})));
+    assert_eq!(r["records"], 25);
+    let reads = seen.iter().filter(|p| p.ends_with("shared.png")).count();
+    assert!(reads <= 2, "the image is read once for the merge, not once per record: {reads} reads for 25 records");
 }
 
 #[test]
@@ -403,6 +742,7 @@ fn role_overrides_column_kind_qr_and_hyperlink() {
             HyperlinkDest::Email(v) => format!("email:{v}"),
             HyperlinkDest::Url(v) => format!("url:{v}"),
             HyperlinkDest::Page(n) => format!("page:{n}"),
+            HyperlinkDest::Anchor(a) => format!("anchor:{a}"),
         });
     }
     kinds.sort();
@@ -514,30 +854,31 @@ fn tiling_rows_first_bottom_inset_and_refusals() {
     assert_eq!(s.documents().len(), before);
 }
 
+/// An IME delete-surrounding while a record is previewed edits the template, not the filled
+/// record, and its undo step restores the template.
 #[test]
-fn update_remove_preview_inline_rows_and_old_files() {
-    let dir = scratch("update");
-    let csv = dir.join("people.csv");
-    write(&csv, "Name\nAda\nGrace\n");
+fn an_ime_delete_ends_a_preview_and_edits_the_template() {
     let mut s = Session::new();
     new_doc(&mut s, 1);
-    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
-    exec(&mut s, "data.source.select", json!({"path": csv}));
-    let id = exec(&mut s, "data.placeholder.add", json!({"field": "Name"}))["id"].clone();
-    let undo = s.documents()[0].history.undo.len();
-    let fingerprint = s.documents()[0].doc.data_merge.sources[0].fingerprint;
-    let mut body = std::fs::read(&csv).unwrap();
-    body.extend_from_slice(b"Kai\n");
-    std::fs::write(&csv, &body).unwrap();
-    let r = exec(&mut s, "data.merge", json!({}));
-    assert_eq!(r["records"], 2);
-    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("changed")));
-    assert_eq!(texts(&s), vec!["Ada".to_string(), "Grace".to_string()]);
-    assert_eq!(s.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Modified);
-    assert_eq!(s.documents()[0].doc.data_merge.sources[0].fingerprint, fingerprint);
-    assert_eq!(s.documents()[0].history.undo.len(), undo);
-    assert_eq!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources[0].status, SourceStatus::Modified);
+    let f = text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    let sid = StoryId(f["story"].as_u64().unwrap());
+    select_csv(&mut s, "Name\nAda\nGrace\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    assert_eq!(texts(&s), vec!["<<Name>>".to_string()]);
+    exec(&mut s, "data.preview", json!({"record": 2}));
+    assert_eq!(texts(&s), vec!["Grace".to_string()], "the preview shows the record");
+    // The caret was placed in the preview, at the end of the filled text.
+    s.doc_mut().unwrap().selection = Selection::text(TextSel { story: sid, anchor: 5, focus: 5, frame: None, cell: None });
+    let m = s.ime_delete_surrounding(1, 0, false).unwrap().expect("the delete changed the template");
+    assert!(m.inserted.is_empty());
+    assert!(s.doc().unwrap().preview_stash.is_none(), "the preview ended before the edit");
+    assert_eq!(texts(&s), vec!["<<Nae>>".to_string()], "the template lost the character, not the filled record");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(texts(&s), vec!["<<Name>>".to_string()], "Undo restores the template, never the preview record");
+    assert!(s.doc().unwrap().preview_stash.is_none());
+}
 
+fn check_missing_merge_source(dir: &Path) {
     let gone = dir.join("gone.csv");
     write(&gone, "Name\nAda\nGrace\n");
     let mut missing = Session::new();
@@ -553,7 +894,9 @@ fn update_remove_preview_inline_rows_and_old_files() {
     assert_eq!(texts(&missing), vec!["Ada".to_string(), "Grace".to_string()]);
     assert_eq!(missing.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Missing);
     assert_eq!(missing.documents()[0].history.undo.len(), missing_undo);
+}
 
+fn check_refused_facing_page_merge(dir: &Path) {
     let refuse = dir.join("refuse.csv");
     write(&refuse, "Name\nAda\nGrace\n");
     let mut refused = Session::new();
@@ -570,49 +913,56 @@ fn update_remove_preview_inline_rows_and_old_files() {
     assert_eq!(refused.documents().len(), 1);
     assert_eq!(refused.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Ok);
     assert_eq!(refused.documents()[0].history.undo.len(), refuse_undo);
+}
 
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    exec(&mut s, "data.source.update", json!({}));
-    let r = exec(&mut s, "data.merge", json!({}));
+fn check_preview_update_save(session: &mut Session, dir: &Path, csv: &Path, id: &Value) {
+    exec(session, "file.activate", json!({"index": 0}));
+    exec(session, "data.source.update", json!({}));
+    let r = exec(session, "data.merge", json!({}));
     assert_eq!(r["records"], 3);
-    assert!(texts(&s).iter().any(|t| t == "Kai"));
+    assert!(texts(session).iter().any(|t| t == "Kai"));
 
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    exec(&mut s, "data.source.remove", json!({}));
-    assert!(s.documents()[0].doc.data_merge.sources.is_empty());
-    assert!(s.documents()[0].doc.data_merge.placeholders.iter().any(|ph| ph.id == id.as_u64().unwrap()));
-    assert_eq!(exec(&mut s, "data.fields", json!({})), json!([]));
+    exec(session, "file.activate", json!({"index": 0}));
+    exec(session, "data.source.remove", json!({}));
+    assert!(session.documents()[0].doc.data_merge.sources.is_empty());
+    assert!(session.documents()[0].doc.data_merge.placeholders.iter().any(|ph| ph.id == id.as_u64().unwrap()));
+    assert_eq!(exec(session, "data.fields", json!({})), json!([]));
 
-    select_csv(&mut s, "Name\nAda\nGrace\n");
-    exec(&mut s, "data.preview", json!({"record": 2}));
-    assert!(texts(&s).iter().any(|t| t.contains("Grace")));
-    assert!(!texts(&s).iter().any(|t| t.contains("<<Name>>")));
-    let ser = exec(&mut s, "file.serialize", json!({}));
+    select_csv(session, "Name\nAda\nGrace\n");
+    exec(session, "data.preview", json!({"record": 2}));
+    assert!(texts(session).iter().any(|t| t.contains("Grace")));
+    assert!(!texts(session).iter().any(|t| t.contains("<<Name>>")));
+    let ser = exec(session, "file.serialize", json!({}));
     let saved = crate::cmd::from_bytes(&crate::cmd::base64_decode(ser["base64"].as_str().unwrap())).unwrap();
     assert!(saved.stories.values().any(|st| st.text.contains("<<Name>>")));
     assert!(!saved.stories.values().any(|st| st.text.contains("Grace")));
-    exec(&mut s, "data.preview.stop", json!({}));
-    assert!(texts(&s).iter().any(|t| t.contains("<<Name>>")));
+    exec(session, "data.preview.stop", json!({}));
+    assert!(texts(session).iter().any(|t| t.contains("<<Name>>")));
 
-    exec(&mut s, "data.preview", json!({"record": 2}));
+    exec(session, "data.preview", json!({"record": 2}));
     let path = dir.join("saved.designcraft");
-    exec(&mut s, "file.save", json!({"path": path}));
+    exec(session, "file.save", json!({"path": path}));
     let saved = crate::cmd::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert!(!saved.stories.values().any(|st| st.text.contains("Grace")));
     assert!(saved.stories.values().any(|st| st.text.contains("<<Name>>")));
 
-    exec(&mut s, "data.preview", json!({"record": 2}));
+    exec(session, "data.preview", json!({"record": 2}));
     let rec = dir.join("recovery");
-    s.recovery_dir = Some(rec.clone());
-    crate::recovery::save(&s, &rec).unwrap();
-    let uid = s.documents()[0].uid;
+    session.recovery_dir = Some(rec.clone());
+    crate::recovery::save(session, &rec).unwrap();
+    let uid = session.documents()[0].uid;
     let recovered = crate::cmd::from_bytes(&std::fs::read(rec.join(format!("{uid}.designcraft"))).unwrap()).unwrap();
     assert!(!recovered.stories.values().any(|st| st.text.contains("Grace")));
-    assert!(texts(&s).iter().any(|t| t.contains("Grace")), "recovery writes the stash and leaves the preview on screen");
-    exec(&mut s, "file.new", json!({}));
-    exec(&mut s, "file.activate", json!({"index": 0}));
-    assert!(texts(&s).iter().any(|t| t.contains("<<Name>>")));
+    assert!(texts(session).iter().any(|t| t.contains("Grace")), "recovery writes the stash and leaves the preview on screen");
+    exec(session, "file.new", json!({}));
+    exec(session, "file.activate", json!({"index": 0}));
+    assert!(texts(session).iter().any(|t| t.contains("<<Name>>")));
 
+    check_inline_rows_and_invalid_requests();
+    check_saved_relative_source(dir, csv);
+}
+
+fn check_inline_rows_and_invalid_requests() {
     let mut s = Session::new();
     new_doc(&mut s, 1);
     text_frame(&mut s, [36.0, 36.0, 300.0, 80.0], "<<Name>> <<Qty>>", None);
@@ -640,7 +990,9 @@ fn update_remove_preview_inline_rows_and_old_files() {
     let msg = err(&mut s, "data.merge", json!({"csv": "Name\nAda\n", "limit": 4_294_967_296u64}));
     assert!(msg.contains("too large"), "{msg}");
     assert_eq!(s.documents().len(), before);
+}
 
+fn check_saved_relative_source(dir: &Path, csv: &Path) {
     let fresh = dir.join("fresh.designcraft");
     let mut s = Session::new();
     new_doc(&mut s, 1);
@@ -651,6 +1003,35 @@ fn update_remove_preview_inline_rows_and_old_files() {
     exec(&mut s, "file.save", json!({"path": fresh}));
     let opened = crate::cmd::from_bytes(&std::fs::read(&fresh).unwrap()).unwrap();
     assert_eq!(opened.data_merge.sources[0].relative_path.as_deref(), Some("people.csv"));
+}
+
+#[test]
+fn update_remove_preview_inline_rows_and_old_files() {
+    let dir = scratch("update");
+    let csv = dir.join("people.csv");
+    write(&csv, "Name\nAda\nGrace\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    exec(&mut s, "data.source.select", json!({"path": csv}));
+    let id = exec(&mut s, "data.placeholder.add", json!({"field": "Name"}))["id"].clone();
+    let undo = s.documents()[0].history.undo.len();
+    let fingerprint = s.documents()[0].doc.data_merge.sources[0].fingerprint;
+    let mut body = std::fs::read(&csv).unwrap();
+    body.extend_from_slice(b"Kai\n");
+    std::fs::write(&csv, &body).unwrap();
+    let r = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(r["records"], 2);
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or("").contains("changed")));
+    assert_eq!(texts(&s), vec!["Ada".to_string(), "Grace".to_string()]);
+    assert_eq!(s.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Modified);
+    assert_eq!(s.documents()[0].doc.data_merge.sources[0].fingerprint, fingerprint);
+    assert_eq!(s.documents()[0].history.undo.len(), undo);
+    assert_eq!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources[0].status, SourceStatus::Modified);
+
+    check_missing_merge_source(&dir);
+    check_refused_facing_page_merge(&dir);
+    check_preview_update_save(&mut s, &dir, &csv, &id);
 }
 
 #[test]
@@ -800,6 +1181,14 @@ fn select_records_dedupes_large_ranges_in_first_seen_order() {
 }
 
 #[test]
+fn select_records_rejects_signed_record_numbers() {
+    for (tok, bad) in [("+2", "+2"), ("1-+3", "+3"), ("+1,+4", "+1")] {
+        let err = parse::select_records(5, "range", 1, tok, None).unwrap_err();
+        assert!(err.contains(&format!("bad record \"{bad}\"")), "{tok}: {err}");
+    }
+}
+
+#[test]
 fn oversized_data_file_is_refused_before_reading() {
     let dir = scratch("oversized");
     let path = dir.join("big.csv");
@@ -808,6 +1197,15 @@ fn oversized_data_file_is_refused_before_reading() {
     let msg = read_path_capped(&path, 1024).unwrap_err();
     assert!(msg.contains("larger than"), "{msg}");
     assert_eq!(read_path_capped(&path, 4096).unwrap().len(), 2048);
+}
+
+/// A device reports no length; the read still stops at the cap (an EPUB `coverImage` of
+/// `/dev/zero` must not read until memory runs out).
+#[cfg(unix)]
+#[test]
+fn endless_file_is_refused_at_the_cap() {
+    let msg = read_path_capped("/dev/zero", 1024).unwrap_err();
+    assert!(msg.contains("larger than"), "{msg}");
 }
 
 /// #198: with facing pages on, one record per page must not stack the copies at identical
@@ -871,4 +1269,20 @@ fn facing_pages_merge_tiles_short_blocks_without_stacking() {
     assert_eq!(origins.len(), 3, "one text frame per record");
     let unique: std::collections::BTreeSet<_> = origins.iter().collect();
     assert_eq!(unique.len(), 3, "no two records may share a page and coordinates: {origins:?}");
+}
+
+// #1522: each record's copy of an anchored object needs its own id, or the merged file won't reopen.
+#[test]
+fn merged_records_give_anchored_objects_their_own_ids() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name\nAda\nGrace\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 400.0, 80.0], "<<Name>> here", None);
+    let b = exec(&mut s, "frame.create", json!({"rect": [450, 450, 474, 490]}));
+    exec(&mut s, "anchored.insert", json!({"ids": [b["id"]], "story": made["story"], "pos": 2}));
+    assert_eq!(exec(&mut s, "data.merge", json!({}))["records"], 2);
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    assert_eq!(doc.anchored_items().len(), 2);
+    doc.check().unwrap();
+    designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
 }

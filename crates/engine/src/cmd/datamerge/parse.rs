@@ -128,7 +128,7 @@ pub fn table_from_objects(rows: &[Value]) -> Result<Table, String> {
                 warnings.push(format!("Row {} has an extra field \"{key}\". It was ignored.", i + 1));
             }
         }
-        if cells.iter().all(|c| c.is_empty()) {
+        if cells.iter().all(String::is_empty) {
             continue;
         }
         out.push(cells);
@@ -159,38 +159,7 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
             let i = record_index(one, count)?;
             idx.push(i);
         }
-        "range" => {
-            if range.trim().is_empty() {
-                return Err("no records".into());
-            }
-            for token in range.split(',') {
-                let token = token.trim();
-                if token.is_empty() {
-                    continue;
-                }
-                if let Some((a, b)) = token.split_once('-') {
-                    let a = parse_record_no(a.trim())?;
-                    let b = parse_record_no(b.trim())?;
-                    if a > b {
-                        return Err(format!("range {a}-{b} is reversed"));
-                    }
-                    let mut n = a;
-                    while n <= b {
-                        let i = record_index(n, count)?;
-                        if seen.insert(i) {
-                            idx.push(i);
-                        }
-                        n = n.saturating_add(1);
-                    }
-                } else {
-                    let n = parse_record_no(token)?;
-                    let i = record_index(n, count)?;
-                    if seen.insert(i) {
-                        idx.push(i);
-                    }
-                }
-            }
-        }
+        "range" => select_range(range, count, &mut idx, &mut seen)?,
         other => return Err(format!("unknown records value \"{other}\"")),
     }
     if let Some(limit) = limit {
@@ -205,7 +174,46 @@ pub fn select_records(count: usize, records: &str, one: u32, range: &str, limit:
     Ok(idx)
 }
 
+/// Expand a comma-separated list of record numbers and `a-b` ranges into `idx`, skipping repeats.
+fn select_range(range: &str, count: usize, idx: &mut Vec<usize>, seen: &mut std::collections::HashSet<usize>) -> Result<(), String> {
+    if range.trim().is_empty() {
+        return Err("no records".into());
+    }
+    for token in range.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let (a, b) = match token.split_once('-') {
+            Some((a, b)) => (parse_record_no(a.trim())?, parse_record_no(b.trim())?),
+            None => {
+                let n = parse_record_no(token)?;
+                (n, n)
+            }
+        };
+        if a > b {
+            return Err(format!("range {a}-{b} is reversed"));
+        }
+        let mut n = a;
+        while n <= b {
+            let i = record_index(n, count)?;
+            if seen.insert(i) {
+                idx.push(i);
+            }
+            if n == b {
+                break;
+            }
+            n += 1;
+        }
+    }
+    Ok(())
+}
+
 fn parse_record_no(s: &str) -> Result<u32, String> {
+    // `parse` alone would accept a leading '+'.
+    if !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("bad record \"{s}\""));
+    }
     s.parse::<u32>().map_err(|_| format!("bad record \"{s}\""))
 }
 
@@ -277,32 +285,23 @@ fn next_slot(col: i32, row: i32, rows_first: bool, fits_col: &impl Fn(i32) -> bo
     (0, 0, true)
 }
 
-/// Files to try for an image cell. `http` and `https` are not candidates. Relative paths are
-/// not resolved against the process working directory.
+/// Files to try for an image cell: an absolute path as it is, a relative one beside the data
+/// file, then beside the document. Relative paths are not resolved against the process working
+/// directory, and paths that may not be followed ([`crate::io::document_path`]: URLs, other
+/// computers, devices) are not candidates.
 pub fn image_candidates(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> Vec<PathBuf> {
     let cell = cell.trim();
     if cell.is_empty() {
         return Vec::new();
     }
-    let lower = cell.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Vec::new();
-    }
-    let path = Path::new(cell);
-    let mut out = Vec::new();
-    let mut push = |p: PathBuf| {
-        if !out.iter().any(|e| e == &p) {
+    let found = std::iter::once(crate::io::document_path(cell, None))
+        .chain(data_dir.map(|dir| crate::io::folder_path(cell, dir)))
+        .chain(doc_dir.map(|dir| crate::io::folder_path(cell, dir)));
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in found.flatten() {
+        if !out.contains(&p) {
             out.push(p);
         }
-    };
-    if path.is_absolute() {
-        push(path.to_path_buf());
-    }
-    if let Some(dir) = data_dir {
-        push(dir.join(cell));
-    }
-    if let Some(dir) = doc_dir {
-        push(dir.join(cell));
     }
     out
 }
@@ -330,14 +329,18 @@ pub fn relative_between(from_dir: &Path, target: &Path) -> String {
 }
 
 pub fn fingerprint_of(path: &Path) -> Option<Fingerprint> {
-    let meta = std::fs::metadata(path).ok()?;
+    Some(fingerprint_from(&crate::io::metadata(path).ok()?))
+}
+
+/// Size and modification time (whole seconds) from a file's metadata.
+pub fn fingerprint_from(meta: &crate::io::Metadata) -> Fingerprint {
     let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0);
-    Some(Fingerprint { size: meta.len(), mtime })
+    Fingerprint { size: meta.len(), mtime }
 }
 
 pub fn status_of(path: &Path, previous: Option<Fingerprint>) -> SourceStatus {
@@ -367,10 +370,16 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     if ext == "csv" {
         return Delimiter::Comma;
     }
-    let header = first_physical_line(text);
-    if header.contains('\t') {
+    let tab = header_delimiter_candidate(text, '\t');
+    let semicolon = header_delimiter_candidate(text, ';');
+    let comma = header_delimiter_candidate(text, ',');
+    // Prefer formats with coherent quoted-field boundaries. If none separates fields,
+    // retain the legacy permissive choice; this is detection, not record validation.
+    let prefer_coherent = [&tab, &semicolon, &comma].iter().any(|c| c.found && c.coherent);
+    let eligible = |c: &HeaderDelimiterCandidate| c.found && (!prefer_coherent || c.coherent);
+    if eligible(&tab) {
         Delimiter::Tab
-    } else if header.contains(';') && !header.contains(',') {
+    } else if eligible(&semicolon) && !eligible(&comma) {
         Delimiter::Semicolon
     } else {
         Delimiter::Comma
@@ -378,11 +387,69 @@ fn sniff(name: &str, text: &str) -> Delimiter {
 }
 
 pub fn extension(name: &str) -> String {
-    Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+    Path::new(name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase()
 }
 
-fn first_physical_line(text: &str) -> &str {
-    text.split('\n').next().unwrap_or("").trim_end_matches('\r')
+struct HeaderDelimiterCandidate {
+    found: bool,
+    coherent: bool,
+}
+
+/// A candidate separator outside quotes in its first nonempty logical record.
+/// Only that candidate starts a new field. Quotes in an unquoted field stay literal;
+/// Non-whitespace text after a quoted field closes lowers coherence, not validity.
+fn header_delimiter_candidate(text: &str, delimiter: char) -> HeaderDelimiterCandidate {
+    let mut found = false;
+    let mut coherent = true;
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut field_start = true;
+    let mut nonempty = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if quoted {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    nonempty = true;
+                } else {
+                    quoted = false;
+                    after_quote = true;
+                }
+            } else if !c.is_whitespace() {
+                nonempty = true;
+            }
+            continue;
+        }
+        match c {
+            '"' if field_start => {
+                quoted = true;
+                field_start = false;
+            }
+            separator if separator == delimiter => {
+                found = true;
+                field_start = true;
+                after_quote = false;
+            }
+            '\r' | '\n' => {
+                if nonempty {
+                    break;
+                }
+                found = false;
+                coherent = true;
+                field_start = true;
+                after_quote = false;
+            }
+            _ => {
+                // Whitespace may follow a closing quote, but does not start a new field
+                // or allow a later non-whitespace suffix to regain coherence.
+                coherent &= !after_quote || c.is_whitespace();
+                nonempty |= !c.is_whitespace();
+                field_start = false;
+            }
+        }
+    }
+    HeaderDelimiterCandidate { found, coherent: coherent && !quoted }
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
@@ -452,6 +519,7 @@ fn parse_delimited(s: &str, delim: char) -> Result<Vec<RawRow>, String> {
     let mut row: Vec<String> = Vec::new();
     let mut field = String::new();
     let mut quoted = false;
+    let mut field_start = true;
     let mut line = 1usize;
     let mut row_line = 1usize;
     let mut data_rows = 0usize;
@@ -501,21 +569,25 @@ fn parse_delimited(s: &str, delim: char) -> Result<Vec<RawRow>, String> {
     };
 
     while let Some(c) = chars.next() {
-        if c == '\n' {
+        if c == '\n' || (c == '\r' && chars.peek() != Some(&'\n')) {
             line = line.saturating_add(1);
         }
         if quoted {
             match c {
                 '"' if chars.peek() == Some(&'"') => {
-                    field.push('"');
+                    if !discarding {
+                        field.push('"');
+                    }
                     chars.next();
                 }
                 '"' => quoted = false,
-                _ => field.push(c),
+                _ if !discarding => field.push(c),
+                _ => {}
             }
             continue;
         }
         if c == delim {
+            field_start = true;
             if discarding {
                 field.clear();
                 continue;
@@ -531,14 +603,25 @@ fn parse_delimited(s: &str, delim: char) -> Result<Vec<RawRow>, String> {
             continue;
         }
         match c {
-            '"' if field.is_empty() && !discarding => quoted = true,
-            '\r' => {}
-            '\n' => {
+            '"' if field_start => {
+                quoted = true;
+                field_start = false;
+            }
+            '\r' | '\n' => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                    line = line.saturating_add(1);
+                }
                 finish(&mut row, &mut field, &mut rows, &mut data_rows, &mut header_width, row_line, &mut discarding)?;
                 row_line = line;
+                field_start = true;
             }
-            _ if discarding => {}
-            _ => field.push(c),
+            _ => {
+                field_start = false;
+                if !discarding {
+                    field.push(c);
+                }
+            }
         }
     }
     if !field.is_empty() || !row.is_empty() || discarding {

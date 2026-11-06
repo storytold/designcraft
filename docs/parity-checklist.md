@@ -1,0 +1,331 @@
+# InDesign feature checklist
+
+> **Generated:** summary by `cargo xtask parity` from the rows below; rows last re-scored 2026-10-04, summary unchanged since (checked 2026-10-10) · **Target:** Adobe InDesign 2026
+
+This is the **presence** checklist: does each InDesign feature exist in DesignCraft? It answers
+the feature-breadth question only. Depth, fidelity and readiness for real work are assessed in
+[target-app-parity.md](target-app-parity.md); individual shortfalls are in [gaps.md](gaps.md).
+Formerly `docs/parity.md`.
+
+Edit a row's status, then run `cargo xtask parity` to regenerate the summary; don't edit the
+summary by hand. Each row of the InDesign feature catalogue is scored **D** (done), **P** (partial: works but lacks options or UI) or **M** (missing), weighted by priority (**P0** core = 3, **P1** = 2, **P2** = 1). Out-of-scope rows (Adobe cloud services, plug-ins, Typekit, Flash) are excluded.
+
+Caveat (2026-10-10 review): rows were graded by the agents that built the features, at a coarse
+grain. A measured match of InDesign 21.6's own menu dump against DesignCraft's labels finds 69%
+of in-scope menu items (75% against the documented menu tree) (see [target-app-parity.md](target-app-parity.md)), so read 99% as an upper
+bound.
+
+<!-- SUMMARY -->
+**Weighted breadth parity: 99%** over 277 features.
+
+| Priority | Features | Done | Partial | Missing | Parity |
+|---|---|---|---|---|---|
+| P0 | 102 | 100 | 2 | 0 | 99% |
+| P1 | 99 | 99 | 0 | 0 | 100% |
+| P2 | 76 | 72 | 4 | 0 | 97% |
+
+| Area | Parity |
+|---|---|
+| Application shell & workspace | 99% |
+| Documents, pages, spreads | 100% |
+| Layers | 100% |
+| Frames, shapes & paths | 100% |
+| Transform | 100% |
+| Fill, stroke, colour | 100% |
+| Effects & transparency | 100% |
+| Placing & links | 93% |
+| Type & text frames | 99% |
+| Typography | 100% |
+| Styles | 100% |
+| Tables | 100% |
+| Long documents | 100% |
+| Interactivity & digital | 100% |
+| Output & production | 92% |
+| XML & automation | 100% |
+| View & navigation | 100% |
+| Undo, history, saving | 100% |
+| Accessibility | 100% |
+
+Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print).
+
+## Rows
+
+| Area | Feature | Priority | Status |
+|---|---|---|---|
+| Application shell & workspace | Start/Home screen | P0 | D |
+| Application shell & workspace | Multiple documents in tabs | P0 | D |
+| Application shell & workspace | New Window for same document | P1 | D |
+| Application shell & workspace | Dockable panels | P0 | D |
+| Application shell & workspace | Workspaces | P1 | D |
+| Application shell & workspace | Control panel | P0 | D |
+| Application shell & workspace | Properties panel | P0 | D |
+| Application shell & workspace | Contextual task bar | P2 | D |
+| Application shell & workspace | Themes | P0 | D |
+| Application shell & workspace | UI scaling | P1 | D |
+| Application shell & workspace | Keyboard shortcut editor | P1 | D |
+| Application shell & workspace | Menu customization | P2 | D |
+| Application shell & workspace | Show Full Menus | P2 | D |
+| Application shell & workspace | Recovery / autosave | P0 | D |
+| Application shell & workspace | Preferences | P0 | D |
+| Application shell & workspace | Localization | P2 | P |
+| Application shell & workspace | Scripting (own API: commands, scripts, MCP) | P2 | D |
+| Documents, pages, spreads | New Document dialog | P0 | D |
+| Documents, pages, spreads | Document Setup | P0 | D |
+| Documents, pages, spreads | Page sizes | P0 | D |
+| Documents, pages, spreads | Facing pages / spreads | P0 | D |
+| Documents, pages, spreads | Pages per spread up to 10 | P1 | D |
+| Documents, pages, spreads | Insert/move/duplicate/delete pages | P0 | D |
+| Documents, pages, spreads | Per-page size (Page tool) | P1 | D |
+| Documents, pages, spreads | Margins and Columns per page | P0 | D |
+| Documents, pages, spreads | Spread rotation (view) | P2 | D |
+| Documents, pages, spreads | Pasteboard | P0 | D |
+| Documents, pages, spreads | Sections & numbering | P0 | D |
+| Documents, pages, spreads | Page numbering display | P1 | D |
+| Documents, pages, spreads | Smart Text Reflow | P1 | D |
+| Documents, pages, spreads | Primary text frame | P1 | D |
+| Documents, pages, spreads | Parent pages | P0 | D |
+| Documents, pages, spreads | Parent item overrides | P0 | D |
+| Documents, pages, spreads | Page transitions | P2 | D |
+| Documents, pages, spreads | Spread view rotation | P2 | D |
+| Documents, pages, spreads | Layout Adjustment | P2 | D |
+| Documents, pages, spreads | Adjust Layout | P2 | D |
+| Documents, pages, spreads | Liquid layout | P2 | D |
+| Documents, pages, spreads | Alternate layouts | P2 | D |
+| Documents, pages, spreads | Document grid & baseline grid | P0 | D |
+| Documents, pages, spreads | Ruler guides | P0 | D |
+| Documents, pages, spreads | Guides on layers | P1 | D |
+| Documents, pages, spreads | Liquid guides | P2 | D |
+| Documents, pages, spreads | Flex Layout | P1 | D |
+| Documents, pages, spreads | Smart guides | P0 | D |
+| Documents, pages, spreads | Snap to guides / grid / baseline | P0 | D |
+| Layers | Layers panel | P0 | D |
+| Layers | Layer options | P0 | D |
+| Layers | Move items between layers | P0 | D |
+| Layers | Merge layers, delete unused | P1 | D |
+| Layers | Hide/Lock others | P1 | D |
+| Layers | Page item names in Layers panel | P1 | D |
+| Layers | Layer colour drives selection colour | P0 | D |
+| Layers | Object Layer Options for placed files | P2 | D |
+| Frames, shapes & paths | Rectangle/Ellipse/Polygon frames | P0 | D |
+| Frames, shapes & paths | Rectangle/Ellipse/Polygon shapes | P0 | D |
+| Frames, shapes & paths | Polygon settings | P0 | D |
+| Frames, shapes & paths | Line tool | P0 | D |
+| Frames, shapes & paths | Pen, add/delete anchor, convert direction | P0 | D |
+| Frames, shapes & paths | Pencil, Smooth, Erase | P1 | D |
+| Frames, shapes & paths | Scissors | P1 | D |
+| Frames, shapes & paths | Content type | P0 | D |
+| Frames, shapes & paths | Convert Shape | P1 | D |
+| Frames, shapes & paths | Corner Options | P0 | D |
+| Frames, shapes & paths | Pathfinder | P1 | D |
+| Frames, shapes & paths | Compound paths | P1 | D |
+| Frames, shapes & paths | Text outlines | P1 | D |
+| Frames, shapes & paths | Clipping paths | P2 | D |
+| Frames, shapes & paths | Frame fitting | P0 | D |
+| Frames, shapes & paths | Frame Fitting Options | P1 | D |
+| Frames, shapes & paths | Content grabber, select content/container | P0 | D |
+| Frames, shapes & paths | Auto-fit | P1 | D |
+| Frames, shapes & paths | Step and Repeat | P1 | D |
+| Frames, shapes & paths | Gridify while drawing | P2 | D |
+| Frames, shapes & paths | Gap tool | P2 | D |
+| Frames, shapes & paths | Live Distribute | P2 | D |
+| Frames, shapes & paths | Generate QR Code | P2 | D |
+| Frames, shapes & paths | Placeholder text | P1 | D |
+| Frames, shapes & paths | Arrange | P0 | D |
+| Frames, shapes & paths | Group/Ungroup | P0 | D |
+| Frames, shapes & paths | Lock / Unlock All on Spread | P0 | D |
+| Frames, shapes & paths | Hide / Show All on Spread | P1 | D |
+| Frames, shapes & paths | Select submenu | P1 | D |
+| Frames, shapes & paths | Select All / Deselect All | P0 | D |
+| Frames, shapes & paths | Duplicate | P0 | D |
+| Frames, shapes & paths | Paste Into / Paste in Place | P0 | D |
+| Frames, shapes & paths | Paste Without Formatting | P0 | D |
+| Frames, shapes & paths | Non-printing attribute | P0 | D |
+| Frames, shapes & paths | Overprint fill/stroke/gap | P1 | D |
+| Transform | Transform panel / Control | P0 | D |
+| Transform | Free Transform tool | P0 | D |
+| Transform | Rotate, Scale, Shear tools + dialogs | P0 | D |
+| Transform | Transform Again family | P1 | D |
+| Transform | Clear Transformations | P1 | D |
+| Transform | Transformations are Totals pref | P1 | D |
+| Transform | Scale strokes / content options | P0 | D |
+| Transform | Align & Distribute | P0 | D |
+| Transform | Dimensions Include Stroke Weight | P0 | D |
+| Transform | Rotate 90 / Flip buttons | P0 | D |
+| Fill, stroke, colour | Swatches panel | P0 | D |
+| Fill, stroke, colour | Color panel | P0 | D |
+| Fill, stroke, colour | Color Picker dialog | P0 | D |
+| Fill, stroke, colour | Gradient panel & tool | P0 | D |
+| Fill, stroke, colour | Gradient Feather tool | P1 | D |
+| Fill, stroke, colour | Tints | P0 | D |
+| Fill, stroke, colour | Special swatches | P0 | D |
+| Fill, stroke, colour | Spot colours | P1 | D |
+| Fill, stroke, colour | Ink Manager | P2 | D |
+| Fill, stroke, colour | Load/Save Swatches (.ase) | P1 | D |
+| Fill, stroke, colour | Color groups | P2 | D |
+| Fill, stroke, colour | Unnamed colour to swatch | P1 | D |
+| Fill, stroke, colour | Stroke panel | P0 | D |
+| Fill, stroke, colour | Stroke styles | P1 | D |
+| Fill, stroke, colour | Color management | P1 | D |
+| Fill, stroke, colour | Overprint Preview | P1 | D |
+| Fill, stroke, colour | Separations Preview | P2 | D |
+| Fill, stroke, colour | Eyedropper | P1 | D |
+| Fill, stroke, colour | Appearance of Black prefs | P1 | D |
+| Effects & transparency | Opacity & blend modes | P0 | D |
+| Effects & transparency | Isolate Blending / Knockout Group | P2 | D |
+| Effects & transparency | Drop Shadow | P1 | D |
+| Effects & transparency | Inner Shadow, Outer Glow, Inner Glow, Bevel, Satin | P2 | D |
+| Effects & transparency | Basic/Directional/Gradient Feather | P2 | D |
+| Effects & transparency | Global Light | P2 | D |
+| Effects & transparency | Transparency blend space | P1 | D |
+| Effects & transparency | Transparency flattener | P2 | D |
+| Placing & links | Place | P0 | D |
+| Placing & links | Place into frame / by click or drag | P0 | D |
+| Placing & links | Raster formats | P0 | D |
+| Placing & links | Vector/page formats (PDF/AI/SVG/EPS place) | P0 | P |
+| Placing & links | Placing INDD/IDML pages | P2 | P |
+| Placing & links | Text import (TXT/DOCX/RTF) | P0 | D |
+| Placing & links | Links panel | P0 | D |
+| Placing & links | Effective/actual PPI | P0 | D |
+| Placing & links | Relink to folder / extension | P1 | D |
+| Placing & links | Copy Links To / Package | P1 | D |
+| Placing & links | Captions | P2 | D |
+| Placing & links | Image import options | P1 | D |
+| Placing & links | Linked text/stories | P2 | D |
+| Placing & links | Display performance | P0 | D |
+| Placing & links | Video/audio | P2 | P |
+| Type & text frames | Text frames | P0 | D |
+| Type & text frames | Threading | P0 | D |
+| Type & text frames | Overset detection & indicator | P0 | D |
+| Type & text frames | Text Frame Options | P0 | D |
+| Type & text frames | Type on a path | P1 | D |
+| Type & text frames | Vertical type | P2 | P |
+| Type & text frames | Story Editor | P1 | D |
+| Type & text frames | Track Changes | P2 | D |
+| Type & text frames | Notes | P2 | D |
+| Type & text frames | Find/Change | P0 | D |
+| Type & text frames | Find Font | P0 | D |
+| Type & text frames | Spell checking | P1 | D |
+| Type & text frames | Hyphenation dictionaries | P0 | D |
+| Type & text frames | Glyphs panel | P1 | D |
+| Type & text frames | Insert special chars / white space / breaks | P0 | D |
+| Type & text frames | Text variables | P1 | D |
+| Type & text frames | Conditional text | P2 | D |
+| Type & text frames | Fill with placeholder text | P1 | D |
+| Type & text frames | Create Outlines | P1 | D |
+| Type & text frames | Change Case | P0 | D |
+| Type & text frames | Show Hidden Characters | P0 | D |
+| Type & text frames | Font menu with preview, favourites | P1 | D |
+| Type & text frames | Missing fonts handling | P0 | D |
+| Type & text frames | Footnotes | P1 | D |
+| Type & text frames | Endnotes | P2 | D |
+| Type & text frames | Cross-references | P2 | D |
+| Type & text frames | Text anchors & hyperlinks | P1 | D |
+| Type & text frames | Data merge | P2 | D |
+| Type & text frames | Smart quotes | P0 | D |
+| Type & text frames | Autocorrect / Dynamic spelling | P2 | D |
+| Type & text frames | Drag & drop text editing | P1 | D |
+| Type & text frames | Paste text with/without formatting | P0 | D |
+| Type & text frames | Math expressions | P2 | D |
+| Type & text frames | Right-to-left / World-Ready composer | P2 | D |
+| Typography | Character attributes | P0 | D |
+| Typography | Underline/Strikethrough options | P1 | D |
+| Typography | OpenType features | P0 | D |
+| Typography | Variable fonts | P1 | D |
+| Typography | Paragraph attributes | P0 | D |
+| Typography | Paragraph Composer (total-fit) | P0 | D |
+| Typography | Single-line Composer | P0 | D |
+| Typography | Tabs, leaders, right-indent tab | P0 | D |
+| Typography | Nested / line / GREP styles | P1 | D |
+| Typography | Drop caps | P1 | D |
+| Typography | Paragraph rules | P1 | D |
+| Typography | Paragraph borders & shading | P1 | D |
+| Typography | Balance ragged lines | P1 | D |
+| Typography | Optical margin alignment | P1 | D |
+| Typography | Baseline grid | P0 | D |
+| Typography | Highlight H&J / keep violations | P1 | D |
+| Typography | Glyph scaling, letter/word spacing | P0 | D |
+| Typography | Auto leading | P0 | D |
+| Typography | Text wrap | P0 | D |
+| Typography | Anchored objects | P1 | D |
+| Typography | Hyphenation exceptions | P1 | D |
+| Typography | Language support | P1 | D |
+| Styles | Paragraph styles | P0 | D |
+| Styles | Character styles | P0 | D |
+| Styles | Object styles | P1 | D |
+| Styles | Table & cell styles | P1 | D |
+| Styles | Style groups | P1 | D |
+| Styles | Quick Apply | P1 | D |
+| Styles | Break link to style | P1 | D |
+| Styles | Style mapping on import | P1 | D |
+| Styles | Style export tagging | P2 | D |
+| Tables | Create / Insert Table | P1 | D |
+| Tables | Convert Text to Table / Table to Text | P1 | D |
+| Tables | Rows/columns insert/delete/resize/distribute | P1 | D |
+| Tables | Merge/Unmerge/Split cells | P1 | D |
+| Tables | Header/footer rows | P1 | D |
+| Tables | Table options | P1 | D |
+| Tables | Cell options | P1 | D |
+| Tables | Graphic cells | P2 | D |
+| Tables | Table styles & cell styles | P1 | D |
+| Tables | Table panel | P1 | D |
+| Tables | Overset cells | P1 | D |
+| Tables | Tables spanning frames | P1 | D |
+| Tables | Sort table rows | P2 | D |
+| Tables | Excel import | P2 | D |
+| Tables | Drag to move rows/columns | P2 | D |
+| Long documents | Table of contents | P1 | D |
+| Long documents | Index | P2 | D |
+| Long documents | Books | P2 | D |
+| Long documents | Numbered lists across stories | P1 | D |
+| Long documents | Cross-references | P2 | D |
+| Long documents | Running headers via variables | P1 | D |
+| Long documents | Footnotes/endnotes | P1 | D |
+| Long documents | Captions | P2 | D |
+| Interactivity & digital | Hyperlinks panel | P1 | D |
+| Interactivity & digital | Bookmarks | P1 | D |
+| Interactivity & digital | Buttons and Forms | P2 | D |
+| Interactivity & digital | Object States | P2 | D |
+| Interactivity & digital | Articles panel | P2 | D |
+| Interactivity & digital | Object Export Options | P2 | D |
+| Interactivity & digital | EPUB export | P2 | D |
+| Interactivity & digital | HTML export | P2 | D |
+| Output & production | Export to PDF (print) | P0 | P |
+| Output & production | Interactive PDF | P2 | D |
+| Output & production | Print dialog | P1 | D |
+| Output & production | Print booklet | P2 | D |
+| Output & production | Package | P1 | D |
+| Output & production | Preflight | P1 | D |
+| Output & production | Export JPEG/PNG | P1 | D |
+| Output & production | Export IDML | P0 | D |
+| Output & production | Export EPUB/HTML | P2 | D |
+| Output & production | Export RTF/TXT/Tagged text | P2 | D |
+| Output & production | Export XML | P2 | D |
+| Output & production | Separations / Flattener / Ink limit preview | P2 | D |
+| XML & automation | Tags panel, Structure | P2 | D |
+| XML & automation | Import/Export XML | P2 | D |
+| XML & automation | Data Merge | P2 | D |
+| XML & automation | Scripts panel | P2 | D |
+| XML & automation | Script Label | P2 | D |
+| XML & automation | Content Collector/Placer | P2 | D |
+| XML & automation | Snippets | P1 | D |
+| XML & automation | Object Library | P2 | D |
+| View & navigation | Zoom commands | P0 | D |
+| View & navigation | Power Zoom | P2 | D |
+| View & navigation | Animated/scrubby zoom | P1 | D |
+| View & navigation | Screen modes | P0 | D |
+| View & navigation | Overprint preview | P1 | D |
+| View & navigation | Rulers, guides, grids toggles | P0 | D |
+| View & navigation | Show/hide frame edges, threads, hidden chars | P0 | D |
+| View & navigation | Structure / tag markers | P2 | D |
+| View & navigation | Display performance | P0 | D |
+| View & navigation | Navigate pages | P0 | D |
+| View & navigation | Split window | P2 | D |
+| View & navigation | Rotate spread view | P2 | D |
+| View & navigation | Find/zoom to object | P1 | D |
+| Undo, history, saving | Unlimited undo/redo | P0 | D |
+| Undo, history, saving | Revert | P0 | D |
+| Undo, history, saving | Save / Save As / Save a Copy | P0 | D |
+| Accessibility | Tagged PDF export | P2 | D |
+| Accessibility | Alt text | P2 | D |
+| Accessibility | Keyboard navigation of UI | P1 | D |
+| Accessibility | High contrast | P2 | D |

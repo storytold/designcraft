@@ -13,314 +13,42 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::StoryId;
-use crate::item::{StrokeType, VerticalJustification};
+use crate::item::{FirstBaseline, StrokeType, VerticalJustification};
 use crate::story::{CharFormat, ParaFormat, Story, TABLE_ANCHOR};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RowHeightMode {
-    /// Grows with the content (the height is a minimum).
-    #[default]
-    AtLeast,
-    Exactly,
-}
+mod cell;
+mod edit;
+mod grid;
+mod merge;
+mod story;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RowKind {
-    Header,
-    #[default]
-    Body,
-    Footer,
-}
+pub use cell::{AltFills, AltStrokes, Cell, CellStroke, Column, Row, RowHeightMode, RowKind, TableOptions};
+pub use grid::CellRange;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Row {
-    pub height: f64,
-    pub mode: RowHeightMode,
-    pub kind: RowKind,
-}
+/// Most rows a table holds, as InDesign allows.
+pub const MAX_TABLE_ROWS: usize = 10_000;
+/// Most columns a table holds, as InDesign allows.
+pub const MAX_TABLE_COLS: usize = 1_000;
+/// Most cells a table holds, whatever its shape.
+///
+/// A [`Cell`] is about 1.4 KB (it carries a [`Story`]), so this is roughly 340 MB of cells at the
+/// limit. The row and column limits alone are not enough: 10,000 × 1,000 would be 13.6 GB, and an
+/// IDML story holding one `<Table>` with 5,000 `<Row/>` and 5,000 `<Column/>` -- about 1 KB
+/// zipped -- asked for 25M cells, some 34 GB. That allocation does not fail politely: it aborts
+/// the process through `handle_alloc_error`, which no `catch_unwind` can save, so every open
+/// document's unsaved work goes with it (#1583).
+pub const MAX_TABLE_CELLS: usize = 250_000;
 
-impl Default for Row {
-    fn default() -> Self {
-        Row { height: 3.0, mode: RowHeightMode::AtLeast, kind: RowKind::Body }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Column {
-    pub width: f64,
-}
-
-/// One cell edge or the table border.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct CellStroke {
-    pub weight: f64,
-    pub color: String,
-    pub tint: f32,
-    pub kind: StrokeType,
-}
-
-impl Default for CellStroke {
-    fn default() -> Self {
-        CellStroke { weight: 1.0, color: designcraft_color::swatch::BLACK.into(), tint: 1.0, kind: StrokeType::Solid }
-    }
-}
-
-impl CellStroke {
-    pub fn none() -> Self {
-        CellStroke { weight: 0.0, ..Default::default() }
-    }
-    pub fn is_visible(&self) -> bool {
-        self.weight > 0.0 && self.color != designcraft_color::swatch::NONE
-    }
-}
-
-/// Table-level alternating row/column strokes. Retained independently of cell formatting
-/// so an explicit cell style or local edge continues to take precedence.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AltStrokes {
-    pub first: u32,
-    pub next: u32,
-    pub first_stroke: CellStroke,
-    pub next_stroke: CellStroke,
-    pub skip_first: u32,
-    pub skip_last: u32,
-}
-
-impl Default for AltStrokes {
-    fn default() -> Self {
-        Self {
-            first: 0,
-            next: 0,
-            first_stroke: CellStroke::default(),
-            next_stroke: CellStroke { weight: 0.25, ..Default::default() },
-            skip_first: 0,
-            skip_last: 0,
-        }
-    }
-}
-
-impl AltStrokes {
-    /// A phase-independent stroke for unskipped, visually uniform patterns. Unequal
-    /// patterns and skip settings are preserved for round trips until their boundary
-    /// phase is supported; they must not be rendered with a guessed phase.
-    pub fn uniform_stroke(&self) -> Option<&CellStroke> {
-        if self.skip_first > 0 || self.skip_last > 0 {
-            return None;
-        }
-        match (self.first > 0, self.next > 0) {
-            (true, false) => Some(&self.first_stroke),
-            (false, true) => Some(&self.next_stroke),
-            (true, true) if self.first_stroke == self.next_stroke || (!self.first_stroke.is_visible() && !self.next_stroke.is_visible()) => {
-                Some(&self.first_stroke)
-            }
-            _ => None,
-        }
-    }
-}
-
-fn no_flags(flags: &[bool; 4]) -> bool {
-    !flags.iter().any(|v| *v)
-}
-fn no_priorities(priorities: &[i32; 4]) -> bool {
-    priorities.iter().all(|v| *v == 0)
-}
-
-fn one() -> u32 {
-    1
-}
-fn full() -> f32 {
-    1.0
-}
-fn no_fill() -> String {
-    designcraft_color::swatch::NONE.into()
-}
-fn default_insets() -> [f64; 4] {
-    [4.0; 4]
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Cell {
-    #[serde(default = "one")]
-    pub row_span: u32,
-    #[serde(default = "one")]
-    pub col_span: u32,
-    /// Cell content (a frameless story).
-    pub text: Story,
-    #[serde(default = "no_fill")]
-    pub fill: String,
-    #[serde(default = "full")]
-    pub fill_tint: f32,
-    /// Top, left, bottom, right.
-    #[serde(default = "default_insets")]
-    pub insets: [f64; 4],
-    #[serde(default)]
-    pub vj: VerticalJustification,
-    /// Text rotation in degrees (only 0 is composed for now).
-    #[serde(default)]
-    pub rotation: f64,
-    /// Edge strokes: top, left, bottom, right.
-    #[serde(default)]
-    pub strokes: [CellStroke; 4],
-    /// Explicit cell-edge formatting takes precedence over the table border, in the same
-    /// top, left, bottom, right order as `strokes`. Older documents keep their table border.
-    #[serde(default)]
-    pub border_overrides: [bool; 4],
-    /// Whether an edge has supplied cell/style attributes, independently of perimeter priority.
-    #[serde(default, skip_serializing_if = "no_flags")]
-    pub stroke_defined: [bool; 4],
-    /// IDML edge-conflict priorities, in top, left, bottom, right order.
-    #[serde(default, skip_serializing_if = "no_priorities")]
-    pub stroke_priorities: [i32; 4],
-    /// Applied cell style ("" = [None]).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub style: String,
-    /// Graphic cell: an image in the cell instead of text (its `xf` maps into the cell's
-    /// content box, origin at the box's top left).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graphic: Option<crate::Graphic>,
-}
-
-impl Default for Cell {
-    fn default() -> Self {
-        Cell {
-            row_span: 1,
-            col_span: 1,
-            text: Story::new(StoryId(0)),
-            fill: no_fill(),
-            fill_tint: 1.0,
-            insets: default_insets(),
-            vj: VerticalJustification::Top,
-            rotation: 0.0,
-            strokes: Default::default(),
-            border_overrides: [false; 4],
-            stroke_priorities: [0; 4],
-            stroke_defined: [false; 4],
-            style: String::new(),
-            graphic: None,
-        }
-    }
-}
-
-impl Cell {
-    pub fn with_text(text: &str, para: ParaFormat) -> Cell {
-        Cell { text: Story::with_text(StoryId(0), text, para), ..Default::default() }
-    }
-    /// A cell with this cell's formatting and no text (new rows / columns, unmerged cells).
-    pub fn blank_like(&self) -> Cell {
-        let mut c = Cell { row_span: 1, col_span: 1, ..self.clone() };
-        let para = self.text.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
-        let fmt = self.text.chars.first().map(|r| r.format.clone()).unwrap_or_default();
-        c.text = Story::new(StoryId(0));
-        c.text.paras[0] = para;
-        c.text.chars[0].format = fmt;
-        c
-    }
-    pub fn has_fill(&self) -> bool {
-        self.fill != designcraft_color::swatch::NONE
-    }
-}
-
-/// Table → Table Options → Fills (alternating pattern).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AltFills {
-    pub first: u32,
-    pub first_color: String,
-    pub first_tint: f32,
-    pub next: u32,
-    pub next_color: String,
-    pub next_tint: f32,
-    pub skip_first: u32,
-    pub skip_last: u32,
-}
-
-impl Default for AltFills {
-    fn default() -> Self {
-        AltFills {
-            first: 1,
-            first_color: designcraft_color::swatch::BLACK.into(),
-            first_tint: 0.2,
-            next: 1,
-            next_color: designcraft_color::swatch::NONE.into(),
-            next_tint: 1.0,
-            skip_first: 0,
-            skip_last: 0,
-        }
-    }
-}
-
-impl AltFills {
-    /// Fill for the `i`-th of `n` body rows/columns, if the pattern paints it.
-    pub fn fill_for(&self, i: usize, n: usize) -> Option<(&str, f32)> {
-        let (sf, sl) = (self.skip_first as usize, self.skip_last as usize);
-        if i < sf || i >= n.saturating_sub(sl) {
-            return None;
-        }
-        let period = (u64::from(self.first) + u64::from(self.next)).max(1);
-        let k = (i - sf) as u64 % period;
-        let (c, t) = if k < u64::from(self.first) { (&self.first_color, self.first_tint) } else { (&self.next_color, self.next_tint) };
-        (c != designcraft_color::swatch::NONE).then_some((c.as_str(), t))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct TableOptions {
-    /// Logical column zero is drawn at the right edge for RTL tables.
-    pub direction: crate::TextDirection,
-    /// Outer border (overrides the outer cell edges).
-    pub border: CellStroke,
-    /// Per-side borders; absent sides use the legacy uniform `border`.
-    #[serde(skip_serializing_if = "no_borders")]
-    pub borders: [Option<CellStroke>; 4],
-    pub space_before: f64,
-    pub space_after: f64,
-    /// Header rows repeat at the top of every text column / frame the table continues into.
-    pub repeat_header: bool,
-    pub repeat_footer: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alt_rows: Option<AltFills>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub alt_cols: Option<AltFills>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub row_strokes: Option<AltStrokes>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column_strokes: Option<AltStrokes>,
-}
-
-fn no_borders(borders: &[Option<CellStroke>; 4]) -> bool {
-    borders.iter().all(Option::is_none)
-}
-
-impl TableOptions {
-    pub fn border_for(&self, side: usize) -> &CellStroke {
-        self.borders.get(side).and_then(Option::as_ref).unwrap_or(&self.border)
-    }
-}
-
-impl Default for TableOptions {
-    fn default() -> Self {
-        TableOptions {
-            direction: crate::TextDirection::LeftToRight,
-            border: CellStroke::default(),
-            borders: Default::default(),
-            space_before: 4.0,
-            space_after: -4.0,
-            repeat_header: true,
-            repeat_footer: true,
-            alt_rows: None,
-            alt_cols: None,
-            row_strokes: None,
-            column_strokes: None,
-        }
-    }
+/// The rows and columns a table of `rows × cols` is actually given, inside the limits above.
+///
+/// Columns are clamped first and rows take what is left of the cell budget, because a table is
+/// far more often long than wide: truncating a 5,000-column table to 1,000 columns and then its
+/// rows loses less of it than the other way round. Callers that read a file report the
+/// difference; the counts are a document's claim, not something to trust.
+pub fn clamped_size(rows: usize, cols: usize) -> (usize, usize) {
+    let cols = cols.clamp(1, MAX_TABLE_COLS);
+    let rows = rows.clamp(1, MAX_TABLE_ROWS.min(MAX_TABLE_CELLS / cols).max(1));
+    (rows, cols)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -338,728 +66,107 @@ pub struct Table {
     pub style: String,
 }
 
-/// A rectangular range of cells (inclusive).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CellRange {
-    pub r0: usize,
-    pub c0: usize,
-    pub r1: usize,
-    pub c1: usize,
-}
-
-impl CellRange {
-    pub fn cell(r: usize, c: usize) -> Self {
-        CellRange { r0: r, c0: c, r1: r, c1: c }
-    }
-    pub fn new(ra: usize, ca: usize, rb: usize, cb: usize) -> Self {
-        CellRange { r0: ra.min(rb), c0: ca.min(cb), r1: ra.max(rb), c1: ca.max(cb) }
-    }
-    pub fn contains(&self, r: usize, c: usize) -> bool {
-        r >= self.r0 && r <= self.r1 && c >= self.c0 && c <= self.c1
-    }
-}
-
-impl Table {
-    /// A `rows × cols` table (`header` + body + `footer` rows) whose columns share `width`.
-    pub fn new(id: u64, body_rows: usize, cols: usize, header: usize, footer: usize, width: f64) -> Table {
-        let cols = cols.max(1);
-        let mut rows = Vec::new();
-        rows.extend((0..header).map(|_| Row { kind: RowKind::Header, ..Default::default() }));
-        rows.extend((0..body_rows.max(1)).map(|_| Row::default()));
-        rows.extend((0..footer).map(|_| Row { kind: RowKind::Footer, ..Default::default() }));
-        let w = (width / cols as f64).max(3.0);
-        let n = rows.len() * cols;
-        Table {
-            id,
-            rows,
-            columns: vec![Column { width: w }; cols],
-            cells: vec![Cell::default(); n],
-            options: TableOptions::default(),
-            style: String::new(),
-        }
-    }
-
-    /// A table from rows of cell strings (Convert Text to Table). Short rows are padded.
-    pub fn from_strings(id: u64, data: &[Vec<String>], width: f64, para: &ParaFormat, fmt: &CharFormat) -> Table {
-        let cols = data.iter().map(Vec::len).max().unwrap_or(1).max(1);
-        let mut t = Table::new(id, data.len().max(1), cols, 0, 0, width);
-        for (r, row) in data.iter().enumerate() {
-            for (c, s) in row.iter().enumerate() {
-                let Some(cell) = t.cell_mut(r, c) else { continue };
-                cell.text = Story::with_text(StoryId(0), "", ParaFormat { table: None, ..para.clone() });
-                cell.text.chars[0].format = fmt.clone();
-                cell.text.insert(0, s);
-            }
-        }
-        t
-    }
-
-    pub fn nrows(&self) -> usize {
-        self.rows.len()
-    }
-    pub fn ncols(&self) -> usize {
-        self.columns.len()
-    }
-    pub fn width(&self) -> f64 {
-        self.columns.iter().map(|c| c.width).sum()
-    }
-    fn idx(&self, r: usize, c: usize) -> Option<usize> {
-        (r < self.nrows() && c < self.ncols()).then(|| r * self.ncols() + c)
-    }
-    pub fn cell(&self, r: usize, c: usize) -> Option<&Cell> {
-        self.cells.get(self.idx(r, c)?)
-    }
-    pub fn cell_mut(&mut self, r: usize, c: usize) -> Option<&mut Cell> {
-        let i = self.idx(r, c)?;
-        self.cells.get_mut(i)
-    }
-    pub fn header_rows(&self) -> usize {
-        self.rows.iter().take_while(|r| r.kind == RowKind::Header).count()
-    }
-    pub fn footer_rows(&self) -> usize {
-        self.rows.iter().rev().take_while(|r| r.kind == RowKind::Footer).count()
-    }
-    pub fn body_rows(&self) -> std::ops::Range<usize> {
-        self.header_rows()..self.nrows() - self.footer_rows()
-    }
-
-    /// For every grid position, the (row, col) of the cell that owns it.
-    pub fn owners(&self) -> Vec<(usize, usize)> {
-        let (nr, nc) = (self.nrows(), self.ncols());
-        let mut v: Vec<(usize, usize)> = (0..nr * nc).map(|i| (i / nc.max(1), i % nc.max(1))).collect();
-        for r in 0..nr {
-            for c in 0..nc {
-                let cell = &self.cells[r * nc + c];
-                if v[r * nc + c] != (r, c) {
-                    continue;
-                }
-                for rr in r..(r + cell.row_span.max(1) as usize).min(nr) {
-                    for cc in c..(c + cell.col_span.max(1) as usize).min(nc) {
-                        v[rr * nc + cc] = (r, c);
-                    }
-                }
-            }
-        }
-        v
-    }
-
-    /// The owning (top-left) cell address of grid position (r, c).
-    pub fn owner(&self, r: usize, c: usize) -> (usize, usize) {
-        self.owners().get(r * self.ncols() + c).copied().unwrap_or((r, c))
-    }
-
-    /// Merged regions `(r, c, row_span, col_span)` (span > 1 in some direction).
-    pub fn regions(&self) -> Vec<(usize, usize, usize, usize)> {
-        let owners = self.owners();
-        let mut v = Vec::new();
-        for r in 0..self.nrows() {
-            for c in 0..self.ncols() {
-                let cell = &self.cells[r * self.ncols() + c];
-                if owners[r * self.ncols() + c] == (r, c) && (cell.row_span > 1 || cell.col_span > 1) {
-                    v.push((r, c, cell.row_span as usize, cell.col_span as usize));
-                }
-            }
-        }
-        v
-    }
-
-    fn set_regions(&mut self, regions: &[(usize, usize, usize, usize)]) {
-        for c in &mut self.cells {
-            c.row_span = 1;
-            c.col_span = 1;
-        }
-        for &(r, c, rs, cs) in regions {
-            if rs == 0 || cs == 0 {
-                continue;
-            }
-            if let Some(cell) = self.cell_mut(r, c) {
-                cell.row_span = rs as u32;
-                cell.col_span = cs as u32;
-            }
-        }
-    }
-
-    /// Insert `n` rows before row `at` (formatted like the neighbouring row).
-    pub fn insert_rows(&mut self, at: usize, n: usize) {
-        let at = at.min(self.nrows());
-        if n == 0 {
-            return;
-        }
-        let nc = self.ncols();
-        let src = if at < self.nrows() { at } else { at.saturating_sub(1) };
-        let mut row = self.rows.get(src).cloned().unwrap_or_default();
-        // A row inserted between body rows (or after the last header / before the first footer) is a body row.
-        if at > 0 && at < self.nrows() && self.rows[at - 1].kind != self.rows[at].kind {
-            row.kind = RowKind::Body;
-        }
-        if at == self.nrows() && row.kind == RowKind::Header {
-            row.kind = RowKind::Body;
-        }
-        if at == 0 && row.kind == RowKind::Footer {
-            row.kind = RowKind::Body;
-        }
-        let template: Vec<Cell> = (0..nc).map(|c| self.cell(src, c).map(Cell::blank_like).unwrap_or_default()).collect();
-        let regions: Vec<_> = self
-            .regions()
-            .into_iter()
-            .map(|(r, c, rs, cs)| {
-                if r >= at {
-                    (r + n, c, rs, cs)
-                } else if r + rs > at {
-                    (r, c, rs + n, cs)
-                } else {
-                    (r, c, rs, cs)
-                }
-            })
-            .collect();
-        for k in 0..n {
-            self.rows.insert(at + k, row.clone());
-            let i = (at + k) * nc;
-            for (c, cell) in template.iter().enumerate() {
-                self.cells.insert(i + c, cell.clone());
-            }
-        }
-        self.set_regions(&regions);
-    }
-
-    /// Delete rows `at..at+n` (at least one row always remains).
-    pub fn delete_rows(&mut self, at: usize, n: usize) {
-        let nr = self.nrows();
-        let at = at.min(nr);
-        let n = n.min(nr - at).min(nr.saturating_sub(1));
-        if n == 0 {
-            return;
-        }
-        let nc = self.ncols();
-        let end = at + n;
-        let mut regions = Vec::new();
-        for (r, c, rs, cs) in self.regions() {
-            let r1 = r + rs;
-            if r >= at && r1 <= end {
-                continue; // removed entirely
-            }
-            let new_rs = rs - (r1.min(end).saturating_sub(r.max(at)));
-            if r >= at && r < end {
-                // The owner row goes away: move its content to the first surviving row.
-                let content = self.cells[r * nc + c].clone();
-                self.cells[end * nc + c] = content;
-                regions.push((at, c, new_rs, cs));
-            } else if r < at {
-                regions.push((r, c, new_rs, cs));
-            } else {
-                regions.push((r - n, c, rs, cs));
-            }
-        }
-        self.rows.drain(at..end);
-        self.cells.drain(at * nc..end * nc);
-        self.set_regions(&regions);
-    }
-
-    /// Insert `n` columns of `width` before column `at`.
-    pub fn insert_cols(&mut self, at: usize, n: usize, width: f64) {
-        let at = at.min(self.ncols());
-        if n == 0 {
-            return;
-        }
-        let nc = self.ncols();
-        let src = if at < nc { at } else { at.saturating_sub(1) };
-        let regions: Vec<_> = self
-            .regions()
-            .into_iter()
-            .map(|(r, c, rs, cs)| {
-                if c >= at {
-                    (r, c + n, rs, cs)
-                } else if c + cs > at {
-                    (r, c, rs, cs + n)
-                } else {
-                    (r, c, rs, cs)
-                }
-            })
-            .collect();
-        let mut cells = Vec::with_capacity(self.nrows() * (nc + n));
-        for r in 0..self.nrows() {
-            for c in 0..nc {
-                if c == at {
-                    let t = self.cells[r * nc + src].blank_like();
-                    cells.extend(std::iter::repeat_n(t, n));
-                }
-                cells.push(self.cells[r * nc + c].clone());
-            }
-            if at == nc {
-                let t = self.cells[r * nc + src].blank_like();
-                cells.extend(std::iter::repeat_n(t, n));
-            }
-        }
-        self.cells = cells;
-        for k in 0..n {
-            self.columns.insert(at + k, Column { width });
-        }
-        self.set_regions(&regions);
-    }
-
-    /// Delete columns `at..at+n` (at least one column always remains).
-    pub fn delete_cols(&mut self, at: usize, n: usize) {
-        let nc = self.ncols();
-        let at = at.min(nc);
-        let n = n.min(nc - at).min(nc.saturating_sub(1));
-        if n == 0 {
-            return;
-        }
-        let end = at + n;
-        let mut regions = Vec::new();
-        for (r, c, rs, cs) in self.regions() {
-            let c1 = c + cs;
-            if c >= at && c1 <= end {
-                continue;
-            }
-            let new_cs = cs - (c1.min(end).saturating_sub(c.max(at)));
-            if c >= at && c < end {
-                let content = self.cells[r * nc + c].clone();
-                self.cells[r * nc + end] = content;
-                regions.push((r, at, rs, new_cs));
-            } else if c < at {
-                regions.push((r, c, rs, new_cs));
-            } else {
-                regions.push((r, c - n, rs, cs));
-            }
-        }
-        let mut cells = Vec::with_capacity(self.nrows() * (nc - n));
-        for r in 0..self.nrows() {
-            for c in 0..nc {
-                if c < at || c >= end {
-                    cells.push(self.cells[r * nc + c].clone());
-                }
-            }
-        }
-        self.cells = cells;
-        self.columns.drain(at..end);
-        self.set_regions(&regions);
-    }
-
-    /// The smallest range containing `r` that doesn't cut through a merged region.
-    pub fn expand_range(&self, mut r: CellRange) -> CellRange {
-        loop {
-            let mut grown = r;
-            for (rr, cc, rs, cs) in self.regions() {
-                let (re, ce) = (rr + rs - 1, cc + cs - 1);
-                let overlaps = rr <= r.r1 && re >= r.r0 && cc <= r.c1 && ce >= r.c0;
-                if overlaps {
-                    grown = CellRange { r0: grown.r0.min(rr), c0: grown.c0.min(cc), r1: grown.r1.max(re), c1: grown.c1.max(ce) };
-                }
-            }
-            if grown == r {
-                return r;
-            }
-            r = grown;
-        }
-    }
-
-    /// Merge a range into its top-left cell; the other cells' text is appended as paragraphs.
-    pub fn merge(&mut self, range: CellRange) -> Result<(), String> {
-        if range.r1 >= self.nrows() || range.c1 >= self.ncols() {
-            return Err("cell range out of bounds".into());
-        }
-        let range = self.expand_range(range);
-        if range.r0 == range.r1 && range.c0 == range.c1 {
-            return Ok(());
-        }
-        let owners = self.owners();
-        let nc = self.ncols();
-        let mut regions: Vec<_> = self.regions().into_iter().filter(|&(r, c, _, _)| !range.contains(r, c)).collect();
-        let mut extra: Vec<Story> = Vec::new();
-        for r in range.r0..=range.r1 {
-            for c in range.c0..=range.c1 {
-                if (r, c) != (range.r0, range.c0) && owners[r * nc + c] == (r, c) {
-                    let t = std::mem::take(&mut self.cells[r * nc + c]);
-                    self.cells[r * nc + c] = t.blank_like();
-                    if !t.text.is_empty() {
-                        extra.push(t.text);
-                    }
-                }
-            }
-        }
-        let owner = &mut self.cells[range.r0 * nc + range.c0];
-        for s in extra {
-            append_story(&mut owner.text, &s);
-        }
-        regions.push((range.r0, range.c0, range.r1 - range.r0 + 1, range.c1 - range.c0 + 1));
-        self.set_regions(&regions);
-        Ok(())
-    }
-
-    /// Unmerge the merged cell covering (r, c).
-    pub fn unmerge(&mut self, r: usize, c: usize) {
-        let (or, oc) = self.owner(r, c);
-        let regions: Vec<_> = self.regions().into_iter().filter(|&(rr, cc, _, _)| (rr, cc) != (or, oc)).collect();
-        self.set_regions(&regions);
-    }
-
-    /// Split the cell covering (r, c) in two: `horizontal` stacks the halves (Split Cell
-    /// Horizontally), otherwise side by side. A merged cell splits its span; a single cell gets a
-    /// new row (column) that the cells beside it span, the row height (column width) shared.
-    pub fn split_cell(&mut self, r: usize, c: usize, horizontal: bool) {
-        if r >= self.nrows() || c >= self.ncols() {
-            return;
-        }
-        let (or, oc) = self.owner(r, c);
-        let (rs, cs) = self.cell(or, oc).map_or((1, 1), |x| (x.row_span as usize, x.col_span as usize));
-        let mut regions: Vec<_> = self.regions().into_iter().filter(|&(rr, cc, _, _)| (rr, cc) != (or, oc)).collect();
-        let span = if horizontal { rs } else { cs };
-        if span > 1 {
-            let a = span.div_ceil(2);
-            if horizontal {
-                regions.push((or, oc, a, cs));
-                regions.push((or + a, oc, rs - a, cs));
-            } else {
-                regions.push((or, oc, rs, a));
-                regions.push((or, oc + a, rs, cs - a));
-            }
-            self.set_regions(&regions);
-            return;
-        }
-        if horizontal {
-            let h = self.rows[or].height;
-            self.insert_rows(or + 1, 1);
-            self.rows[or].height = h / 2.0;
-            self.rows[or + 1].height = h / 2.0;
-            // insert_rows doesn't grow regions that end at the split row; everything else on it
-            // spans the new row now.
-            let mut regions: Vec<_> = self.regions();
-            let (nr, nc) = (self.nrows(), self.ncols());
-            let mut covered = vec![false; nr * nc];
-            for &(rr, cc, rrs, ccs) in &regions {
-                for y in rr..rr + rrs {
-                    for x in cc..cc + ccs {
-                        covered[y * nc + x] = true;
-                    }
-                }
-            }
-            for reg in regions.iter_mut() {
-                let (rr, cc, rrs, ccs) = *reg;
-                if rr + rrs == or + 1 && !(cc <= oc && oc < cc + ccs) {
-                    *reg = (rr, cc, rrs + 1, ccs);
-                }
-            }
-            for x in 0..nc {
-                if (oc..oc + cs).contains(&x) || covered[or * nc + x] {
-                    continue;
-                }
-                regions.push((or, x, 2, 1));
-            }
-            if cs > 1 {
-                regions.push((or + 1, oc, 1, cs));
-            }
-            self.set_regions(&regions);
-        } else {
-            let w = self.columns[oc].width;
-            self.insert_cols(oc + 1, 1, w / 2.0);
-            self.columns[oc].width = w / 2.0;
-            let mut regions: Vec<_> = self.regions();
-            let (nr, nc) = (self.nrows(), self.ncols());
-            let mut covered = vec![false; nr * nc];
-            for &(rr, cc, rrs, ccs) in &regions {
-                for y in rr..rr + rrs {
-                    for x in cc..cc + ccs {
-                        covered[y * nc + x] = true;
-                    }
-                }
-            }
-            for reg in regions.iter_mut() {
-                let (rr, cc, rrs, ccs) = *reg;
-                if cc + ccs == oc + 1 && !(rr <= or && or < rr + rrs) {
-                    *reg = (rr, cc, rrs, ccs + 1);
-                }
-            }
-            for y in 0..nr {
-                if (or..or + rs).contains(&y) || covered[y * nc + oc] {
-                    continue;
-                }
-                regions.push((y, oc, 1, 2));
-            }
-            if rs > 1 {
-                regions.push((or, oc + 1, rs, 1));
-            }
-            self.set_regions(&regions);
-        }
-    }
-
-    /// Move row `from` to position `to` (indices before the move). Refused when merged cells span
-    /// rows (the move would cut them).
-    pub fn move_row(&mut self, from: usize, to: usize) -> Result<(), String> {
-        let (nr, nc) = (self.nrows(), self.ncols());
-        if from >= nr || to >= nr {
-            return Err("no such row".into());
-        }
-        if self.regions().iter().any(|r| r.2 > 1) {
-            return Err("unmerge cells that span rows first".into());
-        }
-        let row = self.rows.remove(from);
-        self.rows.insert(to, row);
-        let cells: Vec<Cell> = self.cells.drain(from * nc..(from + 1) * nc).collect();
-        let at = to * nc;
-        for (k, c) in cells.into_iter().enumerate() {
-            self.cells.insert(at + k, c);
-        }
-        Ok(())
-    }
-
-    /// Move column `from` to position `to`. Refused when merged cells span columns.
-    pub fn move_col(&mut self, from: usize, to: usize) -> Result<(), String> {
-        let (nr, nc) = (self.nrows(), self.ncols());
-        if from >= nc || to >= nc {
-            return Err("no such column".into());
-        }
-        if self.regions().iter().any(|r| r.3 > 1) {
-            return Err("unmerge cells that span columns first".into());
-        }
-        let col = self.columns.remove(from);
-        self.columns.insert(to, col);
-        for r in 0..nr {
-            let c = self.cells.remove(r * nc + from);
-            self.cells.insert(r * nc + to, c);
-        }
-        Ok(())
-    }
-
-    /// Mark the first `header` rows as header rows and the last `footer` rows as footer rows.
-    pub fn set_header_footer(&mut self, header: usize, footer: usize) {
-        let n = self.nrows();
-        let header = header.min(n.saturating_sub(1));
-        let footer = footer.min(n - header - 1);
-        for (i, r) in self.rows.iter_mut().enumerate() {
-            r.kind = if i < header {
-                RowKind::Header
-            } else if i >= n - footer {
-                RowKind::Footer
-            } else {
-                RowKind::Body
-            };
-        }
-    }
-
-    /// Cell texts, rows separated by `\n`, cells by `\t` (Convert Table to Text, search, agents).
-    pub fn plain_text(&self) -> String {
-        let mut out = String::new();
-        for r in 0..self.nrows() {
-            if r > 0 {
-                out.push('\n');
-            }
-            for c in 0..self.ncols() {
-                if c > 0 {
-                    out.push('\t');
-                }
-                if let Some(cell) = self.cell(r, c) {
-                    out.push_str(&cell.text.text.replace('\n', " "));
-                }
-            }
-        }
-        out
-    }
-
-    pub fn check(&self) -> Result<(), String> {
-        if self.rows.is_empty() || self.columns.is_empty() {
-            return Err(format!("table {}: no rows or columns", self.id));
-        }
-        if self.cells.len() != self.nrows() * self.ncols() {
-            return Err(format!("table {}: {} cells for {}×{}", self.id, self.cells.len(), self.nrows(), self.ncols()));
-        }
-        // Header rows first, footer rows last.
-        let (h, f) = (self.header_rows(), self.footer_rows());
-        if self.rows[h..self.nrows() - f].iter().any(|r| r.kind != RowKind::Body) {
-            return Err(format!("table {}: header/footer rows out of order", self.id));
-        }
-        let mut seen = vec![false; self.cells.len()];
-        for r in 0..self.nrows() {
-            for c in 0..self.ncols() {
-                let cell = &self.cells[r * self.ncols() + c];
-                if cell.row_span == 0 || cell.col_span == 0 {
-                    return Err(format!("table {}: zero span at {r},{c}", self.id));
-                }
-                if cell.row_span == 1 && cell.col_span == 1 {
-                    continue;
-                }
-                if r + cell.row_span as usize > self.nrows() || c + cell.col_span as usize > self.ncols() {
-                    return Err(format!("table {}: span out of bounds at {r},{c}", self.id));
-                }
-                for rr in r..r + cell.row_span as usize {
-                    for cc in c..c + cell.col_span as usize {
-                        let i = rr * self.ncols() + cc;
-                        if seen[i] {
-                            return Err(format!("table {}: overlapping merged cells at {rr},{cc}", self.id));
-                        }
-                        seen[i] = true;
-                    }
-                }
-            }
-        }
-        for cell in &self.cells {
-            cell.text.check()?;
-        }
-        Ok(())
-    }
-}
-
-/// Append `other` to `s` as new paragraphs.
-fn append_story(s: &mut Story, other: &Story) {
-    if s.is_empty() {
-        *s = Story { id: s.id, ..other.clone() };
-        s.rev += 1;
-        return;
-    }
-    let base = s.len();
-    s.insert(base, "\n");
-    // Copy other's runs with their formats.
-    for (r, f) in other.runs() {
-        let at = s.len();
-        s.insert_with(at, &other.text[r], f.clone());
-    }
-    let first_new = s.paras.len() - other.paras.len();
-    for (k, p) in other.paras.iter().enumerate() {
-        if let Some(dst) = s.paras.get_mut(first_new + k) {
-            *dst = p.clone();
-        }
-    }
-}
-
-// ---------- tables in stories ----------
-
-impl crate::Document {
-    /// The story text edits go to: a cell's story when `cell` is set, else the story itself.
-    pub fn text_story(&self, story: StoryId, cell: Option<crate::CellAddr>) -> Option<&Story> {
-        let st = self.story(story)?;
-        match cell {
-            Some(c) if c.table == crate::FOOTNOTE_TABLE => st.note(c.row as u64).map(|n| &n.text),
-            Some(c) => st.tables.get(&c.table)?.cell(c.row, c.col).map(|x| &x.text),
-            None => Some(st),
-        }
-    }
-
-    /// Mutable [`Document::text_story`] (a cell edit bumps the containing story's revision).
-    pub fn text_story_mut(&mut self, story: StoryId, cell: Option<crate::CellAddr>) -> Option<&mut Story> {
-        let st = self.story_mut(story)?;
-        match cell {
-            Some(c) if c.table == crate::FOOTNOTE_TABLE => st.note_mut(c.row as u64).map(|n| &mut n.text),
-            Some(c) => st.table_mut(c.table)?.cell_mut(c.row, c.col).map(|x| &mut x.text),
-            None => Some(st),
-        }
-    }
-}
-
-impl Story {
-    /// Visit this story and every text inside it (table cells, footnotes), mutably.
-    pub fn for_each_text_mut(&mut self, f: &mut impl FnMut(&mut Story)) {
-        f(self);
-        for t in self.tables.values_mut() {
-            for c in &mut std::sync::Arc::make_mut(t).cells {
-                c.text.for_each_text_mut(f);
-            }
-        }
-        for n in &mut self.notes {
-            std::sync::Arc::make_mut(n).text.for_each_text_mut(f);
-        }
-    }
-
-    /// The table whose anchor paragraph is `pi`.
-    pub fn para_table(&self, pi: usize) -> Option<&Arc<Table>> {
-        self.tables.get(&self.paras.get(pi)?.table?)
-    }
-
-    /// Byte offset of a table's anchor character.
-    pub fn table_anchor(&self, id: u64) -> Option<usize> {
-        let pi = self.paras.iter().position(|p| p.table == Some(id))?;
-        let r = self.para_ranges().get(pi)?.clone();
-        self.text[r.clone()].find(TABLE_ANCHOR).map(|k| r.start + k)
-    }
-
-    /// The table anchored at or right before byte `pos` (a caret next to the anchor).
-    pub fn table_at(&self, pos: usize) -> Option<u64> {
-        let pi = self.para_at(pos);
-        self.paras.get(pi)?.table
-    }
-
-    /// Mutable table (copy-on-write); bumps the story revision.
-    pub fn table_mut(&mut self, id: u64) -> Option<&mut Table> {
-        let t = self.tables.get_mut(&id)?;
-        self.rev += 1;
-        Some(Arc::make_mut(t))
-    }
-
-    /// Insert `table` at `pos`, giving its anchor its own paragraph. Returns the anchor's byte offset.
-    pub fn insert_table(&mut self, pos: usize, table: Table) -> usize {
-        let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
-        let pi = self.para_at(pos);
-        let pstart = self.para_ranges()[pi].start;
-        let mut s = String::new();
-        if pos > pstart {
-            s.push('\n');
-        }
-        let anchor = pos + s.len();
-        s.push(TABLE_ANCHOR);
-        if !self.text[pos..].starts_with('\n') {
-            s.push('\n');
-        }
-        let id = table.id;
-        self.tables.insert(id, Arc::new(table));
-        // Insert the text first (fix-up would drop an unreferenced table), then point the paragraph at it.
-        self.insert_raw(pos, &s);
-        let api = self.para_at(anchor);
-        self.paras[api].table = Some(id);
-        self.fix_tables();
-        self.rev += 1;
-        anchor
-    }
-
-    /// Keep paragraphs and tables consistent after an edit: a paragraph keeps its table only if it
-    /// still contains an anchor character, every table is referenced once, and tables nobody
-    /// references are dropped.
-    pub(crate) fn fix_tables(&mut self) {
-        if self.tables.is_empty() && self.paras.iter().all(|p| p.table.is_none()) {
-            return;
-        }
-        let ranges = self.para_ranges();
-        let mut used = std::collections::HashSet::new();
-        for (p, r) in self.paras.iter_mut().zip(ranges) {
-            if let Some(id) = p.table
-                && (!self.text[r].contains(TABLE_ANCHOR) || !self.tables.contains_key(&id) || !used.insert(id))
-            {
-                p.table = None;
-            }
-        }
-        self.tables.retain(|id, _| used.contains(id));
-    }
-
-    /// Check table invariants (part of [`Story::check`]).
-    pub(crate) fn check_tables(&self) -> Result<(), String> {
-        let ranges = self.para_ranges();
-        let mut used = std::collections::HashSet::new();
-        for (pi, p) in self.paras.iter().enumerate() {
-            let Some(id) = p.table else { continue };
-            let t = self.tables.get(&id).ok_or_else(|| format!("story {}: paragraph {pi} points at missing table {id}", self.id.0))?;
-            if t.id != id {
-                return Err(format!("story {}: table key {id} != id {}", self.id.0, t.id));
-            }
-            if self.text[ranges[pi].clone()].matches(TABLE_ANCHOR).count() != 1 {
-                return Err(format!("story {}: table {id} paragraph must hold exactly one anchor", self.id.0));
-            }
-            if !used.insert(id) {
-                return Err(format!("story {}: table {id} anchored twice", self.id.0));
-            }
-            t.check()?;
-        }
-        if used.len() != self.tables.len() {
-            return Err(format!("story {}: {} tables but {} anchored", self.id.0, self.tables.len(), used.len()));
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn story(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
+    }
+
+    /// A table's shape comes out of IDML and DOCX files unchecked, and `Cell` is about 1.4 KB, so
+    /// a file claiming 5,000 x 5,000 asked for 25M cells -- some 34 GB. That allocation aborts the
+    /// process rather than failing, taking every open document's unsaved work with it (#1583).
+    #[test]
+    fn a_table_larger_than_the_limits_is_clamped_not_allocated() {
+        // The reported shape: 5,000 rows and 5,000 columns.
+        let t = Table::new(1, 5_000, 5_000, 0, 0, 500.0);
+        assert_eq!(t.columns.len(), MAX_TABLE_COLS, "columns are clamped to InDesign's limit");
+        assert!(t.cells.len() <= MAX_TABLE_CELLS, "{} cells is within the budget", t.cells.len());
+        assert_eq!(t.rows.len() * t.columns.len(), t.cells.len(), "the grid stays rectangular");
+        // What it would have been: 25,000,000 cells at 1,360 bytes each.
+        assert!(25_000_000 * std::mem::size_of::<Cell>() > 30_000_000_000, "the size this test is about");
+        // Freed before the next large table, so the peak stays at one of them.
+        drop(t);
+
+        // A long table keeps its rows while it fits the budget (the budget itself is checked by
+        // `clamped_size`, which allocates nothing).
+        let long = Table::new(2, 10_000, 5, 0, 0, 500.0);
+        assert_eq!((long.rows.len(), long.columns.len()), (10_000, 5), "a long thin table is untouched");
+        assert_eq!(clamped_size(10_000, 25), (10_000, 25), "10,000 x 25 is inside the budget");
+        drop(long);
+
+        // Past the row limit the rows are clamped too.
+        let longer = Table::new(3, 50_000, 2, 0, 0, 100.0);
+        assert_eq!(longer.rows.len(), MAX_TABLE_ROWS, "rows are clamped to InDesign's limit");
+        drop(longer);
+
+        // Header, body and footer share the budget, and the table still has a body.
+        let with_parts = Table::new(4, 5_000, 5_000, 3, 2, 500.0);
+        assert!(with_parts.rows.len() <= MAX_TABLE_ROWS, "{} rows", with_parts.rows.len());
+        assert!(with_parts.cells.len() <= MAX_TABLE_CELLS, "{} cells", with_parts.cells.len());
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Header), "the header survives");
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Footer), "the footer survives");
+        assert!(with_parts.rows.iter().any(|r| r.kind == RowKind::Body), "and so does a body row");
+        drop(with_parts);
+
+        // A header and footer bigger than the whole budget still leave a body row.
+        let all_header = Table::new(6, 1, 1, MAX_TABLE_ROWS * 2, MAX_TABLE_ROWS * 2, 100.0);
+        assert!(all_header.rows.len() <= MAX_TABLE_ROWS, "{} rows", all_header.rows.len());
+        assert!(all_header.rows.iter().any(|r| r.kind == RowKind::Body), "a body row survives");
+    }
+
+    #[test]
+    fn move_row_keeps_header_and_footer_rows_in_place() {
+        let mut t = Table::new(1, 3, 2, 1, 1, 120.0);
+        for (from, to) in [(0, 2), (0, 4), (2, 0), (2, 4), (4, 2), (4, 0)] {
+            assert!(t.move_row(from, to).is_err(), "move_row({from}, {to}) should be refused");
+            t.check().unwrap();
+        }
+        t.move_row(1, 3).unwrap();
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn selected_owners_include_covered_cells_without_expanding_range() {
+        for column in [true, false] {
+            let mut t = Table::new(1, 2, 2, 0, 0, 120.0);
+            let range = if column { CellRange::new(0, 1, 1, 1) } else { CellRange::new(1, 0, 1, 1) };
+            assert_eq!(t.selected_owners(range), if column { vec![(0, 1), (1, 1)] } else { vec![(1, 0), (1, 1)] });
+            t.merge(if column { CellRange::new(0, 0, 0, 1) } else { CellRange::new(0, 0, 1, 0) }).unwrap();
+            assert_eq!(t.selected_owners(range), vec![(0, 0), (1, 1)]);
+        }
+    }
+
+    #[test]
+    fn selected_owners_are_bounded_sorted_and_unique() {
+        let mut t = Table::new(1, 3, 3, 0, 0, 180.0);
+        t.merge(CellRange::new(0, 0, 1, 1)).unwrap();
+        assert_eq!(t.selected_owners(CellRange::new(1, 1, usize::MAX, usize::MAX)), vec![(0, 0), (1, 2), (2, 1), (2, 2)]);
+        assert_eq!(t.selected_owners(CellRange::new(0, 0, 1, 1)), vec![(0, 0)], "covered positions do not duplicate an owner");
+        assert!(t.selected_owners(CellRange::new(3, 0, usize::MAX, usize::MAX)).is_empty());
+        assert!(t.selected_owners(CellRange::new(0, 3, usize::MAX, usize::MAX)).is_empty());
+        assert!(t.selected_owners(CellRange { r0: 1, c0: 0, r1: 0, c1: 1 }).is_empty());
+        t.rows.clear();
+        t.cells.clear();
+        assert!(t.selected_owners(CellRange::cell(0, 0)).is_empty());
+
+        let mut right = Table::new(2, 2, 2, 0, 0, 120.0);
+        right.merge(CellRange::new(0, 1, 1, 1)).unwrap();
+        assert_eq!(right.selected_owners(CellRange::new(1, 0, 1, 1)), vec![(0, 1), (1, 0)], "owner order, not encounter order");
+    }
+
+    /// A short last row's padding cells take the converted text's paragraph and character format,
+    /// like the cells with text.
+    #[test]
+    fn from_strings_formats_the_padding_cells_too() {
+        let data = vec![vec!["a".to_string(), "b".to_string()], vec!["c".to_string()]];
+        let para = ParaFormat { style: "Body".into(), ..Default::default() };
+        let fmt = CharFormat { style: "Strong".into(), ..Default::default() };
+        let t = Table::from_strings(1, &data, 200.0, &para, &fmt);
+        let pad = &t.cell(1, 1).unwrap().text;
+        assert_eq!((pad.paras[0].style.as_str(), pad.chars[0].format.style.as_str()), ("Body", "Strong"));
+        assert_eq!(pad.text, "");
     }
 
     #[test]
@@ -1095,6 +202,30 @@ mod tests {
         s.delete(1..s.len() - 1);
         s.check().unwrap();
         assert!(s.tables.is_empty());
+    }
+
+    #[test]
+    fn deleting_the_return_between_two_tables_keeps_both() {
+        // Backspace at the start of the second table's paragraph.
+        let mut s = story("x");
+        let a1 = s.insert_table(1, Table::new(1, 1, 1, 0, 0, 10.0));
+        let a2 = s.insert_table(s.len(), Table::new(2, 1, 1, 0, 0, 10.0));
+        let before = s.text.clone();
+        s.delete(a2 - 1..a2);
+        s.check().unwrap();
+        assert_eq!(s.text, before);
+        assert_eq!((s.table_anchor(1), s.table_anchor(2)), (Some(a1), Some(a2)));
+        // Deleting the table between two others keeps the outer ones on their own anchors.
+        let mut s = story("x");
+        for id in 1..=3 {
+            s.insert_table(s.len(), Table::new(id, 1, 1, 0, 0, 10.0));
+        }
+        let (a1, a3) = (s.table_anchor(1).unwrap(), s.table_anchor(3).unwrap());
+        s.delete(a1 + TABLE_ANCHOR.len_utf8()..a3);
+        s.check().unwrap();
+        assert_eq!(s.text, format!("x\n{TABLE_ANCHOR}\n{TABLE_ANCHOR}\n"));
+        assert_eq!(s.tables.keys().copied().collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(s.table_anchor(3), Some(a1 + TABLE_ANCHOR.len_utf8() + 1));
     }
 
     #[test]
@@ -1227,32 +358,5 @@ mod tests {
         let back: Cell = serde_json::from_str(&serde_json::to_string(&explicit).unwrap()).unwrap();
         assert_eq!(back, explicit);
         assert_eq!(back.blank_like().border_overrides, explicit.border_overrides);
-    }
-}
-
-#[cfg(test)]
-mod split_tests {
-    use super::*;
-
-    #[test]
-    fn split_single_and_merged_cells() {
-        let mut t = Table::new(1, 2, 2, 0, 0, 100.0);
-        t.split_cell(0, 0, true);
-        assert_eq!((t.nrows(), t.ncols()), (3, 2));
-        // The cell beside the split one spans both new rows.
-        assert_eq!(t.cell(0, 1).unwrap().row_span, 2);
-        assert_eq!(t.owner(1, 1), (0, 1));
-        assert_eq!(t.owner(1, 0), (1, 0), "the new half is its own cell");
-        t.split_cell(2, 1, false);
-        assert_eq!(t.ncols(), 3);
-        assert_eq!(t.cell(0, 0).unwrap().col_span, 1);
-        assert_eq!(t.owner(2, 2), (2, 2));
-        assert_eq!(t.owner(0, 2), (0, 1), "the merged cell above widens");
-        // A merged cell splits its own span instead of adding rows.
-        let mut m = Table::new(1, 4, 1, 0, 0, 100.0);
-        m.merge(CellRange { r0: 0, c0: 0, r1: 3, c1: 0 }).unwrap();
-        m.split_cell(0, 0, true);
-        assert_eq!(m.nrows(), 4);
-        assert_eq!((m.cell(0, 0).unwrap().row_span, m.cell(2, 0).unwrap().row_span), (2, 2));
     }
 }

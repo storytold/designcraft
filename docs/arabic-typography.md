@@ -1,5 +1,7 @@
 # Arabic import and composition
 
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+
 Task: AR1. These changes repair verified gaps in the existing typesetting pipeline.
 They do not claim full InDesign or vendor-specific Naskh composition parity.
 
@@ -74,3 +76,10 @@ compatibility warnings remain, along with separate font/link/overset findings.
 - [Diacritic position enumeration](https://developer.adobe.com/indesign/uxp/dom/api/d/diacritic-position-options/)
   and [positional forms](https://developer.adobe.com/indesign/uxp/dom/api/p/positional-forms/)
   identify serialized options; their presence alone does not establish visual parity.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
+| 2026-10-07 | major | Created: AR1: Arabic import and composition |

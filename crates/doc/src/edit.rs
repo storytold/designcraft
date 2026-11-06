@@ -61,6 +61,76 @@ impl Document {
         }
     }
 
+    /// Where the rulers of spread `r` start before the zero point moves them, for something at
+    /// spread x `x` (a page origin is the page there, or the nearest page): spread coordinates.
+    pub fn ruler_base(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let sp = self.spread(r)?;
+        let b = sp.bounds();
+        Some(match self.settings.ruler_origin {
+            crate::RulerOrigin::Spread => Point::new(b.x0, b.y0),
+            crate::RulerOrigin::Spine => Point::new(sp.spine_x(), b.y0),
+            crate::RulerOrigin::Page => {
+                let pg = sp.pages.get(sp.page_at_x(x)?)?;
+                Point::new(pg.x, b.y0)
+            }
+        })
+    }
+
+    /// Where the rulers and X/Y fields of spread `r` measure from, for something at spread x
+    /// `x`: the ruler origin moved by the document's zero point.
+    pub fn ruler_origin(&self, r: SpreadRef, x: f64) -> Option<Point> {
+        let o = self.ruler_base(r, x)?;
+        let [zx, zy] = self.zero_point();
+        Some(Point::new(o.x + zx, o.y + zy))
+    }
+
+    /// The horizontal ruler of spread `r` in pieces `(from x, to x, base)`, spread coordinates,
+    /// covering every x: one piece, or one per page for a page origin.
+    pub fn ruler_pieces(&self, r: SpreadRef) -> Vec<(f64, f64, Point)> {
+        let Some(sp) = self.spread(r) else {
+            return Vec::new();
+        };
+        if self.settings.ruler_origin != crate::RulerOrigin::Page || sp.pages.len() < 2 {
+            return self.ruler_base(r, 0.0).map(|o| (f64::NEG_INFINITY, f64::INFINITY, o)).into_iter().collect();
+        }
+        let mut pages: Vec<&crate::Page> = sp.pages.iter().collect();
+        pages.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let y = sp.bounds().y0;
+        pages
+            .iter()
+            .enumerate()
+            .map(|(i, pg)| {
+                let from = if i == 0 { f64::NEG_INFINITY } else { pg.x };
+                let to = pages.get(i + 1).map_or(f64::INFINITY, |next| next.x);
+                (from, to, Point::new(pg.x, y))
+            })
+            .collect()
+    }
+
+    /// The document's zero point, kept on the pasteboard (a file may hold any numbers).
+    pub fn zero_point(&self) -> [f64; 2] {
+        self.clamp_zero_point(self.settings.zero_point).unwrap_or([0.0, 0.0])
+    }
+
+    /// `p` (a zero point) kept on the pasteboard around the largest spread, the area the canvas
+    /// shows; `None` when it isn't a finite point.
+    pub fn clamp_zero_point(&self, [x, y]: [f64; 2]) -> Option<[f64; 2]> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let (w, h) = self
+            .spreads
+            .iter()
+            .chain(&self.parents)
+            .map(|sp| sp.bounds())
+            .fold((0.0_f64, 0.0_f64), |(w, h), b| (w.max(b.width()), h.max(b.height())));
+        let finite = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let (px, py) = (finite(self.settings.pasteboard.0), finite(self.settings.pasteboard.1));
+        // From any ruler origin (a spine or a page can be at the spread's right edge).
+        let side = px.max(w);
+        Some([x.clamp(-(w + side), w + side), y.clamp(-py, h + py)])
+    }
+
     /// All spread refs: document spreads then parents.
     pub fn spread_refs(&self) -> impl Iterator<Item = SpreadRef> {
         (0..self.spreads.len()).map(SpreadRef::Doc).chain((0..self.parents.len()).map(SpreadRef::Parent))
@@ -87,6 +157,28 @@ impl Document {
 
     pub fn item(&self, id: ItemId) -> Option<&Item> {
         self.item_at(&self.find(id)?)
+    }
+
+    /// Items embedded in stories (including footnotes and table cells), with their
+    /// owning top-level story. Does not follow text-frame references between stories.
+    pub fn anchored_items(&self) -> Vec<(StoryId, &Item)> {
+        let mut out = Vec::new();
+        let mut stories: Vec<_> = self.stories.iter().map(|(id, story)| (*id, story.as_ref())).collect();
+        while let Some((owner, story)) = stories.pop() {
+            stories.extend(story.notes.iter().chain(&story.endnotes).map(|n| (owner, &n.text)));
+            stories.extend(story.tables.values().flat_map(|t| t.cells.iter().map(|c| (owner, &c.text))));
+            let mut items: Vec<&Item> = story.objects.iter().map(|o| &o.item).collect();
+            while let Some(item) = items.pop() {
+                out.push((owner, item));
+                items.extend(item.children().iter().map(AsRef::as_ref));
+            }
+        }
+        out
+    }
+
+    /// An embedded item is not a spread selection location (`find`).
+    pub fn anchored_item(&self, id: ItemId) -> Option<&Item> {
+        self.anchored_items().into_iter().find_map(|(_, item)| (item.id == id).then_some(item))
     }
 
     pub fn item_mut_at(&mut self, loc: &ItemLoc) -> Option<&mut Item> {
@@ -187,110 +279,267 @@ impl Document {
         self.stories.insert(sid, Arc::new(story));
         let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
         item.object_style = self.styles.default_text_frame.clone();
-        if let Some(os) = self.styles.object_style(&self.styles.default_text_frame).cloned() {
-            if let Some(f) = os.fill {
-                item.fill = f;
-            }
-            if let Some(s) = os.stroke {
-                item.stroke = s;
-            }
+        // Applied before the content exists, so the frame keeps default text frame options.
+        if let Some(os) = self.styles.object_style(&self.styles.default_text_frame) {
+            os.apply_to(&mut item);
         }
         item.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
         self.insert_item(r, item, None)?;
         Ok((id, sid))
     }
 
-    /// Thread `from` → `to`: `to` joins `from`'s story right after `from`. If `to` held its own text,
-    /// that text is appended to the story (as a new paragraph) and its old story is removed.
+    /// Thread `from` → `to`: `to` joins `from`'s story right after `from` (between `from` and the
+    /// frame that followed it, if any). If `to` held its own text, that text is appended to the
+    /// story (as new paragraphs) and its old story is removed; frames that followed `to` come
+    /// along, frames before it keep an empty story of their own. An empty (unassigned) `from` or
+    /// `to` becomes a text frame. `from`'s story keeps its id.
     pub fn thread(&mut self, from: ItemId, to: ItemId) -> Result<()> {
         if from == to {
             return Err(DocError::Invalid("cannot thread a frame to itself".into()));
         }
-        let fs = self.item(from).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(from))?;
-        // Convert unassigned/graphic-less frames into text frames.
-        let ts = match self.item(to).ok_or(DocError::NoItem(to))?.content.clone() {
-            Content::Text(t) => Some(t.story),
-            Content::Unassigned => None,
-            _ => return Err(DocError::Invalid("can only thread to text or empty frames".into())),
+        self.check_thread_links(from, to, false)?;
+        let ts = self.frame_story(to)?;
+        let fs = match self.frame_story(from)? {
+            Some(s) => s,
+            None => self.give_empty_story(from)?,
         };
         if ts == Some(fs) {
             return Err(DocError::Invalid("frames are already in the same story".into()));
         }
-        if let Some(ts) = ts {
-            let other = self.stories.remove(&ts).ok_or(DocError::NoStory(ts))?;
-            let other = Arc::unwrap_or_clone(other);
-            // Frames of the other story after `to` follow along; frames before it are left as empty new stories.
-            let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
-            let before: Vec<ItemId> = other.frames[..pos_to].to_vec();
-            let after: Vec<ItemId> = other.frames[pos_to..].to_vec();
-            {
-                let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
-                if !other.text.is_empty() {
-                    st.text.push('\n');
-                    st.text.push_str(&other.text);
-                    st.paras.extend(other.paras.iter().cloned());
-                    // Char runs: '\n' takes the last run's format, then the other story's runs.
-                    if let Some(last) = st.chars.last_mut() {
-                        last.len += 1;
-                    }
-                    st.chars.extend(other.chars.iter().filter(|r| r.len > 0).cloned());
-                    st.tables.extend(other.tables.iter().map(|(k, v)| (*k, v.clone())));
-                    for n in &other.notes {
-                        let id = st.next_note_id();
-                        st.notes.push(Arc::new(crate::Footnote { id, text: n.text.clone() }));
-                    }
-                    st.anchors.extend(other.anchors.iter().cloned());
-                    st.xrefs.extend(other.xrefs.iter().cloned());
-                    st.index_refs.extend(other.index_refs.iter().cloned());
-                    st.objects.extend(other.objects.iter().cloned());
-                    st.rev += 1;
-                }
-                let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
-                for (k, f) in after.iter().enumerate() {
-                    st.frames.insert(at + k, *f);
-                }
-            }
-            for f in &after {
-                if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
-                    t.story = fs;
-                }
-            }
-            if !before.is_empty() {
-                let nid = StoryId(self.alloc());
-                let mut ns = Story::new(nid);
-                ns.frames = before.clone();
-                ns.vertical = other.vertical;
-                ns.direction = other.direction;
-                for f in &before {
-                    if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
-                        t.story = nid;
-                    }
-                }
-                self.stories.insert(nid, Arc::new(ns));
-            }
-        } else {
+        let Some(ts) = ts else {
             let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
             let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
             st.frames.insert(at, to);
+            st.rev = st.rev.wrapping_add(1);
             let it = self.item_mut(to).ok_or(DocError::NoItem(to))?;
             it.content = Content::Text(TextFrame { story: fs, options: TextFrameOptions::default() });
+            return Ok(());
+        };
+        let mut other = Arc::unwrap_or_clone(self.stories.remove(&ts).ok_or(DocError::NoStory(ts))?);
+        // Frames of the other story from `to` on follow along; frames before it are left as an empty new story.
+        let pos_to = other.frames.iter().position(|f| *f == to).unwrap_or(0);
+        let after = other.frames.split_off(pos_to);
+        let before = std::mem::take(&mut other.frames);
+        let (vertical, direction, optical_margin) = (other.vertical, other.direction, other.optical_margin);
+        let offset;
+        {
+            let st = self.story_mut(fs).ok_or(DocError::NoStory(fs))?;
+            offset = if st.text.is_empty() { 0 } else { st.text.len().saturating_add(1) };
+            // The story keeps its own direction and options, even when it was empty and takes the
+            // other's text.
+            let own = (st.vertical, st.direction, st.optical_margin);
+            st.append_story(other);
+            (st.vertical, st.direction, st.optical_margin) = own;
+            let at = st.frames.iter().position(|f| *f == from).map_or(st.frames.len(), |p| p + 1);
+            for (k, f) in after.iter().enumerate() {
+                st.frames.insert(at + k, *f);
+            }
+            st.rev = st.rev.wrapping_add(1);
         }
-        if let Some(st) = self.story_mut(fs) {
-            st.rev += 1;
+        self.remap_thread_story_refs(ts, fs, offset);
+        for f in &after {
+            if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
+                t.story = fs;
+            }
+        }
+        if !before.is_empty() {
+            let nid = StoryId(self.alloc());
+            let mut ns = Story::new(nid);
+            ns.frames = before.clone();
+            ns.vertical = vertical;
+            ns.direction = direction;
+            ns.optical_margin = optical_margin;
+            for f in &before {
+                if let Some(t) = self.item_mut(*f).and_then(Item::text_frame_mut) {
+                    t.story = nid;
+                }
+            }
+            self.stories.insert(nid, Arc::new(ns));
         }
         Ok(())
+    }
+
+    /// [`Document::thread`], except that an empty `from` alone in its story, threaded in front of
+    /// the first frame of `to`'s story, joins that story: the story with the text keeps its id
+    /// (and whatever refers to it).
+    pub fn thread_keeping_story(&mut self, from: ItemId, to: ItemId) -> Result<()> {
+        let fs = self.frame_story(from)?;
+        let from_empty = fs.is_none_or(|fs| self.story(fs).is_some_and(|s| s.text.is_empty() && s.frames == [from]));
+        let ts = self.frame_story(to)?;
+        let to_first = ts.and_then(|ts| self.story(ts)).is_some_and(|s| s.frames.first() == Some(&to));
+        let (Some(ts), true, true) = (ts, from_empty, to_first && from != to) else {
+            return self.thread(from, to);
+        };
+        self.check_thread_links(from, to, true)?;
+        if let Some(fs) = fs {
+            self.stories.remove(&fs);
+            self.remap_thread_story_refs(fs, ts, 0);
+        }
+        let st = self.story_mut(ts).ok_or(DocError::NoStory(ts))?;
+        st.frames.insert(0, from);
+        st.rev = st.rev.wrapping_add(1);
+        let it = self.item_mut(from).ok_or(DocError::NoItem(from))?;
+        match it.text_frame_mut() {
+            Some(t) => t.story = ts,
+            None => it.content = Content::Text(TextFrame { story: ts, options: TextFrameOptions::default() }),
+        }
+        Ok(())
+    }
+
+    /// Story-external text addresses move with the incoming text when threading merges stories.
+    /// Linked children follow the surviving whole story, including for an empty removed parent;
+    /// their copied content stays unchanged until an explicit Update Link.
+    fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
+        // The child's old snapshot is not a snapshot of the newly merged parent. Force it
+        // out of date even when the old and surviving revision numbers happen to coincide.
+        let stale_rev = self.story(to).map_or(0, |st| st.rev.wrapping_sub(1));
+        for st in self.stories.values_mut() {
+            if st.link.is_some_and(|(parent, _)| parent == from) {
+                Arc::make_mut(st).link = Some((to, stale_rev));
+            }
+        }
+        for link in &mut self.hyperlinks {
+            if let crate::HyperlinkSource::Text { story, start, end } = &mut link.source
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        for placeholder in &mut self.data_merge.placeholders {
+            if let crate::PlaceholderAnchor::Text { story, start, end } = &mut placeholder.anchor
+                && *story == from
+            {
+                *story = to;
+                *start = start.saturating_add(offset);
+                *end = end.saturating_add(offset);
+            }
+        }
+        if self.settings.primary_story == Some(from) {
+            self.settings.primary_story = Some(to);
+        }
+    }
+
+    /// A linked child is replaced wholesale on update. Only empty, unlinked frame
+    /// extensions can join it without losing a link or newly appended body text.
+    fn check_thread_links(&self, from: ItemId, to: ItemId, keep_to: bool) -> Result<()> {
+        let fs = self.frame_story(from)?;
+        let ts = self.frame_story(to)?;
+        let first = fs.and_then(|id| self.story(id));
+        let second = ts.and_then(|id| self.story(id));
+        let incompatible = if keep_to {
+            first.is_some_and(|st| st.link.is_some()) || second.is_some_and(|st| st.link.is_some_and(|(parent, _)| Some(parent) == fs))
+        } else {
+            second.is_some_and(|st| st.link.is_some())
+                || first.is_some_and(|st| {
+                    st.link.is_some()
+                        && second.is_some_and(|incoming| !incoming.text.is_empty() || st.link.is_some_and(|(parent, _)| parent == incoming.id))
+                })
+        };
+        // Removing any ancestor of the survivor would redirect a link back into its own chain.
+        let (removed, survivor) = if keep_to { (fs, second) } else { (ts, first) };
+        let mut parent = survivor.and_then(|st| st.link);
+        let mut absorbs_ancestor = false;
+        // Bound the walk even when an existing document already contains a link cycle.
+        for _ in 0..self.stories.len() {
+            let Some((id, _)) = parent else { break };
+            if Some(id) == removed {
+                absorbs_ancestor = true;
+                break;
+            }
+            parent = self.story(id).and_then(|st| st.link);
+        }
+        if incompatible || absorbs_ancestor {
+            return Err(DocError::Invalid("unlink the linked story before merging its text".into()));
+        }
+        Ok(())
+    }
+
+    /// Can a user thread `from` → `to`? Both are text frames or empty frames (not lines), on
+    /// document spreads or on the same parent spread, not in one story already, and no frame
+    /// threads into `to` yet. [`Document::thread`] itself is less strict (import and autoflow).
+    pub fn check_thread(&self, from: ItemId, to: ItemId) -> Result<()> {
+        if from == to {
+            return Err(DocError::Invalid("cannot thread a frame to itself".into()));
+        }
+        for id in [from, to] {
+            let it = self.item(id).ok_or(DocError::NoItem(id))?;
+            if !matches!(it.content, Content::Text(_) | Content::Unassigned) || it.shape == Shape::GraphicLine {
+                return Err(DocError::Invalid(format!("{id} is not a text frame or an empty frame")));
+            }
+            if it.locked || self.layer(it.layer).is_some_and(|l| l.locked) {
+                return Err(DocError::Invalid(format!("{id} is locked or on a locked layer")));
+            }
+        }
+        let (Some(fl), Some(tl)) = (self.find(from), self.find(to)) else {
+            return Err(DocError::NoItem(to));
+        };
+        let same_place = match (fl.spread, tl.spread) {
+            (SpreadRef::Doc(_), SpreadRef::Doc(_)) => true,
+            (a, b) => a == b,
+        };
+        if !same_place {
+            return Err(DocError::Invalid("frames on a parent spread thread only to frames on the same parent".into()));
+        }
+        let story = |id: ItemId| self.item(id).and_then(|i| i.text_frame()).map(|t| t.story);
+        if story(from).is_some() && story(from) == story(to) {
+            return Err(DocError::Invalid("the frames are already in the same thread".into()));
+        }
+        // Generated text is rebuilt from its source data. Merging body text into it would
+        // silently discard that text on the next update (endnotes update after every edit).
+        let generated = |sid| {
+            self.endnote_story == Some(sid)
+                || self.toc.as_ref().is_some_and(|t| t.story == sid)
+                || self.index.as_ref().is_some_and(|i| i.story == sid)
+        };
+        let (fs, ts) = (story(from), story(to));
+        if fs.is_some_and(generated) && ts.and_then(|sid| self.story(sid)).is_some_and(|st| !st.text.is_empty()) {
+            return Err(DocError::Invalid("cannot merge body text into a generated story".into()));
+        }
+        if ts.is_some_and(generated) && fs.and_then(|sid| self.story(sid)).is_some_and(|st| !st.text.is_empty() || st.frames != [from]) {
+            return Err(DocError::Invalid("a generated story can only take a new empty first frame".into()));
+        }
+        let keep_to = fs.is_none_or(|sid| self.story(sid).is_some_and(|st| st.text.is_empty() && st.frames == [from]))
+            && ts.and_then(|sid| self.story(sid)).is_some_and(|st| st.frames.first() == Some(&to));
+        self.check_thread_links(from, to, keep_to)?;
+        if self.prev_frame(to).is_some() {
+            return Err(DocError::Invalid(format!("text already flows into {to} from another frame: break that thread first")));
+        }
+        Ok(())
+    }
+
+    /// The story of a frame that can take part in a thread: `Some` for a text frame, `None` for
+    /// an empty (unassigned) frame.
+    fn frame_story(&self, id: ItemId) -> Result<Option<StoryId>> {
+        match &self.item(id).ok_or(DocError::NoItem(id))?.content {
+            Content::Text(t) => Ok(Some(t.story)),
+            Content::Unassigned => Ok(None),
+            _ => Err(DocError::Invalid("can only thread text frames or empty frames".into())),
+        }
+    }
+
+    /// Make an empty frame a text frame with a new empty story.
+    fn give_empty_story(&mut self, id: ItemId) -> Result<StoryId> {
+        let sid = StoryId(self.alloc());
+        let mut st = Story::new(sid);
+        st.frames.push(id);
+        let it = self.item_mut(id).ok_or(DocError::NoItem(id))?;
+        it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
+        self.stories.insert(sid, Arc::new(st));
+        Ok(sid)
     }
 
     /// Break the thread after `frame`: the following frames become a new empty story (the text
     /// stays with the first part and may become overset).
     pub fn unthread_after(&mut self, frame: ItemId) -> Result<()> {
         let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
-        let (tail, vertical, direction) = {
+        let (tail, vertical, direction, optical_margin) = {
             let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
             let p = st.frames.iter().position(|f| *f == frame).ok_or(DocError::NoItem(frame))?;
             let tail = st.frames.split_off(p + 1);
-            st.rev += 1;
-            (tail, st.vertical, st.direction)
+            st.rev = st.rev.wrapping_add(1);
+            (tail, st.vertical, st.direction, st.optical_margin)
         };
         if tail.is_empty() {
             return Ok(());
@@ -300,12 +549,38 @@ impl Document {
         ns.frames = tail.clone();
         ns.vertical = vertical;
         ns.direction = direction;
+        ns.optical_margin = optical_margin;
         self.stories.insert(nid, Arc::new(ns));
         for f in tail {
             if let Some(t) = self.item_mut(f).and_then(Item::text_frame_mut) {
                 t.story = nid;
             }
         }
+        Ok(())
+    }
+
+    /// Take `frame` out of its thread: the frames before and after it join up and keep the text,
+    /// `frame` stays on the page with a new empty story.
+    pub fn remove_from_thread(&mut self, frame: ItemId) -> Result<()> {
+        let sid = self.item(frame).and_then(|i| i.text_frame()).map(|t| t.story).ok_or(DocError::NoItem(frame))?;
+        let (vertical, direction, optical_margin) = {
+            let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
+            if st.frames.len() < 2 {
+                return Err(DocError::Invalid(format!("frame {frame} is not threaded to another frame")));
+            }
+            st.frames.retain(|f| *f != frame);
+            st.rev = st.rev.wrapping_add(1);
+            (st.vertical, st.direction, st.optical_margin)
+        };
+        let nid = StoryId(self.alloc());
+        let mut ns = Story::new(nid);
+        ns.frames = vec![frame];
+        ns.vertical = vertical;
+        ns.direction = direction;
+        ns.optical_margin = optical_margin;
+        self.stories.insert(nid, Arc::new(ns));
+        let t = self.item_mut(frame).and_then(Item::text_frame_mut).ok_or(DocError::NoItem(frame))?;
+        t.story = nid;
         Ok(())
     }
 
@@ -357,6 +632,77 @@ impl Document {
         None
     }
 
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either.
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        let sp = self.spread(sr)?;
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        items
+            .into_iter()
+            .rev()
+            .find(|it| {
+                let layer = self.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            })
+            .map(|it| it.id)
+    }
+
+    /// The first item on a document or parent spread whose geometry isn't finite
+    /// ([`Item::geometry_is_finite`]).
+    pub fn non_finite_item(&self) -> Option<ItemId> {
+        let mut found = None;
+        for sp in self.spreads.iter().chain(&self.parents) {
+            for it in &sp.items {
+                it.walk(&mut |i| {
+                    if found.is_none() && !i.geometry_is_finite() {
+                        found = Some(i.id);
+                    }
+                });
+            }
+        }
+        found
+    }
+
+    /// Every item on document and parent spreads, in groups, and among the objects anchored in
+    /// stories, including the stories in table cells and in notes: walks that must cover every
+    /// placement use this, not [`Document::all_items`].
+    pub fn placed_items(&self) -> Vec<&Item> {
+        let mut v = Vec::new();
+        for sp in self.spreads.iter().chain(&self.parents) {
+            for it in &sp.items {
+                placed_item(it, 0, &mut v);
+            }
+        }
+        for st in self.stories.values() {
+            placed_story_items(st, 0, &mut v);
+        }
+        v
+    }
+
+    /// Applies `f` to every placed item `hit` selects, wherever it sits: on document or parent
+    /// spreads, in groups, and anchored in a story (also inside table cells and notes).
+    /// Returns how many items `f` saw.
+    pub fn update_placed_items(&mut self, hit: impl Fn(&Item) -> bool, mut f: impl FnMut(&mut Item)) -> usize {
+        let mut n = 0;
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            if !sp.items.iter().any(|it| has_hit(it, &hit)) {
+                continue;
+            }
+            for it in Arc::make_mut(sp).items.iter_mut() {
+                if has_hit(it, &hit) {
+                    update_placed_item(Arc::make_mut(it), 0, &hit, &mut f, &mut n);
+                }
+            }
+        }
+        for st in self.stories.values_mut() {
+            if story_has_hit(st, 0, &hit) {
+                update_story_items(Arc::make_mut(st), 0, &hit, &mut f, &mut n);
+            }
+        }
+        n
+    }
+
     /// Every item id (pre-order) on document spreads.
     pub fn all_items(&self) -> Vec<ItemId> {
         let mut v = Vec::new();
@@ -366,6 +712,50 @@ impl Document {
             }
         }
         v
+    }
+
+    /// Calls `f` on every item `hit` selects: on document and parent spreads, inside groups and
+    /// among anchored objects. Only the branches holding a hit are copied (copy-on-write). Returns
+    /// how many items `f` saw.
+    pub fn update_items(&mut self, hit: impl Fn(&Item) -> bool, mut f: impl FnMut(&mut Item)) -> usize {
+        const MAX_GROUP_DEPTH: usize = 64;
+        fn any(it: &Item, hit: &impl Fn(&Item) -> bool) -> bool {
+            let mut found = false;
+            it.walk(&mut |i| found |= hit(i));
+            found
+        }
+        fn update(it: &mut Item, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize, depth: usize) {
+            if hit(it) {
+                f(it);
+                *n += 1;
+            }
+            if depth >= MAX_GROUP_DEPTH {
+                return;
+            }
+            if let Some(children) = it.children_mut() {
+                for c in children.iter_mut().filter(|c| any(c, hit)) {
+                    update(Arc::make_mut(c), hit, f, n, depth + 1);
+                }
+            }
+        }
+        let mut n = 0;
+        for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
+            if !sp.items.iter().any(|i| any(i, &hit)) {
+                continue;
+            }
+            for it in Arc::make_mut(sp).items.iter_mut().filter(|i| any(i, &hit)) {
+                update(Arc::make_mut(it), &hit, &mut f, &mut n, 0);
+            }
+        }
+        for st in self.stories.values_mut() {
+            if !st.objects.iter().any(|o| any(&o.item, &hit)) {
+                continue;
+            }
+            for o in Arc::make_mut(st).objects.iter_mut().filter(|o| any(&o.item, &hit)) {
+                update(&mut Arc::make_mut(o).item, &hit, &mut f, &mut n, 0);
+            }
+        }
+        n
     }
 
     /// Plain story text with frame/story stats (for agents).
@@ -394,27 +784,276 @@ impl Document {
         st.tables.clear();
         st.notes.clear();
         st.fix_notes();
+        st.endnotes.clear();
+        st.fix_endnotes();
         st.anchors.clear();
         st.xrefs.clear();
         st.index_refs.clear();
         st.objects.clear();
+        st.editorial.clear();
         st.fix_marks();
-        st.rev += 1;
+        st.rev = st.rev.wrapping_add(1);
         Ok(())
     }
 }
 
+/// How deep nested stories (a cell's text, a footnote's text, an endnote's text) are followed
+/// when every placement is visited. A document nested deeper is left alone.
+const MAX_PLACEMENT_DEPTH: usize = 64;
+
+/// The items anchored in `st`, and in the stories nested in its cells and notes, pre-order.
+fn placed_story_items<'a>(st: &'a Story, depth: usize, v: &mut Vec<&'a Item>) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in &st.objects {
+        placed_item(&o.item, 0, v);
+    }
+    for c in st.tables.values().flat_map(|t| &t.cells) {
+        placed_story_items(&c.text, depth + 1, v);
+    }
+    for n in st.notes.iter().chain(&st.endnotes) {
+        placed_story_items(&n.text, depth + 1, v);
+    }
+}
+
+/// Whether `it` or anything in it is selected by `hit`.
+fn has_hit(it: &Item, hit: &impl Fn(&Item) -> bool) -> bool {
+    fn check(it: &Item, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+        hit(it) || (depth < MAX_PLACEMENT_DEPTH && it.children().iter().any(|child| check(child, depth + 1, hit)))
+    }
+    check(it, 0, hit)
+}
+
+/// [`Document::update_placed_items`] for one item: only the branches holding a hit are copied.
+fn update_placed_item(it: &mut Item, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if hit(it) {
+        f(it);
+        *n += 1;
+    }
+    if depth >= MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    if let Some(children) = it.children_mut() {
+        for c in children.iter_mut().filter(|c| has_hit(c, hit)) {
+            update_placed_item(Arc::make_mut(c), depth + 1, hit, f, n);
+        }
+    }
+}
+
+/// [`Document::update_placed_items`] for the placements of one story, and of the stories nested
+/// in its cells and notes.
+fn update_story_items(st: &mut Story, depth: usize, hit: &impl Fn(&Item) -> bool, f: &mut impl FnMut(&mut Item), n: &mut usize) {
+    if depth > MAX_PLACEMENT_DEPTH {
+        return;
+    }
+    for o in st.objects.iter_mut() {
+        if has_hit(&o.item, hit) {
+            update_placed_item(&mut Arc::make_mut(o).item, 0, hit, f, n);
+        }
+    }
+    for t in st.tables.values_mut().filter(|t| t.cells.iter().any(|c| story_has_hit(&c.text, depth + 1, hit))) {
+        for c in &mut Arc::make_mut(t).cells {
+            if story_has_hit(&c.text, depth + 1, hit) {
+                update_story_items(&mut c.text, depth + 1, hit, f, n);
+            }
+        }
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if story_has_hit(&note.text, depth + 1, hit) {
+            update_story_items(&mut Arc::make_mut(note).text, depth + 1, hit, f, n);
+        }
+    }
+}
+
+fn placed_item<'a>(it: &'a Item, depth: usize, v: &mut Vec<&'a Item>) {
+    v.push(it);
+    if depth < MAX_PLACEMENT_DEPTH {
+        for child in it.children() {
+            placed_item(child, depth + 1, v);
+        }
+    }
+}
+
+fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool {
+    depth <= MAX_PLACEMENT_DEPTH
+        && (st.objects.iter().any(|o| has_hit(&o.item, hit))
+            || st.tables.values().flat_map(|t| &t.cells).any(|c| story_has_hit(&c.text, depth + 1, hit))
+            || st.notes.iter().chain(&st.endnotes).any(|n| story_has_hit(&n.text, depth + 1, hit)))
+}
+
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
-    if let Content::Group { items } = &it.content {
+    // A group is hit through its children. A frame with items pasted into it shows them clipped
+    // to its path, so it is hit by its own area: not where a nested image runs past the frame.
+    if let Content::Group { items } = &it.content
+        && !it.has_nested_items()
+    {
         let inner = it.xf.inverse() * p;
         return items.iter().any(|c| item_hit(c, inner, tol));
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();
-    let area = !it.fill.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_)) || it.path.is_closed() && it.shape != Shape::Path;
+    let area = !it.fill.is_none()
+        || matches!(it.content, Content::Text(_) | Content::Graphic(_))
+        || it.has_nested_items()
+        || it.path.is_closed() && it.shape != Shape::Path;
     if area && it.path.is_closed() && designcraft_geom::hit::fill_contains(&bp, designcraft_geom::FillRule::NonZero, inner) {
         return true;
     }
-    designcraft_geom::hit::stroke_contains(&bp, it.stroke.weight.max(1.0), tol, inner)
+    // Type on a path: the letters stand over the path, so a click on them hits it too.
+    let reach = if it.text_frame().is_some_and(|t| t.options.path.is_some()) { PATH_TYPE_REACH } else { 0.0 };
+    designcraft_geom::hit::stroke_contains(&bp, it.stroke.weight.max(1.0), tol + reach, inner)
+}
+
+/// The frontmost descendant of `it` under `p` that `want` accepts, looking inside nested groups;
+/// `it` itself when nothing inside it matches and `want` accepts it. `p` is in the space `it`
+/// sits in, as [`item_hit`] takes it.
+///
+/// Children are tried front to back and a hidden one is skipped, so of several that `want`
+/// accepts the answer is the one in front. Objects `want` rejects do not hide the ones behind
+/// them: a text frame under a rectangle in the same group is still found.
+pub fn hit_descendant(it: &Item, p: Point, tol: f64, want: &dyn Fn(&Item) -> bool) -> Option<ItemId> {
+    if !item_hit(it, p, tol) {
+        return None;
+    }
+    let inner = it.xf.inverse() * p;
+    let children: Vec<&Arc<Item>> = it.shown_children().collect();
+    for c in children.into_iter().rev() {
+        if c.hidden {
+            continue;
+        }
+        if let Some(id) = hit_descendant(c, inner, tol, want) {
+            return Some(id);
+        }
+    }
+    want(it).then_some(it.id)
+}
+
+/// How far from its path type on a path is hit (points): about a cap height of 12–18 pt type,
+/// either side (the type may sit on or under the path).
+const PATH_TYPE_REACH: f64 = 12.0;
+#[cfg(test)]
+mod placed_item_tests {
+    use super::*;
+
+    /// A frame at (100, 100)–(200, 200) holding an image pasted into it that runs 150 pt past it on
+    /// every side, as a document from InDesign keeps a cropped photo.
+    fn frame_with_nested_image() -> Item {
+        let layer = LayerId(1);
+        let mut image = Item::new(ItemId(2), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 400.0, 400.0)));
+        image.xf = Affine::translate((-150.0, -150.0));
+        image.content = Content::Graphic(crate::Graphic {
+            layer_options: None,
+            asset: crate::AssetId(1),
+            size: (400.0, 400.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut frame = Item::new(ItemId(1), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0)));
+        frame.xf = Affine::translate((100.0, 100.0));
+        frame.content = Content::Group { items: vec![Arc::new(image)] };
+        frame
+    }
+
+    /// The frame shows its nested image clipped, so a click where the image runs past the frame
+    /// hits nothing: clicking the empty page beside such a photo used to select it, so it could
+    /// not be deselected.
+    #[test]
+    fn a_frame_with_a_nested_image_is_hit_only_inside_the_frame() {
+        let frame = frame_with_nested_image();
+        assert!(frame.has_nested_items());
+        assert!(item_hit(&frame, Point::new(150.0, 150.0), 1.0), "inside the frame");
+        assert!(item_hit(&frame, Point::new(100.0, 150.0), 1.0), "on its edge");
+        for p in [Point::new(60.0, 60.0), Point::new(300.0, 150.0), Point::new(150.0, 330.0)] {
+            assert!(!item_hit(&frame, p, 1.0), "{p:?} is outside the frame, over the cropped image");
+        }
+        // A group is still hit through its children.
+        let mut group = frame.clone();
+        group.shape = Shape::Group;
+        assert!(item_hit(&group, Point::new(60.0, 60.0), 1.0));
+    }
+
+    /// Placing or dropping a graphic fills a frame holding only nested graphics, not one holding
+    /// other objects.
+    #[test]
+    fn a_frame_with_only_nested_graphics_takes_a_graphic() {
+        let frame = frame_with_nested_image();
+        assert!(frame.takes_graphic());
+        let mut other = frame.clone();
+        other.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(3), LayerId(1), Shape::Rectangle, Default::default()))] };
+        assert!(!other.takes_graphic());
+        let mut group = frame;
+        group.shape = Shape::Group;
+        assert!(!group.takes_graphic(), "a group of images is not a frame");
+    }
+
+    #[test]
+    fn exhaustive_placements_keep_unselected_branches_shared() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
+        let id = ItemId(d.alloc());
+        let mut item = Item::new(id, layer, Shape::Rectangle, Default::default());
+        item.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default()))] };
+        let child = item.children()[0].id;
+        let mut table = crate::Table::new(1, 1, 1, 0, 0, 20.0);
+        table.cells[0].text.insert_object(0, crate::AnchoredObject { item, position: Default::default() });
+        d.story_mut(sid).unwrap().insert_table(0, table);
+        let untouched = StoryId(d.alloc());
+        d.stories.insert(untouched, Arc::new(Story::new(untouched)));
+        let snapshot = d.clone();
+        assert!(d.placed_items().iter().any(|i| i.id == child));
+        assert_eq!(d.update_placed_items(|i| i.id == child, |i| i.hidden = true), 1);
+        assert!(d.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(!snapshot.placed_items().iter().find(|i| i.id == child).unwrap().hidden);
+        assert!(Arc::ptr_eq(&d.stories[&untouched], &snapshot.stories[&untouched]));
+        assert!(Arc::ptr_eq(&d.spreads[0], &snapshot.spreads[0]));
+        let unchanged = d.clone();
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|_| false, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+        assert!(d.spreads.iter().zip(&unchanged.spreads).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.parents.iter().zip(&unchanged.parents).all(|(a, b)| Arc::ptr_eq(a, b)));
+        assert!(d.stories.iter().all(|(id, st)| Arc::ptr_eq(st, &unchanged.stories[id])));
+    }
+    #[test]
+    fn exhaustive_placements_bound_nested_stories_and_groups() {
+        let mut d = Document::new(&Default::default());
+        let layer = d.default_layer();
+        let target = ItemId(d.alloc());
+        let mut item = Item::new(target, layer, Shape::Rectangle, Default::default());
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, Default::default());
+            group.content = Content::Group { items: vec![Arc::new(item)] };
+            item = group;
+        }
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        assert!(!d.placed_items().iter().any(|i| i.id == target));
+        let mut calls = 0;
+        assert_eq!(d.update_placed_items(|i| i.id == target, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+
+        let nested = ItemId(d.alloc());
+        let sid = StoryId(d.alloc());
+        let mut story = Story::new(sid);
+        story.insert_object(
+            0,
+            crate::AnchoredObject { item: Item::new(nested, layer, Shape::Rectangle, Default::default()), position: Default::default() },
+        );
+        for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
+            let mut outer = Story::new(sid);
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, text: story }));
+            story = outer;
+        }
+        d.stories.insert(sid, Arc::new(story));
+        assert!(!d.placed_items().iter().any(|i| i.id == nested));
+        assert_eq!(d.update_placed_items(|i| i.id == nested, |_| calls += 1), 0);
+        assert_eq!(calls, 0);
+    }
 }

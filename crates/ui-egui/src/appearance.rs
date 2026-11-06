@@ -61,6 +61,9 @@ pub fn set(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
         .transpose()?;
     let light =
         field("lightTheme")?.map(|s| LightTheme::parse(s).ok_or_else(|| format!("`{s}` is not a light theme (light or mediumLight)"))).transpose()?;
+    if mode.is_none() && dark.is_none() && light.is_none() {
+        return Ok(state(&app.ui));
+    }
     if let Some(m) = mode {
         app.ui.appearance_mode = m;
     }
@@ -156,15 +159,20 @@ pub fn preferences_rows(lang: &str, system: Option<egui::Theme>, ui: &mut egui::
     crate::rtl::label(ui, egui::RichText::new(tr("Appearance")).font(crate::theme::semibold(12.0)));
     let mode = d.fields.get("appearanceMode").and_then(Value::as_str).and_then(AppearanceMode::parse).unwrap_or_default();
     ui.horizontal(|ui| {
-        crate::rtl::label(ui, tr("Appearance Mode"));
+        let name = crate::rtl::label(ui, tr("Appearance Mode"));
         let label = |m: AppearanceMode| tr(if m == AppearanceMode::Auto { "Sync with system" } else { m.label() });
-        egui::ComboBox::from_id_salt("pref_appearance_mode").selected_text(crate::rtl::widget(ui, label(mode))).width(160.0).show_ui(ui, |ui| {
-            for m in AppearanceMode::ALL {
-                if ui.selectable_label(m == mode, crate::rtl::widget(ui, label(m))).clicked() {
-                    d.fields.insert("appearanceMode".into(), json!(m.id()));
+        craft_ui::ComboBox::from_id_salt("pref_appearance_mode")
+            .selected_text(crate::rtl::widget(ui, label(mode)))
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                for m in AppearanceMode::ALL {
+                    if ui.selectable_label(m == mode, crate::rtl::widget(ui, label(m))).clicked() {
+                        d.fields.insert("appearanceMode".into(), json!(m.id()));
+                    }
                 }
-            }
-        });
+            })
+            .response
+            .labelled_by(name.id);
     });
     ui.add_space(4.0);
     let mode = d.fields.get("appearanceMode").and_then(Value::as_str).and_then(AppearanceMode::parse).unwrap_or_default();
@@ -530,20 +538,20 @@ mod tests {
         );
         a.run("window.appearanceMode", json!({"mode": "auto"})).unwrap();
         let ctx = egui::Context::default();
-        a.logic(&ctx);
+        a.ui_setup(&ctx);
         assert_eq!(a.ui.brightness, Brightness::Light);
         assert!(!crate::theme::Tokens::get(&ctx).dark, "the light tokens are applied");
         *system.lock().unwrap() = Some(egui::Theme::Dark);
-        a.logic(&ctx);
+        a.ui_setup(&ctx);
         assert_eq!(a.ui.brightness, Brightness::MediumDark);
         assert!(crate::theme::Tokens::get(&ctx).dark);
         // No answer from the system: Dark. A fixed mode ignores the system.
         *system.lock().unwrap() = None;
         a.run("window.appearanceMode", json!({"mode": "light"})).unwrap();
-        a.logic(&ctx);
+        a.ui_setup(&ctx);
         assert_eq!(a.ui.brightness, Brightness::Light);
         a.run("window.appearanceMode", json!({"mode": "auto"})).unwrap();
-        a.logic(&ctx);
+        a.ui_setup(&ctx);
         assert_eq!(a.ui.brightness, Brightness::MediumDark);
     }
 
