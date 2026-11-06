@@ -197,6 +197,58 @@ fn an_empty_frames_x_follows_its_corners() {
     assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "an edited diamond: {lines:?}");
 }
 
+/// A graphic pasted into a smaller Pen-drawn shape (Edit › Paste Into) is clipped to it, and so
+/// are the frame edges: the shape shows its own edge, not the whole graphic's past it (#2345).
+#[test]
+fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 300, height: 300, pixels: vec![90; 300 * 300 * 4] }.to_png()).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let big = app.run("frame.create", json!({"rect": [60, 60, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": png.to_string_lossy(), "frame": big})).unwrap();
+    let pts: Vec<Value> = [[160, 160], [260, 170], [240, 260], [170, 250]].iter().map(|p| json!({"p": p})).collect();
+    let shape = app.run("path.create", json!({"anchors": pts, "closed": true})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [big]})).unwrap();
+    app.run("edit.cut", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [shape]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    assert!(app.ui.frame_edges);
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let st = app.session.active().unwrap();
+    let doc = &st.doc;
+    let it = doc.item(designcraft_doc::ItemId(shape)).unwrap();
+    assert!(it.has_nested_items(), "the graphic is inside the shape");
+    let layout = CanvasLayout::new(doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (a, _) = item_canvas_xf(doc, &layout, it.id).unwrap();
+    let frame = xf.rect(a.transform_rect_bbox(it.bounds()));
+    let edge = frames::layer_color(doc, it).gamma_multiply(0.75);
+    let edges: Vec<Rect> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(edge) => Some(Rect::from_points(&p.points)),
+            _ => None,
+        })
+        .collect();
+    for r in &edges {
+        assert!(frame.expand(0.5).contains_rect(*r), "an edge line at {r:?} runs outside the frame at {frame:?}");
+    }
+    assert!(
+        edges.iter().any(|r| (r.min - frame.min).length() < 0.5 && (r.max - frame.max).length() < 0.5),
+        "the frame's own edge is drawn: {edges:?} vs {frame:?}"
+    );
+}
+
 /// A frame slanted by about its own width has one diagonal near vertical. The X fell back to the
 /// bounds when either diagonal was near an axis, so while the top points were dragged across that
 /// range it jumped from the corners to the bounds and back; only a diamond, both of whose

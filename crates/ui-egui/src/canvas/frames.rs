@@ -56,12 +56,13 @@ pub(super) fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc
         let a = slot.xf;
         // Parent items on document pages, and base parents' items on a parent spread: dotted edges.
         for (pi, page) in sp.pages.iter().enumerate() {
+            let overridden = doc.overridden_parent_items(slot.spread, pi);
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || overridden.contains(&it.id) {
                         continue;
                     }
                     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
@@ -113,14 +114,19 @@ fn draw_item_edges(painter: &egui::Painter, xf: &Xf, doc: &Document, it: &Item, 
         return;
     }
     let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
-    if let Content::Group { items } = &it.content {
+    // A group shows its children's edges. A frame with items pasted into it shows only its own:
+    // they are clipped to it, and their edges would run out past it (#2345).
+    if let Content::Group { items } = &it.content
+        && it.is_group()
+    {
         for c in items {
             draw_item_edges(painter, xf, doc, c, a * it.xf);
         }
         return;
     }
-    // Frames without a stroke show their edge; shapes with strokes are visible already.
-    let show = it.stroke.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
+    // Frames without a stroke show their edge, as do frames holding content; other shapes with
+    // strokes are visible already.
+    let show = it.stroke.is_none() || it.has_nested_items() || matches!(it.content, Content::Text(_) | Content::Graphic(_));
     if show {
         for poly in path_screen(it, xf, a) {
             painter.add(egui::Shape::line(poly, Stroke::new(hair(painter), col.gamma_multiply(0.75))));
