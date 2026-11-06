@@ -88,7 +88,7 @@ fn mapped_tags_and_classes_keep_their_packaged_style_declarations() {
     assert!(!css.contains("p.chapter-title {") && !css.contains("span.key-term {"));
     assert!(rule(&css, "p.basic-paragraph").contains("font-size: 1.000em;"));
     // HTML uses the same mapped stylesheet inline, while EPUB links its packaged CSS.
-    let html = export_html(&doc, &HtmlOptions::default());
+    let html = export_html(&doc, &HtmlOptions::default()).unwrap();
     assert!(html.contains(&css));
     assert!(html.contains("<h1 class=\"chapter\">Heading</h1>"));
 }

@@ -175,7 +175,7 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let title = capped_title(opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string()));
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
-    let Body { html: body, images, toc, .. } = body_html(doc, true, opts.split.as_ref(), &|name, _, _| name.to_string());
+    let Body { html: body, images, toc, .. } = body_html(doc, true, opts.split.as_ref(), &|name, _, _| name.to_string())?;
     let lang = language_tag(&opts.language);
     // One file per chapter (see `starts_chapter`); one file in all when Split Document is off.
     let chapters: Vec<String> = split_chapters(&body)

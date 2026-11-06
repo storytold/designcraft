@@ -72,7 +72,7 @@ pub(super) fn export_html(s: &mut Session, p: &Value) -> Result<Value> {
         generic_families: generic_families(&st.doc),
     };
     let (doc, warnings) = eps_previews(&st.doc);
-    let text = designcraft_epub::export_html(&doc, &opts);
+    let text = designcraft_epub::export_html(&doc, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     match str_param(p, "path") {
         Some(path) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -303,6 +303,7 @@ pub(super) fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = designcraft_epub::export_epub(&epub_doc, &opts).map_err(|e| crate::EngineError::Other(e.to_string()))?;
     warnings.extend(
         designcraft_epub::images_without_alt(&epub_doc)
+            .map_err(|e| crate::EngineError::Other(e.to_string()))?
             .into_iter()
             .map(|name| format!("{name}: no alt text (Object Export Options); exported as decorative (alt=\"\")")),
     );

@@ -55,6 +55,8 @@ pub(crate) struct StoryWriter<'a, 'f> {
     note_refs: std::collections::HashMap<usize, (Vec<usize>, Vec<usize>)>,
     /// Bytes of variable values still allowed into the output (see [`MAX_VARIABLE_BYTES`]).
     variable_bytes: usize,
+    /// The first budget error, reported once the export stops.
+    error: Option<EpubError>,
 }
 
 /// Bytes of variable values one export may write: one stored value referenced many times would
@@ -80,7 +82,13 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             split: doc.settings.epub_split.clone(),
             note_refs: std::collections::HashMap::new(),
             variable_bytes: MAX_VARIABLE_BYTES,
+            error: None,
         }
+    }
+
+    /// Take the first export error, if one was recorded while writing.
+    pub(crate) fn take_error(&mut self) -> Option<EpubError> {
+        self.error.take()
     }
 
     /// Index of the footnote (or endnote) whose reference is at byte `pos` of `st`
@@ -204,7 +212,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             if c != FOOTNOTE_REF && c != ENDNOTE_REF && c != OBJECT_MARK {
                 continue;
             }
-            t.push_str(&run_text(doc, raw.get(seg_start..i).unwrap_or_default(), &mut self.variable_bytes));
+            t.push_str(&run_text(doc, raw.get(seg_start..i).unwrap_or_default(), &mut self.variable_bytes, &mut self.error));
             seg_start = i + c.len_utf8();
             if c == OBJECT_MARK {
                 let k = mark.unwrap_or_else(|| st.text.get(..a).map_or(0, |t| t.matches(OBJECT_MARK).count()));
@@ -220,7 +228,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 }
             }
         }
-        t.push_str(&run_text(doc, raw.get(seg_start..).unwrap_or_default(), &mut self.variable_bytes));
+        t.push_str(&run_text(doc, raw.get(seg_start..).unwrap_or_default(), &mut self.variable_bytes, &mut self.error));
         t
     }
 
@@ -441,8 +449,8 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
 }
 
 /// Run text with variables replaced by their values; `left` is what the export may still write
-/// of them (a value that doesn't fit is left out).
-fn run_text(doc: &Document, raw: &str, left: &mut usize) -> String {
+/// of them. A value that doesn't fit fails the export instead of silently disappearing.
+fn run_text(doc: &Document, raw: &str, left: &mut usize, error: &mut Option<EpubError>) -> String {
     if raw.chars().any(|c| designcraft_doc::vars::var_index(c).is_some()) {
         let sub: String = raw
             .chars()
@@ -450,6 +458,7 @@ fn run_text(doc: &Document, raw: &str, left: &mut usize) -> String {
                 Some(i) => {
                     let v = doc.variable_value(i, None).unwrap_or_default();
                     if v.len() > *left {
+                        *error = Some(EpubError(format!("the export's variable text is longer than {} MB", MAX_VARIABLE_BYTES >> 20)));
                         return String::new();
                     }
                     *left -= v.len();

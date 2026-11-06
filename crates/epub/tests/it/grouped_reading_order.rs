@@ -25,7 +25,7 @@ fn group(doc: &mut Document, spread: usize, ids: &[ItemId], xf: Affine) -> ItemI
 }
 
 fn outputs(doc: &Document) -> [String; 2] {
-    let html = export_html(doc, &HtmlOptions::default());
+    let html = export_html(doc, &HtmlOptions::default()).unwrap();
     let bytes = export_epub(doc, &EpubOptions::default()).unwrap();
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut xhtml = String::new();
