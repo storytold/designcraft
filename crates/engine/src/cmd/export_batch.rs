@@ -557,6 +557,8 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
     }
 
+    /// An export name drops reserved characters, and a Windows device name (`CON`, `COM¹`, `LPT³`)
+    /// is written with a leading `_`. Two files built from one name stay distinct.
     #[test]
     fn names_are_made_safe_and_unique() {
         assert_eq!(safe_name("../a/b:c*?"), "a b c");

@@ -537,6 +537,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// On Windows an existing file spelled in another case is still inside its root, and `NUL`,
+    /// `COM1` and `COM¹` are refused.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -574,6 +576,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// `COM¹` to `LPT³`, and a device name before a colon, are reserved. `COM⁴`, `com¹0`, `lpt¹x`
+    /// and `console:x` are file names.
     #[test]
     fn device_names() {
         for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.designcraft", "NUL ", "COM¹", "Lpt²", "lpt³.txt", "COM1:", "nul:x", "COM¹:"] {
