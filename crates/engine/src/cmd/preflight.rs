@@ -297,6 +297,7 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
     // Nested note and cell text uses paragraph rules too.
     super::fonts::for_each_story(d, &mut |story| {
         let ranges = story.para_ranges();
+        let shown = (!story.frames.is_empty()).then(|| s.cache.get(d, story.id, None));
         for (pi, pf) in story.paras.iter().enumerate() {
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
@@ -333,7 +334,12 @@ pub fn check(s: &Session, min_ppi: f64) -> Vec<Issue> {
             for (run, f) in story.runs().filter(|(run, _)| run.start < range.end && run.end > range.start) {
                 let props = d.styles.resolve_char(&base, f);
                 for part in white_overprint::adornments(d, &props) {
-                    let parts = white_text.entry(story.frames.first().copied()).or_default();
+                    let at = run.start.max(range.start);
+                    let frame = shown
+                        .as_ref()
+                        .and_then(|cs| cs.frames.iter().find(|f| f.range.contains(&at)).map(|f| f.frame))
+                        .or_else(|| story.frames.first().copied());
+                    let parts = white_text.entry(frame).or_default();
                     if !parts.contains(&part) {
                         parts.push(part);
                     }
