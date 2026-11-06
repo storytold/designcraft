@@ -321,6 +321,9 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             }
             if let Some(m) = s("appearanceMode") {
                 r = app.run("window.appearanceMode", json!({"mode": m}));
+                if r.is_err() {
+                    return wrap(r);
+                }
             }
             if let Some(pn) = s("panel") {
                 r = app.run("window.panel", json!({"panel": pn}));
@@ -519,6 +522,14 @@ mod automation_contract_tests {
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
         app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
+    #[test]
+    fn ui_set_reports_a_bad_appearance_mode_even_with_later_settings() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let response = call(&mut app, &ctx, "ui.set", json!({"appearanceMode": "sepia", "panel": "properties"}));
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(app.ui.appearance_mode, crate::theme::AppearanceMode::Dark);
     }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

@@ -22,7 +22,11 @@ pub fn selected(ui: &UiState, system: Option<egui::Theme>) -> Brightness {
 /// Bring the theme on screen in line with the settings (restyles only when it changes).
 pub fn resolve(app: &mut DesignApp) {
     let want = selected(&app.ui, app.system_theme);
-    if app.ui.brightness != want {
+    // Switching to or from Auto can leave the theme on screen as it was while egui's own
+    // preference (System or fixed) is now wrong: restyle then too.
+    let follow = app.ui.appearance_mode == AppearanceMode::Auto;
+    let preference_stale = app.egui_ctx.as_ref().is_some_and(|ctx| (ctx.options(|o| o.theme_preference) == egui::ThemePreference::System) != follow);
+    if app.ui.brightness != want || preference_stale {
         app.ui.brightness = want;
         app.restyle = true;
     }
@@ -41,9 +45,10 @@ pub fn pick_theme(app: &mut DesignApp, b: Brightness) {
     resolve(app);
 }
 
-/// `window.appearanceMode {mode?, darkTheme?, lightTheme?}`: every value is checked before any
-/// is applied.
-pub fn set(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+type Change = (Option<AppearanceMode>, Option<DarkTheme>, Option<LightTheme>);
+
+/// The values of `window.appearanceMode {mode?, darkTheme?, lightTheme?}`, all checked.
+fn parse(p: &Value) -> Result<Change, String> {
     if !p.is_object() {
         return Err("appearance parameters must be an object".into());
     }
@@ -61,6 +66,19 @@ pub fn set(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
         .transpose()?;
     let light =
         field("lightTheme")?.map(|s| LightTheme::parse(s).ok_or_else(|| format!("`{s}` is not a light theme (light or mediumLight)"))).transpose()?;
+    Ok((mode, dark, light))
+}
+
+/// Whether `window.appearanceMode` would accept `p`, so a caller can check before it changes
+/// anything else.
+pub fn validate(p: &Value) -> Result<(), String> {
+    parse(p).map(|_| ())
+}
+
+/// `window.appearanceMode {mode?, darkTheme?, lightTheme?}`: every value is checked before any
+/// is applied.
+pub fn set(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let (mode, dark, light) = parse(p)?;
     if mode.is_none() && dark.is_none() && light.is_none() {
         return Ok(state(&app.ui));
     }
@@ -99,12 +117,14 @@ fn state(ui: &UiState) -> Value {
 /// parse are dropped (their defaults apply) rather than discarding the whole file.
 pub fn migrate_saved(v: &mut Value) {
     let Some(m) = v.as_object_mut() else { return };
-    for (key, ok) in [
-        ("appearanceMode", (|s: &str| AppearanceMode::parse(s).is_some()) as fn(&str) -> bool),
-        ("darkTheme", |s| DarkTheme::parse(s).is_some()),
-        ("lightTheme", |s| LightTheme::parse(s).is_some()),
-    ] {
-        if m.get(key).is_some_and(|x| !x.as_str().is_some_and(ok)) {
+    // The saved form is serde's (camelCase, case-sensitive), not the looser names commands take.
+    fn reads<T: serde::de::DeserializeOwned>(x: &Value) -> bool {
+        serde_json::from_value::<T>(x.clone()).is_ok()
+    }
+    for (key, ok) in
+        [("appearanceMode", reads::<AppearanceMode> as fn(&Value) -> bool), ("darkTheme", reads::<DarkTheme>), ("lightTheme", reads::<LightTheme>)]
+    {
+        if m.get(key).is_some_and(|x| !ok(x)) {
             m.remove(key);
         }
     }
@@ -605,5 +625,78 @@ mod tests {
         for (i, s) in shapes.iter().enumerate() {
             assert!(shapes[..i].iter().all(|o| o != s), "{:?} draws like another theme", Brightness::ALL[i]);
         }
+    }
+
+    #[test]
+    fn saved_values_serde_cannot_read_are_dropped_not_fatal() {
+        let ui =
+            UiState::from_saved_json(br#"{"appearanceMode":"Auto","darkTheme":"MediumDark","lightTheme":"Medium Light","rulers":false}"#).unwrap();
+        assert_eq!((ui.appearance_mode, ui.dark_theme, ui.light_theme), (AppearanceMode::Dark, DarkTheme::MediumDark, LightTheme::Light));
+        assert!(!ui.rulers, "the other settings stay");
+        let read = UiState::read_preferences(br#"{"appearanceMode":"Auto","rulers":false}"#).unwrap();
+        assert!(!read.ui.rulers);
+    }
+
+    #[test]
+    fn switching_to_auto_hands_egui_its_system_preference_back() {
+        let system = Some(egui::Theme::Dark);
+        let mut a = DesignApp::new(
+            designcraft_engine::Session::new(),
+            crate::Services { system_theme: Some(Box::new(move |_| system)), ..Default::default() },
+        );
+        let ctx = egui::Context::default();
+        a.ui_setup(&ctx);
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Dark);
+        // The system is dark and so is the theme on screen: the brightness does not change.
+        a.run("window.appearanceMode", json!({"mode": "auto"})).unwrap();
+        a.ui_setup(&ctx);
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::System);
+        a.run("window.appearanceMode", json!({"mode": "dark"})).unwrap();
+        a.ui_setup(&ctx);
+        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Dark);
+    }
+
+    #[test]
+    fn cancelling_preferences_keeps_auto_when_the_system_theme_changed_meanwhile() {
+        use std::sync::{Arc, Mutex};
+        let system = Arc::new(Mutex::new(Some(egui::Theme::Dark)));
+        let reader = Arc::clone(&system);
+        let mut a = DesignApp::new(
+            designcraft_engine::Session::new(),
+            crate::Services { system_theme: Some(Box::new(move |_| *reader.lock().unwrap())), ..Default::default() },
+        );
+        let ctx = egui::Context::default();
+        a.run("window.appearanceMode", json!({"mode": "auto"})).unwrap();
+        a.ui_setup(&ctx);
+        a.run("app.preferences", json!({})).unwrap();
+        *system.lock().unwrap() = Some(egui::Theme::Light);
+        a.ui_setup(&ctx);
+        assert_eq!(a.ui.brightness, Brightness::Light);
+        crate::dialogs::cancel(&mut a);
+        assert_eq!(a.ui.appearance_mode, AppearanceMode::Auto, "Cancel does not undo the system's change");
+        // OK does not turn Auto into a fixed mode either.
+        a.run("app.preferences", json!({})).unwrap();
+        *system.lock().unwrap() = Some(egui::Theme::Dark);
+        a.ui_setup(&ctx);
+        crate::dialogs::confirm(&mut a).unwrap();
+        assert_eq!(a.ui.appearance_mode, AppearanceMode::Auto);
+    }
+
+    #[test]
+    fn preferences_with_a_bad_appearance_value_changes_nothing_and_stays_open() {
+        let mut a = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        a.run("file.new", json!({})).unwrap();
+        a.run("app.preferences", json!({})).unwrap();
+        let scale = a.ui.ui_scale;
+        let d = a.ui.dialog.as_mut().unwrap();
+        d.fields.insert("uiScale".into(), json!(150.0));
+        d.fields.insert("appearanceMode".into(), json!("sepia"));
+        assert!(crate::dialogs::confirm(&mut a).is_err());
+        assert_eq!(a.ui.ui_scale, scale, "nothing was written before the check");
+        let d = a.ui.dialog.as_mut().expect("the dialog stays open");
+        assert!(!d.s("status").is_empty());
+        d.fields.insert("appearanceMode".into(), json!("light"));
+        crate::dialogs::confirm(&mut a).unwrap();
+        assert_eq!((a.ui.appearance_mode, a.ui.ui_scale), (AppearanceMode::Light, 1.5));
     }
 }
