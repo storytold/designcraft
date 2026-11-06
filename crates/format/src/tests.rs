@@ -275,6 +275,22 @@ fn one_place_picks_the_oldest_reader_that_keeps_the_document() {
 }
 
 #[test]
+fn an_empty_frames_fitting_options_need_version_5_and_survive_a_save() {
+    use designcraft_doc::geom::shapes;
+    use designcraft_doc::{EmptyFrameFitting, Fitting, Item, ItemId, Shape};
+    let mut d = Document::new(&NewDocument::default());
+    let id = ItemId(d.alloc());
+    let mut it = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 50.0, 50.0)));
+    d.insert_item(SpreadRef::Doc(0), it.clone(), None).unwrap();
+    assert_eq!(required_version(&d), 2);
+    it.empty_fitting = Some(EmptyFrameFitting { fitting: Fitting::FitProportionally, ..Default::default() });
+    *d.item_mut(id).unwrap() = it;
+    assert_eq!(required_version(&d), 5);
+    let back = load(&save(&d).unwrap()).unwrap();
+    assert_eq!(back.item(id).unwrap().empty_fitting, d.item(id).unwrap().empty_fitting);
+}
+
+#[test]
 fn roundtrip_with_assets() {
     let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
     let lid = d.default_layer();
