@@ -59,6 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// `math.insert`: insert or edit an equation, inline at the selection or as a frame.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let latex = str_param(p, "latex").ok_or_else(|| bad("math.insert", "`latex` required"))?.to_string();
     let size = size_param(p);

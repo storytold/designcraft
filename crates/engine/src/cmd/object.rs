@@ -1081,11 +1081,13 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
+    let mut item_ids = HashMap::new();
+    let mut copied = Vec::new();
     for id in ids {
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        renumber(dst, src, &mut copy, &mut story_map);
+        renumber_in(dst, src, &mut copy, &mut story_map, true, &mut item_ids, &mut copied);
         if dst.layer(copy.layer).is_none() {
             copy.layer = dst.default_layer();
         }
@@ -1093,6 +1095,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    reorder_copied_threads(dst, src, &story_map, &item_ids, &copied);
     Ok(out)
 }
 
@@ -6150,6 +6153,24 @@ mod anchored_copy_tests {
         assert_eq!(d.story(copied).unwrap().frames, [first_copy.id, second_copy.id], "source thread order");
         assert_eq!(d.story(story).unwrap().frames, [first_id, second_id]);
         assert_reopens(d);
+    }
+
+    #[test]
+    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = (*src).clone();
+        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        assert_eq!(copy.len(), 2);
+        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
+        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
+        dst.check().unwrap();
     }
 
     #[test]

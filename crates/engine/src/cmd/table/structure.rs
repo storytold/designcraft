@@ -26,6 +26,7 @@ fn table_style_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<(design
     Ok(Some((styles.resolve_table_style(name), styles.cell.clone())))
 }
 
+/// `table.insert`: replace the selection with a table.
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| bad("table.insert", "no insertion point"))?;
     if t.cell.is_some() {
@@ -169,6 +170,7 @@ pub(super) fn convert_to_text(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// `table.delete`: remove a table and its anchor.
 pub(super) fn delete_table(s: &mut Session, p: &Value) -> Result<Value> {
     let g = target(s, p, "table.delete")?;
     s.edit(|d, sel| {

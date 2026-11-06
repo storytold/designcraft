@@ -70,6 +70,7 @@ fn destination(d: &mut designcraft_doc::Document, p: &Value) -> Result<u64> {
     d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))
 }
 
+/// `xref.insert`: insert or replace with a cross-reference at the text selection.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let p = p.clone();
     s.edit(|d, sel| {

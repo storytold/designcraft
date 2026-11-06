@@ -142,8 +142,8 @@ impl Story {
     /// The text frames anchored in `range`, including frames inside groups and in the footnotes,
     /// endnotes and tables the range removes, with their stories.
     pub fn anchored_text_frames_in(&self, range: std::ops::Range<usize>) -> Vec<(StoryId, ItemId)> {
-        let a = range.start.min(self.len());
-        let b = range.end.min(self.len()).max(a);
+        let a = crate::story::floor_char_boundary(&self.text, range.start.min(self.len()));
+        let b = crate::story::floor_char_boundary(&self.text, range.end.min(self.len())).max(a);
         let (Some(before), Some(inside)) = (self.text.get(..a), self.text.get(a..b)) else { return Vec::new() };
         let first = before.matches(OBJECT_MARK).count();
         let n = inside.matches(OBJECT_MARK).count();

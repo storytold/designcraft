@@ -57,6 +57,7 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
     }
 }
 
+/// `footnote.insert`: replace the selection with a footnote reference and a new note.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
     let r = s.edit(|d, sel| {
@@ -140,6 +141,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Array(out))
 }
 
+/// `footnote.setText`: replace a footnote's whole text.
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.setText")?;
     let id = note_id(p, "footnote.setText")?;
@@ -148,15 +150,19 @@ fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let n = st.note_mut(id).ok_or_else(|| bad("footnote.setText", format!("no footnote {id}")))?;
         let len = n.text.len();
+        let doomed = n.text.anchored_text_frames_in(0..len);
         n.text.replace(0..len, &text);
+        let new_len = n.text.len();
         // A caret in the replaced text goes to its end.
         if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id))) {
-            (t.anchor, t.focus) = (n.text.len(), n.text.len());
+            (t.anchor, t.focus) = (new_len, new_len);
         }
+        d.unthread_anchored_text_frames(&doomed);
         Ok(Value::Null)
     })
 }
 
+/// `footnote.delete`: remove a footnote and its reference.
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let sid = story_id(p, "footnote.delete")?;
     let id = note_id(p, "footnote.delete")?;
@@ -164,7 +170,8 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let at = st.note_anchor(id).ok_or_else(|| bad("footnote.delete", format!("no footnote {id}")))?;
         follow_delete(sel, sid, at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
-        st.delete(at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
+        let doomed = super::anchored::delete_range(st, at..at + designcraft_doc::FOOTNOTE_REF.len_utf8());
+        d.unthread_anchored_text_frames(&doomed);
         let moved = sel.text.is_some_and(|t| t.story == sid && t.cell == Some(CellAddr::footnote(id)));
         if moved {
             sel.text = Some(TextSel::caret(sid, at));

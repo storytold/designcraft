@@ -401,6 +401,7 @@ fn add_flow_frame(
     Ok(fid)
 }
 
+/// `file.place`: place an imported text story at the selection, a frame, or a new frame.
 pub(super) fn place_text(
     s: &mut Session,
     p: &Value,
