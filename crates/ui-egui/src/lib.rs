@@ -762,7 +762,7 @@ impl DesignApp {
         self.system_theme = self.services.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme());
         appearance::resolve(self);
         if self.restyle {
-            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
+            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness), self.ui.appearance_mode == theme::AppearanceMode::Auto);
             self.restyle = false;
         }
         let now = ctx.input(|i| i.time);

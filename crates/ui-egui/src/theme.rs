@@ -404,7 +404,10 @@ pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
 }
 
-pub fn apply(ctx: &egui::Context, t: &Tokens) {
+/// Installs `t` as egui's styling. With `follow_system` (appearance mode Auto) egui keeps the system
+/// theme preference, so the OS can still deliver theme changes (macOS stops doing so once a concrete
+/// theme is set); the tokens are then installed for both egui themes.
+pub fn apply(ctx: &egui::Context, t: &Tokens, follow_system: bool) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, *t));
     let text_styles: std::collections::BTreeMap<TextStyle, FontId> = [
         (TextStyle::Small, FontId::proportional(10.0)),
@@ -414,9 +417,15 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
         (TextStyle::Monospace, FontId::monospace(11.5)),
     ]
     .into();
-    // Fix egui's own theme to the one these tokens belong to, so a change of the system theme
-    // never swaps in egui's unstyled default (DesignCraft follows the system itself).
-    ctx.set_theme(if t.dark { egui::Theme::Dark } else { egui::Theme::Light });
+    // Outside Auto, fix egui's own theme to the one these tokens belong to, so a change of the system
+    // theme never swaps in egui's unstyled default.
+    ctx.set_theme(if follow_system {
+        egui::ThemePreference::System
+    } else if t.dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
     let r = CornerRadius::same(t.radius);
     v.panel_fill = t.panel;
@@ -450,8 +459,9 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_fill = t.input;
     v.popup_shadow = egui::epaint::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(90) };
-    ctx.set_visuals(v);
-    ctx.global_style_mut(|s| {
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
+    ctx.all_styles_mut(|s| {
         s.text_styles = text_styles.clone();
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(6.0, 2.0);

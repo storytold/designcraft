@@ -2020,10 +2020,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 app.run("window.uiScale", json!({"scale": v / 100.0}))?;
             }
             if d.fields.contains_key("appearanceMode") {
-                app.run(
-                    "window.appearanceMode",
-                    json!({"mode": d.fields.get("appearanceMode"), "darkTheme": d.fields.get("darkTheme"), "lightTheme": d.fields.get("lightTheme")}),
-                )?;
+                let mut p = serde_json::Map::new();
+                for (key, field) in [("mode", "appearanceMode"), ("darkTheme", "darkTheme"), ("lightTheme", "lightTheme")] {
+                    if let Some(v) = d.fields.get(field) {
+                        p.insert(key.into(), v.clone());
+                    }
+                }
+                app.run("window.appearanceMode", serde_json::Value::Object(p))?;
             }
             if d.fields.contains_key("snap.alignEdges") {
                 let mut snap = json!({
@@ -3754,7 +3757,7 @@ mod tests {
     fn dialog_context(language: &str) -> egui::Context {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, language);
-        crate::theme::apply(&ctx, &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()));
+        crate::theme::apply(&ctx, &crate::theme::Tokens::for_brightness(crate::theme::Brightness::default()), false);
         ctx
     }
 
