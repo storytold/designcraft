@@ -279,6 +279,23 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             orient = Some(());
         }
     });
+    // Binding beside the orientation, under Show Right-to-Left Features.
+    let mut binding = None;
+    if crate::rtl_features(app) {
+        let rtl = d.settings.right_to_left_binding;
+        let x = (full_width(ui) - 52.0).max(186.0);
+        place(ui, sub(b, x, 0.0, 52.0, FIELD_H), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (icon, tip, value, on) in [("bind-ltr", "Left to Right", "leftToRight", !rtl), ("bind-rtl", "Right to Left", "rightToLeft", rtl)] {
+                if icon_toggle(ui, icon, on, crate::i18n::tr(&app.ui.language, tip)).clicked() && !on {
+                    binding = Some(value);
+                }
+            }
+        });
+    }
+    if let Some(v) = binding {
+        let _ = app.run("layout.documentSetup", json!({"binding": v}));
+    }
     if let Some((w, h)) = preset {
         let (w, h) = if landscape { (h, w) } else { (w, h) };
         let _ = app.run("layout.documentSetup", json!({"width": w, "height": h}));

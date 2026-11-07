@@ -424,6 +424,22 @@ fn control_paragraph(
         let _ = app.run("type.para", json!({"attrs": {"align": a}}));
     }
     vsep(ui);
+    // Left-to-Right over Right-to-Left Paragraph Direction, right after alignment as in InDesign, under Show Right-to-Left Features.
+    if crate::rtl_features(app) {
+        let rtl = para["direction"] == "rightToLeft";
+        let mut dir = None;
+        rows(ui, |ui, row| {
+            let (on, d) = if row == 0 { (!rtl, "leftToRight") } else { (rtl, "rightToLeft") };
+            let (icon, tip) = crate::panels::properties::direction_icon(d);
+            if crate::widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() && !on {
+                dir = Some(d);
+            }
+        });
+        if let Some(d) = dir {
+            let _ = app.run("type.para", json!({"attrs": crate::panels::properties::direction_attrs(para, d)}));
+        }
+        vsep(ui);
+    }
     let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
     if let Some((k, v)) = indent_space_fields(ui, para, units, tr) {
         let _ = app.run("type.para", json!({"attrs": {k: v}}));

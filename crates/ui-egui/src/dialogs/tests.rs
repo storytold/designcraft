@@ -347,6 +347,45 @@ fn document_setup_keeps_each_pages_margins_unless_they_are_edited() {
     assert_eq!(margins(&app), [12.0; 4]);
 }
 
+/// Document Setup's Binding is two buttons under Orientation, under Show Right-to-Left Features;
+/// Right to Left binds the document right to left on OK.
+#[test]
+fn document_setup_binding_follows_show_right_to_left_features() {
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    let mut app = document_setup_app("points");
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    crate::menus::activate(&mut app, "layout.documentSetup", &Value::Null);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1178.0, 900.0))
+        // Document Setup's older fields have no accessible names yet; this test only needs Binding's.
+        .with_accessibility_check(false)
+        .build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("document_setup_binding_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+    h.run_steps(3);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Left to Right").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
+}
+
 #[test]
 fn document_setup_keeps_a_value_it_cannot_read_and_changes_nothing() {
     for (key, value) in [("width", "wide"), ("marginTop", "-"), ("pages", "0"), ("bleedTop", "x")] {
@@ -384,6 +423,37 @@ fn document_setup_links_edges_and_adjust_layout_applies() {
     let doc = &app.session.active().unwrap().doc;
     let b = doc.item(designcraft_doc::ItemId(f["id"].as_u64().unwrap())).unwrap().bounds();
     assert!((b.y0 - 72.0).abs() < 1e-6 && doc.page(0).unwrap().margins.outside == 72.0, "{b:?}");
+}
+
+/// The Table panel's Direction is under Show Right-to-Left Features; Right to Left puts the first
+/// column on the right.
+#[test]
+fn table_panel_direction_follows_show_right_to_left_features() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(320.0, 1200.0)).with_accessibility_check(false).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("table_direction_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            crate::panels::table::show(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    assert_eq!(h.state_mut().run("table.get", json!({})).unwrap()["options"]["direction"], "rightToLeft");
 }
 
 #[test]
@@ -855,6 +925,46 @@ fn paragraph_style_options_ignore_optical_margin_is_set_on_ok() {
     let app = h.state();
     assert!(app.ui.dialog.is_none());
     assert_eq!(app.session.doc().unwrap().doc.styles.para("Flush").unwrap().para.ignore_optical_margin, Some(true));
+}
+
+/// Show Right-to-Left Features adds Paragraph Direction to Paragraph Style Options › Indents and
+/// Spacing: off, it isn't there; on, Right to Left is saved with the style and its left
+/// alignment mirrored (after #1220).
+#[test]
+fn paragraph_style_options_direction_follows_show_right_to_left_features() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Hebrew Body"})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Hebrew Body", "section": "indents"})));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("paragraph_direction_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Paragraph Direction:").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Paragraph Direction:").click();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialog.is_none());
+    let para = &app.session.doc().unwrap().doc.styles.para("Hebrew Body").unwrap().para;
+    assert_eq!(para.direction, Some(designcraft_doc::TextDirection::RightToLeft));
+    assert_eq!(para.align, Some(designcraft_doc::Align::Right));
 }
 
 #[test]
@@ -2608,6 +2718,31 @@ fn new_document_vertical_scroll_reaches_every_field_and_preset() {
     assert!(app.ui.dialog.as_ref().unwrap().b("primaryTextFrame"), "the caption toggles its checkbox");
     // Below the details: the preset tabs and cards.
     scroll_to_label(&mut app, &ctx, screen, body, "[Default]");
+}
+
+/// Show Right-to-Left Features adds Binding to the New Document window; Right to Left makes a
+/// document whose spreads run right to left. Off, Binding isn't shown and documents are bound
+/// left to right.
+#[test]
+fn new_document_binding_follows_show_right_to_left_features() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 1400.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Binding"), "hidden while the preference is off");
+    assert_eq!(crate::new_document::params(app.ui.dialog.as_ref().unwrap())["binding"], "leftToRight");
+    app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Binding");
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("rightToLeft"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert!(app.session.doc().unwrap().doc.settings.right_to_left_binding);
 }
 
 #[test]

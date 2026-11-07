@@ -405,6 +405,23 @@ pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
     });
+    // Paragraph Direction, right after alignment, under Show Right-to-Left Features.
+    if crate::rtl_features(app) {
+        let p = a["para"].clone();
+        let rtl = p["direction"] == "rightToLeft";
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (on, dir) in [(!rtl, "leftToRight"), (rtl, "rightToLeft")] {
+                let (icon, tip) = super::direction_icon(dir);
+                if widgets::icon_toggle_sized(ui, icon, on, crate::i18n::tr(&app.ui.language, tip), vec2(pitch.min(23.0), 21.0)).clicked() && !on {
+                    let _ = app.run("type.para", json!({"attrs": super::direction_attrs(&p, dir)}));
+                }
+                if pitch > 23.0 {
+                    ui.add_space(pitch - 23.0);
+                }
+            }
+        });
+    }
     let more = temp_bool(ui, "props_para_more", false);
     if more {
         paragraph_more(app, ui, &a["para"], fw);

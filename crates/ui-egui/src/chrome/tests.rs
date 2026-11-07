@@ -434,6 +434,37 @@ fn the_type_control_panel_has_character_and_paragraph_modes() {
     assert!(has(&h, "Small Caps"));
 }
 
+/// Show Right-to-Left Features adds Left-to-Right and Right-to-Left Paragraph Direction buttons
+/// to the ¶ Control panel; a click sets the direction and mirrors left alignment.
+#[test]
+fn the_paragraph_control_panel_has_direction_buttons_under_rtl_features() {
+    let mut app = app();
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Bulbs"})).unwrap();
+    app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+    app.run("prefs.set", serde_json::json!({"rtlFeatures": false})).unwrap();
+    app.session.set_tool("type");
+    let mut h = test_window::open(app, vec2(2400.0, 700.0));
+    let bar = test_window::panel_rect(&h, "control_bar");
+    let in_bar = move |r: egui::Rect| bar.y_range().contains(r.center().y);
+    let click = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+        let r = h.query_all_by_label(label).map(|n| n.rect()).find(|r| in_bar(*r)).unwrap_or_else(|| panic!("no {label:?} in the Control panel"));
+        h.hover_at(r.center());
+        h.drag_at(r.center());
+        h.drop_at(r.center());
+        h.run_steps(3);
+    };
+    let has = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| h.query_all_by_label(label).any(|n| in_bar(n.rect()));
+    click(&mut h, "Paragraph Formatting Controls");
+    assert!(has(&h, "Bulleted List") && !has(&h, "Right-to-Left Paragraph Direction"), "hidden while the preference is off");
+    h.state_mut().app.run("prefs.set", serde_json::json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Left-to-Right Paragraph Direction"));
+    click(&mut h, "Right-to-Left Paragraph Direction");
+    let p = crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+}
+
 /// The course's chapter 21: the ¶ Control panel has InDesign's Bulleted and Numbered List
 /// buttons (with the default hanging indent), and Shading and Border with their colours and
 /// the Paragraph Borders and Shading dialog.

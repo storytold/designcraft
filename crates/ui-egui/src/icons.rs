@@ -4,6 +4,49 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
+/// The bowl of the Paragraph Direction icons' pilcrow on the 20×20 grid (a convex outline).
+const PILCROW_BOWL: [(f32, f32); 39] = [
+    (6.24, 11.05),
+    (5.91, 11.04),
+    (5.60, 11.01),
+    (5.29, 10.97),
+    (5.00, 10.90),
+    (4.71, 10.82),
+    (4.43, 10.71),
+    (4.17, 10.59),
+    (3.93, 10.44),
+    (3.70, 10.28),
+    (3.50, 10.10),
+    (3.31, 9.89),
+    (3.15, 9.67),
+    (2.99, 9.43),
+    (2.87, 9.17),
+    (2.78, 8.88),
+    (2.71, 8.58),
+    (2.67, 8.25),
+    (2.66, 7.91),
+    (2.67, 7.54),
+    (2.71, 7.20),
+    (2.77, 6.89),
+    (2.86, 6.60),
+    (2.98, 6.34),
+    (3.12, 6.10),
+    (3.28, 5.89),
+    (3.47, 5.69),
+    (3.67, 5.52),
+    (3.88, 5.37),
+    (4.12, 5.25),
+    (4.37, 5.14),
+    (4.64, 5.05),
+    (4.91, 4.98),
+    (5.20, 4.92),
+    (5.50, 4.88),
+    (5.81, 4.86),
+    (6.13, 4.85),
+    (6.75, 4.85),
+    (6.75, 11.04),
+];
+
 struct Pen<'a> {
     p: &'a Painter,
     r: Rect,
@@ -798,6 +841,23 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
             pen.fcircle(13.0, 10.0, 1.8);
             pen.frect(5.0, 8.0, 9.0, 12.0);
         }
+        // Binding: a folded leaf leaning the way the pages turn, its back page showing behind the
+        // spine, and an arrow on it slanted with its top edge.
+        "bind-ltr" | "bind-rtl" => {
+            let rtl = name == "bind-rtl";
+            let m = |x: f32| if rtl { 20.0 - x } else { x };
+            pen.w = 1.3;
+            pen.closed(&[(m(5.6), 4.7), (m(14.7), 6.0), (m(14.7), 18.0), (m(5.6), 16.3)]);
+            pen.line(&[(m(5.6), 4.7), (m(12.5), 2.3), (m(12.5), 5.7)]);
+            pen.w = 1.8;
+            if rtl {
+                pen.line(&[(12.6, 11.29), (8.28, 11.85)]);
+                pen.line(&[(9.89, 8.8), (8.0, 11.86), (10.21, 14.3)]);
+            } else {
+                pen.line(&[(11.82, 11.85), (7.5, 11.29)]);
+                pen.line(&[(9.89, 14.3), (12.1, 11.86), (10.21, 8.8)]);
+            }
+        }
         "page-count" => {
             pen.closed(&[(10.0, 5.0), (3.0, 3.0), (3.0, 15.0), (10.0, 17.0)]);
             pen.closed(&[(10.0, 5.0), (17.0, 3.0), (17.0, 15.0), (10.0, 17.0)]);
@@ -977,6 +1037,20 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
             if name == "palign-spine-away" {
                 pen.line(&[(15.5, 2.0), (15.5, 18.0)]);
             }
+        }
+        // Paragraph Direction: the pilcrow, with an arrow beside it at its middle pointing the way
+        // its lines run (on its right for left to right, on its left for right to left).
+        "pdir-ltr" | "pdir-rtl" => {
+            let rtl = name == "pdir-rtl";
+            // The pilcrow (outlined from the UI's Source Sans 3 Semibold), moved right for right to left.
+            let dx = if rtl { 8.11 } else { 0.0 };
+            let at = |pts: &[(f32, f32)]| pts.iter().map(|&(x, y)| (x + dx, y)).collect::<Vec<_>>();
+            pen.fill(&at(&[(7.52, 15.14), (7.52, 4.86), (9.14, 4.86), (9.14, 15.14)]));
+            pen.fill(&at(&PILCROW_BOWL));
+            pen.w = 1.5;
+            let m = |x: f32| if rtl { 20.0 - x } else { x };
+            pen.line(&[(m(11.1), 10.0), (m(16.6), 10.0)]);
+            pen.line(&[(m(14.4), 7.9), (m(16.6), 10.0), (m(14.4), 12.1)]);
         }
         _ => return false,
     }

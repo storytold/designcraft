@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-07** · Preferences › Type › Show Right-to-Left Features (on by default in a right-to-left interface) shows the right-to-left setup controls: Paragraph Direction buttons in the Control panel, the Paragraph panel and Properties, Paragraph Direction in Paragraph Style Options › Indents and Spacing, Binding buttons in New Document (`file.new {binding}`), Document Setup and Properties › Document, and the Table panel's Direction. The Paragraph panel menu keeps its direction items in every interface. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 

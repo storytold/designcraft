@@ -175,6 +175,11 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
+    match p.get("binding").and_then(Value::as_str) {
+        Some("rightToLeft") => nd.right_to_left_binding = true,
+        Some("leftToRight") => nd.right_to_left_binding = false,
+        _ => {}
+    }
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
     nd.gutter = f64_or(p, "gutter", nd.gutter);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
@@ -218,6 +223,24 @@ mod new_document_tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// `file.new {binding}` makes a right-to-left bound document, as Document Setup's Binding
+    /// does later; left to right is the default, and an unknown value changes nothing.
+    #[test]
+    fn new_documents_take_their_binding() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        assert!(!s.doc().unwrap().doc.settings.right_to_left_binding);
+        s.execute("file.new", &json!({"pages": 3, "binding": "rightToLeft"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert!(d.settings.right_to_left_binding);
+        s.execute("file.new", &json!({"binding": "sideways"})).unwrap();
+        assert!(!s.doc().unwrap().doc.settings.right_to_left_binding, "an unknown binding keeps the default");
+        // A saved preset keeps its binding.
+        s.execute("file.savePreset", &json!({"name": "Hebrew Book", "binding": "rightToLeft"})).unwrap();
+        s.execute("file.new", &json!({"preset": "Hebrew Book"})).unwrap();
+        assert!(s.doc().unwrap().doc.settings.right_to_left_binding);
+    }
 
     #[test]
     fn saved_presets_make_documents_by_name() {

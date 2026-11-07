@@ -326,6 +326,30 @@ fn paragraph_panel_keeps_first_line_only() {
     let _ = h.get_by_label("✓ Only Align First Line to Grid");
 }
 
+/// Show Right-to-Left Features adds the Paragraph Direction buttons to the Paragraph panel: off,
+/// only the panel menu has direction; on, Right to Left sets it and mirrors left alignment, and
+/// Left to Right switches back.
+#[test]
+fn paragraph_panel_direction_buttons_follow_show_right_to_left_features() {
+    let mut app = text_app();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel_harness(app, paragraph_panel);
+    h.run_steps(3);
+    assert!(h.query_by_label("Right-to-Left Paragraph Direction").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Left-to-Right Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Right-to-Left Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Left-to-Right Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("leftToRight"), Some("left")));
+}
+
 #[test]
 fn paragraph_panel_menu_toggles_ignore_optical_margin() {
     let mut h = panel_harness(text_app(), paragraph_panel);
@@ -816,6 +840,37 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
     h.run_steps(3);
     let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
     assert_eq!((a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64()), (Some("none"), Some(0.0)));
+}
+
+/// Show Right-to-Left Features adds the Paragraph Direction buttons to Properties › Paragraph,
+/// right after alignment.
+#[test]
+fn properties_paragraph_direction_follows_show_right_to_left_features() {
+    let mut app = text_app();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel(app);
+    assert!(h.query_by_label("Right-to-Left Paragraph Direction").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right-to-Left Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+}
+
+/// Show Right-to-Left Features adds Binding beside the orientation in Properties › Document.
+#[test]
+fn properties_document_binding_follows_show_right_to_left_features() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel(app);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
 }
 
 #[test]
