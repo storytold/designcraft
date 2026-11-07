@@ -21,6 +21,10 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   copied story fresh ids (#1522). Copies used to keep the original's ids, and the saved file then
   failed to open with "duplicate item id". Files already saved that way still don't open; no
   readiness percentage change.
+- **2026-10-27** · The Pages panel draws page and parent thumbnails on a background thread, only
+  for the rows on screen, and keeps the previous revision's picture until the new one arrives. On
+  a 190-page catalogue switching to the Pages tab went from 43 s to 0.2 s, and editing no longer
+  froze the window for over a minute. No readiness percentage change.
 - **2026-10-25** · The application bar uses craft-window's shared title-bar code. A drag that
   starts on a floating panel over the bar moves the panel, not the window, and in full screen the
   bar no longer zooms or moves the window. No readiness percentage change.

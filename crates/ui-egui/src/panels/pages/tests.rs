@@ -7,6 +7,43 @@ use egui_kittest::{
 use super::*;
 use crate::test_window;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_panicking_thumbnail_leaves_its_row_undrawn_and_the_worker_alive() {
+    // A renderer bug on one document must not end the thread: its slot would stay reserved, and
+    // four of them would stop the panel from drawing any thumbnail again.
+    let (drawn, panicked) = super::worker::contained(|| -> Option<u32> { panic!("a renderer bug") });
+    assert!(drawn.is_none() && panicked);
+    assert_eq!(super::worker::contained(|| Some(7)), (Some(7), false), "the next row draws");
+    // The worker's own loop contains the panic and still draws the row queued after it.
+    let (jobs, job_rx) = std::sync::mpsc::channel();
+    let (results, result_rx) = std::sync::mpsc::channel();
+    let of = ThumbOf::Page(PageId(1));
+    let doc = std::sync::Arc::new(Document::new(&designcraft_doc::build::NewDocument::default()));
+    let cache = std::sync::Arc::new(designcraft_compose::Cache::new());
+    let job = |rev: u64| super::worker::Job { key: (1, rev, of, 16), doc: doc.clone(), cache: cache.clone(), of, px: 16.0 };
+    jobs.send(job(1)).unwrap();
+    jobs.send(job(2)).unwrap();
+    drop(jobs);
+    let mut first = true;
+    super::worker::serve(
+        job_rx,
+        results,
+        |_, _| {
+            if std::mem::replace(&mut first, false) {
+                panic!("a renderer bug");
+            }
+            None
+        },
+        || {},
+    );
+    let got: Vec<_> = result_rx.try_iter().collect();
+    assert_eq!(got.len(), 2, "the panic is contained and the next row is drawn");
+    assert_eq!(got[0].0.1, 1, "the row that panicked reports first");
+    assert!(got[0].1.is_none(), "the row that panicked is left undrawn");
+    assert_eq!(got[1].0.1, 2, "the worker is still alive");
+}
+
 #[test]
 fn parent_context_menu_deletes_the_clicked_id_even_with_a_shared_prefix() {
     for vertical in [true, false] {
@@ -325,6 +362,72 @@ fn parent_thumbnails_follow_panel_options() {
     };
     assert_eq!(parent_thumb_heights(true), vec![IconSize::Large.row_h() as u32 - 5]);
     assert_eq!(parent_thumb_heights(false), Vec::<u32>::new());
+}
+
+/// A long document draws thumbnails for the rows on screen, not for every page: the first frame
+/// of a 190-page catalogue used to render all 190 on the interface thread (a 40-second freeze,
+/// repeated on every edit).
+#[test]
+fn only_visible_pages_get_thumbnails() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 120, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let st = h.state().app.session.active().unwrap();
+    let (uid, rev) = (st.uid, st.revision);
+    let last = st.doc.page(119).expect("120th page").id;
+    let thumbs = super::THUMBS.lock().unwrap();
+    let drawn = thumbs.as_ref().map_or(0, |m| m.keys().filter(|k| k.0 == uid && k.1 == rev && matches!(k.2, super::ThumbOf::Page(_))).count());
+    assert!(drawn > 0, "the rows on screen are drawn");
+    assert!(drawn < 40, "120 pages, but only the visible rows are drawn: {drawn}");
+    assert!(
+        !thumbs.as_ref().is_some_and(|m| m.keys().any(|k| k.0 == uid && k.1 == rev && k.2 == super::ThumbOf::Page(last))),
+        "the last page is far below the panel"
+    );
+}
+
+/// Background slots are capped, so a fast scroll across a long document queues a few thumbnails
+/// rather than every page.
+#[test]
+fn background_thumbnails_are_capped() {
+    let keys: Vec<ThumbKey> = (0..10).map(|i| (u64::MAX - 1, 0, ThumbOf::Page(designcraft_doc::PageId(i)), 24)).collect();
+    let taken = keys.iter().filter(|k| begin(**k)).count();
+    assert_eq!(taken, super::MAX_IN_FLIGHT);
+    assert!(!begin(keys[0]), "a slot is reserved once");
+    for k in &keys {
+        ended(*k);
+    }
+    assert!(begin(keys[0]), "released slots are free again");
+    ended(keys[0]);
+}
+
+/// The panel caches a thumbnail by the page's stable id, so an insert, delete or move cannot make
+/// a row show the picture of whatever page used to sit at that index.
+#[test]
+fn page_thumbnails_are_keyed_by_the_page_not_its_index() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 3, "facingPages": false})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let (uid, ids): (u64, Vec<designcraft_doc::PageId>) = {
+        let st = h.state().app.session.active().unwrap();
+        (st.uid, (0..3).map(|i| st.doc.page(i).expect("page").id).collect())
+    };
+    {
+        let thumbs = super::THUMBS.lock().unwrap();
+        let map = thumbs.as_ref().expect("the visible rows drew");
+        for id in &ids {
+            assert!(map.keys().any(|k| k.0 == uid && k.2 == super::ThumbOf::Page(*id)), "page {id} is cached by its id");
+        }
+    }
+    // Move the first page to the end: its picture follows the page, not the index it left.
+    h.state_mut().app.run("layout.pages.move", json!({"from": 0, "to": 2})).unwrap();
+    h.run_steps(2);
+    let moved = h.state().app.session.active().unwrap().doc.page(2).expect("page").id;
+    assert_eq!(moved, ids[0], "the moved page keeps its id");
+    let thumbs = super::THUMBS.lock().unwrap();
+    let map = thumbs.as_ref().expect("thumbnails");
+    assert!(map.keys().any(|k| k.0 == uid && k.2 == super::ThumbOf::Page(moved)), "the moved page keeps its own cache entry");
 }
 
 #[test]
