@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-30** · Vertical Justification Centre fits by the last baseline (clamping so descenders stay inside), so Cap Height figure lines centre without needing a corner radius (#1999). No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
@@ -51,7 +52,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   default layer queries find a placed PDF anywhere in mixed selections. Regression tests cover
   IDML export after rejection and both selection orders.
 
-## Status (2026-10-21)
+## Status (2026-11-03)
 
 **Working today**
 - Document model: facing/non-facing spreads, parent pages with page-number markers, sections, layers, frames (text / graphic / unassigned), threaded stories, paragraph/character/object styles with based-on, swatches (process/spot/tints/gradients), corner options, text wrap, drop shadow, opacity/blend.
