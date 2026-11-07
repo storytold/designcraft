@@ -81,32 +81,62 @@ fn simplify_closed(p: &[Point], tol: f64) -> Vec<Point> {
     a
 }
 
+/// Ramer–Douglas–Peucker on `p`, keeping its ends. Spans wait on a stack of their own rather
+/// than in nested calls: an outline of many points can split one point at a time, deeper than
+/// the call stack goes. A tolerance that isn't a number or is below zero counts as zero (each
+/// split must take a point strictly inside its span, or the span would never get shorter).
 fn rdp(p: &[Point], tol: f64) -> Vec<Point> {
-    if p.len() < 3 {
-        return p.to_vec();
-    }
-    let (a, b) = (p[0], p[p.len() - 1]);
-    let d = b - a;
-    let len = d.hypot();
-    let (mut best, mut idx) = (0.0, 0);
-    for (i, q) in p.iter().enumerate().take(p.len() - 1).skip(1) {
-        let dist = if len < 1e-12 { (*q - a).hypot() } else { ((*q - a).cross(d) / len).abs() };
-        if dist > best {
-            (best, idx) = (dist, i);
+    let (Some(_), Some(last)) = (p.first(), p.len().checked_sub(1)) else { return Vec::new() };
+    let tol = if tol >= 0.0 { tol } else { 0.0 };
+    let mut keep = vec![false; p.len()];
+    keep[0] = true;
+    keep[last] = true;
+    let mut spans = vec![(0, last)];
+    while let Some((s, e)) = spans.pop() {
+        if e < s + 2 {
+            continue;
+        }
+        let (a, b) = (p[s], p[e]);
+        let d = b - a;
+        let len = d.hypot();
+        let (mut best, mut idx) = (0.0, s);
+        for (i, q) in p.iter().enumerate().take(e).skip(s + 1) {
+            let dist = if len < 1e-12 { (*q - a).hypot() } else { ((*q - a).cross(d) / len).abs() };
+            if dist > best {
+                (best, idx) = (dist, i);
+            }
+        }
+        if best > tol && idx > s {
+            keep[idx] = true;
+            spans.push((idx, e));
+            spans.push((s, idx));
         }
     }
-    if best <= tol {
-        return vec![a, b];
-    }
-    let mut left = rdp(&p[..=idx], tol);
-    left.pop();
-    left.extend(rdp(&p[idx..], tol));
-    left
+    p.iter().zip(keep).filter_map(|(q, k)| k.then_some(*q)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tolerance below zero or NaN ends (each split shrinks its span), and a 200,000-point
+    /// path simplifies to completion.
+    #[test]
+    fn simplification_ends_for_any_tolerance_and_depth() {
+        let line: Vec<Point> = (0..10).map(|i| Point::new(f64::from(i), 0.0)).collect();
+        for tol in [-1.0, f64::NAN, 0.0] {
+            assert_eq!(rdp(&line, tol).len(), 2, "{tol}");
+        }
+        // A long convex curve simplifies to completion.
+        let n = 200_000;
+        let curve: Vec<Point> = (0..n).map(|i| Point::new(f64::from(i), (f64::from(i) * 1e-3).powi(3))).collect();
+        assert!(rdp(&curve, 1e-12).len() > 2);
+        // A zigzag of growing amplitude: every split takes the point next to the span's end.
+        let zigzag: Vec<Point> = (0..10_000).map(|i| { let x = f64::from(i); Point::new(x, if i % 2 == 0 { x } else { -x }) }).collect();
+        assert_eq!(rdp(&zigzag, 0.0).len(), zigzag.len());
+        assert!(rdp(&[], 1.0).is_empty());
+        assert_eq!(rdp(&line[..1], 1.0).len(), 1);
+    }
 
     #[test]
     fn traces_a_disc_and_its_hole() {

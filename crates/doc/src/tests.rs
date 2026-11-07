@@ -370,6 +370,20 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
 }
 
+/// Many note references put in at once each get a note with an id of its own, in one pass.
+#[test]
+fn many_note_references_get_their_notes_at_once() {
+    let n = 20_000;
+    let mut st = Story::new(StoryId(1));
+    let refs = format!("{}{}", FOOTNOTE_REF.to_string().repeat(n), crate::ENDNOTE_REF.to_string().repeat(n));
+    st.insert(0, &refs);
+    assert_eq!((st.notes.len(), st.endnotes.len()), (n, n));
+    let ids: std::collections::HashSet<u64> = st.notes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+    let ids: std::collections::HashSet<u64> = st.endnotes.iter().map(|x| x.id).collect();
+    assert_eq!(ids.len(), n);
+}
+
 /// Exceptions are read in one pass: breaks are char positions of the lowercased word, a break
 /// at the start, at the end or twice in a row counts once or not at all, and a long exception
 /// full of breaks takes no longer than its length.
