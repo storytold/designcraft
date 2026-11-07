@@ -98,6 +98,28 @@ appended pages to the template, is an error). It uses the linked source, or inli
 echo 'data.merge {"path": "people.csv", "records": "range", "range": "1-20"}' | designcraft-cli script - --in template.designcraft --save merged.designcraft
 ```
 
+## XML tags
+
+`xml.autoTag {kinds?, overwrite?, useNames?}` tags every untagged text and graphic frame on the document pages: a
+frame whose Layers panel name is a valid XML name gets that name, the others `text_1`, `image_1`, … in reading order.
+`file.importXml` then fills them:
+
+```sh
+echo 'xml.autoTag' | designcraft-cli script - --in template.designcraft --save template.designcraft
+```
+
+`file.importXml {path | text, imageDir?}` puts each element's text into the next text frame with its tag. An element
+with an `href` (`file://` URL or path) places that image into the next graphic frame with its tag, filling it
+proportionally; relative paths are read against `imageDir`, else the XML file's folder. An image that can't be read
+is listed in `failed` and the rest is still imported; one Undo takes back the whole import.
+
+```xml
+<Root>
+  <headline>Spring Issue</headline>
+  <photo href="img/cover.jpg"/>
+</Root>
+```
+
 ## The running app
 
 ```sh

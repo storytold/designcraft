@@ -1030,6 +1030,7 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         let id = ItemId(d.alloc());
         let mut it = Item::new(id, lid, sh, path);
         if content == "graphic" {
+            it.graphic_frame = true;
             it.object_style = d.styles.default_graphic_frame.clone();
             if let Some(e) = d.styles.object_effects(&it.object_style) {
                 it.effects = e.clone();
@@ -2543,6 +2544,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                     d.stories.insert(sid, Arc::new(st));
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
+                        it.graphic_frame = false;
                     }
                 }
                 ("graphic" | "unassigned", Some(Content::Text(tf))) => {
@@ -2555,11 +2557,24 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Unassigned;
+                        // An empty frame for a graphic, or a plain shape.
+                        it.graphic_frame = t == "graphic";
                     }
                 }
                 ("graphic" | "unassigned", Some(Content::Graphic(_))) if t == "unassigned" => {
                     if let Some(it) = d.item_mut(*id) {
                         it.content = Content::Unassigned;
+                        it.graphic_frame = false;
+                    }
+                }
+                ("graphic", Some(Content::Unassigned)) => {
+                    if let Some(it) = d.item_mut(*id) {
+                        it.graphic_frame = true;
+                    }
+                }
+                ("unassigned", Some(Content::Unassigned)) => {
+                    if let Some(it) = d.item_mut(*id) {
+                        it.graphic_frame = false;
                     }
                 }
                 _ => {}
@@ -2994,6 +3009,11 @@ fn fitting_mode(s: &str) -> Option<designcraft_doc::Fitting> {
         "centerContent" => F::CenterContent,
         _ => return None,
     })
+}
+
+/// Whether `object.fit` takes `mode`: Fit Frame to Content, or a fitting other than none.
+pub(crate) fn fit_mode_known(mode: &str) -> bool {
+    mode == "fitFrameToContent" || fitting_mode(mode).is_some_and(|m| m != designcraft_doc::Fitting::None)
 }
 
 /// Frame Fitting Options: auto-fit, fitting, align from, crop amounts.
