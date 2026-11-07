@@ -410,6 +410,7 @@ impl<'a> Ex<'a> {
             el.set("SingleWordJustification", names::align_out(v));
         }
         n!(a, el, keep_with_next, "KeepWithNext");
+        b!(a, el, keep_with_previous, "KeepWithPrevious");
         b!(a, el, keep_lines_together, "KeepLinesTogether");
         b!(a, el, ignore_optical_margin, "IgnoreEdgeAlignment");
         b!(a, el, keep_all_lines, "KeepAllLinesTogether");

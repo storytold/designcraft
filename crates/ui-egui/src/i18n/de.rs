@@ -1918,6 +1918,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Keep Lines Together", "Zeilen nicht trennen"),
     ("Keep Options", "Umbruchoptionen"),
     ("Keep with Next:", "Nicht trennen von nächsten:"),
+    ("Keep with Previous", "Mit vorherigem Absatz zusammenhalten"),
     ("List Type:", "Listentyp:"),
     ("List:", "Liste:"),
     ("Mode:", "Modus:"),
