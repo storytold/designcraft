@@ -95,7 +95,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.typing_format = None;
             ok()
         }),
-        cmd!("text.insert", "Type", [], None, "{text, raw?: bool (no typographer's quotes)} — replaces the selected text", has_text, insert),
+        cmd!(
+            "text.insert",
+            "Type",
+            [],
+            None,
+            "{text, raw?: bool (no typographer's quotes)} — replaces the selected text; markers, breaks and white space go in by name with text.insertSpecial",
+            has_text,
+            insert
+        ),
         cmd!(
             "text.deleteSurrounding",
             "Delete Surrounding Text",
