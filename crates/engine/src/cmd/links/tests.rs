@@ -445,3 +445,93 @@ fn link_status_relink_update_embed() {
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A document saved in `dir` with one placed image whose stored entry is then damaged so that
+/// only its CRC fails, and a spare image to relink to; returns the document's path.
+#[cfg(not(target_arch = "wasm32"))]
+fn document_with_a_damaged_image(dir: &std::path::Path) -> std::path::PathBuf {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let img = dir.join("a.png");
+    let doc = dir.join("d.designcraft");
+    let marker = png(10, 10);
+    std::fs::write(&img, &marker).unwrap();
+    std::fs::write(dir.join("b.png"), png(20, 10)).unwrap();
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": img.to_string_lossy(), "x": 72, "y": 72, "width": 72})).unwrap();
+    s.execute("file.saveAs", &json!({"path": doc.to_string_lossy()})).unwrap();
+
+    // Corrupt the stored asset entry, leaving the archive's structure intact so the entry is
+    // found and only its CRC fails -- the same damage the format test reproduces.
+    // A PNG asset is stored uncompressed, so the whole image appears verbatim -- matched whole,
+    // since every PNG shares the signature the preview thumbnail starts with too.
+    let good = std::fs::read(&doc).unwrap();
+    let at = good.windows(marker.len()).position(|w| w == marker.as_slice()).expect("the stored PNG is in the file");
+    let mut broken = good.clone();
+    broken[at + 32..at + 48].copy_from_slice(&[9; 16]);
+    std::fs::write(&doc, &broken).unwrap();
+    doc
+}
+
+/// Opening a document whose asset could not be read refuses to save, and tells the user to
+/// relink. Relink cloned the asset without clearing the mark, so the way out did not work and
+/// the document could never be saved again (#1592, noted in review).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn relinking_an_unreadable_asset_lets_the_document_be_saved_again() {
+    let dir = std::env::temp_dir().join(format!("dc-unreadable-relink-{}", std::process::id()));
+    let doc = document_with_a_damaged_image(&dir);
+    let other = dir.join("b.png");
+
+    let mut s = Session::new();
+    s.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+    let l = s.execute("links.list", &json!({})).unwrap();
+    let aid = l[0]["asset"].as_u64().unwrap();
+    let err = s.execute("file.save", &json!({})).expect_err("saving would drop the image");
+    assert!(err.to_string().contains("Relink"), "the refusal points at relink: {err}");
+
+    // Taking the advice works: the asset is readable again and the document saves.
+    s.execute("links.relink", &json!({"asset": aid, "path": other.to_string_lossy()})).unwrap();
+    s.execute("file.save", &json!({})).expect("the relinked document saves");
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+
+    // And what was written holds the new image, so the next open needs no relink at all.
+    let mut s = Session::new();
+    s.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+    s.execute("file.save", &json!({})).expect("and it keeps saving");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Crash recovery writes its checkpoints with the native save, which refuses a document holding
+/// an unreadable asset. One such document stopped every checkpoint, its own and every other open
+/// document's, so nothing edited after opening it was covered (noted in review). A checkpoint
+/// keeps the asset marked instead, and the recovered document is refused a save the same way.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_document_with_an_unreadable_asset_is_still_covered_by_crash_recovery() {
+    let dir = std::env::temp_dir().join(format!("dc-unreadable-recovery-{}", std::process::id()));
+    let doc = document_with_a_damaged_image(&dir);
+    let recovery = dir.join("recovery");
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("frame.create", &json!({"rect": [10, 10, 100, 100]})).unwrap();
+    s.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+    s.execute("frame.create", &json!({"rect": [200, 200, 300, 300]})).unwrap();
+    assert_eq!(crate::recovery::save(&s, &recovery).expect("checkpoints are written"), 2, "both edited documents are covered");
+
+    let mut s2 = Session::new();
+    assert_eq!(crate::recovery::open(&mut s2, &recovery).unwrap().len(), 2);
+    let damaged: Vec<_> = s2.documents().iter().filter(|d| d.doc.assets.values().any(|a| a.unreadable)).collect();
+    assert_eq!(damaged.len(), 1, "the asset is still marked after recovery");
+    assert_eq!(damaged[0].doc.spreads[0].items.len(), 2, "with the edit made after opening");
+    let uid = damaged[0].uid;
+    let index = s2.documents().iter().position(|d| d.uid == uid).unwrap();
+    s2.execute("file.activate", &json!({"index": index})).unwrap();
+    assert_eq!(s2.doc().unwrap().uid, uid);
+    let err = s2.execute("file.save", &json!({})).expect_err("the recovered document is refused a save that would drop the image");
+    assert!(err.to_string().contains("Relink"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

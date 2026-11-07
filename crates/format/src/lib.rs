@@ -39,6 +39,11 @@ pub enum FormatError {
     /// The document holds something the file can't represent; nothing is written.
     #[error("{0}")]
     Unsaveable(String),
+    /// An entry is in the archive and cannot be read (a bad CRC, a truncated file). Distinct from
+    /// [`Self::Io`] so a caller can carry on without it -- an asset -- while a refusal such as an
+    /// oversized entry still stops the load (#1592).
+    #[error("{0}")]
+    Unreadable(String),
 }
 
 fn ext_for(mime: &str) -> &'static str {
@@ -66,6 +71,13 @@ pub fn save_with_preview(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u
     save_with_large_entries_from(doc, preview, LARGE_ENTRY)
 }
 
+/// [`save`] for a crash-recovery checkpoint. An asset that could not be read when the document
+/// was opened has no bytes to write, and refusing would leave every later edit uncovered; the
+/// checkpoint lists it, still marked, so the recovered document refuses a save the same way.
+pub fn save_checkpoint(doc: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>, FormatError> {
+    write_archive(doc, preview, LARGE_ENTRY, true)
+}
+
 /// Asset entries this size or larger are written with zip64 sizes. Zip rejects an entry over
 /// 4 GiB written without them; the margin covers deflate output that is larger than its input.
 const LARGE_ENTRY: usize = (u32::MAX as usize).saturating_sub(64 << 20);
@@ -86,6 +98,10 @@ fn required_version(doc: &Document) -> u32 {
 }
 
 fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_entry: usize) -> Result<Vec<u8>, FormatError> {
+    write_archive(doc, preview, large_entry, false)
+}
+
+fn write_archive(doc: &Document, preview: Option<&[u8]>, large_entry: usize, checkpoint: bool) -> Result<Vec<u8>, FormatError> {
     // JSON writes infinity and NaN as null, which no load accepts: the file would not open.
     if let Some(id) = doc.non_finite_item() {
         return Err(FormatError::Unsaveable(format!("object {} has a position or size that is not a finite number", id.0)));
@@ -113,6 +129,15 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
         let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
+            if a.unreadable && !checkpoint {
+                // Saving here would write the document without this image, losing it for good.
+                // The file it came from is still intact, so refusing leaves the user something to
+                // recover from (#1592).
+                return Err(FormatError::Unsaveable(format!(
+                    "`{}` could not be read when this document was opened; saving would lose it. Relink or replace it first.",
+                    a.name
+                )));
+            }
             if a.data.is_empty() {
                 continue;
             }
@@ -198,7 +223,8 @@ impl Limits {
     const DEFAULT: Limits = Limits { json: 256 << 20, asset: 1 << 30, total: 4 << 30 };
 }
 
-/// Read entry `name` of `z`, or `None` when it is missing or unreadable. Refuses a deflated entry
+/// Read entry `name` of `z`, or `None` when it is missing; [`FormatError::Unreadable`] when it is
+/// present but cannot be read. Refuses a deflated entry
 /// that expands past `limit` bytes or past what is `left` of the archive's budget, without
 /// decompressing more than that: the sizes the archive claims are not trusted. A stored entry
 /// is read at its size in the archive and charged to `stored_left`, the archive's own size; only a
@@ -210,7 +236,13 @@ fn read_entry(
     left: &mut u64,
     stored_left: &mut u64,
 ) -> Result<Option<Vec<u8>>, FormatError> {
-    let Ok(f) = z.by_name(name) else { return Ok(None) };
+    let f = match z.by_name(name) {
+        Ok(f) => f,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        // Listed but not openable (encrypted, an unsupported compression method): absent would
+        // have the caller carry on without it, as for a bad CRC below.
+        Err(e) => return Err(FormatError::Unreadable(format!("{name} is in the file but could not be opened: {e}"))),
+    };
     let stored = f.compression() == zip::CompressionMethod::Stored;
     let limit = if !stored {
         limit.min(*left)
@@ -224,8 +256,15 @@ fn read_entry(
         return Err(too_big());
     }
     let mut v = Vec::new();
-    if f.take(limit.saturating_add(1)).read_to_end(&mut v).is_err() {
-        return Ok(None);
+    if let Err(e) = f.take(limit.saturating_add(1)).read_to_end(&mut v) {
+        // The entry is there and cannot be read: a bad CRC, a truncated archive. Reporting it as
+        // absent made the caller carry on with nothing, which for an asset meant the image opened
+        // empty and the next save dropped it (#1592). What was decompressed before the failure
+        // still counts, against the budget the entry draws on, or every damaged entry could
+        // expand to the per-entry limit.
+        let spent = if stored { &mut *stored_left } else { &mut *left };
+        *spent = spent.saturating_sub(v.len() as u64);
+        return Err(FormatError::Unreadable(format!("{name} is in the file but could not be read: {e}")));
     }
     let n = v.len() as u64;
     if n > limit {
@@ -276,7 +315,21 @@ fn load_zip_within(bytes: &[u8], limits: Limits) -> Result<Document, FormatError
         if !doc.assets.contains_key(&AssetId(id)) {
             continue;
         }
-        if let (Some(data), Some(a)) = (read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left)?, doc.assets.get_mut(&AssetId(id))) {
+        // An asset that cannot be read must not stop the document opening -- the rest of the
+        // layout is still there -- but it is marked so that saving does not quietly drop it
+        // (#1592).
+        let entry = match read_entry(&mut z, &name, limits.asset, &mut left, &mut stored_left) {
+            Ok(e) => e,
+            Err(FormatError::Unreadable(message)) => {
+                log::warn!("{message}");
+                if let Some(a) = doc.assets.get_mut(&AssetId(id)) {
+                    Arc::make_mut(a).unreadable = true;
+                }
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if let (Some(data), Some(a)) = (entry, doc.assets.get_mut(&AssetId(id))) {
             let same = loaded.entry(fingerprint.hash_one(data.as_slice())).or_default();
             let data = match same.iter().find(|d| ***d == data) {
                 Some(d) => d.clone(),
