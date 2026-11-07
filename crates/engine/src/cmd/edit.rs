@@ -54,7 +54,9 @@ fn copy_text(s: &mut Session) -> Result<Option<String>> {
     let Some(story) = st.doc.text_story(t.story, t.cell) else { return Ok(None) };
     let slice = story.extract(t.range());
     let text = plain(&slice);
+    let source = st.doc.clone();
     s.text_clipboard = Some((Arc::new(slice), text.clone()));
+    s.text_clipboard_doc = Some(source);
     Ok(Some(text))
 }
 
@@ -125,12 +127,17 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
     // Footnotes, endnotes, editorial notes, cross-references and tables cannot be pasted into cells or footnotes.
     if use_clip && let Some((slice, _)) = clip {
         let slice = if t.cell.is_some() { strip_objects(&slice) } else { (*slice).clone() };
+        let source = s.text_clipboard_doc.clone();
         return s.edit(|d, sel| {
+            let mut slice = slice;
+            super::object::renumber_slice(d, source.as_deref(), &mut slice);
+            let before = super::object::anchored_text_frames(d);
             let st = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
             let r = r.start.min(st.len())..r.end.min(st.len());
             st.delete(r.clone());
             let end = st.insert_story(r.start, &slice);
+            super::object::unthread_deleted_anchored(d, &before);
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             Ok(json!({"pos": end, "formatted": true}))
         });
@@ -163,6 +170,7 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         .map(|a| Point::new(a.x.clamp(-LIMIT, LIMIT), a.y.clamp(-LIMIT, LIMIT)));
     let lid = s.doc()?.active_layer;
     let cache = s.cache.clone();
+    let source = s.text_clipboard_doc.clone();
     let text = if slice.is_some() { String::new() } else { outside_text(text)? };
     s.edit(|d, sel| {
         let sp = d.spread(sr).ok_or_else(|| super::bad("edit.paste", "no such spread"))?;
@@ -180,7 +188,9 @@ fn paste_text_frame(s: &mut Session, p: &Value, text: &str, slice: Option<&desig
         };
         let (id, sid) = d.add_text_frame(sr, rect(max_h), lid, &text, para)?;
         if let Some(sl) = slice {
-            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, sl);
+            let mut sl = sl.clone();
+            super::object::renumber_slice(d, source.as_deref(), &mut sl);
+            d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?.insert_story(0, &sl);
         }
         // Shrink to the composed text unless it already fills the frame.
         let composed = cache.get(d, sid, None);
@@ -392,6 +402,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             copy_items(s)?;
             s.text_clipboard = None;
+            s.text_clipboard_doc = None;
             ok()
         }),
         cmd!("edit.cut", "Cut", ["Edit"], Some("Cmd+X"), "{}", has_selection_or_text, |s, p| {

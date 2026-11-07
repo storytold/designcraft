@@ -1161,6 +1161,64 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
     }
 }
 
+/// Fresh ids from `dst` for the objects anchored in `slice`, text copied from `src` that is about
+/// to be pasted into `dst`, with copies of the stories of anchored text frames and the graphics
+/// they place adopted from `src`. A copied range carried its objects' ids into every paste, so two
+/// anchored items shared an id and the saved file no longer opened (#2284). The stories and
+/// graphics are looked up in the document the text was copied from, which may be another one:
+/// looked up in `dst`, an id from another document finds nothing, or an unrelated story or image.
+/// With no `src`, `dst` as it is now stands in.
+pub(crate) fn renumber_slice(dst: &mut Document, src: Option<&Document>, slice: &mut Story) {
+    let own;
+    let src = match src {
+        Some(src) => src,
+        None => {
+            own = dst.clone();
+            &own
+        }
+    };
+    let mut assets = HashMap::new();
+    for a in designcraft_doc::story_asset_refs(slice) {
+        let na = adopt_or_dangle(dst, src, a);
+        if na != a {
+            assets.insert(a, na);
+        }
+    }
+    designcraft_doc::remap_story_assets(slice, &assets);
+    renumber_anchored(dst, src, slice, &mut HashMap::new());
+}
+
+/// The anchored text frames of `d`, with their stories.
+pub(crate) fn anchored_text_frames(d: &Document) -> Vec<(ItemId, StoryId)> {
+    d.anchored_items().into_iter().filter_map(|(_, i)| Some((i.id, i.text_frame()?.story))).collect()
+}
+
+/// Take the anchored text frames of `before` that are gone from `d` out of their stories'
+/// threads, and drop a story left with no frame, as removing a frame from the page does. A
+/// replaced range that held one left its story threaded to a frame that no longer existed, which
+/// `Document::check` rejects. Repeated, since a dropped story may hold anchored frames of its own.
+pub(crate) fn unthread_deleted_anchored(d: &mut Document, before: &[(ItemId, StoryId)]) {
+    loop {
+        let now: std::collections::HashSet<ItemId> = anchored_text_frames(d).into_iter().map(|(i, _)| i).collect();
+        let mut changed = false;
+        for (id, sid) in before {
+            if now.contains(id) || d.item(*id).is_some() || !d.story(*sid).is_some_and(|st| st.frames.contains(id)) {
+                continue;
+            }
+            let Some(st) = d.stories.get_mut(sid) else { continue };
+            let st = Arc::make_mut(st);
+            st.frames.retain(|f| f != id);
+            if st.frames.is_empty() {
+                d.stories.remove(sid);
+            }
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
 /// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
     let mut fresh = |t: &mut Story| {
@@ -6053,9 +6111,54 @@ mod anchored_copy_tests {
         assert_reopens(doc);
     }
 
-    // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    /// Copy the whole story of `frame` as text; returns its plain text and the story.
+    fn copy_story_text(s: &mut Session, frame: ItemId) -> (String, StoryId) {
+        let sid = s.doc().unwrap().doc.item(frame).unwrap().text_frame().unwrap().story;
+        let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": len})).unwrap();
+        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        (text, sid)
+    }
+
+    // #2284: a copied text range carried its anchored objects' ids into every paste, so two
+    // anchored items shared an id and the saved file no longer opened.
     #[test]
-    fn an_anchored_text_frame_gets_its_own_story_copy() {
+    fn pasting_copied_text_with_an_anchored_object_twice_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (frame, anchored) = frame_with_inline_box(&mut s);
+        let (text, sid) = copy_story_text(&mut s, frame);
+        for _ in 0..2 {
+            let end = s.doc().unwrap().doc.story(sid).unwrap().len();
+            s.execute("text.select", &json!({"story": sid.0, "anchor": end, "focus": end})).unwrap();
+            s.execute("edit.paste", &json!({"text": text})).unwrap();
+        }
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.story(sid).unwrap().objects.len(), 3, "the formatted copy, anchored object and all, was pasted");
+        let ids: std::collections::HashSet<ItemId> = doc.anchored_items().iter().map(|(_, i)| i.id).collect();
+        assert_eq!(ids.len(), 3, "each paste has an id of its own");
+        assert!(ids.contains(&anchored), "the original keeps its id");
+        assert_reopens(doc);
+    }
+
+    // The same copy pasted with no insertion point becomes a new text frame holding it.
+    #[test]
+    fn pasting_copied_text_with_an_anchored_object_as_a_new_frame_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (frame, _) = frame_with_inline_box(&mut s);
+        let (text, _) = copy_story_text(&mut s, frame);
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        let r = s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let new_sid = StoryId(r["story"].as_u64().unwrap());
+        assert_eq!(doc.story(new_sid).unwrap().objects.len(), 1, "the new frame holds the anchored object");
+        let ids: std::collections::HashSet<ItemId> = doc.anchored_items().iter().map(|(_, i)| i.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_reopens(doc);
+    }
+
+    /// A text frame "Host" with a text frame anchored at its start, as IDML import makes them;
+    /// returns the document, the host frame, the anchored frame and the anchored frame's story.
+    fn host_with_anchored_text_frame() -> (Document, ItemId, ItemId, StoryId) {
         let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
         let layer = d.default_layer();
         let (host, host_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
@@ -6066,6 +6169,177 @@ mod anchored_copy_tests {
         d.stories.insert(inner_sid, inner_story);
         d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
         d.check().unwrap();
+        (d, host, inner, inner_sid)
+    }
+
+    fn session_with(d: Document) -> Session {
+        let mut s = Session::new();
+        s.add_document(crate::DocState::new(d, None));
+        s
+    }
+
+    // A text paste copies an anchored text frame's story too, so the two frames do not share one
+    // story: editing one would change the other, and its thread would list both.
+    #[test]
+    fn pasting_copied_text_with_an_anchored_text_frame_gives_it_a_story_of_its_own() {
+        let (d, host, inner, inner_sid) = host_with_anchored_text_frame();
+        let mut s = session_with(d);
+        let (text, host_sid) = copy_story_text(&mut s, host);
+        let end = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": end, "focus": end})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let objects = &doc.story(host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 2);
+        let copy = &objects[1].item;
+        assert_ne!(copy.id, inner);
+        let copy_sid = copy.text_frame().unwrap().story;
+        assert_ne!(copy_sid, inner_sid, "the copy has a story of its own");
+        assert_eq!(doc.story(copy_sid).unwrap().text, "Inner", "holding the same text");
+        assert_eq!(doc.story(copy_sid).unwrap().frames, [copy.id]);
+        assert_eq!(doc.story(inner_sid).unwrap().frames, [inner], "the original's thread is unchanged");
+        assert_reopens(doc);
+    }
+
+    // Pasting over the very range that was copied deletes the original anchored text frame. Its
+    // story was left threaded to the deleted frame, which `Document::check` rejects; on `main` this
+    // only worked because the paste put the same id back.
+    #[test]
+    fn pasting_over_the_copied_range_keeps_the_anchored_frames_text() {
+        let (d, host, inner, inner_sid) = host_with_anchored_text_frame();
+        let mut s = session_with(d);
+        let (text, host_sid) = copy_story_text(&mut s, host);
+        // The selection is still the whole story.
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let objects = &doc.story(host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 1);
+        assert_ne!(objects[0].item.id, inner);
+        assert_eq!(doc.story(objects[0].item.text_frame().unwrap().story).unwrap().text, "Inner");
+        assert!(doc.story(inner_sid).is_none(), "the deleted frame's story went with it");
+        assert_reopens(doc);
+        // One undo puts the original back.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.story(host_sid).unwrap().objects[0].item.id, inner);
+        assert_reopens(doc);
+    }
+
+    /// `d` opened as a second document of `s`, made active; returns its index.
+    fn open_second(s: &mut Session, d: Document) -> usize {
+        let index = s.add_document(crate::DocState::new(d, None));
+        s.execute("file.activate", &json!({"index": index})).unwrap();
+        index
+    }
+
+    // Pasted into another document, an anchored text frame's story is the one it had where it was
+    // copied. Looked up in the destination, the same id found nothing (an empty story) or an
+    // unrelated story (noted in review).
+    #[test]
+    fn copied_text_pasted_into_another_document_keeps_its_anchored_frames_story() {
+        let (a, host, _, inner_sid) = host_with_anchored_text_frame();
+        let mut s = session_with(a);
+        let (text, _) = copy_story_text(&mut s, host);
+        // The destination has a story under the same id, holding something else.
+        let mut b = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = b.default_layer();
+        let (b_host, b_host_sid) =
+            b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host B", ParaFormat::default()).unwrap();
+        b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 400.0, 300.0, 500.0), layer, "Unrelated", ParaFormat::default()).unwrap();
+        assert_eq!(b.story(inner_sid).map(|st| st.text.as_str()), Some("Unrelated"), "the destination reuses the id");
+        open_second(&mut s, b);
+        let _ = b_host;
+        let end = s.doc().unwrap().doc.story(b_host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": b_host_sid.0, "anchor": end, "focus": end})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let objects = &doc.story(b_host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 1);
+        let copy_sid = objects[0].item.text_frame().unwrap().story;
+        assert_eq!(doc.story(copy_sid).unwrap().text, "Inner", "the copied frame's own text");
+        assert_eq!(doc.story(inner_sid).unwrap().text, "Unrelated", "the destination's story is untouched");
+        assert_reopens(doc);
+    }
+
+    // An anchored image pasted into another document brings its graphic along: the asset id it
+    // had names nothing there, or another image.
+    #[test]
+    fn copied_text_pasted_into_another_document_brings_its_anchored_images() {
+        let mut a = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = a.default_layer();
+        let (host, host_sid) = a.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let aid = AssetId(a.alloc());
+        let bytes = vec![7u8; 64];
+        a.assets.insert(
+            aid,
+            Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "a.png".into(),
+                mime: "image/png".into(),
+                data: Arc::new(bytes.clone()),
+                ..Default::default()
+            }),
+        );
+        let mut pic = Item::new(ItemId(a.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        pic.content = Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (10.0, 10.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        a.story_mut(host_sid).unwrap().insert_object(2, AnchoredObject { item: pic, position: Default::default() });
+        a.check().unwrap();
+        let mut s = session_with(a);
+        let (text, _) = copy_story_text(&mut s, host);
+        let mut b = Document::new(&designcraft_doc::build::NewDocument::default());
+        let (_, b_sid) =
+            b.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), b.default_layer(), "B", ParaFormat::default()).unwrap();
+        assert!(b.assets.is_empty());
+        open_second(&mut s, b);
+        s.execute("text.select", &json!({"story": b_sid.0, "anchor": 1, "focus": 1})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let pasted = &doc.story(b_sid).unwrap().objects[0].item;
+        let asset = pasted.graphic().map(|g| g.asset).and_then(|id| doc.assets.get(&id)).expect("the image came along");
+        assert_eq!(*asset.data, bytes);
+        assert_reopens(doc);
+    }
+
+    // Objects anchored in a footnote of the copied range get fresh ids too.
+    #[test]
+    fn an_object_anchored_in_a_copied_footnote_gets_a_fresh_id() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let (host, host_sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host text", ParaFormat::default()).unwrap();
+        let boxed = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0)));
+        let st = d.story_mut(host_sid).unwrap();
+        st.insert_note(4, "Note", ParaFormat::default()).unwrap();
+        Arc::make_mut(&mut st.notes[0]).text.insert_object(0, AnchoredObject { item: boxed, position: Default::default() });
+        d.check().unwrap();
+        let mut s = session_with(d);
+        let (text, _) = copy_story_text(&mut s, host);
+        let end = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": end, "focus": end})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let notes = &doc.story(host_sid).unwrap().notes;
+        assert_eq!(notes.len(), 2, "the footnote was pasted");
+        let ids: Vec<ItemId> = notes.iter().map(|n| n.text.objects[0].item.id).collect();
+        assert_ne!(ids[0], ids[1]);
+        assert_reopens(doc);
+    }
+
+    // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    #[test]
+    fn an_anchored_text_frame_gets_its_own_story_copy() {
+        let (mut d, host, inner, inner_sid) = host_with_anchored_text_frame();
         let src = d.clone();
         let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
         let copy_sid = d.item(copy[0]).unwrap().text_frame().unwrap().story;
