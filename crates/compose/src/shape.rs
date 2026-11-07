@@ -125,19 +125,34 @@ struct Piece {
     composite_note: bool,
 }
 
-/// The style of each byte of a shaped run: `(first byte, style)` in story order.
-struct StyleRuns<'a>(&'a [(usize, u32)]);
+/// How a run shaped as one spans its pieces: the style of each byte (`(first byte, style)` in
+/// story order) and, when the pieces differ in feature switches, each piece's switches over its
+/// story bytes ([`switch_features`]).
+struct StyleRuns<'a> {
+    styles: &'a [(usize, u32)],
+    switches: &'a [(std::ops::Range<usize>, Feature)],
+    /// Every character keeps its own cluster (a mark isn't merged into its letter's), so each
+    /// glyph can take its own character's style ([`designcraft_fonts::ShapeContext::cluster_chars`]).
+    cluster_chars: bool,
+}
 
-impl StyleRuns<'_> {
+impl<'a> StyleRuns<'a> {
+    /// A run in `styles` whose pieces share their feature switches (those of its properties).
+    fn of(styles: &'a [(usize, u32)]) -> Self {
+        StyleRuns { styles, switches: &[], cluster_chars: false }
+    }
+
     fn at(&self, byte: usize) -> u32 {
-        let k = self.0.partition_point(|&(start, _)| start <= byte);
-        self.0.get(k.saturating_sub(1)).map_or(0, |&(_, s)| s)
+        let k = self.styles.partition_point(|&(start, _)| start <= byte);
+        self.styles.get(k.saturating_sub(1)).map_or(0, |&(_, s)| s)
     }
 }
 
 /// The attributes that decide how text is shaped: `p` with everything that only paints the
 /// glyphs (colour, stroke, underline and strikethrough, skew, markers) reset, so two pieces with
-/// equal keys can be shaped as one. Attributes not listed here keep pieces apart.
+/// equal keys can be shaped as one. Feature switches (Ligatures, OpenType features) are reset too:
+/// a run shaped as one applies each piece's over its own text. Attributes not listed here keep
+/// pieces apart.
 fn shaping_key(p: &CharProps) -> CharProps {
     let d = CharProps::default();
     CharProps {
@@ -163,6 +178,9 @@ fn shaping_key(p: &CharProps) -> CharProps {
         conditions: d.conditions,
         change: d.change,
         xml_tag: d.xml_tag,
+        ligatures: d.ligatures,
+        // Horizontal Kana also picks the vertical kana of upright text: it keeps pieces apart.
+        otf_features: if designcraft_doc::otf::is_on(&p.otf_features, "hkna") { vec!["hkna".into()] } else { d.otf_features },
         ..p.clone()
     }
 }
@@ -566,7 +584,7 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
                         &props,
                         &face,
                         env,
-                        &StyleRuns(&[(at, style)]),
+                        &StyleRuns::of(&[(at, style)]),
                         &mut glyphs,
                         sub.upright(),
                     );
@@ -595,20 +613,46 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         let group = &pieces[i..j];
         let range = group[0].range.start..group[j - i - 1].range.end;
         let runs: Vec<(usize, u32)> = group.iter().map(|p| (p.range.start, p.style)).collect();
+        // Pieces that differ in feature switches each take their own, over their own bytes.
+        let switches: Vec<(std::ops::Range<usize>, Feature)> =
+            if group.iter().any(|p| p.props.ligatures != first.props.ligatures || p.props.otf_features != first.props.otf_features) {
+                group.iter().flat_map(|p| switch_features(&p.props).into_iter().map(move |f| (p.range.clone(), f))).collect()
+            } else {
+                Vec::new()
+            };
+        let mut spans = StyleRuns { styles: &runs, switches: &switches, cluster_chars: false };
         let start = glyphs.len();
-        shape_run(db, &story.text, range, &first.props, first.env, &StyleRuns(&runs), sub, &mut glyphs);
-        // A cluster (a ligature, a letter with its marks) that spans two styles would paint one
-        // of them in the other's colour: shape those pieces apart instead.
-        let spans_cut = |g: &Glyph| runs[1..].iter().any(|&(cut, _)| g.byte < cut && cut < g.byte + g.len);
-        if group.len() > 1 && glyphs[start..].iter().any(spans_cut) {
+        shape_run(db, &story.text, range.clone(), &first.props, first.env, &spans, sub, &mut glyphs);
+        // A cluster that spans two styles (a letter with a mark in a colour of its own, a
+        // ligature) would paint one of them in the other's colour.
+        let cuts = runs.get(1..).unwrap_or_default();
+        if glyphs[start..].iter().any(|g| cuts_inside(cuts, g.byte, g.len).next().is_some()) {
+            // Every character in a cluster of its own: a mark keeps its colour and still sits on
+            // its letter, as in InDesign.
             glyphs.truncate(start);
-            for p in group {
-                shape_run(db, &story.text, p.range.clone(), &p.props, p.env, &StyleRuns(&[(p.range.start, p.style)]), sub, &mut glyphs);
+            spans.cluster_chars = true;
+            shape_run(db, &story.text, range, &first.props, first.env, &spans, sub, &mut glyphs);
+            // What still spans a cut is a ligature. Between Arabic characters (lam-alif) it
+            // stays, in its first character's style, as in InDesign; elsewhere a change of style
+            // ends it, so each letter keeps its colour: those pieces are shaped apart.
+            if glyphs[start..].iter().any(|g| cuts_inside(cuts, g.byte, g.len).any(|cut| !between_arabic_characters(&story.text, cut))) {
+                glyphs.truncate(start);
+                for p in group {
+                    shape_run(db, &story.text, p.range.clone(), &p.props, p.env, &StyleRuns::of(&[(p.range.start, p.style)]), sub, &mut glyphs);
+                }
             }
         }
         i = j;
     }
     glyphs
+}
+
+/// The style cuts strictly inside a glyph's cluster, found by binary search: `cuts` is sorted by
+/// story byte (the pieces of a group are contiguous). A ligature can span several cuts.
+fn cuts_inside(cuts: &[(usize, u32)], byte: usize, len: usize) -> impl Iterator<Item = usize> + '_ {
+    let end = byte.saturating_add(len);
+    let from = cuts.partition_point(|&(cut, _)| cut <= byte);
+    cuts.get(from..).unwrap_or_default().iter().map(|&(cut, _)| cut).take_while(move |&cut| cut < end)
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
@@ -673,13 +717,30 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
     }
 }
 
-fn features_for(p: &CharProps) -> Vec<Feature> {
+/// The feature switches a piece sets on its own text: Ligatures off and its OpenType features.
+/// Pieces that differ only in these (and paint) are shaped as one, each switch over its piece's
+/// bytes.
+fn switch_features(p: &CharProps) -> Vec<Feature> {
+    let mut v = Vec::new();
+    if !p.ligatures {
+        v.extend(feature("-liga"));
+        v.extend(feature("-clig"));
+    }
+    for f in &p.otf_features {
+        v.extend(feature(f));
+    }
+    v
+}
+
+/// The features from the rest of `p` (kerning, tracking, capitalization, position, glyph and
+/// positional forms): the same over a run shaped as one.
+fn common_features(p: &CharProps) -> Vec<Feature> {
     let mut v = Vec::new();
     // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
     if p.kerning != Kerning::Metrics {
         v.extend(feature("-kern"));
     }
-    if !p.ligatures || p.tracking.abs() > 1e-9 {
+    if p.tracking.abs() > 1e-9 {
         v.extend(feature("-liga"));
         v.extend(feature("-clig"));
     }
@@ -712,9 +773,6 @@ fn features_for(p: &CharProps) -> Vec<Feature> {
     if !form.is_empty() {
         v.extend(feature(form));
     }
-    for f in &p.otf_features {
-        v.extend(feature(f));
-    }
     let positional = match p.positional_form.as_str() {
         "Initial" => Some("init"),
         "Medial" => Some("medi"),
@@ -728,6 +786,46 @@ fn features_for(p: &CharProps) -> Vec<Feature> {
         }
     }
     v
+}
+
+/// The features to shape story bytes `range` with (`p` its properties). A run shaped across
+/// pieces that differ in feature switches takes each piece's over its own bytes; generated text
+/// (`generated`: a page number, a variable) those of the piece it stands in.
+fn segment_features(p: &CharProps, styles: &StyleRuns<'_>, range: std::ops::Range<usize>, generated: bool) -> Vec<Feature> {
+    let mut feats = common_features(p);
+    if styles.switches.is_empty() {
+        feats.extend(switch_features(p));
+    } else if generated {
+        feats.extend(styles.switches.iter().filter(|(r, _)| r.contains(&range.start)).map(|(_, f)| *f));
+    } else {
+        let at = |b: usize| u32::try_from(b).unwrap_or(u32::MAX);
+        let ranged: Vec<Feature> = styles.switches.iter().map(|(r, f)| Feature { start: at(r.start), end: at(r.end), ..*f }).collect();
+        feats.extend(designcraft_fonts::features_in(&ranged, range));
+    }
+    feats
+}
+
+/// The features of upright glyphs in vertical text: with Horizontal Kana on they take the vertical
+/// kana alternates instead. A group whose pieces differ in another switch carries hkna per piece
+/// (ranged): every hkna entry goes, or a ranged one would still apply over its piece.
+fn upright_features(feats: &[Feature], horizontal_kana: bool) -> Vec<Feature> {
+    let mut out = feats.to_vec();
+    if horizontal_kana {
+        let hkna = feature("hkna").map(|h| h.tag);
+        out.retain(|f| Some(f.tag) != hkna);
+        out.extend(feature("-hkna"));
+        out.extend(feature("vkna"));
+    }
+    out
+}
+
+/// Whether the style change at story byte `cut` falls between two Arabic characters (letters or
+/// marks), which a ligature such as lam-alif may join across it.
+fn between_arabic_characters(text: &str, cut: usize) -> bool {
+    let arabic = |c: Option<char>| {
+        c.is_some_and(|c| matches!(c, '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' | '\u{08A0}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFC}'))
+    };
+    arabic(text.get(..cut).and_then(|s| s.chars().next_back())) && arabic(text.get(cut..).and_then(|s| s.chars().next()))
 }
 
 fn is_mark(c: char) -> bool {
@@ -1021,7 +1119,9 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
 /// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
-/// scripts we lay out, and clusters stay byte offsets into `src`.
+/// scripts we lay out, and clusters stay byte offsets into `src`. Text with features over part of
+/// it, or with every character in a cluster of its own, is shaped whole.
+#[allow(clippy::too_many_arguments)]
 fn shape_cached(
     face: &FontFace,
     src: &str,
@@ -1030,6 +1130,7 @@ fn shape_cached(
     caps: bool,
     vertical: bool,
     (before, after): (&str, &str),
+    cluster_chars: bool,
 ) -> Vec<ShapedGlyph> {
     use designcraft_fonts::ShapeContext;
     let map = |c: char| if caps { c.to_uppercase().next().unwrap_or(c) } else { c };
@@ -1040,8 +1141,9 @@ fn shape_cached(
             designcraft_fonts::shape_with_context(face, s, feats, map, context)
         }
     };
-    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
-        return shape(src, ShapeContext { before, after, language: lang });
+    let ranged = feats.iter().any(|f| f.start != 0 || f.end != u32::MAX);
+    if cluster_chars || ranged || src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
+        return shape(src, ShapeContext { before, after, language: lang, cluster_chars });
     }
     let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
     let pieces: Vec<&str> = src.split_inclusive(' ').collect();
@@ -1200,13 +1302,8 @@ fn shape_segment(
     let manual = if let Kerning::Manual(v) = p.kerning { v / 1000.0 * p.size } else { 0.0 };
     let src = replacement.unwrap_or(&text[range.clone()]);
     let caps = p.capitalization == Capitalization::AllCaps;
-    let feats = features_for(p);
-    // Upright in vertical text, Horizontal Kana takes the vertical kana alternates instead.
-    let mut upright_feats = feats.clone();
-    if vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna") {
-        upright_feats.extend(feature("-hkna"));
-        upright_feats.extend(feature("vkna"));
-    }
+    let feats = segment_features(p, styles, range.clone(), replacement.is_some());
+    let upright_feats = upright_features(&feats, vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna"));
     let space = face.advance(face.glyph_for(' ')) * k * hs;
     // The language picks the font's localized forms (`locl`); the text around the run lets
     // letters join across a change of style.
@@ -1220,7 +1317,8 @@ fn shape_segment(
             None => (text.get(..range.start + r.start).unwrap_or(""), text.get(range.start + r.end..).unwrap_or("")),
             Some(_) => ("", ""),
         };
-        let g = shape_cached(face, &src[r.clone()], if up { &upright_feats } else { &feats }, lang, caps, up, around);
+        let piece = designcraft_fonts::features_in(if up { &upright_feats } else { &feats }, r.clone());
+        let g = shape_cached(face, &src[r.clone()], &piece, lang, caps, up, around, styles.cluster_chars);
         upright.extend(std::iter::repeat_n(up, g.len()));
         shaped.extend(g.into_iter().map(|g| ShapedGlyph { cluster: g.cluster + r.start, ..g }));
     }
@@ -1262,9 +1360,27 @@ fn shape_segment(
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         let body = adv;
+        // Tracking follows a letter with its marks, on the glyph laid out last of them, so it never
+        // moves a mark off its letter. A run shaped across styles keeps every character in a
+        // cluster of its own, and its glyphs come in text order: left to right a mark follows its
+        // letter (the mark takes the tracking, not the letter before it); right to left the
+        // shaper sets a mark before its letter, which is laid out last and takes it (a mark,
+        // never). Left to right the mark may also start the next segment (a piece shaped apart, a
+        // face of its own): the source text after this one says so. A generated label never
+        // looks past itself.
+        let tracked = last_in_cluster
+            && if sg.rtl {
+                !is_mark(ch)
+            } else {
+                let next = match shaped.get(gi + 1) {
+                    Some(x) => src.get(x.cluster..),
+                    None => replacement.map_or_else(|| text.get(range.end..), |_| None),
+                };
+                !starts_with_mark(next)
+            };
         if ch == SOFT_HYPHEN {
             adv = 0.0;
-        } else if last_in_cluster {
+        } else if tracked {
             adv += tracking + manual;
         }
         let mark = face.glyph_is_mark(sg.gid);
@@ -1324,6 +1440,11 @@ fn shape_segment(
             list_label: false,
         });
     }
+}
+
+/// Whether `text` starts with a combining mark.
+fn starts_with_mark(text: Option<&str>) -> bool {
+    text.and_then(|t| t.chars().next()).is_some_and(is_mark)
 }
 
 /// `src` cut into runs set upright in vertical text (CJK, and with `rotate_roman` half-width
@@ -1494,7 +1615,33 @@ fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, O
 
 #[cfg(test)]
 mod tests {
-    use super::overlay_bands;
+    use super::{cuts_inside, overlay_bands, upright_features};
+    use designcraft_fonts::{Feature, feature};
+
+    /// Upright with Horizontal Kana on, no hkna stays on, not even one over a piece's bytes (two
+    /// hkna pieces that differ in another switch shape as one, each switch ranged): vkna takes over.
+    #[test]
+    fn upright_kana_drops_a_ranged_horizontal_kana() {
+        let (Some(hkna), Some(vkna)) = (feature("hkna"), feature("vkna")) else { panic!("valid tags") };
+        let feats = [Feature { start: 0, end: 3, ..hkna }, Feature { start: 3, end: 6, ..hkna }];
+        let up = upright_features(&feats, true);
+        assert!(up.iter().all(|f| f.tag != hkna.tag || f.value == 0), "{up:?}");
+        assert!(up.iter().any(|f| f.tag == vkna.tag && f.value == 1 && f.start == 0 && f.end == u32::MAX));
+        assert_eq!(upright_features(&feats, false), feats.to_vec());
+    }
+
+    /// The binary search finds the same cuts inside a cluster as checking every cut.
+    #[test]
+    fn cuts_inside_match_a_scan_of_every_cut() {
+        let cuts: Vec<(usize, u32)> = [3, 4, 7, 10, 11, 12, 20].into_iter().map(|c| (c, 0)).collect();
+        for byte in 0..24 {
+            for len in 0..12 {
+                let want: Vec<usize> = cuts.iter().map(|c| c.0).filter(|&c| byte < c && c < byte + len).collect();
+                assert_eq!(cuts_inside(&cuts, byte, len).collect::<Vec<_>>(), want, "{byte}+{len}");
+            }
+        }
+        assert_eq!(cuts_inside(&cuts, usize::MAX - 1, 5).count(), 0);
+    }
 
     /// The band sweep picks the same top overlay as checking every overlay at each boundary.
     #[test]

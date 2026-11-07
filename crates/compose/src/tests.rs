@@ -103,6 +103,273 @@ fn justified_lines_fill_the_measure() {
     assert!(last.end_x < last.x1 - 1.0, "last line is ragged");
 }
 
+/// A vowelled Arabic word (beh with fatha, lam with kasra) and the byte of each mark.
+const VOWELLED: &str = "\u{0628}\u{064E}\u{0644}\u{0650}";
+const VOWELLED_MARKS: [usize; 2] = [2, 6];
+
+/// `text` composed in a `width` wide frame with `para`, its marks at `marks` (bytes) in a colour
+/// of their own when `colour` (so the runs are shaped with a cluster per character), and the
+/// style changes `format` makes. `None` when no installed font has every character (the test
+/// can't say anything then).
+fn with_coloured_marks(
+    text: &str,
+    marks: &[usize],
+    colour: bool,
+    width: f64,
+    para: ParaAttrs,
+    format: impl Fn(&mut designcraft_doc::CharFormat),
+) -> Option<ComposedStory> {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+    d.settings.glyph_fallback = true;
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), format);
+    if colour {
+        for &m in marks {
+            let len = text[m..].chars().next().unwrap().len_utf8();
+            story.format_chars(m..m + len, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let missing = all_lines(&cs).iter().flat_map(|l| l.glyphs.iter()).any(|g| g.visible && g.gid == 0);
+    (!missing).then_some(cs)
+}
+
+/// The glyphs of mark `m` (a story byte) and of its base letter on line `l`: in the letter's
+/// cluster (in the font's glyph order) or in a cluster of its own.
+fn mark_and_base(l: &Line, m: usize) -> (&PlacedGlyph, &PlacedGlyph) {
+    let cluster = l.glyphs.iter().find(|g| g.len > 0 && g.byte <= m && m < g.byte + g.len).map(|g| g.byte).unwrap();
+    let is_mark = |g: &PlacedGlyph| g.face.get().glyph_is_mark(g.gid);
+    let mark = l.glyphs.iter().find(|g| (g.byte == cluster || g.byte == m) && is_mark(g)).unwrap();
+    let base = l.glyphs.iter().filter(|g| g.visible && g.byte <= m && !is_mark(g)).max_by_key(|g| g.byte).unwrap();
+    (mark, base)
+}
+
+/// Whether mark `m` (a story byte) is drawn on its base letter: the middle of its ink lies within
+/// the letter's advance.
+fn mark_on_its_base(l: &Line, m: usize) -> Result<(), String> {
+    let (mark, base) = mark_and_base(l, m);
+    let outline = designcraft_fonts::FontDb::global().outline(mark.face.get(), mark.gid);
+    let ink = designcraft_geom::Shape::bounding_box(&*outline);
+    let centre = mark.x + (ink.x0 + ink.x1) / 2.0 * mark.sx;
+    let (a, b) = (base.x.min(base.x + base.adv), base.x.max(base.x + base.adv));
+    if centre > a && centre < b { Ok(()) } else { Err(format!("mark {m} at {centre}, its letter at {a}..{b}")) }
+}
+
+/// A combining mark in a colour of its own still sits on its base letter (the runs shape as one)
+/// and keeps its colour: colour-coded texts put single vowel marks in their own colour. Both a
+/// Latin accent and Arabic vowel marks.
+#[test]
+fn a_mark_in_its_own_colour_stays_on_its_base() {
+    let latin = "Ax\u{301}y";
+    for (text, marks) in [(latin, vec![latin.find('\u{301}').unwrap()]), (VOWELLED, VOWELLED_MARKS.to_vec())] {
+        let place = |colour: bool| with_coloured_marks(text, &marks, colour, 300.0, ParaAttrs::default(), |_| {});
+        let (Some(plain), Some(coloured)) = (place(false), place(true)) else {
+            eprintln!("skipped {text:?}: no installed font has its letters and marks");
+            continue;
+        };
+        let (pl, cl) = (all_lines(&plain)[0], all_lines(&coloured)[0]);
+        assert_eq!(pl.glyphs.len(), cl.glyphs.len(), "{text:?}");
+        for &m in &marks {
+            mark_on_its_base(cl, m).unwrap();
+            let (mark, base) = mark_and_base(cl, m);
+            assert_eq!(coloured.styles[mark.style as usize].fill, "C=100 M=0 Y=0 K=0", "{text:?}: the mark keeps its colour");
+            assert_ne!(coloured.styles[base.style as usize].fill, "C=100 M=0 Y=0 K=0", "{text:?}: its letter keeps its own");
+            // Where it is without the colour, relative to its letter (the shaper may round the
+            // offsets of a mark in a cluster of its own a little differently).
+            let offset = |(mark, base): (&PlacedGlyph, &PlacedGlyph)| (mark.x - base.x, mark.y - base.y);
+            let ((x, y), (cx, cy)) = (offset(mark_and_base(pl, m)), offset((mark, base)));
+            assert!((x - cx).abs() < 0.05 && (y - cy).abs() < 0.05, "{text:?}: the mark moved on its letter: {x},{y} → {cx},{cy}");
+        }
+    }
+}
+
+/// Tracking goes after a letter with its marks, in either direction: a mark in its own colour (a
+/// cluster of its own) gets no tracking between itself and its letter, and the next letter is
+/// where it is without the colour. Right to left the shaper sets a mark before its letter, which
+/// is laid out after it: tracking on the mark there moved the letter off it.
+#[test]
+fn tracking_never_separates_a_mark_from_its_letter() {
+    let latin = "Ax\u{301}y";
+    for (text, marks) in [(latin, vec![latin.find('\u{301}').unwrap()]), (VOWELLED, VOWELLED_MARKS.to_vec())] {
+        let place = |colour: bool| with_coloured_marks(text, &marks, colour, 300.0, ParaAttrs::default(), |f| f.over.tracking = Some(300.0));
+        let (Some(plain), Some(coloured)) = (place(false), place(true)) else {
+            eprintln!("skipped {text:?}: no installed font has its letters and marks");
+            continue;
+        };
+        // The letters (not the marks) are where they are without the colour.
+        let xs = |cs: &ComposedStory| {
+            all_lines(cs)[0].glyphs.iter().filter(|g| !g.face.get().glyph_is_mark(g.gid)).map(|g| (g.gid, g.x, g.adv)).collect::<Vec<_>>()
+        };
+        let (p, c) = (xs(&plain), xs(&coloured));
+        assert_eq!(p.len(), c.len(), "{text:?}");
+        for (a, b) in p.iter().zip(&c) {
+            assert!(a.0 == b.0 && (a.1 - b.1).abs() < 0.05 && (a.2 - b.2).abs() < 0.05, "{text:?}: {a:?} → {b:?}");
+        }
+        for &m in &marks {
+            mark_on_its_base(all_lines(&coloured)[0], m).unwrap();
+        }
+    }
+}
+
+const VOWELLED_TEXT: &str = "\u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650} \u{0628}\u{064E}\u{0644}\u{0650}";
+
+fn vowelled_text_marks() -> Vec<usize> {
+    VOWELLED_TEXT.char_indices().filter(|(_, c)| matches!(c, '\u{064E}' | '\u{0650}')).map(|(i, _)| i).collect()
+}
+
+/// With every character in a cluster of its own (vowel marks in their own colour), lines still
+/// break where they do without the colour, never between a letter and its mark, and justified
+/// letter spacing keeps each mark on its letter.
+#[test]
+fn line_breaks_and_justification_keep_marks_on_their_letters() {
+    let marks = vowelled_text_marks();
+    let para = ParaAttrs {
+        align: Some(Align::RightJustified),
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        kashidas: Some(false),
+        word_space_max: Some(1.0),
+        letter_space_max: Some(0.5),
+        ..Default::default()
+    };
+    let place = |colour: bool| with_coloured_marks(VOWELLED_TEXT, &marks, colour, 32.0, para.clone(), |_| {});
+    let (Some(plain), Some(coloured)) = (place(false), place(true)) else {
+        eprintln!("skipped: no installed font has these Arabic letters and marks");
+        return;
+    };
+    let ranges = |cs: &ComposedStory| all_lines(cs).iter().map(|l| l.range.clone()).collect::<Vec<_>>();
+    assert!(ranges(&plain).len() > 2, "it wraps: {:?}", ranges(&plain));
+    assert_eq!(ranges(&coloured), ranges(&plain));
+    for l in all_lines(&coloured) {
+        assert!(!marks.contains(&l.range.start), "a line starts with a mark: {:?}", l.range);
+        for &m in marks.iter().filter(|m| l.range.contains(m)) {
+            mark_on_its_base(l, m).unwrap();
+        }
+    }
+}
+
+/// With every character in a cluster of its own, the caret never stops between a letter and its
+/// mark (clicking, or stepping as drawn), and still stops between the letters.
+#[test]
+fn caret_positions_keep_a_mark_with_its_letter() {
+    let marks = VOWELLED_MARKS.to_vec();
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    let place = |colour: bool| with_coloured_marks(VOWELLED, &marks, colour, 300.0, para.clone(), |_| {});
+    let (Some(plain), Some(coloured)) = (place(false), place(true)) else {
+        eprintln!("skipped: no installed font has these Arabic letters and marks");
+        return;
+    };
+    let steps = |cs: &ComposedStory| {
+        let mut at = 0;
+        let mut seen = vec![at];
+        while let Some(next) = crate::visual_step(cs, at, true) {
+            if seen.contains(&next) {
+                break;
+            }
+            seen.push(next);
+            at = next;
+        }
+        seen
+    };
+    let mut stops = steps(&coloured);
+    stops.sort_unstable();
+    assert_eq!(stops, [0, 4, 8], "between the letters, never before a mark");
+    let hits: Vec<usize> = (0..120).filter_map(|i| crate::hit(&coloured, 0, Point::new(f64::from(i) * 0.5, 10.0))).collect();
+    assert!(hits.iter().all(|h| !marks.contains(h)), "{hits:?}");
+    assert!(plain.frames[0].lines[0].glyphs.iter().all(|g| g.gid != 0));
+}
+
+/// A generated label (a text variable) that starts with a combining mark is not a mark of the
+/// source: the caret still stops before its marker.
+#[test]
+fn caret_stops_before_a_label_that_starts_with_a_mark() {
+    use designcraft_doc::vars::{TextVariable, VarKind, var_char};
+    let marker = var_char(Document::new(&NewDocument::default()).text_variables.len()).unwrap();
+    let text = format!("ab{marker}c");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    d.text_variables.push(TextVariable::new("Mark first", VarKind::Custom { text: "\u{301}x".into() }));
+    assert_eq!(designcraft_doc::vars::var_index(marker), Some(d.text_variables.len() - 1));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    let at = text.find(marker).unwrap();
+    assert!(l.glyphs.iter().any(|g| g.byte == at && g.generated_text.is_some()), "the label is laid out");
+    let stops: Vec<usize> = crate::caret_stops(l).into_iter().map(|(p, _)| p).collect();
+    assert!(stops.contains(&at), "{stops:?}");
+}
+
+/// Tracking and manual kerning stay off a letter whose mark is shaped apart: a ligature broken by
+/// a change of colour ("fi") shapes the group piece by piece, and a mark in a colour of its own is
+/// then a piece after its letter's. The letter took the spacing, and the mark took it again.
+#[test]
+fn tracking_skips_a_letter_whose_mark_is_shaped_apart() {
+    let text = "fix\u{301}y";
+    let mark = text.find('\u{301}').unwrap();
+    let place = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.kerning = Some(designcraft_doc::Kerning::Manual(300.0)));
+        story.format_chars(1..2, |f| f.over.fill = Some("Cyan".into()));
+        if colour {
+            story.format_chars(mark..mark + 2, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let (plain, coloured) = (place(false), place(true));
+    // The letters (not the mark) are where they are with the mark in its letter's piece. The
+    // broken ligature proves the group was shaped piece by piece (tracking would turn ligatures
+    // off: manual kerning adds the same spacing).
+    assert!(all_lines(&plain)[0].glyphs.iter().any(|g| g.byte == 0 && g.len == 1), "f and i shaped apart");
+    let letters = |cs: &ComposedStory| {
+        all_lines(cs)[0].glyphs.iter().filter(|g| !g.face.get().glyph_is_mark(g.gid)).map(|g| (g.gid, g.x, g.adv)).collect::<Vec<_>>()
+    };
+    let (p, c) = (letters(&plain), letters(&coloured));
+    assert_eq!(p.len(), c.len());
+    for (a, b) in p.iter().zip(&c) {
+        assert!(a.0 == b.0 && (a.1 - b.1).abs() < 0.05 && (a.2 - b.2).abs() < 0.05, "{a:?} → {b:?}");
+    }
+}
+
+/// Pieces that differ only in a feature switch (here Ligatures off) are shaped as one, the switch
+/// over its own piece: the kerning across them stays.
+#[test]
+fn a_feature_switch_keeps_kerning() {
+    let (mut d, sid, _) = doc_with("AVAV", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+    let xs = |d: &Document| all_lines(&compose_story(d, sid, &ComposeOptions::default()))[0].glyphs.iter().map(|g| (g.x, g.adv)).collect::<Vec<_>>();
+    let kerned = xs(&d);
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::None));
+    assert_ne!(xs(&d), kerned, "the bundled font kerns A and V");
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.kerning = Some(designcraft_doc::Kerning::Metrics));
+    assert_eq!(xs(&d), kerned);
+    d.story_mut(sid).unwrap().format_chars(1..2, |f| f.over.ligatures = Some(false));
+    assert_eq!(xs(&d), kerned);
+}
+
+/// Lam-alif stays one ligature when its letters differ only in colour, as in InDesign: it takes
+/// the lam's colour. (Outside Arabic a change of style still ends a ligature, see
+/// `colour_change_keeps_kerning_and_ligatures_keep_colour`.)
+#[test]
+fn lam_alif_survives_a_colour_change() {
+    let text = "\u{0644}\u{0627}";
+    let set = |colour: bool| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if colour {
+            d.story_mut(sid).unwrap().format_chars(2..4, |f| f.over.fill = Some("Cyan".into()));
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let glyphs = &cs.frames[0].lines[0].glyphs;
+        let fills: Vec<String> = glyphs.iter().map(|g| cs.styles[g.style as usize].fill.clone()).collect();
+        (glyphs.iter().map(|g| (g.gid, g.byte, g.len)).collect::<Vec<_>>(), fills)
+    };
+    let (plain, _) = set(false);
+    if plain.len() != 1 || plain[0].0 == 0 {
+        eprintln!("skipped: no installed font forms the lam-alif ligature");
+        return;
+    }
+    let (coloured, fills) = set(true);
+    assert_eq!(coloured, plain, "one lam-alif");
+    assert_ne!(fills[0], "Cyan", "in the lam's colour");
+}
+
 #[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
@@ -3137,6 +3404,34 @@ fn warichu_hit_caret_and_selection_follow_each_row() {
     assert!(!z_style.warichu && (rule_baseline(z_style, l, z) - l.baseline).abs() < 1e-9);
 }
 
+/// A click on a warichu row never puts the caret between a letter and a mark in a colour of its
+/// own (a cluster of its own), as on a line without stacked rows.
+#[test]
+fn a_click_in_a_warichu_row_keeps_a_mark_with_its_letter() {
+    let text = "A\u{301}BCDEFGHZ";
+    let note = text.len() - 1;
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..note, |f| {
+        f.over.warichu = Some(true);
+        f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+    });
+    story.format_chars(1..3, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert!(crate::line_has_stacked_rows(l), "the note is set in two rows");
+    let mark = l.glyphs.iter().find(|g| g.byte == 1 && g.len > 0).expect("the mark is a cluster of its own");
+    let row: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && (g.y - mark.y).abs() < 0.01).collect();
+    let x0 = row.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
+    let x1 = row.iter().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    let y = l.baseline + mark.y;
+    let hits: Vec<usize> = (0..=200).filter_map(|i| hit(&cs, 0, Point::new(x0 + (x1 - x0) * f64::from(i) / 200.0, y))).collect();
+    assert!(hits.contains(&0) && hits.contains(&3), "{hits:?}");
+    assert!(!hits.contains(&1), "{hits:?}");
+}
+
 #[test]
 fn tate_chu_yoko_sets_digits_across_one_em() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
@@ -4172,6 +4467,24 @@ fn drop_cap_caret_and_hit_testing() {
     assert!((x - dc.x).abs() < 1e-6 && (bl - lines[2].baseline).abs() < 1e-6 && asc > 24.0, "{x} {bl} {asc}");
     let (_, x, bl, _, _) = caret(&cs, 1).unwrap();
     assert!(x >= dc.x + dc.adv - 1e-6 && (bl - lines[0].baseline).abs() < 1e-6);
+}
+
+/// A click in a drop cap never puts the caret between its letter and a mark in a colour of its
+/// own (a cluster of its own), as on the line.
+#[test]
+fn a_click_in_a_drop_cap_keeps_a_mark_with_its_letter() {
+    let text = format!("A\u{301}{LOREM}");
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    d.story_mut(sid).unwrap().format_chars(1..3, |f| f.over.fill = Some("C=100 M=0 Y=0 K=0".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = all_lines(&cs)[0];
+    let dc = l.drop_cap.unwrap();
+    assert!(dc.end >= 3, "the mark is in the drop cap: {dc:?}");
+    assert!(l.glyphs.iter().any(|g| g.byte == 1 && g.len > 0), "the mark is a cluster of its own");
+    let y = (dc.rect.y0 + dc.rect.y1) / 2.0;
+    let hits: Vec<usize> = (0..=40).filter_map(|i| hit(&cs, 0, Point::new(dc.rect.x0 + dc.rect.width() * f64::from(i) / 40.0, y))).collect();
+    assert!(hits.contains(&0) && hits.contains(&3), "{hits:?}");
+    assert!(!hits.contains(&1), "{hits:?}");
 }
 
 #[test]

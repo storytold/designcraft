@@ -5749,7 +5749,26 @@ fn caret_stops(l: &Line) -> Vec<(usize, f64)> {
     ps.extend([l.range.start, l.range.end]);
     ps.sort_unstable();
     ps.dedup();
-    ps.into_iter().filter(|p| l.range.contains(p) || *p == l.range.end).map(|p| (p, caret_x(l, p))).collect()
+    ps.into_iter().filter(|p| (l.range.contains(p) || *p == l.range.end) && !before_own_mark(l, *p)).map(|p| (p, caret_x(l, p))).collect()
+}
+
+/// Whether glyph `i` of line `l` is a combining mark in a cluster of its own after a letter (a
+/// mark in a colour of its own, see `shape::StyleRuns::cluster_chars`): the caret stays with its
+/// letter, as it does when the mark is in the letter's cluster. Generated text (a label that
+/// starts with a mark) is not a mark of the source: the caret before its marker stays.
+fn own_mark(l: &Line, i: usize) -> bool {
+    l.glyphs.get(i).is_some_and(|g| {
+        g.len > 0
+            && i > 0
+            && g.byte > l.range.start
+            && g.generated_text.is_none()
+            && unicode_bidi::bidi_class(g.rendered_char) == unicode_bidi::BidiClass::NSM
+    })
+}
+
+/// Whether story byte `p` is where such a mark ([`own_mark`]) starts: no caret position.
+fn before_own_mark(l: &Line, p: usize) -> bool {
+    l.glyphs.iter().enumerate().any(|(i, g)| g.byte == p && own_mark(l, i))
 }
 
 /// Bidi caret movement: the position one step to the left (or right) of `pos` on its line as
@@ -5822,6 +5841,8 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
             .flat_map(|g| [g.byte, g.byte + g.len])
+            // No caret position between a letter and a mark in a cluster of its own, as on the line.
+            .filter(|&at| !before_own_mark(l, at))
             .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
     }
     let l = hit_line(ft, p)?;
@@ -5834,7 +5855,12 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     }
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
-    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+    for (i, g) in l.glyphs.iter().enumerate().filter(|(_, g)| g.len > 0) {
+        if own_mark(l, i) {
+            // No caret position between a letter and its mark.
+            best = g.byte + g.len;
+            continue;
+        }
         let mid = g.x + g.adv / 2.0;
         if p.x < mid && p.x >= prev_mid {
             return Some(g.byte);
@@ -5869,7 +5895,8 @@ fn glyph_contains(l: &Line, g: &PlacedGlyph, p: Point) -> bool {
 }
 
 /// Midpoint walk over `glyphs` (visual order). Past the last glyph yields the byte after it, or
-/// the line end when that glyph closes the line.
+/// the line end when that glyph closes the line. A mark in a cluster of its own ([`own_mark`])
+/// is no candidate.
 fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
     let last_byte = l.glyphs.iter().rev().find(|g| g.len > 0).map(|g| g.byte);
@@ -5879,6 +5906,11 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     for g in &glyphs {
         if last_byte == Some(g.byte) {
             saw_last = true;
+        }
+        if before_own_mark(l, g.byte) {
+            // No caret position between a letter and its mark, as on a line without stacked rows.
+            best = g.byte + g.len;
+            continue;
         }
         let mid = g.x + g.adv / 2.0;
         if p_x < mid && p_x >= prev_mid {
