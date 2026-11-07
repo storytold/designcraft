@@ -242,6 +242,8 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
+    /// The last recovery write failed: its retry stays due even while every checkpoint looks current.
+    pub(crate) recovery_failed: bool,
     /// The egui context (set by the first UI pass): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the

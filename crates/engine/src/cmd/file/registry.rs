@@ -67,9 +67,10 @@ pub fn specs() -> Vec<CommandSpec> {
             let dir = recovery_dir(s, p, FolderAccess::Read)?;
             Ok(Value::Array(crate::recovery::list(&dir).into_iter().map(|(uid, mut m)| { m["uid"] = json!(uid); m }).collect()))
         }),
-        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None, "{dir?} — write every unsaved document to the recovery folder (the app does this on a timer)", always, |s, p| {
+        cmd!(noundo "file.recovery.save", "Save Recovery Data", [], None, "{dir?, changedOnly?} — write every unsaved document to the recovery folder (the app does this on a timer, with changedOnly: documents still as their checkpoint there left them are not written again)", always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Write)?;
-            Ok(json!({"saved": crate::recovery::save_tracked(s, &dir)?}))
+            let changed_only = p.get("changedOnly").and_then(Value::as_bool).unwrap_or(false);
+            Ok(json!({"saved": crate::recovery::save_tracked(s, &dir, changed_only)?}))
         }),
         cmd!(noundo "file.recovery.open", "Recover Documents", [], None, "{dir?} — reopen documents left in the recovery folder (unsaved)", always, |s, p| {
             // Reopening removes the entries it read.

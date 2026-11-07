@@ -822,3 +822,122 @@ fn a_folder_another_running_app_holds_is_refused() {
     assert!(save(&dirty_session(), root.path()).is_err());
     assert!(list(root.path()).is_empty());
 }
+
+/// The timer's checkpoint: changed documents only.
+fn timer_checkpoint(s: &mut Session, dir: &Path) -> Result<usize> {
+    let saved = s.execute("file.recovery.save", &json!({"dir": dir.to_string_lossy(), "changedOnly": true}))?["saved"].clone();
+    Ok(usize::try_from(saved.as_u64().unwrap()).unwrap())
+}
+
+fn type_text(s: &mut Session, text: &str) {
+    s.execute("frame.create", &json!({"rect": [10, 120, 100, 200], "content": "text", "text": text})).unwrap();
+}
+
+/// A 62 MB document was zipped and written again every 30 s although nothing had changed.
+#[test]
+fn the_timer_leaves_an_unchanged_documents_checkpoint_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = run_dir(root.path()).unwrap();
+    let mut s = unsaved("first");
+    s.recovery_dir = Some(dir.clone());
+    assert!(has_changes_to_checkpoint(&s, &dir));
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    let (doc, meta) = files(&dir, s.docs[0].uid);
+    let stamps = || (Stamp::of(&doc), Stamp::of(&meta));
+    let written = stamps();
+    // Nothing changed: nothing is written, not even the metadata's time.
+    assert!(!has_changes_to_checkpoint(&s, &dir));
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 0);
+    assert_eq!(stamps(), written);
+    // An edit is written at the next tick.
+    type_text(&mut s, "second");
+    assert!(has_changes_to_checkpoint(&s, &dir));
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert_eq!(persisted_texts(&dir), ["first", "second"]);
+    // Undo back to the state written last: still current.
+    type_text(&mut s, "undone");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 0);
+    // Either file removed behind the app's back, or rewritten by something else: written again.
+    std::fs::remove_file(&doc).unwrap();
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert_eq!(persisted_texts(&dir), ["first", "second"]);
+    std::fs::remove_file(&meta).unwrap();
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert!(meta.exists());
+    std::fs::write(&meta, b"{damaged").unwrap();
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 0);
+    // Another folder has no checkpoint of it yet.
+    let other = tempfile::tempdir().unwrap();
+    assert_eq!(timer_checkpoint(&mut s, other.path()).unwrap(), 1);
+    // Without changedOnly the command keeps its contract: every unsaved document.
+    assert_eq!(s.execute("file.recovery.save", &json!({})).unwrap()["saved"], 1);
+    // Saved, the entry goes; edited again, it comes back.
+    let saved = root.path().join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy()})).unwrap();
+    assert!(list(&dir).is_empty());
+    assert!(!has_changes_to_checkpoint(&s, &dir));
+    type_text(&mut s, "third");
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert_eq!(persisted_texts(&dir), ["first", "second", "third"]);
+}
+
+/// The timer's check and the write compared the folder differently, so a folder spelled another
+/// way than its checkpoint asked for a frame every interval and wrote nothing.
+#[test]
+fn a_folder_spelled_another_way_is_the_same_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("shared");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::create_dir(root.path().join("elsewhere")).unwrap();
+    let spelled = root.path().join("elsewhere").join("..").join("shared");
+    assert_ne!(spelled, dir);
+    let mut s = unsaved("first");
+    s.recovery_dir = Some(spelled.clone());
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert!(!has_changes_to_checkpoint(&s, &spelled));
+    assert_eq!(timer_checkpoint(&mut s, &spelled).unwrap(), 0);
+    type_text(&mut s, "second");
+    assert!(has_changes_to_checkpoint(&s, &spelled));
+    assert_eq!(timer_checkpoint(&mut s, &spelled).unwrap(), 1);
+    assert!(!has_changes_to_checkpoint(&s, &dir));
+}
+
+/// Skipping an unchanged document does not loosen what a shared folder allows: a running app's
+/// folder is still refused, and an entry replaced by someone else is not taken for this run's.
+#[test]
+fn the_timer_keeps_the_rules_of_shared_folders() {
+    let shared = tempfile::tempdir().unwrap();
+    let mut s = unsaved("mine");
+    assert_eq!(timer_checkpoint(&mut s, shared.path()).unwrap(), 1);
+    assert_eq!(timer_checkpoint(&mut s, shared.path()).unwrap(), 0);
+    // Replaced behind this run's back: no longer current, so not skipped.
+    let (doc, _) = files(shared.path(), s.docs[0].uid);
+    std::fs::write(&doc, b"theirs").unwrap();
+    assert!(!is_current(&s.docs[0], &s.docs[0].doc, shared.path()));
+    // A folder a running app holds is refused, changed or not.
+    let held = tempfile::tempdir().unwrap();
+    let lock = new_lock(held.path()).unwrap();
+    lock.try_lock().unwrap();
+    assert!(timer_checkpoint(&mut s, held.path()).is_err());
+    assert!(list(held.path()).is_empty());
+}
+
+/// A recovered document was written again at the first tick although its new entry already
+/// held it.
+#[test]
+fn a_recovered_document_is_not_written_again_until_it_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let left = root.path().join("left");
+    assert_eq!(save(&unsaved("recovered"), &left).unwrap(), 1);
+    let dir = run_dir(&root.path().join("own")).unwrap();
+    let mut s = Session::new();
+    s.recovery_dir = Some(dir.clone());
+    assert_eq!(open(&mut s, &left).unwrap().len(), 1);
+    assert!(!has_changes_to_checkpoint(&s, &dir), "republished into this run's folder");
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 0);
+    type_text(&mut s, "edited after recovery");
+    assert_eq!(timer_checkpoint(&mut s, &dir).unwrap(), 1);
+    assert_eq!(persisted_texts(&dir), ["edited after recovery", "recovered"]);
+}
