@@ -104,6 +104,9 @@ pub fn combine(op: Op, shapes: &[PathData]) -> Option<PathData> {
     if base.is_some_and(|b| b.is_empty()) {
         return None;
     }
+    if op == Op::Intersect && all.iter().any(|p| p.is_empty()) {
+        return None;
+    }
     let flo: Vec<Vec<SimpleBezierPath>> = all.into_iter().filter(|p| !p.is_empty()).collect();
     let (first, rest) = flo.split_first()?;
     let union = |v: &[Vec<SimpleBezierPath>]| -> Vec<SimpleBezierPath> {
