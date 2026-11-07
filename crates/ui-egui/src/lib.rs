@@ -43,6 +43,7 @@ mod section_options;
 pub mod separations;
 mod shortcut_import;
 mod shortcuts_dialog;
+mod spelling_ui;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;

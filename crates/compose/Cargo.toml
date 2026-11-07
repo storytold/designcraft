@@ -9,6 +9,7 @@ description = "DesignCraft text composition: paragraph composer (Knuth–Plass),
 workspace = true
 
 [dependencies]
+craft-proof = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-bidi-mirroring = { workspace = true }
