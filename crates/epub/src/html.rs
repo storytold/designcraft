@@ -14,6 +14,7 @@ pub enum Block {
 pub fn reading_order(doc: &Document) -> Vec<Block> {
     // Articles, when there are any to export, decide the order (and what's included).
     if doc.articles.iter().any(|a| a.export) {
+        let hidden_layers: Vec<_> = doc.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
         let mut out = Vec::new();
         let mut seen = Vec::new();
         for a in doc.articles.iter().filter(|a| a.export) {
@@ -27,11 +28,20 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                     Content::Graphic(_) => out.push(Block::Image(it.id)),
                     _ => {}
                 };
-                top.walk(&mut |i| push(i));
+                // Hidden items and items on hidden layers (with everything in them) aren't on the page.
+                let mut stack = vec![top];
+                while let Some(it) = stack.pop() {
+                    if it.hidden || hidden_layers.contains(&it.layer) {
+                        continue;
+                    }
+                    push(it);
+                    stack.extend(it.children().iter().rev().map(|c| &**c));
+                }
             }
         }
         return out;
     }
+    let hidden_layers: Vec<_> = doc.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
     let mut keyed: Vec<((usize, i64, i64), Block)> = Vec::new();
     let mut seen_stories = Vec::new();
     for (si, sp) in doc.spreads.iter().enumerate() {
@@ -45,7 +55,8 @@ pub fn reading_order(doc: &Document) -> Vec<Block> {
                 continue;
             };
             let xf = *parent * it.xf;
-            if it.hidden {
+            // Hidden items and items on hidden layers (with everything in them) aren't on the page.
+            if it.hidden || hidden_layers.contains(&it.layer) {
                 continue;
             }
             let children = it.children();
