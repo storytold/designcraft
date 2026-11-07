@@ -545,6 +545,51 @@ impl Story {
         self.rev = self.rev.wrapping_add(1);
     }
 
+    /// [`Story::format_chars`] over many ranges in one pass: `pieces` ascend and don't overlap, and
+    /// `f` gets each piece's own value. Splitting and merging the runs happens once, not per range.
+    pub fn format_pieces<T>(&mut self, pieces: &[(std::ops::Range<usize>, T)], mut f: impl FnMut(&mut CharFormat, &T)) {
+        let mut out: Vec<CharRun> = Vec::with_capacity(self.chars.len() + pieces.len());
+        let (mut j, mut start) = (0, 0);
+        for r in std::mem::take(&mut self.chars) {
+            let end = start + r.len;
+            let mut pos = start;
+            if r.len == 0 {
+                out.push(r);
+                continue;
+            }
+            while pos < end {
+                while pieces.get(j).is_some_and(|(p, _)| p.end <= pos) {
+                    j += 1;
+                }
+                let (cut, piece) = match pieces.get(j) {
+                    Some((p, v)) if p.start <= pos => (p.end.min(end), Some(v)),
+                    Some((p, _)) => (p.start.min(end), None),
+                    None => (end, None),
+                };
+                let mut format = r.format.clone();
+                if let Some(v) = piece {
+                    f(&mut format, v);
+                }
+                out.push(CharRun { len: cut - pos, format });
+                pos = cut;
+            }
+            start = end;
+        }
+        self.chars = out;
+        self.normalize();
+        self.rev = self.rev.wrapping_add(1);
+    }
+
+    /// Apply `f` to paragraph `index` (as [`Story::format_paras`] does, keeping its table).
+    pub fn format_para(&mut self, index: usize, f: impl FnOnce(&mut ParaFormat)) {
+        if let Some(p) = self.paras.get_mut(index) {
+            let table = p.table;
+            f(p);
+            p.table = table;
+            self.rev = self.rev.wrapping_add(1);
+        }
+    }
+
     /// Apply `f` to every paragraph intersecting `range` (an empty range = the paragraph at it).
     pub fn format_paras(&mut self, range: std::ops::Range<usize>, mut f: impl FnMut(&mut ParaFormat)) {
         let a = self.para_at(range.start);
@@ -867,5 +912,21 @@ last");
                 }
             }
         }
+    }
+
+    /// `format_pieces` gives the same runs as one `format_chars` per piece.
+    #[test]
+    fn format_pieces_matches_format_chars() {
+        let mut a = st("one two\nthree four five\n\nsix");
+        let mut b = a.clone();
+        a.format_chars(4..9, |f| f.style = "X".into());
+        b.format_chars(4..9, |f| f.style = "X".into());
+        let n = a.len();
+        let pieces = [(0..2, 1u32), (2..4, 2), (6..11, 3), (11..n, 4)];
+        for (r, v) in &pieces {
+            a.format_chars(r.clone(), |f| f.style = format!("S{v}"));
+        }
+        b.format_pieces(&pieces, |f, v| f.style = format!("S{v}"));
+        assert_eq!(a.chars, b.chars);
     }
 }

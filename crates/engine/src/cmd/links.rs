@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use designcraft_compose::Cache;
-use designcraft_doc::{AssetId, Content, Document, Fingerprint, Item, ItemId, Selection, Story, StoryId, TextFileLink};
+use designcraft_doc::{AssetId, Content, Document, Fingerprint, Item, ItemId, Selection, SpreadRef, Story, StoryId, TextFileLink};
 use designcraft_geom::Affine;
 use serde_json::{Value, json};
 
@@ -310,13 +310,40 @@ fn shown<'a>(d: &'a Document, cache: &Cache, aid: AssetId) -> Vec<Shown<'a>> {
             walk(c, xf * it.xf, aid, page, out);
         }
     }
-    let mut out: Vec<Shown> = uses(d, aid)
-        .into_iter()
-        .filter_map(|id| {
-            let loc = d.find(id)?;
-            Some(Shown { item: d.item_at(&loc)?, page: d.page_of_item(id), parent_xf: d.parent_xf(&loc) })
-        })
-        .collect();
+    // One walk with the group transforms and the spread's first page carried along; a lookup of each
+    // placement (`Document::find`, `page_of_item`) searched the whole document per placement.
+    let mut out: Vec<Shown> = Vec::new();
+    let mut next_page = 0;
+    for r in d.spread_refs() {
+        let Some(sp) = d.spread(r) else { continue };
+        let first = match r {
+            SpreadRef::Doc(_) => {
+                let f = next_page;
+                next_page += sp.pages.len();
+                Some(f)
+            }
+            SpreadRef::Parent(_) => None,
+        };
+        fn graphics<'a>(
+            items: &'a [Arc<Item>],
+            xf: Affine,
+            aid: AssetId,
+            sp: &designcraft_doc::Spread,
+            first: Option<usize>,
+            out: &mut Vec<Shown<'a>>,
+        ) {
+            for it in items {
+                if let Content::Graphic(g) = &it.content
+                    && g.asset == aid
+                {
+                    let page = first.map(|f| f + sp.page_at_x(it.bounds().center().x).unwrap_or(0));
+                    out.push(Shown { item: it, page, parent_xf: xf });
+                }
+                graphics(it.children(), xf * it.xf, aid, sp, first, out);
+            }
+        }
+        graphics(&sp.items, Affine::IDENTITY, aid, sp, first, &mut out);
+    }
     for st in d.stories.values() {
         let mut composed = None;
         for (k, o) in st.objects.iter().enumerate() {
