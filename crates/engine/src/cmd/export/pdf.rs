@@ -552,7 +552,13 @@ mod overset_tests {
         s.execute("file.new", &json!({"width": 300, "height": 200, "pages": 1, "facingPages": false, "margins": 0})).unwrap();
         let frame = s.execute("frame.create", &json!({"rect": [20, 20, 280, 180], "content": "text", "text": "Short."})).unwrap();
         for command in ["file.exportPdf", "file.exportPptx"] {
-            assert_eq!(s.execute(command, &json!({})).unwrap()["warnings"], json!([]), "{command}");
+            // Nothing overflows here, so nothing should be reported *about the pages*. The PPTX
+            // export also says that fonts are not embedded (they are opt-in, as PowerPoint's own
+            // default), which is a separate note: keep this assertion to the page reports.
+            let r = s.execute(command, &json!({})).unwrap();
+            let about: Vec<&serde_json::Value> =
+                r["warnings"].as_array().unwrap().iter().filter(|w| w.as_str().is_some_and(|w| w.contains("not in the export"))).collect();
+            assert!(about.is_empty(), "{command}: {r}");
         }
         let story = s.execute("story.get", &json!({"story": frame["story"].clone()})).unwrap();
         assert!(story["overset"].is_null() && story["oversetChars"].is_null(), "{story}");
