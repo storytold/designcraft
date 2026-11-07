@@ -1,3 +1,4 @@
+use super::caret;
 use super::column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_drag};
 use super::guides::guide_drag;
 use super::ime::{finish_pending_ime_delete, ime_event};
@@ -297,6 +298,13 @@ fn note_release(ui: &egui::Ui, clicks_id: egui::Id, latest: Option<Pos2>, now: f
     }
 }
 
+/// Typing, IME input, a paste or a key press restarts the caret's blink.
+fn restart_caret_blink(ctx: &egui::Context, e: &egui::Event) {
+    if matches!(e, egui::Event::Text(_) | egui::Event::Ime(_) | egui::Event::Paste(_) | egui::Event::Key { pressed: true, .. }) {
+        caret::reset(ctx);
+    }
+}
+
 /// Give an open menu priority, then handle wheel/zoom/pan, spring Zoom, guide drags and primary pointer routing.
 pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect) {
     // While a context menu is open (in either pane), the click that closes it and the keys go to the menu.
@@ -347,6 +355,7 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         let (delay, dist) = ui.ctx().options(|o| (o.input_options.max_double_click_delay, o.input_options.max_click_dist));
         let n = press_count(ui.data(|d| d.get_temp(clicks_id)), o, now, delay, dist);
         ui.data_mut(|d| d.insert_temp(clicks_id, Clicks { at: f64::NEG_INFINITY, pos: o, n }));
+        caret::reset(ui.ctx());
         events.push(PointerEvent { kind: PointerKind::Down, pos: pos(o), mods: m, clicks: n });
         down = true;
     }
@@ -419,6 +428,7 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     let mut held =
         ui.data(|d| d.get_temp::<(egui::Modifiers, egui::Modifiers)>(modifiers_id())).map_or_else(|| ui.input(|i| i.modifiers), |(start, _)| start);
     for e in evs {
+        restart_caret_blink(ui.ctx(), &e);
         #[cfg(not(target_arch = "wasm32"))]
         let chord = {
             if let egui::Event::ModifiersChanged(m) = &e {
