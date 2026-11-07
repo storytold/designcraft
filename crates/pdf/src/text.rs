@@ -69,6 +69,17 @@ fn is_marker(c: char) -> bool {
     ('\u{E000}'..='\u{E1FF}').contains(&c)
 }
 
+/// The capital an All Caps glyph is drawn as, when its source text `t` is one letter whose
+/// uppercase is one other letter: that capital's ToUnicode entry then covers it, so the glyph
+/// needs no ActualText span (which poppler mishandles inside a tagged span).
+fn all_caps_char(g: &PlacedGlyph, t: &str) -> Option<char> {
+    let mut chars = t.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else { return None };
+    let mut upper = c.to_uppercase();
+    let (Some(u), None) = (upper.next(), upper.next()) else { return None };
+    (u != c && g.gid == g.face.glyph_for(u) && g.gid != g.face.glyph_for(c)).then_some(u)
+}
+
 /// Can `b` join the run `a` is in? A missing glyph (.notdef) is a run of its own.
 fn same_run(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
     b.visible
@@ -461,17 +472,24 @@ impl Exporter<'_> {
             let range = if let Some(t) = src {
                 prev_src = Some(g.byte);
                 let a = text.len();
-                text.push_str(t);
+                match all_caps_char(g, t) {
+                    Some(u) => text.push(u),
+                    None => text.push_str(t),
+                }
                 a..text.len()
             } else if g.len == 0 && prev_src == Some(g.byte) && !ranges.is_empty() {
                 // Second glyph of a multi-glyph cluster: share the cluster's text.
                 ranges[ranges.len() - 1].clone()
             } else if let Some(t) = g.generated_text.as_deref().filter(|t| !t.is_empty() && !t.chars().any(is_marker)) {
                 // Generated text (page numbers, list labels): its own characters, which a glyph
-                // the font substituted (small-cap or old-style figures) can't be mapped back to.
+                // the font substituted (small-cap or old-style figures) can't be mapped back to;
+                // an All Caps letter is its capital, as in story text.
                 prev_src = None;
                 let a = text.len();
-                text.push_str(t);
+                match all_caps_char(g, t) {
+                    Some(u) => text.push(u),
+                    None => text.push_str(t),
+                }
                 a..text.len()
             } else if g.generated_text.as_deref() == Some("") && !ranges.is_empty() {
                 // Later glyph of a generated cluster.
