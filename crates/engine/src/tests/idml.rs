@@ -378,7 +378,7 @@ fn placed_pdf_page_and_crop_round_trip_through_idml() {
     let mut spreads = String::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).unwrap();
-        if f.name().starts_with("Spreads/") {
+        if f.name().unwrap().starts_with("Spreads/") {
             std::io::Read::read_to_string(&mut f, &mut spreads).unwrap();
         }
     }
@@ -406,7 +406,7 @@ fn placed_pdf_page_and_crop_round_trip_through_idml() {
         let mut f = zip.by_index(i).unwrap();
         let mut body = String::new();
         std::io::Read::read_to_string(&mut f, &mut body).unwrap();
-        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        out.start_file(f.name().unwrap(), zip::write::SimpleFileOptions::default()).unwrap();
         std::io::Write::write_all(&mut out, body.replace(r#"PageNumber="2""#, r#"PageNumber="4294967295""#).as_bytes()).unwrap();
     }
     let hostile = designcraft_idml::import_idml(&out.finish().unwrap().into_inner()).unwrap();
@@ -440,14 +440,14 @@ fn idml_placed_pdf_cropped_to_its_media_box_gets_media_box_bounds() {
         let mut f = zip.by_index(i).unwrap();
         let mut body = Vec::new();
         std::io::Read::read_to_end(&mut f, &mut body).unwrap();
-        if f.name().starts_with("Spreads/") {
+        if f.name().unwrap().starts_with("Spreads/") {
             let text = String::from_utf8(body).unwrap().replace(r#"PDFCrop="CropTrim""#, r#"PDFCrop="CropMedia""#);
             let start = text.find("<GraphicBounds ").unwrap();
             let end = start + text[start..].find("/>").unwrap() + 2;
             body = format!("{}{}", &text[..start], &text[end..]).into_bytes();
             edited = true;
         }
-        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        out.start_file(f.name().unwrap(), zip::write::SimpleFileOptions::default()).unwrap();
         std::io::Write::write_all(&mut out, &body).unwrap();
     }
     assert!(edited);
@@ -622,7 +622,7 @@ fn with_attr_set(package: &[u8], name: &str, value: &str) -> (Vec<u8>, usize) {
         let mut f = zip.by_index(i).unwrap();
         let mut body = Vec::new();
         std::io::Read::read_to_end(&mut f, &mut body).unwrap();
-        if f.name().ends_with(".xml")
+        if f.name().unwrap().ends_with(".xml")
             && let Ok(text) = String::from_utf8(body.clone())
         {
             let (text, a) = replace_values(&text, &format!(" {name}=\""), '"', value);
@@ -632,7 +632,7 @@ fn with_attr_set(package: &[u8], name: &str, value: &str) -> (Vec<u8>, usize) {
             count += a + b + c + d;
             body = text.into_bytes();
         }
-        out.start_file(f.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        out.start_file(f.name().unwrap(), zip::write::SimpleFileOptions::default()).unwrap();
         std::io::Write::write_all(&mut out, &body).unwrap();
     }
     (out.finish().unwrap().into_inner(), count)

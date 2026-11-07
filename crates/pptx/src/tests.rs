@@ -52,7 +52,7 @@ fn shape_texts(slide: &str) -> Vec<String> {
 
 /// Every XML part parses.
 fn well_formed(z: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>) {
-    let names: Vec<String> = z.file_names().map(str::to_string).collect();
+    let names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
     for n in names.iter().filter(|n| n.ends_with(".xml") || n.ends_with(".rels")) {
         let x = part(z, n);
         let mut r = quick_xml::Reader::from_str(&x);

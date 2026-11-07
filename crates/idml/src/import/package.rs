@@ -27,11 +27,12 @@ impl<'a> Package<'a> {
         }
         let mut lenient: HashMap<String, String> = HashMap::new();
         for i in 0..zip.len() {
-            let Some(name) = zip.name_for_index(i) else { continue };
+            // zip 9: a name that doesn't decode can't be a part name; it is left out.
+            let Some(Ok(name)) = zip.name_for_index(i) else { continue };
             if name.ends_with('/') {
                 continue;
             }
-            lenient.entry(normalize_part_name(name)).or_insert_with(|| name.to_string());
+            lenient.entry(normalize_part_name(&name)).or_insert_with(|| name.to_string());
         }
         Ok(Package { zip, lenient, left: MAX_TOTAL_BYTES })
     }
@@ -44,7 +45,7 @@ impl<'a> Package<'a> {
             return Ok(None);
         };
         let f = self.zip.by_index(i).map_err(|e| IdmlError::NotIdml(e.to_string()))?;
-        let part = f.name().to_string();
+        let part = f.name().map_or_else(|_| name.to_string(), |n| n.into_owned());
         let limit = MAX_PART_BYTES.min(self.left);
         let too_big = || IdmlError::Part {
             part: part.clone(),
