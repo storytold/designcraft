@@ -326,3 +326,28 @@ pub fn with_meta(font: &[u8], dlng: Option<&str>, slng: Option<&str>) -> Option<
 pub fn installed_face(bytes: Vec<u8>, path: std::path::PathBuf) -> Option<crate::FontFace> {
     crate::FontDb::with_font_dirs(vec![]).new_faces(bytes, crate::FontSource::Installed(path)).into_iter().next()
 }
+
+/// A synthetic weight-variable font with Regular and SemiBold named instances, using bundled outlines.
+/// Only discovery is variable; the outlines do not change with weight.
+pub fn variable_font(family: &str) -> Option<Vec<u8>> {
+    let base =
+        font_with_names(&[(1, family), (2, "Regular"), (6, "SyntheticVF-Regular"), (256, "Weight"), (257, "Regular"), (258, "SemiBold")], &['X'])?;
+    // fvar 1.0: one weight axis and two named instances, without PostScript name IDs.
+    let mut fvar = Vec::new();
+    for v in [1u16, 0, 16, 2, 1, 20, 2, 8] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    fvar.extend_from_slice(b"wght");
+    for v in [100i32 << 16, 400 << 16, 900 << 16] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    for v in [0u16, 256] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    for (id, weight) in [(257u16, 400i32), (258, 600)] {
+        fvar.extend_from_slice(&id.to_be_bytes());
+        fvar.extend_from_slice(&0u16.to_be_bytes());
+        fvar.extend_from_slice(&(weight << 16).to_be_bytes());
+    }
+    with_tables(&base, vec![(*b"fvar", fvar)])
+}
