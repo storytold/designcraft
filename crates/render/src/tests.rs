@@ -773,3 +773,32 @@ fn dotted_strokes_draw_every_dot() {
     let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
     assert_eq!(dots, 13);
 }
+
+/// Spreads stacked on the canvas: an item reaching above its page must not paint over the
+/// spread above (that spread is drawn first), only over its own pasteboard (#2406).
+#[test]
+fn an_item_above_its_page_stays_off_the_spread_above() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..NewDocument::default() });
+    assert_eq!(d.spreads.len(), 2);
+    let lid = d.default_layer();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut box_ = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, -150.0, 300.0, 100.0)));
+    box_.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+    d.insert_item(SpreadRef::Doc(1), box_, None).unwrap();
+    let gap = 72.0;
+    let placed = [
+        Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY },
+        Placed { spread: SpreadRef::Doc(1), xf: Affine::translate(Vec2::new(0.0, 792.0 + gap)) },
+    ];
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let opts = RenderOptions { background: Some([128, 128, 128, 255]), ..RenderOptions::default() };
+    let img = r.render(&d, &Cache::new(), &placed, (612, 1700), Affine::IDENTITY, &opts);
+    // Spread 0's paper near its bottom edge stays paper.
+    assert_eq!(img.pixel(200, 770), [255, 255, 255, 255]);
+    // Spread 1's own page and the pasteboard just above it still show the box.
+    let on_page = img.pixel(200, 792 + 72 + 50);
+    assert!(on_page[0] < 80 && on_page[2] > 150, "{on_page:?}");
+    let on_pasteboard = img.pixel(200, 792 + 72 - 20);
+    assert!(on_pasteboard[0] < 80 && on_pasteboard[2] > 150, "{on_pasteboard:?}");
+}
