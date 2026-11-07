@@ -99,3 +99,37 @@ mod swedish_tests {
         assert!(untranslated.is_empty(), "untranslated Swedish menu labels: {untranslated:?}");
     }
 }
+
+#[cfg(test)]
+mod dutch_tests {
+    use super::*;
+
+    #[test]
+    fn dutch_interface_is_selectable_and_translates_every_menu_label() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "app.language", &json!({"lang": "nl"})).unwrap().unwrap();
+        assert_eq!(app.ui.language, "nl");
+        assert_eq!(checked(&app, "app.language", &json!({"lang": "nl"})), Some(true));
+        assert_eq!(crate::i18n::tr("nl", "File"), "Bestand");
+        // Every menu title, item and submenu has a Dutch entry.
+        let mut untranslated = Vec::new();
+        for (title, entries) in menu_tree() {
+            let mut labels = vec![title.to_string()];
+            let mut stack: Vec<&Item> = entries.iter().collect();
+            while let Some(entry) = stack.pop() {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.extend(children.iter());
+                    }
+                    Item::Cmd { label, id, .. } if id != "app.language" => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            // Dutch shares many words with English ("Layout", "Cyan"), so look for a catalog entry.
+            let size = |l: &str| l.strip_suffix(" pt").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            untranslated.extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && !crate::i18n::dutch_has(l)));
+        }
+        assert!(untranslated.is_empty(), "untranslated Dutch menu labels: {untranslated:?}");
+    }
+}

@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-07 · **Change:** minor (Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface; Dutch interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,pl,pt_br,ru,sv,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,nl,pl,pt_br,ru,sv,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -86,8 +86,9 @@ scrolling, complete label/shortcut accessibility and selecting a scrolled row at
 | Polish | pl | 1,717 (99%), count captions category-first; AI-drafted, awaiting native review | partial |
 | Georgian | ka | 1,724 (~100%: every catalog key plus the command labels the others lack), count captions as `noun: n` | partial (reviewed by a native speaker) |
 | Swedish | sv | 2,857 of 2,891 (99%, 2026-11-01 missing-translations report): menus, panels, dialogs and messages; singular for a count of one; AI-drafted with Claude Code from the English source, spot-checked by a native speaker (not every string) | partial |
+| Dutch | nl | 2,898 catalog entries + 6 context captions (2026-11-07), covering menus, panels, dialogs and messages; singular for a count of one; AI-drafted with Claude Code from the English source, awaiting native review | partial |
 
-DesignCraft ships **6** interface languages beyond the twelve; InDesign ships 17 beyond its
+DesignCraft ships **7** interface languages beyond the twelve; InDesign ships 17 beyond its
 eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, tr, uk, zh_TW).
 
 ## Document languages
@@ -126,3 +127,4 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 | 2026-10-11 | minor | Czech (cs) added: 1,722 strings, plural categories handled |
 | 2026-10-13 | minor | Polish interface added (1,717 strings) |
 | 2026-10-22 | minor | French and Italian hyphenation (hyph-fr, hyph-it): the French row and Document languages updated |
+| 2026-11-07 | minor | Dutch (`nl`) interface added (AI-drafted, awaiting native review) |

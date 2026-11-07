@@ -360,7 +360,7 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Vietnamese | vi | none | 0% |
 
 Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
-Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%), Swedish (99%).
+Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%), Swedish (99%), Dutch (`nl`, AI-drafted).
 
 ## Upcoming
 
@@ -401,6 +401,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-11-07** · Dutch interface (`nl`, Preferences ▸ General ▸ Interface Language ▸ Nederlands): menus, panels, dialogs and messages, 2,898 catalog entries; singular for a count of one. AI-drafted with Claude Code from the English source; awaiting native-speaker review. No readiness percentage change.
 - **2026-11-03** · `type.char` says when the font it applies isn't available (#2189): it returns `{"warnings": ["Missing font: Courier Prime (using Source Sans 3)"]}`, or `Missing font style: …` for a style the family doesn't have, in preflight's words. The font is still applied, as before, so Find Font and preflight list it. A script that asked for a font the machine doesn't have exported in the substitute with no word about it. No readiness percentage change.
 - **2026-11-02** · Packaged PDFs report their export warnings in the package result and Instructions.txt, and soft drop shadows and feathers in them are tested. Frame and text-range hyperlinks keep their source bounds when the frame is rasterized, including inside groups. No readiness percentage change.
 - **2026-11-01** · Parent page resizing (#1620): Properties, the Page Tool Control panel and on-page handles resize the selected parent page independently of document pages. Stable parent IDs, repeated resizing, anchors and liquid rules are preserved on the current command modules. Inline parent margin editing targets only the selected parent page and preserves opposite-page margins and document overrides; document commands retain their first-page default before the canvas is initialized. No readiness percentage change.
