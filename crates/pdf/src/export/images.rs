@@ -238,6 +238,8 @@ mod image_content_cache_tests {
             tags: Vec::new(),
             story_tags: HashMap::new(),
             tag_story: None,
+            tag_anchor: None,
+            anchored_tags: std::collections::BTreeMap::new(),
             text_area: None,
             para_tags: HashMap::new(),
         }
