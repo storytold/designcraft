@@ -5,6 +5,18 @@
 
 use super::{Arc, AssetId, Content, ItemId, Session, base64_encode, json};
 
+/// A DOS EPS: its 30-byte header, the PostScript, then the TIFF preview.
+fn dos_eps(ps: &[u8], tiff: &[u8]) -> Vec<u8> {
+    let mut eps = vec![0xC5, 0xD0, 0xD3, 0xC6];
+    for n in [30usize, ps.len(), 0, 0, 30 + ps.len(), tiff.len()] {
+        eps.extend((n as u32).to_le_bytes());
+    }
+    eps.extend([255, 255]);
+    eps.extend(ps);
+    eps.extend(tiff);
+    eps
+}
+
 pub(crate) fn tiff_eps() -> Vec<u8> {
     let mut tiff = b"II".to_vec();
     tiff.extend(42u16.to_le_bytes());
@@ -33,14 +45,7 @@ pub(crate) fn tiff_eps() -> Vec<u8> {
     }
     tiff.extend([255, 0, 0].repeat(4));
     let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%EOF\n";
-    let mut eps = vec![0xC5, 0xD0, 0xD3, 0xC6];
-    for n in [30usize, ps.len(), 0, 0, 30 + ps.len(), tiff.len()] {
-        eps.extend((n as u32).to_le_bytes());
-    }
-    eps.extend([255, 255]);
-    eps.extend(ps);
-    eps.extend(tiff);
-    eps
+    dos_eps(ps, &tiff)
 }
 
 #[test]
@@ -212,4 +217,65 @@ fn eps_place_cursor_retains_source_and_uses_bounding_box_size() {
         assert!(s.execute("file.place", &corrupt).is_err());
     }
     assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+}
+
+/// A 2×1 DOS EPS whose preview is an 8-bit palette TIFF with associated alpha: a black pixel,
+/// then a transparent white one.
+fn palette_alpha_eps() -> Vec<u8> {
+    let (map_at, strip_at) = (8 + 2 + 12 * 12 + 4, 8 + 2 + 12 * 12 + 4 + 1536);
+    let mut tiff = b"II".to_vec();
+    tiff.extend(42u16.to_le_bytes());
+    tiff.extend(8u32.to_le_bytes());
+    tiff.extend(12u16.to_le_bytes());
+    for (tag, ty, count, value) in [
+        (256u16, 4u16, 1u32, 2u32),
+        (257, 4, 1, 1),
+        (258, 3, 1, 8),
+        (259, 3, 1, 1),
+        (262, 3, 1, 3),
+        (273, 4, 1, strip_at),
+        (277, 3, 1, 2),
+        (278, 4, 1, 1),
+        (279, 4, 1, 4),
+        (284, 3, 1, 1),
+        (320, 3, 768, map_at),
+        (338, 3, 1, 1),
+    ] {
+        tiff.extend(tag.to_le_bytes());
+        tiff.extend(ty.to_le_bytes());
+        tiff.extend(count.to_le_bytes());
+        tiff.extend(value.to_le_bytes());
+    }
+    tiff.extend(0u32.to_le_bytes());
+    // Index 0 is white in every channel; the rest of the ColorMap is black.
+    for i in 0..768u32 {
+        tiff.extend(if i % 256 == 0 { 0xFF00u16 } else { 0 }.to_le_bytes());
+    }
+    tiff.extend([1, 255, 0, 0]);
+    let ps = b"%!PS-Adobe-3.1 EPSF-3.0\n%%BoundingBox: 0 0 100 50\n%%EOF\n";
+    dos_eps(ps, &tiff)
+}
+
+/// HTML and reflowable EPUB embed that preview as a PNG that keeps its alpha.
+#[test]
+fn eps_palette_preview_with_alpha_reaches_html_and_epub() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("place.load", &json!({"base64": base64_encode(&palette_alpha_eps()), "name": "drawing.eps"})).unwrap();
+    s.execute("place.drop", &json!({"x": 72, "y": 72})).unwrap();
+
+    let unusable = |r: &serde_json::Value| r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("unusable"));
+    let html = s.execute("file.exportHtml", &json!({})).unwrap();
+    assert!(!unusable(&html), "{html}");
+    assert!(html["text"].as_str().unwrap().contains("data:image/png"), "{html}");
+
+    let epub = s.execute("file.exportEpub", &json!({})).unwrap();
+    assert!(!unusable(&epub), "{epub}");
+    let bytes = super::base64_decode(epub["base64"].as_str().unwrap());
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let name = zip.file_names().find(|n| n.ends_with(".png")).expect("the preview in the EPUB").to_owned();
+    let mut png = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name(&name).unwrap(), &mut png).unwrap();
+    let pixels: Vec<_> = designcraft_images::decode_rgba(&png).unwrap().pixels().map(|p| p.0).collect();
+    assert_eq!(pixels, [[0, 0, 0, 255], [255, 255, 255, 0]]);
 }

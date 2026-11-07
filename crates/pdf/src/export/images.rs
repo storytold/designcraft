@@ -468,14 +468,8 @@ mod eps_tests {
     use super::*;
     use hayro_syntax::object::Name;
 
-    #[test]
-    fn eps_tiff_preview_keeps_cmyk_inks_in_pdf() {
-        let pixels = vec![0u8, 0, 0, 255, 0, 255, 255, 0];
-        let mut tiff = Vec::new();
-        tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tiff))
-            .unwrap()
-            .write_image::<tiff::encoder::colortype::CMYK8>(2, 1, &pixels)
-            .unwrap();
+    /// A 2×1 DOS EPS whose preview is `tiff`.
+    fn eps_with_preview(tiff: &[u8]) -> Vec<u8> {
         let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 2 1\n%%EOF\n";
         let mut eps = vec![0xC5, 0xD0, 0xD3, 0xC6];
         for value in [30usize, ps.len(), 0, 0, 30 + ps.len(), tiff.len()] {
@@ -483,15 +477,19 @@ mod eps_tests {
         }
         eps.extend([0xFF, 0xFF]);
         eps.extend_from_slice(ps);
-        eps.extend_from_slice(&tiff);
-        assert_eq!(designcraft_images::eps_proxy(&eps).unwrap().0, tiff);
+        eps.extend_from_slice(tiff);
+        eps
+    }
+
+    /// A document with `eps` placed on its first page.
+    fn doc_placing(eps: Vec<u8>) -> Document {
         let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
         let aid = AssetId(doc.alloc());
         doc.assets.insert(
             aid,
             Arc::new(designcraft_doc::Asset {
                 id: aid,
-                name: "cmyk.eps".into(),
+                name: "preview.eps".into(),
                 mime: "application/postscript".into(),
                 link: None,
                 data: Arc::new(eps),
@@ -519,6 +517,62 @@ mod eps_tests {
             fill: Default::default(),
         });
         doc.insert_item(designcraft_doc::SpreadRef::Doc(0), item, None).unwrap();
+        doc
+    }
+
+    /// An 8-bit palette index and an alpha sample, for the `tiff` encoder.
+    struct PaletteAndAlpha;
+    impl tiff::encoder::colortype::ColorType for PaletteAndAlpha {
+        type Inner = u8;
+        const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::RGBPalette;
+        const BITS_PER_SAMPLE: &[u16] = &[8, 8];
+        const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 2];
+        fn horizontal_predict(row: &[u8], result: &mut Vec<u8>) {
+            result.extend_from_slice(row);
+        }
+    }
+
+    /// A palette preview's alpha reaches the PDF as a soft mask: the white background stays
+    /// transparent instead of printing over what's behind it.
+    #[test]
+    fn eps_palette_preview_with_alpha_gets_a_soft_mask() {
+        // Index 0 is white, index 1 black.
+        let mut map = vec![0u16; 3 * 256];
+        for channel in 0..3 {
+            map[channel * 256] = 0xFF00;
+        }
+        let mut tiff = Vec::new();
+        let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tiff)).unwrap();
+        let mut img = enc.new_image::<PaletteAndAlpha>(2, 1).unwrap();
+        img.encoder().write_tag(tiff::tags::Tag::ColorMap, &map[..]).unwrap();
+        img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+        img.write_data(&[1, 255, 0, 0]).unwrap();
+
+        let doc = doc_placing(eps_with_preview(&tiff));
+        let report = export_pdf_with_report(&doc, &Cache::new(), &PdfOptions::default()).unwrap();
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let pdf = hayro_syntax::Pdf::new(report.bytes).unwrap();
+        let images: Vec<Vec<u8>> = pdf
+            .objects()
+            .into_iter()
+            .filter_map(|o| o.into_stream())
+            .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .map(|s| s.decoded().unwrap().into_owned())
+            .collect();
+        assert!(images.contains(&vec![255, 0]), "the soft mask, one byte per pixel: {images:?}");
+    }
+
+    #[test]
+    fn eps_tiff_preview_keeps_cmyk_inks_in_pdf() {
+        let pixels = vec![0u8, 0, 0, 255, 0, 255, 255, 0];
+        let mut tiff = Vec::new();
+        tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tiff))
+            .unwrap()
+            .write_image::<tiff::encoder::colortype::CMYK8>(2, 1, &pixels)
+            .unwrap();
+        let eps = eps_with_preview(&tiff);
+        assert_eq!(designcraft_images::eps_proxy(&eps).unwrap().0, tiff);
+        let doc = doc_placing(eps);
         for standard in [Standard::None, Standard::PdfX4] {
             let report = export_pdf_with_report(&doc, &Cache::new(), &PdfOptions { standard, ..Default::default() }).unwrap();
             assert!(report.warnings.is_empty(), "{:?}", report.warnings);

@@ -407,15 +407,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(10, 5, image::Rgba([255, 0, 0, 255])))
             .write_to(&mut std::io::Cursor::new(&mut tiff), image::ImageFormat::Tiff)
             .unwrap();
-        let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
-        let ps_off = 30usize;
-        let tiff_off = ps_off + eps.len();
-        for v in [ps_off, eps.len(), 0, 0, tiff_off, tiff.len()] {
-            dos.extend((v as u32).to_le_bytes());
-        }
-        dos.extend([0xFF, 0xFF]);
-        dos.extend_from_slice(eps);
-        dos.extend_from_slice(&tiff);
+        let dos = crate::tests::dos_eps(eps, &tiff);
         assert!(is_eps(&dos));
         let (p, size) = eps_proxy(&dos).unwrap();
         assert_eq!(size, (100.5, 50.25));
