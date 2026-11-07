@@ -406,20 +406,62 @@ impl Grep {
             .collect()
     }
 
-    /// Matches in `text` and their replacements, `template` expanded per match (`$1`…; see
-    /// [`translate_replacement`]). Stops after the first match when `first_only`.
-    pub fn replacements(&self, text: &str, template: &str, first_only: bool) -> Result<Vec<(Range<usize>, String)>, GrepError> {
+    /// Matches in `text` that `keep` accepts and their replacements, `template` expanded per match
+    /// (`$1`…; see [`translate_replacement`]). Stops after the first kept match when `first_only`,
+    /// and with an error once the expanded replacements pass `max_bytes` in all (before any more
+    /// are made).
+    pub fn replacements(
+        &self,
+        text: &str,
+        template: &str,
+        first_only: bool,
+        max_bytes: usize,
+        keep: impl Fn(&Range<usize>) -> bool,
+    ) -> Result<Vec<(Range<usize>, String)>, GrepError> {
         let exp = fancy_regex::Expander::default();
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         for caps in self.re.captures_iter(text) {
             let caps = caps.map_err(run_err)?;
             let Some(m) = caps.get(0) else { continue };
-            out.push((m.range(), exp.expansion(template, &caps)));
+            if !keep(&m.range()) {
+                continue;
+            }
+            // Written into a buffer that refuses bytes past the budget, so an oversized
+            // expansion is rejected before it is allocated.
+            let mut w = BoundedBuf { buf: Vec::new(), left: max_bytes.saturating_sub(bytes) };
+            if exp.write_expansion(&mut w, template, &caps).is_err() {
+                return Err(err(format!("the replacements would put more than {max_bytes} bytes in")));
+            }
+            bytes += w.buf.len();
+            let expanded = String::from_utf8(w.buf).map_err(|_| err("the replacement is not valid UTF-8".to_string()))?;
+            out.push((m.range(), expanded));
             if first_only {
                 break;
             }
         }
         Ok(out)
+    }
+}
+
+/// A byte sink that fails a write that would pass its remaining budget (nothing is copied then).
+struct BoundedBuf {
+    buf: Vec<u8>,
+    left: usize,
+}
+
+impl std::io::Write for BoundedBuf {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if data.len() > self.left {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.left -= data.len();
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -494,7 +536,13 @@ mod tests {
         assert_eq!(g.find_all("axb A.B a.b", 1).unwrap().first(), Some(&(4..7)));
         let g = grep(r"(\d+)\h(\l+)");
         let tpl = translate_replacement(r"$2~S$1x\r\$$");
-        assert_eq!(g.replacements("5 kg", &tpl, false).unwrap(), [(0..4, "kg\u{A0}5x\n$$".to_string())]);
+        assert_eq!(g.replacements("5 kg", &tpl, false, usize::MAX, |_| true).unwrap(), [(0..4, "kg\u{A0}5x\n$$".to_string())]);
+        // The total expanded size is bounded while the replacements are made, over the matches kept.
+        let g = grep("a");
+        assert!(g.replacements("aaaa", "xxxx", false, 15, |_| true).is_err());
+        assert_eq!(g.replacements("aaaa", "xxxx", false, 16, |_| true).unwrap().len(), 4);
+        assert_eq!(g.replacements("aaaa", "xxxx", false, 8, |m| m.start < 2).unwrap().len(), 2);
+        assert_eq!(g.replacements("aaaa", "xxxx", true, 4, |m| m.start >= 2).unwrap(), [(2..3, "xxxx".to_string())]);
     }
 
     #[test]

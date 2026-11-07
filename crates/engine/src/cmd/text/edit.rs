@@ -433,7 +433,9 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
             let mut delta: isize = 0;
             for seg in segs.iter().rev() {
                 let old = st.slice(seg.clone()).to_string();
-                let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                // The characters in this run: `starts` is sorted, so a search finds the slice.
+                let (from, to) = (starts.partition_point(|b| *b < seg.start), starts.partition_point(|b| *b < seg.end));
+                let new: String = mapped.get(from..to).unwrap_or_default().iter().map(String::as_str).collect();
                 if new != old {
                     delta += new.len() as isize - old.len() as isize;
                     st.replace(seg.clone(), &new);
