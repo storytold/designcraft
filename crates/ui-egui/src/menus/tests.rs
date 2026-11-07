@@ -2488,6 +2488,64 @@ fn type_panel_items_open_their_panels_and_the_marker_shortcut_inserts_a_page_num
 }
 
 #[test]
+fn insert_special_character_menus_list_every_special_character_once_under_its_label() {
+    fn collect(items: &[Item], out: &mut Vec<(String, String, Value)>) {
+        for i in items {
+            match i {
+                Item::Sub(_, c) => collect(c, out),
+                Item::Cmd { label, id, params, .. } => out.push((label.clone(), id.clone(), params.clone())),
+                Item::Sep => {}
+            }
+        }
+    }
+    let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+    let mut entries = Vec::new();
+    collect(&ty, &mut entries);
+    assert!(!entries.iter().any(|(_, id, p)| id == "text.insert" && p.get("raw").is_some()));
+    let mut listed: Vec<(String, String)> = entries
+        .iter()
+        .filter(|(_, id, _)| id == "text.insertSpecial")
+        .map(|(label, _, params)| (params["character"].as_str().unwrap().to_string(), label.clone()))
+        .collect();
+    listed.push(("currentPageNumber".into(), entries.iter().find(|(_, id, _)| id == "app.insertCurrentPageNumber").unwrap().0.clone()));
+    let mut expected: Vec<(String, String)> =
+        designcraft_engine::cmd::text::SPECIAL_CHARACTERS.iter().map(|c| (c.name.to_string(), c.label.to_string())).collect();
+    listed.sort();
+    expected.sort();
+    assert_eq!(listed, expected);
+}
+
+#[test]
+fn insert_special_character_presets_insert_their_character() {
+    let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
+    fn presets(items: &[Item], out: &mut Vec<(String, Value)>) {
+        for i in items {
+            match i {
+                Item::Sub(_, c) => presets(c, out),
+                Item::Cmd { label, id, params, .. } if id == "text.insertSpecial" => out.push((label.clone(), params.clone())),
+                _ => {}
+            }
+        }
+    }
+    let mut found = Vec::new();
+    presets(&ty, &mut found);
+    assert_eq!(found.len() + 1, designcraft_engine::cmd::text::SPECIAL_CHARACTERS.len());
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let story = app.run("frame.create", json!({"rect": [36, 36, 236, 136], "content": "text", "text": ""})).unwrap()["story"].clone();
+    let story_id = designcraft_doc::StoryId(story.as_u64().unwrap());
+    for (label, params) in found {
+        let name = params["character"].as_str().unwrap();
+        let c = designcraft_engine::cmd::text::SPECIAL_CHARACTERS.iter().find(|c| c.name == name).unwrap().character;
+        app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+        app.run("text.insertSpecial", params).unwrap();
+        let text = app.session.doc().unwrap().doc.story(story_id).unwrap().text.clone();
+        assert!(text == c.to_string() || text == format!("{c}\n"), "{label}: {text:?}");
+        app.run("story.setText", json!({"story": story, "text": ""})).unwrap();
+    }
+}
+
+#[test]
 fn custom_workspaces_save_apply_and_delete() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.dock_tab = "swatches".into();
