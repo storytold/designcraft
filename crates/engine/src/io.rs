@@ -55,12 +55,38 @@ fn touch(path: &Path) {
     let _ = path;
 }
 
+/// The most a whole file read in one piece ([`read_file`], [`read`], [`read_to_string`]) may
+/// hold: the format's own limit on what a document unpacks to. What is opened must be a regular
+/// file: a device or a pipe (`/dev/zero`, a FIFO) has no end, and reading it to the end would
+/// take all the memory there is.
+pub const MAX_FILE_BYTES: u64 = 4 << 30;
+
+/// The whole of the regular file at `path`, at most [`MAX_FILE_BYTES`] (the path checked already).
+fn read_whole(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("longer than {MAX_FILE_BYTES} bytes")));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("longer than {MAX_FILE_BYTES} bytes")));
+    }
+    Ok(bytes)
+}
+
 /// The bytes of the file at `path`, inside the automation read root when there is one.
 pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>, String> {
     let path = path.as_ref();
-    touch(path);
-    crate::file_access::check_read(path)?;
-    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// [`read_file`] with the file system's own error, for callers that tell "missing" from other
@@ -69,7 +95,7 @@ pub fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let path = path.as_ref();
     touch(path);
     crate::file_access::check_read(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
-    std::fs::read(path)
+    read_whole(path)
 }
 
 /// [`read`] that stops past `cap` bytes: at most `cap + 1` bytes are read, so a device or a file
@@ -97,9 +123,8 @@ pub fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
 /// The text of the file at `path`, inside the automation read root when there is one.
 pub fn read_to_string(path: impl AsRef<Path>) -> Result<String, String> {
     let path = path.as_ref();
-    touch(path);
-    crate::file_access::check_read(path)?;
-    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+    let bytes = read_file(path)?;
+    String::from_utf8(bytes).map_err(|_| format!("{}: stream did not contain valid UTF-8", path.display()))
 }
 
 /// Make the folder at `path` and the folders above it, inside the automation write root when
@@ -184,4 +209,34 @@ pub fn read_dir(path: impl AsRef<Path>) -> std::io::Result<std::fs::ReadDir> {
     touch(path);
     crate::file_access::check_read(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
     std::fs::read_dir(path)
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    /// A device has no end: a whole-file read refuses it instead of reading until memory runs out.
+    #[cfg(unix)]
+    #[test]
+    fn whole_file_reads_refuse_devices() {
+        let e = read_file("/dev/zero").unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+        assert!(read("/dev/zero").is_err());
+        assert!(read_to_string("/dev/zero").is_err());
+        assert!(read_capped("/dev/zero", 16).is_ok_and(|b| b.len() == 17), "a capped read stops by itself");
+        assert!(read_file("/dev/null/missing").is_err());
+    }
+
+    #[test]
+    fn whole_file_reads_read_whole_files() {
+        let dir = std::env::temp_dir().join(format!("dc-io-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "héllo").unwrap();
+        assert_eq!(read_file(&path).unwrap(), "héllo".as_bytes());
+        assert_eq!(read_to_string(&path).unwrap(), "héllo");
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert!(read_to_string(&path).unwrap_err().contains("UTF-8"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
