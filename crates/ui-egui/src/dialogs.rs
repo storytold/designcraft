@@ -7689,7 +7689,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 12] = [
+pub const JUSTIFY_ATTRS: [&str; 13] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -7700,6 +7700,7 @@ pub const JUSTIFY_ATTRS: [&str; 12] = [
     "glyphScaleDesired",
     "glyphScaleMax",
     "composer",
+    "worldReady",
     "kashidas",
     "koreanCharBreaks",
 ];
@@ -7917,15 +7918,22 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             ui.end_row();
         }
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
-        let composer = cur(d, "composer");
-        // Mixed (null) selects neither; a Japanese composer keeps its kind.
-        let (single, [paragraph, single_line]) = crate::panels::properties::composer_choice(composer.as_str());
-        let known = !composer.is_null();
-        if ui.selectable_label(known && !single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Paragraph Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(paragraph));
-        }
-        if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
-            d.fields.insert(format!("{prefix}composer"), json!(single_line));
+        // InDesign's Composer list: the Paragraph and Single-line Composers and their World-Ready
+        // forms, each setting `composer` and `worldReady`. Mixed (null) selects none.
+        let entries = crate::panels::properties::composer_entries(&cur(d, "composer"), &cur(d, "worldReady"));
+        let shown = entries.iter().find(|e| e.1).map_or("", |e| crate::i18n::tr(lang, e.0));
+        let mut chosen = None;
+        craft_ui::ComboBox::from_id_salt(format!("{prefix}composerChoice")).selected_text(crate::rtl::widget(ui, shown)).show_ui(ui, |ui| {
+            for (label, selected, set) in &entries {
+                if ui.selectable_label(*selected, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                    chosen = Some(set.clone());
+                }
+            }
+        });
+        if let Some(serde_json::Value::Object(set)) = chosen {
+            for (k, v) in set {
+                d.fields.insert(format!("{prefix}{k}"), v);
+            }
         }
         ui.end_row();
         for (label, key, text, default) in [

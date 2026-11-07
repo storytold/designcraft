@@ -8,6 +8,16 @@ use super::{
 impl<'r> Importer<'r> {
     // ---------- styles ----------
 
+    /// The paragraph attributes of paragraph style `name`. `[No paragraph style]` without a composer
+    /// has InDesign's default, the Paragraph Composer, which isn't World-Ready.
+    fn para_style_attrs(&mut self, e: &El, name: &str) -> designcraft_doc::ParaAttrs {
+        let mut para = self.para_attrs(e);
+        if name == designcraft_doc::NO_PARA_STYLE {
+            para.world_ready.get_or_insert(false);
+        }
+        para
+    }
+
     pub(super) fn styles(&mut self, top: &[El]) {
         for e in top.iter().filter(|e| e.local() == "Condition") {
             let (Some(id), Some(name)) = (e.get("Self"), e.get("Name")) else { continue };
@@ -74,7 +84,7 @@ impl<'r> Importer<'r> {
             let name = names::style_name_in(PARA_BUILTINS, e.get("Name").unwrap_or(""));
             let based_on = if name == designcraft_doc::NO_PARA_STYLE { None } else { self.based_on(e, true) };
             let next_style = e.get("NextStyle").map(|n| self.para_style_ref(n)).filter(|n| *n != name);
-            let para = self.para_attrs(e);
+            let para = self.para_style_attrs(e, &name);
             let chars = self.char_attrs(e);
             let s = ParagraphStyle { name: name.clone(), based_on, next_style, para, chars, shortcut: String::new() };
             match self.styles.para_mut(&name) {

@@ -349,12 +349,10 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     };
     let mut attrs = None;
     let mut command = None;
-    let (single, [paragraph, single_line]) = composer_choice(p["composer"].as_str());
-    if item(ui, "Paragraph Composer", Some(!single), true) {
-        attrs = Some(json!({"composer": paragraph}));
-    }
-    if item(ui, "Single-line Composer", Some(single), true) {
-        attrs = Some(json!({"composer": single_line}));
+    for (label, selected, set) in composer_entries(&p["composer"], &p["worldReady"]) {
+        if item(ui, label, Some(selected), true) {
+            attrs = Some(set);
+        }
     }
     ui.separator();
     let grid = p["gridAlign"].as_str().unwrap_or("none");
@@ -540,6 +538,32 @@ fn caption_cell(ui: &mut Ui, text: &str, width: f32) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(width, crate::widgets::FIELD_H), Sense::hover());
     crate::rtl::paint(ui.painter(), pos2(r.min.x, r.center().y), egui::Align2::LEFT_CENTER, text, caption_font(), t.text);
+}
+
+/// The composer choices for a paragraph's `composer` and `worldReady` attributes (null: mixed,
+/// which selects none), as InDesign offers them: the Paragraph and Single-line Composers and their
+/// World-Ready forms, each setting both attributes. Under a Japanese composer, which is always
+/// World-Ready (`ParaProps::is_world_ready`), its kind's two. Each: (label, selected, attributes).
+pub(crate) fn composer_entries(composer: &Value, world_ready: &Value) -> Vec<(&'static str, bool, Value)> {
+    let (single, [paragraph, single_line]) = composer_choice(composer.as_str());
+    let known = !composer.is_null();
+    if composer.as_str().is_some_and(|c| c.starts_with("japanese")) {
+        return vec![
+            ("Paragraph Composer", known && !single, json!({"composer": paragraph})),
+            ("Single-line Composer", known && single, json!({"composer": single_line})),
+        ];
+    }
+    let ready = world_ready.as_bool();
+    let entry = |label, is_single: bool, is_ready: bool| {
+        let selected = known && single == is_single && ready == Some(is_ready);
+        (label, selected, json!({"composer": if is_single { single_line } else { paragraph }, "worldReady": is_ready}))
+    };
+    vec![
+        entry("Paragraph Composer", false, false),
+        entry("Single-line Composer", true, false),
+        entry("World-Ready Paragraph Composer", false, true),
+        entry("World-Ready Single-line Composer", true, true),
+    ]
 }
 
 /// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
