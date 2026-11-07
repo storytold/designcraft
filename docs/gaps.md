@@ -192,7 +192,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Profile / Edit Original, File ▸ Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
-  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler is there). Overriding a
+  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler, Show/Hide Style Name Column and Show/Hide Paragraph Break Marks are there). Overriding a
   base parent's items on a parent spread itself (overrides work on document pages only); Save
   as Parent; new parents for an alternate layout (its pages keep their source pages' parents).
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
