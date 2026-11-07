@@ -39,6 +39,7 @@ impl DesignApp {
         let dialog_wake = std::sync::Arc::new(std::sync::OnceLock::new());
         DesignApp {
             pending_pdf: None,
+            pdf_export: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             file_dialogs: file_dialogs::new_dialogs(dialog_wake.clone()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -120,6 +121,7 @@ impl DesignApp {
             ime_interrupt: false,
             ime_canvas: None,
             quit_requested: false,
+            quit_after_export: false,
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
@@ -294,6 +296,7 @@ impl DesignApp {
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);
+        self.pdf_export.show(&ctx);
         // The IME is observed once, here: after the canvas, the floating panels, the story editor,
         // dialogs and Quick Apply have all applied this pass's commands and focus changes.
         canvas::ime_observe(self, &ctx);

@@ -188,10 +188,15 @@ pub(crate) fn print_pdf(
 /// The PDF that File › Export PDF writes for `p`, with its warnings: the print PDF
 /// ([`print_pdf`]) with its view options, timings and transitions. File › Print prints it.
 pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::ExportReport> {
-    pdf_report(&s.doc()?.doc, &s.cache, p)
+    export_pdf_document(&s.doc()?.doc, &s.cache, p)
 }
 
-/// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
+/// Export an immutable snapshot through the same pipeline as export, print and package.
+pub fn export_pdf_document(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    pdf_report(doc, cache, p)
+}
+
+/// The shared report also used when packaging an immutable document copy.
 pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
     let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;

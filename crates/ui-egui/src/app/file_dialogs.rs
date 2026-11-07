@@ -305,7 +305,7 @@ impl DesignApp {
     /// dialog opened since the asking is up, the answer waits for it to close.
     #[cfg(not(target_arch = "wasm32"))]
     fn continue_in(&mut self, answer: Held) {
-        if self.ui.dialog.as_ref().is_some_and(|d| Some(&d.id) != answer.dialog.as_ref()) {
+        if self.pdf_export.busy() || self.ui.dialog.as_ref().is_some_and(|d| Some(&d.id) != answer.dialog.as_ref()) {
             self.held_answers.push(answer);
             return;
         }
@@ -516,6 +516,53 @@ mod tests {
 
     use super::testing::answer_with;
     use super::{ALL_FILES, open_filters, picked_save_path, save_dialog_start, suggested_extension};
+
+    /// A PDF save answer starts a worker; another answer delivered in that same batch must
+    /// remain pending until the terminal result, rather than being rejected by the busy gate.
+    #[test]
+    fn pdf_save_answer_defers_later_dialog_answers_until_the_worker_finishes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({"pages":1})).unwrap();
+        app.answer_dialogs(answer_with(Some(dir.path().join("Proof.pdf").to_string_lossy().into_owned())));
+        let (release, wait) = mpsc::channel();
+        let wait = std::sync::Mutex::new(wait);
+        app.services.background_write = Some(Arc::new(move |_, bytes| {
+            assert!(bytes.starts_with(b"%PDF"));
+            wait.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            Ok(())
+        }));
+        let answered = Arc::new(AtomicUsize::new(0));
+        let seen = answered.clone();
+        app.ask_save("Proof.pdf", super::Bound::Document, |app, path| crate::menus::export_pdf(app, &serde_json::json!({"path":path}))).unwrap();
+        app.ask_open("open", super::Bound::App, move |_, _| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        app.settle_dialogs();
+        assert!(app.pdf_export.busy());
+        assert_eq!(answered.load(Ordering::SeqCst), 0);
+        assert!(app.file_dialogs_pending());
+        release.send(()).unwrap();
+        let start = std::time::Instant::now();
+        while app.pdf_export.busy() {
+            if let Some(result) = app.pdf_export.poll(&mut app.services.write) {
+                result.unwrap();
+            }
+            assert!(start.elapsed().as_secs() < 10);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.handle_file_dialog_answers();
+        app.handle_file_dialog_answers();
+        assert_eq!(answered.load(Ordering::SeqCst), 1, "delivered exactly once");
+        assert!(!app.file_dialogs_pending());
+    }
 
     #[test]
     fn relink_open_dialog_lists_graphics() {

@@ -3,6 +3,8 @@ use super::{DesignApp, ImportRequest, ImportedFile, Value, canvas, dialogs, file
 use super::{Services, Session};
 #[cfg(test)]
 use crate::Inbox;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::PendingDrop;
 #[cfg(test)]
 use crate::test_window;
 
@@ -177,11 +179,46 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
+        let defer = self.pdf_export.busy();
+        let generation = self.input_generation();
+        let mut starts_batch = true;
         let mut frame_free = true;
         for f in files {
-            let p = f.path().to_string_lossy().to_string();
-            if !p.is_empty() {
-                let _ = self.place_dropped(&p, pointer, &mut frame_free);
+            let path = f.path().to_string_lossy().to_string();
+            if !path.is_empty() {
+                if defer {
+                    // A floating window already supplied main-window coordinates (or its normal
+                    // no-pointer fallback); never replace those with the system pointer.
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch, pointer_sampled: true });
+                    starts_batch = false;
+                } else {
+                    let _ = self.place_dropped(&path, pointer, &mut frame_free);
+                }
+            }
+        }
+        if defer
+            && !files.is_empty()
+            && let Some(ctx) = &self.egui_ctx
+        {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Replay settled native drops after export, retaining each captured batch's first-frame rule.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn replay_dropped_files(&mut self) {
+        if self.pdf_export.busy() {
+            return;
+        }
+        // Placing one valid file must not invalidate later files from the captured generation.
+        let current = self.input_generation();
+        let mut frame_free = true;
+        for drop in std::mem::take(&mut self.pending_drops) {
+            if drop.starts_batch {
+                frame_free = true;
+            }
+            if drop.generation == current {
+                let _ = self.place_dropped(&drop.path, drop.pointer, &mut frame_free);
             }
         }
     }

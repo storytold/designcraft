@@ -59,10 +59,12 @@ impl DesignApp {
                 _ => None,
             });
             let generation = self.input_generation();
+            let mut starts_batch = true;
             for file in std::mem::take(&mut raw.dropped_files) {
                 let path = file.path().to_string_lossy().to_string();
                 if !path.is_empty() {
-                    self.pending_drops.push(PendingDrop { path, pointer, generation });
+                    self.pending_drops.push(PendingDrop { path, pointer, generation, starts_batch, pointer_sampled: pointer.is_some() });
+                    starts_batch = false;
                 }
             }
         }
@@ -147,20 +149,18 @@ impl DesignApp {
     /// says the pointer is, so one dropped on a frame still fills it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn take_pending_drops(&mut self, ctx: &egui::Context) {
-        // Sample the generation once for the whole batch: placing the first valid file must not
-        // suppress later files that belong to the same captured batch.
-        let current = self.input_generation();
-        let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
-        if drops.is_empty() {
-            return;
+        // Sample once before a busy export defers placement: moving the mouse while the
+        // worker runs must not move the captured drop. An unavailable pointer stays unavailable.
+        if self.pending_drops.iter().any(|drop| !drop.pointer_sampled) {
+            let system = self.system_pointer(ctx);
+            for drop in &mut self.pending_drops {
+                if !drop.pointer_sampled {
+                    drop.pointer = drop.pointer.or(system);
+                    drop.pointer_sampled = true;
+                }
+            }
         }
-        // Each file keeps the pointer it was dropped at; the system is asked once, for those
-        // that came without one.
-        let system = drops.iter().any(|d| d.pointer.is_none()).then(|| self.system_pointer(ctx)).flatten();
-        let mut frame_free = true;
-        for drop in drops {
-            let _ = self.place_dropped(&drop.path, drop.pointer.or(system), &mut frame_free);
-        }
+        self.replay_dropped_files();
     }
 
     /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),

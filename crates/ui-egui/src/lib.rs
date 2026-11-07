@@ -36,6 +36,7 @@ pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+mod pdf_export;
 mod prefs;
 pub mod render_worker;
 mod rtl;
@@ -72,7 +73,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{BackgroundWriteFn, ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -113,6 +114,9 @@ struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
     generation: InputGeneration,
+    starts_batch: bool,
+    /// The system pointer is captured once, before export can defer the drop.
+    pointer_sampled: bool,
 }
 
 /// One admitted `ui.screenshot` request. The token, path, deadline and epoch are app-owned; the
@@ -131,6 +135,7 @@ struct ShotRequest {
 
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    pdf_export: pdf_export::Export,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -272,6 +277,8 @@ pub struct DesignApp {
     pub(crate) ime_canvas: Option<canvas::CanvasIme>,
     /// Quit was chosen: close the window on the next frame, as its close button does.
     quit_requested: bool,
+    /// Replay normal Quit after the active PDF export reaches a terminal result.
+    quit_after_export: bool,
     /// An OS close event deferred while a synthetic gesture or native action is pending.
     close_requested_pending: bool,
     /// Close the window without asking about unsaved changes (the control channel's `app.quit`).
@@ -322,6 +329,15 @@ mod window_frame_tests;
 #[cfg(test)]
 pub(crate) mod test_window {
     use egui_kittest::Harness;
+
+    /// The command modifier that the native keymap receives on this platform.
+    pub fn command_modifiers() -> egui::Modifiers {
+        if crate::keys::platform().is_mac() {
+            egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+        }
+    }
 
     pub struct Window {
         pub app: crate::DesignApp,

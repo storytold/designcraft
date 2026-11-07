@@ -200,3 +200,12 @@ Auto-Collapse Iconic Panels setting; `hidden` lists closed panels that remember 
 `Resize` with its edge, or `Divider`), naming groups, columns and windows by their first panel;
 `rect` is `[x, y, width, height]` in points. Drag from a rect's centre with `ui.drag`, or click
 it with `ui.click`, to script a gesture.
+
+### Desktop PDF export jobs
+
+On native desktop, `app.exportPdf` with an explicit path starts a background job and returns
+`{path, queued:true}`. Poll `ui.inspect.pdfExport`: `busy` stays true during generation and saving;
+`last` then contains `{path, bytes, pages, warnings, seconds}` or `{error}`. A queued result is
+not a completed export. Only one job runs at a time; editing and normal Quit wait for it.
+The options dialog uses the same job path. The engine's `file.exportPdf` remains synchronous
+and returns its existing final result, as does browser export.

@@ -1,6 +1,7 @@
 use super::state::{ImportRequest, ImportedFile};
 
 pub type ReadFn = Box<dyn Fn(&str) -> Result<Vec<u8>, String>>;
+pub type BackgroundWriteFn = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<(), String> + Send + Sync>;
 
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
@@ -28,6 +29,8 @@ pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 pub struct Services {
     pub read: Option<ReadFn>,
     pub write: Option<WriteFn>,
+    /// Optional thread-safe writer for native background exports.
+    pub background_write: Option<BackgroundWriteFn>,
     /// Asynchronous open dialog for a purpose (`open`, `place`); the chosen file arrives later
     /// through [`Services::inbox`]. In a browser, which has no native dialogs.
     pub open_async: Option<OpenAsyncFn>,

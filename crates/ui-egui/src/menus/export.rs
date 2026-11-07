@@ -178,10 +178,24 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
             o.entry("flatten").or_insert(json!(app.ui.flattener));
         }
     }
-    let r = app.run("file.exportPdf", params)?;
-    let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
-    match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
-        None => Err("no writer".into()),
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if app.services.write.is_none() && app.services.background_write.is_none() {
+            return Err("no writer".into());
+        }
+        let st = app.session.active().ok_or("no document")?;
+        let ctx = app.egui_ctx.clone().unwrap_or_default();
+        app.pdf_export.start(st, app.session.cache.clone(), path.clone(), params, ctx, app.services.background_write.clone())?;
+        app.status("Exporting PDF…");
+        Ok(json!({"path":path,"queued":true}))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let r = app.run("file.exportPdf", params)?;
+        let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
+        match app.services.write.as_mut() {
+            Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
+            None => Err("no writer".into()),
+        }
     }
 }

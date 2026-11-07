@@ -91,6 +91,15 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
         app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Report"));
         dialogs::confirm(app).unwrap();
         app.settle_dialogs();
+        // Native export completes on a worker; finish it before starting the next dialog.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+            if let Some(result) = app.pdf_export.poll(&mut app.services.write) {
+                result.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export.busy(), "the export must finish before another document is created");
     };
     let save_dialog = |app: &mut DesignApp| {
         app.run("app.saveDialog", json!({})).unwrap();
@@ -941,7 +950,13 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         let window = egui::vec2(300.0, 200.0);
         app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
         let path = dropped_png("drop-system-pointer");
-        app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer: None, generation: app.input_generation() });
+        app.pending_drops.push(crate::PendingDrop {
+            path: path.to_string_lossy().into_owned(),
+            pointer: None,
+            generation: app.input_generation(),
+            starts_batch: true,
+            pointer_sampled: false,
+        });
         let ctx = egui::Context::default();
         ctx.set_zoom_factor(zoom);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
