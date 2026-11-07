@@ -8363,6 +8363,57 @@ fn greek_text_gets_greek_hyphenation() {
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
 
+#[test]
+fn czech_text_gets_czech_hyphenation() {
+    // Czech had no hyphenation: `hypher`'s Czech patterns were not among the features the crate
+    // asks for, so `Lang::for_language` found nothing and Czech text, set justified, stretched
+    // its word spaces instead of breaking words, however narrow the column.
+    let text = "nejnebezpečnějším nepřítelem demokratizace informovanosti obyvatelstva nejnebezpečnějším nepřítelem demokratizace informovanosti obyvatelstva";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 96.0, 700.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Czech".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let breaks: Vec<&str> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!breaks.is_empty(), "Czech text is hyphenated");
+    // Every break the composer took is a break the patterns give for that word.
+    let cz = hyphen::Lang::for_language("Czech").unwrap();
+    for b in breaks {
+        let tail = b.rsplit(' ').next().unwrap_or(b);
+        let start = text.rfind(tail).unwrap_or(0);
+        let whole = text[start..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), cz);
+        assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a hyph-cs point");
+    }
+}
+
+#[test]
+fn czech_is_reached_by_name_tag_and_idml_name_and_diacritics_survive() {
+    for name in ["Czech", "$ID/Czech", "cs", "cs-CZ", "cs_CZ", "Czech: Czech Republic"] {
+        assert!(hyphen::Lang::for_language(name).is_some(), "{name} has hyphenation");
+    }
+    let cz = hyphen::Lang::for_language("$ID/Czech").unwrap();
+    assert_eq!(cz, hyphen::Lang::for_language("cs").unwrap());
+    let lim = hyphen::Limits::default();
+    // Points are counted in characters, so a word with diacritics breaks where the letters say.
+    let pts = hyphen::hyphen_points_in("nepřítelem", &lim, cz);
+    assert!(!pts.is_empty(), "nepřítelem has break points");
+    assert!(pts.iter().all(|&p| p >= lim.after_first && "nepřítelem".chars().count() - p >= lim.before_last));
+    // The syllables the Czech patterns give (de-mo-kra-ti-za-ce, vy-ři-zo-vá-ní, ne-pří-te-lem),
+    // which the English patterns do not: they miss de-mo-kra-ti-za-ce's second and fourth break.
+    assert_eq!(hyphen::hyphen_points_in("demokratizace", &lim, cz), vec![2, 4, 7, 9, 11]);
+    assert_eq!(hyphen::hyphen_points_in("vyřizování", &lim, cz), vec![2, 4, 6, 8]);
+    assert_eq!(hyphen::hyphen_points_in("nepřítelem", &lim, cz), vec![2, 5, 7]);
+    let en = hyphen::Lang::for_language("English: USA").unwrap();
+    assert_ne!(hyphen::hyphen_points_in("demokratizace", &lim, cz), hyphen::hyphen_points_in("demokratizace", &lim, en));
+    // Polish comes with Czech.
+    for name in ["Polish", "pl"] {
+        assert!(hyphen::Lang::for_language(name).is_some(), "{name} has hyphenation");
+    }
+    // A short word, under the minimum, is left whole.
+    assert!(hyphen::hyphen_points_in("žába", &lim, cz).is_empty());
+}
+
 /// An object's wrap pushes the text so that a later object's anchor goes on into the next frame
 /// (Learn Skills Daily's long-document exercise: pictures anchored in headings through a 79-page
 /// story). Each object is placed when its anchor line is set and wraps only the lines after it,
