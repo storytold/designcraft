@@ -186,6 +186,7 @@ mod tests {
         let dot = PathData::new(vec![SubPath::new(vec![Anchor::corner(Point::new(5.0, 5.0))], false)]);
         let rect = shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0));
         assert!(combine(Op::Subtract, &[dot.clone(), rect.clone()]).is_none());
+        assert!(combine(Op::Intersect, &[rect.clone(), dot.clone()]).is_none());
         assert!(combine(Op::MinusBack, &[rect, dot]).is_none());
     }
 
