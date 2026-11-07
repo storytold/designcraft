@@ -1734,6 +1734,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A pure move carries the placed graphic along; a resize leaves it at its size.
+                    let c = inner.as_coeffs();
+                    if let Content::Graphic(g) = &mut it.content
+                        && [c[0] - 1.0, c[1], c[2], c[3] - 1.0].iter().all(|v| v.abs() < 1e-9)
+                    {
+                        g.xf = inner * g.xf;
+                    }
                 }
             }
         }
