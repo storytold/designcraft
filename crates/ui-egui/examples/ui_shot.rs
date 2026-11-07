@@ -11,6 +11,8 @@
 use designcraft_engine::Session;
 use designcraft_ui_egui::{ControlRequest, DesignApp, Services};
 
+static HOLD_SHARP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn main() {
@@ -55,7 +57,12 @@ fn main() {
         if std::env::var_os("UI_SHOT_TRACE").is_some() {
             eprintln!("> {l}");
         }
-        if let Some(p) = l.get("shot").and_then(|v| v.as_str()) {
+        if let Some(hold) = l.get("holdSharpCanvas").and_then(|v| v.as_bool()) {
+            HOLD_SHARP.store(hold, std::sync::atomic::Ordering::Relaxed);
+            if !hold {
+                harness.state_mut().canvas.pending = None;
+            }
+        } else if let Some(p) = l.get("shot").and_then(|v| v.as_str()) {
             step_n(&mut harness, 3);
             match harness.render() {
                 Ok(img) => {
@@ -63,6 +70,19 @@ fn main() {
                     println!("{p}");
                 }
                 Err(e) => eprintln!("render failed: {e}"),
+            }
+        } else if let Some(p) = l.get("state").and_then(|v| v.as_str()) {
+            if let Err(error) = save_state(harness.state(), p) {
+                eprintln!("state snapshot failed: {error}");
+                std::process::exit(1);
+            }
+        } else if let Some(ms) = l.get("waitMs").and_then(|v| v.as_u64()) {
+            // Background workers need actual wall time; synthetic frame count alone can
+            // capture a pending canvas. Keep each scripted wait bounded to ten seconds.
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(ms.min(10_000)) {
+                step(&mut harness);
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
         } else if let Some(n) = l.get("steps").and_then(|v| v.as_u64()) {
             step_n(&mut harness, n as usize);
@@ -92,6 +112,23 @@ fn main() {
 /// One frame, with the app's synthetic input (`ui.click`, `ui.drag`, `ui.key`) injected like the
 /// windowed app's raw-input hook does.
 fn step(harness: &mut egui_kittest::Harness<'_, DesignApp>) {
+    if HOLD_SHARP.load(std::sync::atomic::Ordering::Relaxed) {
+        let app = harness.state_mut();
+        if let (Some(st), Some(view), Some(shown)) = (app.session.active(), app.view(), app.canvas.shown) {
+            // Test-only stand-in for a slow renderer: keep its old texture while preventing
+            // the pending viewport from completing. No product controls or timing assumptions.
+            app.canvas.pending = Some((
+                u64::MAX,
+                designcraft_ui_egui::Shown {
+                    doc: (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, shown.doc.3),
+                    editing_parents: st.editing_parents,
+                    origin: designcraft_geom::Point::new(-1e8, -1e8),
+                    zoom: view.zoom,
+                    size: (1e12, 1e12),
+                },
+            ));
+        }
+    }
     let mut raw = std::mem::take(harness.input_mut());
     let ctx = harness.ctx.clone();
     harness.state_mut().raw_input_hook(&ctx, &mut raw);
@@ -103,4 +140,18 @@ fn step_n(harness: &mut egui_kittest::Harness<'_, DesignApp>, n: usize) {
     for _ in 0..n {
         step(harness);
     }
+}
+
+/// Geometry-only snapshots keep private encoded artwork out of diagnostic JSON.
+fn save_state(app: &DesignApp, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let state=app.session.active().map(|st|serde_json::json!({
+        "interactionActive":st.interaction.is_some(),"selection":st.selection,
+        "view":app.view(),"canvasRect":app.canvas_rect.map(|r|[r.left(),r.top(),r.width(),r.height()]),
+        "sharpView":app.canvas.shown.map(|s|serde_json::json!({"origin":s.origin,"zoom":s.zoom,"size":s.size})),
+        "perf":designcraft_ui_egui::control::inspect(app,&egui::Context::default())["perf"],
+        "currentPage":designcraft_ui_egui::canvas::current_page(app).map(|p|p+1),
+        "items":st.doc.spreads.iter().flat_map(|sp|sp.items.iter()).map(|it|serde_json::json!({"id":it.id.0,"xf":it.xf.as_coeffs(),"opacity":it.opacity})).collect::<Vec<_>>()
+    }));
+    std::fs::write(path, serde_json::to_vec_pretty(&state)?)?;
+    Ok(())
 }

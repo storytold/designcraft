@@ -577,6 +577,7 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 designcraft_render::DisplayQuality::High => "high",
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
+            f["persistImagePreviews"] = json!(app.ui.persist_image_previews);
             f["autoCollapseIconicPanels"] = json!(app.ui.dock_auto_collapse);
             // Interface: Cancel goes back to the theme Preferences opened with.
             f["brightness"] = json!(app.ui.brightness.id());

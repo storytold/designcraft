@@ -34,13 +34,18 @@ impl AppleEvents {
 
     /// The documents still queued: those that arrived after the window's last frame.
     pub fn queued(&self) -> Vec<String> {
-        self.inbox
-            .drain()
-            .into_iter()
-            .flat_map(|e| if let Event::Open(paths) = e { paths } else { Vec::new() })
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect()
+        queued(&self.inbox)
     }
+}
+
+/// Documents still queued at native exit, also when the event loop must not unwind.
+pub fn queued(inbox: &Inbox) -> Vec<String> {
+    inbox
+        .drain()
+        .into_iter()
+        .flat_map(|e| if let Event::Open(paths) = e { paths } else { Vec::new() })
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Hand the documents that arrived since the last frame to the app, which opens them as File ›

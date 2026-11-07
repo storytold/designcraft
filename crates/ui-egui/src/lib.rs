@@ -17,12 +17,14 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod about;
 pub mod canvas;
+mod canvas_preview;
 pub mod chrome;
 pub mod control;
 pub mod credits;
 pub mod cursors;
 pub mod dialogs;
 pub mod dock;
+mod drag_preview;
 pub mod effects_dialog;
 pub mod export_batch_dialog;
 pub mod i18n;
@@ -46,6 +48,7 @@ mod shortcuts_dialog;
 pub mod story_editor;
 pub mod taskbar;
 pub mod theme;
+mod thumbnails;
 pub mod toolbar;
 pub mod updates_ui;
 pub mod widgets;
@@ -167,6 +170,7 @@ pub struct DesignApp {
     /// The persisted colour settings have been applied this session.
     pub color_applied: bool,
     pub perf: Perf,
+    pub(crate) thumbnails: thumbnails::Thumbnails,
     pub synthetic: Vec<egui::Event>,
     /// Control input stays separate from native-menu input until its frame is processed.
     pub(crate) control_synthetic: Vec<egui::Event>,
@@ -272,6 +276,8 @@ pub struct DesignApp {
     pub(crate) ime_canvas: Option<canvas::CanvasIme>,
     /// Quit was chosen: close the window on the next frame, as its close button does.
     quit_requested: bool,
+    /// The root close event passed the unsaved-document checks in the current frame.
+    native_close_approved: bool,
     /// An OS close event deferred while a synthetic gesture or native action is pending.
     close_requested_pending: bool,
     /// Close the window without asking about unsaved changes (the control channel's `app.quit`).
@@ -322,6 +328,15 @@ mod window_frame_tests;
 #[cfg(test)]
 pub(crate) mod test_window {
     use egui_kittest::Harness;
+
+    /// The command modifier that the native keymap receives on this platform.
+    pub fn command_modifiers() -> egui::Modifiers {
+        if crate::keys::platform().is_mac() {
+            egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+        }
+    }
 
     pub struct Window {
         pub app: crate::DesignApp,
