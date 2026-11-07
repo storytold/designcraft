@@ -236,6 +236,20 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn parent_hit_testing_respects_layers() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (a, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
+    let at = designcraft_geom::Point::new(50.0, 50.0);
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), Some(a));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+}
+
+#[test]
 fn page_numbers_saturate_at_the_largest_start() {
     // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
     let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
@@ -246,6 +260,7 @@ fn page_numbers_saturate_at_the_largest_start() {
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,
+        layout: None,
     }];
     assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
     d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
@@ -262,6 +277,7 @@ fn page_names_follow_sections() {
         style: NumberStyle::LowerRoman,
         prefix: "A-".into(),
         marker: String::new(),
+        layout: None,
         include_prefix: true,
     });
     assert_eq!(d.page_name(1), "2");
@@ -273,6 +289,7 @@ fn page_names_follow_sections() {
         start_number: None,
         style: NumberStyle::Arabic,
         prefix: String::new(),
+        layout: None,
         marker: String::new(),
         include_prefix: false,
     });
@@ -288,6 +305,7 @@ fn consecutive_right_pages_get_separate_spreads() {
         start: 1,
         start_number: Some(1),
         style: NumberStyle::Arabic,
+        layout: None,
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,

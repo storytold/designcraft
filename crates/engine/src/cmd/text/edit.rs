@@ -586,6 +586,7 @@ mod language_tests {
             ("fr_FR", GUILLEMETS, false),
             ("nb_NO", GUILLEMETS, false),
             ("ja_JP", CORNERS, false),
+            ("Esperanto", ENGLISH, false),
             ("[No Language]", ENGLISH, false),
         ] {
             assert_eq!(quote_marks(language), quotes, "{language}");

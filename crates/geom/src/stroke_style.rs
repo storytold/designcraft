@@ -38,7 +38,7 @@ fn offset_subpath(bp: &BezPath, d: f64, tol: f64, out: &mut BezPath) {
             PathSeg::Quad(q) => q.raise(),
             PathSeg::Cubic(c) => c,
         };
-        if (c.p3 - c.p0).hypot() < 1e-9 && (c.p1 - c.p0).hypot() < 1e-9 {
+        if (c.p3 - c.p0).hypot() < 1e-9 && (c.p1 - c.p0).hypot() < 1e-9 && (c.p2 - c.p0).hypot() < 1e-9 {
             continue;
         }
         let mut part = BezPath::new();
@@ -146,6 +146,19 @@ mod tests {
         b.move_to((0.0, 0.0));
         b.line_to((100.0, 0.0));
         b
+    }
+
+    #[test]
+    fn stripes_keep_cubic_with_only_second_control_away_from_start() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((0.0, 0.0), (90.0, 0.0), (0.0, 0.0));
+        let offset = offset_path(&path, 2.0, 0.01).bounding_box();
+        assert!(offset.x1 > 39.0, "{offset:?}");
+        assert!(offset.y0 < -1.9 && offset.y1 > 1.9, "{offset:?}");
+        let filled = stripes(&path, 12.0, &[(0.0, 0.5), (0.75, 0.25)], 0.01);
+        assert!(filled.contains(Point::new(20.0, -3.0)));
+        assert!(filled.contains(Point::new(20.0, 3.0)));
     }
 
     #[test]
