@@ -99,9 +99,11 @@ impl Spacing {
             return ([moji_stretch + st, 0.0, 0.0], [moji_shrink + sh, 0.0, 0.0]);
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
+        // Khmer letters take glyph scaling but no letter spacing (see `khmer::letter_gap`).
+        let letter = if crate::khmer::character(g.ch) { 0.0 } else { g.space };
         (
-            [moji_stretch, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [moji_shrink, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [moji_stretch, letter * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
+            [moji_shrink, letter * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
         )
     }
     /// Word-space stretch and shrink of space glyph `g` (see [`Glyph::is_word_space`]); none
@@ -187,7 +189,8 @@ struct Item {
     zone_from: usize,
     /// An emergency break inside a word wider than the measure.
     emergency: bool,
-    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]).
+    /// Glue: stretch past the maximum word spacing ([`Spacing::space_overflow`]). A justified
+    /// Khmer box: its share of the line's slack rating ([`crate::khmer::slack_unit`]).
     over: f64,
 }
 
@@ -463,6 +466,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         let mut bx = Item::boxed(g.adv, st, sh);
         bx.hang = hang_left(g, sp) - g.moji.start;
         bx.start_elastic = crate::mojikumi::start_elastic(g, sp.justify, sp.kinsoku_priority != 3);
+        if sp.justify {
+            bx.over = crate::khmer::slack_unit(g);
+        }
         it.push(bx);
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
@@ -897,7 +903,7 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
 /// split: before `i`, or earlier where kinsoku forbids that (no line starts with closing
 /// punctuation).
 fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
-    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if kinsoku_allows(a.ch, b.ch));
+    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if a.break_after != Some(false) && !a.no_break && kinsoku_allows(a.ch, b.ch));
     (start + 1..=i).rev().find(|&j| allowed(j)).unwrap_or(i)
 }
 

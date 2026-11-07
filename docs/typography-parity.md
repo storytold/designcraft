@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (optional Khmer composition; German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -47,6 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
 | Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
+| Khmer horizontal justification | real word spaces and glyph scaling; lines without a real space stay natural | same, both composers; shared segmentation and authored ZWSP only choose line breaks; attached marks scale with their base | ~ | optional data pack; real document/PDF comparison, not exact pagination parity |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
 | Columns, span / split columns | ✓ | ✓ | ✓ | split columns within a column (#295); text after a span flows below it (#276) |

@@ -871,29 +871,36 @@ fn shape_run_raw(
                 continue;
             }
         }
-        let special = matches!(
-            c,
-            '\t' | story::FORCED_LINE_BREAK
-                | story::PAGE_NUMBER
-                | story::NEXT_PAGE_NUMBER
-                | story::PREV_PAGE_NUMBER
-                | story::SECTION_MARKER
-                | story::COLUMN_BREAK
-                | story::FRAME_BREAK
-                | story::PAGE_BREAK
-                | story::ODD_PAGE_BREAK
-                | story::EVEN_PAGE_BREAK
-                | story::INDENT_HERE
-                | story::RIGHT_INDENT_TAB
-                | story::TABLE_ANCHOR
-                | designcraft_doc::FOOTNOTE_REF
-                | designcraft_doc::ENDNOTE_REF
-                | designcraft_doc::NOTE_MARK
-                | designcraft_doc::XREF_MARK
-                | designcraft_doc::ANCHOR_MARK
-                | designcraft_doc::INDEX_MARK
-                | designcraft_doc::OBJECT_MARK
-        ) || designcraft_doc::vars::var_index(c).is_some();
+        // Preserve joining context in other scripts (notably Arabic around WJ). Khmer
+        // needs standalone controls so an authored ZWSP can carry an exact line boundary.
+        let khmer_control = matches!(c, '\u{200b}' | '\u{2060}')
+            && (text.get(..i).and_then(|s| s.chars().next_back()).is_some_and(crate::khmer::character)
+                || text.get(i + c.len_utf8()..).and_then(|s| s.chars().next()).is_some_and(crate::khmer::character));
+        let special = khmer_control
+            || matches!(
+                c,
+                '\t' | story::FORCED_LINE_BREAK
+                    | story::PAGE_NUMBER
+                    | story::NEXT_PAGE_NUMBER
+                    | story::PREV_PAGE_NUMBER
+                    | story::SECTION_MARKER
+                    | story::COLUMN_BREAK
+                    | story::FRAME_BREAK
+                    | story::PAGE_BREAK
+                    | story::ODD_PAGE_BREAK
+                    | story::EVEN_PAGE_BREAK
+                    | story::INDENT_HERE
+                    | story::RIGHT_INDENT_TAB
+                    | story::TABLE_ANCHOR
+                    | designcraft_doc::FOOTNOTE_REF
+                    | designcraft_doc::ENDNOTE_REF
+                    | designcraft_doc::NOTE_MARK
+                    | designcraft_doc::XREF_MARK
+                    | designcraft_doc::ANCHOR_MARK
+                    | designcraft_doc::INDEX_MARK
+                    | designcraft_doc::OBJECT_MARK
+            )
+            || designcraft_doc::vars::var_index(c).is_some();
         if special {
             flush(seg_start, i, &seg_face, out);
             seg_start = i + c.len_utf8();
