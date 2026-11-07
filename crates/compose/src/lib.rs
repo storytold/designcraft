@@ -387,6 +387,15 @@ pub struct Contour {
 
 /// Points a contour outline may have; a larger outline wraps around its bounding box.
 const MAX_CONTOUR_POINTS: usize = 8192;
+/// Flattening tolerance (points) for a contour outline.
+const CONTOUR_TOLERANCE: f64 = 0.25;
+/// Flattening tolerance as a share of the outline's extent, for an outline so large that the fixed
+/// tolerance would cut its curves into millions of points: the points a curve is cut into grow with
+/// the square root of its size over the tolerance, so this bounds them however large it is.
+const CONTOUR_RELATIVE_TOLERANCE: f64 = 1e-4;
+/// Largest outline extent flattened at all: past this, kurbo's subdivision count (from squared
+/// distances) overflows to infinity and it tries to reserve that many pieces.
+const MAX_CONTOUR_EXTENT: f64 = 1e100;
 
 impl Contour {
     /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
@@ -435,12 +444,26 @@ impl Contour {
 
 /// The closed polylines of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
 fn flatten_rings(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::Affine) -> Option<Vec<Vec<Point>>> {
+    // Every element flattens to at least one point.
+    if path.elements().len() > MAX_CONTOUR_POINTS {
+        return None;
+    }
+    let path = to_inner * path.clone();
+    let extent = control_extent(&path);
+    if extent > MAX_CONTOUR_EXTENT {
+        return None;
+    }
+    let tolerance = (extent * CONTOUR_RELATIVE_TOLERANCE).max(CONTOUR_TOLERANCE);
     let mut rings: Vec<Vec<Point>> = Vec::new();
     let mut n = 0usize;
     let mut too_many = false;
-    designcraft_geom::kurbo::flatten(to_inner * path.clone(), 0.25, |el| {
+    designcraft_geom::kurbo::flatten(path.elements().iter().copied(), tolerance, |el| {
         n += 1;
         too_many |= n > MAX_CONTOUR_POINTS;
+        // Past the limit the outline is given up: keep nothing more.
+        if too_many {
+            return;
+        }
         match el {
             designcraft_geom::PathEl::MoveTo(p) => rings.push(vec![p]),
             designcraft_geom::PathEl::LineTo(p) => match rings.last_mut() {
@@ -452,6 +475,38 @@ fn flatten_rings(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::A
     });
     rings.retain(|r| r.len() >= 2 && r.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
     (!too_many && !rings.is_empty()).then_some(rings)
+}
+
+/// The larger side of the box around `path`'s end and control points (0 without any; infinite if any is not finite).
+fn control_extent(path: &designcraft_geom::BezPath) -> f64 {
+    use designcraft_geom::PathEl;
+    let (mut lo, mut hi) = (Point::new(f64::INFINITY, f64::INFINITY), Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY));
+    let mut all_finite = true;
+    let mut add = |p: Point| {
+        if p.x.is_finite() && p.y.is_finite() {
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+        } else {
+            all_finite = false;
+        }
+    };
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => add(p),
+            PathEl::QuadTo(a, b) => [a, b].into_iter().for_each(&mut add),
+            PathEl::CurveTo(a, b, c) => [a, b, c].into_iter().for_each(&mut add),
+            PathEl::ClosePath => {}
+        }
+    }
+    // A non-finite point must not slip past the extent limit, so report it as unbounded.
+    if !all_finite {
+        return f64::INFINITY;
+    }
+    if lo.x > hi.x {
+        return 0.0;
+    }
+    // Finite points far apart can still be an infinite distance apart.
+    (hi.x - lo.x).max(hi.y - lo.y).min(f64::MAX)
 }
 
 fn rings_bounds(rings: &[Vec<Point>]) -> Option<Rect> {

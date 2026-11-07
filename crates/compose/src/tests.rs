@@ -702,6 +702,46 @@ fn contour_wrap_follows_the_outline_band_by_band() {
     assert_eq!(ex.rect, Rect::new(106.0, 96.0, 194.0, 204.0));
 }
 
+/// A curve with enormous (finite) coordinates is flattened with a tolerance relative to its size,
+/// not cut into billions of 0.25 pt pieces; an outline with more elements than the contour limit
+/// is given up before flattening.
+#[test]
+fn huge_contour_curves_flatten_in_bounded_work() {
+    use designcraft_geom::{Affine, BezPath, Point};
+    let mut p = BezPath::new();
+    p.move_to((0.0, 0.0));
+    p.curve_to((1.0e15, 0.0), (1.0e15, 1.0e15), (0.0, 1.0e15));
+    p.close_path();
+    let t = std::time::Instant::now();
+    let rings = flatten_rings(&p, Affine::IDENTITY).expect("flattened");
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    assert!(rings.iter().map(Vec::len).sum::<usize>() <= MAX_CONTOUR_POINTS);
+    // A page-sized curve keeps the fixed tolerance.
+    let mut small = BezPath::new();
+    small.move_to((0.0, 0.0));
+    small.curve_to((100.0, 0.0), (100.0, 100.0), (0.0, 100.0));
+    assert!(control_extent(&small) * CONTOUR_RELATIVE_TOLERANCE < CONTOUR_TOLERANCE);
+    // Past the extent kurbo can subdivide without overflowing: given up at once.
+    let mut vast = BezPath::new();
+    vast.move_to((0.0, 0.0));
+    vast.curve_to((1.0e155, 0.0), (1.0e155, 1.0e155), (0.0, 1.0e155));
+    vast.close_path();
+    assert!(flatten_rings(&vast, Affine::IDENTITY).is_none());
+    // A non-finite point is unbounded, even beside finite ones.
+    let mut nan = BezPath::new();
+    nan.move_to((0.0, 0.0));
+    nan.line_to((f64::NAN, 1.0));
+    assert!(control_extent(&nan).is_infinite());
+    assert!(flatten_rings(&nan, Affine::IDENTITY).is_none());
+    // Too many elements: given up at once.
+    let mut many = BezPath::new();
+    many.move_to(Point::ZERO);
+    for i in 0..MAX_CONTOUR_POINTS {
+        many.line_to((i as f64, (i % 2) as f64));
+    }
+    assert!(flatten_rings(&many, Affine::IDENTITY).is_none());
+}
+
 /// A contour wrap with a slanted right edge, x = 100 + 2(y − 50) for y in 50..100, text to its right.
 fn doc_with_slant(contour: designcraft_geom::path::PathData) -> (Document, StoryId) {
     let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
