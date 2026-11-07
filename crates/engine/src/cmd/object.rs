@@ -923,21 +923,51 @@ pub fn specs() -> Vec<CommandSpec> {
                 )
             }
         ),
-        cmd!(query "object.findByLabel", "Find by Script Label", [], None, "{label} → ids of objects whose label is `label`", has_doc, |s, p| {
-            let label = str_param(p, "label").unwrap_or("");
-            let d = &s.doc()?.doc;
-            let mut ids = Vec::new();
-            for sp in d.spreads.iter().chain(d.parents.iter()) {
-                for it in &sp.items {
-                    it.walk(&mut |x| {
-                        if x.label == label {
-                            ids.push(x.id.0);
-                        }
-                    });
-                }
+        cmd!(
+            query "object.findByLabel",
+            "Find by Script Label",
+            [],
+            None,
+            "{label} or {key, value?} → ids of objects whose Script Label is `label`, or that have a script label under `key` (with that `value`; the key `Label` is the Script Label). Anchored objects included, also in table cells and notes.",
+            has_doc,
+            find_by_label
+        ),
+        cmd!(
+            "object.insertLabel",
+            "Insert Label",
+            [],
+            None,
+            "{key, value, ids?} — a keyed script label (InDesign's insertLabel); an empty value removes the key, and the key `Label` sets the Script Label. Anchored objects included, also in table cells and notes.",
+            has_doc,
+            insert_label
+        ),
+        cmd!(
+            query "object.extractLabel",
+            "Extract Label",
+            [],
+            None,
+            "{key, id?} → {value}: an object's keyed script label, \"\" when it has none (InDesign's extractLabel); the key `Label` reads the Script Label. Anchored objects included, also in table cells and notes.",
+            has_doc,
+            |s, p| {
+                let key = str_param(p, "key").ok_or_else(|| bad("object.extractLabel", "missing key"))?;
+                let id = one_target(s, p, "object.extractLabel")?;
+                let it = s.doc()?.doc.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+                Ok(json!({"value": it.script_label(key)}))
             }
-            Ok(json!({"ids": ids}))
-        }),
+        ),
+        cmd!(
+            query "object.labels",
+            "Script Labels",
+            [],
+            None,
+            "{id?} → {label, labels: {key: value}}: an object's Script Label and keyed labels. Anchored objects included, also in table cells and notes.",
+            has_doc,
+            |s, p| {
+                let id = one_target(s, p, "object.labels")?;
+                let it = s.doc()?.doc.item_any(id).ok_or(designcraft_doc::DocError::NoItem(id))?;
+                Ok(json!({"label": it.label, "labels": it.labels}))
+            }
+        ),
         cmd!(
             "object.setLayer",
             "Move to Layer",
@@ -2415,6 +2445,60 @@ fn effects_all(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(json!({"changed": changed}))
     })
+}
+
+/// `object.findByLabel`: the objects with a Script Label, or a keyed one, wherever they are placed.
+fn find_by_label(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "object.findByLabel";
+    let (label, key, value) = (str_param(p, "label"), str_param(p, "key"), str_param(p, "value"));
+    // A search without a label or a key would match every object without one.
+    let (key, want) = match (label, key) {
+        (Some(l), None) if value.is_none() => (designcraft_doc::SCRIPT_LABEL_KEY, Some(l)),
+        (None, Some(k)) => (k, value),
+        (Some(_), Some(_)) => return Err(bad(ID, "give `label` or `key`, not both")),
+        (Some(_), None) => return Err(bad(ID, "`value` goes with `key`")),
+        (None, None) => return Err(bad(ID, "give `label`, or `key` and maybe `value`")),
+    };
+    let d = &s.doc()?.doc;
+    let ids: Vec<u64> = d
+        .placed_items()
+        .into_iter()
+        .filter(|it| {
+            let v = it.script_label(key);
+            match want {
+                Some(w) => v == w,
+                None => !v.is_empty(),
+            }
+        })
+        .map(|it| it.id.0)
+        .collect();
+    Ok(json!({"ids": ids}))
+}
+
+/// `object.insertLabel`: set or remove a script label on objects wherever they are placed.
+fn insert_label(s: &mut Session, p: &Value) -> Result<Value> {
+    let key = str_param(p, "key").ok_or_else(|| bad("object.insertLabel", "missing key"))?.to_string();
+    let value = str_param(p, "value").unwrap_or("").to_string();
+    let ids = targets(s, p)?;
+    // Every object is there before any changes.
+    let d = &s.doc()?.doc;
+    if let Some(id) = ids.iter().find(|id| d.item_any(**id).is_none()) {
+        return Err(designcraft_doc::DocError::NoItem(*id).into());
+    }
+    let wanted: HashSet<ItemId> = ids.iter().copied().collect();
+    s.edit(|d, _| {
+        let changed = d.update_placed_items(|it| wanted.contains(&it.id), |it| it.set_script_label(&key, &value));
+        Ok(json!({"changed": changed}))
+    })
+}
+
+/// The one object a query is about: `id`, or the single selected object.
+fn one_target(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
+    match targets(s, p)?.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(bad(cmd, "no object: give `id` or select one")),
+        _ => Err(bad(cmd, "more than one object: give `id`")),
+    }
 }
 
 fn set_flag(s: &mut Session, p: &Value, f: impl Fn(&mut Item), deselect: bool) -> Result<Value> {
@@ -6076,5 +6160,136 @@ mod anchored_copy_tests {
         assert_eq!(d.story(anchored_sid).unwrap().frames, [anchored.id]);
         assert_eq!(d.story(inner_sid).unwrap().frames, [inner]);
         assert_reopens(&d);
+    }
+}
+
+#[cfg(test)]
+mod script_label_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn id(v: &serde_json::Value) -> u64 {
+        v["id"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn keyed_labels_reach_anchored_objects_and_survive_files() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text with a picture"})).unwrap();
+        let story = r["story"].as_u64().unwrap();
+        let free = id(&s.execute("frame.create", &json!({"rect": [10, 10, 40, 40], "content": "unassigned"})).unwrap());
+        let a = id(&s.execute("frame.create", &json!({"rect": [0, 0, 30, 20], "content": "unassigned"})).unwrap());
+        let b = id(&s.execute("frame.create", &json!({"rect": [0, 30, 30, 50], "content": "unassigned"})).unwrap());
+        let g = id(&s.execute("object.group", &json!({"ids": [a, b]})).unwrap());
+        s.execute("anchored.insert", &json!({"ids": [g], "story": story, "pos": 4})).unwrap();
+        // A child of an anchored group, and an object on the spread.
+        s.execute("object.insertLabel", &json!({"key": "imagepath", "value": "file:/images/a.png", "ids": [a]})).unwrap();
+        s.execute("object.insertLabel", &json!({"key": "signet", "value": "is_signet", "ids": [a, free]})).unwrap();
+        let get = |s: &mut Session, id: u64, key: &str| s.execute("object.extractLabel", &json!({"id": id, "key": key})).unwrap()["value"].clone();
+        assert_eq!(get(&mut s, a, "imagepath"), "file:/images/a.png");
+        assert_eq!(get(&mut s, free, "imagepath"), "", "a missing key reads as empty, as in InDesign");
+        let found = s.execute("object.findByLabel", &json!({"key": "signet", "value": "is_signet"})).unwrap();
+        let mut ids: Vec<u64> = found["ids"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+        ids.sort();
+        let mut want = vec![free, a];
+        want.sort();
+        assert_eq!(ids, want);
+        assert_eq!(s.execute("object.findByLabel", &json!({"key": "imagepath"})).unwrap()["ids"], json!([a]));
+        assert_eq!(s.execute("object.labels", &json!({"id": a})).unwrap()["labels"]["signet"], "is_signet");
+        s.execute("object.label", &json!({"label": "cover", "ids": [free]})).unwrap();
+
+        // The native file and IDML keep them, anchored objects included.
+        let d = s.doc().unwrap().doc.clone();
+        let back = crate::cmd::file_from(&crate::cmd::file_bytes(&d).unwrap()).unwrap();
+        assert_eq!(back.item_any(designcraft_doc::ItemId(a)).unwrap().labels.get("imagepath").map(String::as_str), Some("file:/images/a.png"));
+        let idml = designcraft_idml::export_idml(&d);
+        let again = designcraft_idml::import_idml(&idml).unwrap();
+        let labelled: Vec<_> = again
+            .stories
+            .values()
+            .flat_map(|st| st.objects.iter())
+            .flat_map(|o| o.item.children().iter().map(|c| c.labels.clone()).collect::<Vec<_>>())
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(labelled.len(), 1, "the anchored child's labels");
+        assert_eq!(labelled[0].get("signet").map(String::as_str), Some("is_signet"));
+        let spread = again.spreads.iter().flat_map(|sp| sp.items.iter()).find(|it| !it.labels.is_empty()).unwrap();
+        assert_eq!(spread.labels.get("signet").map(String::as_str), Some("is_signet"));
+        // The Script Label goes out as InDesign keeps it (the pair keyed `Label`) and comes back
+        // as the Script Label, where object.findByLabel looks.
+        assert_eq!((spread.label.as_str(), spread.labels.len()), ("cover", 1));
+        let mut reopened = Session::new();
+        reopened.execute("file.openBytes", &json!({"name": "labels.idml", "base64": crate::cmd::file::base64_encode(&idml)})).unwrap();
+        assert_eq!(reopened.execute("object.findByLabel", &json!({"label": "cover"})).unwrap()["ids"].as_array().map(Vec::len), Some(1));
+
+        // An empty value removes the key; undo brings it back.
+        s.execute("object.insertLabel", &json!({"key": "signet", "value": "", "ids": [a]})).unwrap();
+        assert_eq!(get(&mut s, a, "signet"), "");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(get(&mut s, a, "signet"), "is_signet");
+
+        // Mistakes are errors, not panics.
+        assert!(s.execute("object.extractLabel", &json!({"id": a})).is_err(), "no key");
+        assert!(s.execute("object.extractLabel", &json!({"id": 999_999, "key": "k"})).is_err(), "no object");
+        assert!(s.execute("object.insertLabel", &json!({"key": "k", "value": "v", "ids": [999_999]})).is_err());
+        assert!(s.execute("object.labels", &json!({"ids": [a, free]})).is_err(), "one object at a time");
+    }
+
+    #[test]
+    fn labels_reach_objects_in_table_cells_and_notes() {
+        use std::sync::Arc;
+
+        use designcraft_doc::{AnchoredObject, SpreadRef, Table};
+        use designcraft_geom::Rect;
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let in_cell = id(&s.execute("frame.create", &json!({"rect": [10, 10, 40, 40], "content": "unassigned"})).unwrap());
+        let in_note = id(&s.execute("frame.create", &json!({"rect": [50, 10, 80, 40], "content": "unassigned"})).unwrap());
+        {
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let layer = d.default_layer();
+            let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 400.0, 400.0), layer, "Body", Default::default()).unwrap();
+            let mut take = |id: u64| {
+                let item = (**d.spreads[0].items.iter().find(|it| it.id.0 == id).unwrap()).clone();
+                Arc::make_mut(&mut d.spreads[0]).items.retain(|it| it.id.0 != id);
+                AnchoredObject { item, position: Default::default() }
+            };
+            let (cell_object, note_object) = (take(in_cell), take(in_note));
+            let story = d.story_mut(sid).unwrap();
+            let mut table = Table::new(1, 1, 1, 0, 0, 20.0);
+            table.cells[0].text.insert_object(0, cell_object);
+            story.insert_table(0, table);
+            story.insert_note(0, "Note", Default::default()).unwrap();
+            Arc::make_mut(&mut story.notes[0]).text.insert_object(0, note_object);
+        }
+        s.execute("object.insertLabel", &json!({"key": "fit", "value": "fill", "ids": [in_cell, in_note]})).unwrap();
+        for i in [in_cell, in_note] {
+            assert_eq!(s.execute("object.extractLabel", &json!({"id": i, "key": "fit"})).unwrap()["value"], "fill");
+        }
+        let mut found: Vec<u64> =
+            s.execute("object.findByLabel", &json!({"key": "fit"})).unwrap()["ids"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+        found.sort();
+        let mut want = vec![in_cell, in_note];
+        want.sort();
+        assert_eq!(found, want);
+
+        // The key `Label` is the Script Label, however it is set or read: it keeps one value.
+        s.execute("object.insertLabel", &json!({"key": "Label", "value": "cover", "ids": [in_cell]})).unwrap();
+        let labels = s.execute("object.labels", &json!({"id": in_cell})).unwrap();
+        assert_eq!((labels["label"].clone(), labels["labels"].get("Label").cloned()), (json!("cover"), None));
+        assert_eq!(s.execute("object.extractLabel", &json!({"id": in_cell, "key": "Label"})).unwrap()["value"], "cover");
+        assert_eq!(s.execute("object.findByLabel", &json!({"label": "cover"})).unwrap()["ids"], json!([in_cell]));
+        assert_eq!(s.execute("object.findByLabel", &json!({"key": "Label", "value": "cover"})).unwrap()["ids"], json!([in_cell]));
+
+        // A search that names no label or key is an error, not every unlabelled object.
+        for p in [json!({}), json!({"value": "fill"}), json!({"label": "cover", "key": "fit"})] {
+            assert!(s.execute("object.findByLabel", &p).is_err(), "{p}");
+        }
+        // One missing object changes none.
+        assert!(s.execute("object.insertLabel", &json!({"key": "fit", "value": "x", "ids": [in_cell, 999_999]})).is_err());
+        assert_eq!(s.execute("object.extractLabel", &json!({"id": in_cell, "key": "fit"})).unwrap()["value"], "fill");
     }
 }
