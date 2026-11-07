@@ -549,6 +549,8 @@ mod tests {
         assert_eq!(h("pós-graduação"), "pós-gra-du-a-ção", "each part of a compound");
     }
 
+    /// Croatian resolves to the hyph-hr patterns and breaks by the pravopis syllable rules:
+    /// digraphs stay whole, syllabic r carries a syllable, prefixes detach, short jat je stays whole.
     #[test]
     fn croatian_uses_the_hyph_hr_patterns() {
         let hr = Lang::for_language("Croatian").unwrap();
@@ -605,6 +607,8 @@ mod tests {
         assert_eq!(h("bijel"), "bi-jel");
     }
 
+    /// The paragraph's hyphenation limits apply to Croatian points too: after-first/before-last
+    /// margins, minimum word length and the capitalized-words switch.
     #[test]
     fn croatian_respects_paragraph_limits() {
         let hr = Lang::for_language("hr").unwrap();

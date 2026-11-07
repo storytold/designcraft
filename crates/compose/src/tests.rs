@@ -4628,6 +4628,8 @@ fn norwegian_text_gets_norwegian_hyphenation() {
     }
 }
 
+/// Croatian text in a narrow frame composes with automatic hyphenation, and every line-ending
+/// break is a hyph-hr point. Without the croatian feature the language resolves to nothing.
 #[test]
 fn croatian_text_gets_croatian_hyphenation() {
     let text = "udžbenik njegovati rastavljanje hrvatski ljubav najbolji izvor";
