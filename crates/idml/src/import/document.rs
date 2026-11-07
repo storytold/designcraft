@@ -262,6 +262,31 @@ impl<'r> Importer<'r> {
         };
     }
 
+    /// Custom footnote marks DesignCraft keeps in a document label (InDesign has no setting for
+    /// them). Marks past the caps, without text or naming a character style the file lacks are
+    /// left out (a missing style: the mark keeps the reference's style alone).
+    pub(super) fn footnote_marks_label(&mut self, root: &El) {
+        let Some(value) = root
+            .find("Properties")
+            .and_then(|p| p.find("Label"))
+            .and_then(|l| l.find_all("KeyValuePair").find(|kv| kv.get("Key") == Some(names::FOOTNOTE_MARKS_LABEL)))
+            .and_then(|kv| kv.get("Value"))
+        else {
+            return;
+        };
+        let Ok(mut c) = serde_json::from_str::<designcraft_doc::CustomMarks>(value) else { return };
+        c.marks.retain(|m| !m.text.is_empty() && m.text.chars().count() <= designcraft_doc::MAX_MARK_CHARS);
+        c.marks.truncate(designcraft_doc::MAX_CUSTOM_MARKS);
+        for m in &mut c.marks {
+            if m.char_style != designcraft_doc::NO_CHAR_STYLE && self.styles.char_style(&m.char_style).is_none() {
+                m.char_style = designcraft_doc::NO_CHAR_STYLE.into();
+            }
+        }
+        if !c.marks.is_empty() {
+            self.footnote_options.custom_marks = Some(c);
+        }
+    }
+
     /// Preferences › `FootnoteOption` (after styles: it names the footnote text and marker styles).
     pub(super) fn footnote_option(&mut self, e: &El) {
         let mut o = designcraft_doc::FootnoteOptions::default();

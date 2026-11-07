@@ -7,7 +7,8 @@
 //! [`Story`] (like a table cell) composed at the bottom of the column its reference lands in.
 //!
 //! Numbering and layout come from the document-wide [`FootnoteOptions`]
-//! (Type › Document Footnote Options).
+//! (Type › Document Footnote Options). Besides the built-in numbering styles, the marks can be a
+//! sequence the user defines ([`CustomMarks`]), each mark any text with its own character style.
 
 use std::sync::Arc;
 
@@ -103,6 +104,89 @@ pub struct FootnoteOptions {
     pub span_columns: bool,
     /// Rule above the first footnote in a column.
     pub rule: NoteRule,
+    /// Marks the user defines, used instead of [`FootnoteOptions::style`] when set (InDesign has
+    /// no such option: IDML export writes its Symbols style and keeps these in a document label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_marks: Option<CustomMarks>,
+}
+
+/// The most marks a custom sequence uses, and the most characters of each mark: past them a file
+/// or a command can't make a label of unbounded size.
+pub const MAX_CUSTOM_MARKS: usize = 64;
+pub const MAX_MARK_CHARS: usize = 32;
+/// [`MarksAfter::Double`] writes a mark at most this many times; past that it counts instead
+/// ([`MarksAfter::Counter`]'s form).
+const MAX_MARK_REPEATS: u32 = 10;
+
+/// A sequence of footnote marks the user defines: the first footnote takes the first mark, the
+/// next the second, and so on; [`CustomMarks::after`] says what comes after the last.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomMarks {
+    pub marks: Vec<NoteMark>,
+    pub after: MarksAfter,
+}
+
+/// One mark of a [`CustomMarks`] sequence: any text (a symbol, several characters, an emoji),
+/// and the character style it takes on top of the reference's (a font that has the glyph, say).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NoteMark {
+    pub text: String,
+    /// [`NO_CHAR_STYLE`]: none of its own.
+    pub char_style: String,
+}
+
+impl Default for NoteMark {
+    fn default() -> Self {
+        NoteMark { text: String::new(), char_style: NO_CHAR_STYLE.into() }
+    }
+}
+
+/// What the footnotes after the last mark of a [`CustomMarks`] sequence take.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarksAfter {
+    /// The marks again, doubled, then tripled (`*`, `†`, then `**`, `††`), as the built-in
+    /// Symbols style does.
+    #[default]
+    Double,
+    /// The marks again, as they are.
+    Repeat,
+    /// The marks again with a count (`✦`, `✧`, then `✦2`, `✧2`).
+    Counter,
+    /// Numbers (1, 2, 3, …), starting at 1 after the last mark.
+    Numbers,
+}
+
+impl CustomMarks {
+    /// The usable marks: the first [`MAX_CUSTOM_MARKS`] with text, each cut to
+    /// [`MAX_MARK_CHARS`] characters.
+    fn usable(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.marks.iter().filter(|m| !m.text.is_empty()).take(MAX_CUSTOM_MARKS).map(|m| {
+            let end = m.text.char_indices().nth(MAX_MARK_CHARS).map_or(m.text.len(), |(i, _)| i);
+            (&m.text[..end], m.char_style.as_str())
+        })
+    }
+
+    /// The mark of footnote `n` (1-based) and its character style (`None`: none of its own, or a
+    /// number past the marks); `None` when the sequence has no marks.
+    pub fn mark(&self, n: u32) -> Option<(String, Option<String>)> {
+        let marks: Vec<(&str, &str)> = self.usable().collect();
+        let len = u32::try_from(marks.len()).ok().filter(|l| *l > 0)?;
+        let i = n.max(1) - 1;
+        let (round, k) = (i / len, (i % len) as usize);
+        let (text, style) = *marks.get(k)?;
+        let style = (style != NO_CHAR_STYLE && !style.is_empty()).then(|| style.to_string());
+        let counted = |round: u32| format!("{text}{}", round + 1);
+        Some(match self.after {
+            _ if round == 0 => (text.to_string(), style),
+            MarksAfter::Repeat => (text.to_string(), style),
+            MarksAfter::Double if round < MAX_MARK_REPEATS => (text.repeat(round as usize + 1), style),
+            MarksAfter::Double | MarksAfter::Counter => (counted(round), style),
+            MarksAfter::Numbers => ((i - len + 1).to_string(), None),
+        })
+    }
 }
 
 impl Default for FootnoteOptions {
@@ -124,14 +208,28 @@ impl Default for FootnoteOptions {
             first_baseline_min: 0.0,
             span_columns: false,
             rule: NoteRule::default(),
+            custom_marks: None,
         }
     }
 }
 
 impl FootnoteOptions {
+    /// The custom marks in use: set and with at least one mark.
+    pub fn custom(&self) -> Option<&CustomMarks> {
+        self.custom_marks.as_ref().filter(|c| c.marks.iter().any(|m| !m.text.is_empty()))
+    }
+
+    /// The character style of footnote `n`'s mark, when its custom mark has one of its own.
+    pub fn mark_style(&self, n: u32) -> Option<String> {
+        self.custom().and_then(|c| c.mark(n)).and_then(|(_, style)| style)
+    }
+
     /// The number as shown at the reference (`text == false`) or before the footnote text.
     pub fn label(&self, n: u32, text: bool) -> String {
-        let num = self.style.format(n);
+        let num = match self.custom().and_then(|c| c.mark(n)) {
+            Some((mark, _)) => mark,
+            None => self.style.format(n),
+        };
         let affix = match self.affix_in {
             AffixIn::None => false,
             AffixIn::Both => true,
@@ -326,5 +424,68 @@ mod tests {
         o.affix_in = AffixIn::Reference;
         assert_eq!(o.label(4, false), "[4]");
         assert_eq!(o.label(4, true), "4");
+    }
+
+    fn marks(texts: &[&str], after: MarksAfter) -> CustomMarks {
+        CustomMarks { marks: texts.iter().map(|t| NoteMark { text: (*t).into(), ..Default::default() }).collect(), after }
+    }
+
+    /// Custom marks: the user's sequence, then what comes after its last mark.
+    #[test]
+    fn custom_marks_follow_the_sequence_then_their_rule() {
+        let seq = ["♩", "♪", "♫"];
+        let label = |after: MarksAfter, n: u32| {
+            let o = FootnoteOptions { custom_marks: Some(marks(&seq, after)), ..Default::default() };
+            o.label(n, false)
+        };
+        for after in [MarksAfter::Double, MarksAfter::Repeat, MarksAfter::Counter, MarksAfter::Numbers] {
+            assert_eq!([1, 2, 3].map(|n| label(after, n)), seq.map(String::from), "{after:?}");
+        }
+        assert_eq!([4, 6, 7].map(|n| label(MarksAfter::Double, n)), ["♩♩", "♫♫", "♩♩♩"]);
+        assert_eq!([4, 7].map(|n| label(MarksAfter::Repeat, n)), ["♩", "♩"]);
+        assert_eq!([4, 7].map(|n| label(MarksAfter::Counter, n)), ["♩2", "♩3"]);
+        assert_eq!([4, 5].map(|n| label(MarksAfter::Numbers, n)), ["1", "2"]);
+        // Any text: several characters, emoji; prefix and suffix as for numbers.
+        let mut o = FootnoteOptions { custom_marks: Some(marks(&["[a]", "🎸"], MarksAfter::Double)), ..Default::default() };
+        assert_eq!([1, 2].map(|n| o.label(n, false)), ["[a]", "🎸"]);
+        o.prefix = "(".into();
+        o.suffix = ")".into();
+        o.affix_in = AffixIn::Both;
+        assert_eq!(o.label(2, true), "(🎸)");
+        // No marks with text: the numbering style, as without custom marks.
+        let o = FootnoteOptions { custom_marks: Some(marks(&["", ""], MarksAfter::Double)), ..Default::default() };
+        assert_eq!(o.label(2, false), "2");
+    }
+
+    /// Each mark can carry a character style of its own; numbers past the marks don't.
+    #[test]
+    fn custom_marks_carry_their_character_style() {
+        let mut c = marks(&["♪", "*"], MarksAfter::Numbers);
+        c.marks[0].char_style = "Music".into();
+        let o = FootnoteOptions { custom_marks: Some(c), ..Default::default() };
+        assert_eq!(o.mark_style(1).as_deref(), Some("Music"));
+        assert_eq!(o.mark_style(2), None, "[None]: the reference's style alone");
+        assert_eq!(o.mark_style(3), None, "a number past the marks");
+        assert_eq!(FootnoteOptions::default().mark_style(1), None);
+    }
+
+    /// Labels stay small whatever a file or a command holds: a huge number, a long mark, many
+    /// marks.
+    #[test]
+    fn custom_marks_bound_their_labels() {
+        let long = "x".repeat(10_000);
+        let o = FootnoteOptions { custom_marks: Some(marks(&[&long], MarksAfter::Double)), ..Default::default() };
+        assert_eq!(o.label(1, false).chars().count(), MAX_MARK_CHARS);
+        let doubled = o.label(u32::MAX, false);
+        assert!(doubled.len() <= MAX_MARK_CHARS + 10, "counted past the repeats: {}", doubled.len());
+        let many: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let o = FootnoteOptions { custom_marks: Some(marks(&refs, MarksAfter::Repeat)), ..Default::default() };
+        assert_eq!(o.label(MAX_CUSTOM_MARKS as u32 + 1, false), "0", "only the first marks are used");
+        assert_eq!(o.label(0, false), "0", "start at 0 is the first mark");
+        assert_eq!(
+            FootnoteOptions { custom_marks: Some(marks(&["a"], MarksAfter::Numbers)), ..Default::default() }.label(u32::MAX, false),
+            (u32::MAX - 1).to_string()
+        );
     }
 }

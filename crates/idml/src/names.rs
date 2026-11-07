@@ -137,6 +137,10 @@ pub fn font_family_in(v: &str) -> Option<String> {
 }
 
 /// Built-in style names: (ours, IDML `Name`).
+/// The document label (a designmap `KeyValuePair`) that keeps custom footnote marks, which
+/// InDesign has no setting for: it keeps the label and shows its Symbols style instead.
+pub const FOOTNOTE_MARKS_LABEL: &str = "designcraft.footnoteMarks";
+
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];
 pub const CELL_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[None]")];

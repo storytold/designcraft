@@ -125,7 +125,10 @@ impl<'a> Ex<'a> {
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
         let mut props = El::new("Properties");
-        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(o.style)));
+        // Custom marks: InDesign's nearest style is Symbols; the marks themselves go in a document
+        // label (`FOOTNOTE_MARKS_LABEL`) for DesignCraft to read back.
+        let style = if o.custom().is_some() { designcraft_doc::NumberStyle::Symbols } else { o.style };
+        props.push(enumv("FootnoteNumberingStyle", names::number_style_out(style)));
         props.push(enumv("RestartNumbering", restart));
         props.push(enumv("ShowPrefixSuffix", affix));
         props.push(enumv("MarkerPositioning", names::note_marker_out(o.ref_position)));
