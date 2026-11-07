@@ -227,3 +227,24 @@ fn feathers_come_from_the_object_style_unless_its_category_turns_them_off() {
     assert!(fx[2].gradient_feather.on);
     assert!(!fx[2].directional_feather.on, "the item's own setting wins");
 }
+
+/// A style that sets one corner takes the others from the style it is based on, so applying it
+/// keeps the based-on style's rounded corners; and a style's named corners go to the anchors at
+/// those corners of a frame whose path runs top left, bottom left, bottom right, top right.
+#[test]
+fn a_style_setting_one_corner_inherits_the_others_and_names_them() {
+    let child = r#"<ObjectStyle Self="ObjectStyle/Child" Name="Child" TopRightCornerOption="BevelCorner" TopRightCornerRadius="4">
+      <Properties><BasedOn type="object">ObjectStyle/Round</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(&format!("{ROUND}{child}"), &[(r#"AppliedObjectStyle="ObjectStyle/Child""#, "")]);
+    let style = d.styles.object.iter().find(|s| s.name == "Child").unwrap();
+    let c = style.corners.expect("the child sets corners").corners;
+    assert_eq!(c.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Bevel, CornerShape::Rounded, CornerShape::Rounded], "{c:?}");
+    assert_eq!(c.map(|c| c.size), [17.0, 4.0, 17.0, 17.0]);
+    // Applied to the fixture's frame (anchors top left, bottom left, bottom right, top right):
+    // the bevel goes to the top right anchor, the last.
+    let mut it = (*d.spreads[0].items[0]).clone();
+    it.corners = Default::default();
+    style.apply_to(&mut it);
+    assert_eq!(it.corners.corners.map(|c| c.shape), [CornerShape::Rounded, CornerShape::Rounded, CornerShape::Rounded, CornerShape::Bevel]);
+}
