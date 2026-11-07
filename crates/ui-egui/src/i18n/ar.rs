@@ -300,6 +300,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Numbering & Section Options…", "خيارات الترقيم والأقسام…"),
     ("Go to Page…", "انتقال إلى صفحة…"),
     ("Go to Page", "انتقال إلى صفحة"),
+    ("Go to Row…", "انتقال إلى صف…"),
+    ("Go to Row", "انتقال إلى صف"),
     ("Next Page", "الصفحة التالية"),
     ("Previous Page", "الصفحة السابقة"),
     ("First Page", "الصفحة الأولى"),
