@@ -822,3 +822,106 @@ fn a_folder_another_running_app_holds_is_refused() {
     assert!(save(&dirty_session(), root.path()).is_err());
     assert!(list(root.path()).is_empty());
 }
+
+#[test]
+fn an_untouched_document_is_not_rewritten_on_the_next_checkpoint() {
+    // Recovery runs on a 30 s timer and "dirty" means unsaved relative to the file, not changed
+    // since the last checkpoint, so a document edited once and then left open was re-zipped (every
+    // placed image included) every half minute for as long as it stayed unsaved (#2178).
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("recovery");
+    let mut session = dirty_session();
+    let save_here = |s: &mut Session| s.execute("file.recovery.save", &json!({"dir": dir.to_string_lossy()})).unwrap()["saved"].clone();
+
+    assert_eq!(save_here(&mut session), json!(1), "the first checkpoint writes the document");
+    let uid = session.doc().unwrap().uid;
+    let checkpoint = files(&dir, uid).0;
+    let written = std::fs::read(&checkpoint).unwrap();
+
+    assert_eq!(save_here(&mut session), json!(0), "nothing changed, so nothing is written again");
+    assert_eq!(std::fs::read(&checkpoint).unwrap(), written, "the checkpoint on disk is untouched");
+
+    // An edit moves the revision, so the next checkpoint writes once more.
+    session.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    assert_eq!(save_here(&mut session), json!(1), "an edited document is written again");
+    assert_ne!(std::fs::read(&checkpoint).unwrap(), written, "and the checkpoint holds the edit");
+
+    // The document is still unsaved, so it is still recoverable; only the rewrite was skipped.
+    assert!(session.doc().unwrap().is_dirty());
+    assert_eq!(list(&dir).len(), 1);
+}
+
+#[test]
+fn a_checkpoint_in_one_folder_does_not_stand_in_for_another() {
+    // The revision is remembered per folder: a second folder has never held this document, so it
+    // is written there even though nothing changed since the first folder's checkpoint.
+    let root = tempfile::tempdir().unwrap();
+    let (first, second) = (root.path().join("one"), root.path().join("two"));
+    let mut session = dirty_session();
+    let save_to =
+        |s: &mut Session, d: &std::path::Path| s.execute("file.recovery.save", &json!({"dir": d.to_string_lossy()})).unwrap()["saved"].clone();
+
+    assert_eq!(save_to(&mut session, &first), json!(1));
+    assert_eq!(save_to(&mut session, &second), json!(1), "a folder with no checkpoint is written");
+    assert_eq!(save_to(&mut session, &first), json!(0), "and each folder is then up to date");
+    assert_eq!(save_to(&mut session, &second), json!(0));
+    assert_eq!(persisted_texts(&first).len(), persisted_texts(&second).len(), "both folders hold the document");
+
+    // An edit written to only one folder leaves the other holding the older document, so that
+    // folder is written again. One revision remembered for the document instead of one per folder
+    // would skip this write and leave the stale checkpoint behind.
+    session.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    assert_eq!(save_to(&mut session, &second), json!(1), "the edit reaches the second folder");
+    assert_eq!(save_to(&mut session, &first), json!(1), "the first folder still held the older document");
+    let uid = session.doc().unwrap().uid;
+    assert_eq!(
+        std::fs::read(files(&first, uid).0).unwrap(),
+        std::fs::read(files(&second, uid).0).unwrap(),
+        "both folders now hold the same document"
+    );
+}
+
+#[test]
+fn a_checkpoint_removed_from_disk_is_written_again() {
+    // Skipping an unchanged document trusts what was written, so it checks the files are still
+    // there: a recovery folder cleaned from outside must not leave the unsaved document with
+    // nothing to recover from until its next edit.
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("recovery");
+    let mut session = dirty_session();
+    let save_here = |s: &mut Session| s.execute("file.recovery.save", &json!({"dir": dir.to_string_lossy()})).unwrap()["saved"].clone();
+    assert_eq!(save_here(&mut session), json!(1));
+    let (document, metadata) = files(&dir, session.doc().unwrap().uid);
+    assert_eq!(save_here(&mut session), json!(0), "unchanged and on disk: skipped");
+
+    std::fs::remove_file(&document).unwrap();
+    assert_eq!(save_here(&mut session), json!(1), "the checkpoint is gone, so it is written again");
+    assert!(document.is_file() && metadata.is_file());
+
+    std::fs::remove_file(&metadata).unwrap();
+    assert_eq!(save_here(&mut session), json!(1), "a missing metadata file is rewritten too");
+    assert!(metadata.is_file());
+    assert_eq!(save_here(&mut session), json!(0), "and then it is current again");
+}
+
+#[test]
+fn a_reopened_checkpoint_whose_metadata_failed_is_written_on_the_next_tick() {
+    // Reopening republishes each entry under a new uid. If the primary file is written but the
+    // metadata isn't, the entry must not count as current, or the next tick would skip it and it
+    // would stay without its path and title.
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(save(&unsaved("needs its metadata"), dir.path()).unwrap(), 1);
+    let mut reopened = Session::new();
+    let opened = open_with_publisher(&mut reopened, dir.path(), |path, bytes| {
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            return Err(EngineError::Other("metadata refused".into()));
+        }
+        publish_recovery_file(path, bytes, false)
+    })
+    .unwrap();
+    assert_eq!(opened.len(), 1);
+    let saved = reopened.execute("file.recovery.save", &json!({"dir": dir.path().to_string_lossy()})).unwrap();
+    assert_eq!(saved["saved"], json!(1), "the next tick writes the entry the failed metadata left incomplete");
+    let uid = reopened.doc().unwrap().uid;
+    assert!(files(dir.path(), uid).1.is_file(), "now with its metadata");
+}
