@@ -91,6 +91,8 @@ impl eframe::App for App {
                 self.startup.opening(apple_events::poll(&self.apple_events, &mut self.app, ui.ctx()));
             }
         }
+        #[cfg(target_os = "macos")]
+        self.app.set_input_source(selected_input_source());
         self.app.ui(ui);
         self.startup.leave();
         #[cfg(target_os = "macos")]
@@ -123,6 +125,15 @@ fn discard_marked_text() {
     {
         ic.discardMarkedText();
     }
+}
+
+/// The keyboard input source macOS has selected (its ID), or `None` without a key window. Space
+/// in a Japanese input mode types an ideographic space, which winit reports as a plain one.
+#[cfg(target_os = "macos")]
+fn selected_input_source() -> Option<String> {
+    let mtm = objc2::MainThreadMarker::new()?;
+    let id = objc2_app_kit::NSTextInputContext::currentInputContext(mtm)?.selectedKeyboardInputSource()?;
+    Some(id.to_string())
 }
 
 /// Orderly OS termination can bypass egui's cancelable close event. Finish only a complete,

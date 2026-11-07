@@ -254,6 +254,10 @@ pub struct DesignApp {
     /// The marked text the system IME last sent (`None` once it commits or clears). When the
     /// composition ends some other way (a click, a tool switch), the IME is told to drop it.
     pub(crate) ime_marked: Option<String>,
+    /// The keyboard input source the system has selected, as the host last read it (macOS: its
+    /// ID, such as `com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`). `None` where the host
+    /// can't tell: see [`Self::set_input_source`].
+    pub(crate) input_source: Option<String>,
     /// The system IME must drop its marked text (see [`Self::take_ime_discard`]).
     pub(crate) ime_discard: bool,
     /// The canvas asked for the system IME in the last frame (the web build's text input has the

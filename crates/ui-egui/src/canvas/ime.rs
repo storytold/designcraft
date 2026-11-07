@@ -28,6 +28,31 @@ fn drop_stale_ime_events(app: &mut DesignApp) {
     app.ime_interrupt = true;
 }
 
+/// Is `id`, a macOS keyboard input source, a Japanese input method in a mode whose Space types an
+/// ideographic space? Input methods name their modes after a `Japanese` part: none for hiragana
+/// (`com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`, `…Kawasemi4.Japanese`, Google's
+/// `…Japanese.base`), then `Katakana` or `FullWidthRoman`. Their Roman, half-width and code
+/// modes, plain keyboard layouts (`com.apple.keylayout.ABC`) and Chinese and Korean input
+/// methods type a plain space, and so does any mode not named here.
+pub(crate) fn japanese_input_source(id: &str) -> bool {
+    let mut parts = id.split('.');
+    if !parts.any(|p| p == "Japanese") {
+        return false;
+    }
+    matches!(parts.collect::<Vec<_>>().as_slice(), [] | ["base" | "Katakana" | "FullWidthRoman"])
+}
+
+/// The text a key typed, given `text` as the window system reports it.
+///
+/// On macOS the window layer drops what the input method inserts when nothing is being composed
+/// and reports the key's own character: Space in a Japanese input mode comes as a plain space,
+/// where the input method types an ideographic one. With the selected input source in such a
+/// mode (`japanese`), a plain space is therefore the ideographic one; with Shift it stays plain,
+/// as the input methods have it.
+pub(crate) fn typed_text(text: &str, japanese: bool, shift: bool) -> &str {
+    if japanese && !shift && text == " " { "\u{3000}" } else { text }
+}
+
 /// One input method event for the text caret: marked text previews in the story, a commit types.
 pub(super) fn ime_event(app: &mut DesignApp, ctx: &egui::Context, e: egui::ImeEvent, vi: designcraft_engine::ViewInfo) {
     let r = match e {
