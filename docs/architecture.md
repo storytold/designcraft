@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (shared PDF writing) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (document the existing INDD/INDT import path) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -83,7 +83,10 @@ fails or hangs at start-up (`apps/designcraft/src/gpu.rs`).
 
 Native `.designcraft` (zip + JSON); IDML both ways; PDF, EPUB, HTML, PNG/JPEG, text, XML export;
 placed graphics through `images` (PDF/AI pages through hayro); Word/RTF/Excel/Tagged Text through
-`textimport`. INDD is not readable. Details: [file-format-parity.md](file-format-parity.md).
+`textimport`. InDesign documents (`.indd`) and templates (`.indt`) are converted to IDML in memory
+by [storytold/indd-utils](https://github.com/storytold/indd-utils), then read by the IDML importer;
+conversion warnings are included in the open result. See [file-format-parity.md](file-format-parity.md)
+for current fidelity and test-coverage limitations.
 
 PDF authoring uses the independently pinned `craft-pdf` writer and patched Krilla. Document,
 booklet and merge entry points guard the full export; a failed native drawing unwind returns
@@ -110,6 +113,7 @@ builds (on manifest changes), packaging lint and the release workflow; `xtask ci
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-04 | minor | Corrected the file I/O summary to describe the existing INDD/INDT conversion and import path |
 | 2026-10-12 | minor | Documented cancelable Dock Quit through the native event-loop boundary |
 | 2026-10-12 | minor | Documented orderly native exit recovery and the remaining cancelable Dock Quit gap |
 | 2026-10-10 | major | Created from the code on main (92649ff) and `plan/architecture.md` |
