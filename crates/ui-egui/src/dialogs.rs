@@ -58,7 +58,8 @@ impl Dialog {
                     "marksPageInfo": false,
                     "marksWeight": "0.25",
                     "marksOffset": "6",
-                    "tagged": true
+                    "tagged": true,
+                    "outlineText": false
                 })
             }
             _ => json!({}),
@@ -847,6 +848,7 @@ fn pdf_export_params(d: &Dialog) -> Value {
         "spreads": d.b("spreads"),
         "bleed": d.b("bleed"),
         "tagged": d.b("tagged"),
+        "outlineText": d.b("outlineText"),
         "marks": {
             "crop": d.b("marksCrop"),
             "bleed": d.b("marksBleed"),
@@ -984,6 +986,7 @@ fn pdf_export(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         );
     });
     check(ui, d, "tagged", crate::i18n::tr(lang, "Tagged PDF"));
+    check(ui, d, "outlineText", crate::i18n::tr(lang, "Convert text to outlines"));
 
     // Any edit other than picking a preset means the settings are no longer that preset.
     if !preset_clicked && d.fields != before {
@@ -4776,6 +4779,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.pdf_export.marks_weight = d.s("marksWeight");
             app.ui.pdf_export.marks_offset = d.s("marksOffset");
             app.ui.pdf_export.tagged = d.b("tagged");
+            app.ui.pdf_export.outline_text = d.b("outlineText");
 
             let mut params = pdf_export_params(&d);
             let pages = d.s("pages");

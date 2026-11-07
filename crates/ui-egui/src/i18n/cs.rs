@@ -201,6 +201,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Character Styles", "Styly znaků"),
     ("Paragraph Styles", "Styly odstavců"),
     ("Create Outlines", "Převést na křivky"),
+    ("Convert text to outlines", "Převést text na křivky"),
     ("Show Hidden Characters", "Zobrazit skryté znaky"),
     ("Transform", "Transformace"),
     ("Arrange", "Uspořádat"),

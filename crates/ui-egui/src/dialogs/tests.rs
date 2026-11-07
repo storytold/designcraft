@@ -3012,12 +3012,14 @@ fn pdf_export_defaults() {
         "marksOffset",
         "marksPageInfo",
         "marksWeight",
+        "outlineText",
         "preset",
         "spreads",
         "standard",
         "tagged",
     ];
     assert_eq!(keys, expected);
+    assert_eq!(d.fields["outlineText"].as_bool(), Some(false));
     assert_eq!(d.fields["preset"].as_str(), Some("Desktop Printing"));
     assert_eq!(d.fields["standard"].as_str(), Some("none"));
     assert_eq!(d.fields["compressImages"].as_bool(), Some(false));

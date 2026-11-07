@@ -547,7 +547,7 @@ impl Exporter<'_> {
             stroke
         };
         // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
-        if g0.gid == 0 {
+        if g0.gid == 0 || self.opts.outline_text {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         } else if let Some(font) = self.font(&face) {
             self.text_run(s, glyphs, story, font, origin, size, hs, tan, fill, stroke, weight);
@@ -606,7 +606,8 @@ impl Exporter<'_> {
         s.pop();
     }
 
-    /// Glyph outlines as paths (faces krilla can't embed, missing glyphs, strokes behind fill).
+    /// Glyph outlines as paths (text as outlines, faces krilla can't embed, missing glyphs,
+    /// strokes behind fill).
     fn paint_outlines(
         &mut self,
         s: &mut Surface,
@@ -640,8 +641,23 @@ impl Exporter<'_> {
     /// One line of plain text in the bundled UI face (page information mark).
     pub(crate) fn plain_text(&mut self, s: &mut Surface, text: &str, at: (f64, f64), size: f64, color: krilla::color::Color) {
         let face = FontDb::global().face(designcraft_fonts::FALLBACK_FAMILY, "Regular");
-        let Some(font) = self.font(&face) else { return };
         let shaped = designcraft_fonts::shape(&face, text, &[], |c| c);
+        if self.opts.outline_text {
+            let db = FontDb::global();
+            let k = size / face.upem;
+            let mut outlines = BezPath::new();
+            let mut x = 0.0;
+            for g in &shaped {
+                let a = Affine::translate((x + g.x_offset as f64 * k, -(g.y_offset as f64) * k)) * Affine::scale(k);
+                let mut o = (*db.outline(&face, g.gid)).clone();
+                o.apply_affine(a);
+                outlines.extend(o.iter());
+                x += g.x_advance as f64 * k;
+            }
+            self.paint_outlines(s, &outlines, Affine::translate(at), Some(color.into()), None, 0.0);
+            return;
+        }
+        let Some(font) = self.font(&face) else { return };
         let upem = face.upem as f32;
         let glyphs: Vec<KrillaGlyph> = shaped
             .iter()
