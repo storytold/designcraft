@@ -574,6 +574,7 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Chinese: Simplified",
     "Chinese: Traditional",
     "Korean",
+    "Khmer",
     "Arabic",
     "Hebrew",
     "Esperanto",

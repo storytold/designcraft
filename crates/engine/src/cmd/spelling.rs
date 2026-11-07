@@ -1,6 +1,12 @@
-//! Edit → Spelling: check spelling against the bundled US English word list (the public-domain
-//! Moby list used for hyphenation) plus the document's user dictionary; suggestions by edit distance.
+//! Edit → Spelling, over the shared proofing engine (`craft-proof`): each language's spelling and
+//! Khmer preferred forms.
+//! All findings address the original story bytes, including across formatting runs.
 
+mod khmer;
+
+use std::ops::Range;
+
+use craft_proof::{IssueKind, ProofLang};
 use designcraft_compose::hyphen::Dictionary;
 use designcraft_doc::StoryId;
 use serde_json::{Value, json};
@@ -11,7 +17,14 @@ use crate::{Result, Session};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "spelling.check", "Check Spelling…", ["Edit", "Spelling"], Some("Cmd+I"),
-            "{story?, suggestions?: true} → [{story, start, end, word, suggestions}]", has_doc, check),
+            "{story?, suggestions?: true} → [{story, start, end, word, suggestions, kind, message, language}]", has_doc, check),
+        cmd!(query "spelling.suggest", "Spelling Suggestions", [], None,
+            "{story, start, end} → {story, start, end, word, suggestions, kind, message, language}; revalidates one current issue in its paragraph", has_doc, suggest_issue),
+        cmd!(query "spelling.at", "Spelling Issue at Caret", [], None,
+            "{story, at} → the issue around byte offset `at`, with its suggestions, or null", has_doc, issue_at),
+        cmd!(query "spelling.status", "Spelling Dictionaries", [], None,
+            "{} → {englishAvailable, khmerAvailable}; unavailable text is unchecked, not correct", has_doc,
+            |_, _| Ok(json!({"englishAvailable": craft_proof::has_dictionary(Some("en-US")), "khmerAvailable": craft_khmer::data_available()}))),
         cmd!(
             "hyphenation.addException",
             "Add Hyphenation Exception",
@@ -70,11 +83,38 @@ pub fn specs() -> Vec<CommandSpec> {
         }),
         cmd!("spelling.change", "Change", [], None, "{story, start, end, to}", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("spelling.change", "missing story"))?);
-            let (a, b) = (p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize, p.get("end").and_then(Value::as_u64).unwrap_or(0) as usize);
+            let offset = |key| {
+                p.get(key)
+                    .and_then(Value::as_u64)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| bad("spelling.change", "start and end must be byte offsets"))
+            };
+            let (a, b) = (offset("start")?, offset("end")?);
             let to = str_param(p, "to").unwrap_or("").to_string();
-            s.edit(|d, _| {
+            s.edit(|d, sel| {
+                if generated(d, sid) {
+                    return Err(bad("spelling.change", "generated text is rebuilt from its source: correct it there"));
+                }
                 let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                st.replace(a.min(st.len())..b.min(st.len()), &to);
+                if a > b || st.text.get(a..b).is_none() {
+                    return Err(bad("spelling.change", "range must address original UTF-8 character boundaries"));
+                }
+                st.replace(a..b, &to);
+                // The selection follows the text: a selected word stays selected at its new length.
+                let end = a + to.len();
+                let follow = |pos: usize| {
+                    if pos <= a {
+                        pos
+                    } else if pos >= b {
+                        pos - b + end
+                    } else {
+                        end
+                    }
+                };
+                if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell.is_none()) {
+                    t.anchor = follow(t.anchor);
+                    t.focus = follow(t.focus);
+                }
                 Ok(Value::Null)
             })
         }),
@@ -202,6 +242,10 @@ pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
 
 /// Up to 6 suggestions at edit distance 1, ranked: transpositions, replacements, deletions, insertions.
 pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
+    // Bound candidate construction for hostile long tokens in imported books.
+    if w.chars().take(65).count() > 64 {
+        return Vec::new();
+    }
     let chars: Vec<char> = w.chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut push = |c: Vec<char>| {
@@ -238,65 +282,227 @@ pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
     out
 }
 
-/// Misspelled words of a story: byte ranges (acronyms skipped; the user dictionary counts).
-pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String]) -> Vec<std::ops::Range<usize>> {
-    // Text in other languages isn't checked against the English dictionary.
-    let foreign: Vec<std::ops::Range<usize>> = {
-        story
-            .runs()
-            .filter(|(r, f)| {
-                let pi = story.para_at(r.start.min(story.len()));
-                let base = doc.styles.resolve_para(&story.paras[pi.min(story.paras.len().saturating_sub(1))]).1;
-                !designcraft_compose::is_english(&doc.styles.resolve_char(&base, f).language)
-            })
-            .map(|(r, _)| r)
-            .collect()
-    };
-    let dict = Dictionary::en_us();
-    let text = &story.text;
-    let bytes: Vec<(usize, char)> = text.char_indices().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].1.is_alphabetic() {
-            i += 1;
-            continue;
-        }
-        let start = bytes[i].0;
-        let mut j = i;
-        while j < bytes.len()
-            && (bytes[j].1.is_alphabetic() || ((bytes[j].1 == '\'' || bytes[j].1 == '’') && j + 1 < bytes.len() && bytes[j + 1].1.is_alphabetic()))
-        {
-            j += 1;
-        }
-        let end = bytes.get(j).map(|b| b.0).unwrap_or(text.len());
-        let word = &text[start..end];
-        let acronym = word.chars().all(|c| c.is_uppercase()) && word.chars().count() <= 5;
-        if !acronym && !foreign.iter().any(|r| r.contains(&start)) && !known(dict, user, &word.to_lowercase()) {
-            out.push(start..end);
-        }
-        i = j.max(i + 1);
+/// Whether Khmer proofing has its data. Without it, Khmer text is unchecked, not correct.
+pub fn khmer_available() -> bool {
+    craft_khmer::data_available()
+}
+
+/// Whether `text` holds Khmer, by the same rule proofing uses.
+pub fn has_khmer(text: &str) -> bool {
+    text.chars().any(khmer::character)
+}
+
+/// A spelling or preferred-form finding; `range` always addresses original story UTF-8 bytes.
+#[derive(Clone, Debug)]
+pub struct ProofIssue {
+    pub range: Range<usize>,
+    /// `spelling`, or `grammar` for the shared Khmer preferred spelling/phrase rules.
+    pub kind: &'static str,
+    pub message: String,
+    /// The language's tag (`en`, `km`, …): suggestions come from its dictionary.
+    pub language: String,
+    lang: ProofLang,
+    pub suggestions: Vec<String>,
+    /// Retain the cheap rule replacement even when candidate generation is disabled.
+    preferred: Option<String>,
+}
+
+/// The language proofing checks a run in. A language it doesn't know, or No Language, is
+/// [`ProofLang::Other`]: no marks.
+fn proof_language(language: &str) -> ProofLang {
+    let name = language.trim().trim_start_matches("$ID/");
+    match designcraft_doc::language_tag(name) {
+        Some(tag) => ProofLang::from_tag(Some(tag)),
+        // No tag means English to craft-proof; for a name it means [No Language] or an unknown one.
+        None if designcraft_compose::is_english(name) => ProofLang::En,
+        None => ProofLang::Other,
     }
+}
+
+/// Intersect character runs with paragraphs: one character run can span paragraphs
+/// with different base languages. Formatting boundaries do not become word boundaries.
+fn language_spans(
+    doc: &designcraft_doc::Document,
+    story: &designcraft_doc::Story,
+    paragraphs: impl IntoIterator<Item = (usize, Range<usize>)>,
+) -> Vec<(Range<usize>, ProofLang)> {
+    let mut runs = story.runs().peekable();
+    let mut spans = Vec::new();
+    for (pi, para) in paragraphs {
+        let Some(format) = story.paras.get(pi) else { continue };
+        let base = doc.styles.resolve_para(format).1;
+        while runs.peek().is_some_and(|(r, _)| r.end <= para.start) {
+            runs.next();
+        }
+        while let Some((run, format)) = runs.peek() {
+            if run.start >= para.end {
+                break;
+            }
+            let range = run.start.max(para.start)..run.end.min(para.end);
+            if range.start < range.end {
+                spans.push((range, proof_language(&doc.styles.resolve_char(&base, format).language)));
+            }
+            if run.end > para.end {
+                break;
+            }
+            runs.next();
+        }
+    }
+    spans
+}
+
+/// A paragraph's issues from the shared proofing, at story offsets: every language's spelling,
+/// and of the grammar rules only Khmer's preferred forms, which are about spelling too. The
+/// document's user dictionary counts. Candidates are left for [`suggest_issue`], except a
+/// preferred form's, which needs no search.
+fn paragraph_issues(
+    story: &designcraft_doc::Story,
+    user: &[String],
+    suggestions: bool,
+    paragraph: Range<usize>,
+    spans: &[(Range<usize>, ProofLang)],
+) -> Vec<ProofIssue> {
+    let Some(text) = story.text.get(paragraph.clone()) else { return Vec::new() };
+    let local: Vec<_> = spans
+        .iter()
+        .filter(|(r, _)| r.start < paragraph.end && r.end > paragraph.start)
+        .map(|(r, l)| (r.start.max(paragraph.start) - paragraph.start..r.end.min(paragraph.end) - paragraph.start, *l))
+        .collect();
+    // As `spelling.addWord` stores a word: lowercase, whatever the script. Either apostrophe.
+    let fold = |word: &str| word.to_lowercase().replace('’', "'");
+    let known = |word: &str| {
+        let word = fold(word);
+        user.iter().any(|w| fold(w) == word)
+    };
+    craft_proof::check_text(text, &local)
+        .into_iter()
+        .filter(|issue| issue.kind == IssueKind::Spelling || issue.lang == ProofLang::Km)
+        .filter(|issue| text.get(issue.start..issue.end).is_some_and(|word| !known(word) && !known(word.trim_end_matches('ៗ'))))
+        .map(|issue| {
+            let preferred = (issue.kind == IssueKind::Grammar).then(|| issue.suggestions.first().cloned()).flatten();
+            let word = text.get(issue.start..issue.end).unwrap_or_default();
+            let mut found = ProofIssue {
+                range: paragraph.start + issue.start..paragraph.start + issue.end,
+                kind: if issue.kind == IssueKind::Spelling { "spelling" } else { "grammar" },
+                message: issue.message,
+                language: issue.lang.tag().into_owned(),
+                lang: issue.lang,
+                suggestions: Vec::new(),
+                preferred,
+            };
+            if suggestions {
+                found.suggestions = suggestions_for(&mut found, word);
+            }
+            found
+        })
+        .collect()
+}
+
+/// Proof logical paragraphs, then map unchanged byte offsets to the story. Pass false
+/// for dynamic underlines or book-wide refreshes to avoid edit-distance work.
+pub fn proof_issues(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String], suggestions: bool) -> Vec<ProofIssue> {
+    let paragraphs = story.para_ranges();
+    let spans = language_spans(doc, story, paragraphs.iter().cloned().enumerate());
+    let mut out: Vec<_> = paragraphs.into_iter().flat_map(|paragraph| paragraph_issues(story, user, suggestions, paragraph, &spans)).collect();
+    out.sort_by_key(|issue| (issue.range.start, issue.range.end));
     out
+}
+
+/// Dynamic proofing ranges, including Khmer preferred forms; the user dictionary counts.
+/// An empty list is not a correctness claim: consult `spelling.status` for data availability.
+pub fn misspellings(doc: &designcraft_doc::Document, story: &designcraft_doc::Story, user: &[String]) -> Vec<Range<usize>> {
+    proof_issues(doc, story, user, false).into_iter().map(|issue| issue.range).collect()
+}
+
+fn issue_value(sid: StoryId, text: &str, issue: ProofIssue) -> Option<Value> {
+    let word = text.get(issue.range.clone())?;
+    Some(json!({
+        "story": sid.0, "start": issue.range.start, "end": issue.range.end,
+        "word": word, "suggestions": issue.suggestions, "kind": issue.kind,
+        "message": issue.message, "language": issue.language,
+    }))
+}
+
+fn suggest_issue(s: &mut Session, p: &Value) -> Result<Value> {
+    let command = "spelling.suggest";
+    let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad(command, "missing story"))?);
+    let offset = |key| {
+        p.get(key).and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(command, "start and end must be byte offsets"))
+    };
+    let range = offset("start")?..offset("end")?;
+    let doc = &s.doc()?.doc;
+    let story = doc.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    if range.start >= range.end || story.text.get(range.clone()).is_none() {
+        return Err(bad(command, "range must address a nonempty current issue on UTF-8 character boundaries"));
+    }
+    // Search outward only as far as this paragraph; do not segment the book or
+    // generate any other word's suggestions during selection/refresh.
+    let before = story.text.get(..range.start).ok_or_else(|| bad(command, "invalid start"))?;
+    let tail = story.text.get(range.start..).ok_or_else(|| bad(command, "invalid start"))?;
+    let paragraph = before.rfind('\n').map_or(0, |at| at + 1)..tail.find('\n').map_or(story.len(), |at| range.start + at);
+    if range.end > paragraph.end {
+        return Err(bad(command, "range crosses a paragraph boundary"));
+    }
+    let pi = story.para_at(paragraph.start);
+    let spans = language_spans(doc, story, std::iter::once((pi, paragraph.clone())));
+    let mut issue = paragraph_issues(story, &doc.user_words, false, paragraph, &spans)
+        .into_iter()
+        .find(|issue| issue.range == range)
+        .ok_or_else(|| bad(command, "range is no longer a current spelling or preferred-form issue"))?;
+    let word = story.text.get(range).ok_or_else(|| bad(command, "invalid issue range"))?;
+    issue.suggestions = suggestions_for(&mut issue, word);
+    issue_value(sid, &story.text, issue).ok_or_else(|| bad(command, "invalid issue range"))
+}
+
+fn issue_at(s: &mut Session, p: &Value) -> Result<Value> {
+    let command = "spelling.at";
+    let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad(command, "missing story"))?);
+    let at = p.get("at").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(command, "at must be a byte offset"))?;
+    let doc = &s.doc()?.doc;
+    let story = doc.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+    if generated(doc, sid) {
+        return Ok(Value::Null);
+    }
+    let (Some(before), Some(tail)) = (story.text.get(..at), story.text.get(at..)) else {
+        return Err(bad(command, "at must be on a UTF-8 character boundary inside the story"));
+    };
+    let paragraph = before.rfind('\n').map_or(0, |i| i + 1)..tail.find('\n').map_or(story.len(), |i| at + i);
+    let spans = language_spans(doc, story, std::iter::once((story.para_at(paragraph.start), paragraph.clone())));
+    let Some(mut issue) =
+        paragraph_issues(story, &doc.user_words, false, paragraph, &spans).into_iter().find(|i| i.range.contains(&at) || i.range.end == at)
+    else {
+        return Ok(Value::Null);
+    };
+    let word = story.text.get(issue.range.clone()).ok_or_else(|| bad(command, "invalid issue range"))?;
+    issue.suggestions = suggestions_for(&mut issue, word);
+    Ok(issue_value(sid, &story.text, issue).unwrap_or(Value::Null))
+}
+
+/// The candidates for one issue: its preferred form, else edit-distance suggestions.
+fn suggestions_for(issue: &mut ProofIssue, word: &str) -> Vec<String> {
+    match issue.preferred.take() {
+        Some(preferred) => vec![preferred],
+        None => craft_proof::suggest_in(word, 6, issue.lang),
+    }
+}
+
+/// Text rebuilt from its source (endnotes, a table of contents, an index): an edit here wouldn't last.
+fn generated(d: &designcraft_doc::Document, sid: StoryId) -> bool {
+    d.endnote_story == Some(sid) || d.toc.as_ref().is_some_and(|t| t.story == sid) || d.index.as_ref().is_some_and(|i| i.story == sid)
 }
 
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     let d = &st.doc;
-    let dict = Dictionary::en_us();
     let want_sugg = p.get("suggestions").and_then(Value::as_bool).unwrap_or(true);
     let stories: Vec<StoryId> = match p.get("story").and_then(Value::as_u64) {
         Some(id) => vec![StoryId(id)],
-        None => d.stories.keys().copied().collect(),
+        None => d.stories.keys().copied().filter(|sid| !generated(d, *sid)).collect(),
     };
     let mut out = Vec::new();
     for sid in stories {
         let Some(story) = d.story(sid) else { continue };
-        for r in misspellings(d, story, &d.user_words) {
-            let word = &story.text[r.clone()];
-            let sugg = if want_sugg { suggest(dict, &word.to_lowercase()) } else { vec![] };
-            out.push(json!({"story": sid.0, "start": r.start, "end": r.end, "word": word, "suggestions": sugg}));
-        }
+        out.extend(proof_issues(d, story, &d.user_words, want_sugg).into_iter().filter_map(|issue| issue_value(sid, &story.text, issue)));
     }
     Ok(Value::Array(out))
 }
@@ -304,6 +510,57 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_with(text: &str) -> (Session, u64) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 400, 200], "content": "text", "text": text})).unwrap();
+        (s, frame["story"].as_u64().unwrap())
+    }
+
+    /// `spelling.addWord` lowers the case in any script, and a word is typed with either apostrophe.
+    #[test]
+    fn the_user_dictionary_holds_for_any_case_and_apostrophe() {
+        let (mut s, _) = session_with("Zqémile. Zqdon’t.");
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap().as_array().unwrap().len(), 2);
+        s.execute("spelling.addWord", &json!({"word": "Zqémile"})).unwrap();
+        s.execute("spelling.addWord", &json!({"word": "zqdon't"})).unwrap();
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn a_change_keeps_the_selection_with_the_text() {
+        let (mut s, story) = session_with("ete and more");
+        let selection = |s: &Session| {
+            let t = s.doc().unwrap().selection.text.unwrap();
+            (t.anchor, t.focus)
+        };
+        let change = |s: &mut Session, to: &str| s.execute("spelling.change", &json!({"story": story, "start": 0, "end": 3, "to": to})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 1, "focus": 1})).unwrap();
+        change(&mut s, "été");
+        assert_eq!(selection(&s), (5, 5), "a caret inside the word lands after it, on a character boundary");
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 3})).unwrap();
+        change(&mut s, "an");
+        assert_eq!(selection(&s), (0, 2), "a selected word stays selected, reaching no further");
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": story, "anchor": 8, "focus": 12})).unwrap();
+        change(&mut s, "an");
+        assert_eq!(selection(&s), (7, 11), "later text keeps its selection");
+    }
+
+    /// The endnote list is rebuilt after every edit: a correction there would report success and vanish.
+    #[test]
+    fn generated_text_is_left_out_of_the_review() {
+        let (mut s, story) = session_with("Plain.");
+        s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("endnote.insert", &json!({"text": "A zqwrong endnote."})).unwrap();
+        let list = s.doc().unwrap().doc.endnote_story.expect("the endnote list").0;
+        assert!(s.doc().unwrap().doc.story(StoryId(list)).unwrap().text.contains("zqwrong"));
+        assert_eq!(s.execute("spelling.check", &json!({"suggestions": false})).unwrap(), json!([]));
+        assert_eq!(s.execute("spelling.at", &json!({"story": list, "at": 5})).unwrap(), Value::Null);
+        assert!(s.execute("spelling.change", &json!({"story": list, "start": 0, "end": 1, "to": "x"})).is_err());
+    }
 
     #[test]
     fn known_words_and_suggestions() {
@@ -388,7 +645,7 @@ mod tests {
         let r = s.execute("spelling.check", &json!({})).unwrap();
         let words: Vec<&str> = r.as_array().unwrap().iter().map(|m| m["word"].as_str().unwrap()).collect();
         assert_eq!(words, vec!["Thw", "jumpd"]);
-        assert!(r[0]["suggestions"].as_array().unwrap().iter().any(|v| v == "the"));
+        assert!(r[0]["suggestions"].as_array().unwrap().iter().any(|v| v == "The"), "in the word's own capitalization");
         s.execute("spelling.addWord", &json!({"word": "jumpd"})).unwrap();
         assert_eq!(s.execute("spelling.check", &json!({})).unwrap().as_array().unwrap().len(), 1);
     }

@@ -11,6 +11,12 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
+# Shared Khmer segmentation and proofreading; data is an explicit, hash-verified build input.
+craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "0b478944aa27a5bef1f51508c57bd236f272326d", version = "=0.1.0" }
+# Shared proofing: spelling, suggestions and Khmer preferred forms for each language's dictionary.
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "0b478944aa27a5bef1f51508c57bd236f272326d", version = "=0.1.0" }
+# The shared spelling review: the Spelling panel and its right-click section.
+craft-proof-ui = { git = "https://github.com/storytold/craft-libs", rev = "12c2eb7e9db0bc4215ff034f7ad53ea83cd35b39", version = "=0.1.0" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", default-features = false }
 # Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.

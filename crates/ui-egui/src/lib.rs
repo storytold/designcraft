@@ -177,6 +177,10 @@ pub struct DesignApp {
     clipboard_guard_installed: bool,
     /// Story open in the Story Editor.
     pub story_editor: Option<story_editor::Target>,
+    /// The Spelling panel's review of the open document.
+    pub(crate) spelling: craft_proof_ui::Review,
+    /// The spelling issue a text context menu is open on.
+    pub(crate) spelling_context: Option<craft_proof_ui::Issue>,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<ShotRequest>,
     queued_shots: Vec<(u64, f64, u32)>,
