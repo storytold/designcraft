@@ -179,6 +179,38 @@ fn run_cmd_references_and_describe() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v.as_array().unwrap().iter().all(|c| c.to_string().contains("footnote")));
 }
+/// `commands --json` printed `[]` and succeeded: the flag was taken as a FILTER that no command
+/// contains, so a script asking for the catalogue as JSON (as the other Craft CLIs take it) was
+/// told there were no commands. The catalogue is JSON already, so `--json` is accepted and changes
+/// nothing; any other option is an error rather than an empty list.
+#[test]
+fn commands_json_flag_lists_the_catalogue() {
+    let all = cli().arg("commands").output().unwrap();
+    assert!(all.status.success(), "{}", String::from_utf8_lossy(&all.stderr));
+    let all: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    assert!(!all.as_array().unwrap().is_empty());
+
+    let json = cli().args(["commands", "--json"]).output().unwrap();
+    assert!(json.status.success(), "{}", String::from_utf8_lossy(&json.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let count = |v: &serde_json::Value| v.as_array().map_or(0, Vec::len);
+    assert!(json == all, "`commands --json` listed {} commands, `commands` {}", count(&json), count(&all));
+
+    // The flag and a FILTER combine, in either order.
+    for args in [["commands", "--json", "footnote."], ["commands", "footnote.", "--json"]] {
+        let out = cli().args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let list = v.as_array().unwrap();
+        assert!(!list.is_empty(), "{args:?}");
+        assert!(list.iter().all(|c| c.to_string().contains("footnote")), "{args:?}");
+    }
+
+    let bad = cli().args(["commands", "--jsn"]).output().unwrap();
+    assert!(!bad.status.success());
+    assert!(bad.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown option --jsn"));
+}
 
 /// #776: a key the command doesn't take fails the run (`--cmd`) or the step (`script`) instead of
 /// being ignored.
