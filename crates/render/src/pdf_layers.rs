@@ -22,6 +22,11 @@ fn ocgs(pdf: &Pdf) -> Vec<(ObjRef, String, bool)> {
     let (on, off) = (ids_in(b"ON"), ids_in(b"OFF"));
     list.raw_iter()
         .filter_map(|o| o.as_obj_ref())
+        // A layer listed again is one layer: it gets one name, not one per entry.
+        .filter({
+            let mut seen = std::collections::HashSet::new();
+            move |r| seen.insert(*r)
+        })
         .filter_map(|r| {
             let d = xref.get::<Dict<'_>>(ObjectIdentifier::from(r))?;
             let name = d
