@@ -5655,8 +5655,10 @@ fn drop_cap_in_a_document_font_aligns_its_left_edge() {
 fn embedded_text_frames_compose_and_footnotes_retain_object_sources() {
     use designcraft_doc::{AnchorPosition, AnchoredObject};
     let (mut d, body, _) = doc_with("Body", Rect::new(20.0, 20.0, 400.0, 600.0), ParaAttrs::default());
+    // Two lines: the 1 pt marker frame below must stay overset (its first line is now set
+    // anyway, as in InDesign, so only the second line reports the geometry change).
     let (fid, child) =
-        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 40.0), d.default_layer(), "Embedded", ParaFormat::default()).unwrap();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 40.0), d.default_layer(), "Embedded\ntext", ParaFormat::default()).unwrap();
     let item = d.item(fid).unwrap().clone();
     d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
     let story = d.story_mut(body).unwrap();
@@ -7391,6 +7393,20 @@ fn em_centre(l: &Line) -> f64 {
 fn on_grid(y: f64, (start, inc): (f64, f64)) -> bool {
     let n = (y - start) / inc;
     (n - n.round()).abs() < 1e-6
+}
+
+#[test]
+fn first_line_is_set_when_the_frame_is_shorter_than_one_line() {
+    // Running-head geometry from the GB-2025 import: a 7.9 pt tall frame holding 10 pt text.
+    // InDesign sets the first line anyway (descenders hang below the frame); DesignCraft used
+    // to lay out zero lines, so imported running heads and small table cells vanished.
+    let text = "Geschäftsbericht der audius SE 2025";
+    let (mut d, sid, _) = doc_with(text, Rect::new(10.6, 8.5, 178.9, 16.4), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(10.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = &cs.frames[0].lines;
+    assert_eq!(lines.len(), 1, "the first line must be set even though it overflows the frame");
+    assert!(lines[0].baseline > 16.4, "it hangs below the frame bottom: {}", lines[0].baseline);
 }
 
 #[test]
