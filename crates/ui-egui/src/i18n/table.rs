@@ -2566,6 +2566,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     ("Show/Hide Rulers", ["Show/Hide Rulers", "Afficher/Masquer les règles", "Show/Hide Rulers", "Show/Hide Rulers", "显示/隐藏标尺"]),
     (
+        "Show/Hide Style Name Column",
+        [
+            "Show/Hide Style Name Column",
+            "Afficher/Masquer la colonne des noms de style",
+            "Mostrar/ocultar columna de nombres de estilo",
+            "Show/Hide Style Name Column",
+            "显示/隐藏样式名称栏",
+        ],
+    ),
+    (
         "Show/Hide Tagged Frames",
         [
             "Show/Hide Tagged Frames",

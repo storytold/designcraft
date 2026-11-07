@@ -2511,6 +2511,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Optical Margin Size", "Storlek för optisk marginal"),
     ("Dismiss", "Stäng"),
     ("Show/Hide Depth Ruler", "Visa/dölj djuplinjal"),
+    ("Show/Hide Style Name Column", "Visa/dölj kolumnen med stilnamn"),
     ("Split Note", "Dela anteckning"),
     ("Arrangement", "Arrangemang"),
     ("All Inks", "Alla tryckfärger"),

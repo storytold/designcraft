@@ -971,6 +971,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "パネルを表示・非表示"),
     ("Show/Hide Panels Except Tools", "ツール以外のパネルを表示・非表示"),
     ("Show/Hide Rulers", "定規を表示・非表示"),
+    ("Show/Hide Style Name Column", "スタイル名の列を表示・非表示"),
     ("Show/Hide Tagged Frames", "タグ付きフレームを表示・非表示"),
     ("Show/Hide Text Threads", "テキストフレームの連結を表示・非表示"),
     ("Smooth", "平滑化"),

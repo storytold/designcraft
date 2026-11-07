@@ -92,6 +92,7 @@ fn view_items_are_in_the_view_menu_as_in_indesign() {
         "view.separations",
         "view.taggedFrames",
         "view.tagMarkers",
+        "view.storyEditorStyleColumn",
         "view.storyEditorDepthRuler",
     ] {
         assert!(view.contains(&id), "{id} is in View");

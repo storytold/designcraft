@@ -1520,6 +1520,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Panels", "Panelek megjelenítése/elrejtése"),
     ("Show/Hide Panels Except Tools", "Panelek megjelenítése/elrejtése az eszközök kivételével"),
     ("Show/Hide Rulers", "Vonalzók megjelenítése/elrejtése"),
+    ("Show/Hide Style Name Column", "Stílusnevek oszlopának megjelenítése/elrejtése"),
     ("Show/Hide Tagged Frames", "Címkézett keretek megjelenítése/elrejtése"),
     ("Show/Hide Text Threads", "Szövegláncok megjelenítése/elrejtése"),
     ("Signature", "Aláírás"),
