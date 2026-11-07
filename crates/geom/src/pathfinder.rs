@@ -104,6 +104,7 @@ pub fn combine(op: Op, shapes: &[PathData]) -> Option<PathData> {
     if base.is_some_and(|b| b.is_empty()) {
         return None;
     }
+    // A shape with no area shares none with the others: Intersect leaves nothing.
     if op == Op::Intersect && all.iter().any(|p| p.is_empty()) {
         return None;
     }
