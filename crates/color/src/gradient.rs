@@ -72,23 +72,45 @@ impl Default for Gradient {
 impl Gradient {
     /// Colour and opacity at `t` (honours midpoints).
     pub fn sample(&self, t: f32) -> (Color, f32) {
+        self.sample_in(None, t)
+    }
+
+    /// For each window `(stops[k], stops[k + 1])`, the largest end offset of windows `0..=k`: the
+    /// first window whose end reaches `t` is the first `k` where this does, so a binary search
+    /// finds it (stops in any order).
+    fn window_ends(&self) -> Vec<f32> {
+        let mut end = f32::NAN;
+        self.stops
+            .iter()
+            .skip(1)
+            .map(|s| {
+                end = end.max(s.offset);
+                end
+            })
+            .collect()
+    }
+
+    /// [`Self::sample`], with [`Self::window_ends`] given when it was worked out once (else a scan).
+    fn sample_in(&self, ends: Option<&[f32]>, t: f32) -> (Color, f32) {
         let stops = &self.stops;
-        if stops.is_empty() {
+        let Some(first) = stops.first() else {
             return (Color::BLACK, 1.0);
+        };
+        if t <= first.offset {
+            return (first.color, first.opacity);
         }
-        if t <= stops[0].offset {
-            return (stops[0].color, stops[0].opacity);
-        }
-        for w in stops.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            if t <= b.offset {
-                let span = (b.offset - a.offset).max(1e-6);
-                let u = (t - a.offset) / span;
-                // Map through the midpoint: u=mid → 0.5.
-                let m = a.midpoint.clamp(0.01, 0.99);
-                let v = if u < m { 0.5 * u / m } else { 0.5 + 0.5 * (u - m) / (1.0 - m) };
-                return (a.color.lerp(&b.color, v), a.opacity + (b.opacity - a.opacity) * v);
-            }
+        // The first window whose end offset is at or past `t` (none for a NaN `t`).
+        let k = match ends {
+            None => stops.windows(2).position(|w| t <= w[1].offset).unwrap_or(stops.len()),
+            Some(ends) => ends.partition_point(|e| matches!(e.partial_cmp(&t), None | Some(std::cmp::Ordering::Less))),
+        };
+        if let (Some(a), Some(b)) = (stops.get(k), stops.get(k + 1)) {
+            let span = (b.offset - a.offset).max(1e-6);
+            let u = (t - a.offset) / span;
+            // Map through the midpoint: u=mid → 0.5.
+            let m = a.midpoint.clamp(0.01, 0.99);
+            let v = if u < m { 0.5 * u / m } else { 0.5 + 0.5 * (u - m) / (1.0 - m) };
+            return (a.color.lerp(&b.color, v), a.opacity + (b.opacity - a.opacity) * v);
         }
         match stops.last() {
             Some(l) => (l.color, l.opacity),
@@ -97,6 +119,7 @@ impl Gradient {
     }
     /// Stops expanded so that midpoints are represented as explicit stops (for renderers without midpoints).
     pub fn expanded_stops(&self) -> Vec<(f32, Color, f32)> {
+        let ends = self.window_ends();
         let mut out = Vec::new();
         for (i, s) in self.stops.iter().enumerate() {
             out.push((s.offset, s.color, s.opacity));
@@ -104,7 +127,7 @@ impl Gradient {
                 && (s.midpoint - 0.5).abs() > 1e-3
             {
                 let t = s.offset + (n.offset - s.offset) * s.midpoint;
-                let (c, o) = self.sample(t);
+                let (c, o) = self.sample_in(Some(&ends), t);
                 out.push((t, c, o));
             }
         }
@@ -115,6 +138,7 @@ impl Gradient {
     pub fn display_stops(&self) -> Vec<(f32, Color, f32)> {
         const STEPS: usize = 16;
         let stops = self.expanded_stops();
+        let ends = self.window_ends();
         let mut out: Vec<(f32, Color, f32)> = Vec::with_capacity(stops.len() * STEPS);
         for (i, s) in stops.iter().enumerate() {
             out.push(*s);
@@ -124,7 +148,7 @@ impl Gradient {
             }
             for j in 1..STEPS {
                 let t = s.0 + (n.0 - s.0) * j as f32 / STEPS as f32;
-                let (c, a) = self.sample(t);
+                let (c, a) = self.sample_in(Some(&ends), t);
                 out.push((t, c, a));
             }
         }
@@ -215,6 +239,58 @@ impl GradientPaint {
 
 #[cfg(test)]
 mod tests {
+    /// The sampler as it was: the first window whose end reaches `t`, by a scan.
+    fn sample_by_scan(g: &super::Gradient, t: f32) -> (super::Color, f32) {
+        let stops = &g.stops;
+        if stops.is_empty() {
+            return (super::Color::BLACK, 1.0);
+        }
+        if t <= stops[0].offset {
+            return (stops[0].color, stops[0].opacity);
+        }
+        for w in stops.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if t <= b.offset {
+                let span = (b.offset - a.offset).max(1e-6);
+                let u = (t - a.offset) / span;
+                let m = a.midpoint.clamp(0.01, 0.99);
+                let v = if u < m { 0.5 * u / m } else { 0.5 + 0.5 * (u - m) / (1.0 - m) };
+                return (a.color.lerp(&b.color, v), a.opacity + (b.opacity - a.opacity) * v);
+            }
+        }
+        stops.last().map_or((super::Color::BLACK, 1.0), |l| (l.color, l.opacity))
+    }
+
+    /// The search finds the window the scan found, for stops in order, out of order, repeated
+    /// and NaN; and many stops expand in linear time.
+    #[test]
+    fn sampling_by_search_matches_the_scan() {
+        use super::{Color, Gradient, GradientKind, GradientStop};
+        let offsets = [0.0, 0.3, 0.2, 0.2, f32::NAN, 0.9, 0.5, 1.0, 0.95];
+        let stops: Vec<GradientStop> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &o)| GradientStop { midpoint: 0.3, ..GradientStop::new(o, Color::rgb8((i * 25) as u8, 0, 255 - (i * 25) as u8)) })
+            .collect();
+        for n in 0..=stops.len() {
+            let g = Gradient { kind: GradientKind::Linear, stops: stops[..n].to_vec() };
+            for t in [-1.0, 0.0, 0.1, 0.2, 0.25, 0.3, 0.6, 0.9, 0.93, 1.0, 2.0, f32::NAN, f32::INFINITY] {
+                // Compared as printed: a NaN offset gives NaN components on both sides.
+                let a = format!("{:?}", g.sample_in(Some(&g.window_ends()), t));
+                let b = format!("{:?}", sample_by_scan(&g, t));
+                assert_eq!(format!("{:?}", g.sample(t)), b, "{n} stops at {t} (scan)");
+                assert_eq!(a, b, "{n} stops at {t}");
+            }
+        }
+        let many = Gradient {
+            kind: GradientKind::Linear,
+            stops: (0..100_000).map(|i| GradientStop { midpoint: 0.3, ..GradientStop::new(i as f32 / 100_000.0, Color::BLACK) }).collect(),
+        };
+        let t = std::time::Instant::now();
+        assert_eq!(many.expanded_stops().len(), 199_999);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
     use super::*;
 
     #[test]
