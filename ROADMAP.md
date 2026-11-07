@@ -12,11 +12,6 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
-- **2026-11-07** · Czech and Polish text hyphenates with the MIT-licensed
-  `hyph-cs-sojka.tex` and `hyph-pl.tex` patterns through `hypher`. Czech names,
-  IDML names and locale tags resolve to the same patterns. Slovak remains
-  excluded because the patterns in `hypher` 0.1.8 are GPL-2.0-or-later. No
-  readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
@@ -393,6 +388,11 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-07** · Czech and Polish text hyphenates with the MIT-licensed
+  `hyph-cs-sojka.tex` and `hyph-pl.tex` patterns through `hypher`. Czech names,
+  IDML names and locale tags resolve to the same patterns. Slovak remains
+  excluded because the patterns in `hypher` 0.1.8 are GPL-2.0-or-later. No
+  readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
