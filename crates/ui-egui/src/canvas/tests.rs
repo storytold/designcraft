@@ -104,6 +104,46 @@ fn pages_show_paper_under_their_render() {
     }
 }
 
+/// View → Show Hidden Characters stays quiet for hidden frames and hidden layers (#1994).
+#[test]
+fn hidden_characters_skip_hidden_frames_and_layers() {
+    fn marks(app: &mut DesignApp) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut out: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+            let mut output = ctx.run_ui(raw, |ui| show(app, ui));
+            output.textures_delta.clear();
+            let shapes = output.shapes;
+            out = shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .filter(|s| ["·", "»", "¶", "#", "¬", "°"].contains(&s.as_str()))
+                .collect();
+        }
+        out.sort();
+        out
+    }
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let f1 = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "a b c"})).unwrap()["id"].as_u64().unwrap();
+    let layer = app.run("layer.new", serde_json::json!({"name": "Hidden"})).unwrap()["id"].as_u64().unwrap();
+    app.run("layer.activate", serde_json::json!({"id": layer})).unwrap();
+    app.run("frame.create", serde_json::json!({"rect": [72, 220, 400, 348], "content": "text", "text": "x y z"})).unwrap();
+    app.ui.hidden_characters = true;
+    // Two visible frames: two middots and a story-end hash each.
+    assert_eq!(marks(&mut app), vec!["#", "#", "·", "·", "·", "·"].iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    // Hiding the second frame's layer quiets its marks; the first frame's stay.
+    app.run("layer.set", serde_json::json!({"id": layer, "visible": false})).unwrap();
+    assert_eq!(marks(&mut app), vec!["#", "·", "·"].iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    // Hiding the first frame quiets the rest.
+    app.run("object.hide", serde_json::json!({"ids": [f1]})).unwrap();
+    assert!(marks(&mut app).is_empty());
+}
+
 /// Bleed and Slug are preview modes: like Preview they hide the guides, and what the page
 /// shows widens to the bleed or the slug box. The slug guide is drawn in Normal, in its own
 /// colour, beside the bleed guide.
