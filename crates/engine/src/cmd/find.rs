@@ -544,6 +544,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
 /// Most matches `find.find` returns.
 const MAX_MATCHES: usize = 10_000;
 
+/// `find.find`: find every match in the search scope.
 fn find(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;
@@ -595,6 +596,7 @@ fn char_overrides(attrs: Option<&Value>) -> Result<designcraft_doc::CharAttrs> {
     Ok(over)
 }
 
+/// `find.change`: replace or format every match in the search scope, unthreading deleted anchors.
 fn change(s: &mut Session, p: &Value) -> Result<Value> {
     let re = search(p)?;
     re.check(&s.doc()?.doc.styles)?;
@@ -652,6 +654,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
         let styles = d.styles.clone();
         let mut count = 0usize;
         let mut changed = None;
+        let mut doomed = Vec::new();
         for (sid, cell, r) in targets {
             if found.as_ref().is_some_and(|(at, in_cell, _)| *at != sid || *in_cell != cell) {
                 continue;
@@ -679,6 +682,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 let changed = if format_only {
                     range.clone()
                 } else {
+                    doomed.extend(st.anchored_text_frames_in(range.clone()));
                     st.replace(range.clone(), new);
                     range.start..range.start + new.len()
                 };
@@ -719,6 +723,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                 break;
             }
         }
+        d.unthread_anchored_text_frames(&doomed);
         Ok((count, changed))
     })?;
     // Change: Find Next goes on after the changed text, in the search's domain.

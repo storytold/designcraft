@@ -227,39 +227,34 @@ impl Document {
         Ok(id)
     }
 
+    /// Remove an item (and its descendants) from its spread or group, leaving text frames in
+    /// their stories' threads. Anchoring a text frame needs its story to stay threaded to it
+    /// after the frame is no longer a spread item.
+    pub fn take_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
+        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
+        let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
+        if loc.path.len() == 1 {
+            return Ok(sp.items.remove(loc.path[0]));
+        }
+        let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
+        for &i in &loc.path[1..loc.path.len() - 1] {
+            it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
+        }
+        let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
+        Ok(it.children_mut().ok_or(DocError::NoItem(id))?.remove(last))
+    }
+
     /// Remove an item (and its descendants) from the document. Text frames leave their threads;
     /// stories that lose their last frame are deleted.
     pub fn remove_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
-        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
-        let removed = {
-            let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
-            if loc.path.len() == 1 {
-                sp.items.remove(loc.path[0])
-            } else {
-                let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
-                for &i in &loc.path[1..loc.path.len() - 1] {
-                    it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
-                }
-                let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
-                it.children_mut().ok_or(DocError::NoItem(id))?.remove(last)
-            }
-        };
+        let removed = self.take_item(id)?;
         let mut frames = Vec::new();
         removed.walk(&mut |i| {
             if let Some(t) = i.text_frame() {
-                frames.push((i.id, t.story));
+                frames.push((t.story, i.id));
             }
         });
-        for (fid, sid) in frames {
-            let empty = {
-                let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
-                st.frames.retain(|f| *f != fid);
-                st.frames.is_empty()
-            };
-            if empty {
-                self.stories.remove(&sid);
-            }
-        }
+        self.unthread_anchored_text_frames(&frames);
         Ok(removed)
     }
 
@@ -775,6 +770,7 @@ impl Document {
     /// Replace a story's text and formatting wholesale (agents / import).
     pub fn set_story_text(&mut self, sid: StoryId, text: &str) -> Result<()> {
         let st = self.story_mut(sid).ok_or(DocError::NoStory(sid))?;
+        let doomed = st.anchored_text_frames();
         let para = st.paras.first().cloned().map(|p| ParaFormat { table: None, ..p }).unwrap_or_default();
         let fmt = st.chars.first().map(|r| r.format.clone()).unwrap_or_default();
         let n = text.matches('\n').count() + 1;
@@ -793,6 +789,7 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.unthread_anchored_text_frames(&doomed);
         Ok(())
     }
 }

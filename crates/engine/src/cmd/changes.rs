@@ -1,14 +1,15 @@
 //! Type › Track Changes: record edits as inserted / deleted text; accept or reject them.
 
-use designcraft_doc::{ChangeMark, Story, StoryId};
+use designcraft_doc::{ChangeMark, ItemId, Story, StoryId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
 use crate::{Result, Session};
 
-/// Mark `r` deleted (text this session inserted while tracking is simply removed). Returns where
-/// the text after the range now starts.
-pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
+/// Mark `r` deleted (text this session inserted while tracking is simply removed), collecting the
+/// anchored text frames whose inserted marks it removes. Returns where the text after the range
+/// now starts.
+pub(crate) fn mark_deleted_collecting(st: &mut Story, r: std::ops::Range<usize>, doomed: &mut Vec<(StoryId, ItemId)>) -> usize {
     if r.is_empty() {
         return r.start;
     }
@@ -21,6 +22,7 @@ pub(crate) fn mark_deleted(st: &mut Story, r: std::ops::Range<usize>) -> usize {
     let mut end = r.end;
     ins.sort_by_key(|x| std::cmp::Reverse(x.start));
     for x in ins {
+        doomed.extend(st.anchored_text_frames_in(x.clone()));
         st.delete(x.clone());
         end -= x.len();
     }
@@ -37,12 +39,14 @@ fn ranges(st: &Story, mark: ChangeMark) -> Vec<std::ops::Range<usize>> {
     v
 }
 
-/// Accept (or reject) every change in `st`.
-fn resolve(st: &mut Story, accept: bool) -> usize {
+/// Accept (or reject) every change in `st`, with the anchored text frames it deletes.
+fn resolve(st: &mut Story, accept: bool) -> (usize, Vec<(StoryId, ItemId)>) {
     let (remove, keep) = if accept { (ChangeMark::Deleted, ChangeMark::Inserted) } else { (ChangeMark::Inserted, ChangeMark::Deleted) };
     let removed = ranges(st, remove);
     let n = removed.len() + ranges(st, keep).len();
+    let mut doomed = Vec::new();
     for r in removed {
+        doomed.extend(st.anchored_text_frames_in(r.clone()));
         st.delete(r);
     }
     let len = st.len();
@@ -51,7 +55,7 @@ fn resolve(st: &mut Story, accept: bool) -> usize {
             f.over.change = None;
         }
     });
-    n
+    (n, doomed)
 }
 
 /// Accept or reject the one change at `start` in story `story`.
@@ -67,11 +71,14 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
             .map(|(r, f)| (r, f.over.change.unwrap_or_default()))
             .ok_or_else(|| super::bad(id, "no change there"))?;
         // Accepting a deletion or rejecting an insertion removes the text; otherwise it stays, unmarked.
+        let mut doomed = Vec::new();
         if (mark == ChangeMark::Deleted) == accept {
+            doomed = st.anchored_text_frames_in(r.clone());
             st.delete(r.clone());
         } else {
             st.format_chars(r.clone(), |f| f.over.change = None);
         }
+        d.unthread_anchored_text_frames(&doomed);
         if let Some(t) = &mut sel.text
             && t.story == sid
         {
@@ -131,16 +138,21 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Accept or reject every change in the selected story, or in the whole document.
 fn all(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     s.edit(|d, sel| {
         let ids: Vec<StoryId> = d.stories.keys().copied().filter(|id| only.is_none_or(|o| o == *id)).collect();
         let mut n = 0;
+        let mut doomed = Vec::new();
         for id in ids {
             if let Some(st) = d.story_mut(id) {
-                n += resolve(st, accept);
+                let (count, lost) = resolve(st, accept);
+                n += count;
+                doomed.extend(lost);
             }
         }
+        d.unthread_anchored_text_frames(&doomed);
         // The caret may now be past the end.
         if let Some(t) = &mut sel.text
             && let Some(st) = d.story(t.story)

@@ -29,11 +29,22 @@ fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &Hyperl
             let cs = cache.get(doc, *story, None);
             let mut out = Vec::new();
             for ft in &cs.frames {
-                let (Some(loc), Some(it)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
-                if loc.spread != SpreadRef::Doc(si) {
-                    continue;
-                }
-                let m: Affine = doc.parent_xf(&loc) * doc.text_xf(it);
+                let Some(it) = doc.item(ft.frame).or_else(|| doc.anchored_item(ft.frame)) else { continue };
+                let m: Affine = match doc.find(ft.frame) {
+                    Some(loc) if loc.spread == SpreadRef::Doc(si) => doc.parent_xf(&loc) * doc.text_xf(it),
+                    Some(_) => continue,
+                    None => {
+                        let Some(placement) =
+                            designcraft_compose::frame_placement_with(doc, *story, ft.frame, &mut |host| cache.get(doc, host, None))
+                        else {
+                            continue;
+                        };
+                        if placement.spread != SpreadRef::Doc(si) {
+                            continue;
+                        }
+                        placement.xf * doc.text_xf(it)
+                    }
+                };
                 for l in &ft.lines {
                     if l.range.end <= *start || l.range.start >= *end {
                         continue;

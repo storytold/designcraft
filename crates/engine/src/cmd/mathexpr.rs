@@ -59,6 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// `math.insert`: insert or edit an equation, inline at the selection or as a frame.
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let latex = str_param(p, "latex").ok_or_else(|| bad("math.insert", "`latex` required"))?.to_string();
     let size = size_param(p);
@@ -85,9 +86,8 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
             let r = t.range();
-            if let Some(st) = d.story_mut(t.story) {
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
-            }
+            let len = d.story(t.story).map_or(0, |st| st.len());
+            d.delete_text_range(t.story, None, r.start.min(len)..r.end.min(len))?;
             let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));

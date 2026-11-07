@@ -181,12 +181,14 @@ pub fn specs() -> Vec<CommandSpec> {
                         let msg = format!("range {a}..{b} must be UTF-8 byte offsets on character boundaries, start <= end; the story is {n} bytes");
                         return Err(bad("story.replaceRange", msg));
                     }
+                    let doomed = st.anchored_text_frames_in(a..b);
                     st.replace(a..b, &text);
                     let len = st.len();
                     if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid) {
                         t.anchor = floor_char_boundary(&st.text, t.anchor);
                         t.focus = floor_char_boundary(&st.text, t.focus);
                     }
+                    d.unthread_anchored_text_frames(&doomed);
                     Ok(json!({"length": len}))
                 })
             }

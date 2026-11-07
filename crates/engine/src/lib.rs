@@ -410,6 +410,9 @@ pub struct Session {
     pub recovery_dir: Option<std::path::PathBuf>,
     /// Copied text with its formatting (a frameless story slice) and its plain text.
     pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
+    /// The document the text was copied from: pasted anchored text frames take their stories and
+    /// graphics from it, even into another document.
+    pub text_clipboard_doc: Option<Arc<Document>>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.
@@ -473,6 +476,7 @@ impl Session {
             clipboard_origin: 0.0,
             recovery_dir: None,
             text_clipboard: None,
+            text_clipboard_doc: None,
             text_link_checks: Default::default(),
             image_link_checks: Default::default(),
             ui_requests: vec![],

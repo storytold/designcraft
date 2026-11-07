@@ -1081,11 +1081,13 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
+    let mut item_ids = HashMap::new();
+    let mut copied = Vec::new();
     for id in ids {
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        renumber(dst, src, &mut copy, &mut story_map);
+        renumber_in(dst, src, &mut copy, &mut story_map, true, &mut item_ids, &mut copied);
         if dst.layer(copy.layer).is_none() {
             copy.layer = dst.default_layer();
         }
@@ -1093,6 +1095,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    reorder_copied_threads(dst, src, &story_map, &item_ids, &copied);
     Ok(out)
 }
 
@@ -1105,12 +1108,46 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 
 /// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
-    renumber_in(dst, src, it, stories, true);
+    let mut ids = HashMap::new();
+    let mut copied = Vec::new();
+    renumber_in(dst, src, it, stories, true, &mut ids, &mut copied);
+    reorder_copied_threads(dst, src, stories, &ids, &copied);
+}
+
+/// Rebuild each story copied by [`renumber_in`] in its source thread order, not in the order the
+/// copied frames happened to be visited.
+fn reorder_copied_threads(
+    dst: &mut Document,
+    src: &Document,
+    stories: &HashMap<StoryId, StoryId>,
+    ids: &HashMap<ItemId, ItemId>,
+    copied: &[StoryId],
+) {
+    for old_sid in copied {
+        let (Some(source), Some(new_sid)) = (src.story(*old_sid), stories.get(old_sid).copied()) else { continue };
+        let frames: Vec<ItemId> = source.frames.iter().filter_map(|f| ids.get(f).copied()).collect();
+        if !frames.is_empty()
+            && let Some(story) = dst.story_mut(new_sid)
+        {
+            story.frames = frames;
+        }
+    }
 }
 
 /// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
-fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, adopt: bool) {
+#[allow(clippy::too_many_arguments)]
+fn renumber_in(
+    dst: &mut Document,
+    src: &Document,
+    it: &mut Item,
+    stories: &mut HashMap<StoryId, StoryId>,
+    adopt: bool,
+    ids: &mut HashMap<ItemId, ItemId>,
+    copied: &mut Vec<StoryId>,
+) {
+    let old_id = it.id;
     it.id = ItemId(dst.alloc());
+    ids.insert(old_id, it.id);
     let my_id = it.id;
     if adopt
         && let Some(m) = it.media.as_mut()
@@ -1137,7 +1174,8 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    renumber_anchored(dst, src, &mut st, stories);
+                    copied.push(tf.story);
+                    renumber_anchored(dst, src, &mut st, stories, ids, copied);
                     dst.stories.insert(n, Arc::new(st));
                     n
                 }
@@ -1154,7 +1192,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
         }
         Content::Group { items } => {
             for c in items.iter_mut() {
-                renumber_in(dst, src, Arc::make_mut(c), stories, adopt);
+                renumber_in(dst, src, Arc::make_mut(c), stories, adopt, ids, copied);
             }
         }
         Content::Unassigned => {}
@@ -1162,16 +1200,43 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
 }
 
 /// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
-fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+fn renumber_anchored(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    ids: &mut HashMap<ItemId, ItemId>,
+    copied: &mut Vec<StoryId>,
+) {
     let mut fresh = |t: &mut Story| {
         for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false, ids, copied);
         }
     };
     st.for_each_text_mut(&mut fresh);
     for n in &mut st.endnotes {
         Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
+}
+
+/// Fresh ids, stories and assets for the objects anchored in a pasted text slice (#2284),
+/// including its table cells, footnotes, endnotes and anchored text-frame stories. Unlike
+/// [`renumber_anchored`], a slice is not a copy whose assets were already adopted.
+pub(crate) fn renumber_slice(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+    let mut ids = HashMap::new();
+    let mut copied = Vec::new();
+    {
+        let mut fresh = |t: &mut Story| {
+            for o in &mut t.objects {
+                renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, true, &mut ids, &mut copied);
+            }
+        };
+        st.for_each_text_mut(&mut fresh);
+        for n in &mut st.endnotes {
+            Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+        }
+    }
+    reorder_copied_threads(dst, src, stories, &ids, &copied);
 }
 
 fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
@@ -6051,6 +6116,184 @@ mod anchored_copy_tests {
         let doc = &s.doc().unwrap().doc;
         assert_eq!(doc.anchored_items().len(), 3);
         assert_reopens(doc);
+    }
+
+    fn frame_with_inline_text_frame(s: &mut Session) -> (ItemId, ItemId, designcraft_doc::StoryId, designcraft_doc::StoryId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+        let frame = ItemId(r["id"].as_u64().unwrap());
+        let host = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        let r = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "Note"})).unwrap();
+        let inner = ItemId(r["id"].as_u64().unwrap());
+        let inner_story = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("anchored.insert", &json!({"ids": [inner.0], "story": host.0, "pos": 7})).unwrap();
+        (frame, inner, host, inner_story)
+    }
+
+    #[test]
+    fn pasted_frames_keep_their_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host =
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after and more words."})).unwrap();
+        let host_sid = designcraft_doc::StoryId(host["story"].as_u64().unwrap());
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let story = designcraft_doc::StoryId(first["story"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [300, 400, 500, 600], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        // Anchor them in the opposite order from their thread: second first, then first.
+        s.execute("anchored.insert", &json!({"ids": [second_id.0], "story": host_sid.0, "pos": 0})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [first_id.0], "story": host_sid.0, "pos": 7})).unwrap();
+        let len = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 4);
+        let (second_copy, first_copy) = (&objects[2].item, &objects[3].item);
+        let copied = first_copy.text_frame().unwrap().story;
+        assert_eq!(second_copy.text_frame().unwrap().story, copied);
+        assert_eq!(d.story(copied).unwrap().frames, [first_copy.id, second_copy.id], "source thread order");
+        assert_eq!(d.story(story).unwrap().frames, [first_id, second_id]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = (*src).clone();
+        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        assert_eq!(copy.len(), 2);
+        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
+        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
+        dst.check().unwrap();
+    }
+
+    #[test]
+    fn copying_a_host_frame_keeps_the_story_of_the_text_frame_anchored_in_its_text() {
+        let mut s = Session::new();
+        let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
+        }
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn duplicating_a_frame_with_an_anchored_text_frame_keeps_ids_and_stories_unique() {
+        let mut s = Session::new();
+        let (frame, _inner, _host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 2);
+        assert_eq!(items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(), 2);
+        for item in items {
+            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
+        }
+        assert_reopens(d);
+    }
+
+    // #2284: text pasted twice shared the anchored object's id and story.
+    #[test]
+    fn pasting_copied_text_with_an_anchored_text_frame_twice_keeps_ids_and_stories_unique() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host.0, "anchor": len, "focus": len})).unwrap();
+        assert_eq!(s.execute("edit.paste", &json!({})).unwrap()["formatted"], true);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 3);
+        assert_eq!(
+            items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "each paste has a story of its own"
+        );
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner], "the original stays threaded");
+        for item in items {
+            assert_eq!(d.story(item.text_frame().unwrap().story).unwrap().text, "Note");
+        }
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_copied_text_with_an_anchored_text_frame_as_a_new_frame_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items.iter().map(|i| i.id).collect::<std::collections::HashSet<_>>().len(), 2);
+        assert_eq!(items.iter().filter_map(|i| i.text_frame().map(|t| t.story)).collect::<std::collections::HashSet<_>>().len(), 2);
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_over_the_copied_range_keeps_the_anchored_text_frame_valid() {
+        let mut s = Session::new();
+        let (_frame, _inner, host, _inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let items: Vec<_> = d.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 1);
+        let tf = items[0].text_frame().unwrap();
+        assert_eq!(d.story(tf.story).unwrap().text, "Note");
+        assert_eq!(d.story(tf.story).unwrap().frames, [items[0].id]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn copied_text_pasted_into_another_document_keeps_its_anchored_text_frame_story() {
+        let mut s = Session::new();
+        let (_frame, inner, host, inner_story) = frame_with_inline_text_frame(&mut s);
+        let len = s.doc().unwrap().doc.story(host).unwrap().len();
+        s.execute("text.select", &json!({"story": host.0, "anchor": 0, "focus": len})).unwrap();
+        let text = s.execute("edit.copy", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({"text": text})).unwrap();
+        let items: Vec<_> = s.doc().unwrap().doc.anchored_items().into_iter().filter(|(_, i)| i.text_frame().is_some()).map(|(_, i)| i).collect();
+        assert_eq!(items.len(), 1);
+        let tf = items[0].text_frame().unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().text, "Note");
+        assert_eq!(s.doc().unwrap().doc.story(tf.story).unwrap().frames, [items[0].id]);
+        assert_reopens(&s.doc().unwrap().doc);
+        s.set_active(0);
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(inner_story).unwrap().text, "Note");
+        assert_eq!(d.story(inner_story).unwrap().frames, [inner]);
     }
 
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.

@@ -401,6 +401,7 @@ fn add_flow_frame(
     Ok(fid)
 }
 
+/// `file.place`: place an imported text story at the selection, a frame, or a new frame.
 pub(super) fn place_text(
     s: &mut Session,
     p: &Value,
@@ -446,9 +447,9 @@ pub(super) fn place_text(
         add_styles(d, &imp, conflict);
         let sid = if let Some(t) = caret {
             // Into the text at the insertion point (replacing the selection).
-            let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             let r = t.range();
-            story.delete(r.clone());
+            d.delete_text_range(t.story, None, r.clone())?;
+            let story = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
             // An insertion point in an empty paragraph takes the first imported paragraph's style
             // (insert_story would keep the empty paragraph's own, losing the styleMap result).
             let p0 = story.para_at(r.start);
