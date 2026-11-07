@@ -75,8 +75,8 @@ fn step_of(v: &Value) -> Result<Step, String> {
     Ok(Step { command, params })
 }
 
-/// The value a reference (`N.path`, `last.path`) points at.
-fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
+/// The value a reference (`N.path`, `last.path`) points at, borrowed from `results`.
+fn lookup<'a>(r: &str, results: &'a [Value]) -> Result<&'a Value, String> {
     let mut parts = r.split('.');
     let head = parts.next().unwrap_or("");
     let idx = if head == "last" {
@@ -84,14 +84,14 @@ fn lookup(r: &str, results: &[Value]) -> Result<Value, String> {
     } else {
         head.parse::<usize>().map_err(|_| format!("bad reference `${r}`"))?
     };
-    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?.clone();
+    let mut v = results.get(idx).ok_or_else(|| format!("`${r}`: step {idx} hasn't run (only {} have)", results.len()))?;
     for p in parts {
-        v = match (&v, p.parse::<usize>()) {
-            (Value::Array(a), Ok(i)) => a.get(i).cloned(),
-            (Value::Object(o), _) => o.get(p).cloned(),
+        v = match (v, p.parse::<usize>()) {
+            (Value::Array(a), Ok(i)) => a.get(i),
+            (Value::Object(o), _) => o.get(p),
             _ => None,
         }
-        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(&v)))?;
+        .ok_or_else(|| format!("`${r}`: no `{p}` in {}", short(v)))?;
     }
     Ok(v)
 }
@@ -110,12 +110,22 @@ fn is_reference(r: &str) -> bool {
     head_ok && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
 }
 
+/// Longest string a `${…}` interpolation may build: a step that pastes an earlier result into a
+/// story, then interpolates that story into the next, could otherwise double its size each step.
+pub const MAX_INTERPOLATED_BYTES: usize = 16 << 20;
+
+fn too_long(s: &str) -> String {
+    // Cut at a char boundary: a preview of a long Unicode input mustn't copy all of it.
+    let preview = &s[..s.floor_char_boundary(40)];
+    format!("the interpolated text of {preview} is longer than {MAX_INTERPOLATED_BYTES} bytes").replace('\n', " ")
+}
+
 /// Replace references in `params` with values from earlier `results`.
 pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
     Ok(match params {
         Value::String(s) => {
             if let Some(r) = s.strip_prefix('$').filter(|r| is_reference(r)) {
-                return lookup(r, results);
+                return lookup(r, results).cloned();
             }
             if !s.contains("${") && !s.contains("$$") {
                 return Ok(params.clone());
@@ -130,15 +140,23 @@ pub fn resolve(params: &Value, results: &[Value]) -> Result<Value, String> {
                     rest = tail;
                 } else if let Some(inner) = after.strip_prefix('{') {
                     let end = inner.find('}').ok_or_else(|| format!("unclosed `${{` in {s:?}"))?;
-                    match lookup(&inner[..end], results)? {
-                        Value::String(t) => out.push_str(&t),
-                        other => out.push_str(&other.to_string()),
+                    // The length is checked before the value is copied in.
+                    let piece = match lookup(&inner[..end], results)? {
+                        Value::String(t) => std::borrow::Cow::Borrowed(t.as_str()),
+                        other => std::borrow::Cow::Owned(other.to_string()),
+                    };
+                    if out.len().saturating_add(piece.len()) > MAX_INTERPOLATED_BYTES {
+                        return Err(too_long(s));
                     }
+                    out.push_str(&piece);
                     rest = &inner[end + 1..];
                 } else {
                     out.push('$');
                     rest = after;
                 }
+            }
+            if out.len().saturating_add(rest.len()) > MAX_INTERPOLATED_BYTES {
+                return Err(too_long(s));
             }
             out.push_str(rest);
             Value::String(out)
@@ -182,15 +200,44 @@ pub fn run(steps: &[Step], mut exec: impl FnMut(&str, Value) -> Result<Value, St
     Report { results, failed: None }
 }
 
+/// How deep scripts may run scripts (`script.run` is a command a step may run).
+pub const MAX_SCRIPT_DEPTH: usize = 8;
+/// Steps one outermost script may run, the scripts it runs included: a script that runs itself
+/// (its text read back from a story, say) ends here rather than never.
+pub const MAX_SCRIPT_STEPS: usize = 100_000;
+
 impl crate::Session {
     /// Run a script on this session (see [`crate::script`]).
     pub fn run_script(&mut self, steps: &[Step]) -> Report {
-        run(steps, |c, p| self.execute(c, &p).map_err(|e| e.to_string()))
+        if self.script_depth >= MAX_SCRIPT_DEPTH {
+            let command = steps.first().map(|s| s.command.clone()).unwrap_or_default();
+            return Report {
+                results: vec![],
+                failed: Some((0, command, format!("scripts nest deeper than {MAX_SCRIPT_DEPTH} (a script running a script…)"))),
+            };
+        }
+        if self.script_depth == 0 {
+            self.script_steps = MAX_SCRIPT_STEPS;
+        }
+        self.script_depth += 1;
+        let report = run(steps, |c, p| {
+            self.script_steps =
+                self.script_steps.checked_sub(1).ok_or_else(|| format!("the script and the scripts it runs exceed {MAX_SCRIPT_STEPS} steps"))?;
+            self.execute(c, &p).map_err(|e| e.to_string())
+        });
+        self.script_depth -= 1;
+        report
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_limit_error_previews_a_multibyte_input_in_bounds() {
+        let e = super::too_long(&"€".repeat(1000));
+        assert!(e.len() < 150, "{e}");
+    }
+
     use super::*;
 
     #[test]
@@ -273,6 +320,35 @@ mod tests {
         assert!(r.failed.is_none(), "{r:?}");
         assert_eq!(r.results[2]["count"], 2);
         assert_eq!(r.results[3]["text"], "a\u{a0}v\u{a0}Praze");
+    }
+
+    /// A script that runs scripts stops at the depth limit, and the steps of all of them count
+    /// against one budget; the session goes on afterwards.
+    #[test]
+    fn nested_scripts_are_bounded() {
+        let mut s = crate::Session::new();
+        let steps = parse("file.new\ndocument.inspect\ndocument.inspect").unwrap();
+        s.script_depth = MAX_SCRIPT_DEPTH;
+        let e = s.run_script(&steps).failed.expect("must fail").2;
+        assert!(e.contains("nest deeper"), "{e}");
+        s.script_depth = 1;
+        s.script_steps = 2;
+        let r = s.run_script(&steps);
+        assert_eq!(r.results.len(), 2);
+        assert!(r.failed.as_ref().is_some_and(|f| f.2.contains("exceed")), "{r:?}");
+        s.script_depth = 0;
+        let r = s.run_script(&steps);
+        assert!(r.failed.is_none(), "{r:?}");
+        assert_eq!(s.script_depth, 0);
+    }
+
+    #[test]
+    fn interpolation_is_capped() {
+        let big = "x".repeat(MAX_INTERPOLATED_BYTES / 2 + 1);
+        let results = vec![json!({"text": big})];
+        assert!(resolve(&json!("${0.text}"), &results).is_ok());
+        let e = resolve(&json!("${0.text}${0.text}"), &results).unwrap_err();
+        assert!(e.contains("longer than"), "{e}");
     }
 
     #[test]
