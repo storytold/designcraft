@@ -145,8 +145,11 @@ fn a_book_writes_its_chapters_only_inside_the_write_root() {
         s.execute("book.add", &json!({"path": p(&chapter)})).unwrap();
         s.execute("book.add", &json!({"path": p(&second)})).unwrap();
         // Paginate and Synchronize rewrite the chapters (in the read root); Export writes `path`.
+        // The chapters are not in the book's folder, so the updates are given consent for that:
+        // what is tested here is the write root, which consent must not get past.
         let outside_pdf = json!({"path": p(&base.join("outside/book.pdf"))});
-        for (command, params) in [("book.paginate", json!({})), ("book.syncStyles", json!({})), ("book.exportPdf", outside_pdf)] {
+        let consent = json!({"allowOutside": true});
+        for (command, params) in [("book.paginate", consent.clone()), ("book.syncStyles", consent), ("book.exportPdf", outside_pdf)] {
             let r = s.execute(command, &params);
             let e = r.unwrap_err().to_string();
             assert!(e.contains("outside the write root"), "{command}: {e}");
