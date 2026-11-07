@@ -44,6 +44,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.saveSwatches", "Save Swatches for Exchange…", None, "{path?} — write the colour swatches as .ase"),
     ("app.exportPng", "Export Page as PNG…", Some("Cmd+E"), "{}"),
     ("app.exportIdml", "Export IDML…", None, "{path?} — InDesign Markup (IDML) package"),
+    ("app.exportScribus", "Export Scribus…", None, "{path?} — Scribus 1.7 (.sla) document, with its images beside it"),
     (
         "app.exportEpub",
         "Export EPUB…",

@@ -1,4 +1,4 @@
-use super::export::{download_document, export_bytes, export_epub, export_idml, export_pdf, export_png, separations_view};
+use super::export::{download_document, export_bytes, export_epub, export_idml, export_pdf, export_png, export_scribus, separations_view};
 use super::invoke::guide_spread;
 use super::state::{is_window_control, menu_enabled, window_control_available};
 use super::tables::{CLASSIC_GROUPS, TYPOGRAPHY_GROUPS, workspace_open_panel};
@@ -180,6 +180,7 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         },
         "app.exportPng" => export_png(app, p),
         "app.exportIdml" => export_idml(app, p),
+        "app.exportScribus" => export_scribus(app, p),
         // From the menu, EPUB Export Options first; with a path, straight to the file.
         "app.exportEpub" if p.get("path").is_some() => export_epub(app, p),
         "app.exportEpub" => {

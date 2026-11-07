@@ -102,15 +102,6 @@ pub fn read_to_string(path: impl AsRef<Path>) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Make the folder at `path` and the folders above it, inside the automation write root when
-/// there is one.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn create_dir_all(path: impl AsRef<Path>) -> Result<(), String> {
-    let path = path.as_ref();
-    crate::file_access::check_write(path)?;
-    std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
-}
-
 /// Write `bytes` to the file at `path`, inside the automation write root when there is one.
 pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), String> {
     let path = path.as_ref();
@@ -122,6 +113,21 @@ pub fn write_file(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     let written = std::fs::write(path, bytes);
     written.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Make `path` and its missing parents, inside the automation write root when there is one.
+pub fn create_dir_all(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    touch(path);
+    crate::file_access::check_write(path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(format!("{}: folders are not available on the web", path.display()))
+    }
 }
 
 /// Atomically replace the file at `path` with the contents of `staged`, a private temporary file
@@ -176,6 +182,14 @@ pub fn is_dir(path: impl AsRef<Path>) -> bool {
 /// Is there anything at `path` that automation may read?
 pub fn exists(path: impl AsRef<Path>) -> bool {
     metadata(path).is_ok()
+}
+
+/// Is there already an entry at `path` that automation may write over? A broken symlink counts:
+/// replacing it would still destroy what the user put there.
+pub fn exists_for_write(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    touch(path);
+    crate::file_access::check_write(path).is_ok() && std::fs::symlink_metadata(path).is_ok()
 }
 
 /// The entries of the folder at `path`, inside the automation read root when there is one.

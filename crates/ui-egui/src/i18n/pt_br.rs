@@ -529,6 +529,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Export", "Exportar"),
     ("Export Page as PNG…", "Exportar página como PNG…"),
     ("Export IDML…", "Exportar IDML…"),
+    ("Export Scribus…", "Exportar Scribus…"),
     ("Export EPUB…", "Exportar EPUB…"),
     ("Export EPUB (Fixed Layout)…", "Exportar EPUB (layout fixo)…"),
     ("Export PDF (Interactive)…", "Exportar PDF (interativo)…"),

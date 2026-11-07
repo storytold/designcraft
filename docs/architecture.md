@@ -1,6 +1,6 @@
 # DesignCraft architecture
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-12 · **Change:** minor (shared PDF writing) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-03 · **Change:** minor (Scribus 1.7 `.sla` import and export as `designcraft-scribus`; shared PDF writing) · **Target:** Adobe InDesign 2026
 
 How DesignCraft is built today. The design notes behind it are in `plan/architecture.md`
 (local, gitignored); this file describes what the code on `main` does. Agents: AGENTS.md has the
@@ -8,7 +8,7 @@ rules (never crash, everything is a command, layering, clean-room).
 
 ## Workspace
 
-A Cargo workspace: 16 library crates in `crates/`, 3 apps in `apps/`, and `xtask`. 126,411
+A Cargo workspace: 17 library crates in `crates/`, 3 apps in `apps/`, and `xtask`. 126,411
 lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default,
 `unsafe_code = "forbid"` workspace-wide.
 
@@ -23,6 +23,7 @@ lines of Rust, 1,122 tests (2026-10-10). Pure Rust, no C dependencies by default
 | L3 | `render` | document to pixels with vello_cpu (SIMD, multithreaded): items, composed text, images with mips, gradients, effects, damage regions, placed PDF via hayro | 3.5k |
 | L3 | `pdf` | PDF export through craft-pdf with Krilla: real text with subset fonts, CMYK and spot, bleed and marks, tagged PDF, links, forms, transitions, PDF/X-4 and PDF/A-2b | 5.0k |
 | L3 | `idml` | IDML import and export (designmap, spreads, parents, stories, styles, graphics, preferences; CJK and Arabic attributes) | 8.0k |
+| L3 | `scribus` | Scribus 1.7 `.sla` import and export (pages, masters, layers, colours, styles, threaded stories, images as sidecar files, shapes, groups, guides, sections) | 2.5k |
 | L3 | `epub` | EPUB 3 reflowable and fixed-layout export | 0.9k |
 | L3 | `textimport` | Word (.docx), RTF, Excel (.xlsx), Tagged Text import; text export | 1.8k |
 | L3 | `format` | the native `.designcraft` zip (`document.json`, `assets/`, `meta.json`, optional `preview.png`), versioned | 0.3k |

@@ -534,3 +534,51 @@ fn gif_tone_and_cmyk_inks_check_the_rgba_budget() {
     assert!(too_large_to_decode(&tiff));
     assert_eq!(decode_cmyk_tiff(&tiff), None);
 }
+
+/// A JPEG carrying only an APP1 `Exif` segment with the given orientation tag.
+fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+    let mut tiff = Vec::new();
+    tiff.extend(b"II");
+    tiff.extend(42u16.to_le_bytes());
+    tiff.extend(8u32.to_le_bytes());
+    tiff.extend(1u16.to_le_bytes());
+    tiff.extend(0x0112u16.to_le_bytes());
+    tiff.extend(3u16.to_le_bytes());
+    tiff.extend(1u32.to_le_bytes());
+    tiff.extend(orientation.to_le_bytes());
+    tiff.extend([0u8; 2]);
+    tiff.extend(0u32.to_le_bytes());
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    let len = (2 + 6 + tiff.len()) as u16;
+    jpeg.extend(len.to_be_bytes());
+    jpeg.extend(b"Exif\0\0");
+    jpeg.extend(tiff);
+    jpeg.extend([0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn reads_the_exif_orientation() {
+    for o in 1..=8u16 {
+        assert_eq!(exif_orientation(&jpeg_with_orientation(o)), o as u8);
+    }
+    assert_eq!(exif_orientation(b"not an image"), 1, "absent metadata is upright");
+    assert_eq!(exif_orientation(&[]), 1);
+}
+
+#[test]
+fn a_hostile_ifd_offset_does_not_overflow() {
+    // The IFD offset is a `u32` from the file: `0xFFFF_FFFF + 2` overflows a 32-bit `usize`
+    // (wasm) unless the range ends are checked. Absent metadata is upright.
+    let mut tiff = Vec::new();
+    tiff.extend(b"II");
+    tiff.extend(42u16.to_le_bytes());
+    tiff.extend(u32::MAX.to_le_bytes());
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    let len = (2 + 6 + tiff.len()) as u16;
+    jpeg.extend(len.to_be_bytes());
+    jpeg.extend(b"Exif\0\0");
+    jpeg.extend(tiff);
+    jpeg.extend([0xFF, 0xD9]);
+    assert_eq!(exif_orientation(&jpeg), 1);
+}

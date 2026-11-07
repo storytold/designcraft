@@ -67,6 +67,57 @@ pub(super) fn export_idml(app: &mut DesignApp, p: &Value) -> Result<Value, Strin
     }
 }
 
+/// File › Export Scribus…: ask for a path, export through `file.exportScribus` and write the
+/// `.sla` and its linked images with the platform writer (a download on the web).
+pub(super) fn export_scribus(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
+        let name = format!("{}.sla", st.doc.title);
+        return ask_then_export(app, &name, p.clone(), export_scribus);
+    };
+    let r = app.run("file.exportScribus", json!({}))?;
+    let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
+    let dir = std::path::Path::new(&path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let images: Vec<(String, Vec<u8>)> = r["images"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    let rel = i["path"].as_str()?;
+                    let data = designcraft_engine::cmd::base64_decode(i["base64"].as_str().unwrap_or_default());
+                    Some((rel.to_string(), data))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // The images are extra files beside the chosen document: an existing one may be a newer
+    // linked file, so it is never replaced. Refuse before writing anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    for (rel, _) in &images {
+        let path = std::path::Path::new(rel);
+        if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(format!("{rel}: refusing to write an image outside the document's folder"));
+        }
+        let dest = dir.join(path);
+        if designcraft_engine::io::exists_for_write(&dest) {
+            return Err(format!("{}: refusing to overwrite an existing image beside the document; choose an empty folder", dest.display()));
+        }
+    }
+    let write = app.services.write.as_mut().ok_or("no writer")?;
+    for (rel, data) in &images {
+        let dest = dir.join(rel);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            designcraft_engine::io::create_dir_all(parent)?;
+        }
+        write(&dest.to_string_lossy(), data)?;
+    }
+    write(&path, &bytes)?;
+    Ok(json!({"path": path, "bytes": bytes.len(), "images": images.len()}))
+}
+
 /// Export EPUB / Text: ask for a path (default extension `ext`), run `cmd` without one and write
 /// what it returns (`base64` or `text`) with the platform writer.
 /// File › Export EPUB…: export through `file.exportEpub` (the first page as its cover) to `path`,
