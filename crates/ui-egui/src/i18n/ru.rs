@@ -314,6 +314,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Delete Column", "Удалить столбец"),
     ("Delete Condition", "Удалить условие"),
     ("Delete Layer", "Удалить слой"),
+    ("Duplicate Layer \"{name}\"", "Дублировать слой «{name}»"),
     ("Delete Page", "Удалить страницу"),
     ("Delete Row", "Удалить строку"),
     ("Delete Swatch", "Удалить образец"),
