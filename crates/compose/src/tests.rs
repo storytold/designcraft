@@ -1810,13 +1810,15 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// A table keeps its column widths: one wider than the text column overflows it on the right, as
+/// in InDesign, instead of being scaled down to fit (#2171).
 #[test]
-fn table_columns_scale_to_the_text_column() {
+fn table_columns_keep_their_widths_past_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let tf = &cs.frames[0].tables[0];
-    assert!((tf.rect.width() - 200.0).abs() < 1e-6, "{}", tf.rect.width());
-    assert!((tf.cell(0, 3).unwrap().rect.x1 - 200.0).abs() < 1e-6);
+    assert!((tf.rect.width() - 600.0).abs() < 1e-6, "{}", tf.rect.width());
+    assert!((tf.cell(0, 3).unwrap().rect.x1 - 600.0).abs() < 1e-6);
     // A narrow table keeps its widths.
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), filled(2, 2, 0, 100.0));
     let cs = compose_story(&d, sid, &ComposeOptions::default());
