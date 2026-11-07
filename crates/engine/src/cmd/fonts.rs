@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use designcraft_doc::{CharAttrs, Document, Story};
+use designcraft_doc::{CharAttrs, Document, Story, Styles};
 use designcraft_fonts::FontSource;
 use serde_json::{Value, json};
 
@@ -14,7 +14,7 @@ use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "font.list", "Fonts in Document", [], None, "{} → [{family, style, characters, missing, styleMissing, source: bundled|installed|document|added (null when missing), matchStatus: exact|styleSubstitute|missing, resolvedFamily, resolvedStyle, replacementFamily, replacementStyle, fsType, restrictedLicence, bitmapOnly, noSubsetting, editable, previewPrint (the OS/2 fsType embedding bits of the face that sets the text and what they mean; null when missing or the face has no OS/2 table)}] (missing first)", has_doc, |s, _| {
+        cmd!(query "font.list", "Fonts in Document", [], None, "{} → [{family, style, characters, inStylesOnly (true when only paragraph, character or composite styles no text uses name it; characters 0), missing, styleMissing, source: bundled|installed|document|added (null when missing), matchStatus: exact|styleSubstitute|missing, resolvedFamily, resolvedStyle, replacementFamily, replacementStyle, fsType, restrictedLicence, bitmapOnly, noSubsetting, editable, previewPrint (the OS/2 fsType embedding bits of the face that sets the text and what they mean; null when missing or the face has no OS/2 table)}] (missing first)", has_doc, |s, _| {
             Ok(Value::Array(list(&s.doc()?.doc)))
         }),
         cmd!(
@@ -91,7 +91,47 @@ pub(super) struct UsedFont {
 }
 
 fn list(d: &Document) -> Vec<Value> {
-    used_fonts(d).into_iter().map(|font| json!(font)).collect()
+    let mut used = FontTally::new();
+    for_each_story(d, &mut |st| tally_story(d, st, &mut used));
+    let in_text: std::collections::BTreeSet<_> = used.keys().cloned().collect();
+    tally_styles(d, &mut used);
+    describe_fonts(d, used)
+        .into_iter()
+        .map(|font| {
+            let in_styles_only = !in_text.contains(&(font.family.clone(), font.style.clone()));
+            let mut value = json!(font);
+            value["inStylesOnly"] = json!(in_styles_only);
+            value
+        })
+        .collect()
+}
+
+/// Add (with no characters) the fonts that paragraph, character and composite styles name, so
+/// that a font only an unused style sets is listed, and can be replaced, too. A style is listed
+/// under the font style it resolves to, which is what `font.replace` matches it by.
+fn tally_styles(d: &Document, used: &mut FontTally) {
+    let styles = &d.styles;
+    let paragraph = styles.paragraph.iter().filter_map(|ps| Some((ps.chars.font_family.clone()?, para_font_style(styles, &ps.name))));
+    let character = styles.character.iter().filter_map(|cs| Some((cs.chars.font_family.clone()?, char_font_style(styles, &cs.name))));
+    for (family, style) in paragraph.chain(character) {
+        if let Some(composite) = styles.composite_font(&family) {
+            for e in &composite.entries {
+                used.entry((e.family.clone(), e.style.clone())).or_default();
+            }
+        } else {
+            used.entry((family, style)).or_default();
+        }
+    }
+}
+
+/// The font style paragraph style `name` resolves to, through its Based On chain.
+fn para_font_style(styles: &Styles, name: &str) -> String {
+    styles.resolve_para_style(name).1.font_style
+}
+
+/// The font style character style `name` sets, through its Based On chain (Regular when none does).
+fn char_font_style(styles: &Styles, name: &str) -> String {
+    styles.char_style_attrs(name).font_style.unwrap_or_else(|| "Regular".into())
 }
 
 pub(super) type FontTally = BTreeMap<(String, String), (usize, std::collections::BTreeSet<char>)>;
@@ -191,10 +231,11 @@ pub(super) fn describe_fonts(d: &Document, used: FontTally) -> Vec<UsedFont> {
     out
 }
 
-/// Replace the font in a sparse attribute set (only where the family is set); true when it changed.
-fn swap(a: &mut CharAttrs, family: &str, style: Option<&str>, to_family: &str, to_style: Option<&str>) -> bool {
+/// Replace the font in a sparse attribute set (only where the family is set); `effective` is the
+/// font style the set resolves to. True when it changed.
+fn swap(a: &mut CharAttrs, effective: &str, family: &str, style: Option<&str>, to_family: &str, to_style: Option<&str>) -> bool {
     let fam_ok = a.font_family.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(family));
-    let style_ok = style.is_none_or(|s| a.font_style.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(s)));
+    let style_ok = style.is_none_or(|s| effective.eq_ignore_ascii_case(s));
     if !fam_ok || !style_ok {
         return false;
     }
@@ -273,10 +314,12 @@ fn replace(s: &mut Session, p: &Value) -> Result<Value> {
         if styles_too {
             let st = d.styles_mut();
             for ps in &mut st.paragraph {
-                changed += swap(&mut ps.chars, &family, style.as_deref(), &to_family, to_style.as_deref()) as usize;
+                let effective = para_font_style(&original_styles, &ps.name);
+                changed += swap(&mut ps.chars, &effective, &family, style.as_deref(), &to_family, to_style.as_deref()) as usize;
             }
             for cs in &mut st.character {
-                changed += swap(&mut cs.chars, &family, style.as_deref(), &to_family, to_style.as_deref()) as usize;
+                let effective = char_font_style(&original_styles, &cs.name);
+                changed += swap(&mut cs.chars, &effective, &family, style.as_deref(), &to_family, to_style.as_deref()) as usize;
             }
             for f in &mut st.composite_fonts {
                 for e in &mut f.entries {
