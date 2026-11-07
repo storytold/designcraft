@@ -617,35 +617,37 @@ impl Document {
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
     /// Frames hit by area if they have a fill or are text/graphic frames; otherwise near the outline.
     pub fn hit_item(&self, si: usize, p: Point, tol: f64) -> Option<ItemId> {
-        let sp = self.spreads.get(si)?;
-        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
-        items.sort_by_key(|i| self.layer_rank(i.layer));
-        for it in items.into_iter().rev() {
-            let layer = self.layer(it.layer);
-            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) {
-                continue;
-            }
-            if item_hit(it, p, tol) {
-                return Some(it.id);
-            }
-        }
-        None
+        self.hit_items(si, p, tol).next()
     }
 
-    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
-    /// items. Items on hidden or locked layers can't be picked there either.
-    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
-        let sp = self.spread(sr)?;
-        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+    /// Every top-level item under `p` on document spread `si`, frontmost first; the items
+    /// [`Self::hit_item`] could pick (see [`Self::hit_stack`]).
+    pub fn hit_items(&self, si: usize, p: Point, tol: f64) -> impl Iterator<Item = ItemId> + '_ {
+        self.hit_stack(SpreadRef::Doc(si), p, tol)
+    }
+
+    /// Every top-level item under `p` on spread `sr` (spread space), frontmost first as drawn: by
+    /// layer, then stacking order. Hidden items and items on hidden or locked layers are skipped,
+    /// and on parent spreads locked items too. The one stack every pick reads: a click takes the
+    /// first, a Cmd-click steps through the rest.
+    pub fn hit_stack(&self, sr: SpreadRef, p: Point, tol: f64) -> impl Iterator<Item = ItemId> + '_ {
+        let parent = matches!(sr, SpreadRef::Parent(_));
+        let mut items: Vec<&Arc<Item>> = self.spread(sr).map(|sp| sp.items.iter().collect()).unwrap_or_default();
         items.sort_by_key(|i| self.layer_rank(i.layer));
         items
             .into_iter()
             .rev()
-            .find(|it| {
-                let layer = self.layer(it.layer);
-                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            .filter(move |it| {
+                !it.hidden && !(parent && it.locked) && !self.layer(it.layer).is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
             })
             .map(|it| it.id)
+    }
+
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either. The first of
+    /// [`Self::hit_stack`].
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        self.hit_stack(sr, p, tol).next()
     }
 
     /// The first item on a document or parent spread whose geometry isn't finite

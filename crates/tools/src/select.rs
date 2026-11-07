@@ -320,6 +320,9 @@ pub struct SelectionTool {
     /// One of several selected items to make (or stop being) the key object for Align if this
     /// press never becomes a drag.
     key_release: Option<u64>,
+    /// The object behind to select if this Cmd press on one of several selected items never
+    /// becomes a drag (see `next_behind`).
+    behind_release: Option<u64>,
     /// The loaded text cursor.
     loaded: Option<Loaded>,
     /// Frame whose live corners are being edited (diamonds shown).
@@ -336,6 +339,7 @@ impl SelectionTool {
             shift_release: None,
             key_release: None,
             anchor_release: None,
+            behind_release: None,
             loaded: None,
             live: None,
         }
@@ -417,6 +421,38 @@ impl SelectionTool {
             _ => None,
         }
     }
+}
+
+/// The object a Cmd-click at `p` selects: the one under the selected object in the stack under
+/// the pointer, or the frontmost when the selection is not one object in that stack.
+fn next_behind(cx: &ToolContext, p: Point) -> Option<ItemId> {
+    let stack = cx.hits(p);
+    let selected = match cx.selection.items.as_slice() {
+        [id] => Some(cx.doc.top_level_of(*id).unwrap_or(*id)),
+        _ => None,
+    };
+    match selected.and_then(|id| stack.iter().position(|x| *x == id)) {
+        Some(i) => stack.get((i + 1) % stack.len()).copied(),
+        None => stack.first().copied(),
+    }
+}
+
+/// Whether a press with the Selection tool steps through the objects behind (see `next_behind`):
+/// Cmd (Ctrl on Windows and Linux) without Shift.
+///
+/// The rule for such a press:
+/// - What is drawn on the current selection takes it first, as without Cmd: a loaded text cursor
+///   and text ports, path-type brackets, content and corner handles, the rotate zone and the
+///   resize handles (a Cmd-drag there scales the content).
+/// - Anywhere else on an object it steps behind, through the stack a plain click takes the first
+///   of ([`ToolContext::hits`]), on document and parent spreads alike, even over the content
+///   grabber.
+/// - A second press in quick succession, or a double click sent as such, steps again instead of
+///   editing text or entering content.
+/// - On one of several selected objects a press steps on release, so a Cmd-drag moves them all;
+///   a double click sent as such is a whole click and steps at once.
+fn steps_behind(direct: bool, ev: &PointerEvent) -> bool {
+    !direct && ev.mods.cmd && !ev.mods.shift
 }
 
 /// A frame whose content moves on its own: a placed graphic or items pasted into it.
@@ -793,6 +829,7 @@ impl SelectionTool {
         self.shift_release = None;
         self.key_release = None;
         self.anchor_release = None;
+        self.behind_release = None;
         // Type on a path: a bracket moves where the text starts or ends.
         if !ev.mods.shift
             && let Some((id, end)) = self.bracket_at(cx, p)
@@ -891,6 +928,24 @@ impl SelectionTool {
             let handle = (h + 8 - 2 * turns) % 8;
             self.drag = Drag::Resize { handle, start: p, from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b), spread: loc.spread };
             return vec![Action::Begin("Resize".into())];
+        }
+        // Cmd-click (Ctrl-click on Windows and Linux) selects the next object down under the
+        // pointer, wrapping from the bottom one back to the top, so objects hidden behind others
+        // can be picked on the canvas. A drag from there moves what it selected.
+        if steps_behind(self.direct, ev)
+            && let Some(id) = next_behind(cx, p)
+        {
+            self.drag = Drag::Pending { start: p, hit: true, content: false };
+            // On one of several selected objects, step on release, so that a Cmd-drag still
+            // moves them all.
+            if cx.selection.items.len() > 1 && cx.hit(p).is_some_and(|(_, h)| cx.selection.contains(cx.doc.top_level_of(h).unwrap_or(h))) {
+                self.behind_release = Some(id.0);
+                return vec![];
+            }
+            if cx.selection.items == [id] && !cx.selection.content {
+                return vec![];
+            }
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": false}))];
         }
         // The content grabber: select the frame's content; a drag moves it.
         if !self.direct
@@ -1060,6 +1115,7 @@ impl SelectionTool {
                 }
                 self.shift_release = None;
                 self.key_release = None;
+                self.behind_release = None;
                 if hit && !cx.selection.items.is_empty() {
                     // Direct Selection on items without content moves (or duplicates) them whole.
                     let content = content && cx.selection.items.iter().any(|i| cx.doc.item(*i).is_some_and(holds_content));
@@ -1285,8 +1341,10 @@ impl Tool for SelectionTool {
             self.drag = Drag::None;
             return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
         }
+        let cycling = steps_behind(self.direct, ev);
         // The second press of a double click on a text frame: edit its text.
-        if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
+        if !cycling
+            && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(actions) = edit_text_at(cx, p)
         {
@@ -1296,6 +1354,7 @@ impl Tool for SelectionTool {
         // The second press of a double click on a frame with content: toggle between the frame and
         // its content.
         if !self.direct
+            && !cycling
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(id) = cx.hit(p).map(|(_, id)| cx.doc.top_level_of(id).unwrap_or(id))
@@ -1317,6 +1376,7 @@ impl Tool for SelectionTool {
                 let release = self.shift_release.take();
                 let anchor_release = self.anchor_release.take();
                 let key = self.key_release.take();
+                let behind = self.behind_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
                     // A Shift-click on a selected point that never became a drag takes it away.
@@ -1336,7 +1396,9 @@ impl Tool for SelectionTool {
                     Drag::Pending { .. } => match (release, key) {
                         (Some(id), _) => vec![Action::Exec("selection.toggle".into(), json!({"id": id}))],
                         (None, Some(id)) => vec![Action::Exec("selection.key".into(), json!({"id": id}))],
-                        (None, None) => vec![],
+                        (None, None) => {
+                            behind.map(|id| Action::Exec("selection.set".into(), json!({"ids": [id], "content": false}))).into_iter().collect()
+                        }
                     },
                     Drag::Marquee { start, cur } => {
                         let r = Rect::from_points(start, cur);
@@ -1376,6 +1438,17 @@ impl Tool for SelectionTool {
                     }
                     Drag::None | Drag::Place { .. } => vec![],
                 }
+            }
+            // A double click sent as such is a whole click: with Cmd it steps behind, as the
+            // canvas's second press does, and at once, since no drag can follow it (on one of
+            // several selected objects, too).
+            PointerKind::DoubleClick if cycling => {
+                let mut out = self.pointer_down(cx, ev);
+                if let Some(id) = self.behind_release.take() {
+                    self.drag = Drag::None;
+                    out.push(Action::Exec("selection.set".into(), json!({"ids": [id], "content": false})));
+                }
+                out
             }
             PointerKind::DoubleClick => vec![],
         }
