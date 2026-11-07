@@ -942,3 +942,38 @@ fn duplicate_ids_at_the_top_of_the_range_do_not_overflow() {
     assert_eq!(all_item_ids(&d), vec![u64::MAX, u64::MAX]);
     assert!(d.check().is_err());
 }
+
+/// #2364: a story whose thread names a frame the document no longer holds (deleted while the
+/// story kept its id) made the whole file refuse to open. It opens; the story keeps its text,
+/// unplaced, and the other stories are untouched.
+#[test]
+fn a_story_whose_frame_is_gone_opens_with_its_text_unplaced() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (gone, back_cover) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "Back Cover", ParaFormat::default()).unwrap();
+    let (kept, spine) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "Spine", ParaFormat::default()).unwrap();
+    // The frame leaves the spread, but its story still threads it.
+    Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id != gone);
+    assert!(d.check().is_err(), "the file's state");
+    let back = load(&save(&d).unwrap()).unwrap();
+    back.check().unwrap();
+    assert!(back.stories[&back_cover].frames.is_empty());
+    assert_eq!(back.stories[&back_cover].text, "Back Cover");
+    assert_eq!(back.stories[&spine].frames, vec![kept]);
+    assert_eq!(back.stories[&spine].text, "Spine");
+}
+
+/// A thread that names another story's frame drops it; that frame stays in its own story.
+#[test]
+fn a_frame_threaded_into_another_story_stays_with_its_own() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (a, sa) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 200.0, 200.0), lid, "first", ParaFormat::default()).unwrap();
+    let (b, sb) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 210.0, 200.0, 400.0), lid, "second", ParaFormat::default()).unwrap();
+    d.story_mut(sa).unwrap().frames.push(b);
+    let back = load(&save(&d).unwrap()).unwrap();
+    back.check().unwrap();
+    assert_eq!(back.stories[&sa].frames, vec![a]);
+    assert_eq!(back.stories[&sb].frames, vec![b]);
+}

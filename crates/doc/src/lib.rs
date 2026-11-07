@@ -1029,6 +1029,23 @@ impl Document {
         designcraft_color::swatch::resolve(&self.swatches, swatch, tint)
     }
 
+    /// Drop from each story's thread the frames that aren't a text frame of that story: a frame
+    /// deleted while its story kept its id, or one another story owns. A file holding such a
+    /// thread opens again (#2364). The story keeps its text; with no frame left it is unplaced,
+    /// as Preflight reports it, rather than lost.
+    pub fn drop_dangling_story_frames(&mut self) {
+        let owned_by = |d: &Self, frame: ItemId, story: StoryId| {
+            d.item(frame).or_else(|| d.anchored_item(frame)).and_then(Item::text_frame).is_some_and(|t| t.story == story)
+        };
+        let dangling: Vec<(StoryId, ItemId)> =
+            self.stories.iter().flat_map(|(sid, st)| st.frames.iter().filter(|f| !owned_by(self, **f, *sid)).map(|f| (*sid, *f))).collect();
+        for (sid, frame) in dangling {
+            if let Some(st) = self.story_mut(sid) {
+                st.frames.retain(|f| *f != frame);
+            }
+        }
+    }
+
     /// Give items that reuse an earlier item's id (spreads, then parents, then items anchored in
     /// stories) fresh ids, so a file holding such duplicates opens. The first item keeps the id and
     /// what refers to it by id; a renumbered text frame takes its place in its story's thread.
