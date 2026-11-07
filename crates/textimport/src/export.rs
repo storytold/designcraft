@@ -87,13 +87,24 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
     let styles = &doc.styles;
     // Resolve every run first so the font table can be written up front.
     let ranges = story.para_ranges();
+    // The story's runs once; each paragraph takes those reaching it by binary search.
+    let all_runs: Vec<_> = story.runs().collect();
     let mut paras = Vec::with_capacity(ranges.len());
     let mut fonts: Vec<String> = Vec::new();
+    // Each font's number in the table (`fonts` keeps the table's order).
+    let mut font_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut add_font = |fonts: &mut Vec<String>, name: &str| {
+        if !font_index.contains_key(name) {
+            font_index.insert(name.to_string(), fonts.len());
+            fonts.push(name.to_string());
+        }
+    };
     for (i, r) in ranges.iter().enumerate() {
         let pf = story.paras.get(i).cloned().unwrap_or_default();
         let (pp, base) = styles.resolve_para(&pf);
         let mut runs = Vec::new();
-        for (rr, f) in story.runs() {
+        let first = all_runs.partition_point(|(rr, _)| rr.end <= r.start);
+        for (rr, f) in all_runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
             let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
             if a >= b {
                 continue;
@@ -103,13 +114,11 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
             if doc.conditions_hide(&cp.conditions) || cp.change == designcraft_doc::ChangeMark::Deleted {
                 continue;
             }
-            if !fonts.contains(&cp.font_family) {
-                fonts.push(cp.font_family.clone());
-            }
+            add_font(&mut fonts, &cp.font_family);
             runs.push((a..b, cp));
         }
-        if runs.is_empty() && !fonts.contains(&base.font_family) {
-            fonts.push(base.font_family.clone());
+        if runs.is_empty() {
+            add_font(&mut fonts, &base.font_family);
         }
         paras.push((pp, base, pf.table, runs));
     }
@@ -122,6 +131,7 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
         out.push_str(";}");
     }
     out.push_str("}\n");
+    let font_index: std::collections::HashMap<&str, usize> = fonts.iter().enumerate().map(|(i, f)| (f.as_str(), i)).collect();
     for (pp, base, table, runs) in &paras {
         let q = match pp.align {
             Align::Center => "\\qc",
@@ -139,11 +149,11 @@ pub fn rtf(doc: &Document, story: &Story) -> String {
             twips(pp.space_after)
         );
         if runs.is_empty() {
-            let f = fonts.iter().position(|x| *x == base.font_family).unwrap_or(0);
+            let f = font_index.get(base.font_family.as_str()).copied().unwrap_or(0);
             let _ = write!(out, "\\plain\\f{f}\\fs{} ", (base.size * 2.0).round() as i64);
         }
         for (r, cp) in runs {
-            let f = fonts.iter().position(|x| *x == cp.font_family).unwrap_or(0);
+            let f = font_index.get(cp.font_family.as_str()).copied().unwrap_or(0);
             let st = cp.font_style.to_ascii_lowercase();
             let _ = write!(out, "{{\\plain\\f{f}\\fs{}", (cp.size * 2.0).round() as i64);
             if st.contains("bold") || st.contains("black") || st.contains("heavy") || st.contains("semibold") {
