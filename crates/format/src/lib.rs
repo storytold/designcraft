@@ -149,9 +149,25 @@ pub fn starts_designcraft(prefix: &[u8]) -> bool {
 /// The zip entry holding the first page's picture.
 pub const PREVIEW: &str = "preview.png";
 
+/// The two bytes every zip archive starts with.
+const ZIP_MAGIC: [u8; 2] = *b"PK";
+
 /// The PNG bytes of a `.designcraft` file's preview, reading only the zip's directory and that
 /// entry. None for files without one (saved before previews, or legacy JSON) or that aren't ours.
-pub fn read_preview<R: Read + std::io::Seek>(file: R) -> Option<Vec<u8>> {
+///
+/// A file that doesn't start like a zip is refused at once: finding a directory in a file that
+/// isn't one reads all of it (a 31 MB `.indd` in the recent files took the start screen's frame
+/// with it), and no such file can hold a preview.
+pub fn read_preview<R: Read + std::io::Seek>(mut file: R) -> Option<Vec<u8>> {
+    // From the start of the file, whatever the caller's cursor is: a package just written to the
+    // same buffer is read from its beginning, not from its end. The archive reader needs 0 too.
+    file.seek(std::io::SeekFrom::Start(0)).ok()?;
+    let mut magic = [0u8; ZIP_MAGIC.len()];
+    file.read_exact(&mut magic).ok()?;
+    file.seek(std::io::SeekFrom::Start(0)).ok()?;
+    if magic != ZIP_MAGIC {
+        return None;
+    }
     let mut z = zip::ZipArchive::new(file).ok()?;
     let f = z.by_name(PREVIEW).ok()?;
     // A preview is small; a huge entry is not one we wrote.

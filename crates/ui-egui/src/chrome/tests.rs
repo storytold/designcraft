@@ -45,6 +45,19 @@ fn recent_files_are_looked_up_on_disk_every_few_seconds() {
     assert!(!super::recent_file_stat_at(&ctx, &path, 10_000.0 + super::RECENT_STAT_MS).exists, "looked up again");
 }
 
+#[test]
+fn the_first_look_at_a_recent_file_reads_it_at_once() {
+    // The clock counts from this process's first look, so at launch "now" is small: the first
+    // card must still queue a read instead of reading as just checked.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.designcraft");
+    std::fs::write(&path, b"x").unwrap();
+    let path = path.to_string_lossy().to_string();
+    let ctx = egui::Context::default();
+    let first = super::recent_file_stat_at(&ctx, &path, 10.0);
+    assert!(first.exists && first.modified.is_some(), "the first look reads the file");
+}
+
 fn app() -> crate::DesignApp {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.control_bar = true;

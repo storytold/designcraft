@@ -590,6 +590,45 @@ fn the_preview_is_read_back_without_the_document() {
     assert_eq!(read_preview(Cursor::new(Vec::new())), None);
 }
 
+/// A package just written to a buffer is read from its beginning, whatever the caller's cursor
+/// is: the preview reader must not depend on it.
+#[test]
+fn the_preview_is_read_back_from_the_start_whatever_the_cursor_is() {
+    // A caller may hand over a buffer a package was just written to: its cursor is at the end.
+    let d = Document::new(&NewDocument::default());
+    let png = b"\x89PNG fake".to_vec();
+    let mut cursor = Cursor::new(save_with_preview(&d, Some(&png)).unwrap());
+    use std::io::Seek as _;
+    assert_eq!(cursor.seek(std::io::SeekFrom::End(0)).unwrap(), cursor.get_ref().len() as u64);
+    assert_eq!(read_preview(cursor), Some(png));
+}
+
+/// A file that isn't a zip is refused after its first bytes: finding a directory in a file that
+/// has none reads all of it, and the recent files hold whatever the user opened last (a 31 MB
+/// `.indd` cost the start screen's frame a minute on a slow disk).
+#[test]
+fn a_file_that_is_not_a_zip_is_not_read_through_for_a_preview() {
+    struct Counting {
+        inner: Cursor<Vec<u8>>,
+        read: u64,
+    }
+    impl Read for Counting {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += u64::try_from(n).unwrap_or(0);
+            Ok(n)
+        }
+    }
+    impl std::io::Seek for Counting {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+    let mut counting = Counting { inner: Cursor::new(vec![b'x'; 4 << 20]), read: 0 };
+    assert_eq!(read_preview(&mut counting), None);
+    assert!(counting.read <= 16, "the reader took {} bytes of a file that isn't a zip", counting.read);
+}
+
 #[test]
 fn a_preview_that_inflates_past_its_declared_size_is_refused() {
     use std::io::Write;
