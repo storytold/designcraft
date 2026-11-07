@@ -115,27 +115,43 @@ impl Renderer {
         }
         let px = 1.0 / view.determinant().abs().sqrt().max(1e-12);
         let canvas_visible = view.inverse().transform_rect_bbox(Rect::new(0.0, 0.0, w as f64, h as f64));
-        let frames: Vec<(Frame, SpreadRef)> = spreads
+        // Canvas bounds of each placed spread: a spread's items are clipped halfway to its neighbours.
+        let placed_bounds: Vec<Option<Rect>> =
+            spreads.iter().map(|pl| doc.spread(pl.spread).map(|sp| pl.xf.transform_rect_bbox(sp.bounds()))).collect();
+        let frames: Vec<(Frame, SpreadRef, Option<Rect>)> = spreads
             .iter()
-            .filter_map(|pl| {
+            .enumerate()
+            .filter_map(|(i, pl)| {
                 let sp = doc.spread(pl.spread)?;
                 let visible = pl.xf.inverse().transform_rect_bbox(canvas_visible);
                 // Cull spreads far outside the viewport (pasteboard items may extend; allow a margin).
-                rect_overlaps(sp.bounds().inflate(2000.0, 2000.0), visible)
-                    .then_some((Frame { doc, cache, view: view * pl.xf, visible, px, opts, mt }, pl.spread))
+                rect_overlaps(sp.bounds().inflate(2000.0, 2000.0), visible).then_some((
+                    Frame { doc, cache, view: view * pl.xf, visible, px, opts, mt },
+                    pl.spread,
+                    spread_band(&placed_bounds, i, canvas_visible),
+                ))
             })
             .collect();
         // Decode the images in view that aren't cached yet together, before drawing them. The
         // canvas doesn't wait: it decodes them in the background ([`images::mip_now`]).
         if images::can_warm() && !opts.defer_images {
             let mut wanted = Vec::new();
-            for (f, sr) in &frames {
+            for (f, sr, _) in &frames {
                 wanted_images(f, *sr, &mut wanted);
             }
             images::warm(wanted);
         }
-        for (f, sr) in &frames {
+        for (f, sr, band) in &frames {
+            // Spreads are drawn top to bottom: without a clip, an item reaching above its page
+            // would paint over the spread above, already drawn (#2406).
+            if let Some(band) = band {
+                ctx.set_transform(view);
+                ctx.push_clip_layer(&kurbo::Shape::to_path(band, 0.1));
+            }
             self.draw_spread(&mut ctx, f, *sr);
+            if band.is_some() {
+                ctx.pop_layer();
+            }
         }
         ctx.flush();
         // Render straight into the returned buffer (no extra copy of the frame).
@@ -181,4 +197,29 @@ impl Renderer {
         o.background = Some([255, 255, 255, 255]);
         Some(self.render(doc, cache, &[Placed { spread: SpreadRef::Doc(si), xf: Affine::translate(Vec2::ZERO) }], (w, h), view, &o))
     }
+}
+
+/// The canvas band spread `i` may paint in: up to halfway to the spreads stacked above and below
+/// it (the same boundary the canvas uses to pick a spread), across the visible canvas. `None` when
+/// no other spread is stacked above or below.
+fn spread_band(bounds: &[Option<Rect>], i: usize, visible: Rect) -> Option<Rect> {
+    let own = (*bounds.get(i)?)?;
+    let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
+    for (j, other) in bounds.iter().enumerate() {
+        let Some(o) = *other else { continue };
+        if j == i || o.x1 <= own.x0 || o.x0 >= own.x1 {
+            continue;
+        }
+        if o.y1 <= own.y0 {
+            top = top.max((o.y1 + own.y0) * 0.5);
+        } else if o.y0 >= own.y1 {
+            bottom = bottom.min((own.y1 + o.y0) * 0.5);
+        }
+    }
+    if top == f64::NEG_INFINITY && bottom == f64::INFINITY {
+        return None;
+    }
+    let area = visible.inflate(1.0, 1.0);
+    let y0 = top.max(area.y0);
+    Some(Rect::new(area.x0, y0, area.x1, bottom.min(area.y1).max(y0)))
 }
