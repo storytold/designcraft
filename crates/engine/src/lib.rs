@@ -408,8 +408,10 @@ pub struct Session {
     pub clipboard_origin: f64,
     /// Crash-recovery folder (the app sets it; saving or closing a document removes its entry).
     pub recovery_dir: Option<std::path::PathBuf>,
-    /// Copied text with its formatting (a frameless story slice) and its plain text.
-    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String)>,
+    /// Copied text with its formatting (a frameless story slice), its plain text, and the
+    /// swatches of the document it came from (pasted into another document, the text brings the
+    /// ones it names).
+    pub text_clipboard: Option<(Arc<designcraft_doc::Story>, String, Arc<[designcraft_color::Swatch]>)>,
     /// Requests for the UI (dialogs, view changes) produced by tools/commands.
     pub ui_requests: Vec<UiRequest>,
     /// Graphic loaded in the place cursor.

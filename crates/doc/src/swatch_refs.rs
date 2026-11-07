@@ -1,19 +1,70 @@
-//! Renaming a swatch: every place the document names a swatch follows the new name.
+//! Every place a document names a swatch: renaming a swatch makes them follow the new name, and
+//! objects pasted from another document bring the swatches they name.
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use designcraft_color::SwatchValue;
+use designcraft_color::{Swatch, SwatchValue};
 
-use crate::Document;
 use crate::attrs::{CharAttrs, ParaAttrs};
 use crate::item::{Fill, Item, Stroke, TextFrameOptions};
 use crate::story::Story;
 use crate::styles::{AltFillsAttrs, AltStrokesAttrs, CellStrokeAttrs};
-use crate::table::{AltFills, AltStrokes, CellStroke, Table};
+use crate::table::{AltFills, AltStrokes, Cell, CellStroke, Table, TableOptions};
+use crate::{Document, ItemId};
 
+/// How deep into groups the walks here go: past it a hostile document's nesting is left alone
+/// rather than exhausting the stack.
+const MAX_ITEM_DEPTH: u32 = 64;
+
+/// The stories of the text frames in `it` and its members, as deep as [`Names::item`] goes, so the
+/// text that is visited belongs to the frames that are.
+fn frame_stories(it: &Item, depth: u32, out: &mut BTreeSet<crate::StoryId>) {
+    if depth > MAX_ITEM_DEPTH {
+        return;
+    }
+    if let Some(tf) = it.text_frame() {
+        out.insert(tf.story);
+    }
+    for k in it.children() {
+        frame_stories(k, depth + 1, out);
+    }
+}
+
+/// Collect, as `n` sees them, the swatch names in story `st` and the texts inside it (its table
+/// cells, footnotes and endnotes, and theirs), and into `frames` the stories of the text frames
+/// anchored in any of them. `st` is borrowed from the document and nothing of it is changed or
+/// copied whole: its own runs go through a copy that leaves its tables and notes out, and a table
+/// is read through its options and then one cell at a time, so a 250 000-cell table is never
+/// copied to be read (noted in review).
+fn collect_names(n: &Names, st: &Story, depth: u32, frames: &mut BTreeSet<crate::StoryId>) {
+    if depth > MAX_ITEM_DEPTH {
+        return;
+    }
+    let mut own = st.clone();
+    own.tables.clear();
+    own.notes.clear();
+    own.endnotes.clear();
+    n.story(&mut own);
+    for o in &st.objects {
+        frame_stories(&o.item, 0, frames);
+    }
+    for t in st.tables.values() {
+        n.table_options(&mut t.options.clone());
+        for c in &t.cells {
+            n.cell(&mut c.clone());
+            collect_names(n, &c.text, depth + 1, frames);
+        }
+    }
+    for note in st.notes.iter().chain(&st.endnotes) {
+        collect_names(n, &note.text, depth + 1, frames);
+    }
+}
+
+/// Visits every swatch name in what it walks, as `visit` (which may change it) says.
 struct Names<'a> {
-    from: &'a str,
-    to: &'a str,
+    visit: &'a dyn Fn(&mut String),
 }
 
 impl Names<'_> {
@@ -65,9 +116,7 @@ impl Names<'_> {
     }
 
     fn s(&self, v: &mut String) {
-        if v == self.from {
-            *v = self.to.to_string();
-        }
+        (self.visit)(v);
     }
     fn o(&self, v: &mut Option<String>) {
         if let Some(v) = v {
@@ -132,13 +181,21 @@ impl Names<'_> {
     }
     /// An item and everything inside it (group members). Depth-bounded for hostile documents.
     fn item(&self, it: &mut Item, depth: u32) {
-        if depth > 64 {
+        if depth > MAX_ITEM_DEPTH {
             return;
         }
         self.fill(&mut it.fill);
         self.stroke(&mut it.stroke);
         let e = &mut it.effects;
-        for c in [&mut e.drop_shadow.color, &mut e.inner_shadow.color, &mut e.outer_glow.color, &mut e.inner_glow.color, &mut e.satin.color] {
+        for c in [
+            &mut e.drop_shadow.color,
+            &mut e.inner_shadow.color,
+            &mut e.outer_glow.color,
+            &mut e.inner_glow.color,
+            &mut e.satin.color,
+            &mut e.bevel.highlight,
+            &mut e.bevel.shadow,
+        ] {
             self.s(c);
         }
         if let Some(tf) = it.text_frame_mut() {
@@ -155,7 +212,13 @@ impl Names<'_> {
         }
     }
     fn table(&self, t: &mut Table) {
-        let o = &mut t.options;
+        self.table_options(&mut t.options);
+        for c in &mut t.cells {
+            self.cell(c);
+        }
+    }
+    /// A table's own borders, alternating fills and strokes.
+    fn table_options(&self, o: &mut TableOptions) {
         self.cell_stroke(&mut o.border);
         for b in o.borders.iter_mut().flatten() {
             self.cell_stroke(b);
@@ -166,14 +229,15 @@ impl Names<'_> {
         for s in [&mut o.row_strokes, &mut o.column_strokes].into_iter().flatten() {
             self.alt_strokes(s);
         }
-        for c in &mut t.cells {
-            self.s(&mut c.fill);
-            if let Some(g) = &mut c.graphic {
-                self.fill(&mut g.fill);
-            }
-            for s in &mut c.strokes {
-                self.cell_stroke(s);
-            }
+    }
+    /// One cell's fill, strokes and image (its text is visited separately).
+    fn cell(&self, c: &mut Cell) {
+        self.s(&mut c.fill);
+        for s in &mut c.strokes {
+            self.cell_stroke(s);
+        }
+        if let Some(g) = &mut c.graphic {
+            self.fill(&mut g.fill);
         }
     }
     /// One story's own text, objects and tables (cell and note text are visited separately).
@@ -245,7 +309,12 @@ impl Document {
         if from == to {
             return;
         }
-        let n = Names { from, to };
+        let rename = |v: &mut String| {
+            if v == from {
+                *v = to.to_string();
+            }
+        };
+        let n = Names { visit: &rename };
         for w in &mut self.swatches {
             match &mut w.value {
                 SwatchValue::Tint { base, .. } => n.s(base),
@@ -284,5 +353,86 @@ impl Document {
                 }
             }
         }
+    }
+
+    /// Copy from `src` the swatches that `items` of this document (pasted from `src`) name and
+    /// this document lacks: in their fills, strokes and effects, in the text, tables and anchored
+    /// objects of their frames, and the swatches those are built from (a tint's base, a gradient's
+    /// stop swatches). A name this document already has keeps this document's definition.
+    /// Returns how many were added.
+    pub fn adopt_swatches(&mut self, src: &Document, items: &[ItemId]) -> usize {
+        let items: Vec<Item> = items.iter().filter_map(|id| self.item(*id).cloned()).collect();
+        self.adopt_item_swatches(src, &items)
+    }
+
+    /// [`Document::adopt_swatches`] for `items` given as values: objects about to be anchored in
+    /// text, which [`Document::item`] doesn't find. Their frames' stories are this document's.
+    pub fn adopt_item_swatches(&mut self, src: &Document, items: &[Item]) -> usize {
+        let used = RefCell::new(BTreeSet::new());
+        let collect = |v: &mut String| {
+            used.borrow_mut().insert(v.clone());
+        };
+        let n = Names { visit: &collect };
+        let mut stories = BTreeSet::new();
+        for it in items {
+            frame_stories(it, 0, &mut stories);
+            // A copy: collecting changes nothing, but the walk takes what it visits mutably.
+            n.item(&mut it.clone(), 0);
+        }
+        // Text frames anchored in those stories bring their own stories' text too.
+        let mut todo: Vec<crate::StoryId> = stories.iter().copied().collect();
+        let mut seen = stories;
+        while let Some(sid) = todo.pop() {
+            let Some(st) = self.story(sid) else { continue };
+            let mut inner = BTreeSet::new();
+            collect_names(&n, st, 0, &mut inner);
+            todo.extend(inner.into_iter().filter(|s| seen.insert(*s)));
+        }
+        self.adopt_named(&src.swatches, used.into_inner())
+    }
+
+    /// [`Document::adopt_swatches`] for formatted text pasted from another document: the swatches
+    /// `text` (a copied story slice, with its tables and notes) names that this document lacks,
+    /// copied from `src`, the source document's swatches when the text was copied.
+    pub fn adopt_text_swatches(&mut self, src: &[Swatch], text: &Story) -> usize {
+        let used = RefCell::new(BTreeSet::new());
+        let collect = |v: &mut String| {
+            used.borrow_mut().insert(v.clone());
+        };
+        let n = Names { visit: &collect };
+        // Read as a pasted frame's story is, without copying its tables (noted in review).
+        collect_names(&n, text, 0, &mut BTreeSet::new());
+        self.adopt_named(src, used.into_inner())
+    }
+
+    /// Copy from `src` the swatches in `used` that this document lacks, with the swatches they are
+    /// built from (a tint's base, a gradient's stop swatches), in `src`'s order so they line up in
+    /// the Swatches panel as they did there. Returns how many were added.
+    fn adopt_named(&mut self, src: &[Swatch], used: BTreeSet<String>) -> usize {
+        let find = |name: &str| src.iter().find(|w| w.name == name);
+        let mut needed = BTreeSet::new();
+        let mut todo: Vec<String> = used.into_iter().collect();
+        while let Some(name) = todo.pop() {
+            if self.swatch(&name).is_some() || !needed.insert(name.clone()) {
+                continue;
+            }
+            match find(&name).map(|w| &w.value) {
+                Some(SwatchValue::Tint { base, .. }) => todo.push(base.clone()),
+                Some(SwatchValue::Gradient { gradient }) => todo.extend(gradient.stops.iter().filter_map(|s| s.swatch.clone())),
+                _ => {}
+            }
+        }
+        let mut added = 0;
+        for w in src {
+            if needed.contains(&w.name) && self.swatch(&w.name).is_none() {
+                self.swatches.push(w.clone());
+                added += 1;
+            }
+        }
+        // An adopted gradient's stops show this document's colour for a swatch it already had.
+        if added > 0 {
+            self.refresh_gradient_stops();
+        }
+        added
     }
 }
