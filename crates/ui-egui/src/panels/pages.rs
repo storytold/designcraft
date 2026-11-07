@@ -745,7 +745,8 @@ fn empty_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.close();
     }
     if item(ui, "Move Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": cur, "to": cur})));
+        app.ui.dialog =
+            Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": cur.saturating_add(1), "to": cur.saturating_add(1)})));
         ui.close();
     }
     ui.separator();
@@ -1016,6 +1017,7 @@ fn parent_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Do
     }
 }
 
+/// Offer commands for the clicked document page, using dialog positions for editable fields.
 fn page_menu(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
@@ -1034,7 +1036,8 @@ fn page_menu(
         ui.close();
     }
     if item(ui, "Move Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": abs, "to": abs})));
+        app.ui.dialog =
+            Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": abs.saturating_add(1), "to": abs.saturating_add(1)})));
         ui.close();
     }
     if item(ui, "Duplicate Spread") {

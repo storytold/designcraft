@@ -7,6 +7,7 @@ use super::parents::{
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
+/// Register Layout commands; page-index parameters exposed to automation are zero-based.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -94,14 +95,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 ok()
             })
         }),
-        cmd!("layout.pages.move", "Move Pages…", ["Layout", "Pages"], None, "{from, to}", has_doc, |s, p| {
-            let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
-            let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
-            s.edit(|d, _| {
-                d.move_page(from, to)?;
-                ok()
-            })
-        }),
+        cmd!(
+            "layout.pages.move",
+            "Move Pages…",
+            ["Layout", "Pages"],
+            None,
+            "{from: page index (0-based), to: page index (0-based)}",
+            has_doc,
+            |s, p| {
+                let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
+                let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
+                s.edit(|d, _| {
+                    d.move_page(from, to)?;
+                    ok()
+                })
+            }
+        ),
         cmd!(
             "layout.pages.duplicateSpread",
             "Duplicate Spread",
