@@ -11,6 +11,8 @@ pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 
+/// Open a file in its default application, or with `reveal`, show it in the file manager.
+pub type OpenPathFn = Box<dyn FnMut(&std::path::Path, bool) -> Result<(), String>>;
 /// Keeps the window's frame as the app needs it; called once per frame, before it is laid out.
 pub type WindowFrameFn = Box<dyn FnMut()>;
 
@@ -40,6 +42,9 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Open a linked file in its application or show it in the file manager (Edit Original,
+    /// Reveal in Explorer / Finder). Without it (the web build), Edit Original and Reveal are greyed out.
+    pub open_path: Option<OpenPathFn>,
     /// Keeps the undecorated window borderless, so the content and the pointer stay aligned
     /// (Windows custom title bar, #1295). `None` when the window is decorated or the platform
     /// needs no fixing.

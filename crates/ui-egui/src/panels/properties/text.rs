@@ -5,6 +5,99 @@ use super::{
     more_options, outline_button, place, pos2, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs, units, vec2, widgets,
 };
 
+/// Quick Actions for a placed image, as InDesign's: Import File (place another file in the
+/// frame), Embed, Edit Original (the linked file in its default application) and Reveal in
+/// Explorer / Finder (the folder it's in). Linked-file actions are greyed for an embedded image.
+pub(super) fn image_actions(app: &mut DesignApp, ui: &mut Ui, hw: f32) {
+    let tr = |app: &DesignApp, s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
+    let asset = app.session.active().and_then(|st| {
+        let g = st.selection.items.first().and_then(|id| st.doc.item(*id)).and_then(|it| it.graphic())?;
+        st.doc.assets.get(&g.asset).map(|a| (a.id, a.link.clone()))
+    });
+    let link = asset.as_ref().and_then(|(_, l)| l.clone()).filter(|l| !l.is_empty());
+    // Edit Original and Reveal need the system's opener: a browser won't open file:// URLs, so
+    // the web build greys them out.
+    let can_open = link.is_some() && app.services.open_path.is_some();
+    let reveal = if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Reveal in Explorer"
+    } else {
+        "Show in Folder"
+    };
+    let (import, embed, edit, show) = (tr(app, "Import File"), tr(app, "Embed"), tr(app, "Edit Original"), tr(app, reveal));
+    let mut clicked = [false; 4];
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        clicked[0] = outline_button(ui, &import, hw).clicked();
+        clicked[1] = ui.add_enabled_ui(link.is_some(), |ui| outline_button(ui, &embed, hw)).inner.clicked();
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.add_enabled_ui(can_open, |ui| {
+            clicked[2] = outline_button(ui, &edit, hw).clicked();
+            clicked[3] = outline_button(ui, &show, hw).clicked();
+        });
+    });
+    if clicked[0] {
+        // With the frame selected, the file placed replaces the image (File › Place).
+        if let Err(e) = app.pick_and_open("place") {
+            app.status(e);
+        }
+    }
+    if clicked[1]
+        && let Some((id, _)) = asset
+    {
+        let _ = app.run("links.embed", json!({"asset": id.0}));
+    }
+    if let Some(path) = link.filter(|_| clicked[2] || clicked[3]) {
+        // A relative link belongs to the document: resolved against its folder, not the app's
+        // working directory. A link that can't be followed (another computer, a device) says so.
+        let document = app.session.active().and_then(|st| st.path.clone());
+        let file = match designcraft_engine::io::document_path(&path, document.as_deref().map(std::path::Path::new)) {
+            Ok(file) => file,
+            Err(e) => {
+                app.status(e.to_string());
+                return;
+            }
+        };
+        // The link comes from the document, so it isn't trusted: only an existing file goes to the
+        // system's opener, and Edit Original only opens what File › Place takes (not a program).
+        if let Err(e) = openable(&file, clicked[3]) {
+            let msg = crate::i18n::tr(&app.ui.language, e).to_string();
+            app.status(msg);
+            return;
+        }
+        // The system's opener: the file in its application, or selected in the file manager.
+        if let Some(open) = app.services.open_path.as_mut()
+            && let Err(e) = open(&file, clicked[3])
+        {
+            app.status(e);
+        }
+    }
+}
+
+/// Whether the system's opener may be handed `file` (a link resolved against the document, so
+/// not a URL, a device or another computer's): an existing file; to open (Edit Original), one of
+/// the image and document formats File › Place takes; to reveal, a name Explorer's `/select,`
+/// argument can't be broken out of. The error is the status line's message (untranslated).
+pub(super) fn openable(file: &std::path::Path, reveal: bool) -> Result<(), &'static str> {
+    if !designcraft_engine::io::is_file(file) {
+        return Err("The link isn't a file on this computer");
+    }
+    let name = file.to_string_lossy();
+    if reveal {
+        if name.contains('"') {
+            return Err("The link isn't a file on this computer");
+        }
+        return Ok(());
+    }
+    let ext = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    const PLACEABLE: [&str; 13] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "psd", "eps", "ai", "pdf"];
+    if PLACEABLE.contains(&ext.as_str()) { Ok(()) } else { Err("Edit Original opens only linked images and documents") }
+}
+
 // ---------------------------------------------------------------- Text
 
 pub(super) fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
