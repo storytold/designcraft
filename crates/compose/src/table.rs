@@ -11,7 +11,7 @@ use std::sync::Arc;
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
 use designcraft_geom::{Point, Rect};
 
-use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
+use crate::{Above, Band, ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
 
 /// A cell placed in a frame (frame inner space).
 #[derive(Clone, Debug)]
@@ -107,9 +107,10 @@ struct CellLayout {
     line_heights: Vec<f64>,
 }
 
-/// Cell text fits by its baseline, while its typographic/inline-object bounds must still
-/// remain inside the physical cell. The bottom inset can contain ordinary descenders;
-/// adding both the inset and the full descent unnecessarily grows every row.
+/// Cell text fits by its baseline, as text frames do and as in InDesign: ordinary descenders
+/// hang into the bottom inset, and past it (InDesign sizes a row of 8 pt Helvetica Neue,
+/// descent 2.3 pt, with a 2 pt bottom inset as top inset + baseline + 2 pt). Text lowered by a
+/// baseline shift or subscript, and in-flow objects, must still remain inside the physical cell.
 struct CellLineExtent {
     baseline: f64,
     bottom: f64,
@@ -152,7 +153,14 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .frames
         .first()
         .map(|f| {
-            let mut extents: Vec<_> = f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline + l.descent }).collect();
+            let mut extents: Vec<_> = f
+                .lines
+                .iter()
+                .map(|l| {
+                    let lowered = l.glyphs.iter().any(|g| g.y > 1e-9);
+                    CellLineExtent { baseline: l.baseline, bottom: l.baseline + if lowered { l.descent } else { 0.0 } }
+                })
+                .collect();
             // Line metrics include baseline shifts and super/subscript. Include the final
             // geometry of in-flow objects too, but leave custom anchors out of text flow.
             for object in &f.objects {
@@ -191,7 +199,18 @@ pub(crate) fn place_table(
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
         return false;
     }
-    let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+    // A table in a paragraph set across the columns spans them, as text does: it goes below the
+    // deepest of the columns above it, moves on to the next frame, and the columns below start
+    // under it.
+    let spanning = crate::spans_columns(pp);
+    let spans_in = |cur: &Cursor| spanning && cols[cur.fi].len() > 1;
+    let col_rect = |cur: &Cursor| {
+        let col = cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
+        if spans_in(cur) { crate::span_rect(&cols[cur.fi], col, pp.span_columns) } else { col }
+    };
+    if spans_in(cur) {
+        go_below_band(cur, out, pp);
+    }
     let mut col = col_rect(cur);
     // Column widths: scaled to fit the measure.
     let avail = (col.width() - pp.left_indent - pp.right_indent).max(1.0);
@@ -290,7 +309,9 @@ pub(crate) fn place_table(
     let footer_h = sum(body_end, nr);
     let o = &table.options;
     let mut y = match cur.last_baseline {
-        Some(b) => b + cur.last_descent + cur.pending + o.space_before,
+        // As in InDesign, the table starts at the line above's baseline (its descenders hang
+        // into the space before the table), not below them.
+        Some(b) => b + cur.pending + o.space_before,
         None => col.y0,
     };
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
@@ -339,7 +360,11 @@ pub(crate) fn place_table(
             first_frag = false;
         }
         let was_first = first_frag;
-        cur.next_column(cols);
+        if spans_in(cur) {
+            cur.next_frame();
+        } else {
+            cur.next_column(cols);
+        }
         if cur.fi >= frames.len() {
             return false;
         }
@@ -361,7 +386,38 @@ pub(crate) fn place_table(
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
+    if spans_in(cur) {
+        start_band_below(cur, out, pp, pi, y);
+    }
     true
+}
+
+/// A spanning table goes below the deepest of the columns above it, in the first column.
+fn go_below_band(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps) {
+    let deepest = out.frames[cur.fi].lines.get(cur.band.line0..).unwrap_or_default().iter().map(|l| l.baseline + l.descent).reduce(f64::max);
+    match deepest {
+        Some(bottom) => {
+            cur.col = 0;
+            cur.last_baseline = Some(bottom);
+            cur.last_descent = 0.0;
+            // As for spanning text: the space before a span adds to the space after the text above.
+            cur.pending += pp.space_before.max(pp.span_space_before);
+        }
+        // Right below another span (its band still empty): the paragraph's own space before.
+        None if cur.last_baseline.is_some() => cur.pending += pp.space_before,
+        None => {}
+    }
+}
+
+/// The columns below a spanning table (paragraph `pi`, ending at `y`) start under it. As for
+/// spanning text, they all start the larger of the paragraph's space after and its span space
+/// after below it (plus the table's own space after); the paragraph's space after is added to
+/// this column's pending space once the table is placed.
+fn start_band_below(cur: &mut Cursor, out: &ComposedStory, pp: &ParaProps, pi: usize, y: f64) {
+    let after = pp.space_after.max(pp.span_space_after);
+    cur.pending += after - pp.space_after;
+    let above = Above { top: y, baseline: y, descent: 0.0, reference: cur.last_reference, aki_below: None, pending: cur.pending + pp.space_after };
+    cur.band = Band { para: pi + 1, line0: out.frames[cur.fi].lines.len(), above: Some(above), tail: None };
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
@@ -884,7 +940,7 @@ mod height_tests {
     }
 
     #[test]
-    fn cell_bottom_inset_contains_descenders_without_growing_every_row() {
+    fn cell_bottom_inset_takes_descenders_without_growing_every_row() {
         let cell = text_cell("gyp", 8.5);
         let layout = measure(&cell, 92.0);
         let line = &layout.text.frames[0].lines[0];
@@ -934,7 +990,7 @@ mod height_tests {
     }
 
     #[test]
-    fn small_insets_still_contain_descenders_and_shifted_text() {
+    fn small_insets_contain_shifted_text_but_not_descenders() {
         for bottom in [0.0, 1.0] {
             for (shift, position) in [(0.0, Position::Normal), (-15.0, Position::Normal), (0.0, Position::Superscript), (0.0, Position::Subscript)] {
                 let mut cell = text_cell("gyp", bottom);
@@ -944,11 +1000,15 @@ mod height_tests {
                 });
                 let layout = measure(&cell, 92.0);
                 let line = &layout.text.frames[0].lines[0];
-                let expected = cell.insets[0] + line.baseline + bottom.max(line.descent);
+                // Lowered text stays inside the cell; ordinary descenders may hang out of it.
+                let lowered = shift < 0.0 || position == Position::Subscript;
+                let expected = cell.insets[0] + line.baseline + if lowered { bottom.max(line.descent) } else { bottom };
                 let composed = compose_table(single_table(cell), 200.0);
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
-                assert!((placed.rect.height() - expected).abs() < 1e-6);
-                assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
+                assert!((placed.rect.height() - expected).abs() < 1e-6, "shift {shift} {position:?} bottom {bottom}");
+                if lowered {
+                    assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
+                }
                 assert!(!placed.overset);
             }
         }
@@ -976,13 +1036,24 @@ mod height_tests {
     }
 
     #[test]
-    fn exact_height_cannot_fit_a_descender_outside_the_physical_cell() {
+    fn exact_height_fits_a_line_by_its_baseline_but_not_lowered_text() {
         let cell = text_cell("gyp", 0.0);
         let layout = measure(&cell, 92.0);
         let line = &layout.text.frames[0].lines[0];
-        let mut table = single_table(cell);
+        let height = 8.5 + line.baseline + line.descent / 2.0;
+        let mut table = single_table(cell.clone());
         table.rows[0].mode = RowHeightMode::Exactly;
-        table.rows[0].height = 8.5 + line.baseline + line.descent / 2.0;
+        table.rows[0].height = height;
+        let composed = compose_table(table, 200.0);
+        let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+        assert!(!placed.overset);
+        assert_eq!(placed.text.frames[0].lines.len(), 1);
+        // A line lowered by a baseline shift doesn't fit the same row.
+        let mut low = cell;
+        low.text.format_chars(0..3, |f| f.over.baseline_shift = Some(-15.0));
+        let mut table = single_table(low);
+        table.rows[0].mode = RowHeightMode::Exactly;
+        table.rows[0].height = height;
         let composed = compose_table(table, 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
         assert!(placed.overset);
@@ -1031,7 +1102,7 @@ mod height_tests {
     }
 
     #[test]
-    fn vertical_alignment_uses_baseline_fit_without_losing_descenders() {
+    fn vertical_alignment_uses_baseline_fit() {
         for bottom in [0.0, 8.5] {
             for (vj, expected_shift) in
                 [(VerticalJustification::Top, 0.0), (VerticalJustification::Center, 10.0), (VerticalJustification::Bottom, 20.0)]
@@ -1047,7 +1118,7 @@ mod height_tests {
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
                 let line = &placed.text.frames[0].lines[0];
                 assert!((placed.origin.y - placed.clip.y0 - expected_shift).abs() < 1e-6);
-                assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
+                assert!(placed.origin.y + line.baseline <= placed.clip.y1 + 1e-6);
                 assert!(!placed.overset);
             }
         }
