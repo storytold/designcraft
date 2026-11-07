@@ -10,6 +10,7 @@ use super::*;
 mod assets;
 mod clipping;
 mod decorations;
+mod empty_fitting;
 mod facing_ltr;
 mod frame_grid;
 mod index_sort;

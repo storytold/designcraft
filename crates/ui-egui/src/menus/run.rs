@@ -226,14 +226,23 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .unwrap_or(Value::Null))
         }
         "app.fittingOptions" => {
-            let g = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).and_then(|it| it.graphic().cloned()));
-            let Some(g) = g else { return Some(Err("select a frame with a placed graphic".into())) };
-            let fitting = serde_json::to_value(g.auto_fit).unwrap_or(json!("none"));
+            let opts = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id))).and_then(|it| {
+                if let Some(g) = it.graphic() {
+                    Some((g.auto_fit != designcraft_doc::Fitting::None, g.auto_fit, g.fit_align, g.crop))
+                } else if matches!(it.content, designcraft_doc::Content::Unassigned) {
+                    let f = it.empty_fitting.unwrap_or_default();
+                    Some((f.auto_fit, f.fitting, f.align, f.crop))
+                } else {
+                    None
+                }
+            });
+            let Some((auto_fit, fitting, align, crop)) = opts else { return Some(Err("select a graphic frame or an empty frame".into())) };
+            let fitting = serde_json::to_value(fitting).unwrap_or(json!("none"));
             let c = |v: f64| json!(designcraft_geom::format_measure(v, designcraft_geom::Unit::Points));
             app.ui.dialog = Some(crate::dialogs::Dialog::new(
                 "fittingOptions",
-                json!({"autoFit": g.auto_fit != designcraft_doc::Fitting::None, "fitting": fitting, "align": g.fit_align,
-                    "cropTop": c(g.crop[0]), "cropLeft": c(g.crop[1]), "cropBottom": c(g.crop[2]), "cropRight": c(g.crop[3])}),
+                json!({"autoFit": auto_fit, "fitting": fitting, "align": align,
+                    "cropTop": c(crop[0]), "cropLeft": c(crop[1]), "cropBottom": c(crop[2]), "cropRight": c(crop[3])}),
             ));
             Ok(Value::Null)
         }

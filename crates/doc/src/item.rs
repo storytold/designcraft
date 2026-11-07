@@ -21,8 +21,8 @@ pub use effects::{
     OuterGlow, Satin,
 };
 pub use graphic::{
-    ButtonAction, ClippingKind, ClippingPath, ExportOptions, FieldKind, Fitting, FormField, GRAPHIC_LAYER_RENDERING_WARNING, Graphic,
-    GraphicLayerOptions, LiveCaption, MAX_CLIP_ANCHORS, MediaOptions, ObjectLiquid, media_kind, media_mime,
+    ButtonAction, ClippingKind, ClippingPath, EmptyFrameFitting, ExportOptions, FieldKind, Fitting, FormField, GRAPHIC_LAYER_RENDERING_WARNING,
+    Graphic, GraphicLayerOptions, LiveCaption, MAX_CLIP_ANCHORS, MediaOptions, ObjectLiquid, media_kind, media_mime,
 };
 pub use paint::{
     Arrowhead, Cap, Fill, Join, MAX_DASH, MAX_DASH_ENTRIES, MAX_DASH_PERIODS, MIN_DASH, Stroke, StrokeAlign, StrokeStyleDef, StrokeType,
@@ -79,6 +79,9 @@ pub struct Item {
     pub object_style: String,
     #[serde(default)]
     pub content: Content,
+    /// Frame Fitting Options of a frame with no graphic in it (see [`EmptyFrameFitting`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_fitting: Option<EmptyFrameFitting>,
     /// For items on a document page that override a parent-page item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overrides: Option<ItemId>,
@@ -169,6 +172,7 @@ impl Item {
             nonprinting: false,
             object_style: crate::styles::NO_OBJECT_STYLE.into(),
             content: Content::Unassigned,
+            empty_fitting: None,
             overrides: None,
             label: String::new(),
             alt_text: String::new(),

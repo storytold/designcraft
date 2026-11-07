@@ -112,7 +112,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Hyperlinks and Bookmarks panels (Window ▸ Interactive): new from the selection, edit (`hyperlink.edit`), go to source (`hyperlink.goToSource`), rename bookmarks (`bookmark.rename`), go to page, delete.
 - Nested line styles (`nestedLineStyles` paragraph attribute, Paragraph Style Options › Drop Caps and Nested Styles, IDML AllNestedLineStyles): the first lines restyle until the line breaks settle.
 - User dictionary hyphenation exceptions (`hyphenation.addException/removeException/list`, Edit ▸ Spelling ▸ User Dictionary): `ex~am~ple` breaks only at `~`, a plain word never hyphenates.
-- Frame Fitting Options (`object.fittingOptions`, Object ▸ Fitting ▸ Frame Fitting Options…): Auto-Fit refits on resize, fitting, Align From reference point, crop amounts; IDML FrameFittingOption.
+- Frame Fitting Options (`object.fittingOptions`, Object ▸ Fitting ▸ Frame Fitting Options…): Auto-Fit refits on resize, fitting, Align From reference point, crop amounts, also on an empty frame (applied when a graphic is placed into it); IDML FrameFittingOption.
 - Paragraph borders (per-side weights, colour, tint, offsets) and shading offsets, drawn per column part of split paragraphs (also when overset); Paragraph panel controls; IDML ParagraphBorder*/ParagraphShading*Offset.
 - Font menu: search, favourites (stars, Show Favorites Only; `favoriteFonts` preference) and each family previewed in its own face. Western (and other-script) families come first, then Japanese, Simplified Chinese, Traditional Chinese and Korean ones, each group alphabetical and set off by a separator; the group comes from the font's own data (`meta` languages, family names in a CJK language, OS/2 code pages, else what it covers), read once (installed fonts by the font scan, without loading them). CJK families show their native names, the English name on hover; Preferences › Type › Show Font Names in English (`showFontNamesInEnglish`) shows English names throughout. Search matches either name; documents store the English name. Every family list (Character panel, Control bar, Properties, style dialogs, Find Font, Glyphs) follows this order.
 - Application preferences (engine `Prefs`) now persist across launches (desktop: prefs.json beside ui.json).
@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-06** · An empty frame keeps its own Frame Fitting Options: `object.fittingOptions` / `object.clearFittingOptions` act on it, placing a graphic into it (File › Place into a frame, or the loaded place cursor) applies them instead of filling the frame, and IDML and `.designcraft` (format 5, only for documents that have them) keep them. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
