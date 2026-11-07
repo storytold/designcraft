@@ -354,6 +354,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Create as a grid", "Létrehozás rácsként"),
     ("Create new page", "Új oldal létrehozása"),
     ("Create new style", "Új stílus létrehozása"),
+    ("Croatian", "Horvát"),
     ("Crop", "Vágás"),
     ("Crop Amount", "Vágás mértéke"),
     ("Crop Marks", "Vágójelek"),

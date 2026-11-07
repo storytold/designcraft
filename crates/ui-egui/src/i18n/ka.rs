@@ -1485,6 +1485,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Chinese", "ჩინური"),
     ("Constrain proportions for width and height", "სიგანისა და სიმაღლის პროპორციის შენარჩუნება"),
     ("Corner", "კუთხე"),
+    ("Croatian", "ხორვატული"),
     ("Custom", "მორგებული"),
     ("Czech", "ჩეხური"),
     ("Danish", "დანიური"),

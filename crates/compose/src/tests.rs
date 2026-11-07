@@ -4629,6 +4629,25 @@ fn norwegian_text_gets_norwegian_hyphenation() {
 }
 
 #[test]
+fn croatian_text_gets_croatian_hyphenation() {
+    let text = "udžbenik njegovati rastavljanje hrvatski ljubav najbolji izvor";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 76.0, 700.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Croatian".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let breaks: Vec<&str> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!breaks.is_empty(), "Croatian text is hyphenated");
+    for b in breaks {
+        let tail = b.rsplit(' ').next().unwrap_or(b);
+        let whole = text[text.find(b).unwrap() + b.len() - tail.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let hr = hyphen::Lang::for_language("Croatian").unwrap();
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), hr);
+        assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a hyph-hr point");
+    }
+}
+
+#[test]
 fn cjk_aki_adds_space_without_scaling_outlines() {
     let (mut d, sid, _) = doc_with("AB", Rect::new(0.0, 0.0, 300.0, 100.0), ParaAttrs::default());
     let old = compose_story(&d, sid, &ComposeOptions::default());

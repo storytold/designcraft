@@ -14,6 +14,13 @@
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
 //! 1901 and unknown German variants have no automatic hyphenation; no old-spelling set is bundled.
+//! Croatian uses Igor Marinović's `hyph-hr.tex` (1994–2015) from hyph-utf8, LPPL or permissive
+//! data-file licence, taken under the permissive licence (see NOTICE). The patterns are
+//! syllable-based: the digraphs dž, lj and nj are single letters and stay whole, prefixes detach,
+//! and syllabic r carries a syllable (hr-vat-ski). The bundled set systematically splits the long
+//! jat reflex ije (`a1je` … `u1je`), where the strict pravopis keeps it whole (rije-ka, mlije-ko);
+//! `croatian_long_jat_deviation_is_pinned` pins this behaviour — InDesign 2026 shows the same
+//! cvi-jet/bi-jel breaks — so a fix belongs upstream in hyph-utf8, not here.
 //!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
@@ -540,6 +547,74 @@ mod tests {
         assert_eq!(h("Universidade"), "Uni-ver-si-dade");
         assert_eq!(h("experiência"), "ex-pe-ri-ên-cia");
         assert_eq!(h("pós-graduação"), "pós-gra-du-a-ção", "each part of a compound");
+    }
+
+    #[test]
+    fn croatian_uses_the_hyph_hr_patterns() {
+        let hr = Lang::for_language("Croatian").unwrap();
+        assert_eq!(hr, Lang::Patterns(hypher::Lang::Croatian));
+        for name in ["$ID/Croatian", "hr", "hr_HR", "hr-HR", " croatian "] {
+            assert_eq!(Lang::for_language(name), Some(hr), "{name}");
+        }
+        assert_ne!(hr, Lang::English);
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), hr);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        // Syllable breaks; the digraphs dž, lj and nj are single letters and stay whole.
+        assert_eq!(h("udžbenik"), "udž-be-nik");
+        assert_eq!(h("ljubav"), "lju-bav");
+        assert_eq!(h("njegovati"), "nje-go-va-ti");
+        assert_eq!(h("majka"), "maj-ka");
+        assert_eq!(h("trava"), "tra-va");
+        assert_eq!(h("rastavljanje"), "ras-tav-lja-nje");
+        // Syllabic r carries a syllable; one-syllable words stay whole.
+        assert_eq!(h("hrvatski"), "hr-vat-ski");
+        assert_eq!(h("prst"), "prst");
+        assert_eq!(h("vrt"), "vrt");
+        assert_eq!(h("trg"), "trg");
+        // Prefixes detach; the short jat reflex je after a consonant stays whole.
+        assert_eq!(h("najbolji"), "naj-bo-lji");
+        assert_eq!(h("izvor"), "iz-vor");
+        assert_eq!(h("vjetar"), "vje-tar");
+        assert_eq!(h("pjesma"), "pje-sma");
+        assert_eq!(h("dječak"), "dje-čak");
+        assert_eq!(h("mjesec"), "mje-sec");
+        assert_eq!(h("sunce"), "sun-ce");
+        assert_eq!(h("prozor"), "pro-zor");
+        assert_eq!(h("PROZOR"), "PRO-ZOR");
+        // No elision in Croatian: an apostrophe word gets no breaks.
+        assert_eq!(h("Rock'n'Roll"), "Rock'n'Roll");
+    }
+
+    /// The bundled patterns split the long jat reflex ije (`a1je` … `u1je`) where the strict pravopis
+    /// (gramatika.hr, pravopis.hr) keeps it whole: rije-ka, mlije-ko, and one-syllable cvijet/bijel.
+    /// InDesign 2026's Croatian dictionary shows the same cvi-jet/bi-jel breaks (observed black-box),
+    /// so this pins the bundled behavior; a fix belongs upstream in hyph-utf8, not in the app.
+    #[test]
+    fn croatian_long_jat_deviation_is_pinned() {
+        let hr = Lang::for_language("Croatian").unwrap();
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), hr);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h("rijeka"), "ri-je-ka");
+        assert_eq!(h("mlijeko"), "mli-je-ko");
+        assert_eq!(h("tijelo"), "ti-je-lo");
+        assert_eq!(h("cvijet"), "cvi-jet");
+        assert_eq!(h("bijel"), "bi-jel");
+    }
+
+    #[test]
+    fn croatian_respects_paragraph_limits() {
+        let hr = Lang::for_language("hr").unwrap();
+        let lim = Limits { after_first: 4, before_last: 3, ..Limits::default() };
+        assert_eq!(hyphen_points_in("udžbenik", &lim, hr), vec![5]);
+        let lim = Limits { min_word: 9, ..Limits::default() };
+        assert!(hyphen_points_in("udžbenik", &lim, hr).is_empty());
+        let lim = Limits { capitalized: false, ..Limits::default() };
+        assert!(hyphen_points_in("UDŽBENIK", &lim, hr).is_empty());
+        assert!(!hyphen_points_in("udžbenik", &lim, hr).is_empty());
     }
 
     #[test]
