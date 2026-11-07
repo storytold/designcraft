@@ -37,7 +37,6 @@ designcraft-tools = { path = "crates/tools" }
 designcraft-engine = { path = "crates/engine" }
 designcraft-ui-egui = { path = "crates/ui-egui" }
 designcraft-mcp = { path = "crates/mcp" }
-designcraft-testkit = { path = "crates/testkit" }
 
 # foundation
 kurbo = { version = "0.13", features = ["serde"] }
