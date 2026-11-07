@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (Links panel laid out as InDesign's; the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -32,6 +32,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | the Pen previews the segment while a smooth point is dragged out and curves the rubber band out of a smooth point's direction line (`pen_previews_the_curve_while_dragging_and_after_a_smooth_point`, #1438); moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
 | Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
+| Links panel: rows with thumbnail, status and page; Relink / Go To Link / Update Link footer; Link Info | ✓ | ✓ the same layout; Embed Link, Relink to Folder and Update All Links behind the footer's last button; no Relink from CC Libraries or Edit Original | ~ | Learn Skills Daily course, chapter 13 |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
@@ -56,7 +57,7 @@ basics of editing fail for too many users on Windows and Linux.
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |
 | Window controls, full screen | ✓ | ~ | ~ | misaligned on macOS (#333) |
 
-Counted 2026-10-11: 28 rows, 12 ✓, 14 ~, 2 ✗ → **68% presence**, scoring ✓ = 1, ~ = 0.5. Ready
+Counted 2026-10-21: 30 rows, 14 ✓, 15 ~, 1 ✗ → **72% presence**, scoring ✓ = 1, ~ = 0.5. Ready
 for real work is lower, ~45%, because threading is missing and three of the ~ rows (copy/paste,
 context menus, typing at a caret) are things a layout artist does every minute, and their failures stop work.
 
@@ -134,6 +135,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-21 | minor | Added the Links panel row (~: InDesign's layout, no CC Libraries relink or Edit Original); recounted the checklist |
 | 2026-11-02 | patch | Pen: while a smooth point's direction line is dragged out, the segment it shapes (from the previous anchor's out handle to the new anchor's in handle) shows live under the pointer; after a smooth point the rubber band to the pointer curves out of its direction line, a corner's stays straight (#1438, first item; the Option/Alt handle split is the other). Test: `pen_previews_the_curve_while_dragging_and_after_a_smooth_point` |
 | 2026-11-02 | patch | Text variables: a Custom variable defined with a number (a typed `2026` reaches `variables.define` as one) shows its digits instead of nothing (#2093, first item); `text` takes a string, a number or a boolean. Test: `variables::tests::a_custom_variable_defined_with_a_number_shows_its_digits` |
 | 2026-10-30 | minor | Dialogs: Table of Contents title field keeps its edit width; More Options toggles without losing hidden settings |
