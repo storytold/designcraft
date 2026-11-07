@@ -94,7 +94,21 @@ fn from_flo(paths: &[SimpleBezierPath]) -> PathData {
 
 /// Combine `shapes` (back to front, all in one coordinate space). `None` when nothing is left.
 pub fn combine(op: Op, shapes: &[PathData]) -> Option<PathData> {
-    let flo: Vec<Vec<SimpleBezierPath>> = shapes.iter().map(to_flo).filter(|p| !p.is_empty()).collect();
+    let all: Vec<Vec<SimpleBezierPath>> = shapes.iter().map(to_flo).collect();
+    // The base shape is chosen by position; a degenerate base leaves nothing.
+    let base = match op {
+        Op::Subtract => all.first(),
+        Op::MinusBack => all.last(),
+        _ => None,
+    };
+    if base.is_some_and(|b| b.is_empty()) {
+        return None;
+    }
+    // A shape with no area shares none with the others: Intersect leaves nothing.
+    if op == Op::Intersect && all.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let flo: Vec<Vec<SimpleBezierPath>> = all.into_iter().filter(|p| !p.is_empty()).collect();
     let (first, rest) = flo.split_first()?;
     let union = |v: &[Vec<SimpleBezierPath>]| -> Vec<SimpleBezierPath> {
         let mut acc: Vec<SimpleBezierPath> = Vec::new();
@@ -166,6 +180,15 @@ mod tests {
         assert_eq!(ex.subpaths.len(), 2);
         let far = shapes::rectangle(Rect::new(500.0, 500.0, 510.0, 510.0));
         assert!(combine(Op::Intersect, &[a, far]).is_none());
+    }
+
+    #[test]
+    fn degenerate_base_shape_leaves_nothing() {
+        let dot = PathData::new(vec![SubPath::new(vec![Anchor::corner(Point::new(5.0, 5.0))], false)]);
+        let rect = shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert!(combine(Op::Subtract, &[dot.clone(), rect.clone()]).is_none());
+        assert!(combine(Op::Intersect, &[rect.clone(), dot.clone()]).is_none());
+        assert!(combine(Op::MinusBack, &[rect, dot]).is_none());
     }
 
     #[test]
