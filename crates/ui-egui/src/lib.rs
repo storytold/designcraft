@@ -32,6 +32,7 @@ pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod object_style_dialog;
 pub mod package_dialog;
 mod page_history;
 mod panel_docking;
