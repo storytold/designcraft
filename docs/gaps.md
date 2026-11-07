@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-24 · **Change:** minor (placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (EPS through DesignCraft's own PostScript interpreter; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -221,14 +221,14 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Embedded IDML applies variants inside table-cell and footnote text; endnote variants are prepared,
   but IDML endnote structures/artwork are not serialized yet. IDML layer variants are embedded
   copies; external-only export is rejected when choices would be lost.
-- **Missing:** EPS is shown through its preview only (no PostScript interpreter); PSD layer
-  comps beyond visibility; the Clipping Path Options dialog (tracing into a clip that keeps the
+- **Missing:** (EPS runs through DesignCraft's own PostScript interpreter, shown and exported as
+  vectors.) PSD layer comps beyond visibility; the Clipping Path Options dialog (tracing into a clip that keeps the
   frame, Threshold/Tolerance/Inset Frame preview, picking an alpha channel or a path saved in a
   TIFF/PSD); Text Wrap › Same As Clipping following an imported clipping path; Edit Original / Edit With; PDF placed as editable vectors (#227, #24);
   QuarkXPress import (#73); applying a swatch to a selected greyscale or bitmap image (Direct
   Selection + Swatches). A swatch already on the image (IDML `<Image FillColor>`) colours it on
   screen and in PDF and IDML export (#1094).
-- **Estimate:** 30–60 h (PostScript interpreter is a large separate project: +80–150 h).
+- **Estimate:** 30–60 h, plus 20–40 h for the rest of the PostScript imaging model.
 
 ### 20. Performance on large documents (P)
 - **Missing:** incremental composition (recompose from the edited paragraph; 8 ms keystroke

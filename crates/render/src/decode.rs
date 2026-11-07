@@ -8,7 +8,14 @@ pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
 
 /// [`decode_pixmap`] for page `page` of a PDF (other formats have one page).
 pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
-    // Documents retain the EPS source; only display its TIFF preview or placeholder.
+    // Documents retain the EPS source. It draws through its PostScript (as a PDF); one that
+    // won't run shows its TIFF preview or placeholder.
+    if designcraft_postscript::is_eps(bytes)
+        && let Some(pdf) = designcraft_postscript::cached_pdf(bytes)
+        && let Some(pm) = render_pdf_page(&pdf, 0, 3000)
+    {
+        return Some(pm);
+    }
     let proxy = if designcraft_images::is_eps(bytes) { Some(designcraft_images::eps_proxy(bytes)?.0) } else { None };
     let bytes = proxy.as_deref().unwrap_or(bytes);
     if is_pdf(bytes) {

@@ -1,5 +1,5 @@
-//! EPS: there's no general PostScript interpreter here, so a placed EPS shows (and prints)
-//! through a proxy, as InDesign does on screen: the file's TIFF preview when it has one, else the
+//! EPS: the renderer and the PDF export draw an EPS through `designcraft-postscript`. When its
+//! program can't run, it shows (and prints) through a proxy: the file's TIFF preview when it has one, else the
 //! rectangles of a simple one drawn here (InDesign's QR codes), else a placeholder the size of its
 //! bounding box.
 

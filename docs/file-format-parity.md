@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** minor (package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (EPS through DesignCraft's own PostScript interpreter; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -71,7 +71,7 @@ external PDF/X certification.
 | JPEG, PNG, GIF, BMP, WebP | | ✓ | ✓ embedded ICC profiles applied on screen; CMYK JPEGs (incl. YCCK) through their own profile or the working CMYK space | CMYK JPEG/TIFF keep inks in PDF (#35) | 2% |
 | TIFF | `.tif` | ✓ incl. CMYK, alpha, indexed colour, paths | ✓ incl. CMYK, embedded ICC profiles on screen | clipping paths from 8BIM resources unverified | 1% |
 | PSD | `.psd` | ✓ layers, comps, alpha, paths | ~ composite + Object Layer Options; embedded ICC profile and managed CMYK on screen | layer comps partial | 1% |
-| EPS | `.eps` | ✓ (PostScript) | ~ preview only (no interpreter) | | <1% |
+| EPS | `.eps` | ✓ (PostScript) | ~ own PostScript interpreter: vectors, CMYK and spot colours, images, smooth shadings and meshes, tiling patterns, Type 1/Type 3/Type 42/CFF and CID-keyed (CJK, horizontal and vertical) text | | <1% |
 | SVG | `.svg` | ✓ | ✓ (usvg) | | <1% |
 | HEIC | `.heic` | ✓ | ✗ | | <1% |
 | Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), bullets and numbering from `numbering.xml` (#626; levels become list levels, parent numbers in a label level references), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |

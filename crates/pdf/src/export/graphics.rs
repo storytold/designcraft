@@ -187,10 +187,23 @@ impl Exporter<'_> {
         true
     }
 
-    /// A placed PDF goes in as vectors (the page as a form XObject). `false` when `g` is not one.
+    /// A placed PDF goes in as vectors (the page as a form XObject), and so does an EPS, through
+    /// the PDF its PostScript paints. `false` when `g` is neither, or an EPS whose PostScript
+    /// won't run (it goes in as its preview image).
     fn graphic_placed_pdf(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic, hidden: Option<&[String]>) -> bool {
         let doc = self.doc;
-        let Some(asset) = doc.assets.get(&g.asset).filter(|asset| asset.data.starts_with(b"%PDF")) else { return false };
+        let Some(placed) = doc.assets.get(&g.asset) else { return false };
+        let eps_asset;
+        let asset = if designcraft_postscript::is_eps(&placed.data) {
+            let Some(pdf) = designcraft_postscript::cached_pdf(&placed.data) else { return false };
+            eps_asset = designcraft_doc::Asset { data: pdf, mime: "application/pdf".into(), page: 0, ..(**placed).clone() };
+            &eps_asset
+        } else {
+            &**placed
+        };
+        if !asset.data.starts_with(b"%PDF") {
+            return false;
+        }
         // Cropped to a box: the whole page, placed so that the box spans graphic space.
         let shown = asset.shown_box();
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
