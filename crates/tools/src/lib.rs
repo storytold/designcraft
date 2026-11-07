@@ -314,11 +314,43 @@ impl ToolContext<'_> {
         self.doc.item(id)
     }
 
+    /// The selected items with the transform from their own space to the canvas, found in one walk
+    /// of the document (a search per item made a big selection quadratic). Same first match per
+    /// id as `Document::find`, in selection order.
+    fn selected_with_canvas_xf(&self) -> Vec<(&Item, Affine)> {
+        let mut want: std::collections::HashSet<ItemId> = self.selection.items.iter().copied().collect();
+        let mut found: std::collections::HashMap<ItemId, (&Item, Affine)> = std::collections::HashMap::new();
+        fn walk<'a>(
+            items: &'a [std::sync::Arc<Item>],
+            xf: Affine,
+            want: &mut std::collections::HashSet<ItemId>,
+            found: &mut std::collections::HashMap<ItemId, (&'a Item, Affine)>,
+        ) {
+            for it in items {
+                if want.is_empty() {
+                    return;
+                }
+                if want.remove(&it.id) {
+                    found.insert(it.id, (it, xf));
+                }
+                walk(it.children(), xf * it.xf, want, found);
+            }
+        }
+        for r in self.doc.spread_refs() {
+            if want.is_empty() {
+                break;
+            }
+            if let Some(sp) = self.doc.spread(r) {
+                walk(&sp.items, self.layout.xf(r), &mut want, &mut found);
+            }
+        }
+        self.selection.items.iter().filter_map(|id| found.get(id).copied()).collect()
+    }
+
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
-        for id in &self.selection.items {
-            let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
+        for (it, xf) in self.selected_with_canvas_xf() {
             let b = xf.transform_rect_bbox(it.bounds());
             r = Some(r.map_or(b, |r| r.union(b)));
         }
@@ -328,8 +360,7 @@ impl ToolContext<'_> {
     /// Canvas union of the selection's visible bounds. A group uses the alignment box.
     pub fn selection_visible_bounds(&self) -> Option<Rect> {
         let mut acc: Option<Rect> = None;
-        for id in &self.selection.items {
-            let (Some(it), Some(xf)) = (self.doc.item(*id), self.item_canvas_xf(*id)) else { continue };
+        for (it, xf) in self.selected_with_canvas_xf() {
             let Some(local) = crate::snap::moving_bounds(it) else { continue };
             let b = xf.transform_rect_bbox(local);
             if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()) {

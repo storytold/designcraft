@@ -526,6 +526,10 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
     }
     let mover = interval_on(req.rect, axis)?;
     let boxes = spacing_intervals(cx, req, axis, &mover);
+    // Every box is compared with every other (quadratic on each pointer move): none past the cap.
+    if boxes.len() > MAX_SPACING_BOXES {
+        return None;
+    }
     let stationary = stationary_gaps(&boxes);
     let low = nearest_side(&mover, &boxes, None, true);
     let high = nearest_side(&mover, &boxes, None, false);
@@ -574,6 +578,9 @@ fn spacing_intervals(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, mover:
     }
     out
 }
+
+/// Most boxes on the mover's band that smart spacing compares; a spread with more has no spacing guides.
+const MAX_SPACING_BOXES: usize = 2048;
 
 struct Interval {
     lo: f64,
@@ -1213,6 +1220,8 @@ fn offer_parent_items(best: &mut Option<Best>, cx: &ToolContext, req: &SnapReque
 fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
     let Some(sp) = doc.spread(spread) else { return Vec::new() };
     let mut out = Vec::new();
+    // Pages times parent items can be many times what the file stores: no more than this are listed.
+    let room = MAX_PARENT_OCCURRENCES;
     for (pi, page) in sp.pages.iter().enumerate() {
         if !page.show_parent_items {
             continue;
@@ -1233,12 +1242,18 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
                 if parent.pages.len() > 1 && parent.page_at_x(item.bounds().center().x) != Some(ppage) {
                     continue;
                 }
+                if out.len() >= room {
+                    return out;
+                }
                 out.push((item.as_ref(), dx));
             }
         }
     }
     out
 }
+
+/// Parent item occurrences snapping considers on one spread.
+const MAX_PARENT_OCCURRENCES: usize = 100_000;
 
 fn shift_x(r: Rect, dx: f64) -> Rect {
     Rect::new(r.x0 + dx, r.y0, r.x1 + dx, r.y1)
