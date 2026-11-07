@@ -54,6 +54,7 @@ mod prepress;
 mod print;
 mod qr;
 mod rulers;
+mod scribus;
 mod scripts;
 mod select;
 pub mod spelling;
@@ -175,6 +176,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file::specs());
         v.extend(file_info::specs());
         v.extend(interchange::specs());
+        v.extend(scribus::specs());
         v.extend(export::specs());
         v.extend(export_batch::specs());
         v.extend(edit::specs());

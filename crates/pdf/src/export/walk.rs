@@ -299,7 +299,7 @@ impl Exporter<'_> {
         if frame_art {
             s.start_tagged(ContentTag::Artifact(Artifact::new(ArtifactType::Other, None)));
         }
-        self.draw_drop_shadow(s, it, parent, xf, path);
+        self.draw_drop_shadow(s, it, parent, xf, bp, path, page);
         s.push_transform(&tf(xf));
         if !it.fill.is_none()
             && let Some(p) = path
@@ -327,8 +327,10 @@ impl Exporter<'_> {
         }
     }
 
-    /// Draw a cached coverage mask or the offset item silhouette as the drop shadow.
-    fn draw_drop_shadow(&mut self, s: &mut Surface, it: &Item, parent: Affine, xf: Affine, path: Option<&Path>) {
+    /// Draw a cached coverage mask or the offset item silhouette as the drop shadow (like the
+    /// renderer): the shape when the object paints its area, else the text and the stroke.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_drop_shadow(&mut self, s: &mut Surface, it: &Item, parent: Affine, xf: Affine, bp: &BezPath, path: Option<&Path>, page: Option<usize>) {
         let ds = &it.effects.drop_shadow;
         if ds.on
             && let Some(mask) = self.opts.shadows.get(&it.id)
@@ -345,11 +347,60 @@ impl Exporter<'_> {
             let off = Vec2::new(-a.cos() * ds.distance, a.sin() * ds.distance);
             s.push_transform(&tf(Affine::translate(off) * xf));
             s.set_stroke(None);
-            s.set_fill(Some(solid_fill(c, ds.opacity)));
-            s.draw_path(p);
+            s.set_fill(Some(solid_fill(c.clone(), ds.opacity)));
+            match &it.content {
+                Content::Text(tfr) if it.fill.is_none() => self.draw_text_shadow(s, it, tfr, c, bp, p, page),
+                _ => s.draw_path(p),
+            }
             s.set_fill(None);
             s.pop();
         }
+    }
+
+    /// The shadow of a text frame without a fill, with the shadow's fill set: its glyphs, and
+    /// its stroke when it has one.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_shadow(
+        &mut self,
+        s: &mut Surface,
+        it: &Item,
+        tfr: &designcraft_doc::TextFrame,
+        c: krilla::color::Color,
+        bp: &BezPath,
+        p: &Path,
+        page: Option<usize>,
+    ) {
+        if let Some(text) = to_path(&self.text_silhouette(it, tfr, bp, page)) {
+            s.draw_path(&text);
+        }
+        s.set_fill(None);
+        if !it.stroke.is_none() {
+            let ds = &it.effects.drop_shadow;
+            s.set_stroke(Some(krilla::paint::Stroke {
+                paint: c.into(),
+                width: it.stroke.weight as f32,
+                opacity: norm(ds.opacity),
+                ..Default::default()
+            }));
+            s.draw_path(p);
+            s.set_stroke(None);
+        }
+    }
+
+    /// A text frame's glyphs as outlines in its inner space (`bp` is its path).
+    fn text_silhouette(&mut self, it: &Item, tfr: &designcraft_doc::TextFrame, bp: &BezPath, page: Option<usize>) -> BezPath {
+        let cs = self.composed(tfr.story, page);
+        let Some(ft) = cs.frame(it.id) else { return BezPath::new() };
+        let mut out = BezPath::new();
+        if let Some(pt) = &tfr.options.path {
+            for (_, gp) in designcraft_compose::path_glyphs(&cs, ft, bp, pt) {
+                out.extend(gp.iter());
+            }
+        } else {
+            out = crate::text::glyph_silhouette(&cs, ft);
+            out.apply_affine(self.doc.text_local(it));
+        }
+        out
     }
 
     /// The item's content; returns whether a text frame's anchored objects were drawn with it.
