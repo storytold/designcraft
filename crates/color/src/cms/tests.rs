@@ -81,12 +81,89 @@ fn saved_cmyk_names_still_load() {
 #[test]
 fn output_intent_follows_the_working_cmyk_space() {
     let fogra = cms().output_intent().unwrap();
-    assert_eq!((fogra.identifier, fogra.condition.as_str()), ("FOGRA39", COATED_FOGRA39));
+    assert_eq!((&*fogra.identifier, fogra.condition.as_str()), ("FOGRA39", COATED_FOGRA39));
     assert_eq!(&*fogra.icc, craft_cms::builtin::COATED_FOGRA39_ICC);
     for name in [GENERIC_CMYK, DEVICE_CMYK] {
         let g = Cms::new(&ColorSettings { cmyk: name.into(), ..Default::default() }).unwrap().output_intent().unwrap();
-        assert_eq!((g.identifier, g.condition.as_str()), ("Custom", GENERIC_CMYK), "{name}");
+        assert_eq!((&*g.identifier, g.condition.as_str()), ("Custom", GENERIC_CMYK), "{name}");
         assert_eq!(&*g.icc, icc_out::generic_cmyk_icc().unwrap());
+    }
+    // A loaded profile whose description names its characterisation: the registered identifier,
+    // not `Custom`, which is the one field a print provider's preflight matches on (#1475).
+    //
+    // It comes from the profile's own embedded description, never from the name it was
+    // registered under: `register_icc` lets a caller call a profile anything, so reading the
+    // name let one set of bytes wear any registered identifier -- and the identifier is a claim
+    // about those bytes (noted in review). The condition still follows the name, which is the
+    // part a person reads.
+    let coated = craft_cms::Builtin::CoatedCmyk.profile().to_bytes().to_vec();
+    assert!(
+        super::registered_identifier(&craft_cms::Builtin::CoatedCmyk.profile().description).is_none(),
+        "these bytes claim no characterisation, which is what makes them the control"
+    );
+    for name in ["PSOuncoated_v3_FOGRA52", "eciCMYK v2 (FOGRA59)", "CGATS21_CRPC6", "Our House Press"] {
+        super::register_icc(&coated, Some(name.to_string())).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let c = Cms::new(&ColorSettings { cmyk: name.into(), ..Default::default() }).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let intent = c.output_intent().unwrap();
+        assert_eq!((&*intent.identifier, intent.condition.as_str()), ("Custom", name), "{name}: the name it was given is not evidence");
+    }
+
+    // And bytes that do name their characterisation get it, under whatever name they are
+    // registered: the FOGRA39 profile's own description is "Coated FOGRA39 (fitted, craft-cms)".
+    super::register_icc(craft_cms::builtin::COATED_FOGRA39_ICC, Some("House Coated".to_string())).unwrap();
+    let c = Cms::new(&ColorSettings { cmyk: "House Coated".into(), ..Default::default() }).unwrap();
+    let intent = c.output_intent().unwrap();
+    assert_eq!((&*intent.identifier, intent.condition.as_str()), ("FOGRA39", "House Coated"), "the identifier follows the bytes");
+}
+
+/// The identifier is read off the profile's own description, never guessed from anything else.
+#[test]
+fn a_registered_characterisation_is_the_one_the_profile_names() {
+    use super::registered_identifier;
+    for (description, want) in [
+        ("PSOuncoated_v3_FOGRA52", Some("FOGRA52")),
+        // FOGRA59, which `eciCMYK v2` names, is a FOGRA data set but not an ICC registry
+        // entry -- the registry's highest FOGRA is 54 -- so it is not a name a PDF/X identifier
+        // may claim (noted in review). The profile name still reaches the reader as the
+        // condition.
+        ("eciCMYK v2 (FOGRA59)", None),
+        ("FOGRA54", Some("FOGRA54")),
+        ("FOGRA55", None),
+        ("FOGRA999", None),
+        ("Coated FOGRA39 (ISO 12647-2:2004)", Some("FOGRA39")),
+        ("fogra51 lowercase", Some("FOGRA51")),
+        // The registry spells it `CGATS21-2-CRPC6`; a description writing it with an
+        // underscore gets the registered spelling back, which is the one a preflight check
+        // matches (noted in review).
+        ("CGATS21_CRPC6", Some("CGATS21-2-CRPC6")),
+        ("CGATS21-2-CRPC6", Some("CGATS21-2-CRPC6")),
+        ("CGATS21-2-CRPC8", None),
+        ("GRACoL2013_CRPC6", None),
+        ("Our House Press", None),
+        ("FOGRA", None),
+        ("XFOGRA39", None),
+        ("", None),
+        // A multi-byte character before the name used to shift the digits by one, so this gave
+        // FOGRA9 and a print provider's preflight read the wrong characterisation (review of
+        // #1475). The offset and the digits now come from the same string.
+        ("Coated \u{AE} FOGRA39 (ISO 12647-2:2004)", Some("FOGRA39")),
+        ("\u{201C}PSO Coated v3\u{201D} (FOGRA51)", Some("FOGRA51")),
+        ("\u{30B3}\u{30FC}\u{30C8} FOGRA51", Some("FOGRA51")),
+        ("Papier m\u{E4}t\u{E9} CGATS21_CRPC6", Some("CGATS21-2-CRPC6")),
+        ("", None),
+        // The boundary after the digits counts as much as the one before the name: these
+        // descriptions name no registered identifier, and answering for them would put a PDF/X
+        // identifier on a profile that never claimed one (noted in review).
+        ("FOGRA52extra", None),
+        ("PSOuncoated_v3_FOGRA52x", None),
+        ("CGATS21_CRPC6A", None),
+        ("fogra51a", None),
+        // A boundary that is not a letter or digit still ends the name.
+        ("FOGRA39.icc", Some("FOGRA39")),
+        ("FOGRA39-coated", Some("FOGRA39")),
+        ("(FOGRA52)", Some("FOGRA52")),
+    ] {
+        assert_eq!(registered_identifier(description).as_deref(), want, "{description:?}");
     }
 }
 
