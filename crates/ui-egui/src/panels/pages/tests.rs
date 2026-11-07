@@ -15,6 +15,33 @@ fn a_panicking_thumbnail_leaves_its_row_undrawn_and_the_worker_alive() {
     let (drawn, panicked) = super::worker::contained(|| -> Option<u32> { panic!("a renderer bug") });
     assert!(drawn.is_none() && panicked);
     assert_eq!(super::worker::contained(|| Some(7)), (Some(7), false), "the next row draws");
+    // The worker's own loop contains the panic and still draws the row queued after it.
+    let (jobs, job_rx) = std::sync::mpsc::channel();
+    let (results, result_rx) = std::sync::mpsc::channel();
+    let of = ThumbOf::Page(PageId(1));
+    let doc = std::sync::Arc::new(Document::new(&designcraft_doc::build::NewDocument::default()));
+    let cache = std::sync::Arc::new(designcraft_compose::Cache::new());
+    let job = |rev: u64| super::worker::Job { key: (1, rev, of, 16), doc: doc.clone(), cache: cache.clone(), of, px: 16.0 };
+    jobs.send(job(1)).unwrap();
+    jobs.send(job(2)).unwrap();
+    drop(jobs);
+    let mut first = true;
+    super::worker::serve(
+        job_rx,
+        results,
+        |_, _| {
+            if std::mem::replace(&mut first, false) {
+                panic!("a renderer bug");
+            }
+            None
+        },
+        || {},
+    );
+    let got: Vec<_> = result_rx.try_iter().collect();
+    assert_eq!(got.len(), 2, "the panic is contained and the next row is drawn");
+    assert_eq!(got[0].0.1, 1, "the row that panicked reports first");
+    assert!(got[0].1.is_none(), "the row that panicked is left undrawn");
+    assert_eq!(got[1].0.1, 2, "the worker is still alive");
 }
 
 #[test]

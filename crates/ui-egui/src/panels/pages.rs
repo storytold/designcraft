@@ -217,30 +217,40 @@ mod worker {
                 let (jobs, job_rx) = std::sync::mpsc::channel::<Job>();
                 let (result_tx, result_rx) = std::sync::mpsc::channel::<(ThumbKey, Option<(Rendered, String)>)>();
                 let ctx = ctx.clone();
-                let spawned = std::thread::Builder::new().name("designcraft-thumbs".into()).spawn(move || {
-                    let mut r = designcraft_render::Renderer::new();
-                    r.threads = 0;
-                    while let Ok(job) = job_rx.recv() {
-                        // A panic on one row must not end this thread: its slot would never be
-                        // freed, and after four the panel would draw no thumbnail at all again.
-                        let (drawn, panicked) = contained(|| draw(&mut r, &job.doc, &job.cache, job.of, job.px));
-                        if panicked {
-                            // Its caches may be inconsistent after a panic: start clean.
-                            r = designcraft_render::Renderer::new();
-                            r.threads = 0;
-                        }
-                        if result_tx.send((job.key, drawn)).is_err() {
-                            break;
-                        }
-                        ctx.request_repaint();
-                    }
-                });
+                let spawned = std::thread::Builder::new()
+                    .name("designcraft-thumbs".into())
+                    .spawn(move || serve(job_rx, result_tx, |r, job| draw(r, &job.doc, &job.cache, job.of, job.px), || ctx.request_repaint()));
                 if spawned.is_err() {
                     return None;
                 }
                 Some(Worker { jobs, done: Mutex::new(result_rx) })
             })
             .as_ref()
+    }
+
+    /// Draw every queued job and send each result. A panic on one row must not end this loop: its
+    /// slot would never be freed, and after four the panel would draw no thumbnail at all again.
+    /// The drawing and the wake-up are parameters so a test can drive the real loop.
+    pub(super) fn serve(
+        job_rx: Receiver<Job>,
+        result_tx: Sender<(ThumbKey, Option<(Rendered, String)>)>,
+        mut draw: impl FnMut(&mut designcraft_render::Renderer, &Job) -> Option<(Rendered, String)>,
+        repaint: impl Fn(),
+    ) {
+        let mut r = designcraft_render::Renderer::new();
+        r.threads = 0;
+        while let Ok(job) = job_rx.recv() {
+            let (drawn, panicked) = contained(|| draw(&mut r, &job));
+            if panicked {
+                // Its caches may be inconsistent after a panic: start clean.
+                r = designcraft_render::Renderer::new();
+                r.threads = 0;
+            }
+            if result_tx.send((job.key, drawn)).is_err() {
+                break;
+            }
+            repaint();
+        }
     }
 
     /// Queue a thumbnail (the caller reserved its slot with [`begin`]).
@@ -269,7 +279,7 @@ mod worker {
             return;
         }
         let Some(w) = worker(ctx) else { return };
-        let Ok(done) = w.done.lock() else { return };
+        let done = w.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         while let Ok((key, drawn)) = done.try_recv() {
             ended(key);
             store(ctx, key, drawn);
