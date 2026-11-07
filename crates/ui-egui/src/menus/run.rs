@@ -118,7 +118,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.newDocumentDialog" => {
             // In the default units (Preferences with no document open).
             let fields = crate::new_document::defaults_for(&app.session.default_new_document());
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", fields));
+            let mut d = crate::dialogs::Dialog::new("newDocument", fields);
+            crate::new_document::use_print_units(app, &mut d);
+            app.ui.dialog = Some(d);
             Ok(Value::Null)
         }
         "app.openDialog" => match p.get("path").and_then(Value::as_str) {
