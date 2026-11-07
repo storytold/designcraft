@@ -32,7 +32,14 @@ const MAX_DEPTH: usize = 64;
 
 /// A converted SVG node, in points.
 enum Art {
-    Path { path: BezPath, fill: Option<Paint>, stroke: Option<(Paint, StrokeStyle)>, opacity: f32 },
+    /// `even_odd`: filled with SVG's `fill-rule="evenodd"`.
+    Path {
+        path: BezPath,
+        fill: Option<Paint>,
+        even_odd: bool,
+        stroke: Option<(Paint, StrokeStyle)>,
+        opacity: f32,
+    },
     Group(Vec<Art>, f32),
 }
 
@@ -125,6 +132,7 @@ fn convert(g: &usvg::Group, depth: usize, notes: &mut Notes, out: &mut Vec<Art>)
                 }
                 let xf = to_affine(path.abs_transform());
                 let fill = path.fill().and_then(|f| paint(f.paint(), f.opacity().get(), notes));
+                let even_odd = path.fill().is_some_and(|f| f.rule() == usvg::FillRule::EvenOdd);
                 let stroke = path.stroke().and_then(|s| {
                     let c = paint(s.paint(), s.opacity().get(), notes)?;
                     // A stroke scales with the art: its width in points.
@@ -156,7 +164,7 @@ fn convert(g: &usvg::Group, depth: usize, notes: &mut Notes, out: &mut Vec<Art>)
                 {
                     notes.mixed_opacity += 1;
                 }
-                out.push(Art::Path { path: bezpath(path.data(), xf), fill, stroke, opacity: 1.0 });
+                out.push(Art::Path { path: bezpath(path.data(), xf), fill, even_odd, stroke, opacity: 1.0 });
             }
             usvg::Node::Group(child) => {
                 if depth >= MAX_DEPTH {
@@ -225,8 +233,12 @@ fn build(d: &mut designcraft_doc::Document, art: Vec<Art>, layer: designcraft_do
     let mut out = Vec::new();
     for a in art {
         match a {
-            Art::Path { path, fill, stroke, opacity } => {
-                let data = PathData::from_bezpath(&(shift * path));
+            Art::Path { path, fill, even_odd, stroke, opacity } => {
+                let mut data = PathData::from_bezpath(&(shift * path));
+                // Items fill with the non-zero rule: turn even-odd holes against their outlines.
+                if even_odd && fill.is_some() {
+                    super::paths::orient_holes(&mut data);
+                }
                 if data.subpaths.is_empty() {
                     continue;
                 }
@@ -410,6 +422,30 @@ mod tests {
         let id = ItemId(r["ids"][0].as_u64().unwrap());
         assert!((s.doc().unwrap().doc.item(id).unwrap().opacity - 0.4).abs() < 1e-3);
         assert_eq!(r["warnings"], json!([]), "equal opacities fit the object's");
+    }
+
+    #[test]
+    fn even_odd_holes_stay_open() {
+        use designcraft_geom::{FillRule, hit::fill_contains};
+        let mut s = session();
+        let filled = |s: &mut Session, svg: &str| {
+            let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [100, 100]})).unwrap();
+            let it = s.doc().unwrap().doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap().clone();
+            let bp = it.xf * it.path.to_bezpath();
+            (fill_contains(&bp, FillRule::NonZero, Point::new(100.0, 100.0)), fill_contains(&bp, FillRule::NonZero, Point::new(75.0, 75.0)))
+        };
+        // 100 px = 75 pt: the ring spans 62.5..137.5, its hole 85..115.
+        // Both subpaths clockwise: the hole exists only under the even-odd rule.
+        let even_odd = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="#000" fill-rule="evenodd" d="M0,0H100V100H0Z M30,30H70V70H30Z"/></svg>"##;
+        assert_eq!(filled(&mut s, even_odd), (false, true), "the centre is a hole, the band is filled");
+        // Control: a non-zero ring with a reversed inner subpath keeps its hole.
+        let non_zero =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="#000" d="M0,0H100V100H0Z M30,30V70H70V30Z"/></svg>"##;
+        assert_eq!(filled(&mut s, non_zero), (false, true));
+        // Non-zero with both clockwise stays solid.
+        let solid =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="#000" d="M0,0H100V100H0Z M30,30H70V70H30Z"/></svg>"##;
+        assert_eq!(filled(&mut s, solid), (true, true));
     }
 
     #[test]
