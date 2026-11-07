@@ -1,4 +1,4 @@
-use super::cell::{get_cell_stroke, set_cell};
+use super::cell::{get_cell_diagonal, get_cell_stroke, set_cell};
 use super::content::{drop_cells, place_graphic, sort_rows};
 use super::options::{get, options};
 use super::selection::{move_rc, select, step_cell, toggle_selection};
@@ -292,7 +292,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, diagonal?: {lines?: none|topLeft|topRight|crossed (Cell Options › Diagonal Lines: top left to bottom right, top right to bottom left, or both), weight?, color?, tint?, type?, gapColor?, gapTint? (as stroke), inFront?: bool (true: Diagonal In Front, false: Content In Front)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
@@ -304,6 +304,15 @@ fn table_specs() -> Vec<CommandSpec> {
             "{story?, table?, rows?, cols?, edges?} → {weight, color, tint, type, gapColor, gapTint, fill, fillTint, edges: count} of the chosen edges of the target cells; a value that differs between them is null",
             in_table_or_ids,
             get_cell_stroke
+        ),
+        cmd!(
+            query "table.getCellDiagonal",
+            "Get Cell Diagonal Lines",
+            [],
+            None,
+            "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines; a value that differs between them is null",
+            in_table_or_ids,
+            get_cell_diagonal
         ),
         cmd!(
             "table.setRowHeight",

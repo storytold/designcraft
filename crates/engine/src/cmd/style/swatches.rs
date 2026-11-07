@@ -495,6 +495,7 @@ mod swatch_options_tests {
         s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
         s.execute("table.select", &json!({"what": "table"})).unwrap();
         s.execute("table.setCell", &json!({"stroke": {"weight": 2, "type": "dashed", "gapColor": "Brand", "edges": ["all"]}})).unwrap();
+        s.execute("table.setCell", &json!({"diagonal": {"lines": "crossed", "type": "dashed", "color": "Brand", "gapColor": "Brand"}})).unwrap();
         s.execute("swatch.newColorGroup", &json!({"name": "Brand Colors", "swatches": ["Brand"]})).unwrap();
         s.execute("style.character.create", &json!({"name": "Accent"})).unwrap();
         let image = s.execute("frame.create", &json!({"rect": [72, 300, 200, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
@@ -557,6 +558,7 @@ mod swatch_options_tests {
             basic.chars.ruby_stroke.as_deref() == Some(name),
             d.styles.char_style("Accent").unwrap().chars.kenten_fill.as_deref() == Some(name),
             story.tables.values().any(|t| t.cells.iter().all(|c| c.strokes.iter().all(|e| e.gap_color == name))),
+            story.tables.values().any(|t| t.cells.iter().all(|c| c.diagonal.stroke.color == name && c.diagonal.stroke.gap_color == name)),
             d.spreads.iter().flat_map(|sp| &sp.items).any(|it| it.graphic().is_some_and(|g| g.fill.swatch == name)),
             story.tables.values().any(|t| t.cells.iter().any(|c| c.graphic.as_ref().is_some_and(|g| g.fill.swatch == name))),
         ]
@@ -571,10 +573,10 @@ mod swatch_options_tests {
         let d = &s.doc().unwrap().doc;
         assert!(d.swatch("Brand").is_none());
         assert!(matches!(d.swatch("Signal Orange").unwrap().value, SwatchValue::Color { color_type: designcraft_color::ColorType::Spot, .. }));
-        assert_eq!(uses(&s, id, sid, "Signal Orange"), vec![true; 14]);
+        assert_eq!(uses(&s, id, sid, "Signal Orange"), vec![true; 15]);
         s.execute("edit.undo", &json!({})).unwrap();
         assert!(s.doc().unwrap().doc.swatch("Brand").is_some());
-        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 14]);
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 15]);
     }
 
     #[test]
@@ -595,7 +597,7 @@ mod swatch_options_tests {
             assert!(s.execute("swatch.options", &p).is_err(), "{p}");
         }
         assert_eq!(s.doc().unwrap().doc.swatches, before.swatches);
-        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 14]);
+        assert_eq!(uses(&s, id, sid, "Brand"), vec![true; 15]);
         // [Paper]'s colour can change; its name can't.
         s.execute("swatch.options", &json!({"name": "[Paper]", "to": "[Paper]", "color": "#fff8e0"})).unwrap();
     }
@@ -605,7 +607,7 @@ mod swatch_options_tests {
         let (mut s, id, sid) = brand_doc();
         let r = s.execute("swatch.options", &json!({"name": "Brand", "nameWithValue": true, "color": {"c": 10, "m": 20, "y": 30, "k": 40}})).unwrap();
         assert_eq!(r["name"], "C=10 M=20 Y=30 K=40");
-        assert_eq!(uses(&s, id, sid, "C=10 M=20 Y=30 K=40"), vec![true; 14]);
+        assert_eq!(uses(&s, id, sid, "C=10 M=20 Y=30 K=40"), vec![true; 15]);
         // Later colour edits keep the name in step until the swatch is named by hand.
         let r = s.execute("swatch.options", &json!({"name": "C=10 M=20 Y=30 K=40", "color": {"c": 0, "m": 0, "y": 0, "k": 50}})).unwrap();
         assert_eq!(r["name"], "C=0 M=0 Y=0 K=50");

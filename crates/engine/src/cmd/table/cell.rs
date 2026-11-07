@@ -1,5 +1,8 @@
 use super::target::{edit_table, target};
-use super::{CellRange, CellStroke, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok, str_param};
+use super::{
+    CellRange, CellStroke, DiagonalLines, Document, Result, Session, StrokeType, Table, Value, VerticalJustification, bad, compose, json, ok,
+    str_param,
+};
 
 /// Cell edges chosen for a stroke edit: the target range's four outer sides (physical left and
 /// right) and the lines between its rows and columns.
@@ -146,6 +149,48 @@ impl StrokeEdit {
     }
 }
 
+/// A `diagonal` edit of `table.setCell`: the lines, their stroke attributes and Draw.
+struct DiagonalEdit {
+    lines: Option<DiagonalLines>,
+    stroke: StrokeEdit,
+    in_front: Option<bool>,
+}
+
+impl DiagonalEdit {
+    fn parse(doc: &Document, v: &Value, cmd: &str) -> Result<DiagonalEdit> {
+        if !v.is_object() {
+            return Err(bad(cmd, "diagonal must be an object"));
+        }
+        let lines = match v.get("lines").filter(|l| !l.is_null()) {
+            Some(Value::String(name)) => match name.as_str() {
+                "none" => Some(DiagonalLines::None),
+                "topLeft" => Some(DiagonalLines::TopLeft),
+                "topRight" => Some(DiagonalLines::TopRight),
+                "crossed" => Some(DiagonalLines::Crossed),
+                other => return Err(bad(cmd, format!("unknown diagonal lines `{other}`: none, topLeft, topRight or crossed"))),
+            },
+            Some(other) => return Err(bad(cmd, format!("diagonal lines must be a string, not {other}"))),
+            None => None,
+        };
+        let in_front = match v.get("inFront").filter(|f| !f.is_null()) {
+            Some(Value::Bool(b)) => Some(*b),
+            Some(other) => return Err(bad(cmd, format!("inFront must be true or false, not {other}"))),
+            None => None,
+        };
+        Ok(DiagonalEdit { lines, stroke: StrokeEdit::parse(doc, v, cmd)?, in_front })
+    }
+
+    fn apply(&self, d: &mut designcraft_doc::CellDiagonal) {
+        if let Some(l) = self.lines {
+            d.lines = l;
+        }
+        d.stroke = self.stroke.apply(d.stroke.clone());
+        if let Some(f) = self.in_front {
+            d.in_front = f;
+        }
+    }
+}
+
 /// The stroke drawn on side `side` of the owner cell at `(r, c)` (where that side meets its
 /// first neighbour), as rendering resolves it; the cell's own copy if the side has no stretch.
 fn drawn_side(t: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), side: usize) -> Option<CellStroke> {
@@ -247,6 +292,10 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
         Some(sv) => Some((StrokeEdit::parse(doc, sv, ID)?, EdgeSel::parse(sv.get("edges"), ID)?)),
         None => None,
     };
+    let diagonal = match p.get("diagonal").filter(|v| !v.is_null()) {
+        Some(dv) => Some(DiagonalEdit::parse(doc, dv, ID)?),
+        None => None,
+    };
     edit_table(s, &g, ID, |t| {
         let owners = t.owners();
         let nc = t.ncols();
@@ -298,6 +347,9 @@ pub(super) fn set_cell(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(tx) = &text {
                 let len = cell.text.len();
                 cell.text.replace(0..len, tx);
+            }
+            if let Some(edit) = &diagonal {
+                edit.apply(&mut cell.diagonal);
             }
             if let Some((edit, _)) = &stroke {
                 for i in 0..4 {
@@ -370,6 +422,31 @@ pub(super) fn get_cell_stroke(s: &mut Session, p: &Value) -> Result<Value> {
     out.insert("fillTint".into(), fill_tint.unwrap_or(Value::Null));
     out.insert("edges".into(), json!(seen.len()));
     Ok(Value::Object(out))
+}
+
+/// The diagonal lines of the target cells and their stroke; values that differ are null.
+pub(super) fn get_cell_diagonal(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "table.getCellDiagonal";
+    let g = target(s, p, ID)?;
+    let st = s.doc()?;
+    let t = st.doc.story(g.story).and_then(|x| x.tables.get(&g.table)).ok_or_else(|| bad(ID, "no table"))?;
+    let keys = ["lines", "weight", "color", "tint", "type", "gapColor", "gapTint", "inFront"];
+    let mut slots: [Option<Value>; 8] = Default::default();
+    for (r, c) in t.selected_owners(g.range) {
+        let Some(cell) = t.cell(r, c) else { continue };
+        let d = &cell.diagonal;
+        let e = &d.stroke;
+        let values =
+            [json!(d.lines), json!(e.weight), json!(e.color), json!(e.tint), json!(e.kind), json!(e.gap_color), json!(e.gap_tint), json!(d.in_front)];
+        for (slot, v) in slots.iter_mut().zip(values) {
+            match slot {
+                None => *slot = Some(v),
+                Some(cur) if *cur != v => *cur = Value::Null,
+                _ => {}
+            }
+        }
+    }
+    Ok(Value::Object(keys.iter().zip(slots).map(|(k, v)| ((*k).to_string(), v.unwrap_or(Value::Null))).collect()))
 }
 
 /// Only saturation needs rebasing. Preserve every distinct priority's order and keep
