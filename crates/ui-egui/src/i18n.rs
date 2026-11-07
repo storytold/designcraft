@@ -201,6 +201,12 @@ pub(crate) fn russian_catalog() -> Vec<&'static str> {
     ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
 }
 
+/// Whether Spanish has an entry for `s`: its own catalog, or the shared table's Spanish column.
+#[cfg(test)]
+pub(crate) fn spanish_has(s: &str) -> bool {
+    es::TABLE.iter().any(|(key, _)| *key == s) || TABLE.iter().any(|(key, row)| *key == s && !row[2].trim().is_empty())
+}
+
 /// Whether the Swedish catalog has an entry for `s` (many Swedish labels read like the English ones).
 #[cfg(test)]
 pub(crate) fn swedish_has(s: &str) -> bool {
