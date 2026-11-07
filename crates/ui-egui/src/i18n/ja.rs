@@ -3,6 +3,7 @@
 //! Portuguese tables has a row here; the menu titles and panel names that were already Japanese in the
 //! shared table are carried over unchanged.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Keep linked artwork external on save", "保存時にリンクされた画像を外部に保持"),
     ("Fewer Options", "オプションを減らす"),
     ("Tab Character", "タブ文字"),
     ("File", "ファイル"),

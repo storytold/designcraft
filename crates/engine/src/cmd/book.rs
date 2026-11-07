@@ -61,7 +61,11 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
             .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
-    super::file::from_bytes(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+    let mut doc = super::file::from_bytes(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    for warning in super::native_links::resolve(&mut doc, Some(std::path::Path::new(path))) {
+        log::warn!("{path}: {warning}");
+    }
+    Ok(doc)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,7 +97,7 @@ impl ChapterBatch {
         use std::io::Write;
 
         // Propagate serialization errors; an empty fallback must never replace a chapter.
-        let bytes = designcraft_format::save(doc).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let bytes = super::native_links::save(doc, std::path::Path::new(path))?;
         let mut file = tempfile::Builder::new()
             .prefix("chapter-")
             .tempfile_in(self.directory.path())

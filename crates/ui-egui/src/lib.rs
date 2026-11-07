@@ -323,6 +323,15 @@ mod window_frame_tests;
 pub(crate) mod test_window {
     use egui_kittest::Harness;
 
+    /// The command modifier that the native keymap receives on this platform.
+    pub fn command_modifiers() -> egui::Modifiers {
+        if crate::keys::platform().is_mac() {
+            egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND
+        } else {
+            egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+        }
+    }
+
     pub struct Window {
         pub app: crate::DesignApp,
         ready: bool,

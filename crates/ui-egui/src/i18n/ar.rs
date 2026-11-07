@@ -1,5 +1,6 @@
 //! Original Arabic interface translations, stored in logical Unicode order.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Keep linked artwork external on save", "الاحتفاظ بالرسومات المرتبطة خارج المستند عند الحفظ"),
     ("Fewer Options", "خيارات أقل"),
     ("Tab Character", "محرف جدولة"),
     ("File", "ملف"),

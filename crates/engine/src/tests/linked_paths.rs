@@ -107,6 +107,81 @@ fn a_relative_link_resolves_beside_the_document() {
 }
 
 #[test]
+fn native_external_links_never_follow_refused_paths() {
+    let dir = folder("native-remote");
+    let doc = dir.join("doc.designcraft");
+    let mut s = document_with_links(&doc, &[UNC, FILE_URL]);
+    s.execute("links.storage", &json!({"mode": "linked"})).unwrap();
+    // This synthetic working file contains references without embedded originals.
+    let bytes = designcraft_format::save_working(&s.doc().unwrap().doc).unwrap();
+    std::fs::write(&doc, &bytes).unwrap();
+    let mut opened = Session::new();
+    let ((result, rows), seen) = crate::io::touched(|| {
+        let result = opened.execute("file.open", &json!({"path": doc.to_string_lossy()})).unwrap();
+        let rows = opened.execute("links.list", &json!({})).unwrap();
+        opened.execute("links.update", &json!({})).unwrap();
+        (result, rows)
+    });
+    assert!(seen.iter().all(|p| p.starts_with(&dir)), "{seen:?}");
+    assert_eq!(result["warnings"].as_array().unwrap().len(), 2, "{result}");
+    for row in rows.as_array().unwrap() {
+        assert_eq!(row["status"], "missing", "{row}");
+        assert!(row["refused"].is_string(), "{row}");
+    }
+    assert!(opened.doc().unwrap().doc.assets.values().all(|a| a.data.is_empty()));
+    // Saving the unresolved document preserves those references without probing them.
+    let copy = dir.join("copy.designcraft");
+    let (result, seen) = crate::io::touched(|| opened.execute("file.saveACopy", &json!({"path": copy.to_string_lossy()})));
+    result.unwrap();
+    assert!(seen.iter().all(|p| p.starts_with(&dir)), "{seen:?}");
+    let saved = designcraft_format::load(&std::fs::read(&copy).unwrap()).unwrap();
+    for asset in saved.assets.values() {
+        assert!([UNC, FILE_URL].contains(&asset.link.as_deref().unwrap()));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_linked_save_refuses_remote_paths_before_file_system_access() {
+    let dir = folder("native-refused-save");
+    let doc = dir.join("doc.designcraft");
+    let mut s = document_with_links(&doc, &[UNC, FILE_URL]);
+    let before = s.doc().unwrap().doc.clone();
+    let (result, seen) = crate::io::touched(|| s.execute("file.saveAs", &json!({"path": doc.to_string_lossy(), "embedImages": false})));
+    assert!(result.is_err());
+    assert!(seen.is_empty(), "{seen:?}");
+    assert!(!doc.exists());
+    assert_eq!(s.doc().unwrap().doc.as_ref(), before.as_ref());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn linked_save_as_resolves_relative_sources_from_the_original_document() {
+    let dir = folder("native-relative-save-as");
+    let source = dir.join("logo.png");
+    std::fs::write(&source, png()).unwrap();
+    let mut s = document_with_links(&dir.join("original.designcraft"), &["logo.png"]);
+    let moved = dir.join("moved");
+    std::fs::create_dir_all(&moved).unwrap();
+    let copy = moved.join("copy.designcraft");
+    s.execute("file.saveACopy", &json!({"path": copy.to_string_lossy(), "embedImages": false})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.assets.values().next().unwrap().link.as_deref(), Some("logo.png"));
+    let saved = moved.join("saved.designcraft");
+    s.execute("file.saveAs", &json!({"path": saved.to_string_lossy(), "embedImages": false})).unwrap();
+    assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+    for path in [copy, saved] {
+        let stored = designcraft_format::load(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored.assets.values().next().unwrap().link.as_deref(), Some("../logo.png"));
+        let mut opened = Session::new();
+        let result = opened.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(result["warnings"].as_array().unwrap().is_empty(), "{result}");
+        assert_eq!(opened.doc().unwrap().doc.assets.values().next().unwrap().data.as_slice(), png());
+        assert_eq!(opened.execute("links.list", &json!({})).unwrap()[0]["status"], "ok");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_relative_link_in_an_unsaved_document_is_missing() {
     // With no document path there is nothing to resolve against; the working directory is not used.
     let mut s = document_with_links(Path::new("doc.designcraft"), &["logo.png", "img/logo.png"]);
