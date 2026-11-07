@@ -22,6 +22,7 @@ mod edit;
 pub mod endnotes;
 pub mod file_info;
 pub mod flex;
+pub mod framegrid;
 pub mod ids;
 pub mod index;
 pub mod item;
@@ -56,6 +57,7 @@ pub use edit::{ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hi
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
 pub use file_info::FileInfo;
 pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};
+pub use framegrid::FrameGrid;
 pub use ids::*;
 pub use index::{INDEX_MARK, IndexRef};
 pub use item::*;
