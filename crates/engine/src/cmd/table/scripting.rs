@@ -65,20 +65,12 @@ pub(super) fn paragraph_style(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(ID, format!("no paragraph style `{name}`")));
     }
     let clear = p.get("clearOverrides").and_then(Value::as_bool).unwrap_or(false);
+    let styles = s.doc()?.doc.styles.clone();
     let g = target(s, p, ID)?;
     edit_table(s, &g, ID, |t| {
         for cell in &mut t.cells {
             let len = cell.text.text.len();
-            cell.text.format_paras(0..len, |f| {
-                f.style = name.clone();
-                if clear {
-                    f.para = Default::default();
-                    f.chars = Default::default();
-                }
-            });
-            if clear {
-                cell.text.format_chars(0..len, |f| f.over = Default::default());
-            }
+            crate::cmd::style::apply_para_style(&mut cell.text, &styles, &name, &(0..len), clear);
         }
         ok()
     })
