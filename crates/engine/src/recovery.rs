@@ -477,6 +477,9 @@ pub(crate) fn discard_document(s: &mut Session, index: usize, default_dir: Optio
         if !s.docs.iter().enumerate().any(|(other_index, owner)| {
             other_index != index && owner.recovery_entries.iter().any(|(entry_dir, entry_uid)| *entry_uid == uid && same_directory(entry_dir, &dir))
         }) {
+            // A write of it still running must not publish its snapshot after this point.
+            #[cfg(not(target_arch = "wasm32"))]
+            worker::cancel(&dir, uid);
             discard(&dir, uid);
         }
     }
@@ -528,7 +531,13 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
             discard(dir, d.uid);
             continue;
         }
-        write_entry(&access, dir, d)?;
+        // The caller asked for this write now: nothing has cancelled it.
+        // A background write of an older state must not land over this one.
+        #[cfg(not(target_arch = "wasm32"))]
+        worker::cancel(dir, d.uid);
+        if let Some(e) = write_snapshot(&Snapshot::of(&access, dir, d), || false).error {
+            return Err(e);
+        }
         n += 1;
     }
     Ok(n)
@@ -537,14 +546,7 @@ pub fn save(s: &Session, dir: &Path) -> Result<usize> {
 /// Command-path checkpointing also records explicitly selected directories, without configuring
 /// automatic recovery. The immutable public helper remains available for fixtures and callers.
 pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
-    // Reject the complete batch before writing rather than silently losing old ownership records.
-    for document in &s.docs {
-        if document.is_dirty() && !has_checkpoint(document, dir) && document.recovery_entries.len() >= MAX_RECOVERY_ENTRIES {
-            return Err(EngineError::Other(
-                "too many recovery checkpoints; save or close the document before choosing another recovery folder".into(),
-            ));
-        }
-    }
+    reject_overfull_checkpoints(s, dir)?;
     let access = prepare_save(s, dir)?;
     let mut n = 0;
     let preview = s.new_document_preview();
@@ -557,34 +559,361 @@ pub(crate) fn save_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
             discard_document(s, index, Some(dir));
             continue;
         }
-        let Some(document) = s.docs.get_mut(index) else { continue };
-        let (doc, meta) = files(dir, document.uid);
-        let bytes = designcraft_format::save(document.preview_stash.as_deref().unwrap_or(document.doc.as_ref()))
-            .map_err(|e| EngineError::Other(e.to_string()))?;
-        // An entry this run did not write is never replaced, even one made since it checked.
-        let replace = access.owns(document.uid);
-        publish_recovery_file(&doc, &bytes, replace)?;
-        access.record(document.uid);
-        // The primary is useful even if optional metadata fails next. Track it immediately.
-        if !has_checkpoint(document, dir) {
+        let Some(document) = s.docs.get(index) else { continue };
+        // A background write of an older state must not land over this one.
+        #[cfg(not(target_arch = "wasm32"))]
+        worker::cancel(dir, document.uid);
+        let entry = Snapshot::of(&access, dir, document);
+        let written = write_snapshot(&entry, || false);
+        // The primary is the recovery data; its metadata is optional. Track the primary before
+        // returning a metadata error, so Save and Close remove the snapshot this run wrote.
+        if written.published
+            && let Some(document) = s.docs.get_mut(index)
+            && !has_checkpoint(document, dir)
+        {
             document.recovery_entries.push((dir.to_path_buf(), document.uid));
         }
-        let metadata = json!({"path": document.path, "title": document.title(), "saved": designcraft_doc::vars::now()});
-        publish_recovery_file(&meta, metadata.to_string().as_bytes(), replace)?;
+        if let Some(e) = written.error {
+            return Err(e);
+        }
         n += 1;
     }
     Ok(n)
 }
 
-/// Publish a document's recovery entry before its optional metadata.
-fn write_entry(access: &Access, dir: &Path, d: &DocState) -> Result<()> {
-    let (doc, meta) = files(dir, d.uid);
-    let bytes = designcraft_format::save(d.preview_stash.as_deref().unwrap_or(d.doc.as_ref())).map_err(|e| EngineError::Other(e.to_string()))?;
-    let replace = access.owns(d.uid);
-    publish_recovery_file(&doc, &bytes, replace)?;
-    access.record(d.uid);
-    let metadata = json!({"path": d.path, "title": d.title(), "saved": designcraft_doc::vars::now()});
-    publish_recovery_file(&meta, metadata.to_string().as_bytes(), replace)
+/// Reject a complete batch before writing rather than silently losing old ownership records.
+fn reject_overfull_checkpoints(s: &Session, dir: &Path) -> Result<()> {
+    for document in &s.docs {
+        if document.is_dirty() && !has_checkpoint(document, dir) && document.recovery_entries.len() >= MAX_RECOVERY_ENTRIES {
+            return Err(EngineError::Other(
+                "too many recovery checkpoints; save or close the document before choosing another recovery folder".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A document's recovery write, copied so a background thread can write it while the interface
+/// stays responsive: no deflate, no copy of the placed files, happens on the interface thread.
+struct Snapshot {
+    dir: PathBuf,
+    uid: u64,
+    /// The document as it was when the write started (data-merge previews save the unfilled one).
+    doc: std::sync::Arc<designcraft_doc::Document>,
+    path: Option<String>,
+    title: String,
+    /// Whether this run may replace an entry already in the folder.
+    own: bool,
+    /// The folder's canonical key, for recording that a shared entry is this run's now.
+    key: PathBuf,
+}
+
+impl Snapshot {
+    fn of(access: &Access, dir: &Path, d: &DocState) -> Self {
+        Snapshot {
+            dir: dir.to_path_buf(),
+            uid: d.uid,
+            doc: d.preview_stash.clone().unwrap_or_else(|| d.doc.clone()),
+            path: d.path.clone(),
+            title: d.title(),
+            // An entry this run did not write is never replaced, even one made since it checked.
+            own: access.owns(d.uid),
+            key: access.key.clone(),
+        }
+    }
+}
+
+/// What one recovery write left in the folder: whether the primary document was published, and
+/// the error that stopped it or the optional metadata written after it. The primary is the
+/// recovery data (see the module docs: metadata may be missing or stale), so a metadata failure
+/// must not lose the checkpoint that lets Save and Close remove what this run wrote.
+struct Written {
+    published: bool,
+    error: Option<EngineError>,
+}
+
+/// Publish a document's recovery entry before its optional metadata. `cancelled` says whether the
+/// document was saved, reverted or closed since the write started: its snapshot is then dropped
+/// instead of published, so a crash cannot offer back a copy older than the saved file.
+fn write_snapshot(entry: &Snapshot, cancelled: impl Fn() -> bool) -> Written {
+    let (doc, meta) = files(&entry.dir, entry.uid);
+    let published = publish_recovery_written(
+        &doc,
+        entry.own,
+        |out| designcraft_format::write(out, &entry.doc, None).map_err(|e| EngineError::Other(e.to_string())),
+        &cancelled,
+    );
+    match published {
+        Ok(true) => {}
+        // Cancelled while writing: no snapshot and no metadata for it.
+        Ok(false) => return Written { published: false, error: None },
+        Err(e) => return Written { published: false, error: Some(e) },
+    }
+    // Written: in a folder that is not this run's own, the entry is now this run's to replace and
+    // remove (Save and Close must clean up the snapshot they wrote).
+    if !entry.own {
+        WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((entry.key.clone(), entry.uid));
+    }
+    let metadata = json!({"path": entry.path, "title": entry.title, "saved": designcraft_doc::vars::now()});
+    Written { published: true, error: publish_recovery_file(&meta, metadata.to_string().as_bytes(), entry.own).err() }
+}
+
+/// Write recovery entries for dirty documents on a background thread and drop clean checkpoints
+/// now. The interface thread only snapshots what to write: `designcraft_format::write` deflates
+/// and copies placed files, which takes minutes on a catalogue with gigabytes of links. Returns
+/// how many documents were queued.
+pub(crate) fn start_tracked(s: &mut Session, dir: &Path) -> Result<usize> {
+    reject_overfull_checkpoints(s, dir)?;
+    let access = prepare_save(s, dir)?;
+    // Nothing runs on the web's single thread: it would freeze the page just the same.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = access;
+        return save_tracked(s, dir);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut queued = 0;
+        let preview = s.new_document_preview();
+        for index in 0..s.docs.len() {
+            if s.docs.get(index).is_some_and(|document| preview == Some(document.uid)) {
+                continue;
+            }
+            if s.docs.get(index).is_some_and(|document| !document.is_dirty()) {
+                discard_document(s, index, Some(dir));
+                continue;
+            }
+            let Some(document) = s.docs.get(index) else { continue };
+            let entry = Snapshot::of(&access, dir, document);
+            // A write still running for this document already holds a snapshot of it; the next
+            // timer tick catches up with the edits made since.
+            match worker::submit(entry) {
+                Some(true) => queued += 1,
+                Some(false) => {}
+                None => {
+                    // No thread: write this one here rather than lose the recovery data.
+                    let written = write_snapshot(&Snapshot::of(&access, dir, document), || false);
+                    if written.published {
+                        record_checkpoint(s, dir.to_path_buf(), document.uid);
+                    }
+                    if let Some(e) = written.error {
+                        return Err(e);
+                    }
+                    queued += 1;
+                }
+            }
+        }
+        Ok(queued)
+    }
+}
+
+/// Apply one finished background write: record the checkpoint of a document still open and
+/// unsaved, or drop the snapshot of one saved, reverted or closed while its write ran. Returns
+/// whether a checkpoint was recorded.
+#[cfg(not(target_arch = "wasm32"))]
+fn record_checkpoint(s: &mut Session, dir: PathBuf, uid: u64) -> bool {
+    match s.docs.iter_mut().find(|doc| doc.uid == uid) {
+        Some(doc) if doc.is_dirty() => {
+            if !has_checkpoint(doc, &dir) {
+                doc.recovery_entries.push((dir, uid));
+            }
+            true
+        }
+        // Saved, reverted or closed while being written: its snapshot must not come back after a
+        // crash, and the timer writes only when a document is dirty, so nothing else would
+        // remove it.
+        Some(_) | None => {
+            discard(&dir, uid);
+            false
+        }
+    }
+}
+
+/// Apply finished background writes. Returns what was written and what failed.
+pub(crate) struct Finished {
+    pub written: usize,
+    pub errors: Vec<String>,
+    pub busy: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn finished(s: &mut Session) -> Finished {
+    let mut out = Finished { written: 0, errors: Vec::new(), busy: false };
+    let Some(w) = worker::started() else { return out };
+    // Before draining: the worker sends a result before it clears the document as running, so a writer idle now has every result in the channel already.
+    let busy = w.busy();
+    let done = w.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    while let Ok(d) = done.try_recv() {
+        // A primary that landed belongs to this run even if its optional metadata failed: record
+        // it, so Save and Close remove the snapshot instead of leaving it in the folder for ever.
+        if d.published && record_checkpoint(s, d.dir, d.uid) {
+            out.written += 1;
+        }
+        if let Some(e) = d.error {
+            out.errors.push(e);
+        }
+    }
+    out.busy = busy;
+    out
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn finished(_s: &mut Session) -> Finished {
+    // Nothing is written in the background on the web.
+    Finished { written: 0, errors: Vec::new(), busy: false }
+}
+
+/// Automatic recovery's writer: one thread with its own queue, so an unsaved document with
+/// gigabytes of placed files is written without stopping the interface.
+#[cfg(not(target_arch = "wasm32"))]
+mod worker {
+    use std::collections::BTreeSet;
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{Path, PathBuf, Result, Snapshot, write_snapshot};
+
+    /// One document written, for the interface thread to record.
+    pub(super) struct Done {
+        pub(super) dir: PathBuf,
+        pub(super) uid: u64,
+        pub(super) error: Option<String>,
+        /// The primary document reached the folder (its optional metadata may have failed): the
+        /// checkpoint must still be recorded, or Save and Close could not remove it.
+        pub(super) published: bool,
+    }
+
+    pub(super) struct Writer {
+        jobs: Sender<Snapshot>,
+        pub(super) done: Mutex<Receiver<Done>>,
+        /// Documents queued or being written: a second write of one still holds nothing newer.
+        running: Mutex<BTreeSet<(PathBuf, u64)>>,
+        /// A document saved, reverted or closed while its write was queued or running: the
+        /// snapshot it is producing must not be published.
+        cancelled: Mutex<BTreeSet<(PathBuf, u64)>>,
+    }
+
+    static WRITER: OnceLock<Option<Writer>> = OnceLock::new();
+
+    impl Writer {
+        pub(super) fn busy(&self) -> bool {
+            self.running.lock().is_ok_and(|running| !running.is_empty())
+        }
+
+        fn finish(&self, dir: &Path, uid: u64) {
+            let key = (dir.to_path_buf(), uid);
+            if let Ok(mut running) = self.running.lock() {
+                running.remove(&key);
+            }
+            if let Ok(mut cancelled) = self.cancelled.lock() {
+                cancelled.remove(&key);
+            }
+        }
+
+        /// Do not publish the snapshot being written for `dir`/`uid`: the document was saved,
+        /// reverted or closed. Only a write that is queued or running is marked, so the set stays
+        /// as small as the work in flight.
+        fn cancel(&self, dir: &Path, uid: u64) {
+            let key = (dir.to_path_buf(), uid);
+            if !self.running.lock().is_ok_and(|running| running.contains(&key)) {
+                return;
+            }
+            if let Ok(mut cancelled) = self.cancelled.lock() {
+                cancelled.insert(key);
+            }
+        }
+
+        fn cancelled(&self, dir: &Path, uid: u64) -> bool {
+            self.cancelled.lock().is_ok_and(|cancelled| cancelled.contains(&(dir.to_path_buf(), uid)))
+        }
+    }
+
+    /// The writer, started on first use (a thread that can't start leaves recovery synchronous).
+    fn writer() -> Option<&'static Writer> {
+        WRITER
+            .get_or_init(|| {
+                let (jobs, job_rx) = std::sync::mpsc::channel::<Snapshot>();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
+                let spawned = std::thread::Builder::new().name("designcraft-recovery".into()).spawn(move || {
+                    while let Ok(job) = job_rx.recv() {
+                        let (published, error) = guarded_write(&job);
+                        let (dir, uid) = (job.dir, job.uid);
+                        // The result before the document reads as idle: a writer that is not busy
+                        // has already delivered it, so the interface never stops polling with an
+                        // answer still on its way.
+                        let sent = done_tx.send(Done { dir: dir.clone(), uid, error, published }).is_ok();
+                        if let Some(w) = WRITER.get().and_then(Option::as_ref) {
+                            w.finish(&dir, uid);
+                        }
+                        if !sent {
+                            break;
+                        }
+                    }
+                });
+                spawned.ok().map(|_| Writer {
+                    jobs,
+                    done: Mutex::new(done_rx),
+                    running: Mutex::new(BTreeSet::new()),
+                    cancelled: Mutex::new(BTreeSet::new()),
+                })
+            })
+            .as_ref()
+    }
+
+    /// The writer if it has been started.
+    pub(super) fn started() -> Option<&'static Writer> {
+        WRITER.get().and_then(Option::as_ref)
+    }
+
+    /// Do not publish the snapshot being written for `dir`/`uid` (see [`Writer::cancel`]).
+    pub(super) fn cancel(dir: &Path, uid: u64) {
+        if let Some(w) = started() {
+            w.cancel(dir, uid);
+        }
+    }
+
+    /// Whether that write is already marked as cancelled (see [`Writer::cancelled`]).
+    pub(super) fn cancelled(dir: &Path, uid: u64) -> bool {
+        started().is_some_and(|w| w.cancelled(dir, uid))
+    }
+
+    /// Write one snapshot, turning a panic into its error: a panic that ended this thread would
+    /// leave the document marked as running for ever (so it is never written again) and the
+    /// interface asking for frames for ever. A safety net: a writer still must not panic.
+    fn guarded_write(job: &Snapshot) -> (bool, Option<String>) {
+        match guarded(|| Ok(write_snapshot(job, || cancelled(&job.dir, job.uid)))) {
+            // A primary that landed is this run's to remove, even if its metadata failed.
+            Ok(written) => (written.published, written.error.map(|e| e.to_string())),
+            Err(e) => (false, Some(e.to_string())),
+        }
+    }
+
+    /// [`guarded_write`]'s guard, for any write on this thread.
+    pub(super) fn guarded<T>(write: impl FnOnce() -> Result<T>) -> Result<T> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(write)).unwrap_or_else(|payload| {
+            Err(crate::EngineError::Other(format!("recovery writer panicked: {}", crate::guard::panic_message(payload.as_ref()))))
+        })
+    }
+
+    /// Queue a document's write. `None`: no writer thread (the caller writes it itself);
+    /// `Some(false)`: one for this document is still queued or running.
+    pub(super) fn submit(entry: Snapshot) -> Option<bool> {
+        let w = writer()?;
+        let mut running = w.running.lock().ok()?;
+        let key = (entry.dir.clone(), entry.uid);
+        if !running.insert(key.clone()) {
+            return Some(false);
+        }
+        // A write is wanted again: whatever cancelled the last one does not apply to this one.
+        if let Ok(mut cancelled) = w.cancelled.lock() {
+            cancelled.remove(&key);
+        }
+        if w.jobs.send(entry).is_err() {
+            running.remove(&key);
+            return None;
+        }
+        Some(true)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -632,6 +961,21 @@ fn secure_recovery_dir(_dir: &Path) -> Result<bool> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn publish_recovery_file(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
+    publish_recovery_written(path, replace, |out| out.write_all(bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display()))), || false)
+        .map(|_| ())
+}
+
+/// [`publish_recovery_file`], with `write` filling the temporary file: a large document is written
+/// straight to disk instead of being built in memory first. Returns whether it was published;
+/// `cancelled` is asked after the bytes are written and before the rename, so a document saved or
+/// closed meanwhile leaves nothing behind.
+#[cfg(not(target_arch = "wasm32"))]
+fn publish_recovery_written(
+    path: &Path,
+    replace: bool,
+    write: impl FnOnce(&mut std::io::BufWriter<&mut std::fs::File>) -> Result<()>,
+    cancelled: impl Fn() -> bool,
+) -> Result<bool> {
     let Some(dir) = path.parent() else {
         return Err(EngineError::Other(format!("{} has no parent folder", path.display())));
     };
@@ -646,15 +990,24 @@ fn publish_recovery_file(path: &Path, bytes: &[u8], replace: bool) -> Result<()>
         use std::os::unix::fs::PermissionsExt;
         tmp.as_file().set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     }
-    tmp.as_file_mut().write_all(bytes).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    {
+        let mut out = std::io::BufWriter::new(tmp.as_file_mut());
+        write(&mut out)?;
+        out.flush().map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    }
     tmp.as_file_mut().sync_all().map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
+    // Last moment: the document was saved, reverted or closed while the bytes were written. The
+    // temporary file is dropped, so nothing of the stale snapshot stays.
+    if cancelled() {
+        return Ok(false);
+    }
     // Validate the non-followed leaf again immediately before renaming the randomized temporary
     // file to its fixed sibling destination.
     validate_recovery_dir(dir)?;
     let published = if replace { tmp.persist(path) } else { tmp.persist_noclobber(path) };
     published.map_err(|e| EngineError::Other(format!("{}: {}", path.display(), e.error)))?;
     sync_recovery_dir(dir)?;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -709,6 +1062,16 @@ fn sync_recovery_dir(dir: &Path) -> Result<()> {
 
 #[cfg(target_arch = "wasm32")]
 fn publish_recovery_file(_path: &Path, _bytes: &[u8], _replace: bool) -> Result<()> {
+    Err(EngineError::Other("recovery files are unavailable on the web".into()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_recovery_written(
+    _path: &Path,
+    _replace: bool,
+    _write: impl FnOnce(&mut std::io::BufWriter<&mut std::fs::File>) -> Result<()>,
+    _cancelled: impl Fn() -> bool,
+) -> Result<bool> {
     Err(EngineError::Other("recovery files are unavailable on the web".into()))
 }
 

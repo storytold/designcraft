@@ -13,6 +13,12 @@
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
+- **2026-10-27** · Automatic recovery writes off the interface thread, straight to disk: on a
+  190-page catalogue with 4.2 GB of placed files an autosave was 3.6 GB deflated in RAM on the
+  interface thread, which stopped the window answering for 30-100 s after an edit. It is now a
+  background write (`file.recovery.save {background}`, `file.recovery.progress`), the caller
+  blocked for 109 ms instead, and Save, Close and Revert cancel a snapshot still being written.
+  No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
   the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
   and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
