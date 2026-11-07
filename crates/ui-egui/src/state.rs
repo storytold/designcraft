@@ -171,7 +171,14 @@ pub(crate) fn second_window_viewport() -> egui::ViewportId {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
+    /// The interface theme on screen, resolved from the appearance mode and the system (kept as
+    /// the single-theme setting older versions saved).
     pub brightness: theme::Brightness,
+    /// Preferences › Interface › Appearance Mode: Auto follows the system.
+    pub appearance_mode: theme::AppearanceMode,
+    /// The theme used when the interface is dark, and when it is light.
+    pub dark_theme: theme::DarkTheme,
+    pub light_theme: theme::LightTheme,
     pub screen_mode: ScreenMode,
     /// The screen mode leaving Presentation returns to: the one it was entered from.
     pub presentation_return: ScreenMode,
@@ -392,6 +399,9 @@ impl Default for UiState {
     fn default() -> Self {
         UiState {
             brightness: theme::Brightness::MediumDark,
+            appearance_mode: theme::AppearanceMode::Dark,
+            dark_theme: theme::DarkTheme::MediumDark,
+            light_theme: theme::LightTheme::Light,
             screen_mode: ScreenMode::Normal,
             presentation_return: ScreenMode::Normal,
             presentation_view: None,

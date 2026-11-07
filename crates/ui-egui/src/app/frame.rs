@@ -73,8 +73,12 @@ impl DesignApp {
             // The font scan runs in the background: look again shortly.
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
+        // Appearance: Auto follows the system (no polling: the host's reader wakes the UI when the
+        // system changes).
+        self.system_theme = self.services.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme());
+        crate::appearance::resolve(self);
         if self.restyle {
-            theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
+            theme::apply_for(ctx, &theme::Tokens::for_brightness(self.ui.brightness), self.ui.appearance_mode == theme::AppearanceMode::Auto);
             self.restyle = false;
         }
     }

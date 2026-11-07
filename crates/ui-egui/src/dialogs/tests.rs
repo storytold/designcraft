@@ -4356,9 +4356,9 @@ fn find_format_finds_only_text_with_it() {
     assert_eq!(field(&h, FIND_FORMAT), None);
 }
 
-/// The course's chapter 26: Preferences › Interface as InDesign's. A Color Theme swatch shows
-/// its theme at once and Cancel goes back; OK keeps the theme and the Tools panel's columns.
-/// UI Size is in a UI Scaling section of its own.
+/// The course's chapter 26: Preferences › Interface as InDesign's. The appearance mode and its
+/// theme cards apply on OK, and Cancel leaves the theme as it was; OK also keeps the Tools
+/// panel's columns. UI Size is in a UI Scaling section of its own.
 #[test]
 fn preferences_interface_sets_the_color_theme_and_tools_panel() {
     use crate::theme::Brightness;
@@ -4385,22 +4385,21 @@ fn preferences_interface_sets_the_color_theme_and_tools_panel() {
         app,
     );
     h.run_steps(3);
-    let swatch = |h: &Harness<'_, DesignApp>, name: &str| h.get_by(|n| n.role() == Role::RadioButton && n.label().as_deref() == Some(name)).click();
-    for l in ["Appearance", "Color Theme:", "Panels", "Tools Panel:"] {
+    for l in ["Appearance", "Appearance Mode", "Light Theme", "Dark Theme", "Panels", "Tools Panel:"] {
         assert!(h.query_by_label(l).is_some(), "{l}");
     }
-    // A click shows the theme at once; Cancel goes back.
-    swatch(&h, "Light");
+    // Nothing applies until OK: Cancel leaves the theme Preferences opened with.
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("appearanceMode".into(), json!("light"));
     h.run_steps(3);
-    assert_eq!(h.state().ui.brightness, Brightness::Light);
+    assert_eq!(h.state().ui.brightness, opened);
     h.get_by_label("Cancel").click();
     h.run_steps(3);
     assert!(h.state().ui.dialog.is_none());
     assert_eq!(h.state().ui.brightness, opened, "Cancel goes back to the theme Preferences opened with");
-    // OK keeps the theme and the Tools panel's columns.
+    // OK keeps the appearance mode and the Tools panel's columns.
     open(h.state_mut());
     h.run_steps(3);
-    swatch(&h, "Dark");
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("appearanceMode".into(), json!("light"));
     h.run_steps(2);
     h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some("Single Column")).click();
     h.run_steps(2);
@@ -4409,7 +4408,8 @@ fn preferences_interface_sets_the_color_theme_and_tools_panel() {
     h.get_by_label("  OK  ").click();
     h.run_steps(3);
     assert!(h.state().ui.dialog.is_none());
-    assert_eq!(h.state().ui.brightness, Brightness::Dark);
+    assert_eq!(h.state().ui.appearance_mode, crate::theme::AppearanceMode::Light);
+    assert_eq!(h.state().ui.brightness, Brightness::Light);
     assert!(h.state().ui.tools_double_column);
     // The same command the Window menu toggles, with an explicit state for Preferences.
     assert_eq!(h.state_mut().run("window.toolsDoubleColumn", json!({"on": false})).unwrap(), json!(false));

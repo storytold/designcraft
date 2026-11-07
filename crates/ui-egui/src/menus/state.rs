@@ -145,6 +145,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.togglePreview" => app.ui.screen_mode == crate::ScreenMode::Preview,
         "view.togglePresentation" => app.ui.screen_mode == crate::ScreenMode::Presentation,
         "window.brightness" => params.get("brightness").and_then(Value::as_str) == Some(app.ui.brightness.id()),
+        "window.appearanceMode" => params.get("mode").and_then(Value::as_str) == Some(app.ui.appearance_mode.id()),
         "type.storyDirection" => {
             let st = app.session.active()?;
             let sid = st

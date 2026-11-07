@@ -577,10 +577,8 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 designcraft_render::DisplayQuality::High => "high",
             });
             f["uiScale"] = json!((app.ui.ui_scale * 100.0).round());
+            crate::appearance::dialog_fields(&app.ui, &mut f);
             f["autoCollapseIconicPanels"] = json!(app.ui.dock_auto_collapse);
-            // Interface: Cancel goes back to the theme Preferences opened with.
-            f["brightness"] = json!(app.ui.brightness.id());
-            f["openedBrightness"] = json!(app.ui.brightness.id());
             f["toolsColumns"] = json!(if app.ui.tools_double_column { "double" } else { "single" });
             f["richBlack"] = json!(app.ui.rich_black);
             f["dynamicSpelling"] = json!(app.ui.dynamic_spelling);
@@ -1154,10 +1152,11 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "window.brightness" => {
             let b = p.get("brightness").and_then(Value::as_str).and_then(crate::theme::Brightness::parse).unwrap_or(crate::theme::Brightness::Dark);
-            app.ui.brightness = b;
-            app.restyle = true;
+            crate::appearance::pick_theme(app, b);
             Ok(Value::Null)
         }
+        "window.appearanceMode" => crate::appearance::set(app, p),
+        "window.nextAppearanceMode" => Ok(crate::appearance::cycle(app)),
         _ => return None,
     })
 }

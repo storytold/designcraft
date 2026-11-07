@@ -2630,31 +2630,8 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                 }
                 "interface" => {
                     let lang = app.ui.language.clone();
-                    let t = crate::theme::Tokens::get(ui.ctx());
-                    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Appearance")).font(semibold(12.0)));
-                    // Color Theme: a swatch per theme, as InDesign's. A click shows it at once;
-                    // Cancel goes back to the theme Preferences opened with.
-                    ui.horizontal(|ui| {
-                        crate::rtl::label(ui, crate::i18n::tr(&lang, "Color Theme:"));
-                        let cur = d.s("brightness");
-                        for b in crate::theme::Brightness::ALL {
-                            let (r, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-                            let on = cur == b.id();
-                            let swatch = r.shrink(4.0);
-                            ui.painter().rect_filled(swatch, 1.0, crate::theme::Tokens::for_brightness(b).panel);
-                            ui.painter().rect_stroke(swatch, 1.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                            if on || resp.hovered() {
-                                let ring = if on { t.accent_strong } else { t.field_border };
-                                ui.painter().rect_stroke(r.shrink(1.0), 2.0, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
-                            }
-                            let name = crate::i18n::tr(&lang, b.label()).to_string();
-                            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, on, &name));
-                            if resp.on_hover_text(&name).clicked() && !on {
-                                d.fields.insert("brightness".into(), json!(b.id()));
-                                d.fields.insert("applyBrightness".into(), json!(b.id()));
-                            }
-                        }
-                    });
+                    // Appearance mode and the light and dark theme cards (applied on OK).
+                    crate::appearance::preferences_rows(&lang, app.system_theme, ui, d);
                     ui.add_space(8.0);
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Panels")).font(semibold(12.0)));
                     ui.horizontal(|ui| {
@@ -3925,12 +3902,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     {
         d.fields.insert("status".into(), json!(e));
     }
-    // So does Preferences › Interface › Color Theme, as InDesign's.
-    if let Some(b) = d.fields.remove("applyBrightness")
-        && let Err(e) = app.run("window.brightness", json!({"brightness": b}))
-    {
-        d.fields.insert("status".into(), json!(e));
-    }
     if d.id == "newDocument" && result.is_none() {
         crate::new_document::preview(app, &mut d, ctx);
     }
@@ -4080,18 +4051,10 @@ pub fn cancel(app: &mut DesignApp) {
     app.cancel_pdf_import();
     if let Some(d) = d
         && d.id == "preferences"
+        && let Some(lang) = d.fields.get("openedLanguage").and_then(Value::as_str)
+        && lang != app.ui.language
     {
-        if let Some(lang) = d.fields.get("openedLanguage").and_then(Value::as_str)
-            && lang != app.ui.language
-        {
-            let _ = app.run("app.language", json!({"lang": lang}));
-        }
-        // The Color Theme shown while choosing goes back too.
-        if let Some(b) = d.fields.get("openedBrightness").and_then(Value::as_str)
-            && b != app.ui.brightness.id()
-        {
-            let _ = app.run("window.brightness", json!({"brightness": b}));
-        }
+        let _ = app.run("app.language", json!({"lang": lang}));
     }
 }
 
@@ -4354,6 +4317,20 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
         app.cancel_pdf_import();
     }
     confirm_part1(app, d)
+}
+
+/// The appearance fields Preferences was set with, as `window.appearanceMode` takes them: only
+/// the ones that are present.
+fn appearance_params(d: &Dialog) -> Option<Value> {
+    d.fields.contains_key("appearanceMode").then(|| {
+        let mut p = serde_json::Map::new();
+        for (key, field) in [("mode", "appearanceMode"), ("darkTheme", "darkTheme"), ("lightTheme", "lightTheme")] {
+            if let Some(v) = d.fields.get(field) {
+                p.insert(key.into(), v.clone());
+            }
+        }
+        Value::Object(p)
+    })
 }
 
 /// One slice of the dialogs' Apply; later slices take the ids this one doesn't.
@@ -4818,6 +4795,17 @@ fn load_color_profile(app: &mut DesignApp, path: String) -> Result<Value, String
 fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
     match d.id.as_str() {
         "preferences" => {
+            // Check the appearance values before anything is written, and keep the dialog open
+            // when they are wrong.
+            let appearance = appearance_params(&d);
+            if let Some(p) = &appearance
+                && let Err(e) = crate::appearance::validate(p)
+            {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(e));
+                app.ui.dialog = Some(d);
+                return Err(e);
+            }
             let mut prefs = json!({"scaleStrokes": d.b("scaleStrokes"), "dimensionsIncludeStroke": d.b("dimensionsIncludeStroke"), "transformationsAreTotals": d.b("transformationsAreTotals"), "absolutePageNumbers": d.b("absolutePageNumbers"), "highlightHj": d.b("highlightHj"), "highlightKeeps": d.b("highlightKeeps"), "highlightCustomTracking": d.b("highlightCustomTracking"), "highlightSubstitutedFonts": d.b("highlightSubstitutedFonts"), "richBlackOutput": d.b("richBlackOutput"), "typographersQuotes": d.b("typographersQuotes"), "showFontNamesInEnglish": d.b("showFontNamesInEnglish"), "smartTextReflow": d.b("smartTextReflow"),
                     "autocorrect": d.b("autocorrect"), "showAddedText": d.b("showAddedText"), "showNoteAnchors": d.b("showNoteAnchors"),
                     "recoveryMinutes": d.n("recoveryMinutes").unwrap_or(0.5), "linkTextFiles": d.b("linkTextFiles"),
@@ -4865,10 +4853,7 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             };
             app.run(view, json!({}))?;
             app.run("window.richBlack", json!({"on": d.b("richBlack")}))?;
-            // Interface: the theme (already showing, unless set without a click) and the Tools panel.
-            if let Some(b) = d.fields.get("brightness").and_then(Value::as_str).filter(|b| *b != app.ui.brightness.id()) {
-                app.run("window.brightness", json!({"brightness": b}))?;
-            }
+            // Interface: the Tools panel (the appearance mode and themes are set below).
             if d.fields.contains_key("toolsColumns") {
                 app.run("window.toolsDoubleColumn", json!({"on": d.s("toolsColumns") == "double"}))?;
             }
@@ -4877,6 +4862,9 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             }
             if let Some(on) = d.fields.get("autoCollapseIconicPanels").and_then(Value::as_bool) {
                 app.ui.dock_auto_collapse = on;
+            }
+            if let Some(p) = appearance {
+                app.run("window.appearanceMode", p)?;
             }
             if d.fields.contains_key("snap.alignEdges") {
                 let mut snap = json!({

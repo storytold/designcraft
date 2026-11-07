@@ -2265,6 +2265,8 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
                         before.as_object().unwrap().iter().filter(|(k, v)| after.get(k.as_str()) != Some(*v)).map(|(k, _)| k).collect();
                     let changed: Vec<&String> =
                         changed.into_iter().filter(|k| !(opens_a_panel.contains(&id) && arrangement.contains(&k.as_str()))).collect();
+                    // Next Appearance Mode changes the mode, so the theme on screen follows it.
+                    let changed: Vec<&String> = changed.into_iter().filter(|k| !(id == "window.nextAppearanceMode" && *k == "brightness")).collect();
                     if !changed.is_empty() {
                         failed.push(format!("{id} ({context}): changed {changed:?}"));
                     }

@@ -16,6 +16,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 };
 
 pub mod about;
+pub mod appearance;
 pub mod canvas;
 pub mod chrome;
 pub mod control;
@@ -72,7 +73,7 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, SystemThemeFn, WindowFrameFn, WriteFn};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -242,6 +243,8 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
+    /// The system appearance as of the last frame (`None`: unknown), for Auto.
+    pub system_theme: Option<egui::Theme>,
     /// The egui context (set by the first UI pass): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the

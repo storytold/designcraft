@@ -13,6 +13,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod appearance;
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
@@ -229,6 +230,7 @@ fn services() -> Services {
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
         #[cfg(target_os = "macos")]
         pointer: Some(Box::new(pointer::screen_position)),
+        system_theme: appearance::service(),
         ..Default::default()
     }
 }

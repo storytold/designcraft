@@ -1022,6 +1022,19 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Alternating Row Fills",
         ["Alternating Row Fills", "Fonds de ligne en alternance", "Alternating Row Fills", "Alternating Row Fills", "交替行填色"],
     ),
+    // Appearance modes (Preferences › Interface, the header button, Window menu).
+    ("Appearance Mode", ["Erscheinungsbild-Modus", "Mode d'apparence", "Modo de apariencia", "外観モード", "外观模式"]),
+    (
+        "Next Appearance Mode",
+        ["Nächster Erscheinungsbild-Modus", "Mode d'apparence suivant", "Siguiente modo de apariencia", "次の外観モード", "下一个外观模式"],
+    ),
+    (
+        "Sync with system",
+        ["Mit System synchronisieren", "Synchroniser avec le système", "Sincronizar con el sistema", "システムと同期", "与系统同步"],
+    ),
+    ("Dark Theme", ["Dunkles Design", "Thème sombre", "Tema oscuro", "ダークテーマ", "深色主题"]),
+    ("Light Theme", ["Helles Design", "Thème clair", "Tema claro", "ライトテーマ", "浅色主题"]),
+    ("Active", ["Aktiv", "Actif", "Activo", "使用中", "当前"]),
     ("Appearance", ["Appearance", "Apparence", "Appearance", "Appearance", "外观"]),
     ("Apply Gradient", ["Apply Gradient", "Appliquer le dégradé", "Apply Gradient", "Apply Gradient", "应用渐变"]),
     ("Apply Parent", ["Apply Parent", "Appliquer le gabarit", "Apply Parent", "Apply Parent", "应用主页"]),

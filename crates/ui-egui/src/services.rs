@@ -19,6 +19,10 @@ pub type WindowFrameFn = Box<dyn FnMut()>;
 /// the window's `inner_rect`. `None` when the system doesn't say.
 pub type PointerFn = Box<dyn Fn() -> Option<egui::Pos2>>;
 
+/// The system's light or dark appearance when egui can't report it (for example on Linux, where
+/// winit has no theme for many desktops). `None` means no answer.
+pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
+
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
@@ -49,4 +53,6 @@ pub struct Services {
     /// macOS), so without it a drop can't tell which frame it landed on. `None`: a drop without
     /// pointer events lands in the middle of the view.
     pub pointer: Option<PointerFn>,
+    /// The system appearance, asked every frame (cheap: the desktop app reads a cached value).
+    pub system_theme: Option<SystemThemeFn>,
 }
