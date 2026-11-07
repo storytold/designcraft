@@ -60,7 +60,7 @@ impl<'r> Importer<'r> {
         if let Some(s) = e.get("Self") {
             self.item_ids.insert(s.to_string(), id);
         }
-        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let layer = e.get("ItemLayer").and_then(|l| self.layer_ids.get(l)).copied().or(self.parent_layer).unwrap_or_else(|| self.layers[0].id);
         let path = e.prop_el("PathGeometry").map(path_of).unwrap_or_default();
         let mut it = Item::new(id, layer, shape, path);
         it.xf = parent * parse_affine(e.get("ItemTransform"));
@@ -223,11 +223,13 @@ impl<'r> Importer<'r> {
             }
             "Group" => {
                 let mut kids = Vec::new();
+                let outer = self.parent_layer.replace(item.layer);
                 for c in e.elements() {
                     if let Some(k) = self.item(c, Affine::IDENTITY) {
                         kids.push(Arc::new(k));
                     }
                 }
+                self.parent_layer = outer;
                 item.content = Content::Group { items: kids };
                 item.fill = Fill::none();
                 item.stroke = Stroke::none();
@@ -251,12 +253,14 @@ impl<'r> Importer<'r> {
                     }
                 } else {
                     // Page items pasted into this frame (Paste Into).
+                    let outer = self.parent_layer.replace(item.layer);
                     let kids: Vec<Arc<Item>> = e
                         .elements()
                         .filter(|c| matches!(c.local(), "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame"))
                         .filter_map(|c| self.item(c, Affine::IDENTITY))
                         .map(Arc::new)
                         .collect();
+                    self.parent_layer = outer;
                     if !kids.is_empty() {
                         item.content = Content::Group { items: kids };
                     }
