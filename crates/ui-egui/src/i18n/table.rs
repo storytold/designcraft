@@ -146,6 +146,26 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Save a Copy…", ["Kopie speichern …", "Enregistrer une copie…", "Guardar una copia…", "コピーを保存…", "保存副本…"]),
     ("Revert", ["Zurück zur letzten Version", "Version précédente", "Volver a la versión guardada", "復帰", "恢复到上次保存"]),
     ("Place…", ["Platzieren …", "Importer…", "Colocar…", "配置…", "置入…"]),
+    (
+        "Image import cancelled while a dialog is open",
+        [
+            "Bildimport bei geöffnetem Dialog abgebrochen",
+            "Importation des images annulée car une boîte de dialogue est ouverte",
+            "Importación de imágenes cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため画像の読み込みをキャンセルしました",
+            "对话框打开时已取消图像导入",
+        ],
+    ),
+    (
+        "Place cancelled while a dialog is open",
+        [
+            "Platzieren bei geöffnetem Dialog abgebrochen",
+            "Importation annulée car une boîte de dialogue est ouverte",
+            "Colocación cancelada mientras hay un diálogo abierto",
+            "ダイアログが開いているため配置をキャンセルしました",
+            "对话框打开时已取消置入",
+        ],
+    ),
     ("Export PDF…", ["PDF exportieren …", "Exporter en PDF…", "Exportar PDF…", "PDF を書き出し…", "导出PDF…"]),
     ("Print…", ["Drucken …", "Imprimer…", "Imprimir…", "プリント…", "打印…"]),
     ("Document Setup…", ["Dokument einrichten …", "Format de document…", "Ajustar documento…", "ドキュメント設定…", "文档设置…"]),

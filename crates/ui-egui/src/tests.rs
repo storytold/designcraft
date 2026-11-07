@@ -914,10 +914,20 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     let r = app.open_dropped_at(&path.to_string_lossy(), Some(inside));
     let _ = std::fs::remove_file(&path);
     assert_eq!(r.unwrap()["id"].as_u64(), Some(frame), "the frame under the pointer is filled");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.spreads[0].items.len(), 1, "no new object");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
     assert!(canvas::drop_frame(&app, Some(outside)).is_none(), "an empty spot on the page is no frame");
+    // Dropped again, it replaces the image there rather than loading the place cursor.
+    let path = dropped_png("dropframe-again");
+    app.open_dropped_at(&path.to_string_lossy(), Some(inside)).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "still no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else { panic!("a graphic frame") };
+    assert!(d.assets[&g.asset].name.contains("dropframe-again"), "the frame shows the new image");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
     // Text dropped there gets a frame of its own and leaves the image in place.
     let text = std::env::temp_dir().join(format!("designcraft-ui-{}-dropframe.txt", std::process::id()));
     std::fs::write(&text, "Dropped words").unwrap();
@@ -927,6 +937,15 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.spreads[0].items.len(), 2, "the text has a new frame");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
+}
+
+/// The raw input of a drop without pointer events, with the window's content at `inner`.
+#[cfg(not(target_arch = "wasm32"))]
+fn pointerless_drop(path: &std::path::Path, inner: egui::Rect) -> egui::RawInput {
+    let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, inner.size())), ..Default::default() };
+    raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(inner), ..Default::default() });
+    raw.dropped_files.push(dropped_file(path));
+    raw
 }
 
 /// A file dragged in from the Finder brings no pointer events (winit sends none during a drag on
@@ -941,15 +960,16 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         let window = egui::vec2(300.0, 200.0);
         app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
         let path = dropped_png("drop-system-pointer");
-        app.pending_drops.push(crate::PendingDrop { path: path.to_string_lossy().into_owned(), pointer: None, generation: app.input_generation() });
         let ctx = egui::Context::default();
         ctx.set_zoom_factor(zoom);
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0));
-        let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, rect.size())), ..Default::default() };
-        raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(rect), ..Default::default() });
-        ctx.run_ui(raw, |ui| app.take_pending_drops(ui.ctx())).textures_delta.clear();
+        // The zoom takes effect from the next pass, as it has by the time the system drops a file.
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let mut raw = pointerless_drop(&path, egui::Rect::from_min_size(egui::Pos2::ZERO + window, egui::vec2(1400.0, 900.0)));
+        app.raw_input_hook(&ctx, &mut raw);
+        ctx.run_ui(raw, |_| app.take_pending_drops()).textures_delta.clear();
         let _ = std::fs::remove_file(&path);
         assert!(app.pending_drops.is_empty());
+        assert!(app.session.loaded.is_none(), "nothing waits in the place cursor at {zoom}");
         let d = &app.session.doc().unwrap().doc;
         assert_eq!(d.spreads[0].items.len(), 1, "no new object at {zoom}");
         let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
@@ -957,6 +977,96 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         };
         assert!(d.assets[&g.asset].name.contains("drop-system-pointer"));
     }
+}
+
+/// A drop without pointer events keeps the place the system gave when its input arrived,
+/// converted with that input's window: the pointer and the window moving before the UI pass that
+/// places it don't move the drop.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_pointerless_drop_keeps_the_system_pointer_of_its_own_input() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let at = std::rc::Rc::new(std::cell::Cell::new(inside));
+    let reported = at.clone();
+    app.services.pointer = Some(Box::new(move || Some(reported.get())));
+    let ctx = egui::Context::default();
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let path = dropped_png("drop-own-input");
+    let mut raw = pointerless_drop(&path, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    // Before the pass that places it, the window moves and the pointer leaves the frame; a later
+    // input with no drop doesn't ask the system again.
+    let moved = window.translate(egui::vec2(50.0, 40.0));
+    at.set(outside + moved.min.to_vec2());
+    let mut later = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, moved.size())), ..Default::default() };
+    later.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(moved), ..Default::default() });
+    app.raw_input_hook(&ctx, &mut later);
+    ctx.run_ui(later, |_| app.take_pending_drops()).textures_delta.clear();
+    let _ = std::fs::remove_file(&path);
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+        panic!("the file fills the frame it was dropped on")
+    };
+    assert!(d.assets[&g.asset].name.contains("drop-own-input"));
+}
+
+/// Two drops that arrive before one UI pass stay separate: the first still fills the frame it was
+/// dropped on, and the second, off any frame, loads the place cursor. Merged, they'd both queue.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn separate_drops_before_one_pass_are_not_one_batch() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let at = std::rc::Rc::new(std::cell::Cell::new(inside));
+    let reported = at.clone();
+    app.services.pointer = Some(Box::new(move || Some(reported.get())));
+    let ctx = egui::Context::default();
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let (first, second) = (dropped_png("separate-drop-a"), dropped_png("separate-drop-b"));
+    let mut raw = pointerless_drop(&first, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    at.set(outside);
+    let mut raw = pointerless_drop(&second, window);
+    app.raw_input_hook(&ctx, &mut raw);
+    assert_eq!(app.pending_drops.len(), 2);
+    ctx.run_ui(raw, |_| app.take_pending_drops()).textures_delta.clear();
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+    let d = &app.session.doc().unwrap().doc;
+    let designcraft_doc::Content::Graphic(g) = &d.item(designcraft_doc::ItemId(frame)).unwrap().content else {
+        panic!("the first drop fills the frame it was dropped on")
+    };
+    assert!(d.assets[&g.asset].name.contains("separate-drop-a"));
+    let loaded = app.session.loaded.as_ref().expect("the second drop loads the place cursor");
+    assert!(d.assets[&loaded.asset].name.contains("separate-drop-b"));
+    assert!(app.session.loaded_queue.is_empty());
+}
+
+/// A filled compound path (Object > Compound Paths > Make) is a frame a dropped image fills, as
+/// in InDesign, through its ring and not its hole.
+#[test]
+fn a_graphic_dropped_on_a_compound_path_fills_it() {
+    let (mut app, frame, _, _) = app_with_drop_frame();
+    let hole = app.run("frame.create", json!({"rect": [66, 66, 106, 106]})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(app.run("object.makeCompoundPath", json!({"ids": [frame, hole]})).unwrap()["id"].as_u64(), Some(frame));
+    app.run("object.fill", json!({"ids": [frame], "swatch": "[Black]"})).unwrap();
+    let (view, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+    let st = app.session.active().unwrap();
+    let layout = designcraft_tools::CanvasLayout::new(&st.doc, false);
+    let slot = layout.slot(designcraft_doc::SpreadRef::Doc(0)).unwrap();
+    let screen = |x, y| canvas::Xf::new(rect, view).to_screen(slot.to_canvas(designcraft_geom::Point::new(x, y)));
+    // On the ring, between the outer edge (36) and the hole (66); the hole's middle is no frame.
+    let ring = screen(50.0, 50.0);
+    assert!(canvas::drop_frame(&app, Some(screen(86.0, 86.0))).is_none(), "the hole");
+    let path = dropped_png("drop-compound");
+    let r = app.open_dropped_at(&path.to_string_lossy(), Some(ring));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(r.unwrap()["id"].as_u64(), Some(frame), "the compound path under the pointer is filled");
+    let d = &app.session.doc().unwrap().doc;
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    let it = d.item(designcraft_doc::ItemId(frame)).unwrap();
+    assert!(matches!(it.content, designcraft_doc::Content::Graphic(_)));
+    assert_eq!(it.path.subpaths.len(), 2, "it keeps its hole");
 }
 
 #[test]
@@ -970,7 +1080,8 @@ fn a_locked_frame_is_not_a_drop_target() {
     r.unwrap();
     let d = &app.session.doc().unwrap().doc;
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned), "the locked frame stays empty");
-    assert_eq!(d.spreads[0].items.len(), 2, "the graphic became a new object");
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object yet");
+    assert!(app.session.loaded.is_some(), "the image waits in the place cursor");
 }
 
 #[test]
@@ -984,8 +1095,10 @@ fn only_the_first_graphic_of_a_drop_fills_the_frame() {
     let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
     assert_eq!(a.unwrap()["id"].as_u64(), Some(frame));
     assert_ne!(b.unwrap()["id"].as_u64(), Some(frame), "the second graphic doesn't replace the first");
+    // An image dropped off a frame that takes it waits in the place cursor.
+    assert!(app.session.loaded.is_some(), "the second image waits in the place cursor");
     let d = &app.session.doc().unwrap().doc;
-    assert_eq!(d.spreads[0].items.len(), 2, "the second graphic is a new object");
+    assert_eq!(d.spreads[0].items.len(), 1, "no new object");
     assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)));
 }
 
@@ -1001,9 +1114,119 @@ fn a_file_dropped_while_a_parent_is_open_lands_on_the_parent() {
     let r = app.open_dropped(&path.to_string_lossy());
     let _ = std::fs::remove_file(&path);
     r.unwrap();
+    // The image waits in the place cursor; a click on the parent spread places it there.
+    assert!(app.session.loaded.is_some());
+    let st = app.session.active().unwrap();
+    let at = designcraft_tools::CanvasLayout::new(&st.doc, st.editing_parents)
+        .slot(designcraft_doc::SpreadRef::Parent(0))
+        .unwrap()
+        .to_canvas(designcraft_geom::Point::new(50.0, 50.0));
+    let v = designcraft_engine::ViewInfo::at_zoom(1.0);
+    for kind in [designcraft_tools::PointerKind::Down, designcraft_tools::PointerKind::Up] {
+        app.session.pointer(&designcraft_tools::PointerEvent::new(kind, at.x, at.y), v).unwrap();
+    }
     let d = &app.session.doc().unwrap().doc;
     assert_eq!(d.parents[0].items.len(), 1, "the graphic is on the parent spread");
     assert!(d.spreads.iter().all(|s| s.items.is_empty()), "no document page gets it");
+}
+
+/// The names of the images in the place cursor, the one a click places first.
+fn loaded_names(app: &DesignApp) -> Vec<String> {
+    let doc = &app.session.doc().unwrap().doc;
+    app.session.loaded.iter().chain(app.session.loaded_queue.iter()).map(|g| doc.assets[&g.asset].name.clone()).collect()
+}
+
+/// One image dropped where no frame can take it loads the place cursor instead of being placed:
+/// the next click places it. A frame selected doesn't take it, and another image dropped
+/// meanwhile queues after it.
+#[test]
+fn a_single_image_dropped_off_a_frame_loads_the_place_cursor() {
+    let (mut app, frame, _, outside) = app_with_drop_frame();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let first = dropped_png("drop-loads-a");
+    let second = dropped_png("drop-loads-b");
+    app.open_dropped_at(&first.to_string_lossy(), Some(outside)).unwrap();
+    assert_eq!(app.session.tool_id(), "placeGun");
+    assert_eq!(loaded_names(&app).len(), 1);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 1, "nothing placed yet");
+    app.run("selection.set", json!({"ids": [frame]})).unwrap();
+    app.open_dropped_at(&second.to_string_lossy(), Some(outside)).unwrap();
+    let _ = (std::fs::remove_file(&first), std::fs::remove_file(&second));
+    let names = loaded_names(&app);
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].contains("drop-loads-a") && names[1].contains("drop-loads-b"), "{names:?}");
+    let d = &app.session.doc().unwrap().doc;
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned));
+    app.run("place.drop", json!({"x": 300, "y": 300})).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), 2, "the click placed the first");
+    assert_eq!(app.session.tool_id(), "placeGun", "the second is still loaded");
+}
+
+/// Several images dropped together load the place cursor in the order they came, even over a
+/// frame; a file that isn't an image keeps its own drop behaviour (text gets a frame).
+#[test]
+fn several_dropped_images_load_the_place_cursor_in_order() {
+    let (mut app, frame, inside, _) = app_with_drop_frame();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let a = dropped_png("drop-many-a");
+    let b = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-many-b.svg", std::process::id()));
+    std::fs::write(&b, br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"##).unwrap();
+    let c = dropped_png("drop-many-c");
+    let text = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-many.txt", std::process::id()));
+    std::fs::write(&text, "Dropped words").unwrap();
+    let paths = [&a, &text, &b, &c].map(|p| p.to_string_lossy().to_string());
+    app.open_dropped_batch(paths.iter().map(|p| (p.clone(), Some(inside))).collect());
+    for p in [&a, &b, &c, &text] {
+        let _ = std::fs::remove_file(p);
+    }
+    let names = loaded_names(&app);
+    assert_eq!(names.len(), 3, "{names:?}");
+    for (name, want) in names.iter().zip(["drop-many-a", "drop-many-b", "drop-many-c"]) {
+        assert!(name.contains(want), "{names:?}");
+    }
+    assert_eq!(app.session.tool_id(), "placeGun");
+    let d = &app.session.doc().unwrap().doc;
+    assert!(matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Unassigned), "the frame isn't filled");
+    assert_eq!(d.spreads[0].items.len(), 2, "the text got a frame of its own");
+    // Clicks place them one by one; Escape unloads the rest.
+    app.run("place.drop", json!({"x": 300, "y": 300})).unwrap();
+    assert_eq!(app.session.loaded_queue.len(), 1);
+    let mods = designcraft_tools::Mods::default();
+    app.session.tool_key(designcraft_tools::ToolKey::Escape, mods, designcraft_engine::ViewInfo::at_zoom(1.0)).unwrap();
+    assert!(app.session.loaded.is_none() && app.session.loaded_queue.is_empty());
+    assert_eq!(app.session.tool_id(), "selection");
+}
+
+/// A drop is handled in the order its files came, each at its own pointer: an image dropped on a
+/// frame before a document fills that frame in the document that was open, not in the one the
+/// drop opens after it.
+#[test]
+fn a_mixed_drop_keeps_its_order() {
+    let (mut app, frame, inside, outside) = app_with_drop_frame();
+    let mut other = DesignApp::new(Session::new(), Services::default());
+    other.run("file.new", json!({})).unwrap();
+    let document = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-mixed.designcraft", std::process::id()));
+    other.run("file.saveAs", json!({"path": document})).unwrap();
+    let image = dropped_png("drop-mixed");
+    let text = std::env::temp_dir().join(format!("designcraft-ui-{}-drop-mixed.txt", std::process::id()));
+    std::fs::write(&text, "Dropped words").unwrap();
+    let drops = vec![
+        (image.to_string_lossy().to_string(), Some(inside)),
+        (text.to_string_lossy().to_string(), Some(outside)),
+        (document.to_string_lossy().to_string(), Some(outside)),
+    ];
+    app.open_dropped_batch(drops);
+    for p in [&image, &text, &document] {
+        let _ = std::fs::remove_file(p);
+    }
+    assert_eq!(app.session.documents().len(), 2, "the document opened last");
+    let d = &app.session.documents()[0].doc;
+    assert!(
+        matches!(d.item(designcraft_doc::ItemId(frame)).unwrap().content, designcraft_doc::Content::Graphic(_)),
+        "the image filled the frame in the document open before the drop"
+    );
+    assert_eq!(d.spreads[0].items.len(), 2, "the text got a frame of its own");
+    assert!(app.session.loaded.is_none(), "nothing waits in the place cursor");
 }
 
 #[test]
