@@ -100,6 +100,7 @@ impl DesignApp {
             custom_titlebar: false,
             window_maximized: false,
             pending_window_commands: vec![],
+            sent_title: String::new(),
             native_menu: false,
             native_shortcuts: Default::default(),
             keymap: crate::keys::new_keymap(craft_keymap::Overrides::new()),
