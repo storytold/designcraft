@@ -2,8 +2,8 @@
 //! file with some layers off (an appended catalog whose default configuration turns them off,
 //! which the PDF renderer honours).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, Weak};
 
 use craft_pdf::syntax::Pdf;
 use craft_pdf::syntax::object::{Array, Dict, MaybeRef, Name, ObjRef, Object, ObjectIdentifier};
@@ -231,21 +231,43 @@ pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Shared copies of layer variants (by source address and hidden set).
+/// Shared copies of layer variants (by source address and hidden set). A variant keeps its
+/// identity (the same `Arc`) for as long as anything holds it: the image cache keys decodes by
+/// the bytes' address, so a variant rebuilt as a new `Arc` would miss decodes it already has and
+/// be decoded again, every frame once there are more variants on screen than are kept here.
 pub(crate) fn layered(data: &Arc<Vec<u8>>, hidden: &[String]) -> Option<Arc<Vec<u8>>> {
     type Key = (usize, Vec<String>);
-    static CACHE: Mutex<Option<HashMap<Key, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>>> = Mutex::new(None);
+    /// Variants by key: the source (whose liveness says the address still means that file) and
+    /// the variant (`None`: the file couldn't be rewritten). Both weak; `KEEP` holds recent ones.
+    type Known = HashMap<Key, (Weak<Vec<u8>>, Option<Weak<Vec<u8>>>)>;
+    static CACHE: Mutex<Option<(Known, VecDeque<(Key, Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>)>> = Mutex::new(None);
+    /// How many recent variants are kept alive here (each is a copy of its file).
+    const KEEP: usize = 64;
     let key = (Arc::as_ptr(data) as usize, hidden.to_vec());
     let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let map = c.get_or_insert_with(HashMap::new);
-    if let Some(v) = map.get(&key) {
-        return v.1.clone();
-    }
-    if map.len() > 64 {
-        map.clear();
+    let (known, keep) = c.get_or_insert_with(Default::default);
+    if let Some((source, variant)) = known.get(&key)
+        && source.upgrade().is_some_and(|s| Arc::ptr_eq(&s, data))
+    {
+        // `None`: this file couldn't be rewritten with these layers off.
+        if let Some(v) = variant.as_ref()?.upgrade() {
+            return Some(v);
+        }
     }
     let v = pdf_hide_layers(data, hidden).map(Arc::new);
-    map.insert(key, (data.clone(), v.clone()));
+    known.insert(key.clone(), (Arc::downgrade(data), v.as_ref().map(Arc::downgrade)));
+    keep.push_back((key, data.clone(), v.clone()));
+    while keep.len() > KEEP {
+        keep.pop_front();
+    }
+    // Forget variants nothing holds any more, and those of files that are gone.
+    if known.len() > 4 * KEEP {
+        known.retain(|_, (source, variant)| source.strong_count() > 0 && variant.as_ref().is_none_or(|v| v.strong_count() > 0));
+        // Failures are cheap to find again; a hostile run of hidden sets doesn't grow this.
+        if known.len() > 4 * KEEP {
+            known.retain(|_, (_, variant)| variant.is_some());
+        }
+    }
     v
 }
 
@@ -253,6 +275,55 @@ pub(crate) fn layered(data: &Arc<Vec<u8>>, hidden: &[String]) -> Option<Arc<Vec<
 mod tests {
     use super::*;
     use craft_pdf::syntax::reader::{Reader, ReaderExt};
+
+    /// A one-page PDF with two layers, Blue and Red.
+    fn two_layer_pdf() -> Vec<u8> {
+        let content = "/OC /a BDC 0 0 1 rg 0 0 50 100 re f EMC /OC /b BDC 1 0 0 rg 50 0 50 100 re f EMC";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R/OCProperties<</OCGs[5 0 R 6 0 R]/D<</Order[5 0 R 6 0 R]/Name(Default)>>>>>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 5 0 R/b 6 0 R>>>>/Contents 4 0 R>>".to_string(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/OCG/Name(Blue)>>".to_string(),
+            "<</Type/OCG/Name(Red)>>".to_string(),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, o).as_bytes());
+        }
+        let x = out.len();
+        let mut t = format!("xref\n0 {}\n0000000000 65535 f\r\n", objs.len() + 1);
+        for o in offs {
+            t.push_str(&format!("{o:010} 00000 n\r\n"));
+        }
+        t.push_str(&format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1));
+        out.extend_from_slice(t.as_bytes());
+        out
+    }
+
+    /// A variant something still holds comes back as the same `Arc` however many others were made
+    /// since, so decodes keyed by its address keep matching; one nothing holds is made again.
+    #[test]
+    fn a_held_layer_variant_keeps_its_identity_past_the_cache() {
+        let data = Arc::new(two_layer_pdf());
+        let blue = vec!["Blue".to_string()];
+        let first = layered(&data, &blue).expect("Blue can be hidden");
+        assert!(Arc::ptr_eq(&first, &layered(&data, &blue).unwrap()));
+        // More variants than are kept, each with a set of its own.
+        for i in 0..200 {
+            let _ = layered(&data, &["Red".to_string(), format!("unknown {i}")]);
+        }
+        assert!(Arc::ptr_eq(&first, &layered(&data, &blue).unwrap()), "still the same variant");
+        let red = vec!["Red".to_string()];
+        let weak = Arc::downgrade(&layered(&data, &red).unwrap());
+        for i in 0..200 {
+            let _ = layered(&data, &["Blue".to_string(), format!("other {i}")]);
+        }
+        assert_eq!(weak.strong_count(), 0, "a variant nothing holds is let go");
+        assert!(layered(&data, &red).is_some(), "and made again when asked for");
+    }
 
     #[test]
     fn trailer_lookup_does_not_take_guard_values_from_xref_comments() {
