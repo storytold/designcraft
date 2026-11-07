@@ -157,6 +157,45 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
     ContextMenu::Object
 }
 
+/// The button under screen point `pos` (#1798): the frontmost item there, or a button inside it
+/// — in a group, or the shown state of a multi-state object.
+pub(super) fn button_at(app: &DesignApp, rect: Rect, pos: Pos2) -> Option<designcraft_doc::ItemId> {
+    let v = app.view()?;
+    let (id, sp) = item_at(app, Xf::new(rect, v).to_canvas(pos), v.zoom)?;
+    let it = app.session.active()?.doc.item(id)?;
+    designcraft_doc::hit_descendant(it, sp, 4.0 / v.zoom.max(1e-6), &|c| c.button.is_some())
+}
+
+/// Whether a button's URL may leave the app: web and mail links only, so a document can't reach
+/// `file:`, `smb:` or custom scheme handlers through the browser.
+fn opens_in_browser(url: &str) -> bool {
+    let l = url.trim().to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://") || l.starts_with("mailto:")
+}
+
+/// Presentation mode: a click on a button. The engine runs the action (`button.press`: a state
+/// action shows the state) and says where the view goes; the view follows here.
+pub(super) fn press_button(app: &mut DesignApp, id: designcraft_doc::ItemId) {
+    let r = match app.run("button.press", json!({"id": id.0})) {
+        Ok(r) => r,
+        Err(e) => {
+            app.status_error("Buttons", e);
+            return;
+        }
+    };
+    if let Some(page) = r["page"].as_u64() {
+        super::go_to_page(app, page as usize);
+    } else if let Some(step) = r["relative"].as_i64() {
+        super::step_spread(app, step as isize);
+    } else if let Some(url) = r["url"].as_str() {
+        if opens_in_browser(url) {
+            app.ui.pending_urls.push(url.to_string());
+        } else {
+            app.status(format!("Buttons: {url} isn't a web or mail address, so it wasn't opened"));
+        }
+    }
+}
+
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
 fn item_at(app: &DesignApp, p: Point, zoom: f64) -> Option<(designcraft_doc::ItemId, Point)> {
     let st = app.session.active()?;
@@ -562,4 +601,18 @@ pub(super) fn press_count(last: Option<Clicks>, pos: Pos2, now: f64, delay: f64,
 pub(super) fn release_clicks(press: Clicks, pos: Pos2, now: f64, dist: f32) -> Clicks {
     let n = if (pos - press.pos).length() <= dist { press.n } else { 0 };
     Clicks { at: now, pos, n }
+}
+
+#[cfg(test)]
+mod button_tests {
+    /// Only web and mail links open; file, network share and custom schemes don't (#1798 review).
+    #[test]
+    fn only_web_and_mail_links_open() {
+        for ok in ["https://example.com", "http://example.com/a?b=c", "MAILTO:someone@example.com", "  https://x "] {
+            assert!(super::opens_in_browser(ok), "{ok}");
+        }
+        for bad in ["file:///etc/passwd", "smb://server/share", "x-custom://run", "javascript:alert(1)", "", "example.com"] {
+            assert!(!super::opens_in_browser(bad), "{bad}");
+        }
+    }
 }

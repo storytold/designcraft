@@ -1,14 +1,37 @@
 //! Interactive PDF forms (Buttons and Forms: text fields, check boxes, combo and list boxes,
-//! signature fields) and media (placed video and sound). krilla writes neither, so they're added
-//! as an incremental update: widget and screen annotations on their pages, the page `/Annots`, the
-//! catalog `/AcroForm`, and the media files embedded for rendition actions.
+//! signature fields), media (placed video and sound) and state buttons (Go To State, Next and
+//! Previous State on a multi-state object whose states export as layers). krilla writes none of
+//! these, so they're added as an incremental update: widget, screen and link annotations on
+//! their pages, the page `/Annots`, the catalog `/AcroForm`, and the media files embedded for
+//! rendition actions.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use designcraft_doc::{Document, FieldKind, FormField, Item, MediaOptions};
+use designcraft_doc::{ButtonAction, Document, FieldKind, FormField, Item, ItemId, MediaOptions};
 
 use crate::export::Sheet;
 use crate::transitions::{bracketed, int_after, object, rfind};
+
+/// A button on an output page whose action switches a multi-state object's layers: (page index,
+/// PDF rectangle, name, the object, what to show).
+pub(crate) type PlacedStateButton = (usize, [f64; 4], String, ItemId, StateSwitch);
+
+/// What a state button's `SetOCGState` action does (#1798). PDF has no "advance" action, so Next
+/// and Previous State are exact only on a two-state object, where they toggle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StateSwitch {
+    /// Show this state (0-based), hiding the others.
+    Show(usize),
+    /// Swap the two states of a two-state object.
+    Toggle,
+}
+
+/// The name of the optional content group holding state `index` of multi-state object `id`;
+/// [`add_fields`] finds the group by it.
+pub(crate) fn state_layer_name(id: ItemId, index: usize) -> String {
+    format!("dc-state:{}:{index}", id.0)
+}
 
 /// A field placed on an output page: (page index, PDF rectangle, field, border width, 0 when the
 /// item has no stroke).
@@ -42,6 +65,125 @@ pub(crate) fn collect(doc: &Document, sheets: &[Sheet]) -> Vec<Placed> {
             out.push((pi, r, f.clone(), bw));
         }
     });
+    out
+}
+
+/// The state buttons of every exported page, and a warning for each button a PDF can't express:
+/// Next or Previous State on an object with three or more states, or an action on an object that
+/// isn't exported or is no longer multi-state (`items` lists what [`visit`] reaches).
+pub(crate) fn collect_state_buttons(doc: &Document, sheets: &[Sheet]) -> (Vec<PlacedStateButton>, Vec<String>) {
+    let mut states: HashMap<ItemId, usize> = HashMap::new();
+    visit(doc, sheets, |_, _, it| {
+        if !it.states.is_empty() {
+            states.insert(it.id, it.states.len());
+        }
+    });
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    visit(doc, sheets, |pi, r, it| {
+        let (object, switch) = match &it.button {
+            Some(ButtonAction::GoToState { object, state }) => (*object, Some(StateSwitch::Show(*state))),
+            Some(ButtonAction::GoToNextState { object, .. } | ButtonAction::GoToPreviousState { object, .. }) => (*object, None),
+            _ => return,
+        };
+        let name = if it.name.is_empty() { format!("Button {}", it.id) } else { it.name.clone() };
+        let Some(&count) = states.get(&object) else {
+            warnings.push(format!("{name}: its multi-state object isn't on an exported page, so the button was left out"));
+            return;
+        };
+        let switch = match switch {
+            Some(StateSwitch::Show(i)) if i < count => StateSwitch::Show(i),
+            Some(StateSwitch::Show(i)) => {
+                warnings.push(format!("{name}: state {} doesn't exist, so the button was left out", i.saturating_add(1)));
+                return;
+            }
+            None if count == 2 => StateSwitch::Toggle,
+            _ => {
+                warnings.push(format!(
+                    "{name}: Go To Next/Previous State on an object with {count} states can't be expressed in PDF (only two states toggle), so the button was left out"
+                ));
+                return;
+            }
+        };
+        out.push((pi, r, name, object, switch));
+    });
+    (out, warnings)
+}
+
+/// The optional content groups of the written PDF by name, as `n g R` references.
+fn groups_by_name(pdf: &[u8]) -> HashMap<String, String> {
+    use hayro_syntax::object::{Name, Object};
+    let mut out = HashMap::new();
+    let Ok(parsed) = hayro_syntax::Pdf::new(pdf.to_vec()) else { return out };
+    for object in parsed.objects() {
+        let Object::Dict(dict) = object else { continue };
+        if dict.get::<Name<'_>>(b"Type").as_ref().map(AsRef::as_ref) != Some(b"OCG") {
+            continue;
+        }
+        let (Some(name), Some(id)) = (dict.get::<hayro_syntax::object::String<'_>>(b"Name"), dict.obj_id()) else { continue };
+        out.insert(String::from_utf8_lossy(name.as_bytes()).into_owned(), format!("{} {} R", id.obj_number, id.gen_number));
+    }
+    out
+}
+
+/// How many states a multi-state object may have in a PDF before the lookup stops.
+const MAX_STATES: usize = 4096;
+
+/// The objects that make page `page_ref` list the annotations `ids` after its own, `(object
+/// number, body)`: the page itself with a new or longer inline `/Annots`, or its indirect
+/// `/Annots` array re-stated with the ids added. Nothing for an empty `ids`.
+fn page_annots(pdf: &[u8], page_ref: usize, ids: &[usize]) -> Option<Vec<(usize, String)>> {
+    if ids.is_empty() {
+        return Some(Vec::new());
+    }
+    let refs: String = ids.iter().map(|i| format!(" {i} 0 R")).collect();
+    let body = String::from_utf8_lossy(&pdf[object(pdf, page_ref)?]).to_string();
+    if let Some(a) = body.find("/Annots[") {
+        let close = a + body[a..].find(']')?;
+        return Some(vec![(page_ref, format!("{}{refs}{}", &body[..close], &body[close..]).trim().to_string())]);
+    }
+    if let Some(arr_id) = int_after(&body, "/Annots") {
+        // An indirect array: re-state it with the annotations added.
+        let arr = String::from_utf8_lossy(&pdf[object(pdf, arr_id)?]).to_string();
+        let close = arr.rfind(']')?;
+        return Some(vec![(arr_id, format!("{}{refs}{}", arr[..close].trim(), &arr[close..]).trim().to_string())]);
+    }
+    let close = body.rfind(">>")?;
+    Some(vec![(page_ref, format!("{}/Annots[{}]{}", &body[..close], refs.trim(), &body[close..]).trim().to_string())])
+}
+
+/// The link annotation of each state button, `(page index, dictionary)`: its `SetOCGState`
+/// action turns the object's state layers off and the chosen one on, or toggles the two of a
+/// two-state object. Buttons whose layers aren't in `pdf` are skipped.
+fn state_button_annotations(pdf: &[u8], buttons: &[PlacedStateButton], kids: &[usize]) -> Vec<(usize, String)> {
+    if buttons.is_empty() {
+        return Vec::new();
+    }
+    let groups = groups_by_name(pdf);
+    let mut out = Vec::new();
+    for (page, r, name, object, switch) in buttons {
+        let Some(&page_ref) = kids.get(*page) else { continue };
+        let refs: Vec<&str> = (0..MAX_STATES).map_while(|i| groups.get(&state_layer_name(*object, i)).map(String::as_str)).collect();
+        let state = match switch {
+            StateSwitch::Show(i) => {
+                let Some(on) = refs.get(*i) else { continue };
+                format!("/OFF {} /ON {on}", refs.join(" "))
+            }
+            StateSwitch::Toggle if refs.len() == 2 => format!("/Toggle {}", refs.join(" ")),
+            StateSwitch::Toggle => continue,
+        };
+        out.push((
+            *page,
+            format!(
+                "<</Type/Annot/Subtype/Link/Rect[{:.2} {:.2} {:.2} {:.2}]/P {page_ref} 0 R/F 4/Border[0 0 0]/Contents{}/A<</S/SetOCGState/State[{state}]/PreserveRB false>>>>",
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                pdf_string(name)
+            ),
+        ));
+    }
     out
 }
 
@@ -110,8 +252,8 @@ fn checkbox_border(bw: f64, w: f64, h: f64) -> String {
 
 /// Add `fields` and `media` to `pdf` (page indices in output order). `None` when the file's
 /// structure isn't the simple kind this understands.
-pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -> Option<Vec<u8>> {
-    if fields.is_empty() && media.is_empty() {
+pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia], buttons: &[PlacedStateButton]) -> Option<Vec<u8>> {
+    if fields.is_empty() && media.is_empty() && buttons.is_empty() {
         return Some(pdf.to_vec());
     }
     let t_at = rfind(pdf, b"trailer")?;
@@ -191,6 +333,13 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
         );
         per_page[*page].push(screen);
     }
+    // State buttons: a link annotation whose action sets the layers of the object's states.
+    for (page, body) in state_button_annotations(pdf, buttons, &kids) {
+        let link = next;
+        next += 1;
+        put(&mut out, link, body.as_bytes());
+        per_page[page].push(link);
+    }
     let font = next;
     if !fields.is_empty() {
         next += 1;
@@ -252,28 +401,10 @@ pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -
         per_page[*page].push(fid);
         all.push(fid);
     }
-    // Pages list their widgets.
+    // Pages list their annotations.
     for (k, ids) in per_page.iter().enumerate() {
-        if ids.is_empty() {
-            continue;
-        }
-        let refs: String = ids.iter().map(|i| format!(" {i} 0 R")).collect();
-        let body = String::from_utf8_lossy(&pdf[object(pdf, kids[k])?]).to_string();
-        let new = if let Some(a) = body.find("/Annots[") {
-            let close = a + body[a..].find(']')?;
-            format!("{}{refs}{}", &body[..close], &body[close..])
-        } else if let Some(arr_id) = int_after(&body, "/Annots") {
-            // An indirect array: re-state it with the widgets added.
-            let arr = String::from_utf8_lossy(&pdf[object(pdf, arr_id)?]).to_string();
-            let close = arr.rfind(']')?;
-            put(&mut out, arr_id, format!("{}{refs}{}", arr[..close].trim(), &arr[close..]).trim().as_bytes());
-            body.clone()
-        } else {
-            let close = body.rfind(">>")?;
-            format!("{}/Annots[{}]{}", &body[..close], refs.trim(), &body[close..])
-        };
-        if new != body {
-            put(&mut out, kids[k], new.trim().as_bytes());
+        for (id, body) in page_annots(pdf, kids[k], ids)? {
+            put(&mut out, id, body.as_bytes());
         }
     }
     // The catalog's form.
