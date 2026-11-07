@@ -115,6 +115,8 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                         i
                     })
                     .collect();
+                // Objects from another document keep their colours here too (#1743).
+                d.adopt_item_swatches(&items, &fresh);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
@@ -1055,5 +1057,262 @@ mod preview_tests {
         s.begin_interaction("Move").unwrap();
         assert!(s.execute("edit.preview", &json!({"label": "Size", "command": "type.char", "params": {"attrs": {"size": 20}}})).is_err());
         assert_eq!(s.doc().unwrap().interaction.as_ref().unwrap().label, "Move");
+    }
+}
+
+#[cfg(test)]
+mod paste_swatch_tests {
+    use designcraft_color::{Color, Swatch, SwatchValue};
+    use designcraft_doc::ItemId;
+    use serde_json::json;
+
+    use crate::Session;
+
+    fn names(s: &Session) -> Vec<String> {
+        s.doc().unwrap().doc.swatches.iter().map(|w| w.name.clone()).collect()
+    }
+
+    /// Objects pasted into another document keep their colours: the swatches they name come
+    /// along, with the base of a tint, and a name the other document has keeps its own colour. Until
+    /// now they came without them, and a frame filled with a swatch pasted blank (#1743).
+    #[test]
+    fn objects_pasted_into_another_document_bring_the_swatches_they_name() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, color) in [("Brand", "#e05010"), ("Text Green", "#108040"), ("Shared", "#ff0000"), ("Unused", "#123456"), ("Deep Blue", "#102080")]
+        {
+            s.execute("swatch.create", &json!({"name": name, "color": color})).unwrap();
+        }
+        s.edit(|d, _| {
+            d.swatches.push(Swatch {
+                name: "Deep Blue 40%".into(),
+                value: SwatchValue::Tint { base: "Deep Blue".into(), tint: 0.4 },
+                locked: false,
+                named: true,
+                hidden: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Brand"})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [rect], "swatch": "Deep Blue 40%", "weight": 2})).unwrap();
+        let shared = s.execute("frame.create", &json!({"rect": [72, 220, 200, 300]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [shared], "swatch": "Shared"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [220, 72, 400, 200], "content": "text", "text": "Hello"})).unwrap();
+        let (text, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Text Green"}})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect, shared, text]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#0000ff"})).unwrap();
+        let before = names(&s);
+        let pasted: Vec<u64> = s.execute("edit.paste", &json!({})).unwrap()["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        let d = &s.doc().unwrap().doc;
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Brand", "Text Green", "Deep Blue", "Deep Blue 40%"], "the used swatches and the tint's base, in the source's order");
+        let it = d.item(ItemId(pasted[0])).unwrap();
+        assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str()), ("Brand", "Deep Blue 40%"));
+        assert_eq!(d.resolve_color("Brand", 1.0), Some(Color::rgb(224.0 / 255.0, 80.0 / 255.0, 16.0 / 255.0)), "the source's colour");
+        assert_eq!(d.resolve_color("Shared", 1.0), Some(Color::rgb(0.0, 0.0, 1.0)), "a name this document has keeps its colour");
+        let story = d.item(ItemId(pasted[2])).unwrap().text_frame().unwrap().story;
+        assert!(d.story(story).unwrap().chars.iter().any(|r| r.format.over.fill.as_deref() == Some("Text Green")));
+        // One undo step takes the swatches away with the objects.
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(names(&s), before);
+        // Pasting again within the source document adds nothing.
+        s.execute("file.close", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(names(&s), before);
+    }
+
+    /// Objects pasted at a text insertion point of another document are anchored there instead
+    /// of placed on the page, and they bring their swatches too.
+    #[test]
+    fn objects_pasted_into_text_of_another_document_bring_their_swatches() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Brand", "color": "#e05010"})).unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Brand"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        let sid =
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "ab"})).unwrap()["story"].as_u64().unwrap();
+        s.execute("text.select", &json!({"story": sid, "anchor": 1, "focus": 1})).unwrap();
+        let before = names(&s);
+        let r = s.execute("edit.paste", &json!({})).unwrap();
+        assert_eq!(r["anchored"], 1, "{r}");
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Brand"]);
+    }
+
+    /// A gradient swatch brought along whose stop names a swatch this document already has
+    /// shows this document's colour at that stop, as its own uses of that swatch do.
+    #[test]
+    fn an_adopted_gradient_shows_this_documents_colour_for_a_shared_stop_swatch() {
+        use designcraft_color::{Gradient, GradientKind, GradientStop};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#ff0000"})).unwrap();
+        s.edit(|d, _| {
+            let shared = GradientStop { swatch: Some("Shared".into()), ..GradientStop::new(0.0, Color::rgb(1.0, 0.0, 0.0)) };
+            let gradient = Gradient { kind: GradientKind::Linear, stops: vec![shared, GradientStop::new(1.0, Color::WHITE)] };
+            d.swatches.push(Swatch { name: "Sunset".into(), value: SwatchValue::Gradient { gradient }, locked: false, named: true, hidden: false });
+            Ok(())
+        })
+        .unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids": [rect], "swatch": "Sunset"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shared", "color": "#0000ff"})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let Some(SwatchValue::Gradient { gradient }) = d.swatch("Sunset").map(|w| &w.value) else { panic!("Sunset came along") };
+        assert_eq!(gradient.stops[0].swatch.as_deref(), Some("Shared"));
+        assert_eq!(gradient.stops[0].color, Color::rgb(0.0, 0.0, 1.0), "this document's Shared");
+    }
+
+    /// A bevel's highlight and shadow name swatches too: pasted into another document they come
+    /// along, and renaming one renames it there, as for the other effects.
+    #[test]
+    fn a_bevels_highlight_and_shadow_swatches_come_along_and_follow_a_rename() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Glint", "color": "#f0e070"})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Shade", "color": "#302010"})).unwrap();
+        let rect = s.execute("frame.create", &json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let b = &mut d.item_mut(ItemId(rect)).unwrap().effects.bevel;
+            b.highlight = "Glint".into();
+            b.shadow = "Shade".into();
+            Ok(())
+        })
+        .unwrap();
+        s.execute("swatch.options", &json!({"name": "Glint", "to": "Highlight"})).unwrap();
+        let b = &s.doc().unwrap().doc.item(ItemId(rect)).unwrap().effects.bevel;
+        assert_eq!((b.highlight.as_str(), b.shadow.as_str()), ("Highlight", "Shade"), "the rename reaches the bevel");
+        s.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+
+        s.execute("file.new", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        assert_eq!(added, ["Highlight", "Shade"]);
+    }
+
+    /// Text in a frame nested in groups comes along as deep as the swatch walk goes, and no
+    /// deeper: the frames whose text is read are the ones whose own swatches are, and nesting past
+    /// the limit is left alone instead of recursing without bound.
+    #[test]
+    fn nested_frames_bring_their_text_swatches_down_to_the_walks_depth() {
+        for (depth, comes) in [(5usize, true), (70, false)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("swatch.create", &json!({"name": "Text Green", "color": "#108040"})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
+            let (frame, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+            s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+            s.execute("type.char", &json!({"attrs": {"fill": "Text Green"}})).unwrap();
+            // The frame inside `depth` groups, each the only member of the next.
+            let top = s
+                .edit(|d, _| {
+                    let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+                    let at = sp.items.iter().position(|i| i.id == ItemId(frame)).unwrap();
+                    let mut inner = (*sp.items.remove(at)).clone();
+                    for _ in 0..depth {
+                        let mut group = inner.clone();
+                        group.id = ItemId(d.alloc());
+                        group.content = designcraft_doc::Content::Group { items: vec![std::sync::Arc::new(inner)] };
+                        inner = group;
+                    }
+                    let top = inner.id.0;
+                    std::sync::Arc::make_mut(&mut d.spreads[0]).items.push(std::sync::Arc::new(inner));
+                    Ok(top)
+                })
+                .unwrap();
+            s.execute("selection.set", &json!({"ids": [top]})).unwrap();
+            s.execute("edit.copy", &json!({})).unwrap();
+            s.execute("file.new", &json!({})).unwrap();
+            let before = names(&s);
+            s.execute("edit.paste", &json!({})).unwrap();
+            let added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+            assert_eq!(added.contains(&"Text Green".to_string()), comes, "{depth} groups deep: {added:?}");
+        }
+    }
+
+    /// A pasted frame's text brings the swatches of everything inside it: a table cell's fill and
+    /// text, a footnote's text, and the text of a text frame anchored in it (aiongg's
+    /// `ce4068b1`; text frames can come anchored from a file even though `anchored.insert`
+    /// refuses them).
+    #[test]
+    fn the_texts_inside_a_pasted_frames_story_bring_their_swatches() {
+        use designcraft_doc::{AnchorPosition, AnchoredObject, Content, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, color) in [("Cell Fill", "#e0c000"), ("Cell Text", "#c000e0"), ("Note Text", "#00a0e0"), ("Inner Text", "#e05000")] {
+            s.execute("swatch.create", &json!({"name": name, "color": color})).unwrap();
+        }
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host"})).unwrap();
+        let (host_id, host_sid) = (host["id"].as_u64().unwrap(), host["story"].as_u64().unwrap());
+        let inner = s.execute("frame.create", &json!({"rect": [450, 72, 550, 150], "content": "text", "text": "Inner"})).unwrap();
+        let (inner_id, inner_sid) = (inner["id"].as_u64().unwrap(), inner["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": inner_sid, "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fill": "Inner Text"}})).unwrap();
+        s.edit(|d, _| {
+            // The inner frame anchored at the start of the host's text.
+            let sp = std::sync::Arc::make_mut(&mut d.spreads[0]);
+            let at = sp.items.iter().position(|i| i.id == ItemId(inner_id)).unwrap();
+            let item = (*sp.items.remove(at)).clone();
+            assert!(matches!(item.content, Content::Text(_)));
+            let st = d.story_mut(StoryId(host_sid)).unwrap();
+            st.insert_object(0, AnchoredObject::new(item, AnchorPosition::Inline { y_offset: 0.0 }));
+            // A one-cell table: a filled cell with coloured text.
+            let mut t = designcraft_doc::Table::new(9001, 1, 1, 0, 0, 100.0);
+            t.cells[0] = designcraft_doc::Cell::with_text("cell", designcraft_doc::ParaFormat::default());
+            t.cells[0].fill = "Cell Fill".into();
+            let n = t.cells[0].text.len();
+            t.cells[0].text.format_chars(0..n, |f| f.over.fill = Some("Cell Text".into()));
+            let end = st.len();
+            st.insert_table(end, t);
+            // A footnote whose text is coloured.
+            let end = st.len();
+            let id = st.insert_note(end, "note", designcraft_doc::ParaFormat::default()).unwrap();
+            let note = std::sync::Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap());
+            let n = note.text.len();
+            note.text.format_chars(0..n, |f| f.over.fill = Some("Note Text".into()));
+            Ok(())
+        })
+        .unwrap();
+        // From the whole document, as placing one of its pages or a snippet copies: the anchored
+        // frame's story is there to be read.
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+        let before: Vec<String> = dst.swatches.iter().map(|w| w.name.clone()).collect();
+        super::super::object::duplicate_from(&mut dst, &src, &[ItemId(host_id)], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO)
+            .unwrap();
+        let mut added: Vec<String> = dst.swatches.iter().map(|w| w.name.clone()).filter(|n| !before.contains(n)).collect();
+        added.sort();
+        assert_eq!(added, ["Cell Fill", "Cell Text", "Inner Text", "Note Text"]);
+        // Through the clipboard the table and the footnote come along too. (The clipboard keeps
+        // the stories of the frames it copies, not of a text frame anchored in one, so that
+        // frame's text doesn't reach the paste at all yet.)
+        s.execute("selection.set", &json!({"ids": [host_id]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("file.new", &json!({})).unwrap();
+        let before = names(&s);
+        s.execute("edit.paste", &json!({})).unwrap();
+        let mut added: Vec<String> = names(&s).into_iter().filter(|n| !before.contains(n)).collect();
+        added.sort();
+        assert_eq!(added, ["Cell Fill", "Cell Text", "Note Text"]);
     }
 }
