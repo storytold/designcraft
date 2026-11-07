@@ -226,7 +226,7 @@ fn eps_status_tracks_source_bytes_across_save_update_relink_and_embed() {
     std::fs::remove_file(&replacement).unwrap();
     let embedded = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
     // The asset is embedded, so no link is followed and the document is irrelevant.
-    assert_eq!(status_cached(&embedded.assets[&aid], None, &mut Default::default()), "embedded");
+    assert_eq!(status(&embedded.assets[&aid], None), "embedded");
     assert_eq!(embedded.assets[&aid].data.as_slice(), changed);
     assert!(designcraft_render::decode_pixmap(&embedded.assets[&aid].data).is_some());
     let _ = std::fs::remove_dir_all(dir);
@@ -444,4 +444,115 @@ fn link_status_relink_update_embed() {
     s.execute("links.embed", &json!({"asset": aid})).unwrap();
     assert_eq!(s.execute("links.list", &json!({})).unwrap()[0]["status"], "embedded");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Sets a file's modification time `secs` seconds ago (a time old enough to be trusted).
+fn age(path: &std::path::Path, secs: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+}
+
+/// Files whose contents a link check read on this thread while `f` ran.
+fn reads<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = check::READS.with(std::cell::Cell::get);
+    let out = f();
+    (out, check::READS.with(std::cell::Cell::get) - before)
+}
+
+fn first_row(s: &mut Session, p: Value) -> Value {
+    s.execute("links.list", &p).unwrap()[0].clone()
+}
+
+/// Asking again doesn't read the file: placing it remembered its size and time; a file touched
+/// without a change is read once and stays OK; a size change is seen from the metadata alone.
+#[test]
+fn link_status_reads_a_file_only_when_its_size_and_time_cannot_tell() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.png");
+    std::fs::write(&file, png(6, 6)).unwrap();
+    age(&file, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("file.place", &json!({"path": file.to_string_lossy()})).unwrap();
+    // Unchanged: many polls, no reads.
+    let (rows, n) = reads(|| (0..10).map(|_| first_row(&mut s, json!({}))["status"].clone()).collect::<Vec<_>>());
+    assert!(rows.iter().all(|r| r == "ok"), "{rows:?}");
+    assert_eq!(n, 0, "an unchanged file is never read");
+    // Touched, same contents: the metadata alone can't tell, so it is read once, then trusted.
+    age(&file, 30);
+    let (r, n) = reads(|| first_row(&mut s, json!({"metadataOnly": true})));
+    assert_eq!((r["status"].clone(), r["unverified"].clone(), n), (json!("ok"), json!(true), 0));
+    let ((a, b), n) = reads(|| (first_row(&mut s, json!({}))["status"].clone(), first_row(&mut s, json!({}))["status"].clone()));
+    assert_eq!((a, b, n), (json!("ok"), json!("ok"), 1));
+    let (r, n) = reads(|| first_row(&mut s, json!({"metadataOnly": true})));
+    assert_eq!((r["status"].clone(), r.get("unverified").cloned(), n), (json!("ok"), None, 0));
+    // A different size: modified, from the metadata.
+    std::fs::write(&file, png(7, 6)).unwrap();
+    let (r, n) = reads(|| first_row(&mut s, json!({"metadataOnly": true})));
+    assert_eq!((r["status"].clone(), n), (json!("modified"), 0));
+    let (r, n) = reads(|| first_row(&mut s, json!({})));
+    assert_eq!((r["status"].clone(), n), (json!("modified"), 0));
+    // Missing.
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(first_row(&mut s, json!({"metadataOnly": true}))["status"], "missing");
+}
+
+/// The same size with other bytes and another time: a metadata-only look can't tell (it reads
+/// as OK, unverified), a full one reads the file once and says modified, and Update reloads it.
+/// Undo brings back the old copy, which is compared again rather than trusted.
+#[test]
+fn a_same_size_change_is_found_by_one_read_and_undo_compares_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("swatch.png");
+    let solid = |rgba: [u8; 4]| designcraft_render::Rendered { width: 4, height: 4, pixels: rgba.repeat(16) }.to_png();
+    let (red, blue) = (solid([255, 0, 0, 255]), solid([0, 0, 255, 255]));
+    assert_eq!(red.len(), blue.len(), "the same size, so only the bytes tell them apart");
+    std::fs::write(&file, &red).unwrap();
+    age(&file, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let aid = s.execute("file.place", &json!({"path": file.to_string_lossy()})).unwrap()["asset"].clone();
+    std::fs::write(&file, &blue).unwrap();
+    age(&file, 30);
+    let (r, n) = reads(|| first_row(&mut s, json!({"metadataOnly": true})));
+    assert_eq!((r["status"].clone(), r["unverified"].clone(), n), (json!("ok"), json!(true), 0));
+    let (r, n) = reads(|| first_row(&mut s, json!({})));
+    assert_eq!((r["status"].clone(), n), (json!("modified"), 1));
+    // Remembered: the next looks don't read it.
+    let (r, n) = reads(|| first_row(&mut s, json!({"metadataOnly": true})));
+    assert_eq!((r["status"].clone(), n), (json!("modified"), 0));
+    let undo = s.doc().unwrap().history.undo.len();
+    assert_eq!(s.execute("links.update", &json!({"assets": [aid]})).unwrap()["updated"], 1);
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1, "one undo step");
+    let (r, n) = reads(|| first_row(&mut s, json!({})));
+    assert_eq!((r["status"].clone(), n), (json!("ok"), 0), "the update remembered what it read");
+    assert_eq!(s.doc().unwrap().doc.assets[&AssetId(aid.as_u64().unwrap())].data.as_slice(), blue.as_slice());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(first_row(&mut s, json!({}))["status"], "modified");
+}
+
+/// A link to something that isn't a regular file is missing, never read; an empty copy is
+/// missing; an unlinked graphic is embedded; `links.update {assets}` refuses what isn't a list
+/// of ids.
+#[cfg(unix)]
+#[test]
+fn hostile_links_are_missing_without_being_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = Arc::new(png(2, 2));
+    for link in ["/dev/zero", "/dev/null", "relative.png", "", "\0", "file:///dev/zero", "//server/share/x.png", "/no/such/dir/x.png"] {
+        let (state, n) = reads(|| link_state(Some(link), None, &data, true));
+        assert_eq!((state, n), (LinkState::Missing, 0), "{link:?}");
+    }
+    let folder = dir.path().to_string_lossy().to_string();
+    assert_eq!(link_state(Some(&folder), None, &data, true), LinkState::Missing);
+    let file = dir.path().join("x.png");
+    std::fs::write(&file, png(2, 2)).unwrap();
+    assert_eq!(link_state(Some(&file.to_string_lossy()), None, &Arc::new(Vec::new()), true), LinkState::Missing);
+    assert_eq!(link_state(None, None, &data, true), LinkState::Embedded);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    for bad in [json!({"assets": 3}), json!({"assets": ["x"]}), json!({"assets": [-1]}), json!({"assets": [1.5]})] {
+        assert!(s.execute("links.update", &bad).is_err(), "{bad}");
+    }
+    assert_eq!(s.execute("links.update", &json!({"assets": [u64::MAX]})).unwrap()["updated"], 0);
 }

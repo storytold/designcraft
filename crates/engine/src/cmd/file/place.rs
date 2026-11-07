@@ -11,10 +11,13 @@ use super::{
 pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     // The file's size and time before it is read (a linked text file remembers them).
     let mut before = None;
+    // The same for a linked graphic, to the precision the file system keeps.
+    let mut stamp = None;
     let (bytes, name, link) = if let Some(b) = str_param(p, "base64") {
         (base64_decode(b), str_param(p, "name").unwrap_or("image").to_string(), None)
     } else if let Some(path) = str_param(p, "path") {
         before = crate::cmd::datamerge::fingerprint_from_path(path);
+        stamp = crate::cmd::links::check::stamp(std::path::Path::new(path));
         #[cfg(not(target_arch = "wasm32"))]
         let b = crate::io::read_file(path).map_err(EngineError::Other)?;
         #[cfg(target_arch = "wasm32")]
@@ -91,6 +94,12 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let mime = designcraft_render::image_mime(&bytes).to_string();
     let mut asset = Asset { page: pdf_page, name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), pdf_crop, ..Default::default() };
+    // The Links panel then knows the file holds this copy without reading it again.
+    if let Some(link) = asset.link.as_deref()
+        && let Ok(at) = crate::io::document_path(link, s.doc().ok().and_then(|d| d.path.as_deref()).map(std::path::Path::new))
+    {
+        crate::cmd::links::check::remember(&asset.data, &at, stamp, true);
+    }
     // The graphic's natural size: the box in points (the whole page when the box can't be found,
     // and then the document says so).
     let (bw, bh) = match crop_pdf(&mut asset) {

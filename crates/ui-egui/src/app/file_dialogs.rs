@@ -353,14 +353,27 @@ struct OpenFilter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const GRAPHICS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai", "eps"];
+const GRAPHICS: &[&str] = designcraft_doc::GRAPHIC_EXTENSIONS;
+
+/// What Edit › Edit With › Other… lets the user choose: an application bundle on macOS, a
+/// program on Windows. Elsewhere none: the dialog gets no filter and lists every file, since the
+/// Linux dialogs turn an extension into `*.ext`, and `*.*` hides programs without a dot in their
+/// name (`/usr/bin/gimp`).
+#[cfg(not(target_arch = "wasm32"))]
+const APPLICATIONS: &[&str] = if cfg!(target_os = "macos") {
+    &["app"]
+} else if cfg!(target_os = "windows") {
+    &["exe"]
+} else {
+    &[]
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn open_filters(purpose: &str) -> &'static [OpenFilter] {
     match purpose {
         "swatches" => &[OpenFilter { name: "Swatch Exchange (ASE)", extensions: &["ase"] }],
         "script" => &[OpenFilter { name: "Script", extensions: &["dcscript", "txt", "json"] }],
-        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text)", extensions: &["json", "txt"] }],
+        "shortcuts" => &[OpenFilter { name: "Shortcut set (JSON, InDesign text or set file)", extensions: &["json", "txt", "indk"] }],
         "icc" => &[OpenFilter { name: "ICC profile", extensions: &["icc", "icm"] }],
         "coverImage" => &[OpenFilter { name: "Cover image (PNG, JPEG)", extensions: &["png", "jpg", "jpeg"] }],
         "book" => &[OpenFilter { name: "Book", extensions: &["dcbook"] }],
@@ -368,6 +381,9 @@ fn open_filters(purpose: &str) -> &'static [OpenFilter] {
         "dtd" => &[OpenFilter { name: "DTD", extensions: &["dtd"] }],
         "library" => &[OpenFilter { name: "Object Library", extensions: &["dclib"] }],
         "relink" => &[OpenFilter { name: "Graphics", extensions: GRAPHICS }],
+        // Edit › Edit With › Other….
+        "application" if APPLICATIONS.is_empty() => &[],
+        "application" => &[OpenFilter { name: "Applications", extensions: APPLICATIONS }],
         "dataMerge" => &[OpenFilter { name: "Data source (CSV, TSV, text, Excel)", extensions: &["csv", "tsv", "tab", "txt", "xlsx"] }],
         "place" => &[
             OpenFilter {
@@ -541,6 +557,15 @@ mod tests {
             assert!(documents.first().is_some_and(|filter| filter.extensions.contains(&ext)), "{ext} is missing from the first Open filter");
         }
         assert!(documents.last().is_some_and(|filter| filter.extensions == [ALL_FILES]), "files without an extension can be picked");
+    }
+
+    /// Edit With › Other…: a filter only where it names the programs (no `*`, which the Linux
+    /// dialogs turn into `*.*`).
+    #[test]
+    fn application_dialog_has_no_catch_all_filter() {
+        let filters = open_filters("application");
+        assert!(filters.iter().all(|filter| !filter.extensions.is_empty() && !filter.extensions.contains(&"*")));
+        assert_eq!(filters.is_empty(), !cfg!(any(target_os = "macos", target_os = "windows")));
     }
 
     #[test]

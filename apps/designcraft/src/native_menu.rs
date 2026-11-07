@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::mpsc::{Receiver, channel};
 
 use designcraft_ui_egui::DesignApp;
+use designcraft_ui_egui::edit_original::EDIT_WITH_MENU;
 use designcraft_ui_egui::menus::{self, AppMenuItem, Item};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -28,14 +29,18 @@ pub struct NativeMenu {
     shown_for: (String, bool, bool),
     /// File › Open Recent, rebuilt when the list of recent files changes.
     recent: Option<RecentMenu>,
+    /// Edit › Edit With's applications, rebuilt when the selection's file gets others.
+    edit_with: Option<RecentMenu>,
     /// The commands with key equivalents and the shortcut each was given: the menu is rebuilt
     /// when one changes, so a shortcut moved to another command leaves its old item.
     keys: Vec<(String, Option<String>)>,
 }
 
+/// A submenu whose first items change (File › Open Recent, Edit › Edit With).
 struct RecentMenu {
     submenu: Submenu,
-    /// The files shown, and the native items standing for them (with their trailing separator).
+    /// What the items stand for (files, applications), and the native items standing for them
+    /// (with their trailing separator).
     shown: Vec<String>,
     ids: Vec<String>,
     separator: Option<PredefinedMenuItem>,
@@ -81,6 +86,7 @@ impl NativeMenu {
         let mut items = HashMap::new();
         let mut counter = 0usize;
         let mut recent = None;
+        let mut edit_with = None;
         // Application menu: our own About splash (with the community links) instead of the stock
         // panel, and Settings… (Edit › Preferences… on the other platforms).
         let app_menu = Submenu::new("DesignCraft", true);
@@ -115,7 +121,7 @@ impl NativeMenu {
         let _ = menu.append(&app_menu);
         for (title, entries) in menus::native_menu_tree() {
             let sub = Submenu::new(menu_title(app, title), true);
-            build(app, &sub, &entries, &mut items, &mut counter, title, &mut recent);
+            build(app, &sub, &entries, &mut items, &mut counter, title, &mut [(menus::OPEN_RECENT, &mut recent), (EDIT_WITH_MENU, &mut edit_with)]);
             let _ = menu.append(&sub);
         }
         menu.init_for_nsapp();
@@ -128,6 +134,7 @@ impl NativeMenu {
             .filter_map(|(id, sc)| sc.as_ref().filter(|sc| !recording && accel(sc).is_some()).map(|sc| (id.clone(), sc.clone())))
             .collect();
         let recent = recent.map(|submenu| RecentMenu { submenu, shown: Vec::new(), ids: Vec::new(), separator: None });
+        let edit_with = edit_with.map(|submenu| RecentMenu { submenu, shown: Vec::new(), ids: Vec::new(), separator: None });
         Self {
             _menu: menu,
             items,
@@ -135,6 +142,7 @@ impl NativeMenu {
             last_refresh: 0.0,
             shown_for: (app.ui.language.clone(), designcraft_ui_egui::cjk_features(app), app.shortcut_recording()),
             recent,
+            edit_with,
             keys,
         }
     }
@@ -142,37 +150,21 @@ impl NativeMenu {
     /// Put the current recent files at the top of File › Open Recent when they changed.
     fn refresh_recent(&mut self, app: &DesignApp) {
         let Some(r) = self.recent.as_mut() else { return };
-        if r.shown == app.session.prefs.recent_files {
-            return;
+        if r.shown != app.session.prefs.recent_files {
+            refresh(r, &mut self.items, menus::recent_items(app), app.session.prefs.recent_files.clone(), "dc-recent");
         }
-        for id in r.ids.drain(..) {
-            if let Some((_, _, Handle::Plain(item))) = self.items.remove(&id) {
-                let _ = r.submenu.remove(&item);
-            }
+    }
+
+    /// Put the applications that can open the selected graphic's file at the top of Edit › Edit
+    /// With when they changed.
+    fn refresh_edit_with(&mut self, app: &mut DesignApp) {
+        let Some(r) = self.edit_with.as_mut() else { return };
+        let entries = designcraft_ui_egui::edit_original::edit_with_items(app);
+        let shown: Vec<String> =
+            entries.iter().filter_map(|e| if let Item::Cmd { params, .. } = e { Some(params.to_string()) } else { None }).collect();
+        if r.shown != shown {
+            refresh(r, &mut self.items, entries, shown, "dc-editwith");
         }
-        if let Some(sep) = r.separator.take() {
-            let _ = r.submenu.remove(&sep);
-        }
-        let mut position = 0;
-        for it in menus::recent_items(app) {
-            match it {
-                Item::Cmd { label, id, params, .. } => {
-                    let mid = format!("dc-recent{position}");
-                    let item = MenuItem::with_id(mid.clone(), menus::native_label(&label), true, None);
-                    let _ = r.submenu.insert(&item, position);
-                    self.items.insert(mid.clone(), (id, params, Handle::Plain(item)));
-                    r.ids.push(mid);
-                }
-                Item::Sep => {
-                    let sep = PredefinedMenuItem::separator();
-                    let _ = r.submenu.insert(&sep, position);
-                    r.separator = Some(sep);
-                }
-                Item::Sub(..) => continue,
-            }
-            position += 1;
-        }
-        r.shown = app.session.prefs.recent_files.clone();
     }
 
     pub fn poll(&mut self, app: &mut DesignApp, ctx: &egui::Context) {
@@ -208,6 +200,7 @@ impl NativeMenu {
             return;
         }
         self.refresh_recent(app);
+        self.refresh_edit_with(app);
         for (cmd, params, h) in self.items.values() {
             let en = menus::native_menu_enabled(app, ctx, cmd);
             match h {
@@ -228,7 +221,7 @@ fn build(
     items: &mut HashMap<String, (String, Value, Handle)>,
     counter: &mut usize,
     path: &str,
-    recent: &mut Option<Submenu>,
+    dynamic: &mut [(&str, &mut Option<Submenu>)],
 ) {
     for (i, e) in entries.iter().enumerate() {
         match e {
@@ -240,9 +233,9 @@ fn build(
             Item::Sub(label, children) => {
                 let sub = Submenu::new(menu_title(app, label), true);
                 let path = format!("{path}/{label}");
-                build(app, &sub, children, items, counter, &path, recent);
-                if path == menus::OPEN_RECENT {
-                    *recent = Some(sub.clone());
+                build(app, &sub, children, items, counter, &path, dynamic);
+                if let Some((_, slot)) = dynamic.iter_mut().find(|(at, _)| *at == path) {
+                    **slot = Some(sub.clone());
                 }
                 let _ = parent.append(&sub);
             }
@@ -266,4 +259,37 @@ fn build(
             }
         }
     }
+}
+
+/// Replace the changing items at the top of `r`'s submenu with `entries` (native ids `prefix0`…),
+/// standing for `shown`.
+fn refresh(r: &mut RecentMenu, items: &mut HashMap<String, (String, Value, Handle)>, entries: Vec<Item>, shown: Vec<String>, prefix: &str) {
+    for id in r.ids.drain(..) {
+        if let Some((_, _, Handle::Plain(item))) = items.remove(&id) {
+            let _ = r.submenu.remove(&item);
+        }
+    }
+    if let Some(sep) = r.separator.take() {
+        let _ = r.submenu.remove(&sep);
+    }
+    let mut position = 0;
+    for it in entries {
+        match it {
+            Item::Cmd { label, id, params, .. } => {
+                let mid = format!("{prefix}{position}");
+                let item = MenuItem::with_id(mid.clone(), menus::native_label(&label), true, None);
+                let _ = r.submenu.insert(&item, position);
+                items.insert(mid.clone(), (id, params, Handle::Plain(item)));
+                r.ids.push(mid);
+            }
+            Item::Sep => {
+                let sep = PredefinedMenuItem::separator();
+                let _ = r.submenu.insert(&sep, position);
+                r.separator = Some(sep);
+            }
+            Item::Sub(..) => continue,
+        }
+        position += 1;
+    }
+    r.shown = shown;
 }

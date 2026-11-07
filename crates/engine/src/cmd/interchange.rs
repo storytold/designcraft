@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(*asset.data, png, "the packaged graphic must render even when its author-machine path no longer exists");
         let resolved = std::path::absolute(&path).unwrap();
         assert_eq!(asset.link.as_deref(), resolved.to_str(), "remember the resolved link so update and preflight use the packaged file");
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        assert_eq!(super::super::links::status(asset, None), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -544,7 +544,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(*asset.data, png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        assert_eq!(super::super::links::status(asset, None), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -560,7 +560,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(*asset.data, png);
         assert_eq!(asset.link.as_deref(), std::path::absolute(&path).unwrap().to_str());
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        assert_eq!(super::super::links::status(asset, None), "ok");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -580,7 +580,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "an existing original stays authoritative");
         assert_eq!(*asset.data, png);
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
+        assert_eq!(super::super::links::status(asset, None), "modified");
 
         std::fs::remove_file(&original).unwrap();
         std::fs::write(&copy, b"modified packaged copy").unwrap();
@@ -588,7 +588,7 @@ mod tests {
         let asset = doc.assets.values().next().unwrap();
         assert_eq!(asset.link.as_deref(), copy.to_str());
         assert_eq!(*asset.data, png, "rebinding must not replace embedded pixels");
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "modified");
+        assert_eq!(super::super::links::status(asset, None), "modified");
 
         std::fs::remove_file(&copy).unwrap();
         let packaged = package.join("x.idml");
@@ -597,7 +597,7 @@ mod tests {
             let asset = doc.assets.values().next().unwrap();
             assert_eq!(std::path::Path::new(asset.link.as_deref().unwrap()), original.as_path(), "keep a missing link when there is no candidate");
             assert_eq!(*asset.data, png);
-            assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing");
+            assert_eq!(super::super::links::status(asset, None), "missing");
         }
         let oversized = "a/".repeat(MAX_LINK_PATH_BYTES);
         assert!(packaged_link_candidates(&oversized, Some(&packaged)).is_empty());
@@ -645,7 +645,7 @@ mod tests {
             assert!(seen.iter().all(|p| p.starts_with(&dir) || itself.as_ref() == Some(p)), "{link}: {seen:?}");
             let asset = doc.assets.values().next().unwrap();
             assert!(asset.data.is_empty(), "{link}");
-            assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "missing", "{link}");
+            assert_eq!(super::super::links::status(asset, None), "missing", "{link}");
         }
         // An image elsewhere on this computer is read, and so is one beside the package.
         let away = outside.join("logo.png");
@@ -654,7 +654,7 @@ mod tests {
         let doc = import(&idml, Some(&package)).unwrap();
         let asset = doc.assets.values().next().unwrap();
         assert_eq!((&*asset.data, asset.link.as_deref()), (&png, away.to_str()));
-        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+        assert_eq!(super::super::links::status(asset, None), "ok");
         std::fs::write(dir.join("Links").join("logo.png"), &png).unwrap();
         let (idml, _) = linked_idml("Links/logo.png", false).unwrap();
         let doc = import(&idml, Some(&package)).unwrap();

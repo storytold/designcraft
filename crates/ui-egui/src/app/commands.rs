@@ -84,6 +84,12 @@ impl DesignApp {
             match r {
                 UiRequest::Dialog { id, params } if id == "colorTheme" => dialogs::open_color_theme(self, params),
                 UiRequest::Dialog { id, params } if id == "frameSize" => self.ui.dialog = Some(dialogs::frame_size_dialog(self, params)),
+                // Alt-double-click on a placed graphic: Edit Original, not a dialog.
+                UiRequest::Dialog { id, params } if id == designcraft_tools::select::EDIT_ORIGINAL => {
+                    if let Err(e) = self.run(crate::edit_original::EDIT_ORIGINAL, params) {
+                        self.status(e);
+                    }
+                }
                 UiRequest::Dialog { id, params } => self.ui.dialog = Some(dialogs::Dialog::new(&id, params)),
                 UiRequest::View { params } => canvas::apply_view_request(self, &params),
                 UiRequest::Pick { purpose, params } => {

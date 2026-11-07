@@ -561,6 +561,9 @@ fn interface_strings() -> HashSet<&'static str> {
         "{name}: import cancelled while a dialog is open; choose the file again",
         "{name}: {count} step(s) done",
     ]);
+    // Reveal's label on the other platforms, the link badges' tips and the link preference.
+    keys.extend(crate::reveal::LABELS);
+    keys.extend([crate::link_watch::AUTO_UPDATE_LINKS, crate::canvas::link_badges::TIP_MODIFIED, crate::canvas::link_badges::TIP_MISSING]);
     // The Keyboard Shortcuts dialog's strings (craft-keymap) reach `tr` too.
     keys.extend(crate::shortcuts_dialog::strings());
     keys

@@ -43,7 +43,10 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rows = match cached {
         Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
         _ => {
-            let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+            // Metadata only: the UI thread never reads a linked file's contents. A graphic or text
+            // file not yet compared since it changed shows OK until the link watch's worker has
+            // compared it, within a check (a few seconds); the engine remembers that comparison.
+            let rows = app.session.execute("links.list", &json!({"metadataOnly": true})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
             ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
             rows
         }
@@ -145,17 +148,20 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             p
         };
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
-            let target = with("path", Value::Null);
-            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
-                let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
-            }
+            relink(app, with("path", Value::Null));
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
             let _ = app.run("links.goTo", target.clone());
+        }
+        // A placed graphic's file, in its own application (greyed when embedded or missing).
+        if !is_text {
+            let can = app.services.launch.is_some() && designcraft_engine::cmd::link_originals(&app.session, &target).is_ok();
+            let edit = ui.add_enabled(can, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Edit Original"))));
+            if edit.clicked()
+                && let Err(e) = app.run(crate::edit_original::EDIT_ORIGINAL, target.clone())
+            {
+                app.status(e);
+            }
         }
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
         let update = ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Update")));
@@ -197,6 +203,54 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// Relink…: asks for the file, then relinks `target` (`{asset}` or `{story}`) to it.
+pub fn relink(app: &mut DesignApp, target: Value) {
+    let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+        let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
+        Ok(Value::Null)
+    });
+    if let Err(e) = asked {
+        app.status_error("Relink", e);
+    }
+}
+
+/// The Links panel's own rows in its panel menu: Edit Original, Edit With and Reveal in Finder
+/// (Explorer, the file manager) for the chosen graphic (the selection's, when no row is chosen).
+pub fn links_panel_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let chosen: Option<u64> = ui.data(|d| d.get_temp(egui::Id::unique("links_panel_sel")));
+    // A chosen linked text file is no graphic: the selection's graphic then.
+    let target = match chosen {
+        Some(aid) if app.session.active().is_some_and(|st| st.doc.assets.contains_key(&designcraft_doc::AssetId(aid))) => json!({"asset": aid}),
+        _ => Value::Null,
+    };
+    let lang = app.ui.language.clone();
+    let can = app.services.launch.is_some() && designcraft_engine::cmd::link_originals(&app.session, &target).is_ok();
+    let run = |app: &mut DesignApp, ui: &mut egui::Ui, id: &str, p: Value| {
+        if let Err(e) = app.run(id, p) {
+            app.status(e);
+        }
+        ui.close();
+    };
+    if ui.add_enabled(can, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Edit Original")))).clicked() {
+        run(app, ui, crate::edit_original::EDIT_ORIGINAL, target.clone());
+    }
+    ui.add_enabled_ui(can, |ui| {
+        ui.menu_button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Edit With")), |ui| {
+            crate::edit_original::edit_with_menu_items(app, ui, &target);
+            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Other…"))).clicked() {
+                let mut p = if target.is_null() { json!({}) } else { target.clone() };
+                p["other"] = json!(true);
+                run(app, ui, crate::edit_original::EDIT_WITH, p);
+            }
+        });
+    });
+    ui.separator();
+    let can = crate::reveal::available_for(app, &target);
+    if ui.add_enabled(can, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, crate::reveal::LABEL)))).clicked() {
+        run(app, ui, crate::reveal::REVEAL, target.clone());
+    }
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks

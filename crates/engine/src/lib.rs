@@ -248,6 +248,10 @@ pub struct Prefs {
     /// Preferences › File Handling › Create Links When Placing Text Files: placed text files are
     /// linked (Links panel) unless `file.place` says otherwise.
     pub link_text_files: bool,
+    /// Preferences › File Handling › Update Modified Links When DesignCraft Comes Back to the
+    /// Front: the UI updates the modified graphics it finds when its window gains focus again.
+    /// Off by default, as in the reference app (its link badges show them instead).
+    pub auto_update_links: bool,
     /// File › Open Recent: documents opened or saved, most recent first.
     pub recent_files: Vec<String>,
     /// Preferences › File Handling › Number of Recent Items to Display (0 keeps no list).
@@ -380,6 +384,7 @@ impl Default for Prefs {
             show_note_anchors: true,
             recovery_minutes: 0.5,
             link_text_files: false,
+            auto_update_links: false,
             recent_files: Vec::new(),
             recent_files_max: 20,
             default_units: DefaultUnits::default(),
@@ -435,13 +440,6 @@ pub struct Session {
     /// New Document's Preview: the preview document's uid and the uid of the document that was
     /// active before it (see [`Session::preview_new_document`]).
     pub(crate) new_document_preview: Option<(u64, Option<u64>)>,
-    /// Linked text files checked by the Links panel: path → the size and modification time the
-    /// file had and the hash of its contents then, so a file touched but not changed is read once.
-    pub(crate) text_link_checks: std::collections::HashMap<String, (designcraft_doc::Fingerprint, String)>,
-    /// Linked images checked against their files this session (`links.list` polls twice a second):
-    /// a file of the recorded size and time isn't read again.
-    pub(crate) image_link_checks:
-        std::collections::HashMap<(designcraft_doc::AssetId, usize, std::path::PathBuf), (designcraft_doc::Fingerprint, bool)>,
 }
 
 impl Default for Session {
@@ -473,8 +471,6 @@ impl Session {
             clipboard_origin: 0.0,
             recovery_dir: None,
             text_clipboard: None,
-            text_link_checks: Default::default(),
-            image_link_checks: Default::default(),
             ui_requests: vec![],
             loaded: None,
             transforms: Default::default(),

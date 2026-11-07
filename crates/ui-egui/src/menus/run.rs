@@ -67,6 +67,12 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
     if let Some(result) = crate::panel_docking::command(app, id, p) {
         return Some(result);
     }
+    if let Some(result) = crate::edit_original::run(app, id, p) {
+        return Some(result);
+    }
+    if let Some(result) = crate::reveal::run(app, id, p) {
+        return Some(result);
+    }
     run_ui_part1(app, id, p)
         .or_else(|| run_ui_part2(app, id, p))
         .or_else(|| run_ui_part3(app, id, p))
