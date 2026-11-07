@@ -40,6 +40,7 @@ xref.insert  {"paragraph": "Results", "format": "Paragraph Text & Page Number"}
 DCS
 designcraft-cli script page.dcs --save page.designcraft --export page.pdf --export page.png
 designcraft-cli script page.dcs --connect 7979      # the same steps, live in the running app
+                                                    # (with DESIGNCRAFT_CONTROL_TOKEN_FILE set, see docs/control-protocol.md)
 ```
 
 The result is JSON: `{"completed": n, "results": [...]}`, plus `failedIndex` / `failedCommand` / `error` when a step

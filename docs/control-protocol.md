@@ -3,6 +3,43 @@
 Start the app with `--control <port>` (or `DESIGNCRAFT_CONTROL_PORT`). The server listens on
 `127.0.0.1` only and speaks JSON lines: one request object per line, one reply per line.
 
+**The first line of every connection is this launch's token.** The channel reaches every command
+-- open, save and export with any path, and quitting without saving -- and loopback is not a
+boundary between users, so a connection runs nothing until it presents the token:
+
+```json
+{"token": "0f8c…"}
+{"ok": true}
+```
+
+A bare token on its own line is accepted too. A wrong or missing token gets one error reply and
+the connection is closed, like any other line that is not a request.
+
+Send it as soon as you connect: a connection has **10 seconds in all** to present the token, its
+line may be at most 256 bytes, and at most 8 blank lines may come before it. Past any of these it
+gets one error reply and is closed, so connections that never authenticate cannot hold the
+channel's slots. Once the token is accepted the connection may stay idle as long as you like.
+
+Each launch makes a fresh 128-bit token and writes it to the profile directory as
+`control-token-<port>`, readable only by its owner (mode 600 on unix), and logs the path when the
+channel opens. The file is written new and renamed into place, so a process holding the old file
+open never sees the new token. Clients: `designcraft-cli mcp --connect` and
+`designcraft-cli script --connect` read `DESIGNCRAFT_CONTROL_TOKEN`, else the file named by
+`DESIGNCRAFT_CONTROL_TOKEN_FILE`, for example:
+
+```sh
+DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/Library/Application Support/DesignCraft/control-token-7979" designcraft-cli mcp --connect 7979   # macOS
+DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/.config/designcraft/control-token-7979" designcraft-cli mcp --connect 7979                      # Linux
+```
+
+(`%APPDATA%\DesignCraft\control-token-7979` on Windows; with `DESIGNCRAFT_CONFIG_DIR` set, in that folder.)
+
+The app can be given its token instead: started with `DESIGNCRAFT_CONTROL_TOKEN` set, it uses that
+token, writes no file, and removes a `control-token-<port>` an earlier launch left for that port. A
+supplied token is at most 200 bytes, so that `{"token": "…"}` fits the 256-byte first line; a longer
+one keeps the channel shut. Without a random source for a token the channel does not open at all,
+rather than opening without one.
+
 For an isolated native test profile, set `DESIGNCRAFT_CONFIG_DIR` to a dedicated directory before
 launch. UI/engine preferences and the `Recovery` directory then live under that root. An unset
 override preserves the usual platform paths (or `DesignCraftData` next to the executable when a
@@ -22,8 +59,9 @@ nothing sent after it on that connection runs. That covers text that isn't JSON,
 an object without `method`, invalid UTF-8, and a line longer than 4 MiB. An HTTP request (for example a
 web page's cross-origin `fetch` to `127.0.0.1:<port>`) therefore can't smuggle a command in its body:
 its request line is rejected first. At most 16 connections are served at once; further ones get an error
-line and are closed. Clients that get an error reply should reconnect. The port has no authentication,
-so only enable it while you use it. Transport: `apps/designcraft/src/control_server.rs`.
+line and are closed. Clients that get an error reply should reconnect. The token above is what
+stands between the channel and any other local process, so still only enable the port while you
+use it. Transport: `apps/designcraft/src/control_server.rs`.
 
 ```json
 {"id": 1, "method": "engine.execute", "params": {"command": "frame.create", "params": {"rect": [36, 36, 300, 200], "content": "text"}}}

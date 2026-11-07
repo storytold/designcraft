@@ -1316,6 +1316,7 @@ dependencies = [
  "eframe",
  "egui",
  "fmv-macos-events",
+ "getrandom 0.4.3",
  "log",
  "muda",
  "objc2 0.6.5",

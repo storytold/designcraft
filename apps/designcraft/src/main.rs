@@ -16,6 +16,7 @@
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
+mod control_token;
 mod gpu;
 mod gpu_limits;
 mod logging;
@@ -437,8 +438,95 @@ fn main() -> std::process::ExitCode {
                 // and border offset the content and the pointer on some Windows systems (#1295).
                 app.services.window_frame = window_frame::service(cc, app.custom_titlebar);
                 if let Some(port) = control_port {
-                    let rx = control_server::start(port, cc.egui_ctx.clone());
-                    app = app.with_control(rx);
+                    // The channel reaches every command, so it opens only with a token a client
+                    // has to know (#1585). A caller that already has one passes it in the
+                    // environment; otherwise one is generated and written to the profile
+                    // directory for a client to read.
+                    //
+                    // If there is no random source, or nowhere to publish the token, the channel
+                    // does not open. Starting it unauthenticated would be the thing the token is
+                    // for, and starting it with a token nothing can learn leaves a port
+                    // listening that refuses every connection -- while the message said to pass
+                    // the token in an environment variable that nothing read (noted in review).
+                    //
+                    // The port is reserved first, and the token file is named after it. Writing
+                    // the token before binding meant a second launch replaced the token of a
+                    // server already running on that port and only then found the port taken, so
+                    // the first server kept listening while every client read a token it would
+                    // refuse; one name for every launch had two servers on two ports sharing a
+                    // single file (both noted in review).
+                    let supplied = std::env::var(control_token::TOKEN_ENV).ok().and_then(|t| control_token::from_env_value(&t).map(str::to_owned));
+                    let reserved = control_server::bind(port);
+                    // The port the operating system actually gave. `--control 0` asks for any
+                    // free one, so the number that was requested is not the number a client
+                    // connects to, and naming the file after it put every such launch on
+                    // `control-token-0` -- the collision this naming is for (noted in review).
+                    let bound = reserved.as_ref().and_then(|l| match l.local_addr() {
+                        Ok(a) => Some(a.port()),
+                        // Said, not swallowed: this leaves the channel shut, and every other way
+                        // it can fail to start gives its reason (noted in review).
+                        Err(e) => {
+                            log::error!("the control server did not start: its address could not be read: {e}");
+                            None
+                        }
+                    });
+                    let token = bound.and_then(|bound| match supplied {
+                        Some(token) if token.len() > control_token::MAX_SUPPLIED => {
+                            log::error!(
+                                "the control server did not start: {} is {} bytes; a token can be at most {}",
+                                control_token::TOKEN_ENV,
+                                token.len(),
+                                control_token::MAX_SUPPLIED
+                            );
+                            None
+                        }
+                        Some(token) => {
+                            // No file for this token: one an earlier launch left would name a
+                            // token this server doesn't accept.
+                            if let Some(dir) = profile::config_dir() {
+                                control_token::remove_stale(&dir, bound);
+                            }
+                            log::info!("the control token is the one in {}", control_token::TOKEN_ENV);
+                            Some(token)
+                        }
+                        None => match control_token::new_token() {
+                            None => {
+                                // Through `log`, not `eprintln!`: a release Windows build is a
+                                // GUI subsystem binary with no console, so standard error alone
+                                // reaches nobody. The logger writes to standard error as well as
+                                // to the log file, so nothing visible today is lost, and records
+                                // from before `attach_dir` are replayed into the file (review).
+                                log::error!("the control server did not start: no random source for its token");
+                                None
+                            }
+                            Some(token) => match profile::config_dir().map(|dir| control_token::write_token(&dir, bound, &token)) {
+                                Some(Ok(path)) => {
+                                    log::info!("the control token is in {}", path.display());
+                                    Some(token)
+                                }
+                                Some(Err(e)) => {
+                                    log::error!(
+                                        "the control server did not start: its token could not be written: {e} (pass one in {})",
+                                        control_token::TOKEN_ENV
+                                    );
+                                    None
+                                }
+                                None => {
+                                    log::error!(
+                                        "the control server did not start: no profile directory for its token (pass one in {})",
+                                        control_token::TOKEN_ENV
+                                    );
+                                    None
+                                }
+                            },
+                        },
+                    });
+                    // Both or neither: a reserved port with no token is dropped here, which frees
+                    // it rather than leaving a socket open that nothing can authenticate against.
+                    if let (Some(listener), Some(token)) = (reserved, token) {
+                        let rx = control_server::start(listener, token, cc.egui_ctx.clone());
+                        app = app.with_control(rx);
+                    }
                 }
                 if sample {
                     let _ = app.run("file.newSample", serde_json::json!({}));
