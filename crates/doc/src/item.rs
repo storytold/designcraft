@@ -85,6 +85,9 @@ pub struct Item {
     /// Script Label (for scripts and agents).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
+    /// Keyed script labels (InDesign's `insertLabel`/`extractLabel`, IDML `KeyValuePair`s).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
     /// Alternative text (Object Export Options) for tagged PDF and EPUB.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub alt_text: String,
@@ -144,7 +147,30 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// The key InDesign keeps an object's Script Label under among its keyed script labels
+/// (`insertLabel("Label", …)`, an IDML `KeyValuePair Key="Label"`): it names [`Item::label`].
+pub const SCRIPT_LABEL_KEY: &str = "Label";
+
 impl Item {
+    /// The script label under `key`, "" when there is none (InDesign's `extractLabel`); the key
+    /// [`SCRIPT_LABEL_KEY`] reads the Script Label.
+    pub fn script_label(&self, key: &str) -> &str {
+        if key == SCRIPT_LABEL_KEY { &self.label } else { self.labels.get(key).map_or("", String::as_str) }
+    }
+
+    /// Sets the script label under `key` (InDesign's `insertLabel`); an empty `value` removes it.
+    /// The key [`SCRIPT_LABEL_KEY`] sets the Script Label, so a label has one place whichever way
+    /// it is set.
+    pub fn set_script_label(&mut self, key: &str, value: &str) {
+        if key == SCRIPT_LABEL_KEY {
+            self.label = value.to_string();
+        } else if value.is_empty() {
+            self.labels.remove(key);
+        } else {
+            self.labels.insert(key.to_string(), value.to_string());
+        }
+    }
+
     pub fn has_pdf_layer_override(&self) -> bool {
         self.pdf_layer_override || !self.pdf_hidden_layers.is_empty()
     }
@@ -171,6 +197,7 @@ impl Item {
             content: Content::Unassigned,
             overrides: None,
             label: String::new(),
+            labels: std::collections::BTreeMap::new(),
             alt_text: String::new(),
             xml_tag: String::new(),
             button: None,

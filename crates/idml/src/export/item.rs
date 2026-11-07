@@ -98,6 +98,11 @@ impl<'a> Ex<'a> {
             }
         }
         let mut props = Vec::new();
+        // Script labels come first, as InDesign writes them; the Script Label is the pair keyed
+        // `Label`.
+        if let Some(label) = script_labels_el(it) {
+            props.push(label);
+        }
         if tag != "Group" && !it.path.is_empty() {
             props.push(path_geometry(&it.path));
         }
@@ -513,4 +518,17 @@ pub(crate) fn path_to_uri(path: &str) -> String {
         }
     }
     out
+}
+
+/// An item's `<Label>` property: its Script Label and its keyed script labels as `KeyValuePair`s.
+/// A keyed label under the Script Label's own key gives way to the Script Label.
+fn script_labels_el(it: &Item) -> Option<El> {
+    const KEY: &str = designcraft_doc::SCRIPT_LABEL_KEY;
+    let plain = (!it.label.is_empty()).then_some((KEY, it.label.as_str()));
+    let keyed = it.labels.iter().filter(|(k, _)| plain.is_none() || k.as_str() != KEY).map(|(k, v)| (k.as_str(), v.as_str()));
+    let mut label = El::new("Label");
+    for (k, v) in plain.into_iter().chain(keyed) {
+        label.push(El::new("KeyValuePair").attr("Key", k).attr("Value", v));
+    }
+    (!label.children.is_empty()).then_some(label)
 }

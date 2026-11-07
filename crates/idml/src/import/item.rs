@@ -69,6 +69,7 @@ impl<'r> Importer<'r> {
         it.hidden = e.get("Visible") == Some("false");
         it.overrides = e.get("OverriddenPageItem").and_then(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i));
         it.nonprinting = e.get("Nonprinting") == Some("true");
+        (it.label, it.labels) = script_labels(e);
         it.object_style = e
             .get("AppliedObjectStyle")
             .map(|r| {
@@ -417,6 +418,31 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::Clip
     c.source_name = cs.get("AppliedPathName").filter(|n| *n != "$ID/").unwrap_or("").to_string();
     c.source_index = cs.num("Index").filter(|v| v.is_finite()).map_or(-1, |v| v.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
+}
+
+/// The most keyed script labels read from one object, and the longest key or value kept.
+const MAX_LABELS: usize = 1000;
+const MAX_LABEL_BYTES: usize = 1 << 20;
+
+/// An object's Script Label and its keyed script labels:
+/// `<Properties><Label><KeyValuePair Key Value/>…`, where the pair keyed `Label` is the Script
+/// Label.
+fn script_labels(e: &El) -> (String, std::collections::BTreeMap<String, String>) {
+    let mut label = String::new();
+    let mut keyed = std::collections::BTreeMap::new();
+    let Some(el) = e.prop_el("Label") else { return (label, keyed) };
+    for kv in el.find_all("KeyValuePair").take(MAX_LABELS) {
+        let (Some(k), Some(v)) = (kv.get("Key"), kv.get("Value")) else { continue };
+        if k.len() > MAX_LABEL_BYTES || v.len() > MAX_LABEL_BYTES {
+            continue;
+        }
+        if k == designcraft_doc::SCRIPT_LABEL_KEY {
+            label = v.to_string();
+        } else {
+            keyed.insert(k.to_string(), v.to_string());
+        }
+    }
+    (label, keyed)
 }
 
 fn path_of(pg: &El) -> PathData {
