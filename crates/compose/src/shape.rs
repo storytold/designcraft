@@ -929,6 +929,10 @@ fn shape_run_raw(
                 }
                 designcraft_doc::OBJECT_MARK => {
                     let mut g = control_glyph(&primary, p, auto_leading, styles.at(i), i, c);
+                    // Bidi-neutral like U+FFFC (the object replacement character), not a strong
+                    // left-to-right character as its private-use mark is: an inline object in
+                    // right-to-left text keeps its place in the reading order.
+                    g.display_char = '\u{FFFC}';
                     if let Some(o) = sub.objects.get(&i).filter(|o| !o.custom) {
                         let auto = matches!(p.leading, Leading::Auto);
                         match o.y_offset {
