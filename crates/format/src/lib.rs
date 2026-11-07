@@ -1,7 +1,7 @@
 //! The native `.designcraft` format: a zip archive holding
 //!
 //! - `mimetype` (stored first, uncompressed): `application/vnd.designcraft+zip`
-//! - `document.json`: the [`Document`] (pretty JSON, documented by the serde model in `designcraft-doc`)
+//! - `document.json`: the [`Document`] (compact JSON, documented by the serde model in `designcraft-doc`)
 //! - `assets/<id>.<ext>`: embedded placed files, byte-for-byte: one per distinct file, and only
 //!   the ones the document references (see [`Document::compact_assets`])
 //! - `meta.json`: format version and generator
@@ -110,7 +110,7 @@ fn save_with_large_entries_from(doc: &Document, preview: Option<&[u8]>, large_en
             z.write_all(png).map_err(|e| FormatError::Io(e.to_string()))?;
         }
         z.start_file("document.json", deflate).map_err(io)?;
-        let json = serde_json::to_vec_pretty(doc).map_err(|e| FormatError::Io(e.to_string()))?;
+        let json = serde_json::to_vec(doc).map_err(|e| FormatError::Io(e.to_string()))?;
         z.write_all(&json).map_err(|e| FormatError::Io(e.to_string()))?;
         for (id, a) in &doc.assets {
             if a.data.is_empty() {
