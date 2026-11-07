@@ -30,7 +30,12 @@ mod fx;
 pub mod glyphs;
 mod grid;
 mod pdf_bounds;
+mod pdf_convert;
 mod pdf_layers;
+pub use pdf_convert::{
+    MAX_PDF_ART_IMAGE_PIXELS, MAX_PDF_ART_OBJECTS, PdfArtCap, PdfArtImage, PdfArtJoin, PdfArtOp, PdfArtPaint, PdfArtPath, PdfArtStroke,
+    PdfConvertError, PdfPageArt, pdf_document_art, pdf_page_art,
+};
 pub use pdf_layers::{pdf_hide_layers, pdf_layers};
 
 mod color;
@@ -49,8 +54,8 @@ pub use decode::{decode_pixmap, decode_pixmap_page, image_mime, image_size, natu
 #[cfg(test)]
 use pdf_raster::PDF_RENDERS;
 pub use pdf_raster::{
-    PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png, pdf_page_png_checked,
-    pdf_page_png_options_checked, pdf_page_size, pdf_page_sizes, render_pdf_page, shown_box,
+    MAX_PDF_INPUT_BYTES, PdfRasterError, check_pdf_input_size, crop_pixmap, is_pdf, pdf_crop_box, pdf_page_box, pdf_page_count, pdf_page_png,
+    pdf_page_png_checked, pdf_page_png_options_checked, pdf_page_size, pdf_page_sizes, render_pdf_page, shown_box,
 };
 pub(crate) use types::Frame;
 pub use types::{DisplayQuality, FrameStats, MAX_PAGE_PIXELS, MAX_SIDE, Placed, RenderOptions, Rendered, default_threads, effect_outset};
