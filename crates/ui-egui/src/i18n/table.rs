@@ -73,7 +73,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Last Line Right Indent",
-        ["Einzug rechts in letzter Zeile", "Retrait droit de dernière ligne", "Sangría derecha de la última línea", "最終行右インデント", "末行右缩进"],
+        [
+            "Einzug rechts in letzter Zeile",
+            "Retrait droit de dernière ligne",
+            "Sangría derecha de la última línea",
+            "最終行右インデント",
+            "末行右缩进",
+        ],
     ),
     (
         "Drop Cap Number of Lines",
@@ -413,13 +419,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Add to Flex Layout",
-        [
-            "Zu Flex-Layout hinzufügen",
-            "Ajouter à la mise en page flexible",
-            "Agregar a diseño Flex",
-            "フレックスレイアウトに追加",
-            "添加到弹性布局",
-        ],
+        ["Zu Flex-Layout hinzufügen", "Ajouter à la mise en page flexible", "Agregar a diseño Flex", "フレックスレイアウトに追加", "添加到弹性布局"],
     ),
     (
         "Convert to Flex Layout",
@@ -1132,7 +1132,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Clear specified attributes",
-        ["Festgelegte Attribute löschen", "Effacer les attributs indiqués", "Borrar los atributos especificados", "指定した属性を消去", "清除指定的属性"],
+        [
+            "Festgelegte Attribute löschen",
+            "Effacer les attributs indiqués",
+            "Borrar los atributos especificados",
+            "指定した属性を消去",
+            "清除指定的属性",
+        ],
     ),
     (
         "With a Change Format and nothing in Change to, the found text stays and is only formatted",
@@ -1244,7 +1250,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "按比例适合内容",
         ],
     ),
-    ("Fit Content to Frame", ["Fit Content to Frame", "Ajuster le contenu au bloc", "Ajustar contenido al marco", "Fit Content to Frame", "内容适合框架"]),
+    (
+        "Fit Content to Frame",
+        ["Fit Content to Frame", "Ajuster le contenu au bloc", "Ajustar contenido al marco", "Fit Content to Frame", "内容适合框架"],
+    ),
     ("Fitting:", ["Fitting:", "Ajustement :", "Ajuste:", "Fitting:", "适合："]),
     (
         "Flattener preset",
@@ -1688,7 +1697,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "显示前缀/后缀位置：",
         ],
     ),
-    ("Show Tag Markers", ["Show Tag Markers", "Afficher les marqueurs de balise", "Mostrar marcas de etiqueta", "Show Tag Markers", "显示标签标志符"]),
+    (
+        "Show Tag Markers",
+        ["Show Tag Markers", "Afficher les marqueurs de balise", "Mostrar marcas de etiqueta", "Show Tag Markers", "显示标签标志符"],
+    ),
     ("Single-line", ["Single-line", "Ligne simple", "Una línea", "Single-line", "单行"]),
     ("Single-line Composer", ["Single-line Composer", "Compositeur ligne simple", "Compositor de una línea", "Single-line Composer", "单行排版器"]),
     ("Size:", ["Size:", "Taille :", "Tamaño:", "Size:", "大小："]),
@@ -1872,7 +1884,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Default Fill and Stroke",
         ["Default Fill and Stroke", "Fond et contour par défaut", "Relleno y trazo predeterminados", "Default Fill and Stroke", "默认填色和描边"],
     ),
-    ("Swap Fill and Stroke", ["Swap Fill and Stroke", "Permuter fond et contour", "Intercambiar relleno y trazo", "Swap Fill and Stroke", "交换填色和描边"]),
+    (
+        "Swap Fill and Stroke",
+        ["Swap Fill and Stroke", "Permuter fond et contour", "Intercambiar relleno y trazo", "Swap Fill and Stroke", "交换填色和描边"],
+    ),
     (
         "Toggle Fill and Stroke",
         ["Toggle Fill and Stroke", "Basculer fond/contour", "Alternar relleno y trazo", "Toggle Fill and Stroke", "切换填色和描边"],
@@ -1894,7 +1909,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在包含移动图形的文件夹中选择一个文件",
         ],
     ),
-    ("Show Favorites Only", ["Show Favorites Only", "Afficher uniquement les favoris", "Mostrar solo favoritos", "Show Favorites Only", "仅显示收藏夹"]),
+    (
+        "Show Favorites Only",
+        ["Show Favorites Only", "Afficher uniquement les favoris", "Mostrar solo favoritos", "Show Favorites Only", "仅显示收藏夹"],
+    ),
     ("Select", ["Select", "Sélectionner", "Seleccionar", "Select", "选择"]),
     (
         "Hyperlink from the selected text or frames",
@@ -1906,10 +1924,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "从所选文本或框架建立超链接",
         ],
     ),
-    (
-        "Include when exporting",
-        ["Include when exporting", "Inclure à l'exportation", "Incluir al exportar", "Include when exporting", "导出时包含"],
-    ),
+    ("Include when exporting", ["Include when exporting", "Inclure à l'exportation", "Incluir al exportar", "Include when exporting", "导出时包含"]),
     ("Add the selection", ["Add the selection", "Ajouter la sélection", "Agregar la selección", "Add the selection", "添加选择"]),
     ("Tag the selection", ["Tag the selection", "Baliser la sélection", "Etiquetar la selección", "Tag the selection", "标记选择"]),
     ("Separated by commas", ["Separated by commas", "Séparés par des virgules", "Separados por comas", "Separated by commas", "用逗号分隔"]),
@@ -2179,7 +2194,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Delete Text Variable",
         ["Delete Text Variable", "Supprimer la variable de texte", "Eliminar variable de texto", "Delete Text Variable", "删除文本变量"],
     ),
-    ("Delete Workspace…", ["Delete Workspace…", "Supprimer l'espace de travail…", "Eliminar espacio de trabajo…", "Delete Workspace…", "删除工作区…"]),
+    (
+        "Delete Workspace…",
+        ["Delete Workspace…", "Supprimer l'espace de travail…", "Eliminar espacio de trabajo…", "Delete Workspace…", "删除工作区…"],
+    ),
     (
         "DesignCraft Website…",
         ["DesignCraft Website…", "Site web de DesignCraft…", "Sitio web de DesignCraft…", "DesignCraft Website…", "DesignCraft 网站…"],
@@ -2271,7 +2289,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "导出 PDF (交互式)…",
         ],
     ),
-    ("Export Page as PNG…", ["Export Page as PNG…", "Exporter la page en PNG…", "Exportar página como PNG…", "Export Page as PNG…", "将页面导出为 PNG…"]),
+    (
+        "Export Page as PNG…",
+        ["Export Page as PNG…", "Exporter la page en PNG…", "Exportar página como PNG…", "Export Page as PNG…", "将页面导出为 PNG…"],
+    ),
     (
         "Export Selection as Snippet",
         [
@@ -2295,7 +2316,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Find by Script Label",
         ["Find by Script Label", "Rechercher par étiquette de script", "Buscar por etiqueta de script", "Find by Script Label", "按脚本标签查找"],
     ),
-    ("Find/Replace Font…", ["Find/Replace Font…", "Rechercher/Remplacer une police…", "Buscar/reemplazar fuente…", "Find/Replace Font…", "查找/替换字体…"]),
+    (
+        "Find/Replace Font…",
+        ["Find/Replace Font…", "Rechercher/Remplacer une police…", "Buscar/reemplazar fuente…", "Find/Replace Font…", "查找/替换字体…"],
+    ),
     ("First Object Above", ["First Object Above", "Premier objet au-dessus", "Primer objeto arriba", "First Object Above", "上方第一个对象"]),
     (
         "Fit Selection in Window",
@@ -2487,7 +2511,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Object Export Options…",
-        ["Object Export Options…", "Options d'exportation de l'objet…", "Opciones de exportación de objetos…", "Object Export Options…", "对象导出选项…"],
+        [
+            "Object Export Options…",
+            "Options d'exportation de l'objet…",
+            "Opciones de exportación de objetos…",
+            "Object Export Options…",
+            "对象导出选项…",
+        ],
     ),
     (
         "Object Layer Options…",
@@ -2666,7 +2696,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Show/Hide Frame Edges",
-        ["Show/Hide Frame Edges", "Afficher/Masquer les contours de bloc", "Mostrar/ocultar bordes de marco", "Show/Hide Frame Edges", "显示/隐藏框架边缘"],
+        [
+            "Show/Hide Frame Edges",
+            "Afficher/Masquer les contours de bloc",
+            "Mostrar/ocultar bordes de marco",
+            "Show/Hide Frame Edges",
+            "显示/隐藏框架边缘",
+        ],
     ),
     ("Show/Hide Guides", ["Show/Hide Guides", "Afficher/Masquer les repères", "Mostrar/ocultar guías", "Show/Hide Guides", "显示/隐藏参考线"]),
     (
@@ -2703,7 +2739,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Show/Hide Text Threads",
-        ["Show/Hide Text Threads", "Afficher/Masquer le chaînage du texte", "Mostrar/ocultar vínculos de texto", "Show/Hide Text Threads", "显示/隐藏文本串接"],
+        [
+            "Show/Hide Text Threads",
+            "Afficher/Masquer le chaînage du texte",
+            "Mostrar/ocultar vínculos de texto",
+            "Show/Hide Text Threads",
+            "显示/隐藏文本串接",
+        ],
     ),
     ("Smooth", ["Smooth", "Lisse", "Alisar", "Smooth", "平滑"]),
     ("Sort", ["Sort", "Trier", "Ordenar", "Sort", "排序"]),
@@ -2828,7 +2870,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "将选择添加到文章",
         ],
     ),
-    ("Add Unnamed Colors", ["Add Unnamed Colors", "Ajouter les couleurs sans nom", "Agregar colores sin nombre", "Add Unnamed Colors", "添加未命名颜色"]),
+    (
+        "Add Unnamed Colors",
+        ["Add Unnamed Colors", "Ajouter les couleurs sans nom", "Agregar colores sin nombre", "Add Unnamed Colors", "添加未命名颜色"],
+    ),
     ("Add to Dictionary", ["Add to Dictionary", "Ajouter au dictionnaire", "Agregar al diccionario", "Add to Dictionary", "添加到字典"]),
     ("Align Center", ["Align Center", "Aligner au centre", "Alinear al centro", "Align Center", "居中对齐"]),
     ("Align Left", ["Align Left", "Aligner à gauche", "Alinear a la izquierda", "Align Left", "左对齐"]),
@@ -2894,7 +2939,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Delete Paragraph Style",
         ["Delete Paragraph Style", "Supprimer le style de paragraphe", "Eliminar estilo de párrafo", "Delete Paragraph Style", "删除段落样式"],
     ),
-    ("Delete Stroke Style", ["Delete Stroke Style", "Supprimer le style de contour", "Eliminar estilo de trazo", "Delete Stroke Style", "删除描边样式"]),
+    (
+        "Delete Stroke Style",
+        ["Delete Stroke Style", "Supprimer le style de contour", "Eliminar estilo de trazo", "Delete Stroke Style", "删除描边样式"],
+    ),
     ("Delete Table", ["Delete Table", "Supprimer le tableau", "Eliminar tabla", "Delete Table", "删除表格"]),
     ("Delete Tag", ["Delete Tag", "Supprimer la balise", "Eliminar etiqueta", "Delete Tag", "删除标记"]),
     ("Delete Text", ["Delete Text", "Supprimer le texte", "Eliminar texto", "Delete Text", "删除文本"]),
@@ -3250,7 +3298,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "没有超链接。选择文本或框架，键入 URL，然后单击新建。",
         ],
     ),
-    ("No library open.", ["No library open.", "Aucune bibliothèque ouverte.", "No hay ninguna biblioteca abierta.", "No library open.", "没有打开的库。"]),
+    (
+        "No library open.",
+        ["No library open.", "Aucune bibliothèque ouverte.", "No hay ninguna biblioteca abierta.", "No library open.", "没有打开的库。"],
+    ),
     (
         "No notes in this document.",
         [
@@ -3261,7 +3312,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "本文档中没有注释。",
         ],
     ),
-    ("No placed graphics.", ["No placed graphics.", "Aucun graphique importé.", "No hay gráficos colocados.", "No placed graphics.", "没有置入的图形。"]),
+    (
+        "No placed graphics.",
+        ["No placed graphics.", "Aucun graphique importé.", "No hay gráficos colocados.", "No placed graphics.", "没有置入的图形。"],
+    ),
     (
         "No scripts. Add one below.",
         [
@@ -3338,7 +3392,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "ArtCraft 开源创意工具套件的一部分。",
         ],
     ),
-    ("Pasteboard Options", ["Pasteboard Options", "Options de la table de montage", "Opciones de mesa de montaje", "Pasteboard Options", "粘贴板选项"]),
+    (
+        "Pasteboard Options",
+        ["Pasteboard Options", "Options de la table de montage", "Opciones de mesa de montaje", "Pasteboard Options", "粘贴板选项"],
+    ),
     ("Paths", ["Paths", "Tracés", "Trazados", "Paths", "路径"]),
     (
         "Place the insertion point in a table, or create one.",
@@ -3460,7 +3517,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "The fill isn't a gradient.",
-        ["The fill isn't a gradient.", "Le fond n'est pas un dégradé.", "El relleno no es un degradado.", "The fill isn't a gradient.", "填色不是渐变。"],
+        [
+            "The fill isn't a gradient.",
+            "Le fond n'est pas un dégradé.",
+            "El relleno no es un degradado.",
+            "The fill isn't a gradient.",
+            "填色不是渐变。",
+        ],
     ),
     (
         "The library is empty. Select objects and Add Selection.",
@@ -3691,7 +3754,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "在两端对齐的阿拉伯语文本中",
         ],
     ),
-    ("Korean Line Breaks:", ["Korean Line Breaks:", "Retours à la ligne en coréen :", "Saltos de línea en coreano:", "Korean Line Breaks:", "韩文换行："]),
+    (
+        "Korean Line Breaks:",
+        ["Korean Line Breaks:", "Retours à la ligne en coréen :", "Saltos de línea en coreano:", "Korean Line Breaks:", "韩文换行："],
+    ),
     (
         "Between syllables (not only at spaces)",
         [
@@ -4003,7 +4069,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Wrap Around Object Shape",
-        ["Wrap Around Object Shape", "Habiller la forme de l'objet", "Ajustar alrededor de la forma del objeto", "Wrap Around Object Shape", "绕排对象形状"],
+        [
+            "Wrap Around Object Shape",
+            "Habiller la forme de l'objet",
+            "Ajustar alrededor de la forma del objeto",
+            "Wrap Around Object Shape",
+            "绕排对象形状",
+        ],
     ),
     ("Jump Object", ["Jump Object", "Sauter l'objet", "Saltar objeto", "Jump Object", "跳过对象"]),
     (
@@ -4045,7 +4117,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Advanced Character Formats",
-        ["Advanced Character Formats", "Formats de caractère avancés", "Formatos de carácter avanzados", "Advanced Character Formats", "高级字符格式"],
+        [
+            "Advanced Character Formats",
+            "Formats de caractère avancés",
+            "Formatos de carácter avanzados",
+            "Advanced Character Formats",
+            "高级字符格式",
+        ],
     ),
     ("OpenType Features", ["OpenType Features", "Fonctions OpenType", "Funciones OpenType", "OpenType Features", "OpenType 功能"]),
     ("Style Settings:", ["Style Settings:", "Paramètres du style :", "Ajustes de estilo:", "Style Settings:", "样式设置："]),
@@ -4101,7 +4179,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "比例旧式数字",
         ],
     ),
-    ("Proportional Lining", ["Proportional Lining", "Chiffres alignés proportionnels", "Proporcionales alineadas", "Proportional Lining", "比例齐线数字"]),
+    (
+        "Proportional Lining",
+        ["Proportional Lining", "Chiffres alignés proportionnels", "Proporcionales alineadas", "Proportional Lining", "比例齐线数字"],
+    ),
     (
         "Tabular Oldstyle",
         ["Tabular Oldstyle", "Chiffres elzéviriens tabulaires", "Cifras de estilo antiguo tabulares", "Tabular Oldstyle", "等宽旧式数字"],
@@ -4488,7 +4569,10 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "尺寸包括描边粗细",
         ],
     ),
-    ("Enable Autocorrect", ["Enable Autocorrect", "Activer la correction automatique", "Activar la corrección automática", "Enable Autocorrect", "启用自动更正"]),
+    (
+        "Enable Autocorrect",
+        ["Enable Autocorrect", "Activer la correction automatique", "Activar la corrección automática", "Enable Autocorrect", "启用自动更正"],
+    ),
     (
         "Enable Dynamic Spelling (underline misspelled words)",
         [
@@ -4799,7 +4883,13 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ),
     (
         "Start Page Numbering at:",
-        ["Seitennummerierung beginnen bei:", "Commencer la numérotation à :", "Iniciar la numeración de páginas en:", "開始ページ番号:", "起始页码："],
+        [
+            "Seitennummerierung beginnen bei:",
+            "Commencer la numérotation à :",
+            "Iniciar la numeración de páginas en:",
+            "開始ページ番号:",
+            "起始页码：",
+        ],
     ),
     ("Section Prefix:", ["Abschnittspräfix:", "Préfixe de section :", "Prefijo de sección:", "セクションプレフィックス:", "章节前缀："]),
     ("Section Marker:", ["Abschnittsmarke:", "Marqueur de section :", "Marcador de sección:", "セクションマーカー:", "章节标志符："]),
@@ -4939,12 +5029,18 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Do not Print or Export",
         ["Nicht drucken oder exportieren", "Ne pas imprimer ni exporter", "No imprimir ni exportar", "印刷・書き出ししない", "不打印或导出"],
     ),
-    ("Space Before Span:", ["Abstand vor Überspannung:", "Espace avant l'étendue:", "Espacio antes de la extensión:", "段抜き前のアキ:", "跨栏前间距："]),
+    (
+        "Space Before Span:",
+        ["Abstand vor Überspannung:", "Espace avant l'étendue:", "Espacio antes de la extensión:", "段抜き前のアキ:", "跨栏前间距："],
+    ),
     (
         "Space After Span:",
         ["Abstand nach Überspannung:", "Espace après l'étendue:", "Espacio después de abarcar:", "段抜き後のアキ:", "跨栏后间距："],
     ),
-    ("Space Before Split:", ["Abstand vor Teilung:", "Espace avant la division:", "Espacio antes de la división:", "段分割前のアキ:", "拆分前间距："]),
+    (
+        "Space Before Split:",
+        ["Abstand vor Teilung:", "Espace avant la division:", "Espacio antes de la división:", "段分割前のアキ:", "拆分前间距："],
+    ),
     ("Space After Split:", ["Abstand nach Teilung:", "Espace après la division:", "Espacio después de dividir:", "段分割後のアキ:", "拆分后间距："]),
     ("Level:", ["Ebene:", "Niveau:", "Nivel:", "レベル:", "级别："]),
     ("Glyphs…", ["Glyphen…", "Glyphes…", "Glifos…", "字形…", "字形…"]),
