@@ -6550,14 +6550,15 @@ fn grep_styles(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cnames
     }
 }
 
-/// Paragraph Style Options › Keep Options: lines kept with the next paragraph, the paragraph's
-/// lines kept together (all of them, or its first and last lines), and where it starts.
+/// Paragraph Style Options › Keep Options: lines kept with the next paragraph, the first line kept
+/// with the previous one, the paragraph's lines kept together (all of them, or its first and last lines), and where it starts.
 fn keep_options(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Keep with Next:"));
         para_count(ui, d, pv, "keepWithNext", (0, 5));
         crate::rtl::label(ui, crate::i18n::tr(lang, "lines"));
     });
+    para_check(ui, d, pv, "keepWithPrevious", crate::i18n::tr(lang, "Keep with Previous"));
     ui.add_space(4.0);
     para_check(ui, d, pv, "keepLinesTogether", crate::i18n::tr(lang, "Keep Lines Together"));
     let together = para_value(d, pv, "keepLinesTogether").as_bool().unwrap_or(false);

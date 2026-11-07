@@ -1860,6 +1860,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bottom:", "أسفل:"),
     ("Right:", "يمين:"),
     ("Keep with Next:", "الإبقاء مع التالي:"),
+    ("Keep with Previous", "الإبقاء مع السابق"),
     ("Keep Lines Together", "إبقاء الأسطر معًا"),
     ("All Lines in Paragraph", "كل أسطر الفقرة"),
     ("At Start/End of Paragraph", "في بداية الفقرة ونهايتها"),
