@@ -112,6 +112,8 @@ impl Tool for ZoomTool {
 pub struct PlaceGun {
     start: Option<Point>,
     cur: Point,
+    columns: usize,
+    rows: usize,
 }
 
 impl Tool for PlaceGun {
@@ -122,6 +124,8 @@ impl Tool for PlaceGun {
         match ev.kind {
             PointerKind::Down => {
                 self.start = Some(ev.pos);
+                self.columns = 1;
+                self.rows = 1;
                 self.cur = ev.pos;
                 vec![]
             }
@@ -140,9 +144,19 @@ impl Tool for PlaceGun {
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
-                // Under the drag threshold it's a click, as the overlay shows: actual size there.
+                // Under the drag threshold it's a click, as the overlay shows: actual size there
+                // (the next queued image, with several loaded).
                 if click {
                     return vec![Action::Exec("place.drop".into(), json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y}))];
+                }
+                // Arrow keys during the drag set a grid: the queued images fill its cells. A drag
+                // too small for the grid's cells places one frame instead, as the overlay shows.
+                let r = designcraft_geom::Rect::from_points(sa, b);
+                if !grid_cells(r, self.columns, self.rows).is_empty() {
+                    return vec![Action::Exec(
+                        "place.grid".into(),
+                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows, "gutter": PLACE_GRID_GUTTER}),
+                    )];
                 }
                 // The frame the drag drew: at the graphic's proportions from where it started.
                 let r = cx.loaded.map_or_else(|| designcraft_geom::Rect::from_points(sa, b), |size| proportional(sa, b, size).0);
@@ -154,14 +168,51 @@ impl Tool for PlaceGun {
             _ => vec![],
         }
     }
+    fn busy(&self) -> bool {
+        self.start.is_some()
+    }
+    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
+        use crate::ToolKey;
+        if key == ToolKey::Escape {
+            self.start = None;
+            return vec![Action::Exec("place.cancel".into(), json!({}))];
+        }
+        // During a drag the arrow keys change the grid, and are handled even when it is already
+        // at its limit, so they don't go on to nudge the selection.
+        if self.start.is_some() {
+            match key {
+                ToolKey::Right => self.columns = (self.columns + 1).min(100),
+                ToolKey::Left => self.columns = self.columns.saturating_sub(1).max(1),
+                ToolKey::Up => self.rows = (self.rows + 1).min(100),
+                ToolKey::Down => self.rows = self.rows.saturating_sub(1).max(1),
+                _ => return vec![],
+            }
+            return vec![Action::Handled];
+        }
+        vec![]
+    }
     fn overlays(&self, cx: &ToolContext) -> Vec<crate::Overlay> {
         let Some(a) = self.start else { return vec![] };
+        // Under the drag threshold the release is a click (actual size where it was pressed):
+        // no frame is drawn yet, the loaded cursor shows what lands.
+        let click = (self.cur - a).hypot() < cx.tol(3.0);
+        // A grid draws its cells; one too small for them falls back to the single frame, as the
+        // release does. The cells are the release's, worked out on the spread: on a rotated spread
+        // its columns don't run across the canvas.
+        if !click && let Some((sr, sa)) = cx.layout.spread_at(a) {
+            let cells = grid_cells(designcraft_geom::Rect::from_points(sa, cx.layout.to_spread(sr, self.cur)), self.columns, self.rows);
+            if !cells.is_empty() {
+                let on_canvas = |x: f64, y: f64| cx.layout.to_canvas(sr, Point::new(x, y));
+                return cells
+                    .into_iter()
+                    .map(|c| crate::Overlay::Marquee(designcraft_geom::Rect::from_points(on_canvas(c.x0, c.y0), on_canvas(c.x1, c.y1))))
+                    .collect();
+            }
+        }
         let Some(size) = cx.loaded else {
             return vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))];
         };
-        // Under the drag threshold the release is a click (actual size where it was pressed):
-        // no frame is drawn yet, the loaded cursor shows what lands.
-        if (self.cur - a).hypot() < cx.tol(3.0) {
+        if click {
             return vec![];
         }
         // As InDesign: the frame the graphic will fill, and its scale beside the pointer.
@@ -178,13 +229,6 @@ Y: {pct}"
             },
         ]
     }
-    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
-        match key {
-            // Escape unloads the place cursor.
-            crate::ToolKey::Escape => vec![Action::SwitchTool("selection".into())],
-            _ => vec![],
-        }
-    }
     fn cursor(&self, cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
         // Drawing the frame: the crosshair (the loaded graphic's thumbnail would hide the frame).
         // Under the drag threshold no frame is drawn yet (the release is a click), so the
@@ -193,6 +237,34 @@ Y: {pct}"
         let drawing = cx.loaded.is_none() || self.start.is_some_and(|a| (self.cur - a).hypot() >= cx.tol(3.0));
         if drawing { Cursor::Crosshair } else { Cursor::LoadedGraphic }
     }
+}
+
+/// The gutter between place-grid cells, in points. The tool sends it with `place.grid`, so the
+/// preview and what lands can't disagree if the command's default changes.
+const PLACE_GRID_GUTTER: f64 = 6.0;
+
+/// The cells of a `columns` × `rows` place grid drawn over `rect`, [`PLACE_GRID_GUTTER`] apart, as
+/// `place.grid` lays them out. None for a 1 × 1 grid, or when `rect` is too small for the cells to
+/// have a positive size: then the drag places one frame.
+fn grid_cells(rect: designcraft_geom::Rect, columns: usize, rows: usize) -> Vec<designcraft_geom::Rect> {
+    let (columns, rows) = (columns.clamp(1, 100), rows.clamp(1, 100));
+    if columns == 1 && rows == 1 {
+        return vec![];
+    }
+    let w = (rect.width() - PLACE_GRID_GUTTER * (columns - 1) as f64) / columns as f64;
+    let h = (rect.height() - PLACE_GRID_GUTTER * (rows - 1) as f64) / rows as f64;
+    if !(w > 0.0 && h > 0.0) {
+        return vec![];
+    }
+    (0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + PLACE_GRID_GUTTER);
+                let y = rect.y0 + row as f64 * (h + PLACE_GRID_GUTTER);
+                designcraft_geom::Rect::new(x, y, x + w, y + h)
+            })
+        })
+        .collect()
 }
 
 /// A dragged frame `place.drop` takes only when it is wider and taller than this, in points;

@@ -16,6 +16,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "cmd:file.revert",
             "-",
             "ui:app.placeDialog",
+            "ui:app.contactSheetDialog",
             "ui:app.placeWithOptions",
             "-",
             "ui:app.exportPdf",
