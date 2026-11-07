@@ -388,6 +388,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-06** · Finnish text hyphenates with hyph-utf8's `hyph-fi.tex` 2.2 through `hypher` (`Finnish`, `fi`, `fi-FI`, `fi_FI`, IDML `$ID/Finnish`) (#2392). Gap 13 shrinks. No readiness percentage change.
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
 - **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
