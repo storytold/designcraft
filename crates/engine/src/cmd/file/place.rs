@@ -100,8 +100,11 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
             (nw, nh)
         }
     };
+    // A file joining the place cursor's queue goes after the ones already there, whatever is selected.
+    let load_cursor_param = p.get("loadCursor").and_then(Value::as_bool) == Some(true);
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
     let target_frame = crate::cmd::id_param(p, "frame").or_else(|| {
-        if ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
+        if (load_cursor_param && append) || ["x", "y", "spread", "width"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
             return None;
         }
         let st = s.active()?;
@@ -115,8 +118,8 @@ pub(super) fn file_place(s: &mut Session, p: &Value) -> Result<Value> {
     let lid = s.doc()?.active_layer;
     let px = p.get("x").and_then(Value::as_f64);
     let py = p.get("y").and_then(Value::as_f64);
-    if target_frame.is_none() && px.is_none() && py.is_none() && p.get("loadCursor").and_then(Value::as_bool) == Some(true) {
-        return load_cursor(s, asset, (bw, bh));
+    if target_frame.is_none() && px.is_none() && py.is_none() && load_cursor_param {
+        return load_cursor(s, asset, (bw, bh), append);
     }
     s.edit(|d, sel| {
         let fresh = AssetId(d.alloc());
@@ -235,35 +238,105 @@ pub(crate) fn validate_placement(size: (f64, f64), frame: Rect, xf: Affine, comm
     Ok(())
 }
 
+/// Decode and validate the complete batch before replacing the placement cursor.
 pub(super) fn place_load(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, name, link) = read_source(p)?;
-    let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
-    let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
-    let mime = designcraft_render::image_mime(&bytes).to_string();
-    let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
-    load_cursor(s, asset, natural)
+    let append = p.get("append").and_then(Value::as_bool) == Some(true);
+    if p.get("files").is_none() {
+        let (bytes, name, link) = read_source(p)?;
+        let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", "unsupported or corrupt image"))?;
+        let natural = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        let mime = designcraft_render::image_mime(&bytes).to_string();
+        let asset = Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() };
+        return load_cursor(s, asset, natural, append);
+    }
+    let sources = p.get("files").and_then(Value::as_array).ok_or_else(|| bad("place.load", "files must be an array"))?;
+    if sources.is_empty() || sources.len() > MAX_LOADED_IMAGES {
+        return Err(bad("place.load", format!("select between 1 and {MAX_LOADED_IMAGES} images")));
+    }
+    check_cursor_room(s, sources.len(), append, "place.load")?;
+    let mut images = Vec::with_capacity(sources.len());
+    for source in sources {
+        let (bytes, name, link) = read_source(source)?;
+        let (pw, ph) = designcraft_render::image_size(&bytes).ok_or_else(|| bad("place.load", format!("unsupported or corrupt image: {name}")))?;
+        let size = eps_size(&bytes, "place.load")?.or_else(|| designcraft_render::natural_size(&bytes, 0)).unwrap_or((pw as f64, ph as f64));
+        validate_placement(size, Rect::new(0.0, 0.0, size.0, size.1), Affine::IDENTITY, "place.load")?;
+        let mime = designcraft_render::image_mime(&bytes).to_string();
+        images.push((Asset { name, mime, link, data: Arc::new(bytes), pixels: Some((pw, ph)), ..Default::default() }, size));
+    }
+    let queue = s.edit(|d, _| {
+        let mut queue = std::collections::VecDeque::with_capacity(images.len());
+        for (mut asset, size) in images {
+            asset.id = AssetId(d.alloc());
+            queue.push_back(crate::LoadedGraphic { asset: d.add_asset(asset), size });
+        }
+        Ok(queue)
+    })?;
+    if append && s.loaded.is_some() {
+        s.loaded_queue.extend(queue);
+    } else {
+        s.loaded_queue = queue;
+        s.loaded = s.loaded_queue.pop_front();
+    }
+    s.set_tool("placeGun");
+    Ok(json!({"remaining": loaded_count(s), "loaded": true}))
 }
 
-/// Adds `asset` to the document (with a fresh id) and loads it into the place cursor.
-fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64)) -> Result<Value> {
+/// Most images the place cursor holds, and so most one `place.load` takes.
+const MAX_LOADED_IMAGES: usize = 1000;
+
+/// Whether `incoming` images fit in the place cursor: appended, they go after the ones it holds.
+fn check_cursor_room(s: &Session, incoming: usize, append: bool, command: &str) -> Result<()> {
+    let held = if append { loaded_count(s) } else { 0 };
+    if held.saturating_add(incoming) > MAX_LOADED_IMAGES {
+        return Err(bad(command, format!("the place cursor holds at most {MAX_LOADED_IMAGES} images, and it has {held}")));
+    }
+    Ok(())
+}
+
+/// How many images the place cursor holds: the current one and those queued after it.
+fn loaded_count(s: &Session) -> usize {
+    s.loaded_queue.len().saturating_add(usize::from(s.loaded.is_some()))
+}
+
+/// Add a decoded asset with a fresh id, replacing the previous placement queue (or, with
+/// `append` and an image already loaded, queued after it).
+fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64), append: bool) -> Result<Value> {
+    check_cursor_room(s, 1, append, "place.load")?;
     let name = asset.name.clone();
     let (pw, ph) = asset.pixels.unwrap_or_default();
     let aid = s.edit(|d, _| {
         asset.id = AssetId(d.alloc());
         Ok(d.add_asset(asset))
     })?;
-    s.loaded = Some(crate::LoadedGraphic { asset: aid, size });
+    let image = crate::LoadedGraphic { asset: aid, size };
+    if append && s.loaded.is_some() {
+        s.loaded_queue.push_back(image);
+    } else {
+        s.loaded_queue.clear();
+        s.loaded = Some(image);
+    }
     s.set_tool("placeGun");
     Ok(json!({"asset": aid.0, "name": name, "width": pw, "height": ph, "loaded": true}))
 }
 
-pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
-    let crate::LoadedGraphic { asset: aid, size: (nw, nh) } = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
-    // Undo can remove the loaded graphic's asset.
-    if !s.doc()?.doc.assets.contains_key(&aid) {
-        s.loaded = None;
-        return Err(bad("place.drop", "the loaded graphic is no longer in the document"));
+/// Cancel every pending image if Undo removed an asset used by the cursor.
+fn validate_place_cursor(s: &mut Session, command: &str) -> Result<()> {
+    // An empty cursor is its own error, and leaves the tool as it is.
+    if s.loaded.is_none() {
+        return Err(bad(command, "nothing loaded in the place cursor"));
     }
+    let valid = s.loaded.iter().chain(s.loaded_queue.iter()).all(|image| s.doc().is_ok_and(|d| d.doc.assets.contains_key(&image.asset)));
+    if !valid {
+        s.unload_place_cursor();
+        return Err(bad(command, "the loaded graphic is no longer in the document"));
+    }
+    Ok(())
+}
+
+/// Place the current image and advance the cursor only after success.
+pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
+    validate_place_cursor(s, "place.drop")?;
+    let crate::LoadedGraphic { asset: aid, size: (nw, nh) } = s.loaded.ok_or_else(|| bad("place.drop", "nothing loaded in the place cursor"))?;
     let sr = crate::cmd::spread_param(p, "place.drop")?;
     let lid = s.doc()?.active_layer;
     let frame = crate::cmd::id_param(p, "frame");
@@ -321,9 +394,119 @@ pub(super) fn place_drop(s: &mut Session, p: &Value) -> Result<Value> {
         *sel = Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })?;
-    s.loaded = None;
-    s.set_tool("selection");
+    advance_place_cursor(s);
     Ok(r)
+}
+
+/// Advance in file order, returning to selection when the queue is exhausted.
+fn advance_place_cursor(s: &mut Session) {
+    s.loaded = s.loaded_queue.pop_front();
+    if s.loaded.is_none() {
+        s.set_tool("selection");
+    }
+}
+
+/// Validate bounded grid dimensions and a finite nonnegative gutter.
+fn grid_dimensions(p: &Value, command: &str, default_columns: usize, default_rows: usize) -> Result<(usize, usize, f64)> {
+    let dimension = |key, default| -> Result<usize> {
+        match p.get(key) {
+            None => Ok(default),
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (1..=100).contains(n))
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad(command, "rows and columns must be integers between 1 and 100")),
+        }
+    };
+    let gutter = crate::cmd::f64_or(p, "gutter", 6.0);
+    if !gutter.is_finite() || gutter < 0.0 {
+        return Err(bad(command, "gutter must be finite and nonnegative"));
+    }
+    Ok((dimension("columns", default_columns)?, dimension("rows", default_rows)?, gutter))
+}
+
+/// Calculate row-major cells, rejecting gutters that leave no usable space.
+fn grid_cells(rect: Rect, columns: usize, rows: usize, gutter: f64, command: &str) -> Result<Vec<Rect>> {
+    let (columns, rows) = (columns.max(1), rows.max(1));
+    let w = (rect.width() - gutter * columns.saturating_sub(1) as f64) / columns as f64;
+    let h = (rect.height() - gutter * rows.saturating_sub(1) as f64) / rows as f64;
+    if ![rect.x0, rect.y0, rect.x1, rect.y1, w, h].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return Err(bad(command, "the grid area is too small for its rows, columns and gutter"));
+    }
+    Ok((0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + gutter);
+                let y = rect.y0 + row as f64 * (h + gutter);
+                Rect::new(x, y, x + w, y + h)
+            })
+        })
+        .collect())
+}
+
+/// Insert a proportionally fitted image into one grid cell.
+fn insert_grid_image(
+    d: &mut designcraft_doc::Document,
+    spread: designcraft_doc::SpreadRef,
+    layer: designcraft_doc::LayerId,
+    image: crate::LoadedGraphic,
+    rect: Rect,
+    command: &str,
+) -> Result<ItemId> {
+    let crate::LoadedGraphic { asset, size: (nw, nh) } = image;
+    if !d.assets.contains_key(&asset) {
+        return Err(bad(command, "a loaded image is no longer in the document"));
+    }
+    let k = (rect.width() / nw).min(rect.height() / nh);
+    let xf = Affine::translate((rect.x0 + (rect.width() - nw * k) / 2.0, rect.y0 + (rect.height() - nh * k) / 2.0)) * Affine::scale(k);
+    validate_placement((nw, nh), rect, xf, command)?;
+    let id = ItemId(d.alloc());
+    let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(rect));
+    item.object_style = d.styles.default_graphic_frame.clone();
+    if let Some(effects) = d.styles.object_effects(&item.object_style) {
+        item.effects = effects.clone();
+    }
+    item.content = Content::Graphic(Graphic {
+        layer_options: None,
+        asset,
+        size: (nw, nh),
+        xf,
+        auto_fit: designcraft_doc::Fitting::FitProportionally,
+        fit_align: 4,
+        crop: [0.0; 4],
+        clip: None,
+        wrap: Default::default(),
+        fill: Default::default(),
+    });
+    d.insert_item(spread, item, None)?;
+    Ok(id)
+}
+
+/// Place a row-major grid as one undoable edit.
+pub(super) fn place_grid(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "place.grid";
+    validate_place_cursor(s, ID)?;
+    let (columns, rows, gutter) = grid_dimensions(p, ID, 1, 1)?;
+    let rect = crate::cmd::rect_param(p, "rect").ok_or_else(|| bad(ID, "missing rect"))?;
+    let cells = grid_cells(rect, columns, rows, gutter, ID)?;
+    let images: Vec<_> = s.loaded.iter().chain(s.loaded_queue.iter()).copied().take(cells.len()).collect();
+    if images.is_empty() {
+        return Err(bad(ID, "nothing loaded in the place cursor"));
+    }
+    let layer = s.doc()?.active_layer;
+    let spread = crate::cmd::spread_param(p, ID)?;
+    let ids = s.edit(|d, sel| {
+        let mut ids = Vec::with_capacity(images.len());
+        for (image, rect) in images.iter().zip(cells) {
+            ids.push(insert_grid_image(d, spread, layer, *image, rect, ID)?);
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(ids)
+    })?;
+    for _ in &ids {
+        advance_place_cursor(s);
+    }
+    Ok(json!({"ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "remaining": loaded_count(s)}))
 }
 
 /// File › Place of an IDML or DesignCraft document: the objects of one page (`layoutPage`,
@@ -393,6 +576,20 @@ pub(super) mod image_place_tests {
         let png = designcraft_render::Rendered { width: 40, height: 20, pixels: [red, 90, 180, 255].repeat(800) }.to_png();
         std::fs::write(file.path(), png)?;
         Ok(file)
+    }
+
+    /// With nothing in the place cursor, placing says so and leaves the tool as it is (the
+    /// cursor's graphic gone from the document is another error).
+    #[test]
+    fn an_empty_place_cursor_says_so_and_keeps_the_tool() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.set_tool("rectangleFrame");
+        for (cmd, p) in [("place.drop", json!({"x": 10, "y": 10})), ("place.grid", json!({"rect": [0, 0, 100, 100]}))] {
+            let e = s.execute(cmd, &p).unwrap_err().to_string();
+            assert!(e.contains("nothing loaded"), "{cmd}: {e}");
+            assert_eq!(s.tool_id(), "rectangleFrame", "{cmd}");
+        }
     }
 
     #[test]
@@ -879,5 +1076,82 @@ mod nested_frame_tests {
         assert_eq!(d.assets[&g.asset].name, "new.png");
         assert_eq!(it.inner_bounds(), Rect::new(0.0, 0.0, 60.0, 90.0), "the frame keeps its size");
         assert_eq!(d.spreads[0].items.len(), 1, "no new object");
+    }
+}
+
+#[cfg(test)]
+mod cursor_cap_tests {
+    use serde_json::{Value, json};
+
+    use super::MAX_LOADED_IMAGES;
+    use crate::Session;
+
+    fn png() -> String {
+        let png = designcraft_render::Rendered { width: 4, height: 4, pixels: [200, 90, 30, 255].repeat(16) }.to_png();
+        super::super::base64_encode(&png)
+    }
+
+    /// A session whose place cursor holds `held` images, loaded without decoding each of them.
+    fn holding(held: usize) -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("place.load", &json!({"base64": png(), "name": "first.png"})).unwrap();
+        let first = s.loaded.unwrap();
+        s.loaded_queue = std::iter::repeat_n(first, held - 1).collect();
+        s
+    }
+
+    fn count(s: &Session) -> usize {
+        super::loaded_count(s)
+    }
+
+    /// Every way of adding to the cursor stops at the cap, and a refused add changes nothing.
+    #[test]
+    fn appending_stops_at_the_cap_on_the_whole_cursor() {
+        let image = png();
+        let single = json!({"base64": image, "name": "a.png", "append": true});
+        let placed = json!({"base64": image, "name": "a.png", "append": true, "loadCursor": true});
+        let two = json!({"files": [{"base64": image, "name": "a.png"}, {"base64": image, "name": "b.png"}], "append": true});
+        for (command, params) in [("place.load", &single), ("file.place", &placed), ("place.load", &two)] {
+            let mut s = holding(MAX_LOADED_IMAGES);
+            let assets = s.doc().unwrap().doc.assets.len();
+            assert!(s.execute(command, params).is_err(), "{command} {params}");
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{command} {params}");
+            assert_eq!(s.doc().unwrap().doc.assets.len(), assets, "{command} {params}");
+        }
+        // One over, as a batch.
+        let mut s = holding(MAX_LOADED_IMAGES - 1);
+        assert!(s.execute("place.load", &two).is_err());
+        assert_eq!(count(&s), MAX_LOADED_IMAGES - 1);
+    }
+
+    /// The last places up to the cap load, and an unreadable batch reports the cap before decoding.
+    #[test]
+    fn appending_up_to_the_cap_still_loads() {
+        let image = png();
+        for params in
+            [json!({"base64": image, "name": "a.png", "append": true}), json!({"files": [{"base64": image, "name": "a.png"}], "append": true})]
+        {
+            let mut s = holding(MAX_LOADED_IMAGES - 1);
+            s.execute("place.load", &params).unwrap();
+            assert_eq!(count(&s), MAX_LOADED_IMAGES, "{params}");
+        }
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let error =
+            s.execute("place.load", &json!({"files": [{"base64": "not an image", "name": "a.png"}], "append": true})).unwrap_err().to_string();
+        assert!(error.contains(&MAX_LOADED_IMAGES.to_string()), "{error}");
+    }
+
+    /// Without `append` the new images replace the cursor, so what it holds doesn't count.
+    #[test]
+    fn replacing_a_full_cursor_is_not_capped() {
+        let image = png();
+        let mut s = holding(MAX_LOADED_IMAGES);
+        let result: Value = s.execute("place.load", &json!({"base64": image, "name": "a.png"})).unwrap();
+        assert_eq!(result["loaded"], true);
+        assert_eq!(count(&s), 1);
+        let mut s = holding(MAX_LOADED_IMAGES);
+        s.execute("place.load", &json!({"files": [{"base64": image, "name": "a.png"}]})).unwrap();
+        assert_eq!(count(&s), 1);
     }
 }

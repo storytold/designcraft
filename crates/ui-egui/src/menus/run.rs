@@ -135,9 +135,18 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 .unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
-        "app.placeDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.open_picked("place", path.to_string()),
-            None => app.pick_and_open("place"),
+        "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {
+            (Some(path), _) => app.open_picked("place", path.to_string()),
+            // Several files, as chosen together in the dialog: in their order. One is placed as the
+            // dialog places one (filling the selected frame). Every entry must be a path.
+            (None, Some(paths)) => match paths.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>() {
+                None => Err("app.placeDialog: every entry of paths must be a string".into()),
+                Some(paths) => match <[String; 1]>::try_from(paths) {
+                    Ok([path]) => app.open_picked("place", path),
+                    Err(paths) => app.place_paths(paths).map(|()| Value::Null),
+                },
+            },
+            (None, None) => app.pick_and_open("place"),
         },
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.

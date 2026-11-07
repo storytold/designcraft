@@ -15,7 +15,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.newDocumentDialog", "New Document…", Some("Cmd+N"), "{}"),
     ("app.openDialog", "Open…", Some("Cmd+O"), "{path?} — without a path, choose the file in a dialog"),
     ("app.openRecent", "Open Recent File", None, "{index} — file.openRecent, with an alert when the file can't be opened"),
-    ("app.placeDialog", "Place…", Some("Cmd+D"), "{path?} — without a path, choose the file in a dialog"),
+    (
+        "app.placeDialog",
+        "Place…",
+        Some("Cmd+D"),
+        "{path?, paths?: [path] (several, loaded into the place cursor in order)} — without either, choose the files in a dialog",
+    ),
     ("app.saveDialog", "Save As…", Some("Cmd+Shift+S"), "{path?} — without a path, choose where in a dialog"),
     ("app.save", "Save", Some("Cmd+S"), "{}"),
     ("app.quit", "Quit DesignCraft", Some("Cmd+Q"), "{} — close the window; each document with unsaved changes asks first"),
