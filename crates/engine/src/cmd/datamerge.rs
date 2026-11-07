@@ -60,7 +60,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder)",
             has_doc,
             placeholder_add
         ),
@@ -434,7 +434,7 @@ fn overset_count(doc: &Document) -> usize {
         .count()
 }
 
-fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> Result<Value> {
+fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str) -> Result<Value> {
     let (source_id, field) = {
         let source = d.data_merge.sources.first().ok_or_else(|| bad("data.placeholder.add", "select a data source"))?;
         let field =
@@ -481,6 +481,42 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
     } else {
         if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
             return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
+        }
+        // The insertion point is in a table cell or a footnote: the field goes into that text as
+        // its marker, which the merge fills as it fills a typed one. Such a text is a story of its
+        // own that a placeholder can't name, and the selection's offsets are its own, so they used
+        // to put the marker in the table's story instead (#2315).
+        if !explicit_story
+            && let Some(t) = sel.text
+            && let Some(pressed) = t.cell
+        {
+            if role != PlaceholderRole::Text {
+                return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell or a note; insert it as text"));
+            }
+            // The merge finds a marker by its name, so a name that can't be read back out of one
+            // would stay a marker: say so rather than insert it.
+            if name.is_empty() || name.contains(['<', '>', '\n']) {
+                return Err(bad(
+                    "data.placeholder.add",
+                    format!("the field \"{name}\" can't be inserted in a table cell or a note: its name holds < > or a line break"),
+                ));
+            }
+            // A position a merged cell covers is the merged cell's: the field goes where it shows.
+            let cell = d.story(t.story).and_then(|st| st.tables.get(&pressed.table)).map_or(pressed, |tab| {
+                let (row, col) = tab.owner(pressed.row, pressed.col);
+                designcraft_doc::CellAddr { row, col, ..pressed }
+            });
+            let marker = format!("<<{name}>>");
+            let st = d.text_story_mut(t.story, Some(cell)).ok_or_else(|| bad("data.placeholder.add", "no table cell there"))?;
+            let at = if cell == pressed { t.range().start.min(st.text.len()) } else { st.text.len() };
+            let at = designcraft_doc::floor_char_boundary(&st.text, at);
+            st.replace(at..at, &marker);
+            // The caret goes after the field, in that text, as after typing; a cell selection
+            // would have the next keystroke replace the whole cell, field and all.
+            let end = at + marker.len();
+            sel.cells = None;
+            sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, cell: Some(cell), ..t });
+            return Ok(json!({"cell": true, "marker": marker}));
         }
         let (story, at, end) = text_target(p, sel).ok_or_else(|| bad("data.placeholder.add", "select text or a frame"))?;
         if d.story(story).is_none() {
