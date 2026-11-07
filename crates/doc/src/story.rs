@@ -38,6 +38,9 @@ pub const TABLE_ANCHOR: char = '\u{E009}';
 pub const FORCED_LINE_BREAK: char = '\u{2028}';
 pub const ODD_PAGE_BREAK: char = '\u{E011}';
 pub const EVEN_PAGE_BREAK: char = '\u{E012}';
+/// A glyph without a Unicode value, picked from the font by name or glyph id (InDesign's Glyphs
+/// panel; the character's [`crate::CharProps::custom_glyph`] says which, see [`custom_glyph_id`]).
+pub const CUSTOM_GLYPH: char = '\u{E013}';
 
 /// Encode a table-of-contents separator using InDesign's special-character notation.
 pub fn toc_separator_notation(text: &str) -> String {
@@ -66,6 +69,16 @@ pub fn toc_separator_text(notation: &str) -> String {
         }
     }
     text
+}
+
+/// The glyph id a [`CUSTOM_GLYPH`]'s [`crate::CharProps::custom_glyph`] gives: a decimal number is
+/// a glyph id (IDML gives one, of type long, for a glyph the font doesn't name; glyph names never
+/// start with a digit). `None` for a glyph name, or a number too large to be a glyph id.
+pub fn custom_glyph_id(glyph: &str) -> Option<u32> {
+    if glyph.is_empty() || !glyph.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    glyph.parse().ok()
 }
 
 /// A column, frame or page break character. It ends its paragraph: the story stores it as the
@@ -652,8 +665,9 @@ impl Story {
     }
 
     fn normalize(&mut self) {
-        let mut out: Vec<CharRun> = Vec::with_capacity(self.chars.len());
-        for r in self.chars.drain(..) {
+        let runs = custom_glyph_runs_split(&self.text, std::mem::take(&mut self.chars));
+        let mut out: Vec<CharRun> = Vec::with_capacity(runs.len());
+        for r in runs {
             if r.len == 0 && !out.is_empty() {
                 continue;
             }
@@ -670,6 +684,54 @@ impl Story {
     }
 }
 
+/// `runs` of `text` with [`crate::CharProps::custom_glyph`] kept on [`CUSTOM_GLYPH`] characters
+/// only: it names the glyph that character draws and means nothing on any other. Text typed or
+/// pasted next to a custom glyph takes its run's format, and used to keep the attribute (and
+/// export it as a CustomGlyph property on plain text). Runs that carry it are split between
+/// custom glyphs and other characters, which lose it; empty runs (typing formats) lose it too.
+fn custom_glyph_runs_split(text: &str, runs: Vec<CharRun>) -> Vec<CharRun> {
+    if !runs.iter().any(|r| r.format.over.custom_glyph.is_some()) {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len() + 2);
+    let mut start = 0usize;
+    for r in runs {
+        let end = start.saturating_add(r.len);
+        let span = text.get(start..end);
+        start = end;
+        let Some(span) = span.filter(|_| r.format.over.custom_glyph.is_some()) else {
+            out.push(r);
+            continue;
+        };
+        let mut plain = r.format.clone();
+        plain.over.custom_glyph = None;
+        if r.len == 0 {
+            out.push(CharRun { len: 0, format: plain });
+            continue;
+        }
+        // Maximal stretches of custom glyphs and of other characters, in order.
+        let mut stretch: Option<(usize, bool)> = None;
+        let mut push = |from: usize, to: usize, glyph: bool| {
+            out.push(CharRun { len: to - from, format: if glyph { r.format.clone() } else { plain.clone() } });
+        };
+        for (i, c) in span.char_indices() {
+            let glyph = c == CUSTOM_GLYPH;
+            match stretch {
+                Some((_, g)) if g == glyph => {}
+                Some((from, g)) => {
+                    push(from, i, g);
+                    stretch = Some((i, glyph));
+                }
+                None => stretch = Some((i, glyph)),
+            }
+        }
+        if let Some((from, g)) = stretch {
+            push(from, span.len(), g);
+        }
+    }
+    out
+}
+
 pub fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     i = i.min(s.len());
     while !s.is_char_boundary(i) {
@@ -681,6 +743,32 @@ pub fn floor_char_boundary(s: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The custom glyph attribute stays on custom-glyph characters: text typed after, before or in
+    /// place of one, or formatted together with one, doesn't carry it.
+    #[test]
+    fn custom_glyph_stays_on_custom_glyph_characters() {
+        let glyph = |name: &str| CharFormat { over: CharAttrs { custom_glyph: Some(name.into()), ..Default::default() }, ..Default::default() };
+        let named = |st: &Story, at: usize| st.char_format_at(at + 1).over.custom_glyph.clone();
+        let mut st = Story::new(StoryId(1));
+        st.insert(0, "ab");
+        st.insert_with(1, &CUSTOM_GLYPH.to_string(), glyph("g1"));
+        assert_eq!(named(&st, 1), Some("g1".into()));
+        // Typed after it (the format of the run before), and in place of a selection holding it.
+        st.insert(4, "x");
+        assert_eq!(named(&st, 4), None, "typed after");
+        st.replace(1..4, "yz");
+        assert!(st.runs().all(|(_, f)| f.over.custom_glyph.is_none()), "{:?}", st.chars);
+        // A wider insert or format carrying the attribute keeps it on the glyphs only.
+        let text = format!("p{CUSTOM_GLYPH}{CUSTOM_GLYPH}q");
+        st.insert_with(0, &text, glyph("g2"));
+        let named_at: Vec<_> = text.char_indices().map(|(i, _)| named(&st, i)).collect();
+        assert_eq!(named_at, [None, Some("g2".into()), Some("g2".into()), None]);
+        let len = st.text.len();
+        st.format_chars(0..len, |f| f.over.custom_glyph = Some("g3".into()));
+        let glyphs: Vec<_> = st.text.char_indices().map(|(i, c)| (c == CUSTOM_GLYPH, named(&st, i).is_some())).collect();
+        assert!(glyphs.iter().all(|(g, n)| g == n), "{glyphs:?}");
+    }
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())
