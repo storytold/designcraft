@@ -1085,7 +1085,9 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        renumber(dst, src, &mut copy, &mut story_map);
+        if !renumber(dst, src, &mut copy, &mut story_map) {
+            return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
+        }
         if dst.layer(copy.layer).is_none() {
             copy.layer = dst.default_layer();
         }
@@ -1096,6 +1098,9 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
     Ok(out)
 }
 
+/// Groups, and tables and notes in table cells, nesting deeper than this are not copied: [`renumber`] reports them.
+const MAX_COPY_DEPTH: usize = 64;
+
 /// The id to reference in `dst` for asset `id` of `src`. When `src` lacks the asset (a missing graphic), the reference
 /// gets a fresh id from `dst`, so it stays missing: `src`'s id may already name, or later be allocated to, another
 /// image in `dst`.
@@ -1103,13 +1108,17 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
     dst.adopt_asset(src, id).unwrap_or_else(|| AssetId(dst.alloc()))
 }
 
-/// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
-pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
-    renumber_in(dst, src, it, stories, true);
+/// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses. `stories` maps
+/// the stories of `src` copied so far to their copies. False when its groups, or the tables and notes in the table cells
+/// of its stories, nest deeper than [`MAX_COPY_DEPTH`]: the items and tables below that keep their ids, and the copy
+/// must not be used.
+pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
+    renumber_in(dst, src, it, stories, 0, true)
 }
 
-/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
-fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, adopt: bool) {
+/// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
+/// has already adopted.
+fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, depth: usize, adopt: bool) -> bool {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
     if adopt
@@ -1120,12 +1129,14 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
     }
     match &mut it.content {
         Content::Text(tf) => {
+            let mut complete = true;
             let new_sid = match stories.get(&tf.story) {
                 Some(n) => *n,
                 None => {
                     let n = StoryId(dst.alloc());
                     let mut st = src.story(tf.story).cloned().unwrap_or_else(|| Story::new(n));
                     st.id = n;
+                    let marked = renumber_marks(dst, src, stories, &mut st);
                     let mut assets = HashMap::new();
                     for a in designcraft_doc::story_asset_refs(&st) {
                         let na = adopt_or_dangle(dst, src, a);
@@ -1137,8 +1148,14 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    renumber_anchored(dst, src, &mut st, stories);
+                    let copied = stories.len();
+                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1) && marked;
                     dst.stories.insert(n, Arc::new(st));
+                    // The stories anchored in this one were copied while it was not yet in `dst`.
+                    if stories.len() > copied {
+                        let anchors = copied_anchors(dst, src, stories);
+                        retarget_copies(dst, src, stories, &anchors);
+                    }
                     n
                 }
             };
@@ -1146,6 +1163,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
             if let Some(st) = dst.story_mut(new_sid) {
                 st.frames.push(my_id);
             }
+            return complete;
         }
         Content::Graphic(g) => {
             if adopt {
@@ -1153,25 +1171,167 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
             }
         }
         Content::Group { items } => {
-            for c in items.iter_mut() {
-                renumber_in(dst, src, Arc::make_mut(c), stories, adopt);
+            if depth >= MAX_COPY_DEPTH {
+                return false;
             }
+            let mut complete = true;
+            for c in items.iter_mut() {
+                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt);
+            }
+            return complete;
         }
         Content::Unassigned => {}
     }
+    true
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
-fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+/// Give the text anchors and tables of `st`, a new copy of a story of `src`, ids of their own (anchors from the story's
+/// id, tables from `dst`), as do the tables in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`]
+/// levels. Cross-references in `st` and in the copies `stories` already lists point at the copies of their
+/// destinations where those are copied, and the copy's paragraphs follow its tables. False when tables or notes in
+/// table cells nest deeper than [`MAX_COPY_DEPTH`]: the tables below that keep their ids, and the copy must not be used.
+fn renumber_marks(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, st: &mut Story) -> bool {
+    let base = st.id.0 << 24;
+    let mut anchors = HashMap::new();
+    for (k, a) in (1..).zip(st.anchors.iter_mut()) {
+        anchors.insert(a.id, base + k);
+        Arc::make_mut(a).id = base + k;
+    }
+    // Earlier copies change only when this story brings anchors, and this story only when it holds cross-references.
+    let own = !anchors.is_empty();
+    if own || has_xrefs(st, 0) {
+        anchors.extend(copied_anchors(dst, src, stories));
+        if own {
+            retarget_copies(dst, src, stories, &anchors);
+        }
+        remap_xrefs(st, &anchors, 0);
+    }
+    renumber_tables(dst, st, 0)
+}
+
+/// Whether `st`, or a story of its table cells and notes down to [`MAX_COPY_DEPTH`] levels, holds a cross-reference.
+fn has_xrefs(st: &Story, depth: usize) -> bool {
+    if !st.xrefs.is_empty() {
+        return true;
+    }
+    depth < MAX_COPY_DEPTH
+        && (st.tables.values().any(|t| t.cells.iter().any(|c| has_xrefs(&c.text, depth + 1)))
+            || st.notes.iter().chain(&st.endnotes).any(|n| has_xrefs(&n.text, depth + 1)))
+}
+
+/// The anchor ids of the stories of `src` that `stories` maps, each to the id of its copy's anchor in `dst`.
+fn copied_anchors(dst: &Document, src: &Document, stories: &HashMap<StoryId, StoryId>) -> HashMap<u64, u64> {
+    let mut anchors = HashMap::new();
+    for (old, new) in stories {
+        if let (Some(o), Some(n)) = (src.story(*old), dst.story(*new)) {
+            anchors.extend(o.anchors.iter().zip(&n.anchors).map(|(a, b)| (a.id, b.id)));
+        }
+    }
+    anchors
+}
+
+/// Point the cross-references in the copies in `dst` that `stories` lists at the anchors `anchors` gives for their
+/// targets. Each copy's targets are found again from its original: a new anchor id can be another original's.
+fn retarget_copies(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, anchors: &HashMap<u64, u64>) {
+    for (old, new) in stories {
+        if let (Some(o), Some(copy)) = (src.story(*old), dst.story_mut(*new)) {
+            retarget_xrefs(copy, o, anchors, 0);
+        }
+    }
+}
+
+/// Give the tables of `st`, and those in the stories of their cells and of the notes of `st` down to
+/// [`MAX_COPY_DEPTH`] levels, new ids from `dst`, each story's in the order of their old ids, and point the stories'
+/// paragraphs at them. False when the stories below that depth hold tables or notes.
+fn renumber_tables(dst: &mut Document, st: &mut Story, depth: usize) -> bool {
+    let mut tables = HashMap::new();
+    for (old, mut table) in std::mem::take(&mut st.tables) {
+        let id = dst.alloc();
+        Arc::make_mut(&mut table).id = id;
+        tables.insert(old, id);
+        st.tables.insert(id, table);
+    }
+    for pf in &mut st.paras {
+        pf.table = pf.table.map(|t| tables.get(&t).copied().unwrap_or(t));
+    }
+    if depth >= MAX_COPY_DEPTH {
+        // The stories below keep the ids of their tables, so the copy is incomplete when they hold tables or notes.
+        let leaf = |s: &Story| s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text))) && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    let mut complete = true;
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_tables(dst, &mut c.text, depth + 1);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_tables(dst, &mut Arc::make_mut(n).text, depth + 1);
+    }
+    complete
+}
+
+/// Point the cross-references in `st`, and in the stories of its table cells and notes down to [`MAX_COPY_DEPTH`]
+/// levels, at the anchors `map` gives for their targets.
+fn remap_xrefs(st: &mut Story, map: &HashMap<u64, u64>, depth: usize) {
+    if map.is_empty() {
+        return;
+    }
+    for x in &mut st.xrefs {
+        if let Some(n) = map.get(&x.target) {
+            Arc::make_mut(x).target = *n;
+        }
+    }
+    if depth >= MAX_COPY_DEPTH {
+        return;
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            remap_xrefs(&mut c.text, map, depth + 1);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        remap_xrefs(&mut Arc::make_mut(n).text, map, depth + 1);
+    }
+}
+
+/// Point the cross-references in `copy`, a copy of `orig`, and in the stories of its table cells and notes down to
+/// [`MAX_COPY_DEPTH`] levels, at the anchors `map` gives for the targets of the matching references in `orig`.
+fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth: usize) {
+    for (x, o) in copy.xrefs.iter_mut().zip(&orig.xrefs) {
+        let target = map.get(&o.target).copied().unwrap_or(o.target);
+        if x.target != target {
+            Arc::make_mut(x).target = target;
+        }
+    }
+    if depth >= MAX_COPY_DEPTH {
+        return;
+    }
+    // Copied tables have new ids, given in the order of the old ones, so the two maps list them in the same order.
+    for (t, o) in copy.tables.values_mut().zip(orig.tables.values()) {
+        for (c, oc) in Arc::make_mut(t).cells.iter_mut().zip(&o.cells) {
+            retarget_xrefs(&mut c.text, &oc.text, map, depth + 1);
+        }
+    }
+    for (n, o) in copy.notes.iter_mut().zip(&orig.notes).chain(copy.endnotes.iter_mut().zip(&orig.endnotes)) {
+        retarget_xrefs(&mut Arc::make_mut(n).text, &o.text, map, depth + 1);
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522), each `depth`
+/// levels deep. False when one of them nests groups deeper than [`MAX_COPY_DEPTH`].
+fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
+    let mut complete = true;
     let mut fresh = |t: &mut Story| {
         for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+            complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
         }
     };
     st.for_each_text_mut(&mut fresh);
     for n in &mut st.endnotes {
         Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
+    complete
 }
 
 fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
@@ -5369,6 +5529,246 @@ mod copy_ids_tests {
         assert_eq!((r["created"].as_u64(), ids(&r).len()), (Some(3), 3), "{r}");
         assert!(ids(&r).iter().all(|i| s.doc().unwrap().doc.item(designcraft_doc::ItemId(*i)).is_some()));
     }
+
+    /// A selected text frame whose story holds a paragraph anchor, a cross-reference to it and a table.
+    fn marked_frame(s: &mut crate::Session) -> (u64, designcraft_doc::StoryId) {
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false})).unwrap();
+        let text = json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Results\nSee "});
+        let f = s.execute("frame.create", &text).unwrap()["id"].as_u64().unwrap();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().text_frame().unwrap().story;
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 12, "focus": 12})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Results"})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2})).unwrap();
+        s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+        (f, sid)
+    }
+
+    /// The copy of story `orig` made for item `copy` has a text anchor and a table of its own, and its cross-reference
+    /// points at its own anchor. A table command naming the copy's table changes the copy alone.
+    fn assert_own_marks(s: &mut crate::Session, orig: designcraft_doc::StoryId, copy: u64) {
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(designcraft_doc::ItemId(copy)).unwrap().text_frame().unwrap().story;
+        assert_ne!(sid, orig);
+        let (o, c) = (d.story(orig).unwrap(), d.story(sid).unwrap());
+        let (oa, ca) = (o.anchors[0].id, c.anchors[0].id);
+        assert_ne!(oa, ca, "the copy's anchor has an id of its own");
+        assert_eq!(d.find_anchor(ca).map(|(at, _)| at), Some(sid));
+        assert_eq!((o.xrefs[0].target, c.xrefs[0].target), (oa, ca), "each cross-reference points at its own story's anchor");
+        let (ot, ct) = (*o.tables.keys().next().unwrap(), *c.tables.keys().next().unwrap());
+        assert_ne!(ot, ct, "the copy's table has an id of its own");
+        assert_eq!(c.tables[&ct].id, ct);
+        assert_eq!(c.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [ct], "the copied paragraph holds the copied table");
+        d.check().unwrap();
+        // The table commands are enabled with the insertion point in a table: here the original's.
+        let cell = designcraft_doc::CellAddr { table: ot, row: 0, col: 0 };
+        s.edit(|_, sel| {
+            sel.text = Some(designcraft_doc::TextSel { story: orig, anchor: 0, focus: 0, frame: None, cell: Some(cell) });
+            Ok(())
+        })
+        .unwrap();
+        s.execute("table.insertRow", &json!({"table": ct})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(orig).unwrap().tables[&ot].nrows(), 1, "the original table is unchanged");
+        assert_eq!(d.story(sid).unwrap().tables[&ct].nrows(), 2);
+    }
+
+    #[test]
+    fn duplicated_text_gets_anchors_and_tables_of_its_own() {
+        let mut s = crate::Session::new();
+        let (_, sid) = marked_frame(&mut s);
+        let copy = s.execute("edit.duplicate", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn pasted_text_gets_anchors_and_tables_of_its_own() {
+        let mut s = crate::Session::new();
+        let (_, sid) = marked_frame(&mut s);
+        s.execute("edit.copy", &json!({})).unwrap();
+        let copy = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn duplicated_spreads_get_anchors_and_tables_of_their_own() {
+        let mut s = crate::Session::new();
+        let (f, sid) = marked_frame(&mut s);
+        s.execute("layout.pages.duplicateSpread", &json!({"spread": 0})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let copy = d.spreads[1].items.iter().find(|i| i.text_frame().is_some()).unwrap().id.0;
+        assert_ne!(copy, f);
+        assert_own_marks(&mut s, sid, copy);
+    }
+
+    #[test]
+    fn copied_text_gives_tables_in_its_cells_ids_of_their_own() {
+        use std::sync::Arc;
+
+        fn table_ids(st: &designcraft_doc::Story, out: &mut Vec<u64>) {
+            for (id, t) in &st.tables {
+                out.push(*id);
+                for c in &t.cells {
+                    table_ids(&c.text, out);
+                }
+            }
+        }
+        let cell = |st: &designcraft_doc::Story| st.tables.values().next().unwrap().cells[0].text.clone();
+        let mut s = crate::Session::new();
+        let (f, sid) = marked_frame(&mut s);
+        // The table's first cell holds a table.
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let inner = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+        let st = d.story_mut(sid).unwrap();
+        let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+        text.insert_table(text.len(), inner);
+        for copy_cmd in ["edit.duplicate", "edit.paste"] {
+            if copy_cmd == "edit.paste" {
+                s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+                s.execute("edit.copy", &json!({})).unwrap();
+            }
+            let copy = s.execute(copy_cmd, &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+            let d = &s.doc().unwrap().doc;
+            let csid = d.item(designcraft_doc::ItemId(copy)).unwrap().text_frame().unwrap().story;
+            let (o, c) = (d.story(sid).unwrap(), d.story(csid).unwrap());
+            let (oc, cc) = (cell(o), cell(c));
+            let (oi, ci) = (*oc.tables.keys().next().unwrap(), *cc.tables.keys().next().unwrap());
+            assert_ne!(oi, ci, "{copy_cmd}: the copied cell's table has an id of its own");
+            assert_eq!(cc.tables[&ci].id, ci);
+            assert_eq!(cc.paras.iter().filter_map(|pf| pf.table).collect::<Vec<_>>(), [ci], "the cell's paragraph holds the copied table");
+            let mut ids = Vec::new();
+            for st in d.stories.values() {
+                table_ids(st, &mut ids);
+            }
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(unique.len(), ids.len(), "{copy_cmd}: no two tables share an id: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn groups_nested_too_deeply_are_not_copied() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut crate::Session| s.execute("frame.create", &json!({"rect": [0, 0, 50, 50]})).unwrap()["id"].as_u64().unwrap();
+        let mut g = frame(&mut s);
+        for _ in 0..=super::MAX_COPY_DEPTH {
+            let other = frame(&mut s);
+            g = s.execute("object.group", &json!({"ids": [g, other]})).unwrap()["id"].as_u64().unwrap();
+        }
+        let text = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "text", "text": "Host"})).unwrap()["id"].as_u64();
+        let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(text.unwrap())).unwrap().text_frame().unwrap().story;
+        let before = s.doc().unwrap().doc.clone();
+        assert!(s.execute("transform.move", &json!({"dx": 10, "dy": 0, "copy": true, "ids": [g]})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
+        // Nor pasted into text as an anchored object.
+        s.execute("selection.set", &json!({"ids": [g]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        assert!(s.execute("edit.paste", &json!({})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn tables_nested_too_deeply_in_cells_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                if let Some(inner) = chain.take() {
+                    t.cells[0].text.insert_table(0, inner);
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        let mut s = nested(super::MAX_COPY_DEPTH + 1);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
+        s.execute("edit.copy", &json!({})).unwrap();
+        assert!(s.execute("edit.paste", &json!({})).is_err());
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn pasted_cross_references_follow_the_pasted_anchors_of_other_stories() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut crate::Session, rect: [f64; 4], text: &str| {
+            let id = s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            (id, s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story)
+        };
+        // Each story refers to the other, so one of the two is pasted before its destination.
+        let (a, first) = frame(&mut s, [72.0, 72.0, 300.0, 200.0], "Methods, see ");
+        let (b, second) = frame(&mut s, [72.0, 300.0, 300.0, 400.0], "Results, see ");
+        s.execute("text.select", &json!({"story": first.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Results"})).unwrap();
+        s.execute("text.select", &json!({"story": second.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Methods"})).unwrap();
+        s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        // Into another document, which holds no anchor of the original's: its stories get other ids.
+        s.execute("file.new", &json!({})).unwrap();
+        for _ in 0..3 {
+            frame(&mut s, [0.0, 0.0, 50.0, 50.0], "");
+        }
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let ids = s.execute("edit.paste", &json!({})).unwrap()["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect::<Vec<_>>();
+        let d = &s.doc().unwrap().doc;
+        let story = |id: u64| d.story(d.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story).unwrap();
+        for (refers, dest) in [(story(ids[0]), story(ids[1])), (story(ids[1]), story(ids[0]))] {
+            assert_eq!(refers.xrefs[0].target, dest.anchors[0].id, "the cross-reference points at the pasted destination");
+            assert_eq!(d.find_anchor(refers.xrefs[0].target).map(|(at, _)| at), Some(dest.id));
+        }
+    }
+
+    /// The first copy's new anchor id is the second original's anchor id, as can happen between two documents.
+    #[test]
+    fn copied_cross_references_keep_their_destination_when_new_ids_repeat_old_ones() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.edit(|d, _| {
+            d.next_id += 1000;
+            Ok(())
+        })
+        .unwrap();
+        let frame = |s: &mut crate::Session, rect: [f64; 4], text: &str| {
+            let id = s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            (designcraft_doc::ItemId(id), s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story)
+        };
+        let (a, first) = frame(&mut s, [72.0, 72.0, 300.0, 200.0], "Methods, see ");
+        let (b, second) = frame(&mut s, [72.0, 300.0, 300.0, 400.0], "Results");
+        s.execute("text.select", &json!({"story": first.0, "anchor": 13, "focus": 13})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Methods"})).unwrap();
+        s.execute("text.select", &json!({"story": second.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("anchor.create", &json!({"name": "Results"})).unwrap();
+        let src = s.doc().unwrap().doc.as_ref().clone();
+        assert_eq!(src.story(second).unwrap().anchors[0].id, (second.0 << 24) + 1);
+        // The copy of `first` gets story id `second`: one id goes to the frame, the next to its story.
+        let mut t = crate::Session::new();
+        t.execute("file.new", &json!({})).unwrap();
+        let mut dst = t.doc().unwrap().doc.as_ref().clone();
+        assert!(dst.next_id < second.0 - 2);
+        dst.next_id = second.0 - 2;
+        let ids = super::duplicate_from(&mut dst, &src, &[a, b], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::ZERO).unwrap();
+        let story = |id: designcraft_doc::ItemId| dst.story(dst.item(id).unwrap().text_frame().unwrap().story).unwrap();
+        let (one, two) = (story(ids[0]), story(ids[1]));
+        assert_eq!(one.id, second);
+        assert_eq!(one.xrefs[0].target, one.anchors[0].id, "the copy still refers to its own paragraph");
+        assert_ne!(two.anchors[0].id, one.anchors[0].id);
+    }
 }
 
 #[cfg(test)]
@@ -6075,6 +6475,41 @@ mod anchored_copy_tests {
         assert_ne!(anchored_sid, inner_sid);
         assert_eq!(d.story(anchored_sid).unwrap().frames, [anchored.id]);
         assert_eq!(d.story(inner_sid).unwrap().frames, [inner]);
+        assert_reopens(&d);
+    }
+
+    // Each story refers to an anchor in the story anchored in it, which is copied after it.
+    #[test]
+    fn cross_references_into_anchored_stories_follow_their_copies() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let mut frame =
+            |text: &str| d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 50.0, 50.0), layer, text, ParaFormat::default()).unwrap();
+        let (host, host_sid) = frame("Host ");
+        let (inner, inner_sid) = frame("Inner ");
+        let (deep, deep_sid) = frame("Deep");
+        for (into, (id, sid)) in [(inner_sid, (deep, deep_sid)), (host_sid, (inner, inner_sid))] {
+            let target = d.story_mut(sid).unwrap().insert_anchor(0, "Here");
+            let st = d.story_mut(into).unwrap();
+            st.insert_xref(st.len(), designcraft_doc::CrossRef { target, ..Default::default() });
+            let item = d.item(id).unwrap().clone();
+            let story = d.stories.get(&sid).unwrap().clone();
+            d.remove_item(id).unwrap();
+            d.stories.insert(sid, story);
+            d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        }
+        d.check().unwrap();
+        let src = d.clone();
+        let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let anchored = |sid: StoryId| d.story(sid).unwrap().objects[0].item.text_frame().unwrap().story;
+        let host_copy = d.item(copy[0]).unwrap().text_frame().unwrap().story;
+        let inner_copy = anchored(host_copy);
+        let deep_copy = anchored(inner_copy);
+        for (refers, dest) in [(host_copy, inner_copy), (inner_copy, deep_copy)] {
+            let target = d.story(refers).unwrap().xrefs[0].target;
+            assert_eq!(target, d.story(dest).unwrap().anchors[0].id, "the copied cross-reference points at the copied anchor");
+            assert_eq!(d.find_anchor(target).map(|(at, _)| at), Some(dest));
+        }
         assert_reopens(&d);
     }
 }
