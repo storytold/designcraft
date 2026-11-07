@@ -176,6 +176,16 @@ impl Document {
         out
     }
 
+    /// The anchored object `id` is, or is inside (in a group): its story and its index among
+    /// that story's own anchored objects (those in table cells and notes have no such index).
+    pub fn anchored_of(&self, id: ItemId) -> Option<(StoryId, usize)> {
+        fn holds(it: &Item, id: ItemId, depth: usize) -> bool {
+            // Groups nest; a document can't make them deeper than this.
+            it.id == id || (depth < 64 && it.children().iter().any(|c| holds(c, id, depth + 1)))
+        }
+        self.stories.iter().find_map(|(sid, st)| st.objects.iter().position(|o| holds(&o.item, id, 0)).map(|k| (*sid, k)))
+    }
+
     /// An embedded item is not a spread selection location (`find`).
     pub fn anchored_item(&self, id: ItemId) -> Option<&Item> {
         self.anchored_items().into_iter().find_map(|(_, item)| (item.id == id).then_some(item))
