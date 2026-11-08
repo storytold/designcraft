@@ -4805,7 +4805,7 @@ fn kashida_rank(prev: Option<char>, g: char, n: char, next: Option<char>) -> Opt
     let last = !(joins_next(n) && next.is_some_and(joins_prev));
     let forbidden = n == '\u{0648}'
         || (last && matches!(n as u32, 0x0649 | 0x064A | 0x0646))
-        || (is_tooth(g) && matches!(n as u32, 0x0635 | 0x0636 | 0x0639 | 0x063A | 0x0641 | 0x0642))
+        || (is_tooth(g) && matches!(n as u32, 0x0631 | 0x0632 | 0x0635 | 0x0636 | 0x0639 | 0x063A | 0x0641 | 0x0642))
         || g == '\u{0643}'
         || (g == '\u{0644}' && (!medial || matches!(n as u32, 0x0644 | 0x062F)));
     if forbidden {

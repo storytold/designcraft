@@ -61,6 +61,9 @@ fn kashidas_follow_the_typographic_rules() {
         ("بتم", Some(0)),
         ("بيت", Some(0)),
         ("بنت", Some(0)),
+        ("كبير", Some(1)),
+        ("تبر", Some(0)),
+        ("سير", Some(0)),
     ];
     for (word, expected) in words {
         assert_eq!(kashida_letters(word), expected.into_iter().collect::<BTreeSet<usize>>(), "{word}");
