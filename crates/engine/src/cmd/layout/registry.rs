@@ -896,6 +896,15 @@ mod page_index_tests {
     }
 
     #[test]
+    fn a_page_named_twice_does_not_count_as_two_against_the_last_one_left() {
+        // Four pages, three named (one of them twice): that leaves one and is allowed.
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [0, 0, 1, 2]})).unwrap();
+        assert_eq!(r["deleted"], 3);
+        assert_eq!(pages_left(&s), 1);
+    }
+
+    #[test]
     fn applying_a_parent_says_how_many_pages_took_it() {
         let mut s = four_pages();
         s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
