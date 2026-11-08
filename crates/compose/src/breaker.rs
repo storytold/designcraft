@@ -161,15 +161,22 @@ fn flex_cost(p: f64, sp: &Spacing) -> Option<f64> {
 
 /// Paragraph Composer, flexible: the cost of a line `d` points short of its measure (negative:
 /// overfull) whose word spaces are `spaces` points wide at their natural width. A line whose spaces
-/// would be squeezed past [`FLEX_FLOOR`] is infeasible (`feasible` is cleared); `None`: the standard
-/// rating applies.
+/// would be squeezed past [`FLEX_FLOOR`] stays only if letter spacing or glyph scaling can take
+/// the rest (`feasible` from the tiers, as in strict mode), costing as much as spaces at the floor;
+/// otherwise it is infeasible (`feasible` is cleared). `None`: the standard rating applies.
 fn flex_line_cost(sp: &Spacing, d: f64, spaces: f64, forced: bool, feasible: &mut bool) -> Option<f64> {
     if forced && d >= 0.0 {
         Some(0.0)
     } else if spaces > 1e-9 {
-        let c = flex_cost(flex_spacing(d, spaces, sp), sp);
-        *feasible = c.is_some();
-        c
+        match flex_cost(flex_spacing(d, spaces, sp), sp) {
+            Some(c) => {
+                *feasible = true;
+                Some(c)
+            }
+            // Squeezed past the floor: the letter and glyph tiers may still fit it.
+            None if *feasible => flex_cost(FLEX_FLOOR, sp),
+            None => None,
+        }
     } else if *feasible {
         Some(if forced { 0.0 } else { FLEX_SPACELESS_COST })
     } else {
@@ -1079,8 +1086,14 @@ pub fn greedy(
                     if may_hyphenate(hyphens) {
                         let hw = hyphen_width(g, &mut hy_cache);
                         let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                        // As for an automatic hyphenation point: where the line ends here, and
+                        // the first one beyond the measure, for flexible spacing to squeeze to.
                         if x + hy <= w + shrink + FIT_EPS {
                             last_ok = Some((i + 1, true));
+                            last_ok_at = Some((x + hy, nat));
+                            beyond = None;
+                        } else if beyond.is_none() {
+                            beyond = Some((i + 1, x + hy));
                         }
                     }
                 } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
@@ -1193,7 +1206,14 @@ fn squeeze_further(
             x += if g.ch == '\t' { tab(x, j) } else { g.adv };
             let next_space = glyphs.get(j + 1).is_none_or(|n| n.is_space());
             if !next_space && !g.no_break && g.break_after != Some(false) {
-                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/') {
+                // A discretionary hyphen, as the greedy pass takes it (it also suppresses the
+                // automatic points in its word).
+                if g.ch == SOFT_HYPHEN {
+                    if may_hyphenate {
+                        let hw = hyphen_width(g, hy_cache);
+                        break (j + 1, true, false, x + (hw - hyphen_hang(g, hw, sp)).max(0.0));
+                    }
+                } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/') {
                     break (j + 1, false, false, x);
                 }
                 if hyph_after.get(j) == Some(&true) && may_hyphenate {
@@ -1260,5 +1280,24 @@ mod tests {
         // Shrink beyond the tiers is infeasible.
         assert!(!tiered_ratio(-25.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
         assert!(tiered_ratio(-15.0, [0.0; 3], [10.0, 10.0, 0.0], 0.0).1);
+    }
+
+    /// CodeRabbit on #1190: a line whose word spaces alone would go below the floor, but which
+    /// the letter or glyph tiers fit, stays feasible in flexible mode, costing as much as spaces
+    /// at the floor; one the tiers can't fit either is dropped.
+    #[test]
+    fn a_line_the_tiers_fit_stays_feasible_when_flexible() {
+        let sp = Spacing { justify: true, flexible: true, word_desired: 1.0, ..Spacing::default() };
+        // 10 points of word spaces, 9.5 points too long: spaces at 5%, below the 20% floor.
+        let mut feasible = true;
+        let cost = flex_line_cost(&sp, -9.5, 10.0, false, &mut feasible);
+        assert!(feasible, "the tiers fit it");
+        assert_eq!(cost, flex_cost(FLEX_FLOOR, &sp));
+        let mut feasible = false;
+        assert_eq!(flex_line_cost(&sp, -9.5, 10.0, false, &mut feasible), None);
+        assert!(!feasible, "nothing fits it");
+        // Within the floor the spaces alone fit it, whatever the tiers say.
+        let mut feasible = false;
+        assert!(flex_line_cost(&sp, -5.0, 10.0, false, &mut feasible).is_some() && feasible);
     }
 }

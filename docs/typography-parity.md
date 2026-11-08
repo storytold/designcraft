@@ -106,7 +106,8 @@ looser line. Measured black-box from InDesign's PDF output of two documents (abo
 Preferences › Composition › **Word Spacing below Minimum** chooses between *Never (strict)*, new
 documents' default, and *When it avoids a very loose line (InDesign-compatible)*, the default for
 documents opened from IDML. It is saved with the document. Spaces never go below 20% of their
-width. Laid out by DesignCraft, the measured dictionary document matches 87.3% of InDesign's lines
+width. Paragraphs set with a Japanese composer keep the strict rule: Japanese text mostly has no
+word spaces to rate lines by. Laid out by DesignCraft, the measured dictionary document matches 87.3% of InDesign's lines
 exactly (72.5% strict). In the hyphenated document most remaining differences are hyphenation
 points: InDesign's English dictionary and DesignCraft's agree on about 60% of the hyphenated words.
 

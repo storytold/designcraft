@@ -8669,6 +8669,94 @@ mod flexible_word_spacing {
         }
     }
 
+    /// [`first_line`] with paragraph attributes of the test's own (justified, the composer and
+    /// hyphenation as given) → the first line's text, its placed width and the measure.
+    fn first_line_with(text: &str, next: &str, squeeze: f64, para: ParaAttrs, flexible: bool) -> (String, f64, f64) {
+        let fits = format!("{HEAD} {next}");
+        let (w, space) = natural(&fits);
+        let spaces = fits.matches(' ').count() as f64;
+        let width = w - spaces * space * (1.0 - squeeze);
+        let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(false), ..para };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        (text[l.range.clone()].trim_end().to_string(), l.end_x - l.x0, width)
+    }
+
+    /// All lines of `text` in a frame `width` wide, as (text, placed width).
+    fn lines_of(text: &str, width: f64, para: ParaAttrs, flexible: bool) -> Vec<(String, f64)> {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 2000.0), para);
+        d.settings.flexible_word_spacing = flexible;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| (text[l.range.clone()].to_string(), l.end_x - l.x0)).collect()
+    }
+
+    /// FredApps on #1190: where flexible spacing doesn't apply, switching it on changes nothing:
+    /// ragged text, and the Japanese composers (Japanese text has few word spaces to rate lines
+    /// by; they keep their own preferences).
+    #[test]
+    fn flexible_spacing_changes_nothing_where_it_does_not_apply() {
+        let text = format!("{HEAD} crowds and open spaces, {HEAD} it and open spaces in the evening light.");
+        for (align, composer) in [
+            (Align::Left, Composer::Paragraph),
+            (Align::Left, Composer::SingleLine),
+            (Align::LeftJustified, Composer::Japanese),
+            (Align::LeftJustified, Composer::JapaneseSingleLine),
+        ] {
+            let para = ParaAttrs { align: Some(align), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+            for width in [140.0, 190.0, 260.0] {
+                assert_eq!(
+                    lines_of(&text, width, para.clone(), true),
+                    lines_of(&text, width, para.clone(), false),
+                    "{align:?} {composer:?} at {width}"
+                );
+            }
+        }
+    }
+
+    /// FredApps on #1190: a justified line holding one word too long for the measure, with no
+    /// word spaces, breaks as in strict mode.
+    #[test]
+    fn a_word_without_spaces_breaks_as_in_strict_mode() {
+        let text = "Pneumonoultramicroscopicsilicovolcanoconiosis is long.";
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let para = ParaAttrs { align: Some(Align::LeftJustified), composer: Some(composer), hyphenate: Some(false), ..Default::default() };
+            let flexible = lines_of(text, 90.0, para.clone(), true);
+            assert!(flexible.len() > 1, "{composer:?}: {flexible:?}");
+            assert_eq!(flexible, lines_of(text, 90.0, para, false), "{composer:?}");
+        }
+    }
+
+    /// CodeRabbit on #1190: a line chosen for spaces below the Minimum is placed with them there,
+    /// within its measure, though letter spacing and glyph scaling can't shrink.
+    #[test]
+    fn a_squeezed_line_is_placed_within_its_measure() {
+        let text = format!("{HEAD} crowds and open spaces.");
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let para = ParaAttrs { composer: Some(composer), ..Default::default() };
+            // Spaces at 60%: below the 80% Minimum, which placement used to stop at.
+            let (line, width, measure) = first_line_with(&text, "crowds", 0.6, para, true);
+            assert_eq!(line, format!("{HEAD} crowds"), "{composer:?}");
+            assert!(width <= measure + 0.01, "{composer:?}: placed {width} in {measure}");
+        }
+    }
+
+    /// CodeRabbit on #1190: the Single-line Composer, squeezing a loose line, may take a word up
+    /// to its discretionary hyphen.
+    #[test]
+    fn a_squeezed_line_may_end_at_a_discretionary_hyphen() {
+        let text = format!("{HEAD} crowd\u{AD}ed and open spaces.");
+        let para = ParaAttrs { composer: Some(Composer::SingleLine), ..Default::default() };
+        // "crowd" plus its hyphen with spaces at 50% to 70%: the line runs out of room before the
+        // hyphen or after it, inside the word; either way it ends there.
+        for squeeze in [0.5, 0.6, 0.7] {
+            let (line, width, measure) = first_line_with(&text, "crowd-", squeeze, para.clone(), true);
+            assert_eq!(line, format!("{HEAD} crowd\u{AD}"), "spaces at {squeeze}");
+            assert!(width <= measure + 0.01, "spaces at {squeeze}: placed {width} in {measure}");
+        }
+    }
+
     #[test]
     fn spaces_never_squeeze_past_the_floor() {
         // At 10% of their width the spaces would all but vanish: the line breaks before "crowds".

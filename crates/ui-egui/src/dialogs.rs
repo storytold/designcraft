@@ -4968,7 +4968,11 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             doc["advancedType"] = adv;
             doc["overprintBlack"] = json!(d.b("overprintBlack"));
             doc["glyphFallback"] = json!(d.b("glyphFallback"));
-            doc["flexibleWordSpacing"] = json!(d.s("flexibleWordSpacing") == "true");
+            // A dialog opened without the field (`ui.dialog.open` with only some fields) keeps the
+            // document's setting, as for the ruler units.
+            if d.fields.contains_key("flexibleWordSpacing") {
+                doc["flexibleWordSpacing"] = json!(d.s("flexibleWordSpacing") == "true");
+            }
             app.run("document.preferences", doc)
         }
         _ => confirm_part5(app, d),
