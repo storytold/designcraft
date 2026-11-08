@@ -53,7 +53,11 @@ pub(super) fn screen_options(app: &DesignApp, layout: &CanvasLayout, preview: bo
         overprint_preview: app.ui.overprint_preview,
         blend_space_view: !app.ui.proof_colors,
         document_grid: if app.ui.document_grid && !preview { grid_areas(layout) } else { vec![] },
-        baseline_grid: if app.ui.baseline_grid && !preview && zoom >= baseline_view_threshold(app) { grid_areas(layout) } else { vec![] },
+        baseline_grid: if app.ui.guides && app.ui.baseline_grid && !preview && zoom >= baseline_view_threshold(app) {
+            grid_areas(layout)
+        } else {
+            vec![]
+        },
         ..Default::default()
     }
 }
