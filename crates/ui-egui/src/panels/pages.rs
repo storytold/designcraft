@@ -1,37 +1,45 @@
 //! Pages panel: parents at the top, document spreads with live thumbnails below.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use designcraft_doc::{SpreadId, SpreadRef};
+use designcraft_doc::{Document, PageId, SpreadId, SpreadRef};
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
 use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-/// What a thumbnail shows: a document page (absolute index) or a whole parent spread.
+/// What a thumbnail shows: a document page (by stable page id) or a whole parent spread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ThumbOf {
-    Page(usize),
+    Page(PageId),
     Parent(SpreadId),
 }
 
-/// (document uid, content version, page or parent, thumbnail height). The content version is
-/// the document's own allocation, which changes only when the document's content changes — a
-/// selection-only change re-renders no pixels, so keying on the state revision instead tore
-/// down and re-rendered every page thumbnail on every click.
-type ThumbKey = (u64, u64, ThumbOf, u32);
+/// (document uid, page or parent, thumbnail height). Entries are kept until their page's
+/// content changes: when the document's allocation changes, [`validate`] drops only the
+/// damaged spreads' thumbnails. Keying on the state revision instead rebuilt every page
+/// thumbnail on every click (a selection-only change repaints no pixels); keying on the
+/// allocation alone rebuilt them on every content edit, however local — the same ~30 s
+/// freeze on large documents.
+type ThumbKey = (u64, ThumbOf, u32);
 
 static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
+
+/// Per document: the allocation its current thumbnails were validated against. A content
+/// edit replaces the allocation (copy-on-write), and the next paint compares old and new
+/// with the damage API to drop only the damaged spreads' thumbnails; a selection-only
+/// change never touches the allocation, so it drops nothing.
+static LAST_DOC: Mutex<Option<HashMap<u64, std::sync::Weak<Document>>>> = Mutex::new(None);
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
 
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let rev = std::sync::Arc::as_ptr(&st.doc) as u64;
-    let key = (st.uid, rev, of, h.round() as u32);
+    validate(st.uid, &st.doc, &app.session.cache);
+    let key = (st.uid, of, h.round() as u32);
     let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = g.get_or_insert_with(HashMap::new);
     if let Some(t) = map.get(&key) {
@@ -42,10 +50,10 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     r.threads = 0;
     let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
     let (img, name) = match of {
-        ThumbOf::Page(abs) => {
-            let page = st.doc.page(abs)?;
+        ThumbOf::Page(id) => {
+            let (abs, _, page) = st.doc.pages().find(|(_, _, p)| p.id == id)?;
             let img = r.render_page(&st.doc, &app.session.cache, abs, px / page.height.max(1e-6), false, &opts)?;
-            (img, format!("thumb{abs}"))
+            (img, format!("thumb{}", id.0))
         }
         ThumbOf::Parent(id) => {
             let i = st.doc.parent_index(id)?;
@@ -63,11 +71,54 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    // Drop thumbnails of an older version of the document.
-    let (uid, cur) = (st.uid, rev);
-    map.retain(|k, _| !(k.0 == uid && k.1 != cur));
     map.insert(key, tex.clone());
     Some(tex)
+}
+
+/// Keep this document's cached thumbnails in step with its current allocation. A
+/// selection-only change never touches the allocation, so nothing is dropped. A content
+/// edit replaces the allocation (copy-on-write): the damage API then drops only the
+/// thumbnails of the spreads whose rendering actually changed — deleting one object
+/// rebuilds its page, not all 96. A global change (styles, layers, parents, section
+/// numbering) drops the document's whole set.
+fn validate(uid: u64, cur: &std::sync::Arc<Document>, cache: &designcraft_compose::Cache) {
+    let mut last = LAST_DOC.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let last = last.get_or_insert_with(HashMap::new);
+    match last.get(&uid).and_then(|w| w.upgrade()) {
+        Some(prev) if !std::ptr::eq(&prev, cur) => {
+            last.insert(uid, std::sync::Arc::downgrade(cur));
+            let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let map = g.get_or_insert_with(HashMap::new);
+            let mut by_spread: HashMap<usize, Vec<PageId>> = HashMap::new();
+            for (_, si, p) in cur.pages() {
+                by_spread.entry(si).or_default().push(p.id);
+            }
+            match designcraft_render::damage::damage_with(&prev, cur, Some(cache)) {
+                Some(regions) => {
+                    let dirty: HashSet<ThumbOf> = regions
+                        .iter()
+                        .flat_map(|(r, _)| -> Box<dyn Iterator<Item = ThumbOf>> {
+                            match r {
+                                SpreadRef::Doc(si) => Box::new(by_spread.get(si).cloned().unwrap_or_default().into_iter().map(ThumbOf::Page)),
+                                SpreadRef::Parent(i) => Box::new(std::iter::once(ThumbOf::Parent(SpreadId(*i as u64)))),
+                            }
+                        })
+                        .collect();
+                    map.retain(|k, _| !(k.0 == uid && dirty.contains(&k.1)));
+                }
+                None => map.retain(|k, _| k.0 != uid),
+            }
+        }
+        Some(_) => {}
+        None => {
+            // First paint of this document (nothing to drop), or the recorded allocation is
+            // unreachable (e.g. the undo buffer cleared it): drop everything and revalidate.
+            last.insert(uid, std::sync::Arc::downgrade(cur));
+            let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let map = g.get_or_insert_with(HashMap::new);
+            map.retain(|k, _| k.0 != uid);
+        }
+    }
 }
 
 /// Thumbnail sizes of the Pages panel (Panel Options › Size), InDesign's six.
@@ -492,7 +543,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                     });
                     let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                    match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
+                    match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(p.id), th)).flatten() {
                         Some(tex) => {
                             ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                         }
@@ -1288,6 +1339,7 @@ mod click_freeze_repro {
         app.run("file.open", json!({"path": path})).unwrap();
         let doc = app.session.doc().unwrap().doc.clone();
         println!("document: {} spreads, {} items, {} assets", doc.spreads.len(), doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(), doc.assets.len());
+        let count = || THUMBS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0);
         let mut h = Harness::builder()
             .with_size(vec2(280.0, 900.0))
             .with_step_dt(1.0 / 60.0)
@@ -1303,10 +1355,11 @@ mod click_freeze_repro {
                 },
                 app,
             );
+        println!("after build_ui_state: {} thumbnails cached", count());
         let frame = |h: &mut Harness<DesignApp>, label: &str| {
             let t0 = std::time::Instant::now();
             h.run_steps(1);
-            println!("{label}: {} ms", t0.elapsed().as_millis());
+            println!("{label}: {} ms ({} thumbnails cached)", t0.elapsed().as_millis(), count());
         };
         frame(&mut h, "frame 1 (first paint: builds every page thumbnail)");
         frame(&mut h, "frame 2 (thumbnails cached)");
@@ -1330,5 +1383,21 @@ mod click_freeze_repro {
             ms
         };
         assert!(after < cached.max(200) * 20 + 2000, "selection change rebuilt every page thumbnail: {after} ms vs cached {cached} ms");
+        // What Delete on a selected object does: a content edit (copy-on-write, new
+        // allocation) must rebuild only the damaged page's thumbnail, not all of them.
+        let keys_before: std::collections::HashSet<_> = THUMBS.lock().unwrap().as_ref().unwrap().keys().copied().collect();
+        h.state_mut().run("edit.clear", json!({})).unwrap();
+        let deleted = {
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            let ms = t0.elapsed().as_millis();
+            let keys_after: std::collections::HashSet<_> = THUMBS.lock().unwrap().as_ref().unwrap().keys().copied().collect();
+            println!("frame 5 (after edit.clear): {ms} ms ({} -> {} thumbnails)", keys_before.len(), keys_after.len());
+            assert_eq!(keys_before, keys_after, "the content edit dropped page thumbnails that should have stayed cached");
+            ms
+        };
+        // One page thumbnail costs a fraction of a second here; dropping and rebuilding
+        // all ~104 (the old behavior) takes seconds for this document.
+        assert!(deleted < 500, "object delete rebuilt every page thumbnail: {deleted} ms");
     }
 }
