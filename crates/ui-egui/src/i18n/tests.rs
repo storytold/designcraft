@@ -577,3 +577,12 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
 }
+
+#[test]
+fn japanese_names_every_unit() {
+    let names: Vec<&str> = designcraft_geom::Unit::ALL.iter().map(|u| tr("ja", u.label())).collect();
+    assert_eq!(
+        names,
+        ["ポイント", "パイカ", "インチ", "インチ（10 進）", "ミリメートル", "センチメートル", "シセロ", "アゲート", "ピクセル", "Q", "歯"]
+    );
+}
