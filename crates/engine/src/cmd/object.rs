@@ -3720,6 +3720,7 @@ fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Va
         let out: Vec<Value> = made.iter().map(|g| json!({"page": g.page, "index": g.index})).collect();
         Ok(json!({"created": out.len(), "guides": out}))
     })
+    .map(Some)
 }
 
 fn step_repeat_offsets(p: &Value) -> Result<Vec<Vec2>> {
