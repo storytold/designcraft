@@ -874,38 +874,47 @@ impl Document {
 
     /// The parent items drawn behind page `page` of spread `sr`, back to front: the deepest base
     /// parent's first, each parent's in z-order. They are the items of [`Self::shown_parent_pages`]
-    /// on the parent page shown (on a facing parent, the page an item's centre is on), less those
-    /// the page overrides and those a parent page in front of theirs overrides (B based on A hides
-    /// the A items B's page overrides, wherever B shows). Empty when the page hides parent items.
+    /// on the parent page shown (on a facing parent, the page an item's centre is on), less
+    /// [`Self::overridden_parent_items`] (B based on A hides the A items B's page overrides,
+    /// wherever B shows). Empty when the page hides parent items.
     /// Drawing, export, hit testing, snapping and overriding all go through this list.
     pub fn shown_parent_items(&self, sr: SpreadRef, page: usize) -> Vec<ShownParentItem<'_>> {
         let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return Vec::new() };
         if !pg.show_parent_items {
             return Vec::new();
         }
-        let levels = self.shown_parent_pages(sr, page);
+        let overridden = self.overridden_parent_items(sr, page);
         let mut out = Vec::new();
-        for (level, &(ppi, ppage)) in levels.iter().enumerate() {
+        for (ppi, ppage) in self.shown_parent_pages(sr, page) {
             let Some(parent) = self.parents.get(ppi) else { continue };
             let Some(ppg) = parent.pages.get(ppage) else { continue };
             let dx = pg.x - ppg.x;
-            // Overridden by the page, or by a parent page drawn in front of this one.
-            let above = levels.get(level + 1..).unwrap_or_default();
-            let hidden: Vec<&[ItemId]> = std::iter::once(pg.overridden.as_slice())
-                .chain(above.iter().filter_map(|&(i, j)| Some(self.parents.get(i)?.pages.get(j)?.overridden.as_slice())))
-                .collect();
             for it in &parent.items {
                 // Parent items belong to the parent page they sit on.
                 if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {
                     continue;
                 }
-                if hidden.iter().any(|ids| ids.contains(&it.id)) {
+                if overridden.contains(&it.id) {
                     continue;
                 }
                 out.push(ShownParentItem { item: it, dx });
             }
         }
         out
+    }
+
+    /// The parent items page `page` of spread `sr` leaves out because they are overridden: the
+    /// page's own overrides and those of every parent page in [`Self::shown_parent_pages`]. A
+    /// parent page that overrode an item of its base and then deleted the override removed that
+    /// item from itself and from every page based on it (#1469). An override always names an item
+    /// of a parent further back, so one set covers the chain.
+    ///
+    /// Everything that works out which parent items a page shows -- drawing, PDF and PPTX export,
+    /// hit-testing, snapping, frame edges -- asks this, so they all hide the same items.
+    pub fn overridden_parent_items(&self, sr: SpreadRef, page: usize) -> HashSet<ItemId> {
+        let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return HashSet::new() };
+        let behind = self.shown_parent_pages(sr, page).into_iter().filter_map(|(ppi, ppage)| self.parents.get(ppi)?.pages.get(ppage));
+        pg.overridden.iter().copied().chain(behind.flat_map(|p| p.overridden.iter().copied())).collect()
     }
 
     /// Whether basing parent `pi` on `base` would make a `based_on` cycle (or names no parent).

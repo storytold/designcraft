@@ -1,6 +1,6 @@
 use super::common::{TagEntry, blend, norm, rects_overlap, solid_fill, tf, to_path};
 use super::graphics::draw_coverage;
-use super::pipeline::{item_exported, layer_exported};
+use super::pipeline::{drawn_children, item_exported, layer_exported, shown_parent_items};
 use super::*;
 
 impl Exporter<'_> {
@@ -12,22 +12,24 @@ impl Exporter<'_> {
 
     /// The parent pages' items on `layer` shown on page `pi` of spread `si`: the parent's bases
     /// first, then the parent.
-    /// Document spread `si` onto `s`: layer by layer, the parent items each page shows, then the
-    /// spread's own items.
+    fn parent_items(&mut self, s: &mut Surface, si: usize, pi: usize, layer: &designcraft_doc::Layer, first: usize) {
+        for (xf, it) in shown_parent_items(self.doc, si, pi) {
+            if it.layer == layer.id {
+                self.top_item(s, it, xf, Some(first + pi), true);
+            }
+        }
+    }
+
     pub(super) fn spread(&mut self, s: &mut Surface, si: usize) {
         let doc = self.doc;
         let Some(sp) = doc.spreads.get(si) else { return };
         let first = doc.first_page_of_spread(si);
-        // Parent items behind each page: the parent's bases first, then the parent.
-        let shown: Vec<_> = (0..sp.pages.len()).map(|pi| doc.shown_parent_items(SpreadRef::Doc(si), pi)).collect();
         for layer in doc.layers.iter().rev() {
             if !layer_exported(layer) {
                 continue;
             }
-            for (pi, items) in shown.iter().enumerate() {
-                for p in items.iter().filter(|p| p.item.layer == layer.id) {
-                    self.top_item(s, p.item, Affine::translate((p.dx, 0.0)), Some(first + pi), true);
-                }
+            for pi in 0..sp.pages.len() {
+                self.parent_items(s, si, pi, layer, first);
             }
             for it in &sp.items {
                 if it.layer == layer.id {
@@ -247,7 +249,7 @@ impl Exporter<'_> {
         if let Some(c) = &clip {
             s.push_clip_path(c, &FillRule::NonZero);
         }
-        for child in it.children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         if clip.is_some() {
@@ -267,7 +269,7 @@ impl Exporter<'_> {
 
     fn draw_group_children(&mut self, s: &mut Surface, it: &Item, xf: Affine, page: Option<usize>) {
         let pushes = Self::push_group(s, it.opacity, it.blend) + Self::push_isolation(s, it);
-        for child in it.shown_children() {
+        for child in drawn_children(it) {
             self.item(s, child, xf, page);
         }
         for _ in 0..pushes {

@@ -91,7 +91,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Control panel scale X/Y, rotation and shear fields (`transform.info`, absolute `transform.set {scaleX, scaleY, rotation, shear}` about the reference point) and Preferences › Transformations are Totals for nested objects and placed graphics.
 - Variable fonts: each named instance is a style (Font menu, shaping with feature variations, metrics, outlines) and embeds at its axis settings in PDF; free axis sliders still to come.
 - Object ▸ Select (first/next above, next/last below, container, content, previous/next in group), full Object ▸ Convert Shape (`object.convertShape`), Table ▸ Split Cell Horizontally/Vertically.
-- Attributes panel (`object.attributes`: Overprint Fill/Stroke/Gap, Nonprinting), with Overprint Gap in Overprint Preview and IDML; PDF export writes them as `/op` and `/OP` with `/OPM 1`.
+- Attributes panel (`object.attributes`: Overprint Fill/Stroke/Gap, Nonprinting), with Overprint Gap in Overprint Preview and IDML; PDF export writes them as `/op` and `/OP` with `/OPM 1`. Preflight warns about white or [Paper] set to overprint (`whiteOverprint`): a fill, stroke or gap, or ruby and kenten, that lays down no ink and would vanish on press.
 - Page Numbering View (Preferences: section or absolute): page labels everywhere follow it; Go to Page takes section names, numbers or `+n`.
 - Preferences › Advanced Type (document `advancedType`: superscript/subscript size and position; IDML TextPreference); subscripts now drop 33.3% like InDesign.
 - Preferences › Composition › Highlight: keep violations, H&J violations (three shades), custom tracking/kerning, substituted fonts.
@@ -389,6 +389,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 ## Progress log
 
 - **2026-11-04** · Striped strokes retain out-and-back cubic segments whose second control point is away from the coincident endpoints and first control point. A geometry regression checks the offset extent and both stripe bands. No readiness percentage change.
+- **2026-11-04** · Esperanto is a text language (Character › Language, `type.char {language: "Esperanto"}`, IDML `$ID/Esperanto`): tag `eo`, English-style quotes; not hyphenated yet (#1201). No readiness percentage change.
 
 - **2026-11-02** · EPUB Export Options names a cover image file (PNG or JPEG, typed or chosen with Choose…) for the reflowable export; left empty, the first page stays the cover (#1934). No readiness percentage change.
 - **2026-11-02** · The Pen shows the segment a dragged smooth point shapes while it is dragged, and its rubber band curves out of a smooth point's direction line (#1438, first item). No readiness percentage change.
@@ -400,6 +401,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-11-06** · Preflight warns about white or [Paper] set to overprint (#2401): a fill, stroke or stroke gap, or ruby and kenten, in [Paper] or a colour that lays down no ink (C=0 M=0 Y=0 K=0, a 0% tint; a spot ink, such as a white ink or a varnish, prints whatever colour stands in for it), is reported as `whiteOverprint`, since it disappears on press. Text itself has no overprint, so white text in a frame set to Overprint Fill still knocks out and prints, and is not reported. Preflight no longer says PDF export drops ruby and kenten overprint, which it writes. No readiness percentage change.
 - **2026-11-03** · `type.char` says when the font it applies isn't available (#2189): it returns `{"warnings": ["Missing font: Courier Prime (using Source Sans 3)"]}`, or `Missing font style: …` for a style the family doesn't have, in preflight's words. The font is still applied, as before, so Find Font and preflight list it. A script that asked for a font the machine doesn't have exported in the substitute with no word about it. No readiness percentage change.
 - **2026-11-02** · Packaged PDFs report their export warnings in the package result and Instructions.txt, and soft drop shadows and feathers in them are tested. Frame and text-range hyperlinks keep their source bounds when the frame is rasterized, including inside groups. No readiness percentage change.
 - **2026-11-01** · Parent page resizing (#1620): Properties, the Page Tool Control panel and on-page handles resize the selected parent page independently of document pages. Stable parent IDs, repeated resizing, anchors and liquid rules are preserved on the current command modules. Inline parent margin editing targets only the selected parent page and preserves opposite-page margins and document overrides; document commands retain their first-page default before the canvas is initialized. No readiness percentage change.

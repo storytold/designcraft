@@ -176,6 +176,26 @@ mod tests {
         d.check().unwrap();
     }
 
+    /// An item that parent B overrode and deleted doesn't show on the pages using B, so overriding
+    /// all of them doesn't bring back a copy of it (#1469).
+    #[test]
+    fn an_item_a_parent_removed_is_not_overridden_again() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72.0, 72.0, 200.0, 200.0], "content": "unassigned"}))
+            .unwrap();
+        let a_item = ItemId(r["id"].as_u64().unwrap());
+        s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "B"})).unwrap();
+        // B overrides A's item and the override is deleted: B's page keeps it in its list.
+        let st = s.doc_mut().unwrap();
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut st.doc).parents[1]).pages[0].overridden.push(a_item);
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1})).unwrap();
+        assert_eq!(r["ids"], json!([]), "nothing on the page to override");
+    }
+
     /// On a page whose parent B is based on A, A's items can be overridden too.
     #[test]
     fn override_items_from_a_base_parent() {
