@@ -794,16 +794,18 @@ fn the_baseline_grid_goes_behind_the_page_objects_with_grids_in_back() {
         Renderer::new().render(d, &cache, &placed, (612, 792), Affine::IDENTITY, &opts)
     };
 
+    // The rule falls on 48 pt and not on 52, so the two rows differ exactly when it is drawn over
+    // the sheet — which is the whole question the preference answers.
     d.settings.grid.in_back = true;
     let behind = render(&d, vec![(SpreadRef::Doc(0), page)]);
-    assert_eq!(behind.pixel(300, 52)[0], 0, "the sheet is black");
-    assert_eq!(behind.pixel(300, 48)[0], 0, "the rule stays behind it");
+    assert_eq!(behind.pixel(300, 48), behind.pixel(300, 52), "behind the sheet, the rule does not show");
+    assert_eq!(behind.pixel(300, 60), behind.pixel(300, 64), "and no other rule does either");
 
     d.settings.grid.in_back = false;
     let over = render(&d, vec![(SpreadRef::Doc(0), page)]);
-    assert!(over.pixel(300, 48)[0] > 100, "in front, the rule shows: {:?}", over.pixel(300, 48));
-    assert_eq!(over.pixel(300, 52)[0], 0, "and only where it falls");
+    assert_ne!(over.pixel(300, 48), over.pixel(300, 52), "in front, the rule shows over the sheet");
+    assert_ne!(over.pixel(300, 60), over.pixel(300, 64), "one per increment");
 
     let hidden = render(&d, vec![]);
-    assert_eq!(hidden.pixel(300, 48)[0], 0, "no rule while the grid is hidden");
+    assert_eq!(hidden.pixel(300, 48), hidden.pixel(300, 52), "nothing while the grid is hidden");
 }

@@ -48,7 +48,7 @@ pub(super) fn draw_guides(
             if !app.ui.guides {
                 continue;
             }
-            draw_page_grids(painter, xf, doc, slot, p, pr);
+            draw_page_grids(painter, xf, doc, slot, p);
             let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard };
             draw_page_guides(&cx, (pi, p, pr), moving, &selection);
         }
@@ -85,7 +85,7 @@ fn draw_parent_overlay(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &
 
 /// A page's margins and columns. The baseline grid is drawn with the page's content, so that
 /// Grids in Back can put it behind the objects (#2421).
-fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, p: &designcraft_doc::Page, pr: DRect) {
+fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, p: &designcraft_doc::Page) {
     let s = &doc.settings;
     let pt = |q: Point| xf.to_screen(slot.xf * q);
     let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
