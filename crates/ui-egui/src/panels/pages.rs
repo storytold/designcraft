@@ -1353,23 +1353,25 @@ mod click_freeze_repro {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.open", json!({"path": path})).unwrap();
         let doc = app.session.doc().unwrap().doc.clone();
-        println!("document: {} spreads, {} items, {} assets", doc.spreads.len(), doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(), doc.assets.len());
+        println!(
+            "document: {} spreads, {} items, {} assets",
+            doc.spreads.len(),
+            doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(),
+            doc.assets.len()
+        );
         let count = || THUMBS.lock().unwrap().as_ref().map(|m| m.len()).unwrap_or(0);
-        let mut h = Harness::builder()
-            .with_size(vec2(280.0, 900.0))
-            .with_step_dt(1.0 / 60.0)
-            .build_ui_state(
-                |ui, app: &mut DesignApp| {
-                    let key = egui::Id::unique("click_freeze_repro_fonts");
-                    if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                        crate::theme::install_fonts(ui.ctx(), "");
-                        ui.data_mut(|d| d.insert_temp(key, true));
-                        return;
-                    }
-                    show(app, ui);
-                },
-                app,
-            );
+        let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("click_freeze_repro_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
         println!("after build_ui_state: {} thumbnails cached", count());
         let frame = |h: &mut Harness<DesignApp>, label: &str| {
             let t0 = std::time::Instant::now();
@@ -1427,7 +1429,7 @@ mod click_freeze_repro {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.open", json!({"path": path})).unwrap();
         let t0 = std::time::Instant::now();
-        let n = crate::panels::preflight_errors(&mut app);
+        let n = crate::panels::preflight_errors(&app);
         let dt = t0.elapsed();
         println!("status-bar preflight_errors (full-document check): {dt:?} ({n} errors)");
     }
@@ -1460,22 +1462,13 @@ mod click_freeze_repro {
             let doc = &ds.doc;
             let it = &doc.spreads[0].items[0];
             let b = it.bounds();
-            println!(
-                "spread 0 first item #{}: bounds {:?}, text_frame={} graphic={}",
-                it.id.0, b, it.is_text_frame(), it.graphic().is_some()
-            );
+            println!("spread 0 first item #{}: bounds {:?}, text_frame={} graphic={}", it.id.0, b, it.is_text_frame(), it.graphic().is_some());
             (it.id.0, b)
         };
         h.state_mut().app.run("selection.set", json!({"ids": [id]})).unwrap();
         measure("frame after selection.set", &mut h);
 
-        h.state_mut()
-            .app
-            .run(
-                "transform.resize",
-                json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": [b.x0, b.y0, b.x1 + 120.0, b.y1 + 60.0]}),
-            )
-            .unwrap();
+        h.state_mut().app.run("transform.resize", json!({"from": [b.x0, b.y0, b.x1, b.y1], "to": [b.x0, b.y0, b.x1 + 120.0, b.y1 + 60.0]})).unwrap();
         measure("frame after transform.resize", &mut h);
 
         h.state_mut().app.run("edit.clear", json!({})).unwrap();
@@ -1486,11 +1479,7 @@ mod click_freeze_repro {
         let (gid, is_graphic) = {
             let ds = h.state().app.session.active().unwrap();
             let doc = &ds.doc;
-            doc.spreads[0]
-                .items
-                .iter()
-                .find_map(|it| it.graphic().is_some().then_some((it.id.0, true)))
-                .unwrap_or((0, false))
+            doc.spreads[0].items.iter().find_map(|it| it.graphic().is_some().then_some((it.id.0, true))).unwrap_or((0, false))
         };
         println!("assets before image delete: {assets_before} (graphic item #{gid}, found={is_graphic})");
         if is_graphic {
@@ -1544,7 +1533,7 @@ mod click_freeze_repro {
                 for (ii, it) in sp.items.iter().enumerate() {
                     if let Some(tf) = it.text_frame() {
                         let n = doc.stories.get(&tf.story).map(|s| s.frames.len()).unwrap_or(0);
-                        if best.map_or(true, |(_, _, _, b)| n > b) {
+                        if best.is_none_or(|(_, _, _, b)| n > b) {
                             best = Some((it.id, si, ii, n));
                         }
                     }
@@ -1583,13 +1572,20 @@ mod click_freeze_repro {
                 .unwrap();
             let cur = h.state().app.session.active().unwrap().doc.clone();
             let dmg = {
-                let cache: &designcraft_compose::Cache = &*h.state().app.session.cache;
+                let cache: &designcraft_compose::Cache = &h.state().app.session.cache;
                 designcraft_render::damage::damage_with(&prev, &cur, Some(cache))
             };
             let regions = dmg.as_ref().map(|v| v.len()).unwrap_or(usize::MAX);
             let spreads: std::collections::BTreeSet<usize> = dmg
                 .as_ref()
-                .map(|v| v.iter().filter_map(|(r, _)| match r { designcraft_doc::SpreadRef::Doc(i) => Some(*i), _ => None }).collect())
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|(r, _)| match r {
+                            designcraft_doc::SpreadRef::Doc(i) => Some(*i),
+                            _ => None,
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
 
             // Release our strong reference to the previous frame's document: from here on the
@@ -1602,10 +1598,7 @@ mod click_freeze_repro {
             h.run_steps(1);
             let ms = t0.elapsed().as_millis();
             let after = count();
-            println!(
-                "drag step {step}: damage={{{regions} regions, {} spreads}} | frame {ms} ms | thumbs {before} -> {after}",
-                spreads.len()
-            );
+            println!("drag step {step}: damage={{{regions} regions, {} spreads}} | frame {ms} ms | thumbs {before} -> {after}", spreads.len());
             // A full rebuild (the old fallback) costs seconds per step on this document; the
             // incremental path costs tens of ms.
             assert!(ms < 5000, "drag step {step}: a full rebuild ran during the drag ({ms} ms)");
