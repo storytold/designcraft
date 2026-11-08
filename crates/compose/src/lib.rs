@@ -42,7 +42,7 @@ use designcraft_doc::{
     Align, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ListAlign, ListCounter, ParaProps, SpanColumns, StartParagraph, Story, StoryId,
     TabAlign, TextFrameOptions, VerticalJustification, WrapMode, WrapSide, story,
 };
-use designcraft_fonts::{FontDb, ScopedFonts};
+use designcraft_fonts::{FontDb, ScopedFonts, joins_next, joins_prev};
 use designcraft_geom::{Affine, Point, Rect};
 
 use crate::breaker::{Break, Spacing};
@@ -4771,21 +4771,6 @@ fn layout_line(
     }
     append_kashidas(&line, &mut out, kashidas);
     (out, x, ratio)
-}
-
-/// Arabic letters that join the following letter (dual-joining).
-fn joins_next(c: char) -> bool {
-    matches!(c as u32,
-        0x0626 | 0x0628 | 0x062A..=0x062E | 0x0633..=0x063F | 0x0641..=0x0647 | 0x0649 | 0x064A | 0x066E | 0x066F
-        | 0x0678..=0x0687 | 0x069A..=0x06BF | 0x06C1 | 0x06CC | 0x06CE | 0x06D0 | 0x06D1 | 0x06FA..=0x06FC)
-}
-
-/// Arabic letters that join the preceding one (dual- or right-joining).
-fn joins_prev(c: char) -> bool {
-    joins_next(c)
-        || matches!(c as u32,
-            0x0622..=0x0625 | 0x0627 | 0x0629 | 0x062F..=0x0632 | 0x0648 | 0x0671..=0x0673 | 0x0675..=0x0677 | 0x0688..=0x0699
-            | 0x06C0 | 0x06C3..=0x06CB | 0x06CD | 0x06CF | 0x06D2 | 0x06D3)
 }
 
 /// Where kashidas go on a line: one join per word, after a seen or sad when there is one, else the

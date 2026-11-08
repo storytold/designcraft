@@ -211,11 +211,45 @@ fn script_features(features: &[Feature], script: unicode_script::Script) -> std:
     }
 }
 
-/// Whether the shaper substitutes horizontal text with the face's AAT `morx` (or `mort`) table.
-/// It then runs no script shaper (as HarfBuzz does), so the Arabic shaper never marks the joins
-/// where a tatweel may go. The system Arabic fonts on macOS are such fonts.
+/// Whether the shaper substitutes horizontal text with the face's AAT `morx` (or `mort`) table,
+/// which it does when it can read one. It then runs no script shaper (as HarfBuzz does), so the
+/// Arabic shaper never marks the joins where a tatweel may go. The system Arabic fonts on macOS
+/// are such fonts.
 fn shapes_with_morx(face: &FontFace) -> bool {
-    face.skrifa().is_some_and(|f| f.table_data(skrifa::Tag::new(b"morx")).is_some() || f.table_data(skrifa::Tag::new(b"mort")).is_some())
+    use skrifa::raw::TableProvider;
+    face.skrifa().is_some_and(|f| f.morx().is_ok() || f.mort().is_ok())
+}
+
+/// Arabic letters that join the following letter (dual-joining).
+pub fn joins_next(c: char) -> bool {
+    matches!(c as u32,
+        0x0626 | 0x0628 | 0x062A..=0x062E | 0x0633..=0x063F | 0x0641..=0x0647 | 0x0649 | 0x064A | 0x066E | 0x066F
+        | 0x0678..=0x0687 | 0x069A..=0x06BF | 0x06C1 | 0x06CC | 0x06CE | 0x06D0 | 0x06D1 | 0x06FA..=0x06FC)
+}
+
+/// Arabic letters that join the preceding one (dual- or right-joining).
+pub fn joins_prev(c: char) -> bool {
+    joins_next(c)
+        || matches!(c as u32,
+            0x0622..=0x0625 | 0x0627 | 0x0629 | 0x062F..=0x0632 | 0x0648 | 0x0671..=0x0673 | 0x0675..=0x0677 | 0x0688..=0x0699
+            | 0x06C0 | 0x06C3..=0x06CB | 0x06CD | 0x06CF | 0x06D2 | 0x06D3)
+}
+
+/// Arabic marks that joining passes over (joining type T in Unicode's `ArabicShaping.txt`).
+fn joining_transparent(c: char) -> bool {
+    matches!(c as u32,
+        0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06DC | 0x06DF..=0x06E4 | 0x06E7 | 0x06E8 | 0x06EA..=0x06ED
+        | 0x08CA..=0x08E1 | 0x08E3..=0x08FF)
+}
+
+/// Whether the letters on either side of byte `at` of `text` join (after `before`): the last
+/// letter before it, past marks, joins forward and the one at it joins back. What the Arabic
+/// shaper marks as safe for a tatweel, for a face it doesn't shape (an AAT font): a ligature's
+/// last letter decides, so nothing goes after the alef of lam-alef.
+fn joined_at(before: &str, text: &str, at: usize) -> bool {
+    let (Some(head), Some(next)) = (text.get(..at), text.get(at..).and_then(|t| t.chars().next())) else { return false };
+    let prev = head.chars().rev().chain(before.chars().rev()).find(|c| !joining_transparent(*c));
+    prev.is_some_and(joins_next) && joins_prev(next)
 }
 
 fn shape_dir(
@@ -257,8 +291,8 @@ fn shape_dir(
                 y_advance: 0,
                 x_offset: pos.x_offset,
                 y_offset: pos.y_offset,
-                // An AAT font reports no tatweel positions: the composer's joining checks decide.
-                safe_tatweel_before: aat || info.safe_to_insert_tatweel(),
+                // An AAT font gets no tatweel positions from the shaper: its letters decide.
+                safe_tatweel_before: info.safe_to_insert_tatweel() || (aat && joined_at(context.before, text, info.cluster as usize)),
                 rtl,
             });
         }

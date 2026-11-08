@@ -8684,6 +8684,21 @@ fn with_table(bytes: &[u8], tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A font database whose one font is a host Arabic font with a tatweel, made an AAT font by an
+/// empty `morx` table (version 2, no chains), and that font's family. `None` without such a font.
+fn aat_arabic_font(d: &Document, sid: StoryId) -> Option<(FontDb, String)> {
+    let probe = compose_story(d, sid, &ComposeOptions::default());
+    let face = probe.frames[0].lines[0].glyphs.iter().map(|g| g.face).find(|f| f.covers('ب') && f.glyph_for('\u{0640}') != 0)?;
+    let bytes = face.data();
+    if face.index() != 0 || bytes.get(..4) == Some(b"ttcf".as_slice()) || face.hb().is_none() {
+        return None;
+    }
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(with_table(bytes, b"morx", &[0, 2, 0, 0, 0, 0, 0, 0]));
+    Some((db, face.family.clone()))
+}
+
 #[test]
 fn kashidas_stretch_justified_arabic_in_aat_fonts() {
     // The shaper runs no Arabic shaper for a font with a `morx` table (the macOS system Arabic
@@ -8692,23 +8707,28 @@ fn kashidas_stretch_justified_arabic_in_aat_fonts() {
     let para = ParaAttrs { align: Some(Align::RightJustified), direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
     let (mut d, sid, _) = doc_with(text, Rect::new(100.0, 100.0, 260.0, 400.0), para);
     d.settings.glyph_fallback = true;
-    let probe = compose_story(&d, sid, &ComposeOptions::default());
-    let Some(face) = probe.frames[0].lines[0].glyphs.iter().map(|g| g.face).find(|f| f.covers('ب') && f.glyph_for('\u{0640}') != 0) else {
-        return; // No Arabic font with a tatweel on this host.
-    };
-    let bytes = face.data();
-    if face.index() != 0 || bytes.get(..4) == Some(b"ttcf".as_slice()) || face.hb().is_none() {
-        return;
-    }
-    // An empty extended metamorphosis table: version 2, no chains.
-    let db = FontDb::with_font_dirs(Vec::new());
-    db.set_system_fallback(false);
-    db.add_font(with_table(bytes, b"morx", &[0, 2, 0, 0, 0, 0, 0, 0]));
-    let family = face.family.clone();
+    let Some((db, family)) = aat_arabic_font(&d, sid) else { return };
     d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(family.clone()));
     let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
     let line = &cs.frames[0].lines[0];
     assert_eq!(line.glyphs.iter().find(|g| g.len > 0 && !text[g.byte..].starts_with(' ')).map(|g| g.face.family.as_str()), Some(family.as_str()));
     let tatweels = line.glyphs.iter().filter(|g| g.len == 0 && g.gid != 0 && g.gid == g.face.glyph_for('\u{0640}')).count();
     assert!(tatweels > 0, "a justified Arabic line in an AAT font took no kashidas");
+}
+
+#[test]
+fn aat_fonts_take_tatweels_only_where_letters_join() {
+    // In كلام the kaf joins the lam, but the alef joins nothing after it: whatever the shaper
+    // makes of lam-alef (one ligature cluster in a real AAT font), no tatweel goes before the meem.
+    let text = "كلام";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs::default());
+    d.settings.glyph_fallback = true;
+    let Some((db, family)) = aat_arabic_font(&d, sid) else { return };
+    let face = db.face(&family, "Regular");
+    assert_eq!(face.family, family);
+    let shaped = designcraft_fonts::shape(&face, text, &[], |c| c);
+    let safe = |ch: char| shaped.iter().filter(|g| g.cluster == text.find(ch).unwrap()).any(|g| g.safe_tatweel_before);
+    assert!(safe('ل'), "kaf joins lam: {shaped:?}");
+    assert!(!safe('م'), "alef doesn't join meem: {shaped:?}");
+    assert!(!safe('ك'), "nothing before the word: {shaped:?}");
 }
