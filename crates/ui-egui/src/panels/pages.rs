@@ -92,9 +92,10 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
 fn validate(uid: u64, cur: &std::sync::Arc<Document>, cache: &designcraft_compose::Cache) {
     let mut last = LAST_DOC.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let last = last.get_or_insert_with(HashMap::new);
-    // Hold only the active document's previous allocation; other documents' thumbnails stay
-    // cached but pinning their old allocations would only add memory for no diffing benefit.
-    last.retain(|k, _| *k == uid);
+    // Keep one previous allocation per open document: forgetting a document's allocation
+    // when another document is active would make its next paint look like a first paint
+    // and drop every one of its cached thumbnails. Closed documents are pruned in
+    // `show`.
     match last.get(&uid) {
         Some(prev) if !std::ptr::eq(prev.as_ref(), cur.as_ref()) => {
             // Take an owned handle to the old allocation so the borrow of `last` ends before
@@ -359,6 +360,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(st) = app.session.active() else { return };
     let uid = st.uid;
     let doc = st.doc.clone();
+    // A closed document's uid leaves the session: drop its cached thumbnails (frees the
+    // textures) and the pinned previous allocation, which nothing can diff against any more.
+    {
+        let open: HashSet<u64> = app.session.documents().iter().map(|d| d.uid).collect();
+        let mut last = LAST_DOC.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let last = last.get_or_insert_with(HashMap::new);
+        if last.keys().any(|k| !open.contains(k)) {
+            last.retain(|k, _| open.contains(k));
+            let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let map = g.get_or_insert_with(HashMap::new);
+            map.retain(|k, _| open.contains(&k.0));
+        }
+    }
     let editing_parents = st.editing_parents;
     let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
     let mut drop: Option<(PageDrag, usize)> = None;
@@ -1339,8 +1353,9 @@ mod click_freeze_repro {
     //! selection change (and every content edit) re-rendered every page thumbnail on
     //! the UI thread. The document below is built in code, so the assertions run in
     //! CI without any external file: the pages panel fills `THUMBS`, and the cached
-    //! must then survive a selection change, and a local content edit
-    //! must re-render only the edited spread's page thumbnails.
+    //! must then survive a selection change, a local content edit must re-render only the
+    //! edited spread's page thumbnails, switching to another document and back must
+    //! re-render none of them, and closing a document must free its cached entries.
     use egui::epaint::TextureId;
     use egui_kittest::Harness;
     use serde_json::json;
@@ -1424,5 +1439,24 @@ mod click_freeze_repro {
         let expected: HashSet<ThumbOf> =
             h.state().session.doc().unwrap().doc.spreads[edited_spread].pages.iter().map(|p| ThumbOf::Page(p.id)).collect();
         assert_eq!(re_rendered, expected, "the content edit must re-render exactly the edited spread's page thumbnails");
+
+        // Switching to a second document and back must re-render none of this document's
+        // thumbnails: each open document keeps the allocation its thumbnails were validated
+        // against, so the round trip is a pure cache hit.
+        let b = h.state_mut().session.add_document(designcraft_engine::DocState::new(build_doc(8), None));
+        h.state_mut().session.set_active(b);
+        h.run_steps(1);
+        h.state_mut().session.set_active(a);
+        h.run_steps(1);
+        let roundtrip = thumb_tex();
+        assert!(
+            after.keys().all(|k| roundtrip.get(k).is_some_and(|t| *t == after[k])),
+            "switching to another document and back must not re-render this document's thumbnails"
+        );
+
+        // Closing a document frees the cached thumbnails it owns.
+        h.state_mut().session.close_document(b);
+        h.run_steps(1);
+        assert!(thumb_tex().keys().all(|(uid, _)| *uid == uid_a), "closing a document must drop its cached thumbnails");
     }
 }
