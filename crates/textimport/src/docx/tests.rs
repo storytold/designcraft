@@ -66,6 +66,44 @@ fn oversized_part_is_an_error_not_a_huge_read() {
     assert_eq!(part_capped(&mut zip, "word/missing.xml", 4096).unwrap(), None);
 }
 
+/// A Word file with a Table of Contents (a TOC field in its block), body text with a footnote
+/// and an endnote, an Index (an INDEX field), and an unused style.
+fn word_with_extras() -> Vec<u8> {
+    let doc = format!(
+        r#"<w:document {W}><w:body>
+              <w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr><w:sdtContent>
+                <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Eggs 1</w:t></w:r></w:p>
+                <w:p><w:r><w:t>Omelets 2</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+              </w:sdtContent></w:sdt>
+              <w:p><w:r><w:t>Boil the eggs.</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r><w:r><w:endnoteReference w:id="1"/></w:r></w:p>
+              <w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> INDEX </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Eggs, 1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
+            </w:body></w:document>"#
+    );
+    let styles = format!(r#"<w:styles {W}><w:style w:type="paragraph" w:styleId="Unused"><w:name w:val="Unused"/></w:style></w:styles>"#);
+    let foot = format!(r#"<w:footnotes {W}><w:footnote w:id="1"><w:p><w:r><w:t>A foot.</w:t></w:r></w:p></w:footnote></w:footnotes>"#);
+    let end = format!(r#"<w:endnotes {W}><w:endnote w:id="1"><w:p><w:r><w:t>An end.</w:t></w:r></w:p></w:endnote></w:endnotes>"#);
+    docx_parts(&[("word/document.xml", &doc), ("word/styles.xml", &styles), ("word/footnotes.xml", &foot), ("word/endnotes.xml", &end)])
+}
+
+/// Microsoft Word Import Options › Include: the Table of Contents and Index text, footnotes
+/// and endnotes come in or stay out; Import Unused Styles brings every style.
+#[test]
+fn word_import_options_include_or_leave_out() {
+    let bytes = word_with_extras();
+    let all = import(&bytes).unwrap();
+    assert!(all.story.text.contains("Eggs 1") && all.story.text.contains("Omelets 2") && all.story.text.contains("Eggs, 1"), "{:?}", all.story.text);
+    assert_eq!((all.story.notes.len(), all.story.endnotes.len()), (1, 1));
+    assert_eq!(all.story.endnotes[0].text.text, "An end.");
+    assert!(all.para_styles.iter().all(|s| s.name != "Unused"), "unused styles stay out by default");
+    let opts =
+        designcraft_doc::TextImportOptions { toc: false, index: false, footnotes: false, endnotes: false, unused_styles: true, ..Default::default() };
+    let some = import_with(&bytes, &opts).unwrap();
+    assert_eq!(some.story.text, "Boil the eggs.", "only the body: no TOC, index or note markers");
+    assert_eq!(some.story.paras.len(), 1);
+    assert!(some.story.notes.is_empty() && some.story.endnotes.is_empty());
+    assert!(some.para_styles.iter().any(|s| s.name == "Unused"));
+}
+
 /// A DOCX can hold any number where a measure belongs: `1e300` twips became a 5e298 pt
 /// indent, and `w:sz` of `1e300` a 5e299 pt type size. Measures are clamped to the widest
 /// page and a size the engine cannot mean is dropped (#1593).
@@ -335,8 +373,17 @@ fn page_break_ends_its_paragraph() {
     st.check().unwrap();
     let (pb, cb) = (designcraft_doc::PAGE_BREAK, designcraft_doc::COLUMN_BREAK);
     assert_eq!(st.text, format!("End of one{pb}\n{pb}\nTwo{cb}\n"));
-    let styles: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
-    assert_eq!(styles, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+    let names: Vec<&str> = st.paras.iter().map(|p| p.style.as_str()).collect();
+    assert_eq!(names, [BASIC_PARAGRAPH, "Chapter", "Chapter", "Chapter"]);
+    // No Breaks: the breaks go before they end paragraphs, so a paragraph that started with
+    // one stays a single paragraph; Column Break: column breaks, ending their paragraphs.
+    let with = |page_breaks| {
+        import_with(&docx(&document, &styles, ""), &designcraft_doc::TextImportOptions { page_breaks, ..Default::default() }).unwrap().story
+    };
+    let st = with(designcraft_doc::PageBreakImport::None);
+    st.check().unwrap();
+    assert_eq!(st.text, format!("End of one\nTwo{cb}\n"));
+    assert_eq!(with(designcraft_doc::PageBreakImport::Column).text, format!("End of one{cb}\n{cb}\nTwo{cb}\n"));
 }
 
 /// A paragraph in a Word list: `w:numPr` with `numId` and, unless `None`, `ilvl`.
