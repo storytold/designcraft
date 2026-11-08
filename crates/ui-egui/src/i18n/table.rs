@@ -112,7 +112,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("File", ["Datei", "Fichier", "Archivo", "ファイル", "文件"]),
     ("Edit", ["Bearbeiten", "Édition", "Edición", "編集", "编辑"]),
     ("Layout", ["Layout", "Page", "Maquetación", "レイアウト", "版面"]),
-    ("Type", ["Schrift", "Texte", "Página", "書式", "文字"]),
+    ("Type", ["Schrift", "Texte", "Texto", "書式", "文字"]),
     ("Object", ["Objekt", "Objet", "Objeto", "オブジェクト", "对象"]),
     ("Table", ["Tabelle", "Tableau", "Tabla", "表", "表"]),
     ("View", ["Ansicht", "Affichage", "Ver", "表示", "视图"]),
@@ -494,7 +494,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Join Path", ["Pfad zusammenfügen", "Joindre le tracé", "Unir trazado", "パスを連結", "连接路径"]),
     ("Open Path", ["Pfad öffnen", "Ouvrir le tracé", "Abrir trazado", "パスをオープン", "开放路径"]),
     ("Plain", ["Einfach", "Simple", "Normal", "プレーン", "普通"]),
-    ("Symmetrical", ["Symmetrisch", "Symétrique", "Sencillo", "対称", "对称"]),
+    ("Symmetrical", ["Symmetrisch", "Symétrique", "Simétrico", "対称", "对称"]),
     (
         "The stroke isn't a gradient.",
         [
@@ -3450,7 +3450,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         [
             "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",
             "Sélectionnez une vidéo ou un son importé (Fichier › Importer un .mp4, .mov, .mp3, .wav …).",
-            "Selecciona un video o sonido colocado (Archivo › Colocar un .mp4, .mov, .mp3, .wav …).",
+            "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",
             "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …).",
             "选择已置入的视频或声音 (文件 › 置入 .mp4, .mov, .mp3, .wav …)。",
         ],
@@ -3490,7 +3490,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         [
             "Select two or more objects (or a group) to make a multi-state object.",
             "Sélectionnez au moins deux objets (ou un groupe) pour créer un objet à états multiples.",
-            "Selecciona dos o más objetos (o un grupo) para crear un objeto de varios estados.",
+            "Select two or more objects (or a group) to make a multi-state object.",
             "Select two or more objects (or a group) to make a multi-state object.",
             "选择两个或多个对象 (或一个组) 以制作多状态对象。",
         ],
@@ -4528,7 +4528,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         [
             "Add and remove pages as the primary text frame's story grows and shrinks",
             "Ajouter et supprimer des pages à mesure que l'article du bloc de texte principal s'allonge ou se raccourcit",
-            "Agregar y quitar páginas conforme el artículo del marco de texto principal crece y se reduce",
+            "Add and remove pages as the primary text frame's story grows and shrinks",
             "Add and remove pages as the primary text frame's story grows and shrinks",
             "随主文本框架内容增减自动添加或删除页面",
         ],
