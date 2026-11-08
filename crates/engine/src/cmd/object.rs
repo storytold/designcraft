@@ -13,7 +13,8 @@ use designcraft_geom::{Affine, Point, Rect, Vec2, shapes};
 use serde_json::{Value, json};
 
 use super::{
-    CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection_or_guides, ok, point_param, rect_param, spread_param, str_param, targets,
+    CommandSpec, bad, bool_or, cmd, f64_or, has_doc, has_selection, has_selection_or_guides, ok, point_param, rect_param, spread_param, str_param,
+    targets,
 };
 use crate::{Result, Session};
 
