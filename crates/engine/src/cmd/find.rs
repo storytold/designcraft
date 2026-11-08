@@ -659,7 +659,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(story) = d.text_story(sid, cell) else { continue };
             // Collect matches first (positions refer to the original text), apply back to front.
             let text = story.text.get(r.clone()).ok_or_else(|| bad("find", "invalid selection bounds or UTF-8 boundary"))?;
-            let edits: Vec<(std::ops::Range<usize>, String)> = match (&found, &found_out) {
+            let mut edits: Vec<(std::ops::Range<usize>, String)> = match (&found, &found_out) {
                 // Change: the found text alone, in the target it lies in.
                 (Some((_, _, range)), Some(out)) => {
                     if r.start <= range.start && range.end <= r.end {
@@ -674,6 +674,7 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
                     .map(|(m, out)| (r.start + m.start..r.start + m.end, out))
                     .collect(),
             };
+            edits.sort_by_key(|(range, _)| range.start);
             let Some(st) = d.text_story_mut(sid, cell) else { continue };
             for (range, new) in edits.iter().rev() {
                 let changed = if format_only {
@@ -704,6 +705,11 @@ fn change(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(t) = sel.text.as_mut().filter(|t| t.story == sid && t.cell == cell) {
                 repair_selection(t, st);
+            }
+            if cell.is_none() && !format_only {
+                for (range, new) in edits.iter().rev() {
+                    d.adjust_text_ranges(sid, range.clone(), new.len());
+                }
             }
             // Change leaves the changed text selected.
             if let Some((_, _, range)) = &found
