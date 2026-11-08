@@ -178,6 +178,12 @@ fn spreads_and_ranges() {
     assert_eq!(parse_page_range("1-2, 4", 4).unwrap(), vec![0, 1, 3]);
     assert_eq!(parse_page_range("3-", 4).unwrap(), vec![2, 3]);
     assert_eq!(parse_page_range("", 2).unwrap(), vec![0, 1]);
+    // Ranges that overlap many times over: each page is selected once, in the order first named.
+    let overlapping = std::iter::repeat_n("1-20000, 5-19000", 500).collect::<Vec<_>>().join(",");
+    let t = std::time::Instant::now();
+    assert_eq!(parse_page_range(&overlapping, 20000).unwrap().len(), 20000);
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(parse_page_range("3, 1-3", 4).unwrap(), vec![2, 0, 1]);
     assert!(parse_page_range("5", 4).is_err());
     assert!(parse_page_range("x", 4).is_err());
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
@@ -1085,4 +1091,30 @@ fn each_page_shows_its_own_composition() {
     // Parent items first, then the page's own.
     assert_eq!(extract_text(&bytes), ["Folio1Alpha", "Folio2Bravo", "Folio3Charlie"]);
     assert_eq!(export_pdf(&d, &cache, &opts).unwrap(), bytes, "a warm cache exports the same bytes");
+}
+
+/// A parent page that overrode an item of its base and deleted the override hides that item on
+/// the pages that use it. The canvas hid it but PDF export, which looked only at the page's own
+/// overrides, still drew it (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let has_box = |d: &Document| {
+        let (_, paths) = drawn(&export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.iter().any(|r| (r.width() - rect.width()).abs() < 0.5 && (r.height() - rect.height()).abs() < 0.5)
+    };
+    assert!(has_box(&d), "the page exports parent A's box through parent B");
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }

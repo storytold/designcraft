@@ -118,6 +118,8 @@ impl Color {
         } else {
             60.0 * ((r - g) / d + 4.0)
         };
+        // A tiny negative `rem_euclid` input can round up to exactly 6.0 (hue 360).
+        let h = if h >= 360.0 { 0.0 } else { h };
         let s = if max <= 0.0 { 0.0 } else { d / max };
         [h, s, max]
     }
@@ -250,6 +252,12 @@ impl Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hsb_hue_stays_below_360() {
+        let h = Color::rgb(1.0, 0.0, 1e-8).to_hsb()[0];
+        assert!((0.0..360.0).contains(&h), "hue {h}");
+    }
 
     #[test]
     fn hex_roundtrip() {

@@ -113,12 +113,22 @@ pub fn current_page(app: &DesignApp) -> Option<usize> {
     let layout = CanvasLayout::new(&st.doc, st.editing_parents);
     let i = current_slot(app, &layout)?;
     let slot = layout.slots.get(i)?;
-    let SpreadRef::Doc(si) = slot.spread else { return Some(0) };
+    let SpreadRef::Doc(si) = slot.spread else { return None };
     let v = app.view()?;
     let r = app.canvas_rect?;
     let c = slot.to_spread(Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, slot.bounds.center().y));
     let pi = st.doc.spreads[si].page_at_x(c.x).unwrap_or(0);
     Some(st.doc.first_page_of_spread(si) + pi)
+}
+
+/// The Page tool selection, or the page in view, without crossing canvas modes.
+pub fn page_target(app: &DesignApp) -> Option<(SpreadRef, usize)> {
+    let st = app.session.active()?;
+    let selected = CanvasLayout::new(&st.doc, st.editing_parents).selected_page(&st.doc, &st.selection);
+    if st.editing_parents && st.selection.parent_page.is_some() {
+        return selected;
+    }
+    selected.or_else(|| current_spread_page(app))
 }
 
 /// The spread (document or parent) under the view centre and the page index within it: where
@@ -135,22 +145,10 @@ pub fn current_spread_page(app: &DesignApp) -> Option<(SpreadRef, usize)> {
     Some((slot.spread, pg))
 }
 
-/// While parent spreads are being edited: (parent spread index, page index within it) under the
-/// view centre. `None` when document pages are shown.
+/// The selected parent page, or the parent page under the view centre.
 pub fn current_parent_page(app: &DesignApp) -> Option<(usize, usize)> {
-    let st = app.session.active()?;
-    if !st.editing_parents {
-        return None;
-    }
-    let layout = CanvasLayout::new(&st.doc, true);
-    let i = current_slot(app, &layout)?;
-    let slot = layout.slots.get(i)?;
-    let SpreadRef::Parent(pi) = slot.spread else { return None };
-    let v = app.view()?;
-    let r = app.canvas_rect?;
-    let c = slot.to_spread(Point::new(v.origin.x + r.width() as f64 / 2.0 / v.zoom, slot.bounds.center().y));
-    let qi = st.doc.parents.get(pi)?.page_at_x(c.x).unwrap_or(0);
-    Some((pi, qi))
+    let (SpreadRef::Parent(si), pi) = page_target(app)? else { return None };
+    Some((si, pi))
 }
 
 /// The page box's entries (the status bar's, and Properties › Page), as InDesign's: the

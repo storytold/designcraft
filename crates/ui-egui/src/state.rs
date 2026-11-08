@@ -213,6 +213,11 @@ pub struct UiState {
     /// The Pages panel's parents part as its divider was last dragged, and the height the two
     /// parts shared then (None: a few rows).
     pub pages_parents_height: Option<[f32; 2]>,
+    /// The parent selected (clicked) in the Pages panel's parents list: what the panel menu's
+    /// Duplicate Parent Spread, Parent Options and Delete Parent act on, with the uid of the
+    /// document it belongs to (a selection never carries over to another document or session).
+    #[serde(skip)]
+    pub pages_selected_parent: Option<(u64, designcraft_doc::SpreadId)>,
     /// The Pages panel's Panel Options.
     pub pages_panel: panels::pages::PanelOptions,
     /// Edit › Color Settings (re-applied at start).
@@ -229,12 +234,17 @@ pub struct UiState {
     pub story_editor_size: f32,
     /// View › Story Editor › Show/Hide Depth Ruler.
     pub story_editor_depth_ruler: bool,
+    /// The Color Picker's component (its radio button, as `PickComp::key`: `h`, `s`, `b`, `l`,
+    /// `la`, `lb`, `r`, `g`, `bl`), kept between openings and sessions, as Photoshop's picker is.
+    pub color_picker_component: String,
     /// Preferences › General › Interface Language: supported codes are listed in `i18n::LANGUAGES`.
     pub language: String,
     /// Edit › Transparency Flattener Presets: "" (none), "high", "medium" or "low" for PDF export.
     pub flattener: String,
     /// File › Export PDF… options (persisted; see `PdfExportSettings`).
     pub pdf_export: PdfExportSettings,
+    /// File › Export Layouts and Versions…: the last job exported (persisted).
+    pub export_batch: Option<designcraft_engine::cmd::export_batch::ExportJob>,
     /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
     pub style_preview: bool,
     /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
@@ -402,6 +412,7 @@ impl Default for UiState {
             show_full_menus: false,
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
+            color_picker_component: "r".into(),
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
                 ("Two-column grid".into(), "# Four text frames in a 2 × 2 grid.\nframe.grid {\"rect\": [36, 36, 576, 756], \"cols\": 2, \"rows\": 2, \"gutter\": 12}".into()),
@@ -411,6 +422,7 @@ impl Default for UiState {
             hidden_panels: 0,
             skip_delete_pages_warning: false,
             pages_parents_height: None,
+            pages_selected_parent: None,
             pages_panel: Default::default(),
             color_settings: None,
             color_profiles: Vec::new(),
@@ -420,6 +432,7 @@ impl Default for UiState {
             language: String::new(),
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
+            export_batch: None,
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,
