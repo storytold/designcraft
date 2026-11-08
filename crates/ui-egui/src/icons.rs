@@ -1524,7 +1524,7 @@ mod tests {
         let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
         for prim in ctx.tessellate(out.shapes, 2.0) {
             if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
-                for c in mesh.indices.chunks_exact(3) {
+                for c in mesh.indices.as_chunks::<3>().0 {
                     let (a, b, d) = (mesh.vertices[c[0] as usize], mesh.vertices[c[1] as usize], mesh.vertices[c[2] as usize]);
                     tris.push([[a.pos.x, a.pos.y], [b.pos.x, b.pos.y], [d.pos.x, d.pos.y]]);
                 }
