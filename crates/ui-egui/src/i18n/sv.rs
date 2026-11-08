@@ -2983,7 +2983,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Print: marks + bleed", "Tryck: märken + utfall"),
     ("Quality ", "Kvalitet "),
     ("Remove version", "Ta bort version"),
-    ("Screen", "Skärm"),
     ("The document has one layout: all its pages are exported.", "Dokumentet har en layout: alla dess sidor exporteras."),
 ];
 
