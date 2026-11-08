@@ -83,6 +83,10 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             std::sync::Arc::make_mut(n).id = fresh;
             id = fresh;
         }
+        // Text ranges (hyperlinks, placeholders) are in the story's own text, not a note's.
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
+        }
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
     })?;
@@ -199,6 +203,10 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
             (t.anchor, t.focus) = (back(t.anchor), back(t.focus));
         }
         st.delete(at..at + len);
+        // Text ranges (hyperlinks, placeholders) are in the story's own text, not a note's.
+        if holder.is_none() {
+            d.adjust_text_ranges(sid, at..at + len, 0);
+        }
         // A caret in the deleted note (or one nested in it) goes to where its reference was.
         let moved = sel.text.is_some_and(|t| t.story == sid && t.cell.and_then(|c| c.footnote_id()).is_some_and(|c| gone.contains(&c)));
         if moved {
