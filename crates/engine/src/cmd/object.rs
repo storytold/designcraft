@@ -4085,7 +4085,7 @@ mod step_repeat_tests {
 
         // An offset that does not move the guide at all is refused rather than stacking a copy on it.
         s.execute("guide.add", &json!({"orientation": "vertical", "position": 7.0})).unwrap();
-        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 3, "dy": 10.0})).is_err());
+        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 3, "dx": 0.0, "dy": 10.0})).is_err());
         assert_eq!(positions(&s, Orientation::Vertical), vec![100.0, 7.0]);
 
         // A copy of a spread guide stays a spread guide.
