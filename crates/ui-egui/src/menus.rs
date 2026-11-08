@@ -144,7 +144,8 @@ mod spanish_tests {
         let norm = |l: &str| l.trim().to_lowercase();
         let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let mut clashes = Vec::new();
-        let mut stack: Vec<(String, Vec<&Item>)> = menu_tree().iter().map(|(t, e)| (t.to_string(), e.iter().collect())).collect();
+        let tree = menu_tree();
+        let mut stack: Vec<(String, Vec<&Item>)> = tree.iter().map(|(t, e)| (t.to_string(), e.iter().collect())).collect();
         while let Some((title, entries)) = stack.pop() {
             let mut labels = vec![title];
             let mut pending: Vec<&Item> = entries;
