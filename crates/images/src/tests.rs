@@ -105,6 +105,17 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
+/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+#[test]
+fn nested_svg_data_shares_one_budget() {
+    NESTED_SVG_BYTES.set(0);
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
+    assert!(charge_nested_svg(1).is_none());
+    assert!(svg_tree(SVG.as_bytes()).is_some());
+    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+}
+
 #[test]
 fn svg_sniff_size_and_render() {
     let b = SVG.as_bytes();
@@ -246,6 +257,34 @@ fn svg_text_finds_fonts_by_postscript_name() {
     // An unknown name falls back as before (the serif default).
     assert_eq!(text_face(r#" font-family="NoSuch-Font""#), text_face(r#" font-family="No Such Font""#));
     assert_eq!(text_face(r#" font-family="NoSuch-Font""#), "SourceSerif4-Regular");
+}
+
+#[test]
+fn svg_text_matches_legacy_family_names() {
+    use designcraft_fonts::testing::{font_with_names, with_table_u16};
+    // Laid out as Windows names faces outside the regular/bold/italic quartet (seguisb.ttf): the
+    // weight is in the legacy family (ID 1) and full name (ID 4), the typographic family (ID 16)
+    // is the base name.
+    let face = |names: &[(u16, &str)], weight: u16| with_table_u16(font_with_names(names, &['a', 'b']).unwrap(), b"OS/2", 4, weight).unwrap();
+    let fonts = designcraft_fonts::FontDb::global();
+    fonts.add_font(face(&[(1, "DC Test Legacy"), (2, "Regular"), (4, "DC Test Legacy Regular"), (6, "DCTestLegacy-Regular")], 400));
+    fonts.add_font(face(&[(1, "DC Test Legacy"), (2, "Bold"), (4, "DC Test Legacy Bold"), (6, "DCTestLegacy-Bold")], 700));
+    for (name, weight) in [("Semibold", 600), ("Light", 300)] {
+        let legacy = format!("DC Test Legacy {name}");
+        let ps = format!("DCTestLegacy-{name}");
+        fonts.add_font(face(&[(1, &legacy), (2, "Regular"), (4, &legacy), (6, &ps), (16, "DC Test Legacy"), (17, name)], weight));
+    }
+    assert_eq!(text_face(r#" font-family="DC Test Legacy Semibold""#), "DCTestLegacy-Semibold");
+    assert_eq!(text_face(r#" font-family="dc test legacy light""#), "DCTestLegacy-Light");
+    assert_eq!(text_face(r#" font-family="'DC Test Legacy Semibold', sans-serif""#), "DCTestLegacy-Semibold");
+    assert_eq!(text_face(r#" font-family="NoSuch Font, 'DC Test Legacy Light', serif""#), "DCTestLegacy-Light");
+    // The full name (ID 4) of a face of the quartet.
+    assert_eq!(text_face(r#" font-family="DC Test Legacy Bold""#), "DCTestLegacy-Bold");
+    // The typographic family still picks by weight.
+    assert_eq!(text_face(r#" font-family="DC Test Legacy" font-weight="600""#), "DCTestLegacy-Semibold");
+    assert_eq!(text_face(r#" font-family="DC Test Legacy""#), "DCTestLegacy-Regular");
+    // A name nobody has still falls to the serif.
+    assert_eq!(text_face(r#" font-family="DC Test Legacy Nothing""#), "SourceSerif4-Regular");
 }
 
 /// A minimal Photoshop file: 2×1 RGB, no layers, raw merged image.
