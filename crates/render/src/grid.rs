@@ -174,11 +174,6 @@ mod tests {
         assert!(lines(0.0, (1e-9, 1), 0.0, 1e9).is_empty());
         assert_eq!(lines(10.0, (9.0, 8), 0.0, 30.0), vec![(1.0, false), (10.0, true), (19.0, false), (28.0, false)]);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_BASELINES, baseline_lines};
 
     #[test]
     fn the_baseline_rules_are_the_ones_on_the_page() {
@@ -187,10 +182,10 @@ mod tests {
             let mut far = baseline_lines(start, 12.0, 792.0);
             assert_eq!((far.next(), far.count()), (Some(8.0), 65));
         }
-        let lines = |start, increment, height| baseline_lines(start, increment, height).collect::<Vec<_>>();
-        assert_eq!(lines(36.0, 12.0, 72.0), [36.0, 48.0, 60.0], "the bottom edge is not a line");
-        assert_eq!(lines(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
-        assert_eq!(lines(f64::NAN, 12.0, 792.0), [0.0; 0]);
+        let rules = |start, increment, height| baseline_lines(start, increment, height).collect::<Vec<_>>();
+        assert_eq!(rules(36.0, 12.0, 72.0), [36.0, 48.0, 60.0], "the bottom edge is not a line");
+        assert_eq!(rules(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
+        assert_eq!(rules(f64::NAN, 12.0, 792.0), [0.0; 0]);
         assert_eq!(baseline_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
     }
 }
