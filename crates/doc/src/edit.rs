@@ -632,6 +632,22 @@ impl Document {
         None
     }
 
+    /// Hit test on a parent spread (master page): like [`Self::hit_item`], but also skips locked
+    /// items. Items on hidden or locked layers can't be picked there either.
+    pub fn hit_parent_item(&self, sr: SpreadRef, p: Point, tol: f64) -> Option<ItemId> {
+        let sp = self.spread(sr)?;
+        let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
+        items.sort_by_key(|i| self.layer_rank(i.layer));
+        items
+            .into_iter()
+            .rev()
+            .find(|it| {
+                let layer = self.layer(it.layer);
+                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
+            })
+            .map(|it| it.id)
+    }
+
     /// The first item on a document or parent spread whose geometry isn't finite
     /// ([`Item::geometry_is_finite`]).
     pub fn non_finite_item(&self) -> Option<ItemId> {
@@ -777,7 +793,119 @@ impl Document {
         st.editorial.clear();
         st.fix_marks();
         st.rev = st.rev.wrapping_add(1);
+        self.prune_story_text_ranges(sid);
         Ok(())
+    }
+
+    /// Prune text-anchored hyperlinks and placeholders for `story` (e.g. after wholesale story replacement).
+    pub fn prune_story_text_ranges(&mut self, story: StoryId) {
+        self.hyperlinks.retain(|h| match &h.source {
+            crate::HyperlinkSource::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+        self.data_merge.placeholders.retain(|ph| match &ph.anchor {
+            crate::PlaceholderAnchor::Text { story: sid, .. } => *sid != story,
+            _ => true,
+        });
+    }
+
+    /// Remaps text range `s..e` when `del_range` is replaced by `ins_len` bytes.
+    /// Returns `None` if the range is inverted (`s > e`) or emptied by the edit (`s < e && s_new >= e_new`).
+    pub fn remap_range(del_range: std::ops::Range<usize>, ins_len: usize, s: usize, e: usize) -> Option<(usize, usize)> {
+        if s > e {
+            return None;
+        }
+        let (da, db) = (del_range.start, del_range.end);
+        let del_before = db.min(s).saturating_sub(da);
+        let del_inside = db.min(e).saturating_sub(da.max(s));
+        let mut s_new = s.saturating_sub(del_before);
+        let mut e_new = e.saturating_sub(del_before).saturating_sub(del_inside);
+        if da < s || (da == s && db == s) {
+            s_new = s_new.saturating_add(ins_len);
+            e_new = e_new.saturating_add(ins_len);
+        } else if da < e {
+            e_new = e_new.saturating_add(ins_len);
+        }
+        if s < e && s_new >= e_new { None } else { Some((s_new, e_new)) }
+    }
+
+    /// Adjust story-external text references (hyperlinks and data-merge placeholders) after text
+    /// in `story` has `del_range` replaced by `ins_len` bytes.
+    pub fn adjust_text_ranges(&mut self, story: StoryId, del_range: std::ops::Range<usize>, ins_len: usize) {
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = Self::remap_range(del_range.clone(), ins_len, *start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+    }
+
+    /// Shifts text ranges when a block of text in `story` is moved from `from` to `to` (the insertion offset after deletion).
+    /// Preserves the existing order of items in `hyperlinks` and `placeholders`.
+    pub fn move_text_ranges(&mut self, story: StoryId, from: std::ops::Range<usize>, to: usize) {
+        if from.is_empty() {
+            return;
+        }
+        let (da, db) = (from.start, from.end);
+        let len = db - da;
+
+        let remap_moved = |s: usize, e: usize| -> Option<(usize, usize)> {
+            if s >= da && e <= db {
+                Some((to + (s - da), to + (e - da)))
+            } else {
+                let (s1, e1) = Self::remap_range(da..db, 0, s, e)?;
+                Self::remap_range(to..to, len, s1, e1)
+            }
+        };
+
+        self.hyperlinks.retain_mut(|h| {
+            if let crate::HyperlinkSource::Text { story: sid, start, end } = &mut h.source
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
+
+        self.data_merge.placeholders.retain_mut(|ph| {
+            if let crate::PlaceholderAnchor::Text { story: sid, start, end } = &mut ph.anchor
+                && *sid == story
+            {
+                if let Some((ns, ne)) = remap_moved(*start, *end) {
+                    *start = ns;
+                    *end = ne;
+                    return true;
+                }
+                return false;
+            }
+            true
+        });
     }
 }
 
@@ -868,13 +996,20 @@ fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool
 
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
-    if let Content::Group { items } = &it.content {
+    // A group is hit through its children. A frame with items pasted into it shows them clipped
+    // to its path, so it is hit by its own area: not where a nested image runs past the frame.
+    if let Content::Group { items } = &it.content
+        && !it.has_nested_items()
+    {
         let inner = it.xf.inverse() * p;
         return items.iter().any(|c| item_hit(c, inner, tol));
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();
-    let area = !it.fill.is_none() || matches!(it.content, Content::Text(_) | Content::Graphic(_)) || it.path.is_closed() && it.shape != Shape::Path;
+    let area = !it.fill.is_none()
+        || matches!(it.content, Content::Text(_) | Content::Graphic(_))
+        || it.has_nested_items()
+        || it.path.is_closed() && it.shape != Shape::Path;
     if area && it.path.is_closed() && designcraft_geom::hit::fill_contains(&bp, designcraft_geom::FillRule::NonZero, inner) {
         return true;
     }
@@ -913,6 +1048,62 @@ const PATH_TYPE_REACH: f64 = 12.0;
 #[cfg(test)]
 mod placed_item_tests {
     use super::*;
+
+    /// A frame at (100, 100)–(200, 200) holding an image pasted into it that runs 150 pt past it on
+    /// every side, as a document from InDesign keeps a cropped photo.
+    fn frame_with_nested_image() -> Item {
+        let layer = LayerId(1);
+        let mut image = Item::new(ItemId(2), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 400.0, 400.0)));
+        image.xf = Affine::translate((-150.0, -150.0));
+        image.content = Content::Graphic(crate::Graphic {
+            layer_options: None,
+            asset: crate::AssetId(1),
+            size: (400.0, 400.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut frame = Item::new(ItemId(1), layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0)));
+        frame.xf = Affine::translate((100.0, 100.0));
+        frame.content = Content::Group { items: vec![Arc::new(image)] };
+        frame
+    }
+
+    /// The frame shows its nested image clipped, so a click where the image runs past the frame
+    /// hits nothing: clicking the empty page beside such a photo used to select it, so it could
+    /// not be deselected.
+    #[test]
+    fn a_frame_with_a_nested_image_is_hit_only_inside_the_frame() {
+        let frame = frame_with_nested_image();
+        assert!(frame.has_nested_items());
+        assert!(item_hit(&frame, Point::new(150.0, 150.0), 1.0), "inside the frame");
+        assert!(item_hit(&frame, Point::new(100.0, 150.0), 1.0), "on its edge");
+        for p in [Point::new(60.0, 60.0), Point::new(300.0, 150.0), Point::new(150.0, 330.0)] {
+            assert!(!item_hit(&frame, p, 1.0), "{p:?} is outside the frame, over the cropped image");
+        }
+        // A group is still hit through its children.
+        let mut group = frame.clone();
+        group.shape = Shape::Group;
+        assert!(item_hit(&group, Point::new(60.0, 60.0), 1.0));
+    }
+
+    /// Placing or dropping a graphic fills a frame holding only nested graphics, not one holding
+    /// other objects.
+    #[test]
+    fn a_frame_with_only_nested_graphics_takes_a_graphic() {
+        let frame = frame_with_nested_image();
+        assert!(frame.takes_graphic());
+        let mut other = frame.clone();
+        other.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(3), LayerId(1), Shape::Rectangle, Default::default()))] };
+        assert!(!other.takes_graphic());
+        let mut group = frame;
+        group.shape = Shape::Group;
+        assert!(!group.takes_graphic(), "a group of images is not a frame");
+    }
 
     #[test]
     fn exhaustive_placements_keep_unselected_branches_shared() {

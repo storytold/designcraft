@@ -1721,6 +1721,62 @@ fn a_line_fits_when_its_baseline_does() {
     assert!(overset(&mut s, 50.0), "a baseline below the frame still oversets the line");
 }
 
+#[test]
+fn parent_resize_tool_previews_cancels_commits_and_undoes_on_the_selected_spread() {
+    use designcraft_tools::{Mods, Overlay, PointerEvent, PointerKind};
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"width":400,"height":600,"pages":3,"facingPages":true})).unwrap();
+    s.execute("layout.parents.new", &json!({"prefix":"B"})).unwrap();
+    s.execute("layout.parents.edit", &json!({"on":true})).unwrap();
+    s.set_tool("page");
+    let v = ViewInfo::at_zoom(1.0);
+    let before = s.doc().unwrap().doc.clone();
+    for si in 0..2 {
+        for pi in 0..2 {
+            let sr = designcraft_doc::SpreadRef::Parent(si);
+            let rect = |s: &Session| s.layout().spread_page_rect(&s.doc().unwrap().doc, sr, pi).unwrap();
+            let c = rect(&s).center();
+            s.pointer(&PointerEvent::new(PointerKind::Down, c.x, c.y), v).unwrap();
+            s.pointer(&PointerEvent::new(PointerKind::Up, c.x, c.y), v).unwrap();
+            assert_eq!(s.doc().unwrap().selection.parent_page, Some((before.parents[si].id, pi)));
+            assert_eq!(s.doc().unwrap().selection.page, None);
+            assert!(s.overlays(v).iter().any(|o| matches!(o,Overlay::PageHandles(r) if *r==rect(&s))));
+            for alt in [false, true] {
+                let original = s.doc().unwrap().doc.clone();
+                let undo = s.doc().unwrap().history.undo.len();
+                let r = rect(&s);
+                let p = designcraft_geom::Point::new(r.x1, r.center().y);
+                let ev = |kind, x| PointerEvent::new(kind, x, p.y).with_mods(Mods { alt, ..Default::default() });
+                s.pointer(&ev(PointerKind::Down, p.x), v).unwrap();
+                s.pointer(&ev(PointerKind::Drag, p.x + 80.0), v).unwrap();
+                assert_eq!(s.doc().unwrap().doc.parents[si].pages[pi].width, 480.0);
+                assert_eq!(s.doc().unwrap().doc.spreads, before.spreads);
+                assert_eq!(s.doc().unwrap().doc.parents[1 - si], before.parents[1 - si]);
+                s.pointer(&ev(PointerKind::Up, p.x + 80.0), v).unwrap();
+                if alt {
+                    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+                    assert_eq!(s.doc().unwrap().doc.parents[si].pages[pi].width, 480.0);
+                    s.execute("edit.undo", &json!({})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc.parents, original.parents);
+                    s.execute("edit.redo", &json!({})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc.parents[si].pages[pi].width, 480.0);
+                    s.execute("edit.undo", &json!({})).unwrap();
+                } else {
+                    assert!(std::sync::Arc::ptr_eq(&s.doc().unwrap().doc, &original));
+                    assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+                }
+            }
+            let c = rect(&s).center();
+            s.pointer(&PointerEvent::new(PointerKind::DoubleClick, c.x, c.y), v).unwrap();
+            let req = std::mem::take(&mut s.ui_requests);
+            assert!(
+                matches!(req.last(),Some(crate::UiRequest::Dialog{id,params}) if id=="cmd:layout.parentPageSize" && params["parent"]==before.parents[si].id.0 && params["page"]==pi)
+            );
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
+}
+
 /// Reset To Base with a new Based On: a partial rule edit resolves over the new parent, not the
 /// old one.
 #[test]
@@ -2057,4 +2113,49 @@ fn aligning_the_key_object_alone_takes_the_page() {
     s.execute("object.align", &json!({"edge": "left", "ids": [b]})).unwrap();
     let x0 = s.doc().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().bounds().x0;
     assert!(x0.abs() < 1e-6, "the object is at {x0}, not at the page's left edge");
+}
+
+/// A document whose top layer is hidden and locked (a dieline) opens with new objects going to
+/// the topmost layer that is shown and unlocked, not where they couldn't be seen or selected.
+#[test]
+fn a_document_opens_on_its_topmost_visible_unlocked_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let mut d = (*s.doc().unwrap().doc).clone();
+    let top = d.layers.first().unwrap().id;
+    d.layers[0].visible = false;
+    d.layers[0].locked = true;
+    let artwork = d.layers[1].id;
+    assert_eq!(d.default_layer(), top);
+    let st = DocState::new(d, None);
+    assert_eq!(st.active_layer, artwork);
+}
+
+/// When every layer is hidden or locked, a document opens on its top layer, as before.
+#[test]
+fn a_document_with_no_usable_layer_opens_on_its_top_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let mut d = (*s.doc().unwrap().doc).clone();
+    for l in &mut d.layers {
+        l.locked = true;
+    }
+    let top = d.layers[0].id;
+    assert_eq!(DocState::new(d, None).active_layer, top);
+}
+
+/// Deleting the active layer moves new objects to the topmost layer that is shown and unlocked,
+/// not to a hidden, locked top layer.
+#[test]
+fn deleting_the_active_layer_moves_to_a_usable_layer() {
+    let mut s = session();
+    s.execute("layer.new", &json!({"name": "Artwork"})).unwrap();
+    s.execute("layer.new", &json!({"name": "Dieline"})).unwrap();
+    let ids: Vec<_> = s.doc().unwrap().doc.layers.iter().map(|l| l.id).collect();
+    let (dieline, artwork, bottom) = (ids[0], ids[1], ids[2]);
+    s.execute("layer.set", &json!({"id": dieline.0, "visible": false, "locked": true})).unwrap();
+    s.active_mut().unwrap().active_layer = bottom;
+    s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
+    assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
