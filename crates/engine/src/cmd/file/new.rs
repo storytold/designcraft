@@ -176,7 +176,7 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
-    nd.gutter = f64_or(p, "gutter", nd.gutter);
+    nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).map_or(nd.gutter, |g| g.max(0.0));
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
     match p.get("margins") {
         Some(Value::Number(n)) => nd.margins = designcraft_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
@@ -252,6 +252,16 @@ mod new_document_tests {
         s.execute("file.deletePreset", &json!({"name": "newsletter"})).unwrap();
         assert!(s.execute("file.deletePreset", &json!({"name": "newsletter"})).is_err());
         assert!(s.execute("file.new", &json!({"preset": "Newsletter"})).is_err());
+    }
+
+    #[test]
+    fn negative_gutter_is_clamped_to_zero() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"gutter": -50, "columns": 2})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.page(0).unwrap().columns.gutter, 0.0);
+        s.execute("file.savePreset", &json!({"name": "Tight", "gutter": -50, "columns": 2})).unwrap();
+        assert_eq!(s.prefs.document_presets[0].gutter, 0.0);
     }
 
     #[test]
