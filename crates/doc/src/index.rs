@@ -123,14 +123,13 @@ fn record_ref(n: &mut Node, res: &Resolved) {
 pub fn build(spec: &IndexSpec, refs: &[Resolved], page_name: &dyn Fn(usize) -> String) -> Vec<(String, String)> {
     let mut root: BTreeMap<String, Node> = BTreeMap::new();
     for res in refs {
-        let topics: Vec<&String> = res.r.topics.iter().filter(|t| !t.trim().is_empty()).take(4).collect();
+        let topics: Vec<(usize, &String)> = res.r.topics.iter().enumerate().filter(|(_, t)| !t.trim().is_empty()).take(4).collect();
         if topics.is_empty() {
             continue;
         }
         let keys: Vec<(String, String)> = topics
             .iter()
-            .enumerate()
-            .map(|(i, t)| (format!("{}\u{0}{}", sort_key(res.r.sort.get(i).filter(|s| !s.is_empty()).unwrap_or(t)), t.trim()), t.trim().to_string()))
+            .map(|&(i, t)| (format!("{}\u{0}{}", sort_key(res.r.sort.get(i).filter(|s| !s.is_empty()).unwrap_or(t)), t.trim()), t.trim().to_string()))
             .collect();
         let n = descend(&mut root, &keys);
         record_ref(n, res);
@@ -235,6 +234,17 @@ mod tests {
         let spec = IndexSpec { run_in: true, title: String::new(), section_headings: false, between_entries: " / ".into(), ..IndexSpec::default() };
         let out = build(&spec, &refs, &|p| (p + 1).to_string());
         assert_eq!(out, [("Index Level 1".into(), "Typography: kerning / adjustment  See Spacing / pairs  3 / optical  5 / leading  7".into())]);
+    }
+
+    #[test]
+    fn sort_keys_follow_original_topic_level_after_blank_topic() {
+        let mut first = r(&["Zed", "", "Alpha", "Beta"], IndexRange::CurrentPage, Some((0, 0)));
+        first.r.sort = vec![String::new(), String::new(), "zzz".into(), String::new()];
+        let refs = vec![first, r(&["Zed", "Mid"], IndexRange::CurrentPage, Some((1, 1)))];
+        let spec = IndexSpec { title: String::new(), section_headings: false, ..IndexSpec::default() };
+        let out = build(&spec, &refs, &|p| (p + 1).to_string());
+        let names: Vec<&str> = out.iter().map(|(_, t)| t.split("  ").next().unwrap_or("")).collect();
+        assert_eq!(names, ["Zed", "Mid", "Alpha", "Beta"]);
     }
 
     #[test]
