@@ -2316,6 +2316,33 @@ fn selection_tool_selects_an_inline_object_and_resizes_it_by_a_handle() {
     assert!(matches!(a.as_slice(), [Action::Exec(c, _)] if c == "selection.set"), "{a:?}");
 }
 
+/// Review of #1195: an item stacked above an anchored object's text frame keeps a click on it;
+/// the object is only picked where its own frame is the top item.
+#[test]
+fn an_item_above_the_text_frame_keeps_a_click_on_an_anchored_object() {
+    let (mut d, _) = inline_box_doc();
+    let c = Cache::new();
+    let r = crate::anchored::placed(&d, &c, &CanvasLayout::new(&d, false), None)[0].canvas_rect;
+    let (s, l) = (Selection::default(), CanvasLayout::new(&d, false));
+    let p = r.center();
+    let mut t = create("selection");
+    let a = t.pointer(&ctx(&d, &s, &c, &l), &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert!(matches!(a.as_slice(), [Action::Exec(c, _)] if c == "anchored.select"), "{a:?}");
+    // A filled rectangle over the object, above the text frame.
+    let lid = d.default_layer();
+    let spread = l.xf(SpreadRef::Doc(0)).inverse() * p;
+    let box_id = ItemId(d.alloc());
+    let mut cover =
+        Item::new(box_id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(spread.x - 30.0, spread.y - 30.0, spread.x + 30.0, spread.y + 30.0)));
+    cover.fill = designcraft_doc::Fill::swatch("Black");
+    d.insert_item(SpreadRef::Doc(0), cover, None).unwrap();
+    let l = CanvasLayout::new(&d, false);
+    let mut t = create("selection");
+    let a = t.pointer(&ctx(&d, &s, &c, &l), &PointerEvent::new(PointerKind::Down, p.x, p.y));
+    assert!(!a.iter().any(|a| matches!(a, Action::Exec(c, _) if c == "anchored.select")), "the item above wins: {a:?}");
+    assert!(a.iter().any(|a| matches!(a, Action::Exec(c, p) if c == "selection.set" && p["ids"] == serde_json::json!([box_id.0]))), "{a:?}");
+}
+
 /// Review of #1195: a selected anchored object takes Delete and Backspace (`edit.clear`) and
 /// Escape (deselect) from the Selection tool; the arrows don't move it (it flows with the text).
 #[test]

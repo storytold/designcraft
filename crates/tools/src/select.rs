@@ -1305,8 +1305,8 @@ impl Tool for SelectionTool {
             return actions;
         }
         // Anchored objects (inline graphics and the like): a press on a selected one's handle
-        // resizes it, a press on one selects it. They flow with the text, so a drag doesn't move
-        // them, and a double click selects rather than editing the text around them.
+        // resizes it, a press on one selects it. Dragging one to move it isn't implemented yet (the
+        // drag is ignored), and a double click selects rather than editing the text around them.
         if !self.direct && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick) {
             // A handle resizes, with Shift too (proportionally, as other frames).
             if let Some((pl, h)) = anchored_handle_at(cx, p)
@@ -1317,10 +1317,16 @@ impl Tool for SelectionTool {
                 self.drag = Drag::AnchoredResize { sel: pl.sel, handle, from: pl.spread_rect, local: o.item.bounds(), spread: pl.spread, to: None };
                 return vec![Action::Handled];
             }
-            // Shift-click adds to an item selection, which an anchored object can't join.
+            // Shift-click adds to an item selection, which an anchored object can't join. An item
+            // stacked above the object's text frame keeps the click: the object is only picked
+            // where its own frame is the top item.
             if !ev.mods.shift
                 && handle_at(cx, p).is_none()
                 && let Some(pl) = crate::anchored::at(cx.doc, cx.cache, cx.layout, p)
+                && cx.hit(p).is_none_or(|(_, id)| {
+                    let top = |id| cx.doc.top_level_of(id).unwrap_or(id);
+                    top(id) == top(pl.frame)
+                })
             {
                 self.drag = Drag::None;
                 if cx.selection.anchored == Some(pl.sel) {

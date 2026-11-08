@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Anchored Object Options…",
             ["Object", "Anchored Object"],
             None,
-            "{story?, index? (default: the object at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?, spineRelative? (custom: the settings describe a left-hand page and mirror on a right-hand page)}",
+            "{story?, index? (default: the selected anchored object, else the one at the insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?, spineRelative? (custom: the settings describe a left-hand page and mirror on a right-hand page)}",
             has_doc,
             options
         ),
@@ -36,7 +36,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Release",
             ["Object", "Anchored Object"],
             None,
-            "{story?, index? (default: the object at the insertion point)} — puts the object back on the page where it is now and removes it from the text",
+            "{story?, index? (default: the selected anchored object, else the one at the insertion point)} — puts the object back on the page where it is now and removes it from the text",
             has_doc,
             release
         ),
@@ -187,7 +187,6 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-/// `{story, index}`, or the anchored object at (or just before) the text insertion point.
 /// Whether the `k`-th anchored object of story `sid` can't be selected or changed: it, or the text
 /// frame holding it, is locked or on a locked layer (as for other page items).
 fn is_locked(s: &Session, sid: StoryId, k: usize) -> Result<bool> {
@@ -215,6 +214,8 @@ fn check_unlocked(s: &Session, sid: StoryId, k: usize, cmd: &str) -> Result<()> 
     Ok(())
 }
 
+/// `{story, index}`, else the selected anchored object, else the one at (or just before) the text
+/// insertion point.
 fn object_ref(s: &Session, p: &Value, cmd: &str) -> Result<(StoryId, usize)> {
     if let (Some(sid), Some(k)) = (p.get("story").and_then(Value::as_u64), p.get("index").and_then(Value::as_u64)) {
         return Ok((StoryId(sid), usize::try_from(k).map_err(|_| bad(cmd, "index out of range"))?));
@@ -321,6 +322,7 @@ pub(crate) fn delete(s: &mut Session, a: AnchoredSel) -> Result<Value> {
 
 fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.options")?;
+    check_unlocked(s, sid, k, "anchored.options")?;
     let cur = s.doc()?.doc.story(sid).and_then(|st| st.objects.get(k).cloned()).ok_or_else(|| bad("anchored.options", "no such anchored object"))?;
     let position = position_param(p, &cur.position)?;
     s.edit(|d, _| {
@@ -334,6 +336,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.release")?;
+    check_unlocked(s, sid, k, "anchored.release")?;
     let d0 = s.doc()?.doc.clone();
     let st = d0.story(sid).ok_or_else(|| bad("anchored.release", "no such story"))?;
     let obj = st.objects.get(k).cloned().ok_or_else(|| bad("anchored.release", "no such anchored object"))?;
@@ -423,7 +426,8 @@ mod tests {
     }
 
     /// A locked anchored object, one on a locked layer, or one in a locked frame or a frame on a
-    /// locked layer can't be selected, resized or deleted: it stays in the text with its marker.
+    /// locked layer can't be selected, resized, deleted, changed in Anchored Object Options or
+    /// released: it stays in the text with its marker.
     #[test]
     fn locked_anchored_objects_are_left_alone() {
         type Lock = fn(&mut designcraft_doc::Document, StoryId);
@@ -455,10 +459,14 @@ mod tests {
             assert!(s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).is_err(), "{what}: select");
             assert!(s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [0, 0, 24, 60]})).is_err(), "{what}: resize");
             assert!(s.execute("edit.clear", &json!({})).is_err(), "{what}: delete");
+            // Anchored Object Options and Release (on the selected object, as from the menu).
+            assert!(s.execute("anchored.options", &json!({"position": "aboveLine"})).is_err(), "{what}: options");
+            assert!(s.execute("anchored.release", &json!({})).is_err(), "{what}: release");
             let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
             assert_eq!(st.objects.len(), 1, "{what}: the object stays");
             assert_eq!(st.text.matches(OBJECT_MARK).count(), 1, "{what}: and its marker");
             assert_eq!(st.objects[0].size(), (24.0, 40.0), "{what}: at its size");
+            assert!(matches!(st.objects[0].position, AnchorPosition::Inline { .. }), "{what}: inline still");
         }
     }
 

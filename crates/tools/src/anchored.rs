@@ -16,6 +16,8 @@ pub struct Placed {
     pub spread_rect: Rect,
     pub canvas_rect: Rect,
     pub turned: bool,
+    /// The text frame it was composed in.
+    pub frame: designcraft_doc::ItemId,
 }
 
 /// The anchored objects of `story` (every story's when `None`) composed in frames on the
@@ -64,6 +66,7 @@ pub fn placed(doc: &Document, cache: &Cache, layout: &CanvasLayout, story: Optio
                     spread_rect,
                     canvas_rect: slot.xf.transform_rect_bbox(spread_rect),
                     turned,
+                    frame: ft.frame,
                 });
             }
         }
