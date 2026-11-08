@@ -142,6 +142,12 @@ pub fn has_selection(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| !d.selection.items.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }
 }
+/// Objects or ruler guides: Step and Repeat copies either, so a page with only a guide selected
+/// keeps the command awake.
+pub fn has_selection_or_guides(s: &Session) -> std::result::Result<(), String> {
+    has_doc(s)?;
+    if s.active().is_some_and(|d| !d.selection.items.is_empty() || !d.selection.guides.is_empty()) { Ok(()) } else { Err(NOTHING_SELECTED.into()) }
+}
 pub fn has_text(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
     if s.active().is_some_and(|d| d.selection.text.is_some()) { Ok(()) } else { Err("no text insertion point".into()) }
