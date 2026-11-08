@@ -671,7 +671,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Step and Repeat…",
             ["Edit"],
             Some("Cmd+Alt+U"),
-            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied along its own axis and the offset across it is ignored; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
+            "{count?: 1..1000, dx?, dy?, rows?, columns?, ids?} — copies of the selection (or ids) offset by (dx, dy); a selected ruler guide is copied along its own axis (the offset across it is ignored, copies stay within 1000000 pt of the spread origin) → {created, guides: [{page, index}]}; with rows/columns, a grid of at most 1000 cells, and at most 1000 item copies including group contents → {created, ids: the copies}",
             has_selection_or_guides,
             step_and_repeat
         ),
@@ -3704,7 +3704,8 @@ fn step_and_repeat_guides(s: &mut Session, offsets: &[Vec2]) -> Result<Option<Va
                     continue;
                 }
                 let index = pg.guides.len();
-                pg.guides.push(Guide { position: guide.position + shift, ..guide.clone() });
+                let position = super::guides::guide_position(guide.position + shift, "edit.stepAndRepeat")?;
+                pg.guides.push(Guide { position, ..guide.clone() });
                 made.push(GuideSel { spread: at.spread, page: at.page, index });
             }
         }
@@ -4100,6 +4101,8 @@ mod step_repeat_tests {
         let before = s.doc().unwrap().doc.spreads[0].pages[0].guides.len();
         assert_eq!(s.execute("edit.stepAndRepeat", &json!({"ids": [frame], "count": 1, "dx": 20.0})).unwrap()["created"], 1);
         assert_eq!(s.doc().unwrap().doc.spreads[0].pages[0].guides.len(), before, "the selected guide is untouched");
+        s.execute("guide.add", &json!({"orientation": "vertical", "position": 999_990.0})).unwrap();
+        assert!(s.execute("edit.stepAndRepeat", &json!({"count": 1, "dx": 20.0})).is_err(), "a copy past the guide range is refused");
     }
 
     #[test]
