@@ -839,10 +839,14 @@ pub fn specs() -> Vec<CommandSpec> {
 /// silence, so a caller that was off by one deleted a different range and still read
 /// `ok`; the sentence is the one the MCP export commands have used since #70.
 fn page_indices(id: &str, count: usize, p: &Value) -> Result<Vec<usize>> {
-    let raw: Vec<u64> = p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    // A list that is missing, is not a list, or holds something that is not a whole number is
+    // refused rather than filtered: dropping an entry silently is the same mistake this fixes,
+    // one level up — the caller would be told a page was handled when it never was.
+    let raw = p.get("pages").and_then(Value::as_array).ok_or_else(|| bad(id, "pages takes a list of page indices"))?;
     let mut out = Vec::with_capacity(raw.len());
     for v in raw {
-        let i = usize::try_from(v).unwrap_or(usize::MAX);
+        let n = v.as_u64().ok_or_else(|| bad(id, format!("pages takes whole numbers, and {v} is not one")))?;
+        let i = usize::try_from(n).unwrap_or(usize::MAX);
         if i >= count {
             return Err(bad(id, format!("no page {i} (the document has {count} pages, indices are 0-based)")));
         }
@@ -873,6 +877,7 @@ mod page_index_tests {
         s.doc().unwrap().doc.page_count()
     }
 
+    /// An index past the last page is an error that names it, and nothing is removed.
     #[test]
     fn a_page_index_past_the_end_is_refused_and_nothing_is_deleted() {
         let mut s = four_pages();
@@ -882,6 +887,7 @@ mod page_index_tests {
         assert_eq!(pages_left(&s), 4, "nothing went");
     }
 
+    /// The reply says how many pages went, and a page named twice is one page.
     #[test]
     fn deleting_says_how_many_pages_went() {
         let mut s = four_pages();
@@ -895,6 +901,7 @@ mod page_index_tests {
         assert_eq!(pages_left(&s), 3);
     }
 
+    /// Three pages named of four leave one, which is allowed even with a repeat.
     #[test]
     fn a_page_named_twice_does_not_count_as_two_against_the_last_one_left() {
         // Four pages, three named (one of them twice): that leaves one and is allowed.
@@ -904,6 +911,7 @@ mod page_index_tests {
         assert_eq!(pages_left(&s), 1);
     }
 
+    /// Applying a parent reports how many pages took it, and the pages really do.
     #[test]
     fn applying_a_parent_says_how_many_pages_took_it() {
         let mut s = four_pages();
@@ -916,6 +924,7 @@ mod page_index_tests {
         }
     }
 
+    /// Refused before the edit starts, so no page changes parent.
     #[test]
     fn a_page_index_past_the_end_is_refused_by_a_parent() {
         let mut s = four_pages();
@@ -929,6 +938,18 @@ mod page_index_tests {
         assert!(!after.contains(&Some(b)), "and none took B");
     }
 
+    /// A malformed list is refused instead of quietly dropping the entries it cannot read.
+    #[test]
+    fn a_malformed_page_list_is_refused_instead_of_ignored() {
+        let mut s = four_pages();
+        for list in [json!({"pages": "4"}), json!({"pages": [1, "2"]}), json!({})] {
+            let err = s.execute("layout.pages.delete", &list).unwrap_err().to_string();
+            assert!(err.contains("pages takes"), "refused: {list} → {err}");
+        }
+        assert_eq!(pages_left(&s), 4, "and nothing went");
+    }
+
+    /// Both commands' `params` doc states that the indices count from 0.
     #[test]
     fn both_commands_state_the_base_in_their_params() {
         for id in ["layout.pages.delete", "layout.pages.applyParent"] {
