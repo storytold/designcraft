@@ -211,6 +211,13 @@ fn script_features(features: &[Feature], script: unicode_script::Script) -> std:
     }
 }
 
+/// Whether the shaper substitutes horizontal text with the face's AAT `morx` (or `mort`) table.
+/// It then runs no script shaper (as HarfBuzz does), so the Arabic shaper never marks the joins
+/// where a tatweel may go. The system Arabic fonts on macOS are such fonts.
+fn shapes_with_morx(face: &FontFace) -> bool {
+    face.skrifa().is_some_and(|f| f.table_data(skrifa::Tag::new(b"morx")).is_some() || f.table_data(skrifa::Tag::new(b"mort")).is_some())
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -223,6 +230,7 @@ fn shape_dir(
     let mut out = Vec::with_capacity(text.len());
     let features = script_features(features, script);
     let features = &features[..];
+    let aat = shapes_with_morx(face);
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
@@ -249,7 +257,8 @@ fn shape_dir(
                 y_advance: 0,
                 x_offset: pos.x_offset,
                 y_offset: pos.y_offset,
-                safe_tatweel_before: info.safe_to_insert_tatweel(),
+                // An AAT font reports no tatweel positions: the composer's joining checks decide.
+                safe_tatweel_before: aat || info.safe_to_insert_tatweel(),
                 rtl,
             });
         }
