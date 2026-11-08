@@ -1105,9 +1105,15 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 
 /// Give `it` (an item of `src`) fresh ids from `dst`, with copies of its stories and the assets it uses.
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) {
+    renumber_in(dst, src, it, stories, true);
+}
+
+/// `adopt` is false inside a story copy, whose asset references the copy has already adopted.
+fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, adopt: bool) {
     it.id = ItemId(dst.alloc());
     let my_id = it.id;
-    if let Some(m) = it.media.as_mut()
+    if adopt
+        && let Some(m) = it.media.as_mut()
         && let Some(p) = m.poster
     {
         m.poster = Some(adopt_or_dangle(dst, src, p));
@@ -1129,8 +1135,10 @@ pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, storie
                     }
                     designcraft_doc::remap_story_assets(&mut st, &assets);
                     st.frames.clear();
-                    dst.stories.insert(n, Arc::new(st));
+                    // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
+                    renumber_anchored(dst, src, &mut st, stories);
+                    dst.stories.insert(n, Arc::new(st));
                     n
                 }
             };
@@ -1140,14 +1148,29 @@ pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, storie
             }
         }
         Content::Graphic(g) => {
-            g.asset = adopt_or_dangle(dst, src, g.asset);
+            if adopt {
+                g.asset = adopt_or_dangle(dst, src, g.asset);
+            }
         }
         Content::Group { items } => {
             for c in items.iter_mut() {
-                renumber(dst, src, Arc::make_mut(c), stories);
+                renumber_in(dst, src, Arc::make_mut(c), stories, adopt);
             }
         }
         Content::Unassigned => {}
+    }
+}
+
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
+fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>) {
+    let mut fresh = |t: &mut Story| {
+        for o in &mut t.objects {
+            renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, false);
+        }
+    };
+    st.for_each_text_mut(&mut fresh);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
     }
 }
 
@@ -1681,6 +1704,13 @@ fn transform_set(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     let inner = it.xf.inverse() * m * it.xf;
                     bake(it, inner);
+                    // A pure move carries the placed graphic along; a resize leaves it at its size.
+                    let c = inner.as_coeffs();
+                    if let Content::Graphic(g) = &mut it.content
+                        && [c[0] - 1.0, c[1], c[2], c[3] - 1.0].iter().all(|v| v.abs() < 1e-9)
+                    {
+                        g.xf = inner * g.xf;
+                    }
                 }
             }
         }
@@ -2836,7 +2866,12 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
-                Some(frac) => designcraft_render::crop_pixmap(&px, frac).unwrap_or(px),
+                // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
+                // the whole page instead would trace something else than the box.
+                Some(frac) => match designcraft_render::crop_pixmap(&px, frac) {
+                    Some(cropped) => cropped,
+                    None => continue,
+                },
                 None => px,
             };
             let (pw, ph) = (px.width() as usize, px.height() as usize);
@@ -4637,6 +4672,40 @@ mod clipping_tests {
         assert!(s.execute("object.clippingPath", &json!({"ids": [f], "threshold": 255})).is_err());
     }
 
+    /// A placed PDF whose crop box is too large to trace is skipped, not traced from the whole page.
+    #[test]
+    fn clipping_path_skips_a_pdf_whose_crop_is_too_large_to_trace() {
+        let content = "0 0 0 rg 10 10 50 50 re f";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".into(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[-30000 -30000 30000 30000]/CropBox[0 0 100 100]/Contents 4 0 R>>".into(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objs.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 5\n0000000000 65535 f\r\n");
+        for at in offsets {
+            bytes.extend_from_slice(format!("{at:010} 00000 n\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("trailer\n<</Size 5/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        let placed = s
+            .execute("file.place", &json!({"base64": super::super::file::base64_encode(&bytes), "name": "wide.pdf", "frame": f, "pdfCrop": "media"}));
+        assert!(placed.is_ok(), "{placed:?}");
+        let before = s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape;
+        let e = s.execute("object.clippingPath", &json!({"ids": [f], "type": "alpha"}));
+        assert!(e.is_err(), "the graphic is skipped, so there is nothing to trace: {e:?}");
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(f)).unwrap().shape, before, "the frame keeps its shape");
+    }
+
     #[test]
     fn clipping_path_options_report_invert_and_remove_the_clip() {
         let mut s = Session::new();
@@ -5935,5 +6004,77 @@ mod frame_baseline_grid_tests {
         assert_eq!(grid(&s).map(|g| g.relative_to), Some(FrameGridRelative::TopMargin));
         s.execute("object.textFrameOptions", &json!({"ids": [id.0], "baselineGrid": null})).unwrap();
         assert_eq!(grid(&s), None);
+    }
+}
+
+#[cfg(test)]
+mod anchored_copy_tests {
+    use super::*;
+    use designcraft_doc::AnchoredObject;
+
+    /// A text frame with an inline rectangle; returns the frame and the anchored item's id.
+    fn frame_with_inline_box(s: &mut Session) -> (ItemId, ItemId) {
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after."})).unwrap();
+        let frame = ItemId(r["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(frame).unwrap().text_frame().unwrap().story;
+        let b = s.execute("frame.create", &json!({"rect": [450, 450, 474, 490]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [b["id"]], "story": sid.0, "pos": 7})).unwrap();
+        (frame, s.doc().unwrap().doc.story(sid).unwrap().objects[0].item.id)
+    }
+
+    fn assert_reopens(doc: &Document) {
+        doc.check().unwrap();
+        designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+    }
+
+    // #1522: the copy kept the anchored object's id, and the saved file no longer opened.
+    #[test]
+    fn duplicating_a_frame_with_an_anchored_object_saves_a_file_that_reopens() {
+        let mut s = Session::new();
+        let (frame, anchored) = frame_with_inline_box(&mut s);
+        s.execute("transform.move", &json!({"ids": [frame.0], "dx": 10, "dy": 10, "copy": true})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().iter().filter(|(_, i)| i.id == anchored).count(), 1);
+        assert_eq!(doc.anchored_items().len(), 2);
+        assert_reopens(doc);
+    }
+
+    #[test]
+    fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
+        let mut s = Session::new();
+        let (frame, _) = frame_with_inline_box(&mut s);
+        s.execute("selection.set", &json!({"ids": [frame.0]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        assert_eq!(doc.anchored_items().len(), 3);
+        assert_reopens(doc);
+    }
+
+    // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    #[test]
+    fn an_anchored_text_frame_gets_its_own_story_copy() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let (host, host_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let (inner, inner_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 50.0, 50.0), layer, "Inner", ParaFormat::default()).unwrap();
+        let item = d.item(inner).unwrap().clone();
+        let inner_story = d.stories.get(&inner_sid).unwrap().clone();
+        d.remove_item(inner).unwrap();
+        d.stories.insert(inner_sid, inner_story);
+        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        d.check().unwrap();
+        let src = d.clone();
+        let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let copy_sid = d.item(copy[0]).unwrap().text_frame().unwrap().story;
+        let anchored = &d.story(copy_sid).unwrap().objects[0].item;
+        assert_ne!(anchored.id, inner);
+        let anchored_sid = anchored.text_frame().unwrap().story;
+        assert_ne!(anchored_sid, inner_sid);
+        assert_eq!(d.story(anchored_sid).unwrap().frames, [anchored.id]);
+        assert_eq!(d.story(inner_sid).unwrap().frames, [inner]);
+        assert_reopens(&d);
     }
 }

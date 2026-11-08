@@ -123,11 +123,14 @@ pub fn import_idml_report_with_previews(
     }
     warnings.append(&mut im.warnings);
     let story_ids = im.story_ids.clone();
-    let mut document = im.finish(&root).map_err(|e| match e {
+    // `finish` resolves what needs the whole document (hyperlinks, #1446) and so reports its own
+    // warnings; it is called after this append, so they come back with the document.
+    let (mut document, finishing) = im.finish(&root).map_err(|e| match e {
         // Without its spread parts there is nothing to open: say which parts were missing.
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
+    warnings.extend(finishing);
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings, story_ids })
@@ -136,6 +139,22 @@ pub fn import_idml_report_with_previews(
 struct ItemCtx {
     /// Self → (story self, prev self, next self)
     threads: Vec<(ItemId, String, String, String)>,
+}
+
+/// An IDML value given either as an attribute or inside `<Properties>`, trimmed.
+fn attr_or_prop(e: &El, key: &str) -> Option<String> {
+    e.get(key).map(|v| v.trim().to_string()).or_else(|| e.prop(key).map(|v| v.trim().to_string())).filter(|v| !v.is_empty())
+}
+
+/// Where a hyperlink destination element points, before the pages, items and anchors it names
+/// have been read (#1446). A `Hyperlink` names its destination by `Self` and the elements come in
+/// any order, so both ends are resolved once the document is complete.
+#[derive(Clone, Debug)]
+enum PendingDest {
+    /// `HyperlinkURLDestination`'s `DestinationURL`; a `mailto:` one is an email link.
+    Url(String),
+    /// `HyperlinkPageDestination`'s `DestinationPage`, a page's `Self`.
+    Page(String),
 }
 
 struct Importer<'r> {
@@ -195,6 +214,8 @@ struct Importer<'r> {
     page_index: HashMap<String, usize>,
     item_ids: HashMap<String, ItemId>,
     assets: BTreeMap<AssetId, Arc<Asset>>,
+    /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
+    asset_index: designcraft_doc::AssetIndex,
     /// Assets read from a link path at a page and crop, so later placements of that path, page
     /// and crop reuse them unread.
     linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
@@ -205,6 +226,24 @@ struct Importer<'r> {
     anchor_ids: HashMap<String, u64>,
     /// Cross-reference source Self → (story, index in its cross-references).
     xref_srcs: HashMap<String, (StoryId, usize)>,
+    /// `HyperlinkPageItemSource` Self → the page item's Self (#1446). Items are read after the
+    /// hyperlinks are listed, so the names are resolved at the end, in [`Importer::finish`].
+    link_item_srcs: HashMap<String, String>,
+    /// `HyperlinkTextSource` Self → the story and the byte range of the text it wrapped.
+    link_text_srcs: HashMap<String, (StoryId, usize, usize)>,
+    /// Hyperlink sources and text destinations found in a table cell's or a footnote's story.
+    /// Those are built under `StoryId(0)`, a placeholder that is no story of the document, so a
+    /// link recorded against it names a story nothing can look up and offsets into text that is
+    /// not there. They are kept apart so the report can say which links were dropped and why,
+    /// rather than claiming their source was not a run of text (noted in review).
+    nested_link_srcs: std::collections::HashSet<String>,
+    nested_anchors: std::collections::HashSet<String>,
+    /// A destination element's Self → where it points, as far as its own element says.
+    link_dests: HashMap<String, PendingDest>,
+    /// Destination Self → element name, for the kinds this importer does not read.
+    other_dests: HashMap<String, String>,
+    /// Each `Hyperlink`: its name, its source's Self and its destination's Self.
+    links: Vec<(String, String, String)>,
     /// Cross-reference format Self → name.
     xref_format_names: HashMap<String, String>,
     xref_formats: Vec<designcraft_doc::XrefFormat>,
@@ -277,12 +316,20 @@ impl<'r> Importer<'r> {
             page_index: HashMap::new(),
             item_ids: HashMap::new(),
             assets: BTreeMap::new(),
+            asset_index: designcraft_doc::AssetIndex::new(),
             linked_assets: HashMap::new(),
             ctx: ItemCtx { threads: Vec::new() },
             sections: Vec::new(),
             footnote_options: Default::default(),
             anchor_ids: HashMap::new(),
             xref_srcs: HashMap::new(),
+            link_item_srcs: HashMap::new(),
+            link_text_srcs: HashMap::new(),
+            nested_link_srcs: std::collections::HashSet::new(),
+            nested_anchors: std::collections::HashSet::new(),
+            link_dests: HashMap::new(),
+            other_dests: HashMap::new(),
+            links: Vec::new(),
             xref_format_names: HashMap::new(),
             xref_formats: designcraft_doc::xref::default_formats(),
             index_topics: HashMap::new(),
@@ -330,11 +377,17 @@ impl<'r> Importer<'r> {
                     self.default_margins = Some((m, c));
                 }
                 "ViewPreference" => {
-                    if let Some(u) = e.get("HorizontalMeasurementUnits") {
-                        self.settings.horizontal_units = names::unit_in(u);
-                    }
-                    if let Some(u) = e.get("VerticalMeasurementUnits") {
-                        self.settings.vertical_units = names::unit_in(u);
+                    for (attr, ruler) in [("HorizontalMeasurementUnits", "horizontal"), ("VerticalMeasurementUnits", "vertical")] {
+                        let Some(u) = e.get(attr) else { continue };
+                        let unit = names::unit_in(u).unwrap_or_else(|| {
+                            self.warnings.push(format!("{ruler} ruler units `{u}` are not available; read as points"));
+                            designcraft_geom::Unit::Points
+                        });
+                        if ruler == "horizontal" {
+                            self.settings.horizontal_units = unit;
+                        } else {
+                            self.settings.vertical_units = unit;
+                        }
                     }
                     if let Some(v) = e.num("CursorKeyIncrement") {
                         self.settings.keyboard_increment = v;
@@ -476,6 +529,7 @@ impl<'r> Importer<'r> {
         for e in top.iter().filter(|e| e.local() == "CrossReferenceFormat") {
             self.xref_format(e);
         }
+        self.read_hyperlinks(top);
         if let Some(ix) = top.iter().find(|e| e.local() == "Index") {
             self.index_topics_of(ix, &IndexTopic::default());
         }
@@ -496,15 +550,7 @@ impl<'r> Importer<'r> {
             self.stories.insert(id, story);
         }
         self.toc = self.toc_of(top);
-        // Topic cross-references (See / See also) become markers at the start of the first story
-        // with text.
-        if !self.index_xrefs.is_empty()
-            && let Some(st) = self.stories.values_mut().find(|s| !s.text.is_empty())
-        {
-            for r in std::mem::take(&mut self.index_xrefs).into_iter().rev() {
-                st.insert_index_ref(0, r);
-            }
-        }
+        self.place_index_xrefs();
         // Cross-references point at their hyperlink's destination.
         for h in top.iter().filter(|e| e.local() == "Hyperlink") {
             let (Some(src), Some(dest)) = (h.get("Source"), h.prop("Destination")) else { continue };
@@ -532,9 +578,14 @@ impl<'r> Importer<'r> {
             let sp = self.spread(e, id, false);
             self.spreads.push(sp);
         }
-        // Sections.
+        // Sections. A section whose AlternateLayout differs from the one before starts that layout.
+        let mut last_layout: Option<String> = None;
         for e in top.iter().filter(|e| e.local() == "Section") {
             let Some(start) = e.get("PageStart").and_then(|p| self.page_index.get(p)).copied() else { continue };
+            let layout = e.get("AlternateLayout").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+            let starts_layout = layout.clone().filter(|l| last_layout.as_ref() != Some(l));
+            // A section without one stays in the layout before it.
+            last_layout = layout.or(last_layout.take());
             let cont = e.get("ContinueNumbering") != Some("false");
             self.sections.push(Section {
                 start,
@@ -543,6 +594,7 @@ impl<'r> Importer<'r> {
                 prefix: e.get("SectionPrefix").unwrap_or("").to_string(),
                 marker: e.get("Marker").unwrap_or("").to_string(),
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
+                layout: starts_layout,
             });
         }
         if self.rotated_cells > 0 {
@@ -562,6 +614,7 @@ impl<'r> Importer<'r> {
                     style: Default::default(),
                     prefix: String::new(),
                     marker: String::new(),
+                    layout: None,
                     include_prefix: false,
                 },
             );
@@ -570,7 +623,149 @@ impl<'r> Importer<'r> {
         Ok(())
     }
 
-    fn finish(mut self, root: &El) -> Result<Document> {
+    /// Hyperlink sources, destinations and the `Hyperlink` elements that join them (#1446), by
+    /// name: the pages, page items and anchors they name are read later, so `finish` puts the two
+    /// ends together.
+    fn read_hyperlinks(&mut self, top: &[El]) {
+        for e in top {
+            let me = || e.get("Self").unwrap_or("").trim().to_string();
+            match e.local() {
+                "HyperlinkURLDestination" => {
+                    if let Some(u) = attr_or_prop(e, "DestinationURL") {
+                        self.link_dests.insert(me(), PendingDest::Url(u));
+                    }
+                }
+                "HyperlinkPageDestination" => {
+                    if let Some(pg) = attr_or_prop(e, "DestinationPage") {
+                        self.link_dests.insert(me(), PendingDest::Page(pg));
+                    }
+                }
+                "HyperlinkPageItemSource" => {
+                    if let Some(it) = attr_or_prop(e, "SourcePageItem") {
+                        self.link_item_srcs.insert(me(), it);
+                    }
+                }
+                "Hyperlink" => {
+                    if let (Some(src), Some(dest)) = (attr_or_prop(e, "Source"), attr_or_prop(e, "Destination")) {
+                        let name = e.get("Name").unwrap_or("").trim().to_string();
+                        self.links.push((name, src, dest));
+                    }
+                }
+                // A destination kind this importer does not read (an external page, say): kept
+                // by name so a link dropped for it can say what it led to.
+                other if other.starts_with("Hyperlink") && other.ends_with("Destination") => {
+                    self.other_dests.insert(me(), other.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Topic cross-references (See / See also) become markers at the start of the first story
+    /// with text, and the hyperlink text ranges recorded for that story move along with them.
+    fn place_index_xrefs(&mut self) {
+        let index_xrefs = std::mem::take(&mut self.index_xrefs);
+        if !index_xrefs.is_empty() {
+            let mut moved = None;
+            if let Some((&sid, st)) = self.stories.iter_mut().find(|(_, s)| !s.text.is_empty()) {
+                let before = st.text.len();
+                for r in index_xrefs.into_iter().rev() {
+                    st.insert_index_ref(0, r);
+                }
+                moved = Some((sid, st.text.len().saturating_sub(before)));
+            }
+            // The markers go in at the start of the story, so every byte range already recorded
+            // for it moved along by what they added. The hyperlink step reads those ranges after
+            // this, and a range left unshifted covered different text than the run it came from
+            // (noted in review).
+            if let Some((sid, shift)) = moved.filter(|(_, n)| *n > 0) {
+                for (story, start, end) in self.link_text_srcs.values_mut() {
+                    if *story == sid {
+                        *start += shift;
+                        *end += shift;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The document's hyperlinks, put together from the sources, destinations and `Hyperlink`
+    /// elements the package listed (#1446). Called once the pages, page items and text anchors
+    /// they name have been read. A link whose source or destination is not in the file is
+    /// dropped: a source that names no item is nothing to click, and a destination that resolves
+    /// to nothing would be a link that goes nowhere.
+    fn hyperlink_list(&mut self) -> Vec<designcraft_doc::Hyperlink> {
+        use designcraft_doc::{HyperlinkDest as D, HyperlinkSource as S};
+        let mut out: Vec<designcraft_doc::Hyperlink> = Vec::new();
+        for (name, src, dest) in std::mem::take(&mut self.links) {
+            // A cross-reference's source is its own kind and is joined to its anchor elsewhere.
+            if self.xref_srcs.contains_key(&src) {
+                continue;
+            }
+            let label = if name.is_empty() { src.clone() } else { name.clone() };
+            let source = if let Some(item) = self.link_item_srcs.get(&src) {
+                let Some(&id) = self.item_ids.get(item) else {
+                    let item = item.clone();
+                    self.warnings.push(format!("hyperlink {label}: its page item {item} is not in the package, so the link was dropped"));
+                    continue;
+                };
+                S::Item { id }
+            } else if let Some(&(story, start, end)) = self.link_text_srcs.get(&src) {
+                S::Text { story, start, end }
+            } else if self.nested_link_srcs.contains(&src) {
+                self.warnings.push(format!(
+                    "hyperlink {label}: its source is text in a table cell or a footnote, which this importer cannot link yet, so the link was dropped"
+                ));
+                continue;
+            } else {
+                self.warnings.push(format!("hyperlink {label}: its source {src} is not a page item or a run of text, so the link was dropped"));
+                continue;
+            };
+            let dest = match self.link_dests.get(&dest) {
+                Some(PendingDest::Url(u)) => match u.strip_prefix("mailto:") {
+                    // `hyperlink.create` keeps an email address as one, so a `mailto:` URL is
+                    // read back as the email link it was written from.
+                    Some(address) if !address.is_empty() => D::Email(address.to_string()),
+                    _ => D::Url(u.clone()),
+                },
+                Some(PendingDest::Page(pg)) => match self.page_index.get(pg) {
+                    Some(&i) => D::Page(i),
+                    None => {
+                        self.warnings.push(format!("hyperlink {label}: it leads to a page that is not in the package, so the link was dropped"));
+                        continue;
+                    }
+                },
+                // A `HyperlinkTextDestination` has no entry of its own: it sits in a story and is
+                // named straight by its `Self`, as a cross-reference names its anchor.
+                None if self.nested_anchors.contains(&dest) => {
+                    self.warnings.push(format!(
+                        "hyperlink {label}: it leads to text in a table cell or a footnote, which this importer cannot point at yet, so the link was dropped"
+                    ));
+                    continue;
+                }
+                None => match (self.anchor_ids.get(&dest), self.other_dests.get(&dest)) {
+                    (Some(&id), _) => D::Anchor(id),
+                    // A kind InDesign writes and this importer does not read yet: say which,
+                    // rather than report it as missing from the package.
+                    (None, Some(kind)) => {
+                        let kind = kind.clone();
+                        self.warnings.push(format!("hyperlink {label}: a {kind} is not read yet, so the link was dropped"));
+                        continue;
+                    }
+                    (None, None) => {
+                        self.warnings.push(format!("hyperlink {label}: its destination {dest} is not in the package, so the link was dropped"));
+                        continue;
+                    }
+                },
+            };
+            let name = if name.is_empty() { dest.label() } else { name };
+            out.push(designcraft_doc::Hyperlink { id: self.alloc(), name, source, dest });
+        }
+        out
+    }
+
+    /// The finished document, and the warnings raised while finishing it.
+    fn finish(mut self, root: &El) -> Result<(Document, Vec<String>)> {
         let title = root.get("Name").map(|n| n.trim_end_matches(".indd").to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
         if self.spreads.is_empty() {
             return Err(IdmlError::Invalid("document has no spreads".into()));
@@ -598,7 +793,7 @@ impl<'r> Importer<'r> {
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),
             assets: std::mem::take(&mut self.assets),
-            hyperlinks: vec![],
+            hyperlinks: self.hyperlink_list(),
             data_merge: Default::default(),
             bookmarks: vec![],
             user_words: vec![],
@@ -613,6 +808,19 @@ impl<'r> Importer<'r> {
             next_id: self.next_id,
             font_scope: 0,
         };
+        // A link from a frame anchored in text is kept -- it is in the document and goes back out
+        // to IDML -- but PDF export finds a link's frame among the spreads' items, where an
+        // anchored frame is not, so the PDF would leave it out without a word. Say so here.
+        for h in &d.hyperlinks {
+            if let designcraft_doc::HyperlinkSource::Item { id } = h.source
+                && d.find(id).is_none()
+            {
+                self.warnings.push(format!(
+                    "hyperlink {}: its source is a frame anchored in text, which PDF export cannot place yet, so the PDF will not have this link",
+                    h.name
+                ));
+            }
+        }
         if let [x, y] = root.get("ZeroPoint").map(nums).unwrap_or_default()[..]
             && let Some(zp) = d.clamp_zero_point([x, y])
         {
@@ -621,6 +829,6 @@ impl<'r> Importer<'r> {
         // Cross-reference text the format generates exactly is generated again; any other was
         // typed over it and is kept (needs the destinations, resolved above).
         d.drop_generated_xref_text();
-        Ok(d)
+        Ok((d, std::mem::take(&mut self.warnings)))
     }
 }

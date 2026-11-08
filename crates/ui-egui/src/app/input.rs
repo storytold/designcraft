@@ -23,6 +23,11 @@ impl DesignApp {
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // An undecorated window gets its caption back when the toolkit changes its flags
+        // (maximize, restore, …): take it off again before the frame is laid out (#1295).
+        if let Some(window_frame) = self.services.window_frame.as_mut() {
+            window_frame();
+        }
         if !self.injected_settle_hook {
             let pending = self.injected_pending.clone();
             let settled = self.injected_settled.clone();
@@ -135,6 +140,42 @@ impl DesignApp {
         if self.host_order_pending() {
             ctx.request_repaint();
         }
+    }
+
+    /// Open or place the files dropped since the last UI pass, at the pointer. Files dropped
+    /// without pointer events (dragged in from another application) are placed where the system
+    /// says the pointer is, so one dropped on a frame still fills it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_pending_drops(&mut self, ctx: &egui::Context) {
+        // Sample the generation once for the whole batch: placing the first valid file must not
+        // suppress later files that belong to the same captured batch.
+        let current = self.input_generation();
+        let drops: Vec<_> = std::mem::take(&mut self.pending_drops).into_iter().filter(|d| d.generation == current).collect();
+        if drops.is_empty() {
+            return;
+        }
+        // Each file keeps the pointer it was dropped at; the system is asked once, for those
+        // that came without one.
+        let system = drops.iter().any(|d| d.pointer.is_none()).then(|| self.system_pointer(ctx)).flatten();
+        let mut frame_free = true;
+        for drop in drops {
+            let _ = self.place_dropped(&drop.path, drop.pointer.or(system), &mut frame_free);
+        }
+    }
+
+    /// Where the pointer is in the window, asked of the system ([`crate::Services::pointer`]),
+    /// for files dropped without pointer events: dragged in from another application, they bring
+    /// none. `None` when the system doesn't say or the window's place isn't known.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn system_pointer(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let at = (self.services.pointer.as_ref()?)()?;
+        // The system's points are unscaled; egui's (the window's rect too) are divided by the
+        // UI scale.
+        let zoom = ctx.zoom_factor();
+        let at = if zoom.is_finite() && zoom > 0.0 { at / zoom } else { at };
+        let inner = ctx.input(|i| i.viewport().inner_rect)?;
+        let local = at - inner.min.to_vec2();
+        (local.x.is_finite() && local.y.is_finite()).then_some(local)
     }
 
     /// The current state an injected batch belongs to.
