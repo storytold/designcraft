@@ -8671,7 +8671,7 @@ fn small_caps_come_from_the_font_or_are_drawn_when_it_has_none() {
     let plain = composed("Inter", Capitalization::Normal);
     let small = composed("Inter", Capitalization::SmallCaps);
     let at = |gs: &[(usize, u32, f64, f64, char)], byte: usize| gs.iter().find(|g| g.0 == byte).cloned().unwrap();
-    let (_, a_plain, adv_plain, _, _) = at(&plain, 0);
+    let (_, a_plain, _adv_plain, _, _) = at(&plain, 0);
     let (_, cap_plain, adv_cap, _, _) = at(&plain, 3);
     let (_, small_a, adv_a, sx_a, ch_a) = at(&small, 0);
     let (_, small_cap, adv_upper, sx_cap, _) = at(&small, 3);
