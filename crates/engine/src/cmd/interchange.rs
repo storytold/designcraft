@@ -459,21 +459,34 @@ fn warning_item(
 
 /// `file.openPages`: an Apple Pages document, converted into a new unsaved document.
 pub(crate) fn open_pages(s: &mut Session, p: &Value) -> Result<Value> {
-    let (bytes, title) = if let Some(b) = str_param(p, "base64") {
-        (base64_decode(b), without_pages_extension(str_param(p, "name").unwrap_or_default()).to_string())
-    } else if let Some(path) = str_param(p, "path") {
+    open_pages_with(s, p, None)
+}
+
+/// [`open_pages`], given the file's bytes when the caller has already read or decoded them.
+pub(crate) fn open_pages_with(s: &mut Session, p: &Value, read: Option<Vec<u8>>) -> Result<Value> {
+    let (path, b64) = (str_param(p, "path"), str_param(p, "base64"));
+    if path.is_some() && b64.is_some() {
+        return Err(bad("file.openPages", "give `path` or `base64`, not both"));
+    }
+    let (bytes, title) = if let Some(b) = b64 {
+        (read.unwrap_or_else(|| base64_decode(b)), without_pages_extension(str_param(p, "name").unwrap_or_default()).to_string())
+    } else if let Some(path) = path {
         // A package folder is read file by file below.
         #[cfg(not(target_arch = "wasm32"))]
-        let b = if crate::io::is_dir(path) { Vec::new() } else { crate::io::read_file(path).map_err(EngineError::Other)? };
+        let b = match read {
+            Some(b) => b,
+            None if crate::io::is_dir(path) => Vec::new(),
+            None => crate::io::read_file(path).map_err(EngineError::Other)?,
+        };
         #[cfg(target_arch = "wasm32")]
-        let b: Vec<u8> = Vec::new();
+        let b: Vec<u8> = read.unwrap_or_default();
         (b, std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
     } else {
         return Err(bad("file.openPages", "missing `path` or `base64`"));
     };
     let fonts = |ps: &str| designcraft_fonts::FontDb::global().postscript_face(ps);
     #[cfg(not(target_arch = "wasm32"))]
-    let import = match str_param(p, "path").filter(|path| str_param(p, "base64").is_none() && crate::io::is_dir(path)) {
+    let import = match path.filter(|path| crate::io::is_dir(path)) {
         Some(path) => designcraft_pages::import_files(read_pages_package(path)?, &fonts),
         None => designcraft_pages::import(&bytes, &fonts),
     };

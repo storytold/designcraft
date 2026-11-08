@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use designcraft_doc::item::{Content, VerticalJustification};
-use designcraft_doc::{Align, Leading};
+use designcraft_doc::{Align, Item, Leading};
 use designcraft_geom::Point;
 
 use super::*;
@@ -466,4 +466,49 @@ fn the_longest_literal_length_fails_without_overflowing() {
     // A literal with a 4-byte length of 0xFFFFFFFF: one more than that overflows a 32-bit usize.
     let block = [10, 63 << 2, 0xFF, 0xFF, 0xFF, 0xFF, b'x'];
     assert!(snappy::decompress_block(&block, &mut Vec::new(), 1 << 20).is_err());
+}
+
+fn rgba(r: f32, g: f32, b: f32, a: f32) -> M {
+    M::new().uint(1, 1).f32(3, r).f32(4, g).f32(5, b).f32(6, a)
+}
+
+/// One shape on page 1 drawn with graphic style `props` (the style's field 1.11), and its warnings.
+fn styled_shape(props: M) -> (Item, Vec<String>) {
+    let root = M::new().reference(3, 10).f32(30, 100.0).f32(31, 100.0);
+    let group = M::new().msg(1, M::new().uint(1, 0).msg(4, M::new().reference(1, 20)));
+    let shape = M::new().msg(1, M::new().msg(1, M::new().msg(1, geometry(0.0, 0.0, 10.0, 10.0, 0.0))).reference(2, 50));
+    let doc = iwa(&[(1, 10000, root), (10, 10010, group), (20, 2011, shape), (50, 2025, M::new().msg(1, M::new().msg(11, props)))]);
+    let im = import(&zip(&[("Index/Document.iwa", &doc)]), NO_FONTS).unwrap();
+    ((*im.document.spreads[0].items[0]).clone(), im.warnings.into_iter().collect())
+}
+
+#[test]
+fn colour_alpha_becomes_the_item_opacity() {
+    // A half-transparent fill and no stroke, in a 0.8 opacity style.
+    let (item, warnings) = styled_shape(M::new().msg(1, M::new().msg(1, rgba(1.0, 0.0, 0.0, 0.5))).f32(3, 0.8));
+    assert_eq!(item.fill.swatch, "R=255 G=0 B=0");
+    assert!((item.opacity - 0.4).abs() < 1e-6, "{}", item.opacity);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    // Fill and stroke sharing an alpha.
+    let (item, warnings) =
+        styled_shape(M::new().msg(1, M::new().msg(1, rgba(1.0, 0.0, 0.0, 0.5))).msg(2, M::new().msg(1, rgba(0.0, 0.0, 0.0, 0.5)).f32(2, 1.0)));
+    assert!((item.opacity - 0.5).abs() < 1e-6, "{}", item.opacity);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn different_fill_and_stroke_alpha_is_named_in_warnings() {
+    let (item, warnings) =
+        styled_shape(M::new().msg(1, M::new().msg(1, rgba(1.0, 0.0, 0.0, 0.5))).msg(2, M::new().msg(1, rgba(0.0, 0.0, 0.0, 1.0)).f32(2, 1.0)));
+    assert!((item.opacity - 0.5).abs() < 1e-6, "{}", item.opacity);
+    assert!(warnings.iter().any(|w| w.contains("different transparency")), "{warnings:?}");
+}
+
+#[test]
+fn transparent_text_colour_is_named_in_warnings() {
+    let root = M::new().reference(4, 40).f32(30, 100.0).f32(31, 100.0);
+    let faint = M::new().msg(11, M::new().msg(7, rgba(0.0, 0.0, 0.0, 0.5)));
+    let doc = iwa(&[(1, 10000, root), (40, 2001, storage("Faint", &[], &[(0, Some(62))])), (62, 2021, faint)]);
+    let im = import(&zip(&[("Index/Document.iwa", &doc)]), NO_FONTS).unwrap();
+    assert!(im.warnings.iter().any(|w| w.contains("transparent text")), "{:?}", im.warnings);
 }

@@ -143,7 +143,13 @@ impl Importer<'_> {
             2 => Some(Position::Subscript),
             _ => None,
         });
-        a.fill = c.color.map(|rgba| self.swatch(rgba));
+        a.fill = c.color.map(|rgba| {
+            let (name, alpha) = self.swatch(rgba);
+            if alpha > 0.0 && alpha < 1.0 - 0.5 / 255.0 {
+                self.warnings.insert("transparent text colour is shown opaque".into());
+            }
+            name
+        });
         a.language = lang.filter(|l| !l.is_empty()).map(str::to_string);
         a
     }

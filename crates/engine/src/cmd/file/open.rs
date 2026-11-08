@@ -92,9 +92,7 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
             return crate::cmd::interchange::open_idml(s, p);
         }
         if pages || (!native && crate::cmd::interchange::is_pages(path, &bytes)) {
-            // The Pages reader reads the file again; don't hold two copies.
-            drop(bytes);
-            return crate::cmd::interchange::open_pages(s, p);
+            return crate::cmd::interchange::open_pages_with(s, p, Some(bytes));
         }
         if !native && ext != designcraft_format::EXTENSION {
             return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
@@ -169,7 +167,7 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
         return crate::cmd::interchange::open_idml(s, p);
     }
     if pages || (!native && crate::cmd::interchange::is_pages(name, &b)) {
-        return crate::cmd::interchange::open_pages(s, p);
+        return crate::cmd::interchange::open_pages_with(s, p, Some(b));
     }
     let (mut d, warnings) = load_bytes(&b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
@@ -312,6 +310,14 @@ mod document_fonts_tests {
         assert!(e.contains("Pages document"), "{e}");
         assert!(s.doc().is_err(), "nothing was opened");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_pages_takes_a_path_or_bytes_not_both() {
+        let mut s = Session::new();
+        let e = s.execute("file.openPages", &json!({"path": "Poster.pages", "base64": ""})).unwrap_err().to_string();
+        assert!(e.contains("not both"), "{e}");
+        assert!(s.doc().is_err(), "nothing was opened");
     }
 
     /// A ZIP holding `Index/Document.iwa`: a Pages document by its content (a damaged one).

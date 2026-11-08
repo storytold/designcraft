@@ -1,7 +1,7 @@
 //! Building the document: the page setup from the document root (`TP.DocumentArchive`), then the
 //! objects placed on each page (its page group), then the body text.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use designcraft_color::{Color, Swatch, swatch};
@@ -82,6 +82,10 @@ pub(crate) struct Importer<'p> {
     assets: HashMap<u64, Option<(AssetId, Option<(f64, f64)>)>>,
     /// Drawables still allowed to be visited ([`MAX_VISITS`]).
     visits_left: usize,
+    /// Names of the swatches already added to `doc`.
+    swatch_names: HashSet<String>,
+    /// Family and style by PostScript name, from [`FontLookup`] or the name itself.
+    font_names: HashMap<String, (String, String)>,
 }
 
 pub(crate) fn import(pkg: &Package, fonts: FontLookup) -> Result<Import> {
@@ -98,6 +102,8 @@ pub(crate) fn import(pkg: &Package, fonts: FontLookup) -> Result<Import> {
         char_styles: HashMap::new(),
         assets: HashMap::new(),
         visits_left: MAX_VISITS,
+        swatch_names: HashSet::new(),
+        font_names: HashMap::new(),
     };
     im.layer = im.doc.default_layer();
     // The document's paint order (`TP.DrawablesZOrderArchive`, root field 20), back to front.
@@ -235,10 +241,17 @@ impl<'p> Importer<'p> {
     /// Family and style of the font with PostScript name `ps`, made bold or italic when the text
     /// asks for it and the font is the regular face.
     pub(crate) fn font(&mut self, ps: &str, bold: bool, italic: bool) -> (String, String) {
-        let (family, style) = (self.fonts)(ps).unwrap_or_else(|| match ps.split_once('-') {
-            Some((f, s)) => (split_words(f), split_words(s)),
-            None => (split_words(ps), "Regular".into()),
-        });
+        let fonts = self.fonts;
+        let (family, style) = self
+            .font_names
+            .entry(ps.to_string())
+            .or_insert_with(|| {
+                fonts(ps).unwrap_or_else(|| match ps.split_once('-') {
+                    Some((f, s)) => (split_words(f), split_words(s)),
+                    None => (split_words(ps), "Regular".into()),
+                })
+            })
+            .clone();
         let style = match (style.as_str(), bold, italic) {
             ("Regular" | "Roman", true, true) => "Bold Italic".into(),
             ("Regular" | "Roman", true, false) => "Bold".into(),
@@ -249,19 +262,21 @@ impl<'p> Importer<'p> {
         (family, style)
     }
 
-    /// The swatch of an sRGB colour, added to the document the first time it is used.
-    pub(crate) fn swatch(&mut self, [r, g, b, a]: Rgba) -> String {
+    /// The swatch of an sRGB colour, added to the document the first time it is used, and the
+    /// colour's alpha. A swatch holds no alpha (storytold/designcraft#2469): the caller carries it
+    /// in the item's opacity where it can.
+    pub(crate) fn swatch(&mut self, [r, g, b, a]: Rgba) -> (String, f64) {
         if a <= 0.0 {
-            return swatch::NONE.into();
+            return (swatch::NONE.into(), 0.0);
         }
         let c = Color::rgb(r as f32, g as f32, b as f32);
         let name = swatch::value_name(c);
-        if !self.doc.swatches.iter().any(|s| s.name == name) {
+        if self.swatch_names.insert(name.clone()) && !self.doc.swatches.iter().any(|s| s.name == name) {
             let mut s = Swatch::color(&name, c);
             s.named = false;
             self.doc.swatches.push(s);
         }
-        name
+        (name, a.min(1.0))
     }
 
     fn new_item(&mut self, shape: Shape, path: PathData, xf: Affine) -> Item {
@@ -273,14 +288,30 @@ impl<'p> Importer<'p> {
     }
 
     fn apply_style(&mut self, item: &mut Item, s: &ShapeProps) {
+        let mut alphas = Vec::new();
         if let Some(Some(c)) = s.fill {
-            item.fill = Fill::swatch(&self.swatch(c));
+            let (name, a) = self.swatch(c);
+            item.fill = Fill::swatch(&name);
+            alphas.push(a);
         }
         if let Some(Some((c, w))) = s.stroke {
-            item.stroke = Stroke { swatch: self.swatch(c), weight: w, ..Stroke::none() };
+            let (name, a) = self.swatch(c);
+            if w > 0.0 {
+                alphas.push(a);
+            }
+            item.stroke = Stroke { swatch: name, weight: w, ..Stroke::none() };
         }
         if let Some(o) = s.opacity {
             item.opacity = o as f32;
+        }
+        // Colour alpha becomes the item's opacity when the fill and stroke share it. Otherwise
+        // the fill's alpha is used for both, as one opacity is all an item has.
+        let visible: Vec<f64> = alphas.into_iter().filter(|a| *a > 0.0).collect();
+        if let Some(&a) = visible.first() {
+            if visible.iter().any(|b| (b - a).abs() > 0.5 / 255.0) {
+                self.warnings.insert("a fill and stroke with different transparency share one opacity".into());
+            }
+            item.opacity *= a as f32;
         }
         if s.gradient_or_image_fill {
             self.warnings.insert("gradient and image fills show a solid colour".into());

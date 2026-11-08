@@ -30,7 +30,7 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
-| Apple Pages | `.pages` (file or package folder) | ✗ | ~ (`designcraft-pages`; Pages 5.1 and later) | ✗ | Pages, placed shapes, text boxes, images (masks, opacity), groups, rotation, fill/stroke/opacity, paragraph and character formatting as local overrides. Not read: tables, charts, shadows, gradient and image fills (first colour shown), inline objects, footnotes, named styles; word-processing body text goes into one frame on page 1. Warnings name what was skipped. Synthetic-archive tests in `crates/pages/src/tests.rs`; checked by hand against one real two-page poster | — |
+| Apple Pages | `.pages` (file or package folder) | ✗ | ~ (`designcraft-pages`; Pages 5.1 and later) | ✗ | Pages, placed shapes, text boxes, images (masks, opacity), groups, rotation, fill/stroke/opacity (a colour's alpha becomes the item's opacity; differing fill and stroke alpha, and text alpha, are approximated with a warning until #2469), paragraph and character formatting as local overrides. Not read: tables, charts, shadows, gradient and image fills (first colour shown), inline objects, footnotes, named styles; word-processing body text goes into one frame on page 1. Warnings name what was skipped. Synthetic-archive tests in `crates/pages/src/tests.rs`; checked by hand against one real two-page poster | — |
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and
