@@ -87,3 +87,15 @@ DesignCraft renders with wgpu. It uses **WebGPU** when the browser has it and fa
 For example: `<iframe src="https://example.com/designcraft/?webgl" ...>`.
 
 A browser with neither WebGPU nor WebGL2 gets a message in place of the app.
+
+## Driving it from the page (`window.designcraft`)
+
+Every DesignCraft web build puts `window.designcraft` on the page, from [`craft-web-api`](https://github.com/storytold/craft-libs/tree/main/crates/web-api) (storytold/craft-libs#413), the same shape in every Craft app. `designcraft.request(method, params)` calls any method of the control channel the desktop app serves (`docs/control-protocol.md`), and `execute(command, params)`, `commands()`, `docInspect(params)`, `uiInspect(params)` and `screenshot(params)` are shortcuts for the common ones. Each returns a Promise that resolves with the method's result and rejects with an `Error`; a call the app does not answer within 30 seconds rejects. DesignCraft's control requests cannot be withdrawn, so a call that times out in the page still runs when the app reaches it, as it does for a desktop client that timed out.
+
+```js
+const doc = await designcraft.docInspect();                          // pages, frames, selection
+await designcraft.execute("frame.create", { rect: [36, 36, 300, 200], content: "text" });
+const { data } = await designcraft.screenshot();                     // the window as PNG (base64)
+```
+
+The API is installed in every session. There is no file system in the page: a screenshot without `path` comes back inline.
