@@ -261,7 +261,7 @@ mod new_document_tests {
         for (name, w_mm, h_mm) in [
             ("Bunko (105 × 148 mm)", 105.0, 148.0),
             ("Shinsho (103 × 182 mm)", 103.0, 182.0),
-            ("Yotsuro (127 × 188 mm)", 127.0, 188.0),
+            ("Shiroku (127 × 188 mm)", 127.0, 188.0),
             ("Kiku (152 × 227 mm)", 152.0, 227.0),
             ("AB (210 × 257 mm)", 210.0, 257.0),
             ("Japanese Postcard (100 × 148 mm)", 100.0, 148.0),

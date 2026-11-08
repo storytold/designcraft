@@ -45,7 +45,7 @@ pub const PRESETS: &[Preset] = &[
     // ISO B6 (125×176 mm); 文庫 is 105×148 mm, the same size as A6.
     Preset { name: "Bunko (105 × 148 mm)", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "Shinsho (103 × 182 mm)", intent: Intent::Print, width: 103.0 * MM, height: 182.0 * MM, units: Unit::Millimeters },
-    Preset { name: "Yotsuro (127 × 188 mm)", intent: Intent::Print, width: 127.0 * MM, height: 188.0 * MM, units: Unit::Millimeters },
+    Preset { name: "Shiroku (127 × 188 mm)", intent: Intent::Print, width: 127.0 * MM, height: 188.0 * MM, units: Unit::Millimeters },
     Preset { name: "Kiku (152 × 227 mm)", intent: Intent::Print, width: 152.0 * MM, height: 227.0 * MM, units: Unit::Millimeters },
     Preset { name: "AB (210 × 257 mm)", intent: Intent::Print, width: 210.0 * MM, height: 257.0 * MM, units: Unit::Millimeters },
     Preset { name: "Japanese Postcard (100 × 148 mm)", intent: Intent::Print, width: 100.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
@@ -1150,7 +1150,7 @@ mod tests {
         for (name, w_mm, h_mm) in [
             ("Bunko (105 × 148 mm)", 105.0, 148.0),
             ("Shinsho (103 × 182 mm)", 103.0, 182.0),
-            ("Yotsuro (127 × 188 mm)", 127.0, 188.0),
+            ("Shiroku (127 × 188 mm)", 127.0, 188.0),
             ("Kiku (152 × 227 mm)", 152.0, 227.0),
             ("AB (210 × 257 mm)", 210.0, 257.0),
             ("Japanese Postcard (100 × 148 mm)", 100.0, 148.0),
