@@ -16,10 +16,13 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, name: String, mime: &str, 
         p.get("width").and_then(Value::as_f64).unwrap_or(if video { 320.0 } else { 200.0 }),
         p.get("height").and_then(Value::as_f64).unwrap_or(if video { 180.0 } else { 48.0 }),
     );
-    let target = super::id_param(p, "frame").or_else(|| {
-        let st = s.active()?;
-        st.selection.items.iter().copied().find(|i| st.doc.item(*i).is_some_and(|it| matches!(it.content, Content::Unassigned | Content::Graphic(_))))
-    });
+    let target =
+        super::id_param(p, "frame").or_else(|| {
+            let st = s.active()?;
+            st.selection.items.iter().copied().find(|i| {
+                st.doc.item(*i).is_some_and(|it| it.path.encloses_area() && matches!(it.content, Content::Unassigned | Content::Graphic(_)))
+            })
+        });
     let spread = super::spread_param(p, "file.place")?;
     let lid = s.doc()?.active_layer;
     let (px, py) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64));
@@ -157,6 +160,22 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn media_placement_leaves_a_selected_line_alone() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let line = s.execute("line.create", &json!({"a": [18, 600], "b": [594, 600]})).unwrap();
+        let original = serde_json::to_value(s.doc().unwrap().doc.item(designcraft_doc::ItemId(line["id"].as_u64().unwrap())).unwrap()).unwrap();
+        let fake = super::super::file::base64_encode(b"\x00\x00\x00\x18ftypmp42");
+
+        let r = s.execute("file.place", &json!({"base64": fake, "name": "clip.mp4"})).unwrap();
+
+        assert_ne!(r["id"], line["id"]);
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(serde_json::to_value(d.item(designcraft_doc::ItemId(line["id"].as_u64().unwrap())).unwrap()).unwrap(), original);
+        assert_eq!(d.spreads[0].items.len(), 2);
+    }
 
     #[test]
     fn media_frames_place_render_and_export() {

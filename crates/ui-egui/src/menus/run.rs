@@ -300,6 +300,33 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
     })
 }
 
+/// File › Export Layouts and Versions…: the dialog, on `layouts` when given.
+fn open_export_batch(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("no document open".into());
+    }
+    let layouts = p.get("layouts").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+    crate::export_batch_dialog::open(app, layouts);
+    Ok(Value::Null)
+}
+
+/// Layout › Parent Options… (the parent selected in the Pages panel or shown, else the first) and
+/// Layout › Alternate Layout Options… (the layout of the page in view).
+fn open_layout_options(app: &mut DesignApp, id: &str) -> Result<Value, String> {
+    let Some(st) = app.session.active() else { return Err("no document open".into()) };
+    let doc = st.doc.clone();
+    if id == "app.parentOptions" {
+        let target = crate::panels::pages::target_parent(app, &doc).or_else(|| doc.parents.first().map(|p| p.id));
+        let Some(target) = target else { return Err("the document has no parents".into()) };
+        crate::panels::pages::open_parent_options(app, &doc, target);
+    } else {
+        let layouts = doc.layouts();
+        let k = crate::panels::pages::layout_index(&layouts, crate::canvas::current_page(app).unwrap_or(0));
+        crate::panels::pages::open_layout_options(app, &doc, &layouts, k);
+    }
+    Ok(Value::Null)
+}
+
 /// One slice of the UI commands: `None` if `id` isn't one of them.
 fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
@@ -462,7 +489,11 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.deletePage" | "app.duplicateSpread" => {
             let Some(st) = app.session.active() else { return Some(Err("no document open".into())) };
-            let page = crate::canvas::current_page(app).unwrap_or(0);
+            let page = match crate::canvas::current_page(app) {
+                Some(page) => page,
+                None if !st.editing_parents => 0,
+                None => return Some(Err("select a document page".into())),
+            };
             let r = if id == "app.deletePage" {
                 crate::dialogs::delete_pages(app, vec![page])
             } else {
@@ -471,6 +502,8 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             };
             return Some(r);
         }
+        "app.exportBatch" => return Some(open_export_batch(app, p)),
+        "app.parentOptions" | "app.alternateLayoutOptions" => return Some(open_layout_options(app, id)),
         "app.tabsPanel" => {
             toggle_tabs_panel(app);
             Ok(Value::Null)
@@ -575,7 +608,14 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
     Some(match id {
         "view.zoomIn" | "view.zoomOut" => {
             if let Some(r) = rect {
-                crate::canvas::zoom_at(app, r.center(), if id == "view.zoomIn" { 1.5 } else { 1.0 / 1.5 });
+                // A keyboard zoom names the pointer ("at"); it counts only over the canvas.
+                let at = p
+                    .get("at")
+                    .and_then(Value::as_array)
+                    .filter(|a| a.len() == 2)
+                    .and_then(|a| Some(egui::pos2(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32)));
+                let at = at.filter(|at| r.contains(*at)).unwrap_or_else(|| r.center());
+                crate::canvas::zoom_at(app, at, if id == "view.zoomIn" { 1.5 } else { 1.0 / 1.5 });
             }
             Ok(Value::Null)
         }
