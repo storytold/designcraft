@@ -176,7 +176,7 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
-    nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).map_or(nd.gutter, |g| g.max(0.0));
+    nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).unwrap_or(nd.gutter).max(0.0);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
     match p.get("margins") {
         Some(Value::Number(n)) => nd.margins = designcraft_doc::Margins::uniform(n.as_f64().unwrap_or(36.0)),
