@@ -133,4 +133,47 @@ mod spanish_tests {
         }
         assert!(untranslated.is_empty(), "untranslated Spanish menu labels: {untranslated:?}");
     }
+
+    #[test]
+    fn two_commands_never_read_the_same_in_spanish() {
+        // The Type menu offers `Hair Space` and `Thin Space`, which insert U+200A and U+2009, and the
+        // Symbols menu offers the trademark and the registered trademark. If both read the same, the
+        // user cannot tell which command will insert which character.
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        run_ui(&mut app, "app.language", &json!({"lang": "es"})).unwrap().unwrap();
+        let norm = |l: &str| l.trim().to_lowercase();
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut clashes = Vec::new();
+        let mut stack: Vec<(String, Vec<&Item>)> = menu_tree().iter().map(|(t, e)| (t.to_string(), e.iter().collect())).collect();
+        while let Some((title, entries)) = stack.pop() {
+            let mut labels = vec![title];
+            let mut pending: Vec<&Item> = entries;
+            while let Some(entry) = pending.pop() {
+                match entry {
+                    Item::Sub(label, children) => {
+                        labels.push(label.clone());
+                        stack.push((label.clone(), children.iter().collect()));
+                    }
+                    Item::Cmd { label, .. } => labels.push(label.clone()),
+                    _ => {}
+                }
+            }
+            for label in labels {
+                let spanish = crate::i18n::tr("es", &label).to_string();
+                if !spanish.chars().any(char::is_alphabetic) {
+                    continue;
+                }
+                match seen.get(&norm(&spanish)) {
+                    Some(other) if norm(other) != norm(&label) => {
+                        clashes.push((spanish.clone(), other.clone(), label.clone()));
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(norm(&spanish), label.clone());
+                    }
+                }
+            }
+        }
+        assert!(clashes.is_empty(), "two commands read the same in Spanish: {clashes:?}");
+    }
 }
