@@ -32,7 +32,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("links", "Links", "panel-links"),
     ("info", "Info", "panel-info"),
     ("preflight", "Preflight", "panel-preflight"),
-    ("separations", "Separations Preview", "panel-swatches"),
+    ("separations", "Separations Preview", "panel-separations"),
     ("attributes", "Attributes", "panel-attributes"),
     ("conditions", "Conditional Text", "panel-conditions"),
     ("notes", "Notes", "panel-notes"),

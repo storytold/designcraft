@@ -243,6 +243,14 @@ fn paint_tools(pen: &mut Pen, name: &str) -> bool {
             pen.rect(11.0, 3.0, 17.0, 11.0);
             pen.rect(7.0, 13.0, 13.0, 18.0);
         }
+        "panel-separations" => {
+            // Three plates fanned like cards (12°, 6°, 0° about the shared bottom-left
+            // corner); a color-patch circle on the front plate ties it to printing.
+            pen.closed(&[(4.5, 16.0), (13.3, 17.87), (15.17, 9.07), (6.37, 7.2)]);
+            pen.closed(&[(4.5, 16.0), (13.45, 16.94), (14.39, 7.99), (5.44, 7.05)]);
+            pen.rect(4.5, 7.0, 13.5, 16.0);
+            pen.circle(9.0, 11.5, 2.0);
+        }
         "panel-layers" => {
             pen.closed(&[(10.0, 3.0), (18.0, 7.0), (10.0, 11.0), (2.0, 7.0)]);
             pen.line(&[(2.0, 10.5), (10.0, 14.5), (18.0, 10.5)]);
@@ -1551,14 +1559,12 @@ mod tests {
         (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)
     }
 
-    /// The icon names of every registered panel: the dock tabs and the collapsed icon column.
+    /// The icon names of every registered panel: the dock tabs and the collapsed icon
+    /// column. One entry per panel — duplicates stay in, so
+    /// `sidebar_panel_icons_are_pairwise_distinct` catches a reused shape.
     fn registered_panel_icons() -> Vec<&'static str> {
         let mut names: Vec<&'static str> = crate::dock::DOCK_TABS.iter().map(|p| p.2).collect();
-        for (_, _, icon) in crate::dock::ICON_PANELS {
-            if !names.contains(icon) {
-                names.push(icon);
-            }
-        }
+        names.extend(crate::dock::ICON_PANELS.iter().map(|p| p.2));
         names
     }
 
