@@ -1,4 +1,4 @@
-//! The document grid on screen (View › Grids & Guides › Show/Hide Document Grid).
+//! The document grid and the baseline grid on screen (View › Grids & Guides › Show/Hide Document Grid, Show/Hide Baseline Grid).
 //!
 //! The lines are the positions Snap to Document Grid snaps to: every `vertical / subdivisions`
 //! on x and `horizontal / subdivisions` on y, counted from the top-left corner of the page that

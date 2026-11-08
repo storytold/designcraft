@@ -706,7 +706,11 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.snapToGuides" => flag(&mut app.ui.snap_to_guides),
         "view.snapToDocumentGrid" => flag(&mut app.ui.snap_to_document_grid),
         "view.smartGuides" => flag(&mut app.ui.smart_guides),
-        "view.baselineGrid" => flag(&mut app.ui.baseline_grid),
+        "view.baselineGrid" => {
+            // The grid is drawn into the canvas texture.
+            app.canvas.shown = None;
+            flag(&mut app.ui.baseline_grid)
+        }
         "view.documentGrid" => {
             // The grid is drawn into the canvas texture.
             app.canvas.shown = None;
