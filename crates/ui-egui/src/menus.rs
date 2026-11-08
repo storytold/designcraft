@@ -145,7 +145,8 @@ mod spanish_tests {
         let mut clashes = Vec::new();
         let tree = menu_tree();
         let mut menus: Vec<Vec<String>> = vec![tree.iter().map(|(t, _)| t.to_string()).collect()];
-        let mut stack: Vec<Vec<&Item>> = vec![tree.iter().map(|(_, e)| e.iter().collect()).collect()];
+        let top: Vec<&Item> = tree.iter().flat_map(|(_, e)| e.iter()).collect();
+        let mut stack: Vec<Vec<&Item>> = vec![top];
         while let Some(entries) = stack.pop() {
             let mut labels = Vec::new();
             for entry in entries {
