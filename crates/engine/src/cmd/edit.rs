@@ -638,11 +638,7 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     for p in d.parents.iter_mut() {
         Arc::make_mut(p).items.clear();
     }
-    // Stories shown by text frames anchored in the kept stories go along (and theirs).
-    let anchored: std::collections::HashSet<designcraft_doc::StoryId> =
-        d.stories.values().filter(|st| st.frames.iter().any(|f| frames.contains(f))).flat_map(|st| d.anchored_stories(st).into_keys()).collect();
-    d.stories.retain(|id, st| st.frames.iter().any(|f| frames.contains(f)) || anchored.contains(id));
-    frames.extend(d.anchored_items().into_iter().map(|(_, i)| i.id));
+    d.stories.retain(|_, st| st.frames.iter().any(|f| frames.contains(f)));
     for st in d.stories.values_mut() {
         Arc::make_mut(st).frames.retain(|f| frames.contains(f));
     }
