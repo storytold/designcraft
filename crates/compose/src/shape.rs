@@ -1082,16 +1082,16 @@ const SMALL_CAPS_SIZE: f64 = 0.7;
 static SMALL_CAPS_MISSING: RwLock<Vec<(u32, bool)>> = RwLock::new(Vec::new());
 
 /// How much a glyph shrinks when we draw its small caps: the lowercase letters of a Small Caps run,
-/// every letter of All Small Caps, and nothing else. Only the glyph and its advance change — the
+/// and nothing else. Only the glyph and its advance change — the
 /// line box is measured from the unscaled size, so turning it on never moves the leading.
-fn small_caps_shrink(small: bool, all_small_caps: bool, ch: char) -> f64 {
-    if small && (all_small_caps || ch.is_lowercase()) { SMALL_CAPS_SIZE } else { 1.0 }
+fn small_caps_shrink(small: bool, ch: char) -> f64 {
+    if small && ch.is_lowercase() { SMALL_CAPS_SIZE } else { 1.0 }
 }
 
-/// Whether this run's small caps have to be drawn instead of taken from the font: the font's own
-/// `smcp` is used whenever it has one.
+/// Whether this run's Small Caps have to be drawn instead of taken from the font: the font's own
+/// `smcp` is used whenever it has one. OpenType All Small Caps only applies a font's own small caps.
 fn small_caps_drawn_by_us(face: &FontFace, p: &CharProps) -> bool {
-    if !matches!(p.capitalization, Capitalization::SmallCaps | Capitalization::OpenTypeAllSmallCaps) {
+    if p.capitalization != Capitalization::SmallCaps {
         return false;
     }
     let id = face.id();
@@ -1286,7 +1286,7 @@ fn shape_segment(
             let end = shaped[gi + 1..].iter().map(|r| r.cluster).find(|&c| c > sg.cluster).unwrap_or(src.len());
             Box::from(src.get(sg.cluster..end).unwrap_or(""))
         });
-        let shrink = small_caps_shrink(small, p.capitalization == Capitalization::OpenTypeAllSmallCaps, ch);
+        let shrink = small_caps_shrink(small, src.get(sg.cluster..).and_then(|s| s.chars().next()).unwrap_or(ch));
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
         let mut adv = if up { -(sg.y_advance as f64) * k_v * shrink } else { sg.x_advance as f64 * k * hs * shrink };
         let (dx, dy) = if up {
