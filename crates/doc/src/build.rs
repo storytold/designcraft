@@ -39,9 +39,9 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "A5", intent: Intent::Print, width: 148.0 * MM, height: 210.0 * MM, units: Unit::Millimeters },
     Preset { name: "A6", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "B5", intent: Intent::Print, width: 176.0 * MM, height: 250.0 * MM, units: Unit::Millimeters },
-    // Japanese print sizes, as the Japanese edition of InDesign lists them: 文庫 105×148 mm,
-    // 新書 103×182, 四六判 127×188, 菊判 152×227, AB判 210×257, ハガキ 100×148, 往復ハガキ
-    // 148×200, B6 (JIS) 128×182 and 名刺 91×55 mm. B6 here is the JIS size (128×182 mm), not
+    // Common Japanese print and paper sizes (JIS B6 and the publishing and postal sizes): 文庫
+    // 105×148 mm, 新書 103×182, 四六判 127×188, 菊判 152×227, AB判 210×257, ハガキ 100×148,
+    // 往復ハガキ 148×200, B6 (JIS) 128×182 and 名刺 91×55 mm. B6 here is JIS B6 (128×182 mm), not
     // ISO B6 (125×176 mm); 文庫 is 105×148 mm, the same size as A6.
     Preset { name: "Bunko (105 × 148 mm)", intent: Intent::Print, width: 105.0 * MM, height: 148.0 * MM, units: Unit::Millimeters },
     Preset { name: "Shinsho (103 × 182 mm)", intent: Intent::Print, width: 103.0 * MM, height: 182.0 * MM, units: Unit::Millimeters },
