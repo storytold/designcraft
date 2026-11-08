@@ -330,20 +330,14 @@ impl DesignApp {
     }
 
     /// Relink graphics from delivered files, returning the files left to import. Files chosen
-    /// to relink (`relink:{asset}`, `relinkFiles`) and dropped images named like a missing
-    /// graphic of the document they were dropped on relink, each request's files in one undo
-    /// step; other dropped files are placed or opened as before.
+    /// to relink (`relink:{asset}`, `relinkFiles`) relink, each request's files in one undo step;
+    /// every other file (a dropped one too) is placed or opened as before.
     fn relink_from_inbox(&mut self, files: Vec<ImportedFile>) -> Vec<ImportedFile> {
         let mut rest = Vec::new();
         // (request, files) in arrival order; a request's files arrive together.
         let mut batches: Vec<(ImportRequest, Vec<ImportedFile>)> = Vec::new();
         for file in files {
-            let relink = file.request.purpose.starts_with("relink")
-                || (file.request.purpose == "drop"
-                    && file.request.target.is_some()
-                    && !opens_as_document(&file.name)
-                    && designcraft_render::image_size(&file.bytes).is_some());
-            if !relink {
+            if !file.request.purpose.starts_with("relink") {
                 rest.push(file);
                 continue;
             }
@@ -353,11 +347,7 @@ impl DesignApp {
             }
         }
         for (request, batch) in batches {
-            let drop = request.purpose == "drop";
             if self.activate_import_target(&request).is_err() {
-                if drop {
-                    rest.extend(batch);
-                }
                 continue;
             }
             // A file from a chosen folder is named by its path in it (which tells same-named
@@ -374,7 +364,15 @@ impl DesignApp {
                 Ok(v) => {
                     let n = v["relinked"].as_u64().unwrap_or(0);
                     let unsure = v["ambiguous"].as_array().map_or(0, Vec::len);
-                    if unsure > 0 {
+                    let unread: Vec<&str> = v["failed"].as_array().map(|f| f.iter().filter_map(|f| f["name"].as_str()).collect()).unwrap_or_default();
+                    if !unread.is_empty() {
+                        // Matching files that couldn't be read: their graphics stay missing.
+                        self.status(
+                            crate::i18n::tr(&self.ui.language, "Relinked {count}; couldn't read {files}")
+                                .replace("{count}", &n.to_string())
+                                .replace("{files}", &unread.join(", ")),
+                        );
+                    } else if unsure > 0 {
                         // Files named like graphics they couldn't be told apart for: neither
                         // relinked nor placed.
                         self.status(
@@ -382,21 +380,11 @@ impl DesignApp {
                                 .replace("{count}", &n.to_string())
                                 .replace("{unsure}", &unsure.to_string()),
                         );
-                    } else if n > 0 || !drop {
+                    } else {
                         self.status(crate::i18n::tr(&self.ui.language, "Relinked {count}").replace("{count}", &n.to_string()));
                     }
-                    // Dropped images that named no missing graphic are placed as before.
-                    if drop {
-                        let unused: Vec<&str> = v["unused"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-                        rest.extend(batch.into_iter().filter(|f| unused.iter().any(|u| file_name_of(&f.name) == *u)));
-                    }
                 }
-                Err(e) => {
-                    self.status(e);
-                    if drop {
-                        rest.extend(batch);
-                    }
-                }
+                Err(e) => self.status(e),
             }
         }
         rest
@@ -614,21 +602,24 @@ pub(crate) mod browser_import_tests {
         deliver(&mut app, request, "a.svg", image());
         assert!(has_data(&app), "{}", app.ui.status);
         assert_eq!(app.session.doc().unwrap().doc.assets[&aid].link.as_deref(), Some("/Users/someone/Links/a.svg"));
+        // A dropped image is placed, as ever, even when it is named like a missing graphic.
         make_missing(&mut app);
-        let request = app.import_request("drop");
-        deliver(&mut app, request, "A.SVG", image());
-        assert!(has_data(&app), "a dropped file named like the missing graphic relinks it");
-        assert_eq!(items(&app), n, "nothing new is placed");
-        // Nothing selected, so a placed image gets a frame of its own.
         app.run("edit.deselectAll", json!({})).unwrap();
         let request = app.import_request("drop");
-        deliver(&mut app, request, "other.svg", image());
-        assert_eq!(items(&app), n + 1, "a dropped image that names no missing graphic is placed");
+        deliver(&mut app, request, "A.SVG", image());
+        assert!(!has_data(&app), "the dropped file doesn't relink");
+        assert_eq!(items(&app), n + 1, "it is placed");
         // Relink… for one graphic: the chosen file, whatever its name.
         make_missing(&mut app);
         let request = app.import_request(&format!("relink:{}", aid.0));
         deliver(&mut app, request, "renamed.svg", image());
         assert_eq!(app.session.doc().unwrap().doc.assets[&aid].link.as_deref(), Some("renamed.svg"));
+        // A matching file that can't be read is named in the status, its graphic left missing.
+        make_missing(&mut app);
+        let request = app.import_request("relinkFiles");
+        deliver(&mut app, request, "a.svg", b"not an image".to_vec());
+        assert!(!has_data(&app));
+        assert!(app.ui.status.contains("couldn't read a.svg"), "{}", app.ui.status);
     }
 
     fn deliver(app: &mut DesignApp, request: ImportRequest, name: &str, bytes: Vec<u8>) {

@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Relink to Files",
             [],
             None,
-            "{files: [{name, base64, path?: the file's path within a chosen folder}], asset?: id} — relink from files handed over by name (the web build's file picker and drops, which give no path on disk): with `asset`, that graphic from the first file; otherwise each missing graphic from the file whose path ends most like its link (the same name at least, any case), all in one undo step — a graphic those can't tell apart (two equally likely files, or one file named only like graphics linking to different files) stays missing. A file named like the link keeps the link's path → {relinked, notFound: [names no file matched], ambiguous: [names left missing], unused: [files that matched nothing]}",
+            "{files: [{name, base64, path?: the file's path within a chosen folder}], asset?: id} — relink from files handed over by name (the web build's file and folder pickers, which give no path on disk): with `asset`, that graphic from the first file; otherwise each missing graphic from the file whose path ends most like its link (the same name at least, any case), all in one undo step — a graphic those can't tell apart (two equally likely files, or one file named only like graphics linking to different files) stays missing. A file named like the link keeps the link's path → {relinked, notFound: [names no file matched], ambiguous: [names left missing], failed: [{name, error}: matching files that couldn't be read, their graphics left missing], unused: [files that matched nothing]}",
             has_doc,
             relink_files
         ),
@@ -466,7 +466,9 @@ fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
 /// to and the stored link itself, so refreshing a link never rewrites what the document holds.
 fn relinked_asset(a: &designcraft_doc::Asset, read: &Path, link: &str) -> Result<Arc<designcraft_doc::Asset>> {
     let (bytes, px) = reload(read)?;
-    relinked_from(a, bytes, px, &read.display().to_string(), link)
+    // Named as the platform reads the link (a path on this computer).
+    let name = Path::new(link).file_name().map_or_else(|| link.to_string(), |n| n.to_string_lossy().to_string());
+    relinked_from(a, bytes, px, &read.display().to_string(), link, name)
 }
 
 /// [`relinked_asset`] from a file handed over as bytes with its name (the browser's file picker
@@ -479,7 +481,9 @@ fn relinked_bytes(a: &designcraft_doc::Asset, name: &str, bytes: Vec<u8>) -> Res
         Some(old) if link_file_name(old).eq_ignore_ascii_case(name) => old.clone(),
         _ => name.to_string(),
     };
-    relinked_from(a, bytes, px, name, &link)
+    // The link kept may come from another platform: named after its last part, either separator.
+    let file = link_file_name(&link).to_string();
+    relinked_from(a, bytes, px, name, &link, file)
 }
 
 /// The file name at the end of a link (either kind of separator).
@@ -487,8 +491,16 @@ fn link_file_name(link: &str) -> &str {
     link.rsplit(['/', '\\']).next().unwrap_or(link)
 }
 
-/// The asset with a new file's bytes (`px` its pixel size, `label` naming it in errors).
-fn relinked_from(a: &designcraft_doc::Asset, bytes: Vec<u8>, px: (u32, u32), label: &str, link: &str) -> Result<Arc<designcraft_doc::Asset>> {
+/// The asset with a new file's bytes (`px` its pixel size, `label` naming it in errors, `name`
+/// the graphic's name from now on).
+fn relinked_from(
+    a: &designcraft_doc::Asset,
+    bytes: Vec<u8>,
+    px: (u32, u32),
+    label: &str,
+    link: &str,
+    name: String,
+) -> Result<Arc<designcraft_doc::Asset>> {
     let page = if designcraft_render::is_pdf(&bytes) { a.page } else { 0 };
     let px = if page > 0 {
         designcraft_render::pdf_page_size(&bytes, page as usize)
@@ -502,7 +514,7 @@ fn relinked_from(a: &designcraft_doc::Asset, bytes: Vec<u8>, px: (u32, u32), lab
     a.data = Arc::new(bytes);
     a.pixels = Some(px);
     a.page = page;
-    a.name = link_file_name(link).to_string();
+    a.name = name;
     a.link = Some(link.to_string());
     // A placed PDF keeps its crop choice; its box is found on the new file.
     super::file::crop_pdf(&mut a);
@@ -691,7 +703,7 @@ fn relink_files(s: &mut Session, p: &Value) -> Result<Value> {
     // Every replacement is built before the edit: a bad file leaves the document as it was.
     let mut fresh = Vec::new();
     let mut used = vec![false; files.len()];
-    let (mut not_found, mut ambiguous) = (Vec::new(), Vec::new());
+    let (mut not_found, mut ambiguous, mut failed) = (Vec::new(), Vec::new(), Vec::new());
     if let Some(aid) = p.get("asset").and_then(Value::as_u64).map(AssetId) {
         let a = d.assets.get(&aid).ok_or_else(|| bad(ID, "no such graphic"))?;
         let ((name, _), b64) = files.first().zip(data.first()).ok_or_else(|| bad(ID, "no file"))?;
@@ -717,9 +729,13 @@ fn relink_files(s: &mut Session, p: &Value) -> Result<Value> {
         }
         for (aid, k) in chosen {
             let (Some(a), Some((name, _)), Some(b64)) = (d.assets.get(&aid), files.get(k), data.get(k)) else { continue };
-            fresh.push((aid, relinked_bytes(a, name, super::base64_decode(b64))?));
             if let Some(u) = used.get_mut(k) {
                 *u = true;
+            }
+            // A file that can't be read leaves its graphic missing and the others relinking.
+            match relinked_bytes(a, name, super::base64_decode(b64)) {
+                Ok(fresh_asset) => fresh.push((aid, fresh_asset)),
+                Err(e) => failed.push(json!({"name": name, "error": e.to_string()})),
             }
         }
     }
@@ -733,7 +749,7 @@ fn relink_files(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(())
         })?;
     }
-    Ok(json!({"relinked": n, "notFound": not_found, "ambiguous": ambiguous, "unused": unused}))
+    Ok(json!({"relinked": n, "notFound": not_found, "ambiguous": ambiguous, "failed": failed, "unused": unused}))
 }
 
 /// `links.update`: re-read the modified links (one, or every one) from where they resolve.
@@ -943,7 +959,7 @@ mod shared_asset_tests {
     /// but relinking it would change nothing on the page. The journal keeps the files' names,
     /// not their contents.
     #[test]
-    fn relinks_only_placed_graphics_and_journals_no_file_contents() {
+    fn relinks_only_placed_graphics_and_replays_from_the_journal() {
         let (mut s, a, b) = two_missing();
         // b's frame is deleted: its asset stays (for undo) but nothing shows it.
         s.edit(|d, _| {
@@ -959,9 +975,43 @@ mod shared_asset_tests {
         assert_eq!(r["unused"], json!(["pic1.png"]), "nothing placed is named pic1");
         let d = &s.doc().unwrap().doc;
         assert!(!d.assets[&a].data.is_empty() && d.assets[&b].data.is_empty());
-        let (id, params) = s.journal.last().unwrap();
+        // The journal keeps the files whole, as it does for `file.place {base64}`: replayed, the
+        // entry relinks again.
+        let (id, params) = s.journal.last().unwrap().clone();
         assert_eq!(id, "links.relinkFiles");
-        assert!(params["files"].as_array().unwrap().iter().all(|f| f.get("base64").is_none() && f["name"].is_string()), "{params}");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.assets[&a].data.is_empty());
+        assert_eq!(s.execute(&id, &params).unwrap()["relinked"], 1);
+        assert!(!s.doc().unwrap().doc.assets[&a].data.is_empty());
+    }
+
+    /// A matching file that can't be read (here not an image at all) is reported and leaves its
+    /// graphic missing; the other files still relink theirs.
+    #[test]
+    fn an_unreadable_file_leaves_the_others_relinking() {
+        let (mut s, a, b) = two_missing();
+        let good = json!({"name": "pic0.png", "base64": super::super::file::base64_encode(&png(6, 6))});
+        let bad_file = json!({"name": "pic1.png", "base64": super::super::file::base64_encode(b"not an image")});
+        let r = s.execute("links.relinkFiles", &json!({"files": [good, bad_file]})).unwrap();
+        assert_eq!(r["relinked"], 1, "{r}");
+        assert_eq!(r["failed"].as_array().map(|f| f.iter().map(|f| f["name"].clone()).collect::<Vec<_>>()), Some(vec![json!("pic1.png")]), "{r}");
+        let d = &s.doc().unwrap().doc;
+        assert!(!d.assets[&a].data.is_empty() && d.assets[&b].data.is_empty());
+    }
+
+    /// Relinking to a file on disk names the graphic after that file as the platform reads
+    /// paths: a backslash is part of a file name on Linux and macOS.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_relink_names_the_graphic_by_the_platform_s_file_name() {
+        let (mut s, a, _) = two_missing();
+        let dir = std::env::temp_dir().join(format!("dc-relink-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover\\v2.png");
+        std::fs::write(&path, png(4, 4)).unwrap();
+        s.execute("links.relink", &json!({"asset": a.0, "path": path.to_string_lossy()})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.assets[&a].name, "cover\\v2.png");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Files of the same name in different folders of a chosen folder: each missing graphic takes
@@ -1029,10 +1079,13 @@ mod shared_asset_tests {
         s.execute("links.relinkFiles", &json!({"asset": b.0, "files": [file("new.png", 5)]})).unwrap();
         let d = &s.doc().unwrap().doc;
         assert_eq!((d.assets[&b].pixels, d.assets[&b].link.as_deref(), d.assets[&b].name.as_str()), (Some((5, 5)), Some("new.png"), "new.png"));
-        // A file that isn't an image changes nothing.
+        // A file that isn't an image changes nothing: reported for a folder, an error for one
+        // chosen file.
         let before = s.doc().unwrap().doc.assets.clone();
         let bad = json!({"name": "pic0.png", "base64": super::super::file::base64_encode(b"not an image")});
-        assert!(s.execute("links.relinkFiles", &json!({"files": [bad]})).is_err());
+        let r = s.execute("links.relinkFiles", &json!({"files": [bad.clone()]})).unwrap();
+        assert_eq!((r["relinked"].clone(), r["failed"][0]["name"].clone()), (json!(0), json!("pic0.png")), "{r}");
+        assert!(s.execute("links.relinkFiles", &json!({"asset": a.0, "files": [bad]})).is_err());
         assert_eq!(s.doc().unwrap().doc.assets, before);
         assert!(s.execute("links.relinkFiles", &json!({"files": "x"})).is_err());
     }

@@ -359,24 +359,19 @@ impl eframe::App for WebShell {
         let _ = self.graphics.run_if_healthy(|| {
             // Dropped files belong to this host iteration's raw input, not to stale logic input:
             // read them here once, before the batch is saved as pending for a hidden pass.
-            let dropped = std::mem::take(&mut raw.dropped_files);
-            if !dropped.is_empty() {
+            for f in std::mem::take(&mut raw.dropped_files) {
                 let request = self.app.import_request("drop");
                 let inbox = self.inbox.clone();
                 let ctx = ctx.clone();
-                // Read every dropped file before delivering any: dropped graphics that relink
-                // missing links relink together, in one undo step.
                 wasm_bindgen_futures::spawn_local(async move {
-                    let mut files = Vec::with_capacity(dropped.len());
-                    for f in dropped {
-                        let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
-                        match f.bytes_async().await {
-                            Ok(bytes) => files.push(ImportedFile { request: request.clone(), name, bytes }),
-                            Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
+                    let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
+                    match f.bytes_async().await {
+                        Ok(bytes) => {
+                            inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name, bytes });
+                            ctx.request_repaint();
                         }
+                        Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
                     }
-                    inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
-                    ctx.request_repaint();
                 });
             }
             designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused() || self.app.canvas_ime());
@@ -463,17 +458,24 @@ async fn pick_folder_files(wanted: &[String]) -> Vec<(String, Vec<u8>)> {
     if input.set_attribute("webkitdirectory", "").is_err() {
         return Vec::new();
     }
-    // Settles when files are chosen or the picker is cancelled.
-    let chosen = js_sys::Promise::new(&mut |resolve, _reject| {
-        let done = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
-        });
-        let _ = input.add_event_listener_with_callback("change", done.as_ref().unchecked_ref());
-        let _ = input.add_event_listener_with_callback("cancel", done.as_ref().unchecked_ref());
-        done.forget();
+    // Settles when files are chosen or the picker is cancelled. The listener is this call's and
+    // goes when the picker settles, not kept for the page's life. (A browser that fires neither
+    // event leaves this call waiting; current browsers fire `cancel`.)
+    let mut resolve = None;
+    let chosen = js_sys::Promise::new(&mut |r, _reject| resolve = Some(r));
+    let Some(resolve) = resolve else { return Vec::new() };
+    let done = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
     });
+    for event in ["change", "cancel"] {
+        let _ = input.add_event_listener_with_callback(event, done.as_ref().unchecked_ref());
+    }
     input.click();
     let _ = wasm_bindgen_futures::JsFuture::from(chosen).await;
+    for event in ["change", "cancel"] {
+        let _ = input.remove_event_listener_with_callback(event, done.as_ref().unchecked_ref());
+    }
+    drop(done);
     let Some(list) = input.files() else { return Vec::new() };
     let mut out = Vec::new();
     let mut bytes = 0.0;
