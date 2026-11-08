@@ -784,7 +784,7 @@ fn the_baseline_grid_goes_behind_the_page_objects_with_grids_in_back() {
     let page = d.spreads[0].pages[0].bounds();
     let id = designcraft_doc::ItemId(d.alloc());
     let mut sheet = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(page));
-    sheet.fill = Fill::swatch("C=0 M=0 Y=0 K=100");
+    sheet.fill = Fill::swatch(designcraft_color::swatch::BLACK);
     d.insert_item(SpreadRef::Doc(0), sheet, None).unwrap();
     let cache = Cache::new();
     let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
