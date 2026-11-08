@@ -100,7 +100,11 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
     let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
-    if let Some(c) = &next.custom_marks {
+    // Only marks that change are checked: a mark's character style deleted since doesn't stop
+    // other changes (the mark then takes the reference's style alone).
+    if next.custom_marks != cur.custom_marks
+        && let Some(c) = &next.custom_marks
+    {
         check_marks(c, &s.doc()?.doc)?;
     }
     let out = serde_json::to_value(&next).unwrap_or_default();
@@ -338,6 +342,23 @@ mod tests {
         // null: back to the numbering style.
         s.execute("footnote.options", &json!({"customMarks": null})).unwrap();
         assert_eq!(s.doc().unwrap().doc.footnote_options.label(1, false), "1");
+    }
+
+    /// A mark's character style deleted since doesn't stop other footnote options changing, nor
+    /// the same marks being sent again (as the dialog does); new marks are still checked.
+    #[test]
+    fn a_deleted_mark_style_does_not_stop_other_changes() {
+        let (mut s, _) = session_with_text();
+        s.execute("style.character.create", &json!({"name": "Music"})).unwrap();
+        let marks = json!({"marks": [{"text": "\u{266B}", "charStyle": "Music"}]});
+        s.execute("footnote.options", &json!({"customMarks": marks})).unwrap();
+        s.execute("style.character.delete", &json!({"name": "Music", "replaceWith": designcraft_doc::NO_CHAR_STYLE})).unwrap();
+        s.execute("footnote.options", &json!({"startAt": 5})).unwrap();
+        s.execute("footnote.options", &json!({"customMarks": marks, "prefix": "("})).unwrap();
+        let o = s.doc().unwrap().doc.footnote_options.clone();
+        assert_eq!((o.start_at, o.prefix.as_str()), (5, "("));
+        let other = json!({"marks": [{"text": "x", "charStyle": "Music"}]});
+        assert!(s.execute("footnote.options", &json!({"customMarks": other})).is_err(), "new marks are checked");
     }
 
     #[test]

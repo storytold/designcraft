@@ -80,7 +80,7 @@ pub(crate) struct Notes {
     pub key: Option<usize>,
     pub placed: Vec<Placed>,
     /// Composed footnote text by (index, label, width).
-    cache: HashMap<(usize, String, Option<String>, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
+    cache: HashMap<(usize, String, Option<(String, std::ops::Range<usize>)>, u64, bool, bool), (Arc<ComposedStory>, NoteMetrics)>,
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
@@ -165,8 +165,10 @@ impl Notes {
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> (Arc<ComposedStory>, NoteMetrics) {
         let o = &doc.footnote_options;
-        let label = format!("{}{}", o.label(self.numbers[k], true), o.separator);
-        let label_style = o.mark_style(self.numbers[k]);
+        let (before, mark, after) = o.label_parts(self.numbers[k], true);
+        let label = format!("{before}{mark}{after}{}", o.separator);
+        // The mark's own style, for the mark alone.
+        let label_style = o.mark_style(self.numbers[k]).map(|s| (s, before.len()..before.len() + mark.len()));
         // The page side sets towards/away-from-spine alignment and spine-relative anchored objects.
         let key = (k, label.clone(), label_style.clone(), w.to_bits(), f.left_page, f.right_page);
         if let Some(c) = self.cache.get(&key) {

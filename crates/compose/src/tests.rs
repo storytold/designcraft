@@ -8658,6 +8658,22 @@ fn custom_footnote_marks_show_with_their_own_character_style() {
     // In the footnote text the label takes the mark's style too.
     let note_mark = ft.notes[0].text.frames[0].lines[0].glyphs.iter().find(|g| g.rendered_char == '♪').unwrap();
     assert_eq!(note_mark.face.family, "Custom Mark Glyphs");
+    // The prefix, suffix and separator keep the text's style: only the mark takes the Music style.
+    d.footnote_options.prefix = "[".into();
+    d.footnote_options.suffix = "]".into();
+    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+    d.footnote_options.separator = "|".into();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let first_line = &ft.notes[0].text.frames[0].lines[0].glyphs;
+    let shown: String = first_line.iter().take(4).map(|g| g.rendered_char).collect();
+    assert_eq!(shown, "[♪]|");
+    for g in first_line.iter().take(4) {
+        let music = g.rendered_char == '♪';
+        assert_eq!(g.face.family == "Custom Mark Glyphs", music, "`{}` in {}", g.rendered_char, g.face.family);
+    }
+    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::None;
+    d.footnote_options.separator = designcraft_doc::FootnoteOptions::default().separator;
     // Start at and restart apply as to numbers.
     d.footnote_options.start_at = 2;
     let cs = compose_story(&d, sid, &ComposeOptions::default());

@@ -263,9 +263,15 @@ impl<'r> Importer<'r> {
     }
 
     /// Custom footnote marks DesignCraft keeps in a document label (InDesign has no setting for
-    /// them). Marks past the caps, without text or naming a character style the file lacks are
-    /// left out (a missing style: the mark keeps the reference's style alone).
+    /// them), with the numbering style under them. Marks past the caps, without text or naming a
+    /// character style the file lacks are left out (a missing style: the mark keeps the
+    /// reference's style alone). The label counts only while the file's style is still Symbols,
+    /// as written: InDesign keeps the label when the style is changed there. A label past
+    /// [`names::MAX_FOOTNOTE_MARKS_LABEL`] isn't read.
     pub(super) fn footnote_marks_label(&mut self, root: &El) {
+        if self.footnote_options.style != designcraft_doc::NumberStyle::Symbols {
+            return;
+        }
         let Some(value) = root
             .find("Properties")
             .and_then(|p| p.find("Label"))
@@ -274,7 +280,12 @@ impl<'r> Importer<'r> {
         else {
             return;
         };
-        let Ok(mut c) = serde_json::from_str::<designcraft_doc::CustomMarks>(value) else { return };
+        if value.len() > names::MAX_FOOTNOTE_MARKS_LABEL {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(value) else { return };
+        let style = v.get(names::FOOTNOTE_MARKS_STYLE).cloned().and_then(|s| serde_json::from_value::<designcraft_doc::NumberStyle>(s).ok());
+        let Ok(mut c) = serde_json::from_value::<designcraft_doc::CustomMarks>(v) else { return };
         c.marks.retain(|m| !m.text.is_empty() && m.text.chars().count() <= designcraft_doc::MAX_MARK_CHARS);
         c.marks.truncate(designcraft_doc::MAX_CUSTOM_MARKS);
         for m in &mut c.marks {
@@ -284,6 +295,9 @@ impl<'r> Importer<'r> {
         }
         if !c.marks.is_empty() {
             self.footnote_options.custom_marks = Some(c);
+            if let Some(style) = style {
+                self.footnote_options.style = style;
+            }
         }
     }
 

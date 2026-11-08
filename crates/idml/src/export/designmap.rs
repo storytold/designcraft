@@ -20,7 +20,7 @@ impl<'a> Ex<'a> {
             .attr("ActiveLayer", d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()));
         // Settings InDesign has no place for, kept as document labels it carries along.
         if let Some(c) = d.footnote_options.custom()
-            && let Ok(json) = serde_json::to_string(c)
+            && let Some(json) = footnote_marks_label(c, d.footnote_options.style)
         {
             let mut label = El::new("Label");
             label.push(El::new("KeyValuePair").attr("Key", names::FOOTNOTE_MARKS_LABEL).attr("Value", json));
@@ -466,6 +466,13 @@ fn fnv(s: &str) -> u64 {
 /// one element, so a `Self` written twice is a broken file.
 fn has_self(root: &El, name: &str, me: &str) -> bool {
     root.children.iter().any(|n| matches!(n, crate::xml::Node::El(e) if e.name == name && e.get("Self") == Some(me)))
+}
+
+/// [`names::FOOTNOTE_MARKS_LABEL`]'s value: the marks, and the numbering style under them.
+fn footnote_marks_label(c: &designcraft_doc::CustomMarks, style: designcraft_doc::NumberStyle) -> Option<String> {
+    let mut v = serde_json::to_value(c).ok()?;
+    v.as_object_mut()?.insert(names::FOOTNOTE_MARKS_STYLE.into(), serde_json::to_value(style).ok()?);
+    serde_json::to_string(&v).ok()
 }
 
 #[cfg(test)]

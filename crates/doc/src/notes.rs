@@ -226,6 +226,13 @@ impl FootnoteOptions {
 
     /// The number as shown at the reference (`text == false`) or before the footnote text.
     pub fn label(&self, n: u32, text: bool) -> String {
+        let (before, num, after) = self.label_parts(n, text);
+        format!("{before}{num}{after}")
+    }
+
+    /// [`FootnoteOptions::label`] in its parts: the prefix (if shown), the number or mark (the
+    /// part a custom mark's character style applies to), and the suffix (if shown).
+    pub fn label_parts(&self, n: u32, text: bool) -> (&str, String, &str) {
         let num = match self.custom().and_then(|c| c.mark(n)) {
             Some((mark, _)) => mark,
             None => self.style.format(n),
@@ -236,7 +243,7 @@ impl FootnoteOptions {
             AffixIn::Reference => !text,
             AffixIn::Text => text,
         };
-        if affix { format!("{}{num}{}", self.prefix, self.suffix) } else { num }
+        if affix { (&self.prefix, num, &self.suffix) } else { ("", num, "") }
     }
 }
 

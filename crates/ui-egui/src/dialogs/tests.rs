@@ -4850,6 +4850,24 @@ fn footnote_options_dialog_edits_custom_marks() {
     assert_eq!((o.custom_marks.is_none(), o.label(1, false).as_str()), (true, "*"));
 }
 
+/// A mark longer than the command takes is cut to that length rather than refused, which would
+/// close the dialog with its edits lost.
+#[test]
+fn footnote_options_dialog_cuts_a_long_mark() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("app.footnoteOptionsDialog", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    app.ui.dialog.as_mut().unwrap().fields.insert("style".into(), json!("custom"));
+    draw(&mut app, &ctx);
+    draw(&mut app, &ctx);
+    let long = "\u{2726}".repeat(designcraft_doc::MAX_MARK_CHARS + 8);
+    app.ui.dialog.as_mut().unwrap().fields.insert("mark.0.text".into(), json!(long));
+    confirm(&mut app).unwrap();
+    let o = app.session.doc().unwrap().doc.footnote_options.clone();
+    assert_eq!(o.label(1, false), "\u{2726}".repeat(designcraft_doc::MAX_MARK_CHARS));
+}
+
 /// Find/Change's Change and Change/Find, as InDesign's: Find Next selects a match, Change/Find
 /// changes it and selects the next, Change changes that one and keeps it selected. With no
 /// text selected they're off.

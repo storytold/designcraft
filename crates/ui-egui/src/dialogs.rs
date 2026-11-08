@@ -160,8 +160,14 @@ fn text_field(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32) {
 /// [`text_field`] with the visible caption's text as its accessible name (a text field with no
 /// label, hint or `labelled_by` is an unnamed input).
 fn text_field_named(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, name: &str) {
+    text_field_limited(ui, d, key, w, name, usize::MAX);
+}
+
+/// [`text_field_named`] taking at most `limit` characters.
+fn text_field_limited(ui: &mut egui::Ui, d: &mut Dialog, key: &str, w: f32, name: &str, limit: usize) {
     let mut s = d.s(key);
-    let resp = ui.add(egui::TextEdit::singleline(&mut s).desired_width(w).align(egui::Align2::LEFT_TOP)).accessible_name(name.to_owned());
+    let resp =
+        ui.add(egui::TextEdit::singleline(&mut s).desired_width(w).align(egui::Align2::LEFT_TOP).char_limit(limit)).accessible_name(name.to_owned());
     if resp.changed() {
         d.fields.insert(key.into(), Value::String(s));
     }
@@ -8142,14 +8148,16 @@ fn rule_types() -> Vec<designcraft_doc::StrokeType> {
 /// The Style menu's entry for the marks the user defines (not a numbering style).
 const CUSTOM_MARKS: &str = "custom";
 
-/// Custom marks in the Footnote Options dialog's fields, in order, the ones without text left out.
+/// Custom marks in the Footnote Options dialog's fields, in order, the ones without text left
+/// out, each cut to [`MAX_MARK_CHARS`](designcraft_doc::MAX_MARK_CHARS) characters: the command
+/// takes no more, and the dialog has closed by then.
 fn dialog_marks(d: &Dialog) -> Vec<designcraft_doc::NoteMark> {
     let n = d.n("markCount").unwrap_or(0.0).clamp(0.0, designcraft_doc::MAX_CUSTOM_MARKS as f64) as usize;
     (0..n)
         .map(|i| {
             let style = d.s(&format!("mark.{i}.charStyle"));
             designcraft_doc::NoteMark {
-                text: d.s(&format!("mark.{i}.text")),
+                text: d.s(&format!("mark.{i}.text")).chars().take(designcraft_doc::MAX_MARK_CHARS).collect(),
                 char_style: if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.into() } else { style },
             }
         })
@@ -8202,7 +8210,7 @@ fn custom_marks_editor(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut remove = None;
     egui::Grid::new("fn_marks").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
         for i in 0..n {
-            text_field_named(ui, d, &format!("mark.{i}.text"), 70.0, crate::i18n::tr(&lang, "Mark"));
+            text_field_limited(ui, d, &format!("mark.{i}.text"), 70.0, crate::i18n::tr(&lang, "Mark"), designcraft_doc::MAX_MARK_CHARS);
             let key = format!("mark.{i}.charStyle");
             if d.s(&key).is_empty() {
                 d.fields.insert(key.clone(), json!(designcraft_doc::NO_CHAR_STYLE));
