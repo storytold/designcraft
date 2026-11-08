@@ -88,7 +88,10 @@ indd = { git = "https://github.com/storytold/indd-utils", rev = "7f3060e5bce78d2
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 # Atomic file replacement for saves and exports (craft-libs).
 craft-atomic = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
-# File › Print through the system print spooler (craft-libs).
+# File › Print (craft-libs): the system print spooler, and network printers addressed by the person
+# (WS-Print and IPP). Pinned to the craft-libs#116 PR ref until it merges: once craft-libs#112 and
+# #116 are both on craft-libs main, this and craft-ui move to that main revision (`rev = "<sha>"`,
+# then `cargo update -p craft-print -p craft-ui`). Do not merge with the PR refs in place.
 craft-print = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "refs/pull/116/head" }
 
 # ICC colour management: working spaces, transforms, black point compensation (craft-libs).
