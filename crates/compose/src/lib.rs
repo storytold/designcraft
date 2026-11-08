@@ -4826,7 +4826,7 @@ fn kashida_points(line: &[Glyph]) -> Vec<usize> {
     let mut out = Vec::new();
     let mut best: Option<(u8, usize)> = None;
     for (i, g) in line.iter().enumerate() {
-        if g.is_space() {
+        if g.is_space() || g.ch == '\t' || g.ch == story::RIGHT_INDENT_TAB {
             if let Some((_, k)) = best.take() {
                 out.push(k);
             }
