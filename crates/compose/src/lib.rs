@@ -5924,7 +5924,17 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     if glyphs.is_empty() {
         return if l.last_in_para { l.range.end } else { l.range.start };
     }
-    if saw_last && l.last_in_para { l.range.end } else { best.min(l.range.end) }
+    if saw_last && l.last_in_para { l.range.end } else { past_own_marks(l, best).min(l.range.end) }
+}
+
+/// `p`, or past the marks in clusters of their own ([`own_mark`]) that start there, looked for on
+/// the whole line: a mark shifted vertically is on no row with its letter.
+fn past_own_marks(l: &Line, mut p: usize) -> usize {
+    // `own_mark` needs a length, so each step moves on.
+    while let Some(g) = l.glyphs.iter().enumerate().find_map(|(i, g)| (g.byte == p && own_mark(l, i)).then_some(g)) {
+        p = g.byte + g.len;
+    }
+    p
 }
 
 fn hit_stacked(l: &Line, p: Point) -> usize {

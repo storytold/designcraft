@@ -3417,6 +3417,46 @@ fn a_click_in_a_warichu_row_keeps_a_mark_with_its_letter() {
     assert!(!hits.contains(&1), "{hits:?}");
 }
 
+/// The same when the mark is shifted off its row: a click on the right half of the letter at the
+/// row's end goes past the mark, not between it and the letter.
+#[test]
+fn a_click_at_a_warichu_row_end_goes_past_a_shifted_mark() {
+    // A note in two rows, with the mark (when given) shifted up off the row of the letter before it.
+    let set = |text: &str, mark: Option<usize>| {
+        let note = text.len() - 1;
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..note, |f| {
+            f.over.warichu = Some(true);
+            f.over.warichu_alignment = Some(designcraft_doc::cjk::WarichuAlignment::Left);
+        });
+        if let Some(at) = mark {
+            story.format_chars(at..at + "\u{301}".len(), |f| {
+                f.over.fill = Some("C=100 M=0 Y=0 K=0".into());
+                f.over.baseline_shift = Some(4.0);
+            });
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // Where the first row ends: the mark goes right after it, on the letter closing the row.
+    let letters = "ABCDEFGHIJKL";
+    let plain = set(&format!("{letters}Z"), None);
+    let first_row = plain.frames[0].lines[0].glyphs.iter().filter(|g| g.len > 0 && g.y == plain.frames[0].lines[0].glyphs[0].y).count();
+    let (head, tail) = letters.split_at(first_row);
+    let cs = set(&format!("{head}\u{301}{tail}Z"), Some(first_row));
+    let l = &cs.frames[0].lines[0];
+    let glyph = |byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).expect("a glyph of its own");
+    let (base, mark) = (glyph(first_row - 1), glyph(first_row));
+    let glyphs = crate::line_glyphs(l);
+    assert!(crate::on_stacked_row(&glyphs, base), "the letter is on a stacked row");
+    assert!((base.y - mark.y).abs() > crate::ROW_Y, "the mark is off its letter's row");
+    assert!(glyphs.iter().filter(|g| (g.y - base.y).abs() <= crate::ROW_Y).all(|g| g.byte <= base.byte), "the letter closes its row");
+    let at = hit(&cs, 0, Point::new(base.x + base.adv * 0.75, l.baseline + base.y)).unwrap();
+    assert_eq!(at, first_row + "\u{301}".len(), "past the mark, not between it and its letter");
+}
+
 #[test]
 fn tate_chu_yoko_sets_digits_across_one_em() {
     let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
