@@ -5,7 +5,7 @@ use super::parents::{
     parent_label_taken, parent_name_param, parent_options, parent_page_size, parent_page_target, parent_prefix_param, parent_ref, parent_spread_index,
 };
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
-use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
+use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -81,19 +81,25 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("layout.pages.delete", "Delete Pages", ["Layout", "Pages"], None, "{pages: [index]}", has_doc, |s, p| {
-            let pages: Vec<usize> = p
-                .get("pages")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect())
-                .unwrap_or_default();
-            s.edit(|d, sel| {
-                d.delete_pages(&pages)?;
-                sel.items.retain(|i| d.item(*i).is_some());
-                sel.text = sel.text.filter(|t| d.story(t.story).is_some());
-                ok()
-            })
-        }),
+        cmd!(
+            "layout.pages.delete",
+            "Delete Pages",
+            ["Layout", "Pages"],
+            None,
+            "{pages: [0-based page indices]} → {deleted: how many pages were removed}",
+            has_doc,
+            |s, p| {
+                const ID: &str = "layout.pages.delete";
+                let pages = page_indices(ID, s.doc()?.doc.page_count(), p)?;
+                let deleted = distinct_pages(&pages);
+                s.edit(|d, sel| {
+                    d.delete_pages(&pages)?;
+                    sel.items.retain(|i| d.item(*i).is_some());
+                    sel.text = sel.text.filter(|t| d.story(t.story).is_some());
+                    Ok(json!({"deleted": deleted}))
+                })
+            }
+        ),
         cmd!("layout.pages.move", "Move Pages…", ["Layout", "Pages"], None, "{from, to}", has_doc, |s, p| {
             let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing from"))? as usize;
             let to = p.get("to").and_then(Value::as_u64).ok_or_else(|| bad("layout.pages.move", "missing to"))? as usize;
@@ -165,18 +171,16 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Parent to Pages…",
             ["Layout", "Pages"],
             None,
-            "{pages: [index], parent: id|\"A-Parent\"|\"A\"|null (null or \"[None]\" clears)}",
+            "{pages: [0-based page indices], parent: id|\"A-Parent\"|\"A\"|null (null or \"[None]\" clears)} → {applied: how many pages took the parent}",
             has_doc,
             |s, p| {
-                let pages: Vec<usize> = p
-                    .get("pages")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_u64).map(|v| v as usize).collect())
-                    .unwrap_or_default();
-                let parent = parent_ref("layout.pages.applyParent", &s.doc()?.doc, p.get("parent"))?.unwrap_or(None);
+                const ID: &str = "layout.pages.applyParent";
+                let pages = page_indices(ID, s.doc()?.doc.page_count(), p)?;
+                let applied = distinct_pages(&pages);
+                let parent = parent_ref(ID, &s.doc()?.doc, p.get("parent"))?.unwrap_or(None);
                 s.edit(|d, _| {
                     d.apply_parent(&pages, parent)?;
-                    ok()
+                    Ok(json!({"applied": applied}))
                 })
             }
         ),
@@ -827,4 +831,100 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
     ]
+}
+
+/// The page indices a `layout.pages.*` command was given, in the order it passed them.
+///
+/// Both commands count pages from 0. An index past the last page used to be dropped in
+/// silence, so a caller that was off by one deleted a different range and still read
+/// `ok`; the sentence is the one the MCP export commands have used since #70.
+fn page_indices(id: &str, count: usize, p: &Value) -> Result<Vec<usize>> {
+    let raw: Vec<u64> = p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    let mut out = Vec::with_capacity(raw.len());
+    for v in raw {
+        let i = usize::try_from(v).unwrap_or(usize::MAX);
+        if i >= count {
+            return Err(bad(id, format!("no page {i} (the document has {count} pages, indices are 0-based)")));
+        }
+        out.push(i);
+    }
+    Ok(out)
+}
+
+/// How many pages a list of indices names, counting a repeated index once.
+fn distinct_pages(pages: &[usize]) -> usize {
+    let mut v = pages.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    v.len()
+}
+
+#[cfg(test)]
+mod page_index_tests {
+    use serde_json::json;
+
+    fn four_pages() -> crate::Session {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"pages": 4})).unwrap();
+        s
+    }
+
+    fn pages_left(s: &crate::Session) -> usize {
+        s.doc().unwrap().doc.page_count()
+    }
+
+    #[test]
+    fn a_page_index_past_the_end_is_refused_and_nothing_is_deleted() {
+        let mut s = four_pages();
+        let err = s.execute("layout.pages.delete", &json!({"pages": [4]})).unwrap_err().to_string();
+        assert!(err.contains("no page 4"), "the message names the index: {err}");
+        assert!(err.contains("indices are 0-based"), "and the base: {err}");
+        assert_eq!(pages_left(&s), 4, "nothing went");
+    }
+
+    #[test]
+    fn deleting_says_how_many_pages_went() {
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [0, 1]})).unwrap();
+        assert_eq!(r["deleted"], 2);
+        assert_eq!(pages_left(&s), 2);
+        // A page named twice is one page, not two.
+        let mut s = four_pages();
+        let r = s.execute("layout.pages.delete", &json!({"pages": [1, 1]})).unwrap();
+        assert_eq!(r["deleted"], 1);
+        assert_eq!(pages_left(&s), 3);
+    }
+
+    #[test]
+    fn applying_a_parent_says_how_many_pages_took_it() {
+        let mut s = four_pages();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let r = s.execute("layout.pages.applyParent", &json!({"pages": [1, 2], "parent": "B"})).unwrap();
+        assert_eq!(r["applied"], 2);
+        let doc = s.doc().unwrap();
+        for page in [1usize, 2] {
+            assert!(doc.doc.page(page).unwrap().parent.is_some(), "page {page} took the parent");
+        }
+    }
+
+    #[test]
+    fn a_page_index_past_the_end_is_refused_by_a_parent() {
+        let mut s = four_pages();
+        // Pages are born on the default parent A, so what must not change is which parent they have.
+        let b = s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap()["id"].as_u64().unwrap();
+        let before: Vec<_> = (0..4).map(|i| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0)).collect();
+        let err = s.execute("layout.pages.applyParent", &json!({"pages": [4], "parent": "B"})).unwrap_err().to_string();
+        assert!(err.contains("no page 4"), "{err}");
+        let after: Vec<_> = (0..4).map(|i| s.doc().unwrap().doc.page(i).unwrap().parent.map(|p| p.0)).collect();
+        assert_eq!(before, after, "no page changed parent");
+        assert!(!after.contains(&Some(b)), "and none took B");
+    }
+
+    #[test]
+    fn both_commands_state_the_base_in_their_params() {
+        for id in ["layout.pages.delete", "layout.pages.applyParent"] {
+            let spec = crate::cmd::command_specs().iter().find(|s| s.id == id).unwrap();
+            assert!(spec.params.contains("0-based"), "{id} says its base: {}", spec.params);
+        }
+    }
 }
