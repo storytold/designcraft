@@ -11,16 +11,19 @@ use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, st
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
-            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, binding?: leftToRight|rightToLeft, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?, primaryTextFrame?: bool}",
+            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, binding?: leftToRight|rightToLeft (anything else is refused), columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?, primaryTextFrame?: bool}",
             always, file_new),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
-        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
+        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true` and their `binding`: leftToRight|rightToLeft)", always, |s, _| {
             let mut presets: Vec<Value> = PRESETS.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect();
             presets.extend(
                 s.prefs
                     .document_presets
                     .iter()
-                    .map(|p| json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "saved": true})),
+                    .map(|p| {
+                        let binding = if p.right_to_left_binding { "rightToLeft" } else { "leftToRight" };
+                        json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "binding": binding, "saved": true})
+                    }),
             );
             Ok(Value::Array(presets))
         }),

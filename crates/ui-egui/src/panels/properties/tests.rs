@@ -350,6 +350,21 @@ fn paragraph_panel_direction_buttons_follow_show_right_to_left_features() {
     assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("leftToRight"), Some("left")));
 }
 
+/// Left unset, Show Right-to-Left Features follows the interface language in the panels too: the
+/// Paragraph panel shows the direction buttons in an Arabic interface and not in an English one.
+#[test]
+fn paragraph_panel_direction_buttons_follow_the_interface_language_when_unset() {
+    for (lang, shown) in [("", false), ("ar", true)] {
+        let mut app = text_app();
+        app.ui.language = lang.into();
+        assert_eq!(app.session.prefs.rtl_features, None, "unset");
+        let label = crate::i18n::tr(lang, "Right-to-Left Paragraph Direction").to_string();
+        let mut h = panel_harness(app, paragraph_panel);
+        h.run_steps(3);
+        assert_eq!(h.query_by_label(&label).is_some(), shown, "{lang:?}");
+    }
+}
+
 #[test]
 fn paragraph_panel_menu_toggles_ignore_optical_margin() {
     let mut h = panel_harness(text_app(), paragraph_panel);

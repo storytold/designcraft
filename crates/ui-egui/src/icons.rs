@@ -1043,10 +1043,15 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
         "pdir-ltr" | "pdir-rtl" => {
             let rtl = name == "pdir-rtl";
             // The pilcrow (outlined from the UI's Source Sans 3 Semibold), moved right for right to left.
+            // Shifted in fixed-size copies on the stack: painting allocates nothing.
             let dx = if rtl { 8.11 } else { 0.0 };
-            let at = |pts: &[(f32, f32)]| pts.iter().map(|&(x, y)| (x + dx, y)).collect::<Vec<_>>();
-            pen.fill(&at(&[(7.52, 15.14), (7.52, 4.86), (9.14, 4.86), (9.14, 15.14)]));
-            pen.fill(&at(&PILCROW_BOWL));
+            let mut stem = [(7.52, 15.14), (7.52, 4.86), (9.14, 4.86), (9.14, 15.14)];
+            let mut bowl = PILCROW_BOWL;
+            for p in stem.iter_mut().chain(bowl.iter_mut()) {
+                p.0 += dx;
+            }
+            pen.fill(&stem);
+            pen.fill(&bowl);
             pen.w = 1.5;
             let m = |x: f32| if rtl { 20.0 - x } else { x };
             pen.line(&[(m(11.1), 10.0), (m(16.6), 10.0)]);
