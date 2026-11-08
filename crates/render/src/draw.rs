@@ -56,10 +56,19 @@ impl Renderer {
         if let Some(area) = grid_area.filter(|_| grid.in_back) {
             grid::draw(ctx, f, sp, grid, area);
         }
+        // The baseline grid follows the same Grids in Back preference as the document grid: behind
+        // the page's objects when it is on, over them when it is off (#2421).
+        let baseline_area = f.opts.baseline_grid.iter().find(|(r, _)| *r == sr).map(|(_, a)| *a);
+        if let Some(area) = baseline_area.filter(|_| grid.in_back) {
+            grid::draw_baseline(ctx, f, sp, &doc.settings.baseline_grid, area);
+        }
         if blendspace::uses_cmyk(doc, sr, f.opts) {
             self.draw_cmyk_spread(ctx, f, sr);
             if let Some(area) = grid_area.filter(|_| !grid.in_back) {
                 grid::draw(ctx, f, sp, grid, area);
+            }
+            if let Some(area) = baseline_area.filter(|_| !grid.in_back) {
+                grid::draw_baseline(ctx, f, sp, &doc.settings.baseline_grid, area);
             }
             return;
         }
@@ -120,6 +129,9 @@ impl Renderer {
         }
         if let Some(area) = grid_area.filter(|_| !grid.in_back) {
             grid::draw(ctx, f, sp, grid, area);
+        }
+        if let Some(area) = baseline_area.filter(|_| !grid.in_back) {
+            grid::draw_baseline(ctx, f, sp, &doc.settings.baseline_grid, area);
         }
     }
 

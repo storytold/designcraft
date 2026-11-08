@@ -42,7 +42,6 @@ use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};
 #[cfg(test)]
 use input::{press_count, release_clicks};
 #[cfg(test)]
-use page_decor::{MAX_BASELINES, baseline_grid_lines};
 use page_decor::{dashed, draw_flattener_preview, draw_guides, shown_area};
 use render::render_texture;
 pub use render::{DisplayKey, color_at};

@@ -10,18 +10,6 @@ pub(super) fn dashed(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke, 
     painter.extend(egui::Shape::dashed_line(&[a, b], stroke, dash, gap));
 }
 
-/// The most baseline grid lines drawn on a page: one per point of the tallest page (216 in).
-pub(super) const MAX_BASELINES: usize = 216 * 72;
-
-/// Baseline grid lines inside a page, measured from its top: `start + n * increment` for n >= 0 (the bottom
-/// edge is not a line), `start` from [`BaselineGrid::origin`](designcraft_doc::BaselineGrid::origin). Lines
-/// above the page are skipped without walking them, however far up the start is.
-pub(super) fn baseline_grid_lines(start: f64, increment: f64, height: f64) -> impl Iterator<Item = f64> {
-    let step = increment.max(1.0);
-    let first = if start < 0.0 { start.rem_euclid(step) } else { start };
-    (0..MAX_BASELINES).map(move |n| first + n as f64 * step).take_while(move |y| *y < height)
-}
-
 /// What a screen mode shows of a spread, in screen coordinates: the trim, or out to the bleed or
 /// the slug box. Slug shows every printing element, so the bleed as well — and a slug narrower
 /// than the bleed does not pull the edge back in.
@@ -60,7 +48,7 @@ pub(super) fn draw_guides(
             if !app.ui.guides {
                 continue;
             }
-            draw_page_grids(painter, xf, doc, slot, p, pr, app.ui.baseline_grid);
+            draw_page_grids(painter, xf, doc, slot, p, pr);
             let cx = GuideCtx { painter, xf, doc, slot, sp, pasteboard };
             draw_page_guides(&cx, (pi, p, pr), moving, &selection);
         }
@@ -95,22 +83,12 @@ fn draw_parent_overlay(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &
     }
 }
 
-/// A page's baseline grid (when `baseline` is on and the view is zoomed in far enough), margins
-/// and columns.
-fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, p: &designcraft_doc::Page, pr: DRect, baseline: bool) {
+/// A page's margins and columns. The baseline grid is drawn with the page's content, so that
+/// Grids in Back can put it behind the objects (#2421).
+fn draw_page_grids(painter: &egui::Painter, xf: &Xf, doc: &Document, slot: &SpreadSlot, p: &designcraft_doc::Page, pr: DRect) {
     let s = &doc.settings;
     let pt = |q: Point| xf.to_screen(slot.xf * q);
     let rect = |r: DRect| xf.rect(slot.xf.transform_rect_bbox(r));
-    // Baseline grid.
-    if baseline && xf.zoom >= s.baseline_grid.view_threshold {
-        let g = &s.baseline_grid;
-        for y in baseline_grid_lines(g.origin(p), g.increment, p.height) {
-            painter.line_segment(
-                [pt(Point::new(pr.x0, pr.y0 + y)), pt(Point::new(pr.x1, pr.y0 + y))],
-                Stroke::new(hair(painter), c32(g.color).gamma_multiply(0.8)),
-            );
-        }
-    }
     // Margins (magenta) and columns (violet).
     painter.rect_stroke(rect(p.margin_rect()), 0.0, Stroke::new(hair(painter), c32(s.margin_color)), StrokeKind::Middle);
     let cols = p.column_rects();

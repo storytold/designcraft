@@ -1970,7 +1970,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
     let view = Affine::scale(scale) * Affine::translate((-corner.x, -corner.y));
     let placed: Vec<_> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let render = |app: &DesignApp| {
-        let opts = screen_options(app, &layout, false, 1.0);
+        let opts = screen_options(app, &layout, false, 1.0, 1.0);
         designcraft_render::Renderer::new().render(&doc, &app.session.cache, &placed, (160, 160), view, &opts)
     };
     // The snapped point is at pixel (80, 80); halfway to the next line is 18 px further.
@@ -1986,7 +1986,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
     assert_eq!(darkest(&on, [96, 100], [96, 100]), 255, "nothing between lines");
     // Preview hides it.
     app.ui.screen_mode = ScreenMode::Preview;
-    assert!(screen_options(&app, &layout, true, 1.0).document_grid.is_empty());
+    assert!(screen_options(&app, &layout, true, 1.0, 1.0).document_grid.is_empty());
 }
 
 /// egui moves keyboard focus on a plain arrow key or Tab, and Space/Return then clicks the
@@ -2962,20 +2962,6 @@ fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
     assert!(!app.session.tool_composing());
     let typed = story_text(&mut app, &sid);
     assert!(typed.contains("がく") && typed.contains("しょうこ") && !typed.contains('\n'), "{typed:?}");
-}
-
-#[test]
-fn baseline_grid_lines_are_the_ones_on_the_page() {
-    // A start far above the page used to be walked line by line, without end.
-    for start in [-1e9, -1e17] {
-        let mut far = baseline_grid_lines(start, 12.0, 792.0);
-        assert_eq!((far.next(), far.count()), (Some(8.0), 65));
-    }
-    let lines = |start, increment, height| baseline_grid_lines(start, increment, height).collect::<Vec<_>>();
-    assert_eq!(lines(36.0, 12.0, 72.0), [36.0, 48.0, 60.0], "the bottom edge is not a line");
-    assert_eq!(lines(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
-    assert_eq!(lines(f64::NAN, 12.0, 792.0), [0.0; 0]);
-    assert_eq!(baseline_grid_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
 }
 
 #[test]

@@ -69,6 +69,10 @@ pub struct RenderOptions {
     /// document grid covers, drawn behind or in front of the page items as the grid settings say
     /// (screen view). Empty draws no grid.
     pub document_grid: Vec<(SpreadRef, Rect)>,
+    /// View › Show Baseline Grids: the area (spread coordinates) of each listed spread that the
+    /// baseline grid covers, drawn behind or in front of the page items with the same Grids in Back
+    /// preference the document grid uses (screen view). Empty draws none.
+    pub baseline_grid: Vec<(SpreadRef, Rect)>,
 }
 
 /// View › Display Performance: how placed graphics and effects are drawn on screen.

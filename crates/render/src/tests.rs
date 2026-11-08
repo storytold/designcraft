@@ -773,3 +773,37 @@ fn dotted_strokes_draw_every_dot() {
     let dots = outline.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count();
     assert_eq!(dots, 13);
 }
+
+/// Grids in Back governs the baseline grid the way it already governed the document grid: behind the
+/// page's objects when it is on, over them when it is off. The baseline grid used to be painted by the
+/// canvas after everything else, so the preference could not reach it at all (#2421).
+#[test]
+fn the_baseline_grid_goes_behind_the_page_objects_with_grids_in_back() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let page = d.spreads[0].pages[0].bounds();
+    let id = designcraft_doc::ItemId(d.alloc());
+    let mut sheet = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(page));
+    sheet.fill = Fill::swatch("C=0 M=0 Y=0 K=100");
+    d.insert_item(SpreadRef::Doc(0), sheet, None).unwrap();
+    let cache = Cache::new();
+    let placed = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+    // The default baseline grid starts at 36 pt and goes every 12, so 48 pt is a rule and 52 is not.
+    let render = |d: &Document, grid: Vec<(SpreadRef, Rect)>| {
+        let opts = RenderOptions { baseline_grid: grid, ..Default::default() };
+        Renderer::new().render(d, &cache, &placed, (612, 792), Affine::IDENTITY, &opts)
+    };
+
+    d.settings.grid.in_back = true;
+    let behind = render(&d, vec![(SpreadRef::Doc(0), page)]);
+    assert_eq!(behind.pixel(300, 52)[0], 0, "the sheet is black");
+    assert_eq!(behind.pixel(300, 48)[0], 0, "the rule stays behind it");
+
+    d.settings.grid.in_back = false;
+    let over = render(&d, vec![(SpreadRef::Doc(0), page)]);
+    assert!(over.pixel(300, 48)[0] > 100, "in front, the rule shows: {:?}", over.pixel(300, 48));
+    assert_eq!(over.pixel(300, 52)[0], 0, "and only where it falls");
+
+    let hidden = render(&d, vec![]);
+    assert_eq!(hidden.pixel(300, 48)[0], 0, "no rule while the grid is hidden");
+}
