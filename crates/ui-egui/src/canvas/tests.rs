@@ -137,6 +137,118 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
     }
 }
 
+/// An empty graphic frame's X joins its corners: a rectangle's, and a frame slanted by
+/// moving its top points, as in the Zero2Graphic tutorial's row of parallelograms.
+#[test]
+fn an_empty_frames_x_follows_its_corners() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap();
+    let x = |app: &DesignApp| {
+        let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        let m = it.xf;
+        frame_x(&it).map(|(a, b)| {
+            let (a, b) = (m * a, m * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+    };
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 100.0), (200.0, 160.0)], [(100.0, 160.0), (200.0, 100.0)]], "corner to corner");
+    // Slant it: the two top points move 30 pt right.
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+    let top: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).y < 130.0).map(|(k, _)| json!([0, k])).collect();
+    assert_eq!(top.len(), 2);
+    app.run("path.moveAnchors", json!({"id": id, "anchors": top, "dx": 30, "dy": 0})).unwrap();
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 160.0), (230.0, 100.0)], [(130.0, 100.0), (200.0, 160.0)]], "the slanted corners");
+    // An ellipse frame (four smooth anchors) keeps the X across its bounds, not a plus.
+    let e = app.run("frame.create", json!({"rect": [300, 100, 400, 160], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(e)).unwrap().clone();
+    let mut lines: Vec<[(f64, f64); 2]> = frame_x(&it)
+        .map(|(a, b)| {
+            let (a, b) = (it.xf * a, it.xf * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+        .to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(300.0, 100.0), (400.0, 160.0)], [(300.0, 160.0), (400.0, 100.0)]], "the ellipse's bounds");
+    // So does a four-sided polygon frame (a diamond): its corners would cross as a plus.
+    let mut diamond = it.clone();
+    diamond.shape = designcraft_doc::Shape::Polygon;
+    for a in &mut diamond.path.subpaths[0].anchors {
+        (a.h_in, a.h_out) = (a.p, a.p);
+    }
+    let lines: Vec<_> = frame_x(&diamond).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "diagonals, not a plus: {lines:?}");
+    // Still after one of its points moves (which makes it a path).
+    let p = app.run("frame.create", json!({"rect": [300, 200, 400, 260], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0]], "dx": 5, "dy": 0})).unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(p)).unwrap().clone();
+    assert_eq!(it.shape, designcraft_doc::Shape::Path);
+    let lines: Vec<_> = frame_x(&it).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "an edited diamond: {lines:?}");
+}
+
+/// A graphic pasted into a smaller Pen-drawn shape (Edit › Paste Into) is clipped to it, and so
+/// are the frame edges: the shape shows its own edge, not the whole graphic's past it (#2345).
+#[test]
+fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 300, height: 300, pixels: vec![90; 300 * 300 * 4] }.to_png()).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let big = app.run("frame.create", json!({"rect": [60, 60, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": png.to_string_lossy(), "frame": big})).unwrap();
+    let pts: Vec<Value> = [[160, 160], [260, 170], [240, 260], [170, 250]].iter().map(|p| json!({"p": p})).collect();
+    let shape = app.run("path.create", json!({"anchors": pts, "closed": true})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [big]})).unwrap();
+    app.run("edit.cut", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [shape]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    assert!(app.ui.frame_edges);
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let st = app.session.active().unwrap();
+    let doc = &st.doc;
+    let it = doc.item(designcraft_doc::ItemId(shape)).unwrap();
+    assert!(it.has_nested_items(), "the graphic is inside the shape");
+    let layout = CanvasLayout::new(doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (a, _) = item_canvas_xf(doc, &layout, it.id).unwrap();
+    let frame = xf.rect(a.transform_rect_bbox(it.bounds()));
+    let edge = frames::layer_color(doc, it).gamma_multiply(0.75);
+    let edges: Vec<Rect> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(edge) => Some(Rect::from_points(&p.points)),
+            _ => None,
+        })
+        .collect();
+    for r in &edges {
+        assert!(frame.expand(0.5).contains_rect(*r), "an edge line at {r:?} runs outside the frame at {frame:?}");
+    }
+    assert!(
+        edges.iter().any(|r| (r.min - frame.min).length() < 0.5 && (r.max - frame.max).length() < 0.5),
+        "the frame's own edge is drawn: {edges:?} vs {frame:?}"
+    );
+}
+
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and
 /// Slug the slug box. A slug narrower than the bleed never pulls the edge back in.
 #[test]
