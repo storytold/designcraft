@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-07 · **Change:** minor (Spanish interface complete; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -11,7 +11,7 @@ Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-ty
 ## How it was measured
 
 Interface strings live in `crates/ui-egui/src/i18n/table.rs` (a shared table with German, French,
-Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,fr,hu,it,ja,ka,pl,pt_br,ru,sv,uk}.rs`.
+Spanish, Japanese and Simplified Chinese columns) and `crates/ui-egui/src/i18n/{ar,cs,de,es,fr,hu,it,ja,ka,pl,pt_br,ru,sv,uk}.rs`.
 Untranslated strings fall back to English. A script (2026-10-10) built the set of English
 interface strings as the union of every catalog's keys, every engine command label and every
 literal passed to `tr`/`t` in the UI crate: **1,724 strings**. A further ~145 capitalized literals
@@ -35,7 +35,7 @@ come as Middle East editions with an English or French interface and right-to-le
 |---|---|---|---|---|---|---|---|---|
 | English | en | ✓ | 1,724 / 1,724 (100%) | all / all / none | Latin ✓ | yes | full | 0 |
 | Simplified Chinese (Mandarin) | zh | ✓ (zh_CN) | 1,438 (83%) | menus, panels, most dialogs; tooltips partly; no help | CJK typesetting ✓ (cjk.md); canvas IME ✓, not checked by hand with a system IME (#322); CJK UI font not embedded in release builds, so boxes on Linux (#332) | no | partial | 25–40 |
-| Spanish | es | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | partial | 5–8 |
+| Spanish | es | ✓ | 2,947 / 2,947 (100%) | menus, panels, dialogs, messages and command labels; no help | Latin ✓; Spanish hyphenation ✓ (#222) | no | full | 0 |
 | Hindi | hi | ✗ | 0 (0%) | none | Devanagari shaped by harfrust in documents but untested; no Hindi hyphenation or spelling | no | none | 20–30 |
 | Arabic | ar | Middle East edition (English/French UI) | 1,459 (85%) | menus, panels, most dialogs; no help | RTL UI text (`rtl.rs`: bidi + shaping); Arabic composition, kashida, digits, RTL stories and tables ✓ (arabic-typography.md); list bullets and multi-column RTL open (#100) | no | partial | 15–25 |
 | French | fr | ✓ | 1,438 (83%) | menus, panels, most dialogs; no help | Latin ✓; French hyphenation ✓ (hyph-fr) | no | partial | 6–10 |
