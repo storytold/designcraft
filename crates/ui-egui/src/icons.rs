@@ -1540,16 +1540,8 @@ mod tests {
         for prim in ctx.tessellate(out.shapes, 2.0) {
             if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
                 for c in mesh.indices.as_chunks::<3>().0 {
-                    let (a, b, d) = (
-                        &mesh.vertices[c[0] as usize],
-                        &mesh.vertices[c[1] as usize],
-                        &mesh.vertices[c[2] as usize],
-                    );
-                    tris.push([
-                        [a.pos.x, a.pos.y, a.uv.x, a.uv.y],
-                        [b.pos.x, b.pos.y, b.uv.x, b.uv.y],
-                        [d.pos.x, d.pos.y, d.uv.x, d.uv.y],
-                    ]);
+                    let (a, b, d) = (&mesh.vertices[c[0] as usize], &mesh.vertices[c[1] as usize], &mesh.vertices[c[2] as usize]);
+                    tris.push([[a.pos.x, a.pos.y, a.uv.x, a.uv.y], [b.pos.x, b.pos.y, b.uv.x, b.uv.y], [d.pos.x, d.pos.y, d.uv.x, d.uv.y]]);
                 }
             }
         }
@@ -1588,11 +1580,7 @@ mod tests {
         let u = w_a * au + w_b * bu + w_c * cu;
         let v = w_a * av + w_b * bv + w_c * cv;
         // Constant uv (`Vertex::untextured`): solid fill, covered wherever inside.
-        if (au - bu).abs() <= 1e-6
-            && (au - cu).abs() <= 1e-6
-            && (av - bv).abs() <= 1e-6
-            && (av - cv).abs() <= 1e-6
-        {
+        if (au - bu).abs() <= 1e-6 && (au - cu).abs() <= 1e-6 && (av - bv).abs() <= 1e-6 && (av - cv).abs() <= 1e-6 {
             return true;
         }
         // Glyph triangle: covered where the font atlas is opaque.
