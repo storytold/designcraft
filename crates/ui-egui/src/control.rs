@@ -4,12 +4,15 @@
 //! - `engine.execute {command, params}` / `ui.menu.invoke {command|id, params}`: run any command
 //! - `engine.commands`: engine + UI commands with enablement
 //! - `document.inspect`: document summary; `ui.inspect`: UI state
+//! - `ui.docking`: the panel layout in use and the focused panel
 //! - `ui.menu.list`: flattened menu tree
 //! - `ui.tool.select {tool}`, `ui.tool.list`
 //! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
 //!   drive the active tool through the same path as the mouse
 //! - `ui.key {key, shift?, alt?, cmd?}`: synthetic keyboard input
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
+//! - `ui.ime {preedit?, active?: [start, end], commit?}`: input method events, as the system IME
+//!   sends them (marked text with its converting clause in characters, then the committed text)
 //! - `ui.move {x, y}` / `ui.click {x, y, button?, count?, shift?…}` / `ui.drag {x, y, toX, toY, steps?}`:
 //!   real egui pointer input in screen points (reaches every widget: panels, flyouts, dialogs)
 //! - `ui.set {brightness?, panel?, dockTab?, rulers?, outline?, …}`
@@ -75,9 +78,22 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "ui": serde_json::to_value(&app.ui).unwrap_or_default(),
         "view": app.view().map(|v| serde_json::to_value(v).unwrap_or_default()),
         "canvasRect": app.canvas_rect.map(|c| json!([c.left(), c.top(), c.width(), c.height()])),
+        "docking": crate::panel_docking::inspect(app, ctx),
         "window": [r.width(), r.height()],
-        "documents": app.session.documents().iter().map(|d| json!({"title": d.title(), "dirty": d.is_dirty()})).collect::<Vec<_>>(),
+        "documents": app
+            .session
+            .documents()
+            .iter()
+            .map(|d| {
+                let mut v = json!({"title": d.title(), "dirty": d.is_dirty()});
+                if app.session.new_document_preview() == Some(d.uid) {
+                    v["preview"] = json!(true);
+                }
+                v
+            })
+            .collect::<Vec<_>>(),
         "currentPage": crate::canvas::current_page(app),
+        "separations": crate::separations::inspect(app),
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
@@ -133,6 +149,83 @@ pub fn handle(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) ->
     out
 }
 
+/// `ui.pointer`: canvas-space pointer events straight to the tool.
+fn control_pointer(app: &mut DesignApp, ctx: &egui::Context, p: &Value) -> Outcome {
+    let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
+    let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
+    let view = app.view_info();
+    let xf = app.canvas_rect.zip(app.view().copied()).map(|(rect, v)| Xf::new(rect, &v));
+    let mut last = None;
+    for e in events {
+        let kind = match e.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "down" => PointerKind::Down,
+            "drag" => PointerKind::Drag,
+            "up" => PointerKind::Up,
+            "move" => PointerKind::Move,
+            "doubleclick" | "dblclick" => PointerKind::DoubleClick,
+            other => return err(format!("unknown pointer kind `{other}`")),
+        };
+        let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = e.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        let pos = if e.get("space").and_then(Value::as_str) == Some("screen") {
+            match xf {
+                Some(xf) => xf.to_canvas(egui::pos2(x as f32, y as f32)),
+                None => return err("no canvas yet"),
+            }
+        } else {
+            designcraft_geom::Point::new(x, y)
+        };
+        let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
+        let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
+        if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods, clicks }, view) {
+            return err(e);
+        }
+        app.after_engine();
+        last = Some((pos, mods));
+    }
+    ctx.request_repaint();
+    // The tool's cursor where the last event was.
+    let cursor = last.map(|(pos, mods)| app.session.cursor(pos, mods, view));
+    wrap(app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id(), "cursor": cursor})))
+}
+
+/// `ui.click` and `ui.drag`: screen-space pointer input through egui itself, which reaches every widget.
+fn control_click(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    let p = &req.params;
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    // Screen-space (egui points) pointer input through egui itself: reaches every widget.
+    let (count, steps) = match pointer_counts(p, req.method == "ui.drag", app.control_synthetic.len().saturating_add(app.synthetic.len())) {
+        Ok(counts) => counts,
+        Err(e) => return err(e),
+    };
+    let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let button = match s("button") {
+        Some("right") | Some("secondary") => egui::PointerButton::Secondary,
+        Some("middle") => egui::PointerButton::Middle,
+        _ => egui::PointerButton::Primary,
+    };
+    let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
+    let modifiers =
+        egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: b("cmd") && cfg!(target_os = "macos"), command: b("cmd") };
+    let a = egui::pos2(f("x"), f("y"));
+    let end = if req.method == "ui.drag" { egui::pos2(f("toX"), f("toY")) } else { a };
+    app.control_synthetic.push(egui::Event::PointerMoved(a));
+    app.control_synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
+    if req.method == "ui.drag" {
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            app.control_synthetic.push(egui::Event::PointerMoved(a + (end - a) * t));
+        }
+    }
+    app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
+    for _ in 1..count {
+        app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
+        app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
+    }
+    ctx.request_repaint();
+    ok(Value::Null)
+}
+
 fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -147,54 +240,20 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let params = if params.is_null() { json!({}) } else { params };
+            // A key the command's description doesn't name is an error, not a default (#776).
+            if let Err(e) = designcraft_engine::check_params(id, &params) {
+                return err(e.to_string());
+            }
             wrap(app.run(id, params))
         }
         "engine.commands" => ok(all_commands(app)),
         "document.inspect" => wrap(app.run("document.inspect", json!({}))),
         "ui.inspect" => ok(inspect(app, ctx)),
+        "ui.docking" => ok(crate::panel_docking::inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
         "ui.tool.list" => ok(serde_json::to_value(designcraft_tools::TOOL_GROUPS).unwrap_or_default()),
-        "ui.pointer" => {
-            let Some(events) = p.get("events").and_then(Value::as_array) else { return err("missing `events`") };
-            let base_mods: Mods = p.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-            let view = app.view_info();
-            let xf = app.canvas_rect.zip(app.view().copied()).map(|(rect, v)| Xf::new(rect, &v));
-            let mut last = None;
-            for e in events {
-                let kind = match e.get("kind").and_then(Value::as_str).unwrap_or("") {
-                    "down" => PointerKind::Down,
-                    "drag" => PointerKind::Drag,
-                    "up" => PointerKind::Up,
-                    "move" => PointerKind::Move,
-                    "doubleclick" | "dblclick" => PointerKind::DoubleClick,
-                    other => return err(format!("unknown pointer kind `{other}`")),
-                };
-                let x = e.get("x").and_then(Value::as_f64).unwrap_or(0.0);
-                let y = e.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-                let pos = if e.get("space").and_then(Value::as_str) == Some("screen") {
-                    match xf {
-                        Some(xf) => xf.to_canvas(egui::pos2(x as f32, y as f32)),
-                        None => return err("no canvas yet"),
-                    }
-                } else {
-                    designcraft_geom::Point::new(x, y)
-                };
-                let mods = e.get("mods").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or(base_mods);
-                let clicks = e.get("clicks").and_then(Value::as_u64).map_or(1, |n| n.clamp(1, 255) as u8);
-                if let Err(e) = app.session.pointer(&PointerEvent { kind, pos, mods, clicks }, view) {
-                    return err(e);
-                }
-                app.after_engine();
-                last = Some((pos, mods));
-            }
-            ctx.request_repaint();
-            // The tool's cursor where the last event was.
-            let cursor = last.map(|(pos, mods)| app.session.cursor(pos, mods, view));
-            wrap(
-                app.run("document.inspect", json!({})).map(|d| json!({"selection": d["selection"], "tool": app.session.tool_id(), "cursor": cursor})),
-            )
-        }
+        "ui.pointer" => control_pointer(app, ctx, p),
         "ui.key" => {
             let Some(k) = s("key").and_then(key_from) else { return err("unknown or missing `key`") };
             let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
@@ -213,50 +272,21 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
             ctx.request_repaint();
             ok(Value::Null)
         }
+        // What Ctrl/Cmd+V delivers from the system clipboard: text, or SVG markup copied in an
+        // illustration app (pasted as editable paths when no text is being edited).
+        "ui.paste" => {
+            let Some(text) = s("text") else { return err("missing `text`") };
+            app.control_synthetic.push(egui::Event::Paste(text.to_string()));
+            ctx.request_repaint();
+            ok(Value::Null)
+        }
         "ui.move" => {
             let pos = egui::pos2(p.get("x").and_then(Value::as_f64).unwrap_or(0.0) as f32, p.get("y").and_then(Value::as_f64).unwrap_or(0.0) as f32);
             app.control_synthetic.push(egui::Event::PointerMoved(pos));
             ctx.request_repaint();
             ok(Value::Null)
         }
-        "ui.click" | "ui.drag" => {
-            // Screen-space (egui points) pointer input through egui itself: reaches every widget.
-            let (count, steps) = match pointer_counts(p, req.method == "ui.drag", app.control_synthetic.len().saturating_add(app.synthetic.len())) {
-                Ok(counts) => counts,
-                Err(e) => return err(e),
-            };
-            let f = |k: &str| p.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
-            let button = match s("button") {
-                Some("right") | Some("secondary") => egui::PointerButton::Secondary,
-                Some("middle") => egui::PointerButton::Middle,
-                _ => egui::PointerButton::Primary,
-            };
-            let b = |n: &str| p.get(n).and_then(Value::as_bool).unwrap_or(false);
-            let modifiers = egui::Modifiers {
-                alt: b("alt"),
-                ctrl: b("ctrl"),
-                shift: b("shift"),
-                mac_cmd: b("cmd") && cfg!(target_os = "macos"),
-                command: b("cmd"),
-            };
-            let a = egui::pos2(f("x"), f("y"));
-            let end = if req.method == "ui.drag" { egui::pos2(f("toX"), f("toY")) } else { a };
-            app.control_synthetic.push(egui::Event::PointerMoved(a));
-            app.control_synthetic.push(egui::Event::PointerButton { pos: a, button, pressed: true, modifiers });
-            if req.method == "ui.drag" {
-                for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
-                    app.control_synthetic.push(egui::Event::PointerMoved(a + (end - a) * t));
-                }
-            }
-            app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            for _ in 1..count {
-                app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: true, modifiers });
-                app.control_synthetic.push(egui::Event::PointerButton { pos: end, button, pressed: false, modifiers });
-            }
-            ctx.request_repaint();
-            ok(Value::Null)
-        }
+        "ui.click" | "ui.drag" => control_click(app, ctx, req),
         "ui.text" => {
             let Some(text) = s("text") else { return err("missing `text`") };
             // Focused widgets retain the synthetic keyboard route. Document automation uses
@@ -271,6 +301,18 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 }
                 wrap(app.run("text.insert", json!({"text": text})))
             }
+        }
+        "ui.ime" => {
+            let n = |v: &Value| v.as_u64().and_then(|n| usize::try_from(n).ok());
+            if let Some(text) = s("preedit") {
+                let active = p.get("active").and_then(Value::as_array).and_then(|a| Some(n(a.first()?)?..n(a.get(1)?)?));
+                app.control_synthetic.push(egui::Event::Ime(egui::ImeEvent::Preedit { text: text.to_string(), active_range_chars: active }));
+            }
+            if let Some(text) = s("commit") {
+                app.control_synthetic.push(egui::Event::Ime(egui::ImeEvent::Commit(text.to_string())));
+            }
+            ctx.request_repaint();
+            ok(Value::Null)
         }
         "ui.set" => {
             let mut r = Ok(Value::Null);
@@ -288,6 +330,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 ("frameEdges", "view.frameEdges"),
                 ("guides", "view.guides"),
                 ("baselineGrid", "view.baselineGrid"),
+                ("documentGrid", "view.documentGrid"),
                 ("textThreads", "view.textThreads"),
             ] {
                 if let Some(want) = p.get(k).and_then(Value::as_bool) {
@@ -296,6 +339,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                         "frameEdges" => app.ui.frame_edges,
                         "guides" => app.ui.guides,
                         "baselineGrid" => app.ui.baseline_grid,
+                        "documentGrid" => app.ui.document_grid,
                         _ => app.ui.text_threads,
                     };
                     if cur != want {
@@ -322,7 +366,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
                 r = crate::panel_docking::close_visible(app).map(|_| Value::Null);
             }
             if let Some(v) = p.get("dockExpanded").and_then(Value::as_bool) {
-                app.ui.dock_expanded = v;
+                r = crate::panel_docking::set_iconic(app, !v);
             }
             wrap(r)
         }
@@ -339,10 +383,14 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         },
         "ui.dialog.open" => {
             let Some(id) = s("id") else { return err("missing `id`") };
+            // Replacing a modal cancels its transaction just like its Cancel button.
+            // In particular, an uncommitted style preview must not leak into the new dialog.
+            crate::dialogs::cancel(app);
             if id == "findChange" || app.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 app.session.reset_find_scope();
             }
-            let d = crate::dialogs::Dialog::new(id, p.get("fields").cloned().unwrap_or(Value::Null));
+            let fields = p.get("fields").cloned().unwrap_or(Value::Null);
+            let d = if id == "frameSize" { crate::dialogs::frame_size_dialog(app, fields) } else { crate::dialogs::Dialog::new(id, fields) };
             let v = serde_json::to_value(&d).unwrap_or_default();
             app.ui.dialog = Some(d);
             ok(v)
@@ -371,7 +419,12 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         }
         "ui.render" => {
             let Some(st) = app.session.active() else { return err("no document") };
-            let page = match page_index(p, crate::canvas::current_page(app).unwrap_or(0), st.doc.page_count()) {
+            let current = match crate::canvas::current_page(app) {
+                Some(page) => page,
+                None if !st.editing_parents || p.get("page").is_some() => 0,
+                None => return err("select a document page or give an explicit page"),
+            };
+            let page = match page_index(p, current, st.doc.page_count()) {
                 Ok(page) => page,
                 Err(e) => return err(e),
             };
@@ -440,6 +493,30 @@ pub(crate) fn page_index(p: &Value, default: usize, count: usize) -> Result<usiz
 #[cfg(test)]
 mod automation_contract_tests {
     use super::*;
+
+    #[test]
+    fn replacing_a_style_preview_dialog_restores_the_document_and_undo_recording() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let before = app.session.doc().unwrap().doc.clone();
+        let history = app.session.doc().unwrap().history.undo.len();
+        app.session.begin_interaction("Style Options").unwrap();
+        app.session.preview("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":24}})).unwrap();
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            "paragraphStyleOptions",
+            json!({
+                "name":designcraft_doc::BASIC_PARAGRAPH,"preview":true,"_previewed":{"chars":{"size":24}}
+            }),
+        ));
+        assert_ne!(app.session.doc().unwrap().doc, before);
+        let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id":"characterStyleOptions","fields":{"new":true}}));
+        assert_eq!(response["ok"], true);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+        assert!(app.session.doc().unwrap().interaction.is_none());
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
+        app.run("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":18}})).unwrap();
+        assert_eq!(app.session.doc().unwrap().history.undo.len(), history + 1);
+    }
     fn app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({"pages":2})).unwrap();
@@ -506,10 +583,15 @@ mod automation_contract_tests {
     fn pointer_gestures_accept_the_exact_event_budget() {
         let mut app = app();
         let ctx = egui::Context::default();
-        for (method, params) in
-            [("ui.drag", json!({"steps": 9492, "count": 255})), ("ui.drag", json!({"steps": 10000})), ("ui.drag", json!({"steps": 9998, "count": 2}))]
-        {
-            app.control_synthetic.clear();
+        for (method, params) in [
+            ("ui.click", json!({"count": 255})),
+            ("ui.drag", json!({"steps": 9492, "count": 255})),
+            ("ui.drag", json!({"steps": 10000})),
+            ("ui.drag", json!({"steps": 9998, "count": 2})),
+        ] {
+            // A full click count fits on top of 9,492 pending events.
+            let pending = if method == "ui.click" { 10_003 - 511 } else { 0 };
+            app.control_synthetic = vec![egui::Event::PointerMoved(egui::pos2(12.0, 34.0)); pending];
             assert_eq!(call(&mut app, &ctx, method, params)["ok"], true, "{method}");
             assert_eq!(app.control_synthetic.len(), 10003);
             assert!(matches!(app.control_synthetic.last(), Some(egui::Event::PointerButton { pressed: false, .. })));
@@ -529,7 +611,7 @@ mod automation_contract_tests {
         assert_eq!(app.control_synthetic, queued);
         // The ordinary input hook consumes one pointer event per frame, freeing
         // enough room for a complete click without dropping earlier input.
-        app.raw_input_hook(&mut egui::RawInput::default());
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         assert_eq!(app.control_synthetic.len(), 10000);
         assert_eq!(call(&mut app, &ctx, "ui.click", json!({}))["ok"], true);
         assert_eq!(app.control_synthetic.len(), 10003);
@@ -612,6 +694,83 @@ mod automation_contract_tests {
         assert_eq!(app.ui.palette.as_deref(), Some("field"));
         assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     }
+    #[test]
+    fn parent_resize_no_canvas_render_keeps_document_page_zero_default() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.run("layout.pageSize", json!({"pages": [2], "width": 700})).unwrap();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        let omitted = call(&mut app, &ctx, "ui.render", json!({"scale": 0.1}));
+        assert_eq!(omitted["ok"], true, "{omitted}");
+        let first = call(&mut app, &ctx, "ui.render", json!({"page": 0, "scale": 0.1}));
+        let second = call(&mut app, &ctx, "ui.render", json!({"page": 1, "scale": 0.1}));
+        assert_eq!(omitted, first);
+        assert_ne!(omitted, second);
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_delete_uses_first_document_page() {
+        let mut app = app();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        app.run("app.deletePage", json!({})).unwrap();
+        let after = &app.session.doc().unwrap().doc;
+        assert_eq!(after.page_count(), 1);
+        assert_eq!(after.page(0).unwrap().id, before.page(1).unwrap().id);
+        assert_eq!(after.parents, before.parents);
+        assert!(app.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_delete_keeps_the_object_warning() {
+        let mut app = app();
+        app.run("frame.create", json!({"rect": [36, 36, 100, 100]})).unwrap();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        app.run("app.deletePage", json!({})).unwrap();
+        let dialog = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.id, "deletePages");
+        assert_eq!(dialog.fields["pages"], json!([0]));
+        assert_eq!(app.session.doc().unwrap().doc, before);
+    }
+
+    #[test]
+    fn parent_resize_no_canvas_duplicate_uses_first_document_spread() {
+        let mut app = app();
+        assert!(app.canvas_rect.is_none());
+        let before = app.session.doc().unwrap().doc.clone();
+        let ids: Vec<_> = before.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).collect();
+        let result = app.run("app.duplicateSpread", json!({})).unwrap();
+        let after = &app.session.doc().unwrap().doc;
+        let first = result["page"].as_u64().unwrap() as usize;
+        assert_eq!(first, before.spreads[0].pages.len());
+        assert_eq!(after.page_count(), before.page_count() + first);
+        for i in first..first * 2 {
+            assert!(!ids.contains(&after.page(i).unwrap().id));
+        }
+        let retained: Vec<_> = after.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.id)).filter(|id| ids.contains(id)).collect();
+        assert_eq!(retained, ids);
+        assert_eq!(after.parents, before.parents);
+    }
+
+    #[test]
+    fn parent_resize_mode_does_not_default_document_actions_to_page_zero() {
+        for canvas in [None, Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)))] {
+            let mut app = app();
+            let ctx = egui::Context::default();
+            app.canvas_rect = canvas;
+            app.run("layout.parents.edit", json!({"on":true,"parent":"A"})).unwrap();
+            let before = app.session.doc().unwrap().doc.clone();
+            assert!(app.run("app.deletePage", json!({})).is_err());
+            assert!(app.run("app.duplicateSpread", json!({})).is_err());
+            assert_eq!(call(&mut app, &ctx, "ui.render", json!({"scale":0.1}))["ok"], false);
+            assert_eq!(call(&mut app, &ctx, "ui.render", json!({"page":0,"scale":0.1}))["ok"], true);
+            assert_eq!(app.session.doc().unwrap().doc, before);
+        }
+    }
+
     #[test]
     fn control_pages_validate_before_writer_and_preserve_omission() {
         let mut app = app();
@@ -715,7 +874,7 @@ mod deferred_clipboard_tests {
         assert!(!app.in_control);
         for step in 0..3 {
             let mut raw = egui::RawInput { time: Some(step as f64 * 0.05), ..Default::default() };
-            app.raw_input_hook(&mut raw);
+            app.raw_input_hook(&ctx, &mut raw);
             ctx.run_ui(raw, |ui| menus::shortcuts(&mut app, ui.ctx())).textures_delta.clear();
         }
         let texts: Vec<String> = app.session.active().unwrap().doc.stories.values().map(|story| story.text.clone()).collect();
@@ -723,7 +882,7 @@ mod deferred_clipboard_tests {
         assert!(!texts.iter().any(|text| text.contains("SYNTHETIC_CLIPBOARD_SENTINEL")));
         // Once control input is drained, an ordinary user paste still reads its clipboard.
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         app.run("edit.paste", json!({})).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
@@ -734,12 +893,12 @@ mod deferred_clipboard_tests {
         let (req, _) = ControlRequest::new("ui.move", json!({"x":10,"y":10}));
         let _ = handle(&mut app, &ctx, &req);
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         let mut private = ctx.run_ui(raw, |ui| ui.ctx().copy_text("control field".into()));
         assert!(!private.platform_output.commands.iter().any(|cmd| matches!(cmd, egui::OutputCommand::CopyText(_))));
         private.textures_delta.clear();
         let mut raw = egui::RawInput::default();
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&ctx, &mut raw);
         let mut native = ctx.run_ui(raw, |ui| ui.ctx().copy_text("native field".into()));
         assert!(native.platform_output.commands.iter().any(|cmd| matches!(cmd, egui::OutputCommand::CopyText(text) if text=="native field")));
         native.textures_delta.clear();
@@ -756,5 +915,27 @@ mod deferred_clipboard_tests {
             assert!(app.synthetic.is_empty());
             assert!(!app.in_control);
         }
+    }
+
+    #[test]
+    fn control_ime_and_paste_keep_their_order_with_control_keys() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        for (method, params) in [("ui.ime", json!({"preedit":"ni"})), ("ui.key", json!({"key":"A"})), ("ui.paste", json!({"text":"p"}))] {
+            let (req, _) = ControlRequest::new(method, params);
+            assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(v) if v["ok"]==true), "{method}");
+        }
+        assert!(app.synthetic.is_empty(), "native menu events stay in their own queue");
+        let kinds: Vec<_> = app
+            .control_synthetic
+            .iter()
+            .map(|e| match e {
+                egui::Event::Ime(_) => "ime",
+                egui::Event::Key { .. } => "key",
+                egui::Event::Paste(_) => "paste",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["ime", "key", "key", "paste"]);
     }
 }

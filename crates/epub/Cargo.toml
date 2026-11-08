@@ -12,3 +12,4 @@ workspace = true
 designcraft-doc = { workspace = true }
 designcraft-color = { workspace = true }
 zip = { workspace = true }
+chrono = { workspace = true }

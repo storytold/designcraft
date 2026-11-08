@@ -118,6 +118,8 @@ impl Color {
         } else {
             60.0 * ((r - g) / d + 4.0)
         };
+        // A tiny negative `rem_euclid` input can round up to exactly 6.0 (hue 360).
+        let h = if h >= 360.0 { 0.0 } else { h };
         let s = if max <= 0.0 { 0.0 } else { d / max };
         [h, s, max]
     }
@@ -141,7 +143,7 @@ impl Color {
         let [r, g, b, _] = self.to_rgba8(1.0);
         format!("#{r:02x}{g:02x}{b:02x}")
     }
-    /// Parse `#rgb`, `#rrggbb` or a few CSS names.
+    /// Parse `#rgb`, `#rrggbb` (the `#` optional, any case, spaces around) or a few CSS names.
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.trim();
         match s.to_ascii_lowercase().as_str() {
@@ -153,6 +155,10 @@ impl Color {
             _ => {}
         }
         let h = s.strip_prefix('#').unwrap_or(s);
+        // `from_str_radix` takes a sign: "+f+f+f" is not a colour.
+        if !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let p = |i: usize, n: usize| u8::from_str_radix(h.get(i..i + n)?, 16).ok();
         match h.len() {
             3 => Some(Color::rgb8(p(0, 1)? * 17, p(1, 1)? * 17, p(2, 1)? * 17)),
@@ -248,11 +254,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hsb_hue_stays_below_360() {
+        let h = Color::rgb(1.0, 0.0, 1e-8).to_hsb()[0];
+        assert!((0.0..360.0).contains(&h), "hue {h}");
+    }
+
+    #[test]
     fn hex_roundtrip() {
         let c = Color::from_hex("#ff8000").unwrap();
         assert_eq!(c.to_hex(), "#ff8000");
         assert_eq!(Color::from_hex("#fff").unwrap().to_hex(), "#ffffff");
         assert_eq!(Color::from_hex("zz"), None);
+        for typed in ["#F59019", "f59019", "  #f59019 "] {
+            assert_eq!(Color::from_hex(typed).map(|c| c.to_hex()).as_deref(), Some("#f59019"), "{typed:?}");
+        }
+        assert_eq!(Color::from_hex("F59").map(|c| c.to_hex()).as_deref(), Some("#ff5599"));
+        for partial in ["#f5", "#f590", "#f5901", "#f590190", "+f+f+f", "#+1+2+3"] {
+            assert_eq!(Color::from_hex(partial), None, "{partial:?}");
+        }
     }
 
     #[test]

@@ -73,6 +73,11 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
                     Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
                     None => continue,
                 },
+                // The page the anchor's text has landed on, as a cross-reference resolves it.
+                HyperlinkDest::Anchor(a) => match cache.xref_index(doc).page_index(*a).and_then(|p| sheet_of_page(doc, sheets, p)) {
+                    Some(i) => Target::Destination(XyzDestination::new(i, krilla::geom::Point::from_xy(0.0, 0.0)).into()),
+                    None => continue,
+                },
             };
             out.push(Annotation::new_link(LinkAnnotation::new(rect, target), Some(h.name.clone())));
         }
@@ -82,14 +87,8 @@ pub(crate) fn annotations(doc: &Document, cache: &designcraft_compose::Cache, sh
         let first = doc.spreads[..sh.spread].iter().map(|s| s.pages.len()).sum::<usize>();
         sp.pages.iter().position(|p| p.bounds().intersect(sh.trim).area() > 0.0).map(|i| first + i)
     });
-    let mut stack: Vec<(Affine, &std::sync::Arc<designcraft_doc::Item>)> =
-        doc.spreads.get(sh.spread).map(|sp| sp.items.iter().map(|it| (Affine::IDENTITY, it)).collect()).unwrap_or_default();
-    while let Some((xf, it)) = stack.pop() {
-        stack.extend(it.shown_children().map(|c| (xf * it.xf, c)));
+    for (xf, it) in crate::export::exported_items(doc, sh.spread) {
         let Some(action) = &it.button else { continue };
-        if it.hidden {
-            continue;
-        }
         let r = xf.transform_rect_bbox(it.bounds()).intersect(sh.bleed);
         let rect = krilla::geom::Rect::from_ltrb(
             (r.x0 - sh.media.x0) as f32,

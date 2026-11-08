@@ -12,7 +12,7 @@ workspace = true
 kurbo = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-moxcms = "0.8"
+craft-cms = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

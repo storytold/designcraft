@@ -14,23 +14,30 @@ use crate::{Result, Session};
 fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: designcraft_doc::LayerId, at: (f64, f64)) -> Item {
     let (svg, (w, h)) = crate::math::to_svg(latex, size);
     let fresh = AssetId(d.alloc());
-    let aid = d.add_asset(Asset {
-        page: 0,
-        id: fresh,
-        name: "math.svg".into(),
-        mime: "image/svg+xml".into(),
-        link: None,
-        data: Arc::new(svg),
-        pixels: None,
-    });
+    let aid = d.add_asset(Asset { id: fresh, name: "math.svg".into(), mime: "image/svg+xml".into(), data: Arc::new(svg), ..Default::default() });
     let id = ItemId(d.alloc());
     let r = Rect::new(at.0, at.1, at.0 + w, at.1 + h);
     let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
-    it.content =
-        Content::Graphic(Graphic { asset: aid, size: (w, h), xf: Affine::translate(at), auto_fit: Default::default(), fit_align: 4, crop: [0.0; 4] });
+    it.content = Content::Graphic(Graphic {
+        layer_options: None,
+        asset: aid,
+        size: (w, h),
+        xf: Affine::translate(at),
+        auto_fit: Default::default(),
+        fit_align: 4,
+        crop: [0.0; 4],
+        wrap: Default::default(),
+        clip: None,
+        fill: Default::default(),
+    });
     it.alt_text = latex.to_string();
     it.name = "Math".into();
     it
+}
+
+/// The `size` parameter in points: 12 by default (also for non-finite values), clamped to 2..=400.
+fn size_param(p: &Value) -> f64 {
+    p.get("size").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(12.0).clamp(2.0, 400.0)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -40,13 +47,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Math Expression…",
             ["Type"],
             None,
-            "{latex, size?: points (12), x?, y?, spread?} — at the text insertion point (inline), else as a frame; or {id, latex} to edit one",
+            "{latex, size?: points (12), x?, y?, spread?} or {id, latex, size?} — at the text insertion point (inline), else as a frame; with `id`: edits that equation",
             has_doc,
             insert
         ),
         cmd!(query "math.svg", "Math Expression SVG", [], None, "{latex, size?} → {svg, width, height} — typeset without placing", has_doc, |_s, p| {
             let latex = str_param(p, "latex").ok_or_else(|| bad("math.svg", "`latex` required"))?;
-            let (svg, (w, h)) = crate::math::to_svg(latex, p.get("size").and_then(Value::as_f64).unwrap_or(12.0));
+            let (svg, (w, h)) = crate::math::to_svg(latex, size_param(p));
             Ok(json!({"svg": String::from_utf8_lossy(&svg), "width": w, "height": h}))
         }),
     ]
@@ -54,13 +61,15 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let latex = str_param(p, "latex").ok_or_else(|| bad("math.insert", "`latex` required"))?.to_string();
-    let size = p.get("size").and_then(Value::as_f64).unwrap_or(12.0).clamp(2.0, 400.0);
+    let size = size_param(p);
     let lid = s.doc()?.active_layer;
     // Edit an existing expression in place.
     if let Some(id) = super::id_param(p, "id") {
         return s.edit(|d, _| {
             let old = d.item(id).ok_or_else(|| bad("math.insert", "no such object"))?;
-            let at = old.bounds();
+            // The path and graphic live in the item's inner space, which `xf` maps to the spread:
+            // build the new ones at the old inner corner and keep `xf`.
+            let at = old.path.bounds().ok_or_else(|| bad("math.insert", "equation has no geometry"))?;
             let it = math_item(d, &latex, size, lid, (at.x0, at.y0));
             let target = d.item_mut(id).ok_or_else(|| bad("math.insert", "no such object"))?;
             target.path = it.path;
@@ -76,9 +85,11 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
             let r = t.range();
+            let del = r.start.min(d.story(t.story).map_or(0, |st| st.len()))..r.end.min(d.story(t.story).map_or(0, |st| st.len()));
             if let Some(st) = d.story_mut(t.story) {
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                st.delete(del.clone());
             }
+            d.adjust_text_ranges(t.story, del, 0);
             let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));
@@ -97,6 +108,24 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn math_svg_clamps_size_like_insert() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let dims = |s: &mut Session, size: f64| {
+            let r = s.execute("math.svg", &json!({"latex": "x", "size": size})).unwrap();
+            (r["width"].as_f64().unwrap(), r["height"].as_f64().unwrap())
+        };
+        let (w2, h2) = dims(&mut s, 2.0);
+        let (w400, h400) = dims(&mut s, 400.0);
+        for size in [0.0, -5.0, 1e-300] {
+            assert_eq!(dims(&mut s, size), (w2, h2), "size {size}");
+        }
+        for size in [1e9, 1e300] {
+            assert_eq!(dims(&mut s, size), (w400, h400), "size {size}");
+        }
+    }
 
     #[test]
     fn math_places_inline_and_as_frames() {
@@ -127,5 +156,47 @@ mod tests {
         assert_eq!(s.execute("math.insert", &json!({"latex": r"\pi r^2"})).unwrap()["inline"], true);
         let st = &s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(f["story"].as_u64().unwrap())];
         assert_eq!(st.objects.len(), 1);
+    }
+
+    /// The item's top-left corner in spread space (inner path corner through its transform).
+    fn origin(s: &Session, id: designcraft_doc::ItemId) -> designcraft_geom::Point {
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(id).unwrap();
+        let r = it.path.bounds().unwrap();
+        it.xf * designcraft_geom::Point::new(r.x0, r.y0)
+    }
+
+    #[test]
+    fn editing_a_transformed_equation_keeps_its_place() {
+        for step in ["move", "rotate", "scale"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let r = s.execute("math.insert", &json!({"latex": r"\frac{a}{b}", "x": 100, "y": 100})).unwrap();
+            let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+            match step {
+                "move" => s.execute("transform.move", &json!({"ids": [id.0], "dx": 50, "dy": 40})),
+                "rotate" => s.execute("transform.rotate", &json!({"ids": [id.0], "angle": 30})),
+                _ => s.execute("transform.scale", &json!({"ids": [id.0], "sx": 2.0, "sy": 1.5})),
+            }
+            .unwrap();
+            let before = origin(&s, id);
+            s.execute("math.insert", &json!({"id": id.0, "latex": r"\frac{a}{b}"})).unwrap();
+            let after = origin(&s, id);
+            assert!((before.x - after.x).abs() < 1e-6 && (before.y - after.y).abs() < 1e-6, "{step}: {before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn editing_a_moved_equation_keeps_its_bounds() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("math.insert", &json!({"latex": "x", "x": 100, "y": 100})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        s.execute("transform.move", &json!({"ids": [id.0], "dx": 50, "dy": 40})).unwrap();
+        let before = s.doc().unwrap().doc.item(id).unwrap().bounds();
+        s.execute("math.insert", &json!({"id": id.0, "latex": "x"})).unwrap();
+        let after = s.doc().unwrap().doc.item(id).unwrap().bounds();
+        assert_eq!((before.x0, before.y0), (after.x0, after.y0));
+        assert_eq!((after.x0, after.y0), (150.0, 140.0));
     }
 }

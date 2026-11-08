@@ -25,17 +25,21 @@ fn place(d: &mut Document, data: Vec<u8>, x: f64) {
 
 fn place_named(d: &mut Document, data: Vec<u8>, x: f64, name: &str, mime: &str, page: u32) {
     let aid = AssetId(d.alloc());
-    d.assets.insert(aid, Arc::new(Asset { id: aid, name: name.into(), mime: mime.into(), link: None, data: Arc::new(data), pixels: None, page }));
+    d.assets.insert(aid, Arc::new(Asset { id: aid, name: name.into(), mime: mime.into(), data: Arc::new(data), page, ..Default::default() }));
     let id = ItemId(d.alloc());
     let mut item = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(x, 36.0, x + 20.0, 56.0)));
     item.stroke.weight = 0.0;
     item.content = Content::Graphic(Graphic {
+        layer_options: None,
         asset: aid,
         size: (20.0, 20.0),
         xf: Affine::translate((x, 36.0)),
+        clip: None,
         auto_fit: Default::default(),
         fit_align: 4,
         crop: [0.0; 4],
+        wrap: Default::default(),
+        fill: Default::default(),
     });
     d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
 }
@@ -245,6 +249,8 @@ fn successful_fallback_warns_for_both_names_and_preserves_rgb_samples() {
 #[test]
 fn pdfa_rgb_conversion_does_not_poison_later_cmyk_exports() {
     let bytes = fixtures::cmyk_tiff(None, false);
+    // PDF/A gets the RGB the screen shows: converted through the working CMYK space.
+    let rgb: Vec<u8> = designcraft_images::decode_rgba(&bytes).unwrap().pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
     let mut d = Document::new(&Default::default());
     place_named(&mut d, bytes.clone(), 36.0, "a.tif", "image/tiff", 0);
     place_named(&mut d, bytes, 66.0, "b.tif", "image/tiff", 0);
@@ -256,7 +262,7 @@ fn pdfa_rgb_conversion_does_not_poison_later_cmyk_exports() {
         if standard == Standard::PdfA2b {
             assert_eq!(report.warnings, ["PDF/A: CMYK colours were converted to RGB (no CMYK output intent profile is available yet)"]);
             assert_eq!(images[0].space, "ICC");
-            assert_eq!(images[0].samples, [0, 0, 0, 255, 0, 0]);
+            assert_eq!(images[0].samples, rgb);
         } else {
             assert!(report.warnings.is_empty());
             assert_eq!(images[0].space, "DeviceCMYK");

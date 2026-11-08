@@ -1,4 +1,4 @@
-use super::*;
+use super::{CanvasLayout, Color32, DesignApp, Point, Pos2, Rect, View, Xf, json, render_texture, vec2};
 
 fn app_with_document_object() -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

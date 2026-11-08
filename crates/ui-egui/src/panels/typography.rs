@@ -1,7 +1,8 @@
 //! The Typography panel: the OpenType features the fonts of the selected text offer, grouped as
 //! Affinity's are. Every feature is a checkbox that shows how much of the selection it is applied to
 //! (checked: all of it; a dash: some of it; empty: none). A feature only some of the selection's fonts
-//! offer is italic. Changes apply to the selection through `type.feature`.
+//! offer is italic. Changes apply to the selection through `type.feature`, and Standard Ligatures
+//! through `type.char`'s `ligatures` attribute, which shaping reads.
 
 use std::collections::BTreeMap;
 
@@ -46,9 +47,16 @@ const ALTERNATES: &[Switch] = &[
     ("zero", "Slashed Zero"),
 ];
 
-const FIGURE_STYLE: &[Choice] = &[("Lining", &["lnum"]), ("Oldstyle", &["onum"])];
+/// One axis of the figures (style or width), and the choice that partners a choice on the other
+/// axis when no choice on this one applies to all of the selection.
+struct FigureAxis {
+    choices: &'static [Choice],
+    fallback: usize,
+}
 
-const FIGURE_WIDTH: &[Choice] = &[("Tabular", &["tnum"]), ("Proportional", &["pnum"])];
+const FIGURE_STYLE: FigureAxis = FigureAxis { choices: &[("Lining", &["lnum"]), ("Oldstyle", &["onum"])], fallback: 0 };
+
+const FIGURE_WIDTH: FigureAxis = FigureAxis { choices: &[("Tabular", &["tnum"]), ("Proportional", &["pnum"])], fallback: 1 };
 
 const FIGURE_POSITION: &[Choice] = &[
     ("Numerator", &["numr"]),
@@ -61,6 +69,49 @@ const FIGURE_POSITION: &[Choice] = &[
 const FRACTION_AND_ORDINAL: &[Switch] = &[("frac", "Fractions"), ("ordn", "Ordinal")];
 
 const CAPITALS: &[Choice] = &[("Caps to Small Caps", &["c2sc"]), ("Small Caps", &["smcp"]), ("All Small Caps", &["c2sc", "smcp"])];
+
+/// The sections of on/off switches above Other Features.
+const SWITCH_SECTIONS: &[&[Switch]] = &[LIGATURES, ALTERNATES, FRACTION_AND_ORDINAL];
+
+/// The character format's on/off features (`otf::TOGGLES`) no other section shows, so each one the
+/// character style dialog and IDML carry has a control here too.
+fn other_toggles() -> Vec<Switch> {
+    designcraft_doc::otf::TOGGLES
+        .iter()
+        .filter(|(tag, ..)| !SWITCH_SECTIONS.iter().any(|section| section.iter().any(|(t, _)| t == tag)))
+        .map(|(tag, label, _)| (*tag, *label))
+        .collect()
+}
+
+/// What this frame's clicks set: OpenType feature tags, and the `ligatures` attribute.
+#[derive(Default)]
+struct Changes {
+    features: BTreeMap<String, bool>,
+    ligatures: Option<bool>,
+}
+
+impl Changes {
+    /// Standard Ligatures is the `ligatures` attribute: shaping turns `liga` off through it, and
+    /// IDML carries it as `Ligatures`, so `liga` stays out of the feature list. The tag is also
+    /// cleared from the selection's features, since an earlier `-liga` would keep shaping it off.
+    fn set(&mut self, tag: &str, on: bool) {
+        if tag == "liga" {
+            self.ligatures = Some(on);
+            self.features.insert("liga".to_string(), true);
+        } else {
+            self.features.insert(tag.to_string(), on);
+        }
+    }
+
+    fn apply(self, app: &mut DesignApp) {
+        if !self.features.is_empty() {
+            let _ = app.run("type.feature", json!({"features": self.features}));
+        }
+        if let Some(on) = self.ligatures {
+            let _ = app.run("type.char", json!({"attrs": {"ligatures": on}}));
+        }
+    }
+}
 
 /// A feature the selection's fonts offer, and its state over the selection.
 #[derive(Clone, Copy)]
@@ -118,24 +169,22 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         return;
     }
     let lang = app.ui.language.clone();
-    // Changes this frame: each feature tag to the state it is set to.
-    let mut changes: BTreeMap<String, bool> = BTreeMap::new();
+    let mut changes = Changes::default();
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Typography")).strong());
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         section(ui, &lang, "Ligatures", |ui| switches(ui, &lang, &offered, LIGATURES, &mut changes));
         section(ui, &lang, "Alternates", |ui| switches(ui, &lang, &offered, ALTERNATES, &mut changes));
         section(ui, &lang, "Stylistic Sets", |ui| stylistic_sets(ui, &lang, &offered, &mut changes));
-        section(ui, &lang, "Figure Style", |ui| choices(ui, &lang, &offered, FIGURE_STYLE, &mut changes));
-        section(ui, &lang, "Figure Width", |ui| choices(ui, &lang, &offered, FIGURE_WIDTH, &mut changes));
+        section(ui, &lang, "Figure Style", |ui| figures(ui, &lang, &offered, &FIGURE_STYLE, &FIGURE_WIDTH, &mut changes));
+        section(ui, &lang, "Figure Width", |ui| figures(ui, &lang, &offered, &FIGURE_WIDTH, &FIGURE_STYLE, &mut changes));
         section(ui, &lang, "Figure Position", |ui| {
             choices(ui, &lang, &offered, FIGURE_POSITION, &mut changes);
             switches(ui, &lang, &offered, FRACTION_AND_ORDINAL, &mut changes);
         });
         section(ui, &lang, "Capitals", |ui| choices(ui, &lang, &offered, CAPITALS, &mut changes));
+        section(ui, &lang, "Other Features", |ui| switches(ui, &lang, &offered, &other_toggles(), &mut changes));
     });
-    if !changes.is_empty() {
-        let _ = app.run("type.feature", json!({"features": changes}));
-    }
+    changes.apply(app);
 }
 
 /// A collapsible section, open at first. Its body runs only when it has something to show.
@@ -157,23 +206,23 @@ fn tri_checkbox(ui: &mut egui::Ui, text: &str, feature: Feature) -> Option<bool>
 }
 
 /// On/off switches the fonts offer.
-fn switches(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Switch], changes: &mut BTreeMap<String, bool>) {
+fn switches(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Switch], changes: &mut Changes) {
     for (tag, label) in items {
         let Some(feature) = offered.get(tag) else { continue };
         if let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) {
-            changes.insert(tag.to_string(), on);
+            changes.set(tag, on);
         }
     }
 }
 
 /// Mutually exclusive choices, as checkboxes: choosing one turns the others off. Choosing a checked
 /// one turns it off.
-fn choices(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], changes: &mut BTreeMap<String, bool>) {
+fn choices(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], changes: &mut Changes) {
     for (i, (label, tags)) in items.iter().enumerate() {
         let Some(feature) = offered.choice(tags) else { continue };
         let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) else { continue };
         for t in *tags {
-            changes.insert(t.to_string(), on);
+            changes.set(t, on);
         }
         if on {
             for (j, (_, others)) in items.iter().enumerate() {
@@ -181,23 +230,55 @@ fn choices(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], c
                     continue;
                 }
                 for t in others.iter().filter(|t| !tags.contains(t)) {
-                    changes.insert(t.to_string(), false);
+                    changes.set(t, false);
                 }
             }
         }
     }
 }
 
+/// A figure style or width, as checkboxes like `choices`.
+fn figures(ui: &mut egui::Ui, lang: &str, offered: &Offered, axis: &FigureAxis, other: &FigureAxis, changes: &mut Changes) {
+    for (i, (label, tags)) in axis.choices.iter().enumerate() {
+        let Some(feature) = offered.choice(tags) else { continue };
+        if let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) {
+            figure_change(offered, axis, other, i, on, changes);
+        }
+    }
+}
+
+/// The changes turning `choice` on `axis` on or off makes. IDML's figure styles pair a style with a
+/// width, and a style or width alone is the default figures there, so turning one on also sets the
+/// other axis: the choice all of the selection has, else that axis's fallback. Turning one off
+/// clears both axes (the font's default figures).
+fn figure_change(offered: &Offered, axis: &FigureAxis, other: &FigureAxis, choice: usize, on: bool, changes: &mut Changes) {
+    for (_, tags) in axis.choices.iter().chain(other.choices) {
+        for t in *tags {
+            changes.set(t, false);
+        }
+    }
+    let Some((_, tags)) = axis.choices.get(choice).filter(|_| on) else { return };
+    let partner = other
+        .choices
+        .iter()
+        .find(|(_, t)| offered.choice(t).is_some_and(|f| f.applied == Covered::All))
+        .or_else(|| other.choices.get(other.fallback))
+        .map_or(&[][..], |(_, t)| *t);
+    for t in tags.iter().chain(partner) {
+        changes.set(t, true);
+    }
+}
+
 /// Stylistic sets by the name their fonts give them, or the generic `Stylistic Set NN` when the
 /// selection's fonts name them differently.
-fn stylistic_sets(ui: &mut egui::Ui, lang: &str, offered: &Offered, changes: &mut BTreeMap<String, bool>) {
+fn stylistic_sets(ui: &mut egui::Ui, lang: &str, offered: &Offered, changes: &mut Changes) {
     for set in &offered.sets {
         let label = match &set.name {
             Some(name) => format!("{name} ({})", set.tag),
             None => format!("{} {:02}", crate::i18n::tr(lang, "Stylistic Set"), set.number),
         };
         if let Some(on) = tri_checkbox(ui, &label, set.feature) {
-            changes.insert(set.tag.clone(), on);
+            changes.set(&set.tag, on);
         }
     }
 }
@@ -222,4 +303,111 @@ fn offered(app: &mut DesignApp) -> Offered {
         out.sets.push(Set { number, tag: tag.to_string(), name: s["name"].as_str().map(str::to_string), feature });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use egui::vec2;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    use super::*;
+
+    /// A Typography panel over "office" (all selected), its fonts installed before the first frame.
+    fn harness() -> Harness<'static, DesignApp> {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "office 1024", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let id = egui::Id::unique("test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(id, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        h
+    }
+
+    fn click(h: &mut Harness<'static, DesignApp>, label: &str) {
+        h.get_by_label(label).click();
+        h.run_steps(2);
+    }
+
+    fn chars(h: &mut Harness<'static, DesignApp>) -> Value {
+        super::super::text_attrs(h.state_mut()).unwrap()["chars"].clone()
+    }
+
+    /// Every `OTFFigureStyle` the stories' IDML export writes is `expected`.
+    fn assert_idml_figures(h: &Harness<'static, DesignApp>, expected: &str, why: &str) {
+        let idml = designcraft_idml::export_idml(&h.state().session.active().unwrap().doc);
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(idml)).unwrap();
+        let mut stories = String::new();
+        for i in 0..z.len() {
+            let mut f = z.by_index(i).unwrap();
+            if f.name().starts_with("Stories/") {
+                f.read_to_string(&mut stories).unwrap();
+            }
+        }
+        let found: Vec<&str> = stories.split("OTFFigureStyle=\"").skip(1).filter_map(|s| s.split('"').next()).collect();
+        assert!(!found.is_empty() && found.iter().all(|f| *f == expected), "{why}: {found:?}");
+    }
+
+    #[test]
+    fn every_character_format_toggle_has_a_control() {
+        let mut tags: Vec<&str> = SWITCH_SECTIONS.iter().flat_map(|s| s.iter().map(|(t, _)| *t)).collect();
+        tags.extend(other_toggles().iter().map(|(t, _)| *t));
+        for (tag, ..) in designcraft_doc::otf::TOGGLES {
+            assert!(tags.contains(tag), "{tag} has no Typography panel control");
+        }
+        assert_eq!(tags.len(), tags.iter().collect::<std::collections::BTreeSet<_>>().len(), "a feature shown twice: {tags:?}");
+        // Source Serif 4 offers `mark`, one of the toggles only Other Features shows.
+        let mut h = harness();
+        click(&mut h, "Mark Positioning");
+        assert_eq!(chars(&mut h)["otfFeatures"], json!(["-mark"]));
+    }
+
+    #[test]
+    fn a_figure_style_or_width_chosen_alone_exports_as_a_figure_style() {
+        let mut h = harness();
+        click(&mut h, "Lining");
+        assert_idml_figures(&h, "ProportionalLining", "Lining takes the fallback width");
+        click(&mut h, "Tabular");
+        assert_idml_figures(&h, "TabularLining", "Tabular keeps the applied style");
+        click(&mut h, "Oldstyle");
+        assert_idml_figures(&h, "TabularOldstyle", "Oldstyle keeps the applied width");
+        click(&mut h, "Oldstyle");
+        assert_idml_figures(&h, "Default", "turning a choice off clears both axes");
+        assert!(!["tnum", "pnum", "lnum", "onum"].iter().any(|t| chars(&mut h)["otfFeatures"].as_array().unwrap().contains(&json!(t))));
+    }
+
+    #[test]
+    fn standard_ligatures_switch_the_ligatures_attribute() {
+        let mut h = harness();
+        click(&mut h, "Standard Ligatures");
+        let c = chars(&mut h);
+        assert_eq!(c["ligatures"], false, "{c}");
+        assert!(!c["otfFeatures"].as_array().is_some_and(|l| l.iter().any(|t| t.as_str().is_some_and(|t| t.ends_with("liga")))), "{c}");
+        click(&mut h, "Standard Ligatures");
+        assert_eq!(chars(&mut h)["ligatures"], true, "the switch turns ligatures back on");
+    }
+
+    #[test]
+    fn standard_ligatures_switch_on_clears_a_feature_list_liga_off() {
+        let mut h = harness();
+        h.state_mut().run("type.feature", json!({"features": {"liga": false}})).unwrap();
+        assert_eq!(chars(&mut h)["otfFeatures"], json!(["-liga"]));
+        h.run_steps(2);
+        click(&mut h, "Standard Ligatures");
+        let c = chars(&mut h);
+        assert_eq!(c["ligatures"], true, "{c}");
+        assert!(!c["otfFeatures"].as_array().is_some_and(|l| l.iter().any(|t| t.as_str().is_some_and(|t| t.ends_with("liga")))), "{c}");
+    }
 }

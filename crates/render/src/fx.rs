@@ -4,7 +4,8 @@
 //! vello_cpu only supports filter layers in single-threaded contexts, so on the multithreaded
 //! pipeline each effect is rendered into an offscreen single-threaded context cropped to its
 //! reach and composited back as an image ([`Renderer::with_filters`]); single-threaded contexts
-//! draw directly. A very wide blur goes offscreen in both, at a lower resolution.
+//! draw directly. A very wide blur goes offscreen in both, at a lower resolution; the object
+//! itself and the clip to its shape stay at full resolution.
 //!
 //! - Drop shadow / outer glow: the object's silhouette (everything it paints: fill, image, text,
 //!   stroke) in a `DropShadowOnly` layer under the object. `size` sets the blur (σ = size / 2),
@@ -23,6 +24,7 @@ use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
 use vello_cpu::{RenderContext, kurbo};
 
 use crate::{Frame, Renderer, color_of};
+use designcraft_compose::ShownOn;
 
 /// Shadow offset (spread units) for an InDesign angle (degrees, light direction) and distance.
 pub(crate) fn offset(angle: f64, distance: f64) -> Vec2 {
@@ -88,7 +90,7 @@ pub(crate) fn gradient_feather_mask(ctx: &mut RenderContext, f: &Frame, it: &Ite
 
 impl Renderer {
     /// Draw an item with soft effects: below-effects, the (feathered) body, inner shadow.
-    pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: Option<usize>) {
+    pub(crate) fn draw_item_fx(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine, page: ShownOn) {
         let doc = f.doc;
         let e = &it.effects;
         let sw = if it.stroke.is_none() { 0.0 } else { it.stroke.extent() };
@@ -100,20 +102,26 @@ impl Renderer {
         let mut below = vec![];
         if e.outer_glow.on {
             let g = &e.outer_glow;
-            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity));
+            below.push((Vec2::ZERO, g.size, g.spread, g.color.clone(), g.opacity, g.mode));
         }
         if e.drop_shadow.on {
             let d = &e.drop_shadow;
-            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity));
+            below.push((offset(doc.light_angle(d.angle, d.global_light), d.distance), d.size, d.spread, d.color.clone(), d.opacity, d.mode));
         }
-        for (off, size, pct, color, opacity) in below {
+        for (off, size, pct, color, opacity, mode) in below {
             let Some(c) = doc.resolve_color(&color, 1.0) else { continue };
             let (sigma, grow) = split(size, pct);
             let filter = shadow(sigma, color_of(&c, opacity.clamp(0.0, 1.0)));
             // The offset moves the geometry, not the filter: vello drops layer content that lies
             // entirely outside the viewport before filtering.
             let r = (reach + off).inflate(grow, grow);
-            self.with_filters(ctx, f, r, sigma, |me, c, fr| {
+            // The effect's blend sees what's behind the object: a layer around the filtered one.
+            let mix = crate::blend_mode(mode).mix;
+            if mix != Mix::Normal {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
+            }
+            self.with_filters(ctx, f, r, sigma, None, |me, c, fr| {
                 let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
                 c.set_transform(moved.view);
                 c.push_layer(None, None, None, None, Some(filter));
@@ -126,6 +134,9 @@ impl Renderer {
                 }
                 c.pop_layer();
             });
+            if mix != Mix::Normal {
+                ctx.pop_layer();
+            }
         }
         // Gradient feather: the object (feathered or not) drawn in its own layer, then kept as
         // much as the opacity gradient says.
@@ -135,31 +146,40 @@ impl Renderer {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, None, None, None, None);
         }
-        // The object, feathered or not.
+        // The object, feathered or not. Choke keeps that much of the width opaque (a shorter
+        // fade); Sharp and Rounded corners follow the inset shape more tightly than Diffused.
         if e.feather > 0.0 && it.path.is_closed() {
-            let w = e.feather;
-            self.with_filters(ctx, f, reach, w / 4.0, |me, c, fr| {
-                c.set_transform(fr.view * xf);
-                c.push_clip_layer(bp);
-                me.draw_body(c, fr, it, bp, xf, page);
-                // Keep the body where the blurred inset silhouette is.
-                c.set_transform(Affine::IDENTITY);
-                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+            let fo = &e.feather_options;
+            let w = e.feather * (1.0 - fo.choke.clamp(0.0, 100.0) / 100.0).max(0.01);
+            let (sigma, join) = match fo.corners {
+                designcraft_doc::FeatherCorners::Diffused => (w / 4.0, kurbo::Join::Round),
+                designcraft_doc::FeatherCorners::Rounded => (w / 3.0, kurbo::Join::Round),
+                designcraft_doc::FeatherCorners::Sharp => (w / 6.0, kurbo::Join::Miter),
+            };
+            // The body and its clip stay at device resolution; only the blurred mask may be drawn
+            // offscreen at a lower one.
+            ctx.set_transform(f.view * xf);
+            ctx.push_clip_layer(bp);
+            self.draw_body(ctx, f, it, bp, xf, page);
+            // Keep the body where the blurred inset silhouette is.
+            ctx.set_transform(Affine::IDENTITY);
+            ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+            self.with_filters(ctx, f, reach, sigma, None, |_, c, fr| {
                 c.set_transform(fr.view);
-                c.push_layer(None, None, None, None, Some(blur(w / 4.0)));
+                c.push_layer(None, None, None, None, Some(blur(sigma)));
                 c.set_transform(fr.view * xf);
                 c.set_paint(peniko::Color::BLACK);
                 c.fill_path(bp);
                 c.set_transform(Affine::IDENTITY);
                 c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
                 c.set_transform(fr.view * xf);
-                c.set_stroke(kurbo::Stroke::new(w).with_join(kurbo::Join::Round));
+                c.set_stroke(kurbo::Stroke::new(w).with_join(join));
                 c.stroke_path(bp);
                 c.pop_layer();
                 c.pop_layer();
-                c.pop_layer();
-                c.pop_layer();
             });
+            ctx.pop_layer();
+            ctx.pop_layer();
         } else {
             self.draw_body(ctx, f, it, bp, xf, page);
         }
@@ -200,6 +220,9 @@ impl Renderer {
         if !it.path.is_closed() {
             return;
         }
+        // An image's edge is where it is opaque, not the frame: inner shadows, glows and bevels
+        // follow what is painted when the frame holds a graphic.
+        let painted = matches!(it.content, designcraft_doc::Content::Graphic(_)).then_some((it, page));
         // Inner shadow, clipped to the shape.
         if e.inner_shadow.on
             && let Some(c) = doc.resolve_color(&e.inner_shadow.color, 1.0)
@@ -207,7 +230,19 @@ impl Renderer {
             let s = &e.inner_shadow;
             let (sigma, choke) = split(s.size, s.choke);
             let off = offset(doc.light_angle(s.angle, s.global_light), s.distance);
-            self.inner_edge(ctx, f, reach, bp, xf, off, sigma, choke, color_of(&c, s.opacity.clamp(0.0, 1.0)), Mix::Normal);
+            self.inner_edge(
+                ctx,
+                f,
+                reach,
+                bp,
+                xf,
+                off,
+                sigma,
+                choke,
+                color_of(&c, s.opacity.clamp(0.0, 1.0)),
+                crate::blend_mode(s.mode).mix,
+                painted,
+            );
         }
         // Inner glow: from the edges inwards (or out from the centre), screened over the object.
         if e.inner_glow.on
@@ -215,11 +250,12 @@ impl Renderer {
         {
             let g = &e.inner_glow;
             let (sigma, choke) = split(g.size, g.choke);
+            // Precise keeps the glow close to the edge: a tighter blur.
+            let sigma = if g.technique == designcraft_doc::GlowTechnique::Precise { sigma * 0.4 } else { sigma };
+            let mix = crate::blend_mode(g.mode).mix;
             let paint = color_of(&c, g.opacity.clamp(0.0, 1.0));
             if g.center {
-                self.with_blended_filters(ctx, f, reach, sigma, Mix::Screen, |_, c, fr| {
-                    c.set_transform(fr.view * xf);
-                    c.push_clip_layer(bp);
+                self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |_, c, fr| {
                     c.set_transform(fr.view);
                     c.push_layer(None, None, None, None, Some(blur(sigma)));
                     c.set_transform(fr.view * xf);
@@ -234,10 +270,9 @@ impl Renderer {
                     c.stroke_path(bp);
                     c.pop_layer();
                     c.pop_layer();
-                    c.pop_layer();
                 });
             } else {
-                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, Mix::Screen);
+                self.inner_edge(ctx, f, reach, bp, xf, Vec2::ZERO, sigma, choke, paint, mix, painted);
             }
         }
         // Satin: the shape shifted both ways along the angle, blurred, where exactly one covers.
@@ -249,9 +284,7 @@ impl Renderer {
             let sigma = st.size.max(0.0) / 2.0;
             let paint = color_of(&c, st.opacity.clamp(0.0, 1.0));
             let invert = st.invert;
-            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, |_, c, fr| {
-                c.set_transform(fr.view * xf);
-                c.push_clip_layer(bp);
+            self.with_blended_filters(ctx, f, reach, sigma, Mix::Multiply, (bp, xf), |_, c, fr| {
                 c.set_transform(fr.view);
                 c.push_layer(None, None, None, None, Some(blur(sigma)));
                 if invert {
@@ -271,7 +304,6 @@ impl Renderer {
                 c.pop_layer();
                 c.pop_layer();
                 c.pop_layer();
-                c.pop_layer();
             });
         }
         // Bevel and Emboss (inner bevel): highlight from the lit side, shadow from the other.
@@ -281,16 +313,18 @@ impl Renderer {
             let sigma = b.size.max(0.0) / 2.0;
             if let Some(c) = doc.resolve_color(&b.highlight, 1.0) {
                 // The inverse shape moved away from the light lights the edges facing it.
-                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen);
+                self.inner_edge(ctx, f, reach, bp, xf, off, sigma, 0.0, color_of(&c, b.highlight_opacity.clamp(0.0, 1.0)), Mix::Screen, painted);
             }
             if let Some(c) = doc.resolve_color(&b.shadow, 1.0) {
-                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply);
+                self.inner_edge(ctx, f, reach, bp, xf, -off, sigma, 0.0, color_of(&c, b.shadow_opacity.clamp(0.0, 1.0)), Mix::Multiply, painted);
             }
         }
     }
 
     /// An inner shadow-like edge: everything outside the shape moved by `off`, blurred by
-    /// `sigma`, clipped to the shape and blended with `mix`.
+    /// `sigma`, clipped to the shape and blended with `mix`. With `painted` (an object and the
+    /// page it shows on), the shape is what the object paints, so a transparent part of an image
+    /// is outside it: the edge runs along the image's opaque pixels, not the frame.
     #[allow(clippy::too_many_arguments)]
     fn inner_edge(
         &mut self,
@@ -304,10 +338,34 @@ impl Renderer {
         choke: f64,
         paint: peniko::Color,
         mix: Mix,
+        painted: Option<(&Item, ShownOn)>,
     ) {
-        self.with_blended_filters(ctx, f, reach, sigma, mix, |_, c, fr| {
-            c.set_transform(fr.view * xf);
-            c.push_clip_layer(bp);
+        if let Some((it, page)) = painted {
+            self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |me, c, fr| {
+                let pad = sigma * 4.0 + choke + off.hypot() + 4.0 * fr.px;
+                let area = reach.inflate(pad, pad);
+                // The colour everywhere but under the painted pixels moved by `off`, blurred, ...
+                c.set_transform(fr.view);
+                c.push_layer(None, None, None, None, None);
+                c.push_layer(None, None, None, None, Some(blur(sigma)));
+                c.set_paint(paint);
+                c.fill_rect(&area);
+                c.set_transform(Affine::IDENTITY);
+                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                let moved = Frame { view: fr.view * Affine::translate(off), ..*fr };
+                me.draw_body(c, &moved, it, bp, xf, page);
+                c.pop_layer();
+                c.pop_layer();
+                // ... kept only where the object paints.
+                c.set_transform(Affine::IDENTITY);
+                c.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestIn)), None, None, None);
+                me.draw_body(c, fr, it, bp, xf, page);
+                c.pop_layer();
+                c.pop_layer();
+            });
+            return;
+        }
+        self.with_blended_filters(ctx, f, reach, sigma, mix, (bp, xf), |_, c, fr| {
             c.set_transform(fr.view);
             c.push_layer(None, None, None, None, Some(blur(sigma)));
             // Everything outside the offset shape, so the colour bleeds in from the edges.
@@ -326,12 +384,13 @@ impl Renderer {
                 c.stroke_path(&shape);
             }
             c.pop_layer();
-            c.pop_layer();
         });
     }
 
-    /// The effect's blend must see the object's backdrop, outside its clipping and offscreen
+    /// [`Renderer::with_filters`] clipped to `clip` (a path and its spread transform), blended with
+    /// `mix`. The effect's blend must see the object's backdrop, outside its clipping and offscreen
     /// filter layers. Putting it inside the clip blends with transparent pixels instead.
+    #[allow(clippy::too_many_arguments)]
     fn with_blended_filters(
         &mut self,
         ctx: &mut RenderContext,
@@ -339,13 +398,14 @@ impl Renderer {
         reach: Rect,
         sigma: f64,
         mix: Mix,
+        clip: (&BezPath, Affine),
         draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
     ) {
         if mix != Mix::Normal {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(BlendMode::new(mix, Compose::SrcOver)), None, None, None);
         }
-        self.with_filters(ctx, f, reach, sigma, draw);
+        self.with_filters(ctx, f, reach, sigma, Some(clip), draw);
         if mix != Mix::Normal {
             ctx.pop_layer();
         }
@@ -354,32 +414,56 @@ impl Renderer {
     /// Run `draw`, which pushes filter layers. Single-threaded contexts draw directly. On a
     /// multithreaded context, or for a blur wider than [`MAX_BLUR_SPREAD`], the layer is drawn into
     /// an offscreen single-threaded context covering `reach` (spread space) plus the blur's spread,
-    /// then composited back.
+    /// then composited back. `clip` (a path and its spread transform) clips what `draw` paints;
+    /// at a lower resolution it clips the composited image on `ctx`, so its edge stays sharp.
     pub(crate) fn with_filters(
         &mut self,
         ctx: &mut RenderContext,
         f: &Frame,
         reach: Rect,
         sigma: f64,
+        clip: Option<(&BezPath, Affine)>,
         draw: impl FnOnce(&mut Self, &mut RenderContext, &Frame),
     ) {
         // 3σ of the Gaussian in pixels, plus a pixel of antialiasing.
         let spread = sigma.max(0.0) * 3.0 / f.px + 2.0;
         if !f.mt && spread <= MAX_BLUR_SPREAD {
-            return draw(self, ctx, f);
+            push_clip(ctx, f, clip);
+            draw(self, ctx, f);
+            pop_clip(ctx, clip);
+            return;
         }
         let Some(o) = offscreen(f.view.transform_rect_bbox(reach), spread, ctx.width(), ctx.height()) else { return };
         let mut off = RenderContext::new_with(o.width, o.height, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
         let view = Affine::scale(1.0 / o.scale) * Affine::translate((-o.x0, -o.y0)) * f.view;
         let shifted = Frame { mt: false, view, px: f.px * o.scale, ..*f };
+        // Clip where the result is at full resolution: offscreen unless that is reduced.
+        let (inner, outer) = if o.scale > 1.0 { (None, clip) } else { (clip, None) };
+        push_clip(&mut off, &shifted, inner);
         draw(self, &mut off, &shifted);
+        pop_clip(&mut off, inner);
         off.flush();
         let mut pm = vello_cpu::Pixmap::new(o.width, o.height);
         off.render(&mut pm, &mut self.resources);
+        push_clip(ctx, f, outer);
         ctx.set_transform(Affine::translate((o.x0, o.y0)) * Affine::scale(o.scale));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(pm)), sampler: peniko::ImageSampler::default() });
         ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(o.width), f64::from(o.height)));
+        pop_clip(ctx, outer);
         ctx.set_transform(Affine::IDENTITY);
+    }
+}
+
+fn push_clip(ctx: &mut RenderContext, f: &Frame, clip: Option<(&BezPath, Affine)>) {
+    if let Some((bp, xf)) = clip {
+        ctx.set_transform(f.view * xf);
+        ctx.push_clip_layer(bp);
+    }
+}
+
+fn pop_clip(ctx: &mut RenderContext, clip: Option<(&BezPath, Affine)>) {
+    if clip.is_some() {
+        ctx.pop_layer();
     }
 }
 
@@ -425,5 +509,69 @@ mod tests {
         // much padding again inside vello's filter layer. Drawn at 1/14.65 it is 1,024 px wide.
         let wide = Offscreen { x0: -14852.0, y0: -14852.0, scale: 15_002.0 / 1024.0, width: 2062, height: 2062 };
         assert_eq!(offscreen(object, 15_002.0, 1440, 900), Some(wide));
+    }
+
+    /// An inner shadow on a frame holding an image whose left half is transparent: the shadow
+    /// lines the image's opaque part (its edge in the middle of the frame), not only the frame.
+    #[test]
+    fn an_inner_shadow_follows_a_transparent_images_edge() {
+        use designcraft_doc::build::NewDocument;
+        use designcraft_doc::{Document, SpreadRef};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        // 20 × 20: transparent left half, opaque white right half.
+        let img = image::RgbaImage::from_fn(20, 20, |x, _| if x < 10 { image::Rgba([0, 0, 0, 0]) } else { image::Rgba([255, 255, 255, 255]) });
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let aid = designcraft_doc::AssetId(d.alloc());
+        d.assets.insert(
+            aid,
+            std::sync::Arc::new(designcraft_doc::Asset {
+                id: aid,
+                name: "half.png".into(),
+                mime: "image/png".into(),
+                data: std::sync::Arc::new(png),
+                pixels: Some((20, 20)),
+                ..Default::default()
+            }),
+        );
+        let mut it = Item::new(
+            designcraft_doc::ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 300.0, 300.0)),
+        );
+        it.content = designcraft_doc::Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (200.0, 200.0),
+            xf: Affine::translate((100.0, 100.0)),
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let s = &mut it.effects.inner_shadow;
+        s.on = true;
+        s.color = "[Black]".into();
+        s.opacity = 1.0;
+        s.distance = 0.0;
+        s.size = 20.0;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let cache = crate::Cache::new();
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let page = r.render_page(&d, &cache, 0, 1.0, false, &crate::RenderOptions::default()).unwrap();
+        let lum = |x: u32| {
+            let p = page.pixel(x, 200);
+            u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+        };
+        // The image's opaque part starts at x = 200: just inside it the shadow darkens it; in its
+        // middle (x = 250, 50 pt from every edge but the frame's right one) it stays light.
+        assert!(lum(204) + 60 < lum(250), "shadow at the image's own edge: {} vs {}", lum(204), lum(250));
+        // The transparent half shows the page: no shadow painted there.
+        assert!(lum(150) > 700, "nothing over the transparent part: {}", lum(150));
     }
 }

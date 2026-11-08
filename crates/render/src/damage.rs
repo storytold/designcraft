@@ -2,7 +2,7 @@
 //! repaint just those regions (typing in a frame repaints the frame, not the window).
 //!
 //! Conservative: anything whose effect can reach beyond the changed items' own bounds (styles,
-//! swatches, layers, parent pages, text wrap, effects, text that other stories show through
+//! swatches, layers, parent pages, placed files, text wrap, effects, text that other stories show through
 //! cross-references, variables or footnote numbers) reports "everything" (`None`).
 
 use std::collections::HashMap;
@@ -33,6 +33,9 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.spreads.len() != new.spreads.len()
         || old.parents.len() != new.parents.len()
         || old.parents.iter().zip(&new.parents).any(|(a, b)| !Arc::ptr_eq(a, b))
+        // A relinked or updated file changes what unchanged items show.
+        || old.assets.len() != new.assets.len()
+        || old.assets.iter().zip(&new.assets).any(|((ka, a), (kb, b))| ka != kb || !Arc::ptr_eq(a, b))
     {
         return None;
     }
@@ -92,6 +95,14 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         if a.map_or(0, |s| s.notes.len()) != b.map_or(0, |s| s.notes.len()) {
             return None;
         }
+        // Its anchored objects' text wrap reflows the other stories on its spreads.
+        for d in [old, new] {
+            for other in designcraft_compose::wrap::wrapped_by(d, sid) {
+                for f in d.story(other).map(|s| s.frames.clone()).unwrap_or_default() {
+                    out.push(frame_area(d, f)?);
+                }
+            }
+        }
         // Only the frames whose composition changed, when the previous composition is known.
         if let (Some(c), Some(_), Some(_)) = (cache, a, b)
             && let Some(prev) = c.composed_for(old, sid)
@@ -148,7 +159,7 @@ fn item_area(it: &Item) -> Option<Rect> {
     let mut ok = true;
     it.walk(&mut |i| {
         // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.wrap.mode != designcraft_doc::WrapMode::None {
+        if i.effects.any() || i.has_wrap() {
             ok = false;
         }
     });
@@ -220,6 +231,62 @@ mod tests {
         assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(350.0, 100.0))));
     }
 
+    #[test]
+    fn relinking_an_asset_damages_the_frame_showing_it() {
+        use designcraft_doc::{Asset, AssetId, Content, Graphic};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let aid = AssetId(d.alloc());
+        d.assets.insert(aid, Arc::new(Asset { id: aid, name: "a.png".into(), mime: "image/png".into(), ..Default::default() }));
+        let mut it = Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)),
+        );
+        it.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (100.0, 100.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(it));
+        let old = d.clone();
+        // Relink: the same asset id now holds other bytes; the item itself is unchanged.
+        let fresh = Asset { data: Arc::new(vec![1, 2, 3]), link: Some("/new/a.png".into()), ..(*d.assets[&aid]).clone() };
+        d.assets.insert(aid, Arc::new(fresh));
+        let dmg = damage(&old, &d);
+        assert!(
+            dmg.as_ref().is_none_or(|v| v.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(150.0, 150.0)))),
+            "relink reported damage {dmg:?}"
+        );
+    }
+
+    #[test]
+    fn editing_a_wrapping_anchored_object_damages_the_text_it_wraps() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "Anchor", ParaFormat::default()).unwrap();
+        let (_, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 600.0), lid, "Wrapped", ParaFormat::default()).unwrap();
+        let mut it = designcraft_doc::Item::new(
+            designcraft_doc::ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 20.0)),
+        );
+        it.wrap.mode = designcraft_doc::WrapMode::BoundingBox;
+        let old = d.clone();
+        d.story_mut(a).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        let dmg = damage(&old, &d).unwrap();
+        assert!(dmg.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(400.0, 500.0))));
+    }
+
     /// Channels where `old`'s render patched over `new`'s damage differs from `new`'s full render.
     fn patched_diff(old: &Document, new: &Document, (w, h): (u32, u32), zoom: f64) -> usize {
         use crate::{Placed, RenderOptions, Renderer};
@@ -230,8 +297,8 @@ mod tests {
         let mut r = Renderer::new();
         r.threads = 0;
         let opts = RenderOptions::default();
-        let mut img = r.render(old, &cache, &placed, w, h, view, &opts);
-        let full = r.render(new, &cache, &placed, w, h, view, &opts);
+        let mut img = r.render(old, &cache, &placed, (w, h), view, &opts);
+        let full = r.render(new, &cache, &placed, (w, h), view, &opts);
         // Patch the damaged pixels.
         let regions = damage(old, new).unwrap();
         let u = regions.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap();
@@ -239,7 +306,7 @@ mod tests {
         let y0 = ((u.y0 * zoom).floor().max(0.0)) as u32;
         let x1 = ((u.x1 * zoom).ceil() as u32).min(w);
         let y1 = ((u.y1 * zoom).ceil() as u32).min(h);
-        let patch = r.render(new, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
+        let patch = r.render(new, &cache, &placed, (x1 - x0, y1 - y0), Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
         for y in y0..y1 {
             for x in x0..x1 {
                 let pi = (((y - y0) * (x1 - x0) + (x - x0)) * 4) as usize;
