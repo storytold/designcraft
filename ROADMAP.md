@@ -361,7 +361,7 @@ A string without a translation shows in English and fails no check; `cargo xtask
 | Vietnamese | vi | none | 0% |
 
 Also shipped: Czech (99%), Italian (85%), Ukrainian (83%), Polish (99%).
-Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%), Swedish (99%), Spanish (100% of the report's 2,947 strings).
+Also shipped: Italian (85%), Ukrainian (83%), Georgian (100%), Swedish (99%), Spanish (100% of the report's 2,956 strings).
 
 - **2026-11-07** · Spanish interface (`es`): menus, panels and dialogs read in Spanish. The rows the
   shared table already had are filled in its Spanish column; the 834 keys it has no row for live in
