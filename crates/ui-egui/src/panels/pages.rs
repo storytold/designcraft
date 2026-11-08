@@ -17,7 +17,10 @@ enum ThumbOf {
     Parent(SpreadId),
 }
 
-/// (document uid, revision, page or parent, thumbnail height).
+/// (document uid, content version, page or parent, thumbnail height). The content version is
+/// the document's own allocation, which changes only when the document's content changes — a
+/// selection-only change re-renders no pixels, so keying on the state revision instead tore
+/// down and re-rendered every page thumbnail on every click.
 type ThumbKey = (u64, u64, ThumbOf, u32);
 
 static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
@@ -27,7 +30,8 @@ const MAX_THUMB_W: f64 = 1024.0;
 
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let key = (st.uid, st.revision, of, h.round() as u32);
+    let rev = std::sync::Arc::as_ptr(&st.doc) as u64;
+    let key = (st.uid, rev, of, h.round() as u32);
     let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = g.get_or_insert_with(HashMap::new);
     if let Some(t) = map.get(&key) {
@@ -59,9 +63,9 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    // Drop thumbnails of older revisions.
-    let (uid, rev) = (st.uid, st.revision);
-    map.retain(|k, _| !(k.0 == uid && k.1 != rev));
+    // Drop thumbnails of an older version of the document.
+    let (uid, cur) = (st.uid, rev);
+    map.retain(|k, _| !(k.0 == uid && k.1 != cur));
     map.insert(key, tex.clone());
     Some(tex)
 }
@@ -1260,5 +1264,71 @@ mod spread_label_tests {
         assert!(!h.state().session.doc().unwrap().editing_parents);
         assert!(!h.state().view().unwrap().fitted);
         assert_eq!(h.state().session.doc().unwrap().doc.page_loc(crate::canvas::current_page(h.state()).unwrap()).unwrap().0, 2);
+    }
+}
+
+#[cfg(test)]
+mod click_freeze_repro {
+    //! Repro for: clicking an object in a large document froze the UI for ~30 s.
+    //!
+    //! Set `DC_PORT_REPRO` to a `.designcraft` path to run it (e.g. the user's
+    //! Portfolio-Clean file); the test is skipped when the variable is unset.
+    use egui_kittest::Harness;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn selecting_an_object_must_not_rebuild_every_page_thumbnail() {
+        let path = match std::env::var("DC_PORT_REPRO") {
+            Ok(p) if !p.is_empty() => p,
+            _ => return,
+        };
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.open", json!({"path": path})).unwrap();
+        let doc = app.session.doc().unwrap().doc.clone();
+        println!("document: {} spreads, {} items, {} assets", doc.spreads.len(), doc.spreads.iter().map(|s| s.items.len()).sum::<usize>(), doc.assets.len());
+        let mut h = Harness::builder()
+            .with_size(vec2(280.0, 900.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                |ui, app: &mut DesignApp| {
+                    let key = egui::Id::unique("click_freeze_repro_fonts");
+                    if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                        crate::theme::install_fonts(ui.ctx(), "");
+                        ui.data_mut(|d| d.insert_temp(key, true));
+                        return;
+                    }
+                    show(app, ui);
+                },
+                app,
+            );
+        let frame = |h: &mut Harness<DesignApp>, label: &str| {
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            println!("{label}: {} ms", t0.elapsed().as_millis());
+        };
+        frame(&mut h, "frame 1 (first paint: builds every page thumbnail)");
+        frame(&mut h, "frame 2 (thumbnails cached)");
+        // What a click on an object does: the select tool dispatches selection.set.
+        let id = h.state().session.doc().unwrap().doc.spreads.first().and_then(|sp| sp.items.first()).map(|it| it.id.0).unwrap_or(0);
+        h.state_mut().run("selection.set", json!({"ids": [id]})).unwrap();
+        let after = {
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            let ms = t0.elapsed().as_millis();
+            println!("frame 3 (after selection.set): {ms} ms");
+            ms
+        };
+        // A selection change repaints only the selection outline; it must not cost
+        // like re-rendering every page thumbnail.
+        let cached = {
+            let t0 = std::time::Instant::now();
+            h.run_steps(1);
+            let ms = t0.elapsed().as_millis();
+            println!("frame 4 (steady state): {ms} ms");
+            ms
+        };
+        assert!(after < cached.max(200) * 20 + 2000, "selection change rebuilt every page thumbnail: {after} ms vs cached {cached} ms");
     }
 }

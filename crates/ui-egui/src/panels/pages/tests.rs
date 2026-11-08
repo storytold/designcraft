@@ -63,7 +63,7 @@ fn double_clicking_a_parent_shows_that_parent() {
     }
     // Parent rows show a rendered thumbnail.
     let id = st.doc.parents[2].id;
-    let rev = (st.uid, st.revision);
+    let rev = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64);
     let thumbs = super::THUMBS.lock().unwrap();
     assert!(thumbs.as_ref().unwrap().keys().any(|k| (k.0, k.1) == rev && k.2 == super::ThumbOf::Parent(id)));
 }
