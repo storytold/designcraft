@@ -21,6 +21,17 @@ fn modified(doc: &Document, opts: &EpubOptions) -> String {
     t.map_or_else(|| "2026-01-01T00:00:00Z".to_string(), iso8601)
 }
 
+/// Characters of the title the package keeps: it is copied into every content file, so a huge one
+/// would multiply by the number of chapters or pages.
+const MAX_TITLE_CHARS: usize = 1024;
+
+fn capped_title(title: String) -> String {
+    match title.char_indices().nth(MAX_TITLE_CHARS) {
+        Some((at, _)) => title[..at].to_string(),
+        None => title,
+    }
+}
+
 /// The book's identifier: the given one, else a `urn:uuid` derived from the title and the
 /// document's creation time, so a book keeps its identifier from export to export and two books
 /// with the same title don't share one.
@@ -70,7 +81,7 @@ pub struct FixedPage {
 
 /// A pre-paginated (fixed-layout) EPUB: one XHTML page per document page.
 pub fn export_fixed_epub(doc: &Document, pages: &[FixedPage], opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
+    let title = capped_title(opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string()));
     let lang = language_tag(&opts.language);
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
@@ -161,7 +172,7 @@ fn write_package<'a>(opf: &str, nav: &str, entries: impl IntoIterator<Item = (St
 
 /// Export the document as a reflowable EPUB 3.
 pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubError> {
-    let title = opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string());
+    let title = capped_title(opts.title.clone().unwrap_or_else(|| doc.metadata_title().to_string()));
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
     let Body { html: body, images, toc, .. } = body_html(doc, true, opts.split.as_ref(), &|name, _, _| name.to_string());

@@ -5,13 +5,15 @@ use super::names::has_face;
 #[cfg(not(target_arch = "wasm32"))]
 use super::names::has_wws_family;
 use super::outline::font_outline;
+#[cfg(target_os = "macos")]
+use super::platform_font_files;
 use super::scoped::ScopedFonts;
 #[cfg(not(target_arch = "wasm32"))]
 use super::system::CatalogEntry;
 #[cfg(not(target_os = "macos"))]
 use super::system::platform_font_files;
 use super::system::system_font_dirs;
-use super::*;
+use super::{Arc, AtomicU32, BezPath, FontDb, HashMap, Mutex, PoisonError, RwLock};
 
 pub(super) static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -195,6 +197,11 @@ impl FontDb {
     /// A shared face other than `exclude` that covers `c` (see [`ScopedFonts::fallback_for`]).
     pub fn fallback_for(&self, c: char, exclude: u32, language: Option<&str>) -> Option<Arc<FontFace>> {
         self.scoped(0).fallback_for(c, exclude, language)
+    }
+
+    /// [`ScopedFonts::fallback_for_styled`] on the shared scope.
+    pub fn fallback_for_styled(&self, c: char, exclude: u32, language: Option<&str>, prefer_sans: Option<bool>) -> Option<Arc<FontFace>> {
+        self.scoped(0).fallback_for_styled(c, exclude, language, prefer_sans)
     }
 
     /// The box drawn for `face`'s missing glyph (.notdef) when the font's own has no outline, in

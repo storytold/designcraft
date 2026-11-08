@@ -4,6 +4,7 @@ use egui::{Color32, Sense, Stroke, vec2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
+use crate::app::file_dialogs::Bound;
 use crate::theme::{Tokens, semibold};
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -186,11 +187,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 fn select_source(app: &mut DesignApp) {
-    let Some(path) = app.services.pick_open.as_mut().and_then(|f| f("dataMerge")) else {
+    let asked = app.ask_open("dataMerge", Bound::Document, |app, path| {
+        let _ = app.run("data.source.select", json!({"path": path}));
+        Ok(Value::Null)
+    });
+    if asked.is_err() {
         app.status(tr(&app.ui.language, "Pass csv, rows, or bytes from the control channel."));
-        return;
-    };
-    let _ = app.run("data.source.select", json!({"path": path}));
+    }
 }
 
 /// Render a localized, named combo and return only a changed selection.

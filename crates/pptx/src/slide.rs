@@ -259,6 +259,8 @@ impl<'a> Exporter<'a> {
         let b = doc.settings.bleed;
         self.clip = Rect::new(bounds.x0 - b[2].max(b[3]), bounds.y0 - b[0], bounds.x1 + b[2].max(b[3]), bounds.y1 + b[1]);
         let page_name = doc.page_name(abs);
+        // What the canvas hides: this page's overrides and those of the parent pages behind it.
+        let overridden = doc.page_loc(abs).map(|(si, pi)| doc.overridden_parent_items(designcraft_doc::SpreadRef::Doc(si), pi)).unwrap_or_default();
         for layer in doc.layers.iter().rev() {
             if !layer.visible || !layer.printable {
                 continue;
@@ -270,7 +272,7 @@ impl<'a> Exporter<'a> {
             {
                 let dx = page.x - pp.x;
                 for it in &parent.items {
-                    if it.layer != layer.id || page.overridden.contains(&it.id) {
+                    if it.layer != layer.id || overridden.contains(&it.id) {
                         continue;
                     }
                     if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {

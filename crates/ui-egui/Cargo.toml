@@ -21,10 +21,12 @@ designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
+designcraft-textimport = { workspace = true }
 craft-prepress = { workspace = true }
 # The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
 # them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
+egui_extras = { workspace = true }
 web-time = { workspace = true }
 # Unicode bidi classes are used only to bypass the label cache for ordinary LTR text.
 unicode-bidi = { workspace = true }
@@ -32,10 +34,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
-# Network printing (WS-Print, IPP): not for the web, there is no socket there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Network printing (WS-Print, IPP): not for the web, there is no socket there.
 designcraft-print = { workspace = true }
 craft-update = { workspace = true }
+# File and message dialogs that never block the frame; the browser build uses its own path.
+craft-dialogs = { workspace = true }
+raw-window-handle = { workspace = true }
 
 [dev-dependencies]
 # The in-memory fake printers (never in a shipped binary).

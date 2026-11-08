@@ -1,6 +1,9 @@
 use super::color::{HIDDEN_LAYERS, blend_mode, color_of, overprints, rect_overlaps, screen_color, set_fill_paint, spread_blends};
 use super::types::{DisplayQuality, Frame};
-use super::*;
+use super::{
+    Affine, Arc, BezPath, BlendMode, Compose, ComposedStory, Content, DcBlend, Item, Mix, RenderContext, Renderer, Shape, ShownOn, SpreadRef,
+    StoryId, Vec2, blendspace, corners, fx, grid, kurbo, peniko,
+};
 
 /// An item's fill under its content; an overprinting fill multiplies into what is beneath.
 fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, xf: Affine) {
@@ -87,12 +90,15 @@ impl Renderer {
                 if !page.show_parent_items {
                     continue;
                 }
-                for (ppi, ppage) in doc.shown_parent_pages(sr, pi) {
+                let chain = doc.shown_parent_pages(sr, pi);
+                // This page's overrides and those of every parent page behind it (#1469).
+                let overridden = doc.overridden_parent_items(sr, pi);
+                for (ppi, ppage) in chain {
                     let Some(parent) = doc.parents.get(ppi) else { continue };
                     let Some(ppg) = parent.pages.get(ppage) else { continue };
                     let dx = page.x - ppg.x;
                     for it in &parent.items {
-                        if it.layer != layer.id || page.overridden.contains(&it.id) {
+                        if it.layer != layer.id || overridden.contains(&it.id) {
                             continue;
                         }
                         // Parent items belong to the parent page they sit on.

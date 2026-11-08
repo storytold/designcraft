@@ -3,6 +3,57 @@ use egui_kittest::{Harness, kittest::Queryable};
 
 use super::*;
 
+/// A place-cursor drag past its 3-point threshold but short of egui's drag distance previews
+/// a frame, and the release places that frame: what's shown is what lands.
+#[test]
+fn a_short_place_cursor_drag_places_the_frame_it_previews() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    app.run("place.load", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png"})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(6);
+    let (from, slot) = {
+        let app = h.state();
+        let layout = CanvasLayout::new(&app.session.doc().unwrap().doc, false);
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        (xf.to_screen(layout.slots[0].xf * Point::new(200.0, 200.0)), layout.slots[0].xf)
+    };
+    // About 5.4 points: past the place cursor's 3, short of egui's 6.
+    let to = from + vec2(4.5, 3.0);
+    assert!((to - from).length() < h.ctx.options(|o| o.input_options.max_click_dist));
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerMoved(to));
+    h.run_steps(2);
+    let vi = h.state().view_info();
+    let preview = h
+        .state_mut()
+        .session
+        .overlays(vi)
+        .into_iter()
+        .find_map(|o| match o {
+            designcraft_tools::Overlay::Marquee(r) => Some(r),
+            _ => None,
+        })
+        .expect("the frame is previewed");
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let placed = h.state().session.doc().unwrap().doc.spreads[0].items.last().expect("placed").bounds();
+    let shown = slot.inverse().transform_rect_bbox(preview);
+    for (a, b) in [(placed.x0, shown.x0), (placed.y0, shown.y0), (placed.x1, shown.x1), (placed.y1, shown.y1)] {
+        assert!((a - b).abs() < 0.01, "placed {placed:?}, previewed {shown:?}");
+    }
+}
+
 #[test]
 fn a_press_after_a_drag_is_not_a_double_click() {
     let (delay, dist) = (0.3, 6.0);
@@ -84,6 +135,118 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
         assert_eq!(strokes(&mut app, s.margin_color), 0, "{mode:?} hides the margin guide");
         assert_eq!(strokes(&mut app, s.slug_color), 0, "{mode:?} hides the slug guide");
     }
+}
+
+/// An empty graphic frame's X joins its corners: a rectangle's, and a frame slanted by
+/// moving its top points, as in the Zero2Graphic tutorial's row of parallelograms.
+#[test]
+fn an_empty_frames_x_follows_its_corners() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 160]})).unwrap()["id"].as_u64().unwrap();
+    let x = |app: &DesignApp| {
+        let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+        let m = it.xf;
+        frame_x(&it).map(|(a, b)| {
+            let (a, b) = (m * a, m * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+    };
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 100.0), (200.0, 160.0)], [(100.0, 160.0), (200.0, 100.0)]], "corner to corner");
+    // Slant it: the two top points move 30 pt right.
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+    let top: Vec<Value> =
+        it.path.subpaths[0].anchors.iter().enumerate().filter(|(_, a)| (it.xf * a.p).y < 130.0).map(|(k, _)| json!([0, k])).collect();
+    assert_eq!(top.len(), 2);
+    app.run("path.moveAnchors", json!({"id": id, "anchors": top, "dx": 30, "dy": 0})).unwrap();
+    let mut lines = x(&app).to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(100.0, 160.0), (230.0, 100.0)], [(130.0, 100.0), (200.0, 160.0)]], "the slanted corners");
+    // An ellipse frame (four smooth anchors) keeps the X across its bounds, not a plus.
+    let e = app.run("frame.create", json!({"rect": [300, 100, 400, 160], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(e)).unwrap().clone();
+    let mut lines: Vec<[(f64, f64); 2]> = frame_x(&it)
+        .map(|(a, b)| {
+            let (a, b) = (it.xf * a, it.xf * b);
+            [(a.x.round(), a.y.round()), (b.x.round(), b.y.round())]
+        })
+        .to_vec();
+    lines.iter_mut().for_each(|l| l.sort_by(|a, b| a.partial_cmp(b).unwrap()));
+    lines.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(lines, vec![[(300.0, 100.0), (400.0, 160.0)], [(300.0, 160.0), (400.0, 100.0)]], "the ellipse's bounds");
+    // So does a four-sided polygon frame (a diamond): its corners would cross as a plus.
+    let mut diamond = it.clone();
+    diamond.shape = designcraft_doc::Shape::Polygon;
+    for a in &mut diamond.path.subpaths[0].anchors {
+        (a.h_in, a.h_out) = (a.p, a.p);
+    }
+    let lines: Vec<_> = frame_x(&diamond).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "diagonals, not a plus: {lines:?}");
+    // Still after one of its points moves (which makes it a path).
+    let p = app.run("frame.create", json!({"rect": [300, 200, 400, 260], "shape": "polygon", "sides": 4, "starInset": 0})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("path.moveAnchors", json!({"id": p, "anchors": [[0, 0]], "dx": 5, "dy": 0})).unwrap();
+    let it = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(p)).unwrap().clone();
+    assert_eq!(it.shape, designcraft_doc::Shape::Path);
+    let lines: Vec<_> = frame_x(&it).to_vec();
+    assert!(lines.iter().all(|(a, b)| (a.x - b.x).abs() > 1e-6 && (a.y - b.y).abs() > 1e-6), "an edited diamond: {lines:?}");
+}
+
+/// A graphic pasted into a smaller Pen-drawn shape (Edit › Paste Into) is clipped to it, and so
+/// are the frame edges: the shape shows its own edge, not the whole graphic's past it (#2345).
+#[test]
+fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("photo.png");
+    std::fs::write(&png, designcraft_render::Rendered { width: 300, height: 300, pixels: vec![90; 300 * 300 * 4] }.to_png()).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let big = app.run("frame.create", json!({"rect": [60, 60, 360, 360]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": png.to_string_lossy(), "frame": big})).unwrap();
+    let pts: Vec<Value> = [[160, 160], [260, 170], [240, 260], [170, 250]].iter().map(|p| json!({"p": p})).collect();
+    let shape = app.run("path.create", json!({"anchors": pts, "closed": true})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [big]})).unwrap();
+    app.run("edit.cut", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [shape]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    assert!(app.ui.frame_edges);
+    let ctx = egui::Context::default();
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
+        out.textures_delta.clear();
+        shapes = out.shapes;
+    }
+    let st = app.session.active().unwrap();
+    let doc = &st.doc;
+    let it = doc.item(designcraft_doc::ItemId(shape)).unwrap();
+    assert!(it.has_nested_items(), "the graphic is inside the shape");
+    let layout = CanvasLayout::new(doc, false);
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let (a, _) = item_canvas_xf(doc, &layout, it.id).unwrap();
+    let frame = xf.rect(a.transform_rect_bbox(it.bounds()));
+    let edge = frames::layer_color(doc, it).gamma_multiply(0.75);
+    let edges: Vec<Rect> = shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(edge) => Some(Rect::from_points(&p.points)),
+            _ => None,
+        })
+        .collect();
+    for r in &edges {
+        assert!(frame.expand(0.5).contains_rect(*r), "an edge line at {r:?} runs outside the frame at {frame:?}");
+    }
+    assert!(
+        edges.iter().any(|r| (r.min - frame.min).length() < 0.5 && (r.max - frame.max).length() < 0.5),
+        "the frame's own edge is drawn: {edges:?} vs {frame:?}"
+    );
 }
 
 /// Each preview mode's shown area: Preview stops at the trim, Bleed reaches the bleed box and
@@ -953,6 +1116,31 @@ fn overset_frames_are_found_inside_groups() {
     assert!(out.is_empty());
 }
 
+/// While parents are edited, a document page's frames have no place on the canvas (they fell back
+/// to the identity transform and their ¶ marks and other overlays piled onto the right parent
+/// page), and the reverse.
+#[test]
+fn document_pages_have_no_place_on_the_parent_canvas() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2})).unwrap();
+    let s = &mut app.session;
+    let body =
+        s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": "one\ntwo"})).unwrap()["id"].as_u64().unwrap();
+    let head = s
+        .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [36, 10, 300, 30], "content": "text", "text": "head"}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let (body, head) = (designcraft_doc::ItemId(body), designcraft_doc::ItemId(head));
+    let pages = CanvasLayout::new(&doc, false);
+    assert!(item_canvas_xf(&doc, &pages, body).is_some());
+    assert!(item_canvas_xf(&doc, &pages, head).is_none());
+    let parents = CanvasLayout::new(&doc, true);
+    assert!(item_canvas_xf(&doc, &parents, body).is_none(), "a page frame is not drawn over the parent");
+    assert!(item_canvas_xf(&doc, &parents, head).is_some());
+}
+
 /// The always-on overset mark sits at the frame's out port, a step along its own right edge
 /// (so a rotated frame gets it inside its edge, not straight up from the corner), and a
 /// selected overset frame gets only the mark its ports draw.
@@ -1772,6 +1960,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
         snap: SnapView { snap_to_document_grid: true, zone_px: 20.0, ..SnapView::OFF },
         unit: Unit::Points,
         stroke_in_front: false,
+        loaded: None,
     };
     let (snapped, _) = designcraft_tools::snap::snap_point(&cx, sr, Point::new(page.x0 + 31.3, page.y0 + 47.9));
     assert_eq!((snapped.x - page.x0, snapped.y - page.y0), (27.0, 45.0));
@@ -1782,7 +1971,7 @@ fn document_grid_is_drawn_where_points_snap_to_it() {
     let placed: Vec<_> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let render = |app: &DesignApp| {
         let opts = screen_options(app, &layout, false, 1.0);
-        designcraft_render::Renderer::new().render(&doc, &app.session.cache, &placed, 160, 160, view, &opts)
+        designcraft_render::Renderer::new().render(&doc, &app.session.cache, &placed, (160, 160), view, &opts)
     };
     // The snapped point is at pixel (80, 80); halfway to the next line is 18 px further.
     let darkest = |img: &designcraft_render::Rendered, xs: [u32; 2], ys: [u32; 2]| {
@@ -2836,4 +3025,50 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
         assert!(dots.iter().all(|&x| x > l.end_x && x < para_x), "{dots:?} then {mark} at {para_x}");
         assert!(para_x >= space.x + space.adv, "{mark} at {para_x} overlaps the last space");
     }
+}
+
+/// As InDesign: an end-of-story # in every cell (after its text), a ¶ where a cell paragraph
+/// ends, and the table paragraph's ¶ just after the table's bottom right corner.
+#[test]
+fn table_cells_show_their_hidden_characters() {
+    let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), DRect::new(0.0, 0.0, 300.0, 300.0), lid, "", Default::default()).unwrap();
+    let data = vec![vec!["Name:".to_string(), "".into()], vec!["a\nb".into(), "".into()]];
+    let t = designcraft_doc::Table::from_strings(d.alloc(), &data, 200.0, &Default::default(), &Default::default());
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let cs = compose::compose_story(&d, sid, &compose::ComposeOptions::default());
+    let frag = &cs.frames[0].tables[0];
+    // The whole frame: the table's own line adds no second ¶; the story's last paragraph
+    // (after the table) has its #.
+    let story = d.story(sid).unwrap().text.clone();
+    let all = frame_hidden_marks(&story, &cs.frames[0]);
+    let marks: Vec<_> = all.iter().filter(|m| frag.rect.inflate(2.0, 2.0).contains(m.0)).cloned().collect();
+    let ends = |m: &str| marks.iter().filter(|x| x.1 == m).count();
+    assert_eq!(ends("#"), 4, "one per cell: {marks:?}");
+    assert_eq!(ends("¶"), 2, "the cell's first paragraph and the table's, once: {marks:?}");
+    assert_eq!(all.iter().filter(|m| m.1 == "¶" && m.3 > 20.0).count(), 0, "no ¶ the size of the table: {all:?}");
+    // Each # is inside its cell, after the cell's text.
+    for c in &frag.cells {
+        let inside = marks.iter().filter(|m| m.1 == "#" && c.rect.contains(m.0)).count();
+        assert_eq!(inside, 1, "cell {},{}: {marks:?}", c.row, c.col);
+    }
+    let name = frag.cell(0, 0).unwrap();
+    assert!(marks.iter().any(|m| m.1 == "#" && name.rect.contains(m.0) && m.0.x > name.origin.x + 20.0), "after Name:");
+    let last = marks.last().unwrap();
+    assert_eq!((last.0, last.1), (designcraft_geom::Point::new(frag.rect.x1 + 1.0, frag.rect.y1), "¶"));
+}
+
+#[test]
+fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    let mut h = harness(app);
+    h.state_mut().run("layout.parents.edit", json!({"on": true, "parent": "A-Parent"})).unwrap();
+    h.run_steps(2);
+    let b = page_box(h.state()).unwrap();
+    // Page 2 is the left page of the second spread.
+    page_box_go(h.state_mut(), &b, 1);
+    h.run_steps(3);
+    assert_eq!(current_page(h.state()), Some(1));
 }

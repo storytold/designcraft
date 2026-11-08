@@ -49,10 +49,10 @@ mod pdfx;
 mod pdfx1a;
 mod transitions;
 pub use export::{
-    BookletKind, BookletOptions, GrayPage, booklet_pairs, export_booklet, export_pdf, export_pdf_with_report, gray_pdf, merge_pdfs, print_color,
-    rec709_luma, sheet_spreads,
+    BookletKind, BookletOptions, GrayPage, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, gray_pdf,
+    item_exported, layer_exported, merge_pdfs, print_color, rec709_luma, sheet_spreads, shown_parent_items,
 };
-pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4};
+pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
@@ -137,7 +137,8 @@ pub struct PdfOptions {
     /// Title for the metadata; `None` = the document title.
     pub title: Option<String>,
     pub author: Option<String>,
-    /// Creation date as Unix seconds (UTC); `None` = now (native) / omitted (wasm).
+    /// Creation date as Unix seconds (UTC). `None` takes `SOURCE_DATE_EPOCH` when it names a date
+    /// a PDF can hold, else the clock (native) / omitted (wasm).
     pub created: Option<i64>,
     /// Tagged PDF: stories become paragraphs in reading order, graphics figures with their alt
     /// text, parent-page items and printer's marks artifacts.
@@ -221,6 +222,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
     let bad = || PdfError::BadRange(s.to_string());
     let num = |v: &str| v.trim().parse::<usize>().map_err(|_| bad());
     let mut out = Vec::new();
+    // The pages selected so far, for ranges that overlap (`1-9, 2-8, …`): a set, not a search.
+    let mut selected = vec![false; count];
     for part in t.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (a, b) = match part.split_once('-') {
             Some((a, b)) => {
@@ -240,7 +243,8 @@ pub fn parse_page_range(s: &str, count: usize) -> Result<Vec<usize>> {
             if p > count {
                 return Err(PdfError::BadPage(p));
             }
-            if !out.contains(&(p - 1)) {
+            if let Some(new) = selected.get_mut(p - 1).filter(|s| !**s) {
+                *new = true;
                 out.push(p - 1);
             }
         }

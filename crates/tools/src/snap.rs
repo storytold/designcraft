@@ -1093,9 +1093,15 @@ fn pass_align(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -> 
     }
     let flags = axis_flags(req, axis);
     let mut best: Option<Best> = None;
+    // An edge being drawn or resized also meets the page's centre line, as InDesign's smart
+    // guides do: a frame drawn from the top margin down to the middle of the page stops there.
+    let edge_to_centre = cx.snap.align_centers && matches!(req.gesture, Gesture::Create | Gesture::Resize);
     if let Some(sp) = cx.doc.spread(req.spread) {
         for page in &sp.pages {
             offer_box(&mut best, req.rect, flags, axis, page.bounds(), tol, (cx.snap.align_edges, cx.snap.align_centers));
+            if edge_to_centre {
+                offer_edges_to_centre(&mut best, req.rect, flags, axis, page.bounds(), tol);
+            }
         }
         for item in &sp.items {
             let Some(rect) = item_target_rect(cx.selection, req, item) else { continue };
@@ -1211,6 +1217,7 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
         if !page.show_parent_items {
             continue;
         }
+        let overridden = doc.overridden_parent_items(spread, pi);
         for (ppi, ppage) in doc.shown_parent_pages(spread, pi) {
             let Some(parent) = doc.parents.get(ppi) else { continue };
             let Some(parent_page) = parent.pages.get(ppage) else { continue };
@@ -1219,7 +1226,7 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
                 continue;
             }
             for item in &parent.items {
-                if page.overridden.contains(&item.id) {
+                if overridden.contains(&item.id) {
                     continue;
                 }
                 // A facing parent only shows items whose center sits on the parent page this page uses.
@@ -1307,6 +1314,18 @@ fn offer_box(best: &mut Option<Best>, moving: Rect, flags: [bool; 3], axis: Axis
     }
     if centers && use_mid {
         offer(best, m_mid, t_mid, tol, Some(target));
+    }
+}
+
+/// The moving rect's enabled edges against the target's centre line.
+fn offer_edges_to_centre(best: &mut Option<Best>, moving: Rect, flags: [bool; 3], axis: Axis, target: Rect, tol: f64) {
+    let (m0, _, m1) = axis_triple(moving, axis);
+    let (_, t_mid, _) = axis_triple(target, axis);
+    if flags[0] {
+        offer(best, m0, t_mid, tol, Some(target));
+    }
+    if flags[2] {
+        offer(best, m1, t_mid, tol, Some(target));
     }
 }
 

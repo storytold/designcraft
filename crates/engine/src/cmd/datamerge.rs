@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use designcraft_doc::{
-    DataField, DataFieldKind, DataSource, Delimiter, Document, HyperlinkSource, ItemId, MergeOptions, Page, Placeholder, PlaceholderAnchor,
-    PlaceholderRole, Selection, SourceStatus, SpreadRef, StoryId,
+    DataField, DataFieldKind, DataSource, Delimiter, Document, ItemId, MergeOptions, Page, Placeholder, PlaceholderAnchor, PlaceholderRole,
+    Selection, SourceStatus, SpreadRef, StoryId,
 };
 use designcraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
-use fill::{FillReport, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
+use fill::{FillReport, ImageCache, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
 use parse::{
     Table, TileInput, extension, fingerprint_of, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects,
     tile,
@@ -172,8 +172,7 @@ fn placeholder_remove(s: &mut Session, p: &Value) -> Result<Value> {
                     let start = start.min(end);
                     st.replace(start..end, "");
                 }
-                let removed = end.saturating_sub(start);
-                shift_after(d, story, end, -(removed as isize));
+                d.adjust_text_ranges(story, start..end, 0);
             }
         }
         d.data_merge.placeholders.retain(|ph| ph.id != id);
@@ -210,7 +209,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let row = source.rows.get((record as usize).saturating_sub(1)).cloned().unwrap_or_default();
     let data_dir = source_file(&source, st.path.as_deref().map(Path::new)).as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let doc_dir = st.path.as_deref().and_then(parent_dir);
-    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref() };
+    let images = ImageCache::default();
+    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
@@ -246,7 +246,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     warnings.extend(table.warnings.iter().cloned());
     let mut merged = src.clone();
     let mut missing = Vec::new();
-    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref() };
+    let images = ImageCache::default();
+    let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     let mut sink = Sink { warnings: &mut warnings, missing: &mut missing, parent: false };
     if options.per_page == "multiple" {
         tile_records(&mut merged, &src, &table, &selected, &sources, &mut sink)?;
@@ -493,7 +494,7 @@ fn add_placeholder(d: &mut Document, sel: &Selection, p: &Value, name: &str) -> 
             if let Some(st) = d.story_mut(story) {
                 st.replace(at..at, &marker);
             }
-            shift_after(d, story, at, marker.len() as isize);
+            d.adjust_text_ranges(story, at..at, marker.len());
             PlaceholderAnchor::Text { story, start: at, end: at.saturating_add(marker.len()) }
         } else {
             let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -517,30 +518,6 @@ fn text_target(p: &Value, sel: &Selection) -> Option<(StoryId, usize, usize)> {
         let r = t.range();
         (t.story, r.start, r.end)
     })
-}
-
-fn shift_after(doc: &mut Document, story: StoryId, at: usize, delta: isize) {
-    if delta == 0 {
-        return;
-    }
-    for ph in &mut doc.data_merge.placeholders {
-        if let PlaceholderAnchor::Text { story: s, start, end } = &mut ph.anchor
-            && *s == story
-            && *start >= at
-        {
-            *start = fill::add_delta(*start, delta);
-            *end = fill::add_delta(*end, delta);
-        }
-    }
-    for link in &mut doc.hyperlinks {
-        if let HyperlinkSource::Text { story: s, start, end } = &mut link.source
-            && *s == story
-            && *start >= at
-        {
-            *start = fill::add_delta(*start, delta);
-            *end = fill::add_delta(*end, delta);
-        }
-    }
 }
 
 /// After an edit, drop a text placeholder whose marker is gone unless the story still has exactly

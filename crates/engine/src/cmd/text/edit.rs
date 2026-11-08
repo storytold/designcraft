@@ -1,6 +1,8 @@
 use super::caret::{next_char, next_word, prev_char, prev_word, story_of};
 use super::format::{apply_typing_format, format_targets, typing_format};
-use super::*;
+use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, id_param, json, ok, str_param};
+#[cfg(test)]
+use designcraft_doc::StoryId;
 
 // Each command edits a copy-on-write Story snapshot. Reserving its known final text growth
 // avoids retaining geometric String spare capacity in every independent undo snapshot.
@@ -11,10 +13,13 @@ fn reserve_command_text(st: &mut designcraft_doc::Story, additional: usize) -> R
 
 pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = crate::cmd::text_param(p, "text");
-    // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`).
-    if text == "\t" && s.doc()?.selection.text.is_some_and(|t| t.cell.is_some()) {
+    // Tab in a table cell moves to the next cell (Shift-Tab: `table.prevCell`). Footnote text is
+    // addressed as a cell too: a Tab there is typed.
+    if text == "\t" && s.doc()?.selection.text.is_some_and(|t| t.cell.is_some_and(|c| c.footnote_id().is_none())) {
         return crate::cmd::table::step_cell(s, true);
     }
+    // Typing with one cell selected replaces its text, as InDesign.
+    crate::cmd::table::one_selected_cell_to_text(s)?;
     let raw = p.get("raw").and_then(Value::as_bool).unwrap_or(false);
     let text = if s.prefs.typographers_quotes && !raw { smart_quotes(s, &text) } else { text };
     let tracking = s.doc()?.doc.settings.track_changes;
@@ -33,6 +38,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         {
             r = r.start + 1..r.start + 1;
         }
+        let mut auto_edit = None;
         // Autocorrect: a word ended by a space or punctuation is looked up.
         if let Some(list) = &autocorrect
             && r.is_empty()
@@ -51,6 +57,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
                         to.clone()
                     };
                     st.replace(ws..r.start, &to);
+                    auto_edit = Some((ws..r.start, to.len()));
                     r = ws + to.len()..ws + to.len();
                 }
             }
@@ -78,7 +85,7 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if tracking && t.cell.is_none() {
             // Track Changes: the replaced text is marked deleted, the typing inserted after it.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let (at, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
             reserve_command_text(st, text.len())?;
             let mut fmt = st.insert_format_at(at).clone();
             if let Some(f) = &typing {
@@ -88,6 +95,11 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
             st.insert_with(at, &text, fmt);
             let pos = at + text.len() - trail;
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
+            d.adjust_text_ranges(t.story, at..at, text.len());
             return Ok(json!({"pos": pos}));
         }
         let a = floor_char_boundary(&st.text, r.start.min(st.len()));
@@ -101,6 +113,12 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let pos = r.start + text.len() - trail;
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+        if t.cell.is_none() {
+            if let Some((range, len)) = auto_edit {
+                d.adjust_text_ranges(t.story, range, len);
+            }
+            d.adjust_text_ranges(t.story, a..b, text.len());
+        }
         Ok(json!({"pos": pos}))
     });
     // A preview (IME marked text) leaves the typing format to the text typed in the end.
@@ -137,24 +155,46 @@ pub(super) fn delete_surrounding(s: &mut Session, p: &Value) -> Result<Value> {
     };
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.deleteSurrounding", "no text insertion point"))?;
-        let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
-        if !after_range.is_empty() {
-            if tracking {
-                crate::cmd::changes::mark_deleted(story, after_range.clone());
+        let (shift, after_removed, before_removed) = {
+            let story = d.text_story_mut(t.story, t.cell).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
+            let after_removed = if !after_range.is_empty() {
+                if tracking {
+                    let (_, removed) = crate::cmd::changes::mark_deleted_reporting(story, after_range.clone());
+                    removed
+                } else {
+                    story.delete(after_range.clone());
+                    Vec::new()
+                }
             } else {
-                story.delete(after_range.clone());
+                Vec::new()
+            };
+            let (shift, before_removed) = if !before_range.is_empty() {
+                if tracking {
+                    // Tracked changes keep the text and mark it deleted: the selection does not move.
+                    let (new_end, removed) = crate::cmd::changes::mark_deleted_reporting(story, before_range.clone());
+                    (before_range.end.saturating_sub(new_end), removed)
+                } else {
+                    story.delete(before_range.clone());
+                    (before_range.len(), Vec::new())
+                }
+            } else {
+                (0, Vec::new())
+            };
+            (shift, after_removed, before_removed)
+        };
+        if tracking {
+            for rr in after_removed {
+                d.adjust_text_ranges(t.story, rr, 0);
             }
+        } else if t.cell.is_none() && !after_range.is_empty() {
+            d.adjust_text_ranges(t.story, after_range.clone(), 0);
         }
-        let mut shift = 0usize;
-        if !before_range.is_empty() {
-            if tracking {
-                // Tracked changes keep the text and mark it deleted: the selection does not move.
-                let new_end = crate::cmd::changes::mark_deleted(story, before_range.clone());
-                shift = before_range.end.saturating_sub(new_end);
-            } else {
-                shift = before_range.len();
-                story.delete(before_range.clone());
+        if tracking {
+            for rr in before_removed {
+                d.adjust_text_ranges(t.story, rr, 0);
             }
+        } else if t.cell.is_none() && !before_range.is_empty() {
+            d.adjust_text_ranges(t.story, before_range.clone(), 0);
         }
         sel.text = Some(TextSel { anchor: t.anchor.saturating_sub(shift), focus: t.focus.saturating_sub(shift), ..t });
         Ok(())
@@ -259,11 +299,22 @@ pub(crate) fn delete_selection(s: &mut Session) -> Result<Value> {
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("text.delete", "no text"))?;
         let r = t.range();
+        let mut removed_ranges = Vec::new();
         if let Some(st) = d.text_story_mut(t.story, t.cell) {
             if tracking && t.cell.is_none() {
-                crate::cmd::changes::mark_deleted(st, r.clone());
+                let (_, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
+                removed_ranges = removed;
             } else {
                 st.delete(r.clone());
+            }
+        }
+        if t.cell.is_none() {
+            if tracking {
+                for rr in removed_ranges {
+                    d.adjust_text_ranges(t.story, rr, 0);
+                }
+            } else {
+                d.adjust_text_ranges(t.story, r.clone(), 0);
             }
         }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
@@ -291,12 +342,18 @@ pub(super) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let r = with_break_pair(&st.text, r);
         if tracking && t.cell.is_none() {
             // Marked, not removed: the caret steps over the deleted text.
-            let at = crate::cmd::changes::mark_deleted(st, r.clone());
+            let (at, removed) = crate::cmd::changes::mark_deleted_reporting(st, r.clone());
             let pos = if forward { at.max(r.end.min(st.len())) } else { r.start.min(at) };
             sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
+            for rr in removed {
+                d.adjust_text_ranges(t.story, rr, 0);
+            }
             return ok();
         }
         st.delete(r.clone());
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), 0);
+        }
         sel.text = Some(TextSel { anchor: r.start, focus: r.start, ..t });
         ok()
     })
@@ -418,20 +475,36 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
     let targets = format_targets(s);
     s.edit(|d, sel| {
         for t in &targets {
-            let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
-            let r = t.range.start.min(st.len())..t.range.end.min(st.len());
-            let mapped = case_map(st.slice(r.clone()), &case);
-            // Replace run by run (from the end) so every run keeps its formatting.
-            let segs: Vec<std::ops::Range<usize>> =
-                st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
-            let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
-            let mut delta: isize = 0;
-            for seg in segs.iter().rev() {
-                let old = st.slice(seg.clone()).to_string();
-                let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
-                if new != old {
-                    delta += new.len() as isize - old.len() as isize;
-                    st.replace(seg.clone(), &new);
+            let (delta, r, changes) = {
+                let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
+                let r = t.range.start.min(st.len())..t.range.end.min(st.len());
+                let mapped = case_map(st.slice(r.clone()), &case);
+                // Replace run by run (from the end) so every run keeps its formatting.
+                let segs: Vec<std::ops::Range<usize>> =
+                    st.runs().map(|(rr, _)| rr.start.max(r.start)..rr.end.min(r.end)).filter(|x| x.start < x.end).collect();
+                let starts: Vec<usize> = st.slice(r.clone()).char_indices().map(|(i, _)| r.start + i).collect();
+                let mut delta: isize = 0;
+                let mut changes = Vec::new();
+                for seg in segs.iter().rev() {
+                    let old = st.slice(seg.clone()).to_string();
+                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    if new != old {
+                        delta += new.len() as isize - old.len() as isize;
+                        st.replace(seg.clone(), &new);
+                        // Per-character changes (back to front), so ranges inside the run keep their boundaries.
+                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                            let ce = starts.get(i + 1).copied().unwrap_or(r.end);
+                            if m.len() != ce - b {
+                                changes.push((*b..ce, m.len()));
+                            }
+                        }
+                    }
+                }
+                (delta, r, changes)
+            };
+            if t.cell.is_none() {
+                for (range, new_len) in changes {
+                    d.adjust_text_ranges(t.story, range, new_len);
                 }
             }
             if let Some(ts) = sel.text.as_mut().filter(|ts| ts.story == t.story && ts.cell == t.cell && !ts.is_caret()) {
@@ -581,6 +654,7 @@ mod language_tests {
             ("fr_FR", GUILLEMETS, false),
             ("nb_NO", GUILLEMETS, false),
             ("ja_JP", CORNERS, false),
+            ("Esperanto", ENGLISH, false),
             ("[No Language]", ENGLISH, false),
         ] {
             assert_eq!(quote_marks(language), quotes, "{language}");

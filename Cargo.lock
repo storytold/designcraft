@@ -944,6 +944,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-dialogs"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=1a11a4897865f7410c40d25ca6e452ce399a1a2c#1a11a4897865f7410c40d25ca6e452ce399a1a2c"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "rfd",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
@@ -1106,13 +1119,14 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=92d392cff132eaf53e13afff77f38b5c11b73aa0#92d392cff132eaf53e13afff77f38b5c11b73aa0"
+source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
 dependencies = [
  "chrono",
  "dunce",
  "egui",
  "flate2",
  "getrandom 0.3.4",
+ "image",
  "log",
  "plist",
  "semver",
@@ -1247,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "arboard",
  "craft-update",
@@ -1261,6 +1275,7 @@ dependencies = [
  "muda",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rfd",
  "serde",
  "serde_json",
@@ -1271,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-cli"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1282,12 +1297,13 @@ dependencies = [
  "designcraft-mcp",
  "designcraft-pdf",
  "designcraft-render",
+ "image",
  "serde_json",
 ]
 
 [[package]]
 name = "designcraft-color"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "craft-cms",
  "kurbo",
@@ -1299,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-compose"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
@@ -1319,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-doc"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1332,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-engine"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "caseless",
  "craft-atomic",
@@ -1372,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-epub"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1382,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-fonts"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "core-text",
  "harfrust 0.13.3",
@@ -1395,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-format"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-doc",
  "designcraft-images",
@@ -1407,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-geom"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "flo_curves",
  "kurbo",
@@ -1420,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-idml"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1435,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-images"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "craft-cms",
  "designcraft-color",
@@ -1445,6 +1461,7 @@ dependencies = [
  "log",
  "quick-xml 0.41.0",
  "resvg",
+ "skrifa 0.47.0",
  "tiff",
  "zune-core",
  "zune-jpeg",
@@ -1452,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-mcp"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-geom",
@@ -1465,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pdf"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "craft-cms",
@@ -1477,6 +1494,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "designcraft-images",
+ "flate2",
  "hayro-cmap",
  "hayro-interpret",
  "hayro-syntax",
@@ -1490,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-pptx"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "designcraft-color",
@@ -1508,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-print"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "craft-print",
  "designcraft-render",
@@ -1517,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-render"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "craft-pdf",
  "designcraft-color",
@@ -1536,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-textimport"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-doc",
  "quick-xml 0.41.0",
@@ -1545,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-tools"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-color",
  "designcraft-compose",
@@ -1557,8 +1575,9 @@ dependencies = [
 
 [[package]]
 name = "designcraft-ui-egui"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
+ "craft-dialogs",
  "craft-keymap",
  "craft-prepress",
  "craft-print",
@@ -1574,10 +1593,13 @@ dependencies = [
  "designcraft-idml",
  "designcraft-print",
  "designcraft-render",
+ "designcraft-textimport",
  "designcraft-tools",
  "egui",
+ "egui_extras",
  "egui_kittest",
  "log",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
@@ -1589,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-web"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "designcraft-engine",
  "designcraft-format",
@@ -1803,6 +1825,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_extras"
+version = "0.37.0"
+source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "itertools 0.15.0",
+ "log",
+ "profiling",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
@@ -1854,6 +1889,26 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
+name = "enum-map"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4532960034c15ba2f55e9eee631040ecc473c32e6c4b200828c759840f13a06"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7127272f64b3e098f7d81f350d672081b879bff896d219c42370dc858b1af9ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "enumflags2"
@@ -2911,7 +2966,7 @@ checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
 [[package]]
 name = "indd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/indd-utils?branch=main#7f3060e5bce78d21ea70e0d5eacb96edce15dfbe"
+source = "git+https://github.com/storytold/indd-utils?rev=7f3060e5bce78d21ea70e0d5eacb96edce15dfbe#7f3060e5bce78d21ea70e0d5eacb96edce15dfbe"
 
 [[package]]
 name = "indexmap"
@@ -3104,7 +3159,7 @@ dependencies = [
  "skrifa 0.42.1",
  "smallvec",
  "subsetter",
- "tiny-skia-path",
+ "tiny-skia-path 0.12.0",
  "xmp-writer",
  "yoke",
  "zune-jpeg",
@@ -3122,7 +3177,7 @@ dependencies = [
  "resvg",
  "skrifa 0.42.1",
  "smallvec",
- "tiny-skia",
+ "tiny-skia 0.12.0",
  "usvg",
 ]
 
@@ -4535,7 +4590,7 @@ dependencies = [
  "pico-args",
  "rgb",
  "svgtypes",
- "tiny-skia",
+ "tiny-skia 0.12.0",
  "usvg",
  "zune-jpeg",
 ]
@@ -4803,6 +4858,17 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sctk-adwaita"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6277f0217056f77f1d8f49f2950ac6c278c0d607c45f5ee99328d792ede24ec"
+dependencies = [
+ "log",
+ "smithay-client-toolkit 0.19.2",
+ "tiny-skia 0.11.4",
+]
 
 [[package]]
 name = "security-framework"
@@ -5374,6 +5440,20 @@ dependencies = [
 
 [[package]]
 name = "tiny-skia"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "bytemuck",
+ "cfg-if",
+ "log",
+ "tiny-skia-path 0.11.4",
+]
+
+[[package]]
+name = "tiny-skia"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47ffee5eaaf5527f630fb0e356b90ebdec84d5d18d937c5e440350f88c5a91ea"
@@ -5384,7 +5464,18 @@ dependencies = [
  "cfg-if",
  "log",
  "png",
- "tiny-skia-path",
+ "tiny-skia-path 0.12.0",
+]
+
+[[package]]
+name = "tiny-skia-path"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "strict-num",
 ]
 
 [[package]]
@@ -5701,7 +5792,7 @@ dependencies = [
  "siphasher",
  "strict-num",
  "svgtypes",
- "tiny-skia-path",
+ "tiny-skia-path 0.12.0",
  "ttf-parser",
  "unicode-bidi",
  "unicode-script",
@@ -6585,6 +6676,7 @@ dependencies = [
  "raw-window-handle",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
+ "sctk-adwaita",
  "smithay-client-toolkit 0.19.2",
  "smol_str",
  "tracing",
@@ -6789,7 +6881,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.13.0"
+version = "0.17.0"
 dependencies = [
  "serde_json",
 ]
@@ -7126,11 +7218,6 @@ dependencies = [
 
 [[patch.unused]]
 name = "egui_demo_lib"
-version = "0.37.0"
-source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
-
-[[patch.unused]]
-name = "egui_extras"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
 
