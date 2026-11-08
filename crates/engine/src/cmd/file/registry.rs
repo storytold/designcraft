@@ -44,7 +44,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{files: [{path, base64}]} — a package folder handed over as files (the web build can't look beside a file): opens its document (DesignCraft, IDML or InDesign; the one nearest the top) with the fonts of the `Document Fonts` folder beside it, for that document alone (as file.open loads them beside a file). A zip of a package given to file.openBytes opens the same way → {index, document: its path, documentFonts: faces loaded, warnings}",
             always, super::package::file_open_package),
         cmd!(noundo "font.loadDocumentFonts", "Load Document Fonts", [], None,
-            "{files: [{path, base64}]} — the font files (.ttf, .otf, .ttc, .otc) of a folder handed over become the active document's own fonts, in place of any it had: those in a `Document Fonts` folder among the files, else all of them. For a document opened by itself in a browser, which can't look beside it. Not an edit → {documentFonts: faces loaded, warnings: files skipped}",
+            "{files: [{path, base64}], index?} — the font files (.ttf, .otf, .ttc, .otc) of a folder handed over become the own fonts of document `index` (default: the active one; it stays active), in place of any it had: those in a `Document Fonts` folder among the files, else all of them. For a document opened by itself in a browser, which can't look beside it. Not an edit → {documentFonts: faces loaded, warnings: files skipped}",
             has_doc, super::package::load_document_fonts),
         cmd!(noundo "file.openRecent", "Open Recent File", [], None,
             "{index} — reopen entry `index` of File › Open Recent (as file.open); a file that is gone is an error and stays listed",

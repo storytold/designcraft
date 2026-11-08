@@ -5,15 +5,21 @@
 
 use std::io::Read;
 
-use designcraft_fonts::{DOCUMENT_FONTS_FOLDER, DocumentFonts, FontDb, MAX_DOCUMENT_FONT_BYTES, is_document_font_name};
+use designcraft_fonts::{
+    DOCUMENT_FONTS_FOLDER, DocumentFonts, FontDb, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES, MAX_DOCUMENT_FONTS_TOTAL, is_document_font_name,
+};
 
-use super::bytes::{base64_decode, base64_encode};
+use super::bytes::base64_decode;
 use super::{Arc, EngineError, Result, Session, Value, bad, json};
 
 /// At most this many files are looked at in a package (a folder's listing or a zip's directory).
 const MAX_PACKAGE_FILES: usize = 20_000;
-/// The document read out of a zipped package is at most this large.
+/// The document read out of a zipped package is at most this large: 1 GB, or in a browser tab
+/// 384 MB, as much as a package folder may hold there.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_PACKAGE_DOCUMENT_BYTES: u64 = 1 << 30;
+#[cfg(target_arch = "wasm32")]
+const MAX_PACKAGE_DOCUMENT_BYTES: u64 = 384 << 20;
 
 /// The file extensions a package's document may have.
 const DOCUMENT_EXTENSIONS: [&str; 4] = ["designcraft", "idml", "indd", "indt"];
@@ -66,8 +72,9 @@ fn folder_fonts<'a>(paths: impl Iterator<Item = &'a str> + Clone) -> Vec<&'a str
     if named.is_empty() { fonts.collect() } else { named }
 }
 
-/// The `files` parameter: `[{path, base64}]` → (path, bytes), at most [`MAX_PACKAGE_FILES`].
-fn files_param(cmd: &str, p: &Value) -> Result<Vec<(String, String)>> {
+/// The `files` parameter: `[{path, base64}]` → (path, base64), at most [`MAX_PACKAGE_FILES`],
+/// borrowed: only the files used are decoded, and nothing is copied before.
+fn files_param<'a>(cmd: &str, p: &'a Value) -> Result<Vec<(&'a str, &'a str)>> {
     let files = p.get("files").and_then(Value::as_array).ok_or_else(|| bad(cmd, "missing `files` ([{path, base64}])"))?;
     if files.len() > MAX_PACKAGE_FILES {
         return Err(bad(cmd, format!("too many files ({}; at most {MAX_PACKAGE_FILES})", files.len())));
@@ -77,7 +84,7 @@ fn files_param(cmd: &str, p: &Value) -> Result<Vec<(String, String)>> {
         .map(|f| {
             let path = f.get("path").and_then(Value::as_str).ok_or_else(|| bad(cmd, "a file without `path`"))?;
             let b64 = f.get("base64").and_then(Value::as_str).unwrap_or_default();
-            Ok((path.to_string(), b64.to_string()))
+            Ok((path, b64))
         })
         .collect()
 }
@@ -99,6 +106,14 @@ fn attach_fonts(s: &mut Session, index: usize, fonts: &DocumentFonts) -> Result<
     Ok(())
 }
 
+/// Undo and redo keep the document fonts loaded since (see [`attach_fonts`]): loading them isn't
+/// an edit, and the scope an earlier state names may be closed.
+pub(crate) fn keep_font_scope(now: &designcraft_doc::Document, to: &mut Arc<designcraft_doc::Document>) {
+    if to.font_scope != now.font_scope {
+        Arc::make_mut(to).font_scope = now.font_scope;
+    }
+}
+
 /// Load `fonts` (path, bytes) as document `index`'s fonts → (faces, a warning per file skipped).
 fn load_fonts(s: &mut Session, index: usize, fonts: Vec<(String, Vec<u8>)>) -> Result<(usize, Vec<String>)> {
     let r = FontDb::global().load_document_font_files(fonts);
@@ -111,19 +126,18 @@ fn load_fonts(s: &mut Session, index: usize, fonts: Vec<(String, Vec<u8>)>) -> R
 pub(super) fn file_open_package(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.openPackage";
     let files = files_param(ID, p)?;
-    let document = package_document(files.iter().map(|(p, _)| p.as_str()))
-        .ok_or_else(|| bad(ID, "no DesignCraft, IDML or InDesign document in the package"))?
-        .to_string();
+    let document =
+        package_document(files.iter().map(|(p, _)| *p)).ok_or_else(|| bad(ID, "no DesignCraft, IDML or InDesign document in the package"))?;
     let fonts: Vec<(String, Vec<u8>)> =
-        files.iter().filter(|(p, _)| beside_document(&document, p)).map(|(p, b)| (p.clone(), base64_decode(b))).collect();
-    let doc_b64 = files.iter().find(|(p, _)| *p == document).map(|(_, b)| b.as_str()).unwrap_or_default();
-    open_with_fonts(s, &document, doc_b64, fonts)
+        files.iter().filter(|(p, _)| beside_document(document, p)).map(|(p, b)| ((*p).to_string(), base64_decode(b))).collect();
+    let doc = files.iter().find(|(p, _)| *p == document).map(|(_, b)| base64_decode(b)).unwrap_or_default();
+    open_with_fonts(s, document, &doc, fonts)
 }
 
-/// Open the document `path` (`base64`) handed over with `fonts`, its document fonts.
-fn open_with_fonts(s: &mut Session, path: &str, base64: &str, fonts: Vec<(String, Vec<u8>)>) -> Result<Value> {
-    let name = parts(path).last().map_or_else(|| path.to_string(), |n| (*n).to_string());
-    let mut r = super::open::file_open_bytes(s, &json!({"name": name, "base64": base64}))?;
+/// Open the document `path` (`bytes`) handed over with `fonts`, its document fonts.
+fn open_with_fonts(s: &mut Session, path: &str, bytes: &[u8], fonts: Vec<(String, Vec<u8>)>) -> Result<Value> {
+    let name = parts(path).last().map_or(path, |n| *n);
+    let mut r = super::open::open_document_bytes(s, name, bytes)?;
     let index = r.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok()).ok_or(EngineError::NoDocument)?;
     let (faces, skipped) = load_fonts(s, index, fonts)?;
     r["documentFonts"] = json!(faces);
@@ -134,19 +148,23 @@ fn open_with_fonts(s: &mut Session, path: &str, base64: &str, fonts: Vec<(String
     Ok(r)
 }
 
-/// `font.loadDocumentFonts {files: [{path, base64}]}`: the fonts of a folder handed over become
-/// the active document's fonts (see [`folder_fonts`]): for a document opened by itself, in a
-/// browser that can't look beside it.
+/// `font.loadDocumentFonts {files: [{path, base64}], index?}`: the fonts of a folder handed over
+/// become the fonts of document `index` (by default the active one; see [`folder_fonts`]): for a
+/// document opened by itself, in a browser that can't look beside it.
 pub(super) fn load_document_fonts(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "font.loadDocumentFonts";
     let files = files_param(ID, p)?;
-    let chosen = folder_fonts(files.iter().map(|(p, _)| p.as_str()));
-    let fonts: Vec<(String, Vec<u8>)> =
-        files.iter().filter(|(p, _)| chosen.contains(&p.as_str())).map(|(p, b)| (p.clone(), base64_decode(b))).collect();
+    let index = match p.get("index") {
+        None | Some(Value::Null) => s.active_index().ok_or(EngineError::NoDocument)?,
+        Some(v) => {
+            v.as_u64().and_then(|i| usize::try_from(i).ok()).filter(|i| *i < s.docs.len()).ok_or_else(|| bad(ID, "`index` isn't an open document"))?
+        }
+    };
+    let chosen = folder_fonts(files.iter().map(|(p, _)| *p));
+    let fonts: Vec<(String, Vec<u8>)> = files.iter().filter(|(p, _)| chosen.contains(p)).map(|(p, b)| ((*p).to_string(), base64_decode(b))).collect();
     if fonts.is_empty() {
         return Err(bad(ID, format!("no font files (.ttf, .otf, .ttc, .otc) in the folder or its {DOCUMENT_FONTS_FOLDER} folder")));
     }
-    let index = s.active_index().ok_or(EngineError::NoDocument)?;
     let (faces, warnings) = load_fonts(s, index, fonts)?;
     Ok(json!({"documentFonts": faces, "warnings": warnings}))
 }
@@ -160,17 +178,34 @@ pub fn is_zipped_package(bytes: &[u8]) -> bool {
         && zip::ZipArchive::new(std::io::Cursor::new(bytes)).is_ok_and(|z| z.len() <= MAX_PACKAGE_FILES && package_document(z.file_names()).is_some())
 }
 
+/// Why a zip entry wasn't read.
+enum EntryError {
+    /// Over the bytes it may take.
+    TooLarge(u64),
+    /// Missing or unreadable.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for EntryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(max) => write!(f, "larger than {} MB", max >> 20),
+            Self::Unreadable(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Read entry `name` of `z`, at most `max` bytes (a size the zip states is input: one byte past
 /// the limit catches an entry larger than it says).
-fn read_entry(z: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, max: u64) -> std::result::Result<Vec<u8>, String> {
-    let entry = z.by_name(name).map_err(|e| e.to_string())?;
+fn read_entry(z: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str, max: u64) -> std::result::Result<Vec<u8>, EntryError> {
+    let entry = z.by_name(name).map_err(|e| EntryError::Unreadable(e.to_string()))?;
     if entry.size() > max {
-        return Err(format!("larger than {} MB", max >> 20));
+        return Err(EntryError::TooLarge(max));
     }
     let mut data = Vec::new();
-    entry.take(max + 1).read_to_end(&mut data).map_err(|e| e.to_string())?;
+    entry.take(max.saturating_add(1)).read_to_end(&mut data).map_err(|e| EntryError::Unreadable(e.to_string()))?;
     if data.len() as u64 > max {
-        return Err(format!("larger than {} MB", max >> 20));
+        return Err(EntryError::TooLarge(max));
     }
     Ok(data)
 }
@@ -188,20 +223,54 @@ pub(super) fn open_zipped_package(s: &mut Session, bytes: &[u8]) -> Result<Value
         .ok_or_else(|| bad(ID, "no DesignCraft, IDML or InDesign document in the zip"))?
         .to_string();
     let doc = read_entry(&mut z, &document, MAX_PACKAGE_DOCUMENT_BYTES).map_err(|e| bad(ID, format!("{document}: {e}")))?;
-    let mut fonts = Vec::new();
-    let mut warnings = Vec::new();
-    for name in names.iter().filter(|n| beside_document(&document, n)) {
-        // The font loader applies the total and the count; each file is capped as it's read.
-        match read_entry(&mut z, name, MAX_DOCUMENT_FONT_BYTES) {
-            Ok(data) => fonts.push((name.to_string(), data)),
-            Err(e) => warnings.push(format!("{DOCUMENT_FONTS_FOLDER}: {name}: {e}")),
-        }
-    }
-    let mut r = open_with_fonts(s, &document, &base64_encode(&doc), fonts)?;
+    let beside: Vec<&str> = names.iter().map(String::as_str).filter(|n| beside_document(&document, n)).collect();
+    let (fonts, warnings) = read_fonts(&mut z, beside, FontLimits::DOCUMENT);
+    let mut r = open_with_fonts(s, &document, &doc, fonts)?;
     if let Some(w) = r.get_mut("warnings").and_then(Value::as_array_mut) {
         w.extend(warnings.into_iter().map(Value::String));
     }
     Ok(r)
+}
+
+/// How many font files a zipped package's fonts may have, and how many bytes each and in all.
+#[derive(Clone, Copy)]
+struct FontLimits {
+    files: usize,
+    each: u64,
+    total: u64,
+}
+
+impl FontLimits {
+    /// A `Document Fonts` folder's limits.
+    const DOCUMENT: Self = Self { files: MAX_DOCUMENT_FONT_FILES, each: MAX_DOCUMENT_FONT_BYTES, total: MAX_DOCUMENT_FONTS_TOTAL };
+}
+
+/// Read the font entries `names` of `z` in name order, as the font loader takes them, within
+/// `limits`: an entry is read at most to what the total leaves, so a zip that inflates is never
+/// read past it → (path, bytes) and a warning per entry not read.
+fn read_fonts(z: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, mut names: Vec<&str>, limits: FontLimits) -> (Vec<(String, Vec<u8>)>, Vec<String>) {
+    names.sort_unstable();
+    let (mut fonts, mut warnings) = (Vec::new(), Vec::new());
+    let mut total = 0u64;
+    for (n, name) in names.iter().enumerate() {
+        let left = limits.total.saturating_sub(total);
+        if fonts.len() >= limits.files || left == 0 {
+            warnings.push(format!("{DOCUMENT_FONTS_FOLDER}: {} more font files not read (the folder's limits are reached)", names.len() - n));
+            break;
+        }
+        let max = limits.each.min(left);
+        match read_entry(z, name, max) {
+            Ok(data) => {
+                total = total.saturating_add(data.len() as u64);
+                fonts.push(((*name).to_string(), data));
+            }
+            Err(EntryError::TooLarge(_)) if max < limits.each => {
+                warnings.push(format!("{DOCUMENT_FONTS_FOLDER}: {name}: over the {} MB the folder's fonts may take in all", limits.total >> 20));
+            }
+            Err(e) => warnings.push(format!("{DOCUMENT_FONTS_FOLDER}: {name}: {e}")),
+        }
+    }
+    (fonts, warnings)
 }
 
 #[cfg(test)]

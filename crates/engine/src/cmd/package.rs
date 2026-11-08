@@ -327,19 +327,27 @@ fn copy_font(root: &OutputRoot, face: &FontFace, dir: &Path, copied: &mut Vec<Pa
     let from = match &face.source {
         FontSource::Bundled => return " — included with DesignCraft".into(),
         FontSource::Memory => return " — not copied: no font file".into(),
-        FontSource::Installed(p) | FontSource::Document(p) => p,
+        FontSource::Installed(p) | FontSource::Document(p) => p.clone(),
+        // Named by its path in what was handed over: a key and a file name here, not a file to read.
+        FontSource::DocumentContents(name) => PathBuf::from(name),
     };
     if face.restricted_licence() {
         return " — not copied: its licence doesn't allow it".into();
     }
-    if copied.contains(from) {
+    if copied.contains(&from) {
         return String::new();
     }
     let name = safe_component(&from.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "font");
     let to = dir.join(unique_name(font_file_name(name, face.data()), taken));
-    match root.validate_directory(dir).and_then(|_| root.copy(from, &to)) {
+    // A font handed over as contents is written from them; a font file is copied, keeping its
+    // permissions.
+    let written = root.validate_directory(dir).and_then(|_| match &face.source {
+        FontSource::DocumentContents(_) => root.write(&to, face.data()),
+        _ => root.copy(&from, &to),
+    });
+    match written {
         Ok(()) => {
-            copied.push(from.clone());
+            copied.push(from);
             files.push(to);
             String::new()
         }

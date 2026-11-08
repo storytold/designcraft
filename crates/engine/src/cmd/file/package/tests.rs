@@ -145,3 +145,91 @@ fn document_fonts_load_for_a_document_already_open() {
     assert_ne!(st.revision, revision, "drawn again with the fonts");
     assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
 }
+
+/// A zipped package's fonts are read within the folder's limits as they're read: an entry is read
+/// only as far as the total leaves, so a zip that inflates can't take more.
+#[test]
+fn a_zips_fonts_are_read_no_further_than_their_limits_leave() {
+    let (a, b, c) = (vec![0u8; 1000], vec![0u8; 1000], vec![0u8; 400]);
+    let bytes = zip(&[("P/Document Fonts/b.ttf", &b), ("P/Document Fonts/a.ttf", &a), ("P/Document Fonts/c.ttf", &c)]);
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice())).unwrap();
+    let names = vec!["P/Document Fonts/b.ttf", "P/Document Fonts/a.ttf", "P/Document Fonts/c.ttf"];
+    let limits = super::FontLimits { files: 10, each: 1000, total: 1500 };
+    let (fonts, warnings) = super::read_fonts(&mut z, names.clone(), limits);
+    // In name order: a whole; b is over what's left (500) and not read; c fits.
+    let read: Vec<&str> = fonts.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(read, ["P/Document Fonts/a.ttf", "P/Document Fonts/c.ttf"]);
+    assert!(warnings.iter().any(|w| w.contains("b.ttf") && w.contains("in all")), "{warnings:?}");
+    // The count stops reading, too.
+    let (fonts, warnings) = super::read_fonts(&mut z, names, super::FontLimits { files: 1, ..limits });
+    assert_eq!(fonts.len(), 1);
+    assert!(warnings.iter().any(|w| w.contains("2 more font files not read")), "{warnings:?}");
+}
+
+/// The document taken out of a zipped package isn't opened as a package again: a package inside
+/// a package would open the next without end.
+#[test]
+fn a_package_inside_a_package_is_not_opened_as_one() {
+    let inner = zip(&[("Inner/Inner.designcraft", &document_bytes("Nested Package Family"))]);
+    assert!(super::is_zipped_package(&inner));
+    let outer = zip(&[("Outer/nested.idml", &inner)]);
+    assert!(super::is_zipped_package(&outer));
+    let mut s = Session::new();
+    assert!(s.execute("file.openBytes", &json!({"name": "Outer.zip", "base64": base64_encode(&outer)})).is_err());
+    assert!(s.doc().is_err(), "nothing opened");
+}
+
+/// `font.loadDocumentFonts {index}` gives the fonts to that document and leaves the active one.
+#[test]
+fn document_fonts_load_for_the_document_named() {
+    const FAMILY: &str = "Package Index Test Family";
+    let doc = document_bytes(FAMILY);
+    let mut s = Session::new();
+    s.execute("file.openBytes", &json!({"name": "A.designcraft", "base64": base64_encode(&doc)})).unwrap();
+    s.execute("file.openBytes", &json!({"name": "B.designcraft", "base64": base64_encode(&doc)})).unwrap();
+    assert_eq!(s.active_index(), Some(1));
+    let fonts = files(&[("Document Fonts/f.ttf", &font(FAMILY))]);
+    assert!(s.execute("font.loadDocumentFonts", &json!({"files": fonts, "index": 2})).is_err(), "no third document");
+    s.execute("font.loadDocumentFonts", &json!({"files": fonts, "index": 0})).unwrap();
+    assert_eq!(s.active_index(), Some(1), "the active document stays");
+    assert_eq!(font_entry(&mut s, FAMILY)["missing"], true, "B has no fonts");
+    s.execute("file.activate", &json!({"index": 0})).unwrap();
+    assert_eq!(font_entry(&mut s, FAMILY)["missing"], false, "A has them");
+}
+
+/// Fonts loaded after an edit stay through undo and redo: loading them isn't an edit.
+#[test]
+fn document_fonts_stay_through_undo_and_redo() {
+    const FAMILY: &str = "Package Undo Test Family";
+    let mut s = Session::new();
+    s.execute("file.openBytes", &json!({"name": "Issue.designcraft", "base64": base64_encode(&document_bytes(FAMILY))})).unwrap();
+    s.execute("frame.create", &json!({"rect": [10, 10, 50, 50]})).unwrap();
+    s.execute("font.loadDocumentFonts", &json!({"files": files(&[("Document Fonts/f.ttf", &font(FAMILY))])})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(font_entry(&mut s, FAMILY)["missing"], false, "after undo");
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(font_entry(&mut s, FAMILY)["missing"], false, "after redo");
+}
+
+/// File › Package writes a document font handed over as contents from those contents, never
+/// from a file at the path it was handed over under.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn package_writes_fonts_handed_over_from_their_contents() {
+    const FAMILY: &str = "Package Contents Test Family";
+    let dir = std::env::temp_dir().join(format!("dc-package-contents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let decoy_dir = dir.join(designcraft_fonts::DOCUMENT_FONTS_FOLDER);
+    std::fs::create_dir_all(&decoy_dir).unwrap();
+    let decoy = decoy_dir.join("f.ttf");
+    std::fs::write(&decoy, font("Package Decoy Family")).unwrap();
+    let mut s = Session::new();
+    s.execute("file.openBytes", &json!({"name": "Issue.designcraft", "base64": base64_encode(&document_bytes(FAMILY))})).unwrap();
+    let handed = font(FAMILY);
+    s.execute("font.loadDocumentFonts", &json!({"files": files(&[(&decoy.to_string_lossy(), &handed)])})).unwrap();
+    let out = dir.join("Pkg");
+    s.execute("file.package", &json!({"dir": out.to_string_lossy(), "idml": false})).unwrap();
+    let packed = std::fs::read(out.join(designcraft_fonts::DOCUMENT_FONTS_FOLDER).join("f.ttf")).unwrap();
+    assert_eq!(packed, handed, "the font's own bytes, not the file at its path");
+    let _ = std::fs::remove_dir_all(&dir);
+}

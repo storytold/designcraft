@@ -163,9 +163,23 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     if super::package::is_zipped_package(&b) {
         return super::package::open_zipped_package(s, &b);
     }
-    let (mut d, warnings) = load_bytes(&b)?;
+    open_native_bytes(s, &b, str_param(p, "name"))
+}
+
+/// Open the document `bytes` (named `name`) taken out of a package. It isn't looked at as a
+/// package again: a package inside a package would open the next, without end.
+pub(super) fn open_document_bytes(s: &mut Session, name: &str, bytes: &[u8]) -> Result<Value> {
+    if designcraft_idml::is_idml(bytes) || crate::cmd::interchange::is_indd(name, bytes) {
+        return crate::cmd::interchange::open_idml(s, &json!({"name": name, "base64": super::bytes::base64_encode(bytes)}));
+    }
+    open_native_bytes(s, bytes, Some(name))
+}
+
+/// Open a DesignCraft document's `b`ytes, titled after `name`.
+fn open_native_bytes(s: &mut Session, b: &[u8], name: Option<&str>) -> Result<Value> {
+    let (mut d, warnings) = load_bytes(b)?;
     crate::cmd::datamerge::resolve_sources_on_open(&mut d, None);
-    if let Some(n) = str_param(p, "name") {
+    if let Some(n) = name {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }

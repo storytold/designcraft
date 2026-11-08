@@ -12,7 +12,7 @@ impl DesignApp {
     #[track_caller]
     pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
         if let Some(open) = self.services.open_async.as_mut() {
-            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) };
+            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid), ..Default::default() };
             open(request);
             return Ok(Value::Null);
         }
@@ -47,7 +47,7 @@ impl DesignApp {
         designcraft_engine::cmd::has_doc(&self.session)?;
         if let Some(open) = self.services.open_async.as_mut() {
             let purpose = if kind.is_empty() { "styles".to_string() } else { format!("styles:{kind}") };
-            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid) });
+            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid), ..Default::default() });
             return Ok(Value::Null);
         }
         let kind = kind.to_string();
@@ -63,22 +63,23 @@ impl DesignApp {
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
-        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
+        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid), ..Default::default() }
     }
 
     /// Ask the host for a folder for `purpose` (`package`, `documentFonts`; see
     /// [`crate::Services::pick_folder`]): its files arrive later through the inbox, all with the
-    /// purpose `folder:<purpose>`. A host delivers a dropped folder the same way, as
-    /// `folder:drop`.
+    /// purpose `folder:<purpose>` and the request's own batch. A host delivers a dropped folder
+    /// the same way, as `folder:drop` with a batch of its own ([`crate::next_import_batch`]).
     pub(crate) fn pick_folder(&mut self, purpose: &str) -> Result<Value, String> {
-        let request = self.import_request(&format!("folder:{purpose}"));
+        let request = ImportRequest { batch: crate::next_import_batch(), ..self.import_request(&format!("folder:{purpose}")) };
         let pick = self.services.pick_folder.as_mut().ok_or("no folder picker here: the desktop app reads the folder beside the file")?;
         pick(request);
         Ok(Value::Null)
     }
 
     /// Take the folders handed over out of `inbox` and import each (see [`Self::import_folder`]):
-    /// a folder's files arrive together, named by their paths in it, with a `folder:` purpose.
+    /// a folder's files arrive with a `folder:` purpose and its batch, named by their paths in it.
+    /// Two folders handed over at once stay two.
     fn import_folders(&mut self, inbox: &crate::Inbox) {
         let folders: Vec<ImportedFile> = {
             let mut files = inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -87,8 +88,9 @@ impl DesignApp {
             folders
         };
         let mut folders = folders;
-        while let Some(purpose) = folders.first().map(|f| f.request.purpose.clone()) {
-            let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) = folders.into_iter().partition(|f| f.request.purpose == purpose);
+        while let Some((purpose, batch)) = folders.first().map(|f| (f.request.purpose.clone(), f.request.batch)) {
+            let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) =
+                folders.into_iter().partition(|f| f.request.purpose == purpose && f.request.batch == batch);
             folders = rest;
             let Some(first) = folder.first() else { continue };
             let request = ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), ..first.request.clone() };
@@ -114,14 +116,16 @@ impl DesignApp {
         if request.purpose == "package" || (request.purpose == "drop" && has_document) {
             return self.open_named_file("file.openPackage", json!({"files": list}), folder);
         }
-        if request.purpose == "documentFonts" {
-            self.activate_import_target(request)?;
-        } else if self.session.active().is_none() {
-            return Err(crate::i18n::tr(&self.ui.language, "The folder holds no document to open").to_string());
-        }
-        let r = self.run("font.loadDocumentFonts", json!({"files": list}))?;
+        // The document that asked, which needn't be the active one any more; a dropped folder of
+        // fonts is for the active one.
+        let index = if request.purpose == "documentFonts" {
+            self.import_target_index(request)?
+        } else {
+            self.session.active_index().ok_or_else(|| crate::i18n::tr(&self.ui.language, "The folder holds no document to open").to_string())?
+        };
+        let r = self.run("font.loadDocumentFonts", json!({"files": list, "index": index}))?;
         let faces = r.get("documentFonts").and_then(Value::as_u64).unwrap_or(0);
-        let title = self.session.active().map(|d| d.title()).unwrap_or_default();
+        let title = self.session.documents().get(index).map(|d| d.title()).unwrap_or_default();
         self.status(
             crate::i18n::tr(&self.ui.language, "{count} document fonts loaded for “{title}”")
                 .replace("{count}", &faces.to_string())
@@ -135,13 +139,19 @@ impl DesignApp {
     }
 
     pub(crate) fn activate_import_target(&mut self, request: &ImportRequest) -> Result<(), String> {
+        let index = self.import_target_index(request)?;
+        self.run("file.activate", json!({"index": index}))?;
+        Ok(())
+    }
+
+    /// The index of the document `request` was made for; a message when it has closed.
+    pub(crate) fn import_target_index(&mut self, request: &ImportRequest) -> Result<usize, String> {
         let Some(index) = request.target.and_then(|uid| self.session.documents().iter().position(|d| d.uid == uid)) else {
             let message = "Import cancelled: the originating document has closed";
             self.status(crate::i18n::tr(&self.ui.language, message));
             return Err(message.into());
         };
-        self.run("file.activate", json!({"index": index}))?;
-        Ok(())
+        Ok(index)
     }
 
     pub(crate) fn cancel_pdf_import(&mut self) {
@@ -1101,5 +1111,36 @@ mod folder_tests {
         app.drain_inbox();
         assert_eq!(app.session.documents().len(), 2, "the dropped package folder opens");
         assert!(!missing(&mut app, FAMILY));
+    }
+
+    /// Two folders handed over before the inbox is read stay two folders: each package opens.
+    #[test]
+    fn two_folders_handed_over_at_once_stay_two() {
+        const FAMILY: &str = "UI Package Twice Family";
+        let (mut app, _) =
+            app_with_folder(vec![("Issue/Issue.designcraft".into(), document_bytes(FAMILY)), ("Issue/Document Fonts/f.ttf".into(), font(FAMILY))]);
+        app.run("app.openPackageFolder", json!({})).unwrap();
+        app.run("app.openPackageFolder", json!({})).unwrap();
+        app.drain_inbox();
+        assert_eq!(app.session.documents().len(), 2, "{}", app.ui.status);
+    }
+
+    /// Fonts from Find Font's folder go to the document that asked, and the document active when
+    /// they arrive stays active.
+    #[test]
+    fn find_font_folder_fonts_go_to_the_document_that_asked() {
+        const FAMILY: &str = "UI Package Asked Family";
+        let (mut app, _) = app_with_folder(vec![("Issue/Document Fonts/f.ttf".into(), font(FAMILY))]);
+        let b64 = designcraft_engine::cmd::base64_encode(&document_bytes(FAMILY));
+        app.run("file.openBytes", json!({"name": "A.designcraft", "base64": b64})).unwrap();
+        app.pick_folder("documentFonts").unwrap();
+        // Another document is opened while the folder is still being read.
+        app.run("file.openBytes", json!({"name": "B.designcraft", "base64": b64})).unwrap();
+        app.drain_inbox();
+        assert_eq!(app.session.active_index(), Some(1), "B stays active");
+        assert!(missing(&mut app, FAMILY), "B has no fonts");
+        assert!(app.ui.status.contains("“A”"), "{}", app.ui.status);
+        app.run("file.activate", json!({"index": 0})).unwrap();
+        assert!(!missing(&mut app, FAMILY), "A has them");
     }
 }

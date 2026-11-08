@@ -19,7 +19,7 @@ impl FontSource {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             FontSource::Installed(p) | FontSource::Document(p) => Some(p),
-            FontSource::Bundled | FontSource::Memory => None,
+            FontSource::Bundled | FontSource::Memory | FontSource::DocumentContents(_) => None,
         }
     }
 }

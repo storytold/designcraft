@@ -7,6 +7,15 @@ use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// Which folder handed over the file ([`next_import_batch`]): files of a `folder:` purpose
+    /// with the same batch are one folder. 0 for single files.
+    pub batch: u64,
+}
+
+/// A new batch number for a folder handed over (see [`ImportRequest::batch`]), never 0.
+pub fn next_import_batch() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 pub struct ImportedFile {

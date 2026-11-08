@@ -1,15 +1,14 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
-use super::browser_policy::{has_query_flag, mime_for};
+use super::browser_policy::{PACKAGE_DOC_EXTS, deliver_dropped_folder, has_query_flag, mime_for};
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
-use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
+use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services, next_import_batch};
 use wasm_bindgen::JsCast as _;
 
 /// What Open… offers: the documents, and a zipped package (a document with its Document Fonts).
 const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt", "zip"];
 /// The documents a package folder holds, and the font files of its `Document Fonts` folder.
-const PACKAGE_DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
 const FONT_EXTS: &[&str] = &["ttf", "otf", "ttc", "otc"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
@@ -571,8 +570,13 @@ fn install_folder_drop(inbox: Inbox, ctx: egui::Context) {
         event.stop_immediate_propagation();
         let (inbox, ctx) = (inbox.clone(), ctx.clone());
         wasm_bindgen_futures::spawn_local(async move {
-            let files = read_dropped(entries).await;
-            deliver_folder(&inbox, &ctx, &ImportRequest { purpose: "folder:drop".into(), ..Default::default() }, files);
+            let (files, partial) = read_dropped(entries).await;
+            if !deliver_dropped_folder(files.iter().map(|(path, _)| path.as_str()), partial) {
+                log::warn!("the folder holds more than can be read at once, and its document wasn't among what was read: nothing loaded");
+                return;
+            }
+            let request = ImportRequest { purpose: "folder:drop".into(), batch: next_import_batch(), ..Default::default() };
+            deliver_folder(&inbox, &ctx, &request, files);
         });
     });
     if window.add_event_listener_with_callback_and_bool("drop", on_drop.as_ref().unchecked_ref(), true).is_err() {
@@ -629,20 +633,25 @@ async fn entry_file(entry: &wasm_bindgen::JsValue) -> Option<web_sys::File> {
 }
 
 /// The documents and font files ([`wanted_in_folder`]) of dropped entries, folders walked, each
-/// named by its path (`fullPath`, without the leading `/`), within the folder limits.
-async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>)> {
+/// named by its path (`fullPath`, without the leading `/`), within the folder limits → (the
+/// files, whether a limit left some unread).
+async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> (Vec<(String, Vec<u8>)>, bool) {
     let mut out = Vec::new();
+    let mut partial = false;
     let (mut bytes, mut seen) = (0.0, 0usize);
     let mut pending: Vec<(wasm_bindgen::JsValue, usize)> = roots.into_iter().map(|e| (e, 0)).collect();
     while let Some((entry, depth)) = pending.pop() {
         seen += 1;
         if seen > MAX_PACKAGE_ENTRIES {
             log::warn!("the folder holds more than can be read at once; the rest is left");
+            partial = true;
             break;
         }
         if js_get(&entry, "isDirectory").and_then(|v| v.as_bool()).unwrap_or(false) {
             if depth < MAX_PACKAGE_DEPTH {
                 pending.extend(read_directory(&entry).await.into_iter().map(|e| (e, depth + 1)));
+            } else {
+                partial = true;
             }
             continue;
         }
@@ -653,6 +662,7 @@ async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>
         let Some(file) = entry_file(&entry).await else { continue };
         if out.len() >= MAX_PACKAGE_FILES || bytes + file.size() > MAX_PACKAGE_BYTES {
             log::warn!("the folder holds more than can be read at once; the rest is left");
+            partial = true;
             break;
         }
         bytes += file.size();
@@ -661,5 +671,5 @@ async fn read_dropped(roots: Vec<wasm_bindgen::JsValue>) -> Vec<(String, Vec<u8>
             out.push((path.trim_start_matches('/').to_string(), js_sys::Uint8Array::new(&buf).to_vec()));
         }
     }
-    out
+    (out, partial)
 }
