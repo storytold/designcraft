@@ -1520,7 +1520,9 @@ mod tests {
     ///
     /// The shapes are run through the tessellator — with the theme fonts installed, so
     /// text glyphs are real triangle geometry — and a pixel counts as covered when its
-    /// center lands inside any output triangle.
+    /// center lands inside an output triangle that is opaque there: glyph triangles
+    /// are sampled through the font atlas, so letter counters (the hole in “A”) stay
+    /// uncovered, matching what the user sees.
     fn pixels(name: &str) -> Vec<bool> {
         const N: usize = 40;
         let ctx = egui::Context::default();
@@ -1529,20 +1531,34 @@ mod tests {
             paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 20.0)), name, Color32::WHITE);
         });
         out.textures_delta.clear();
-        let mut tris: Vec<[[f32; 2]; 3]> = Vec::new();
+        // The font atlas is the texture every glyph triangle samples from.
+        let atlas = ctx.fonts(|f| f.image());
+        let (aw, ah) = (atlas.size[0] as f32, atlas.size[1] as f32);
+
+        // Triangles as (x, y, u, v) per corner; u and v are normalized atlas coords.
+        let mut tris: Vec<[[f32; 4]; 3]> = Vec::new();
         for prim in ctx.tessellate(out.shapes, 2.0) {
             if let egui::epaint::Primitive::Mesh(mesh) = prim.primitive {
                 for c in mesh.indices.as_chunks::<3>().0 {
-                    let (a, b, d) = (mesh.vertices[c[0] as usize], mesh.vertices[c[1] as usize], mesh.vertices[c[2] as usize]);
-                    tris.push([[a.pos.x, a.pos.y], [b.pos.x, b.pos.y], [d.pos.x, d.pos.y]]);
+                    let (a, b, d) = (
+                        &mesh.vertices[c[0] as usize],
+                        &mesh.vertices[c[1] as usize],
+                        &mesh.vertices[c[2] as usize],
+                    );
+                    tris.push([
+                        [a.pos.x, a.pos.y, a.uv.x, a.uv.y],
+                        [b.pos.x, b.pos.y, b.uv.x, b.uv.y],
+                        [d.pos.x, d.pos.y, d.uv.x, d.uv.y],
+                    ]);
                 }
             }
         }
+
         let mut bmp = vec![false; N * N];
         for j in 0..N {
             for i in 0..N {
                 let (px, py) = ((i as f32 + 0.5) / 2.0, (j as f32 + 0.5) / 2.0);
-                if tris.iter().any(|t| tri_contains(px, py, t)) {
+                if tris.iter().any(|t| tri_covers(px, py, t, &atlas, aw, ah)) {
                     bmp[j * N + i] = true;
                 }
             }
@@ -1550,13 +1566,39 @@ mod tests {
         bmp
     }
 
-    /// Whether point `(px, py)` is inside (or on) triangle `t`.
-    fn tri_contains(px: f32, py: f32, t: &[[f32; 2]; 3]) -> bool {
-        let ([ax, ay], [bx, by], [cx, cy]) = (t[0], t[1], t[2]);
+    /// Whether pixel `(px, py)` lies inside triangle `t` and is opaque there.
+    ///
+    /// `t` holds (x, y, u, v) per corner. Solid (untextured) triangles carry a
+    /// constant uv and cover everything inside them. Glyph triangles carry uv
+    /// corners into the font atlas: the uv at the point is interpolated from its
+    /// barycentric coordinates, and the sampled texel's alpha decides coverage —
+    /// so the counters of letters stay uncovered.
+    fn tri_covers(px: f32, py: f32, t: &[[f32; 4]; 3], atlas: &egui::ColorImage, aw: f32, ah: f32) -> bool {
+        let ([ax, ay, au, av], [bx, by, bu, bv], [cx, cy, cu, cv]) = (t[0], t[1], t[2]);
         let d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
         let d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
         let d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
-        (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)
+        if !((d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)) {
+            return false;
+        }
+        let area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+        let w_a = ((bx - px) * (cy - py) - (cx - px) * (by - py)) / area;
+        let w_b = ((cx - px) * (ay - py) - (ax - px) * (cy - py)) / area;
+        let w_c = 1.0 - w_a - w_b;
+        let u = w_a * au + w_b * bu + w_c * cu;
+        let v = w_a * av + w_b * bv + w_c * cv;
+        // Constant uv (`Vertex::untextured`): solid fill, covered wherever inside.
+        if (au - bu).abs() <= 1e-6
+            && (au - cu).abs() <= 1e-6
+            && (av - bv).abs() <= 1e-6
+            && (av - cv).abs() <= 1e-6
+        {
+            return true;
+        }
+        // Glyph triangle: covered where the font atlas is opaque.
+        let tx = (u * aw).clamp(0.0, aw - 1.0) as usize;
+        let ty = (v * ah).clamp(0.0, ah - 1.0) as usize;
+        atlas.pixels[ty * atlas.size[0] + tx].a() > 127
     }
 
     /// The icon names of every registered panel: the dock tabs and the collapsed icon
@@ -1570,8 +1612,8 @@ mod tests {
 
     /// Minimum number of pixels (on the 40×40 supersampled grid) by which two
     /// registered panel icons may differ. The closest current pair is
-    /// `panel-pstyles` vs `panel-cstyles` at 100 px, so the threshold catches copied or
-    /// near-copied icons while leaving room for deliberate family resemblance.
+    /// `panel-info` vs `panel-preflight` at 89 px, so the threshold catches copied
+    /// or near-copied icons while leaving room for deliberate family resemblance.
     const MIN_ICON_DISTANCE: usize = 25;
 
     /// Every registered panel icon — the dock tabs and the collapsed icon column —
