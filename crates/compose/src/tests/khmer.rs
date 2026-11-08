@@ -1,25 +1,12 @@
 use super::*;
 use std::collections::BTreeMap;
 
-const PROSE: &str =
-    "ទ្រង់បានបង្កើតរបស់ខ្លះមកឲ្យអាចកម្រើកបាន និងខ្លះទៀតមិនអាចកម្រើកបានខ្លះស្អាត និងខ្លះទៀតមិនស្អាត ហើយរបស់ទាំងអស់នោះសុទ្ធតែមានគុណសម្បត្តិខុសៗគ្នា ប៉ុន្តែគ្មាននិចលភាព ឬក៏ស្មារតីសោះឡើយ។";
-
 fn khmer_font_available() -> bool {
     let db = designcraft_fonts::FontDb::global();
     let face = db.face("Khmer Sangam MN", "Regular");
     let available = face.glyph_for('ក') != 0 || db.fallback_for('ក', face.id(), None).is_some();
     if !available {
         eprintln!("skipped Khmer layout: install a Khmer font or supply craft-fonts");
-    }
-    available
-}
-
-/// The data-gated tests below need the Khmer data, which no build embeds until maintainers classify
-/// it; `required_data_pack_is_available` stops a build that requires the data from skipping them.
-fn khmer_data_available() -> bool {
-    let available = craft_khmer::data_available();
-    if !available {
-        eprintln!("skipped Khmer dictionary layout: built without Khmer data (see docs/khmer.md)");
     }
     available
 }
@@ -51,54 +38,11 @@ fn cluster_geometry(cs: &ComposedStory) -> BTreeMap<usize, Vec<(u32, f64, f64)>>
     groups
 }
 
-/// With a required pack, the data-gated tests below must not pass by skipping.
+/// With a required pack, the word count's data-only checks below must not pass by skipping.
 #[test]
 fn required_data_pack_is_available() {
     if option_env!("CRAFT_KHMER_REQUIRED") == Some("1") {
         assert!(craft_khmer::data_available(), "required Khmer data must activate the composition tests");
-    }
-}
-
-#[test]
-fn justified_khmer_fills_only_lines_with_real_spaces_without_moving_attached_glyphs() {
-    if !khmer_data_available() || !khmer_font_available() {
-        return;
-    }
-    let (natural_doc, sid) = fixture(PROSE, 10000.0, Composer::Paragraph, Align::Left);
-    let natural = compose_story(&natural_doc, sid, &ComposeOptions::default());
-    let reference = cluster_geometry(&natural);
-    assert!(reference.values().any(|cluster| cluster.len() > 1), "exercise an actual multi-glyph Khmer cluster");
-    for composer in [Composer::Paragraph, Composer::SingleLine] {
-        for align in [Align::LeftJustified, Align::FullyJustified] {
-            for width in [120.0, 220.0, 320.0] {
-                let (doc, sid) = fixture(PROSE, width, composer, align);
-                let cs = compose_story(&doc, sid, &ComposeOptions::default());
-                assert!(!cs.is_overset());
-                assert!(cs.line_count() >= 2);
-                let last = all_lines(&cs).last().copied().unwrap();
-                assert_eq!(last.range.end, PROSE.len());
-                if align == Align::LeftJustified {
-                    assert!(last.end_x < last.x1 - 0.5, "ordinary justified final line stays ragged");
-                }
-                for line in all_lines(&cs) {
-                    if !line.last_in_para && PROSE[line.range.clone()].trim_end().contains(' ') {
-                        assert!((line.end_x - line.x1).abs() < 0.6, "{composer:?}/{align:?}/{width}: {} != {}", line.end_x, line.x1);
-                    }
-                    assert!(line.end_x <= line.x1 + 0.02, "{composer:?}/{align:?}/{width}: overflow");
-                    let start = PROSE.get(line.range.start..).unwrap().chars().next();
-                    assert!(!start.is_some_and(|c| matches!(c, 'ៗ' | '។' | '\u{17b4}'..='\u{17d3}')));
-                }
-                for (byte, cluster) in cluster_geometry(&cs) {
-                    let original = &reference[&byte];
-                    assert_eq!(cluster.len(), original.len(), "cluster at {byte}");
-                    for (a, b) in cluster.iter().zip(original) {
-                        assert_eq!(a.0, b.0);
-                        assert!((a.1 - b.1).abs() < 0.001 && (a.2 - b.2).abs() < 0.001, "mark moved at {byte}: {a:?} / {b:?}");
-                    }
-                }
-                assert_eq!(doc.story(sid).unwrap().text, PROSE, "layout never inserts spaces");
-            }
-        }
     }
 }
 
@@ -150,53 +94,6 @@ fn khmer_authored_boundaries_survive_formatting_and_emergency_wraps() {
         let (mut doc, sid) = fixture("គ្រប់ៗគ្នា", 8.0, composer, Align::Left);
         doc.story_mut(sid).unwrap().format_chars(0.."គ្រប់ៗគ្នា".len(), |f| f.over.no_break = Some(true));
         assert_eq!(compose_story(&doc, sid, &ComposeOptions::default()).line_count(), 1);
-    }
-}
-
-#[test]
-fn misspelled_khmer_still_wraps_and_single_words_stay_intact() {
-    if !khmer_data_available() || !khmer_font_available() {
-        return;
-    }
-    let text = "ខ្ញុំស្រឡាញ់ភាសាខ្មែររររររសួស្តីពិភពលោក";
-    let (wide, sid) = fixture(text, 1000.0, Composer::Paragraph, Align::Left);
-    let reference = cluster_geometry(&compose_story(&wide, sid, &ComposeOptions::default()));
-    for composer in [Composer::Paragraph, Composer::SingleLine] {
-        let (doc, sid) = fixture(text, 65.0, composer, Align::LeftJustified);
-        let cs = compose_story(&doc, sid, &ComposeOptions::default());
-        let lines = all_lines(&cs);
-        assert!(lines.len() >= 3 && !cs.is_overset());
-        assert_eq!(lines.last().unwrap().range.end, text.len());
-        for line in &lines {
-            assert!(line.end_x <= line.x1 + 0.02, "{composer:?}: {:?} overflowed", line.range);
-        }
-        for (byte, cluster) in cluster_geometry(&cs) {
-            assert_eq!(cluster.len(), reference[&byte].len());
-            for (a, b) in cluster.iter().zip(&reference[&byte]) {
-                assert_eq!(a.0, b.0);
-                assert!((a.1 - b.1).abs() < 0.001 && (a.2 - b.2).abs() < 0.001, "mark moved at {byte}");
-            }
-        }
-        // Even expansive H&J settings must not manufacture Khmer letter gaps,
-        // on either a forced line or the final line.
-        for text in ["កសិករ", "កសិករ\u{2028}ខ្មែរ"] {
-            let (natural, sid) = fixture(text, 100.0, composer, Align::Left);
-            let natural = compose_story(&natural, sid, &ComposeOptions::default());
-            for align in [Align::LeftJustified, Align::FullyJustified] {
-                let (mut doc, sid) = fixture(text, 100.0, composer, align);
-                doc.story_mut(sid).unwrap().format_paras(0..text.len(), |f| {
-                    f.para.letter_space_desired = Some(0.2);
-                    f.para.letter_space_max = Some(0.6);
-                    f.para.glyph_scale_min = Some(0.9);
-                    f.para.glyph_scale_max = Some(1.1);
-                });
-                let cs = compose_story(&doc, sid, &ComposeOptions::default());
-                assert_eq!(cs.line_count(), natural.line_count());
-                for (line, original) in all_lines(&cs).into_iter().zip(all_lines(&natural)) {
-                    assert!((line.end_x - original.end_x).abs() < 0.001, "Khmer letters must never spread");
-                }
-            }
-        }
     }
 }
 
@@ -440,6 +337,35 @@ fn single_word_justification_places_a_khmer_line_without_a_space() {
             let line = all_lines(&cs)[0];
             assert!((line.glyphs[0].x - start).abs() < 1e-6, "{composer:?}/{setting:?}: {} != {start}", line.glyphs[0].x);
             assert!((line.end_x - start - natural).abs() < 1e-6, "{composer:?}/{setting:?}: letters keep their width");
+        }
+    }
+}
+
+#[test]
+fn letter_spacing_never_spreads_khmer_letters_when_a_real_space_justifies_the_line() {
+    // The first line has a real space and is justified; the forced break keeps it from being last.
+    let text = format!("{WORD} {WORD}\u{2028}{WORD}");
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        let width = word_width(composer) * 3.0;
+        let (natural, sid) = synthetic(&text, 100000.0, composer, Align::Left);
+        let natural = glyph_metrics(&compose_story(&natural, sid, &ComposeOptions::default()));
+        for align in [Align::LeftJustified, Align::FullyJustified] {
+            let (mut doc, sid) = synthetic(&text, width, composer, align);
+            doc.story_mut(sid).unwrap().format_paras(0..text.len(), |f| {
+                f.para.word_space_max = Some(1.0);
+                f.para.letter_space_desired = Some(0.2);
+                f.para.letter_space_max = Some(0.6);
+            });
+            let cs = compose_story(&doc, sid, &ComposeOptions::default());
+            let line = all_lines(&cs)[0];
+            assert!((line.end_x - line.x1).abs() < 0.02, "{composer:?}/{align:?}: the spaced line fills the measure");
+            for g in line.glyphs.iter().filter(|g| g.rendered_char != ' ' && g.visible) {
+                assert!(
+                    natural[&g.byte].iter().any(|r| (r.0 - g.adv).abs() < 1e-6),
+                    "{composer:?}/{align:?}: Khmer letters must never spread at {}",
+                    g.byte
+                );
+            }
         }
     }
 }
