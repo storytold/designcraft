@@ -8673,13 +8673,13 @@ fn small_caps_come_from_the_font_or_are_drawn_when_it_has_none() {
     let at = |gs: &[(usize, u32, f64, f64, char)], byte: usize| gs.iter().find(|g| g.0 == byte).cloned().unwrap();
     let (_, a_plain, adv_plain, _, _) = at(&plain, 0);
     let (_, cap_plain, adv_cap, _, _) = at(&plain, 3);
-    let (_, a_small, adv_a, sx_a, ch_a) = at(&small, 0);
-    let (_, cap_small, adv_A, sx_cap, _) = at(&small, 3);
+    let (_, small_a, adv_a, sx_a, ch_a) = at(&small, 0);
+    let (_, small_cap, adv_upper, sx_cap, _) = at(&small, 3);
     assert_eq!(ch_a, 'a', "the run still reads a");
-    assert_eq!(a_small, cap_plain, "the a is drawn with the glyph of an A");
-    assert_eq!(a_small, cap_small, "the same glyph the run's own A uses");
+    assert_eq!(small_a, cap_plain, "the a is drawn with the glyph of an A");
+    assert_eq!(small_a, small_cap, "the same glyph the run's own A uses");
     assert!((adv_a / adv_cap - 0.7).abs() < 1e-6, "the small a takes 70%: {} / {}", adv_a, adv_cap);
-    assert!((adv_A - adv_cap).abs() < 1e-9, "the capital keeps its advance: {} vs {}", adv_A, adv_cap);
+    assert!((adv_upper - adv_cap).abs() < 1e-9, "the capital keeps its advance: {} vs {}", adv_upper, adv_cap);
     assert!((sx_a / sx_cap - 0.7).abs() < 1e-6, "and its drawing is scaled by the same 0.7");
     assert_ne!(a_plain, cap_plain, "in the plain run the two letters differ");
 
