@@ -236,6 +236,20 @@ fn hit_testing_respects_layers() {
 }
 
 #[test]
+fn parent_hit_testing_respects_layers() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (a, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "x", ParaFormat::default()).unwrap();
+    let at = designcraft_geom::Point::new(50.0, 50.0);
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), Some(a));
+    d.layer_mut(lid).unwrap().visible = false;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+    d.layer_mut(lid).unwrap().visible = true;
+    d.layer_mut(lid).unwrap().locked = true;
+    assert_eq!(d.hit_parent_item(SpreadRef::Parent(0), at, 2.0), None);
+}
+
+#[test]
 fn page_numbers_saturate_at_the_largest_start() {
     // A start number from a file or an old command: page 2 overflowed (a panic in debug builds).
     let mut d = crate::Document::new(&crate::build::NewDocument { pages: 3, facing_pages: false, ..Default::default() });
@@ -246,6 +260,7 @@ fn page_numbers_saturate_at_the_largest_start() {
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,
+        layout: None,
     }];
     assert_eq!((0..3).map(|i| d.page_number(i)).collect::<Vec<_>>(), [u32::MAX; 3]);
     d.sections.push(crate::Section { start: 2, start_number: None, ..d.sections[0].clone() });
@@ -262,6 +277,7 @@ fn page_names_follow_sections() {
         style: NumberStyle::LowerRoman,
         prefix: "A-".into(),
         marker: String::new(),
+        layout: None,
         include_prefix: true,
     });
     assert_eq!(d.page_name(1), "2");
@@ -273,6 +289,7 @@ fn page_names_follow_sections() {
         start_number: None,
         style: NumberStyle::Arabic,
         prefix: String::new(),
+        layout: None,
         marker: String::new(),
         include_prefix: false,
     });
@@ -288,6 +305,7 @@ fn consecutive_right_pages_get_separate_spreads() {
         start: 1,
         start_number: Some(1),
         style: NumberStyle::Arabic,
+        layout: None,
         prefix: String::new(),
         marker: String::new(),
         include_prefix: false,
@@ -350,6 +368,185 @@ fn placed_pdf_without_a_crop_choice_loads_with_the_crop_box() {
     assert_eq!((back.pdf_crop, back.shown_box()), (PdfCrop::Trim, Some([0.1, 0.1, 0.9, 0.9])));
     // A box with no area shows the whole page.
     assert_eq!(Asset { pdf_box: Some([0.5, 0.5, 0.5, 0.9]), ..back }.shown_box(), None);
+}
+
+#[test]
+fn adjust_text_ranges_tracks_and_prunes_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    d.hyperlinks.push(Hyperlink {
+        id: 10,
+        name: "Link".into(),
+        source: HyperlinkSource::Text { story: sid, start: 10, end: 20 },
+        dest: HyperlinkDest::Url("https://example.com".into()),
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 20,
+        source_id: 1,
+        field: "Name".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 20 },
+    });
+
+    // 1. Insert before range (at 5, length 3) -> both move by 3: 13..23
+    d.adjust_text_ranges(sid, 5..5, 3);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 13, end: 23 });
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 13, end: 23 });
+
+    // 2. Pure insert at start (at 13, length 2) -> shifts forward: 15..25
+    d.adjust_text_ranges(sid, 13..13, 2);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 25 });
+
+    // 3. Insert inside range (at 18, length 4) -> end expands: 15..29
+    d.adjust_text_ranges(sid, 18..18, 4);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 4. Typing at the very end of the range (at 29, length 3) -> does not expand range
+    d.adjust_text_ranges(sid, 29..29, 3);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 5. Insert after range (at 35, length 5) -> no change
+    d.adjust_text_ranges(sid, 35..35, 5);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 15, end: 29 });
+
+    // 6. Delete before range (0..5, length 0) -> shifts back by 5: 10..24
+    d.adjust_text_ranges(sid, 0..5, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 24 });
+
+    // 7. Delete inside range (12..16, length 0) -> end shrinks by 4: 10..20
+    d.adjust_text_ranges(sid, 12..16, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 10, end: 20 });
+
+    // 8. Delete across start boundary (8..14, length 0) -> surviving start is 8, end is 14
+    d.adjust_text_ranges(sid, 8..14, 0);
+    assert_eq!(d.hyperlinks[0].source, HyperlinkSource::Text { story: sid, start: 8, end: 14 });
+
+    // 9. Delete entire range (5..20, length 0) -> pruned
+    d.adjust_text_ranges(sid, 5..20, 0);
+    assert!(d.hyperlinks.is_empty());
+    assert!(d.data_merge.placeholders.is_empty());
+}
+
+#[test]
+fn adjust_text_ranges_preserves_zero_length_ranges_and_drops_inverted() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    // Zero-length placeholder (e.g. created at caret)
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 1,
+        source_id: 1,
+        field: "CaretPh".into(),
+        role: crate::PlaceholderRole::Hyperlink,
+        anchor: crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 10 },
+    });
+    // Inverted hyperlink from corrupt input
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Inverted".into(),
+        source: HyperlinkSource::Text { story: sid, start: 25, end: 15 },
+        dest: HyperlinkDest::Url("https://example.com".into()),
+    });
+
+    // 1. Inverted range is pruned on edit
+    d.adjust_text_ranges(sid, 0..0, 2);
+    assert!(d.hyperlinks.is_empty(), "inverted range must be dropped");
+
+    // 2. Zero-length placeholder shifts when text is inserted before it (at 0, len 5) -> 15..15
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 12, end: 12 });
+    d.adjust_text_ranges(sid, 0..0, 5);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 17, end: 17 });
+
+    // 3. Zero-length placeholder shifts when text is deleted before it (0..7) -> 10..10
+    d.adjust_text_ranges(sid, 0..7, 0);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 10, end: 10 });
+
+    // 4. Deleting text enclosing the zero-length placeholder collapses it to the deletion start without pruning
+    d.adjust_text_ranges(sid, 5..15, 0);
+    assert_eq!(d.data_merge.placeholders[0].anchor, crate::PlaceholderAnchor::Text { story: sid, start: 5, end: 5 });
+}
+
+#[test]
+fn move_text_ranges_tracks_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let sid = StoryId(1);
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "Inside".into(),
+        source: HyperlinkSource::Text { story: sid, start: 22, end: 28 },
+        dest: HyperlinkDest::Url("https://example.com/inside".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Between".into(),
+        source: HyperlinkSource::Text { story: sid, start: 5, end: 10 },
+        dest: HyperlinkDest::Url("https://example.com/between".into()),
+    });
+
+    // Move block 20..30 to position 0 (before both links).
+    // The moved block (length 10) lands at 0..10.
+    // The link inside (22..28, relative offset +2..+8) becomes 2..8.
+    // The link originally at 5..10 shifts forward by 10 to 15..20.
+    d.move_text_ranges(sid, 20..30, 0);
+
+    let inside = d.hyperlinks.iter().find(|h| h.id == 1).unwrap();
+    let between = d.hyperlinks.iter().find(|h| h.id == 2).unwrap();
+    assert_eq!(inside.source, HyperlinkSource::Text { story: sid, start: 2, end: 8 });
+    assert_eq!(between.source, HyperlinkSource::Text { story: sid, start: 15, end: 20 });
+    assert_eq!(d.hyperlinks[0].id, 1, "original list order in doc.hyperlinks must be preserved");
+    assert_eq!(d.hyperlinks[1].id, 2);
+}
+
+#[test]
+fn set_story_text_prunes_story_hyperlinks_and_placeholders() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let (_, sid1) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(10.0, 10.0, 100.0, 100.0), lid, "initial one", ParaFormat::default()).unwrap();
+    let (_, sid2) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(110.0, 10.0, 200.0, 100.0), lid, "initial two", ParaFormat::default()).unwrap();
+
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "Link1".into(),
+        source: HyperlinkSource::Text { story: sid1, start: 0, end: 7 },
+        dest: HyperlinkDest::Url("https://example.com/1".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "Link2".into(),
+        source: HyperlinkSource::Text { story: sid2, start: 0, end: 7 },
+        dest: HyperlinkDest::Url("https://example.com/2".into()),
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 10,
+        source_id: 1,
+        field: "Ph1".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid1, start: 0, end: 7 },
+    });
+    d.data_merge.placeholders.push(crate::Placeholder {
+        id: 20,
+        source_id: 1,
+        field: "Ph2".into(),
+        role: crate::PlaceholderRole::Text,
+        anchor: crate::PlaceholderAnchor::Text { story: sid2, start: 0, end: 7 },
+    });
+
+    d.set_story_text(sid1, "Replacement story text").unwrap();
+
+    // sid1 hyperlinks and placeholders must be pruned
+    assert!(d.hyperlinks.iter().all(|h| match &h.source {
+        HyperlinkSource::Text { story, .. } => *story != sid1,
+        _ => true,
+    }));
+    assert!(d.data_merge.placeholders.iter().all(|ph| match &ph.anchor {
+        crate::PlaceholderAnchor::Text { story, .. } => *story != sid1,
+        _ => true,
+    }));
+
+    // sid2 hyperlinks and placeholders must be preserved
+    assert_eq!(d.hyperlinks.len(), 1);
+    assert_eq!(d.hyperlinks[0].id, 2);
+    assert_eq!(d.data_merge.placeholders.len(), 1);
+    assert_eq!(d.data_merge.placeholders[0].id, 20);
 }
 
 /// Many note references put in at once each get a note with an id of its own, in one pass.
