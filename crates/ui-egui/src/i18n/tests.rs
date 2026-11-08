@@ -578,3 +578,29 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
 }
+
+/// Every unit name the ruler menus and Preferences show has its Spanish row, while the symbols
+/// Q and Ha keep their letters so a value copied in one language pastes back in another.
+#[test]
+fn unit_names_are_translated_in_spanish() {
+    for (key, spanish) in [
+        ("Points", "Puntos"),
+        ("Picas", "Picas"),
+        ("Inches", "Pulgadas"),
+        ("Inches Decimal", "Pulgadas decimales"),
+        ("Millimeters", "Milímetros"),
+        ("Centimeters", "Centímetros"),
+        ("Ciceros", "Cíceros"),
+        ("Agates", "Ágatas"),
+        ("Pixels", "Píxeles"),
+    ] {
+        assert_eq!(tr("es", key), spanish, "{key}");
+    }
+    for symbol in ["Q", "Ha"] {
+        assert_eq!(tr("es", symbol), symbol, "{symbol} stays a symbol");
+    }
+    // Nothing the enum can return is left without a row.
+    for unit in designcraft_geom::Unit::ALL {
+        assert!(!tr("es", unit.label()).is_empty(), "{}", unit.label());
+    }
+}
