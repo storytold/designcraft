@@ -37,7 +37,8 @@ pub fn placed(doc: &Document, cache: &Cache, layout: &CanvasLayout, story: Optio
             }
             let (Some(loc), Some(frame)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
             let layer = doc.layer(frame.layer);
-            if frame.hidden || layer.is_some_and(|l| !l.visible || l.locked) {
+            // A locked frame's objects are locked too (`anchored.select` refuses them).
+            if frame.hidden || frame.locked || layer.is_some_and(|l| !l.visible || l.locked) {
                 continue;
             }
             let Some(slot) = layout.slot(loc.spread) else { continue };
@@ -45,9 +46,10 @@ pub fn placed(doc: &Document, cache: &Cache, layout: &CanvasLayout, story: Optio
             let [a, b, c, d, _, _] = xf.as_coeffs();
             let turned = b.abs() > 1e-9 || c.abs() > 1e-9 || a <= 0.0 || d <= 0.0;
             for o in &ft.objects {
-                // A locked object (or one on a locked layer) can't be selected, as other items.
+                // A locked object (or one on a locked layer) can't be selected, as other items; a
+                // hidden one isn't drawn, so it can't be clicked.
                 let it = &o.object.item;
-                if it.locked || doc.layer(it.layer).is_some_and(|l| l.locked) {
+                if it.hidden || it.locked || doc.layer(it.layer).is_some_and(|l| l.locked) {
                     continue;
                 }
                 let r = o.object.item.bounds();

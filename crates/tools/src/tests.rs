@@ -2316,6 +2316,71 @@ fn selection_tool_selects_an_inline_object_and_resizes_it_by_a_handle() {
     assert!(matches!(a.as_slice(), [Action::Exec(c, _)] if c == "selection.set"), "{a:?}");
 }
 
+/// Review of #1195: a selected anchored object takes Delete and Backspace (`edit.clear`) and
+/// Escape (deselect) from the Selection tool; the arrows don't move it (it flows with the text).
+#[test]
+fn keys_act_on_a_selected_anchored_object() {
+    let (d, sid) = inline_box_doc();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let s = Selection { anchored: Some(designcraft_doc::AnchoredSel { story: sid, index: 0 }), ..Default::default() };
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    for key in [ToolKey::Delete, ToolKey::Backspace] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Exec("edit.clear".into(), serde_json::json!({}))], "{key:?}");
+    }
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+    assert!(t.key(&cx, ToolKey::Left, Mods::default()).is_empty());
+}
+
+/// Review of #1195: the Selection tool doesn't pick an anchored object it can't select: one in a
+/// locked text frame (`anchored.select` refuses it), or a hidden one (it isn't drawn).
+#[test]
+fn locked_frames_and_hidden_anchored_objects_are_not_picked() {
+    let (d, sid) = inline_box_doc();
+    let c = Cache::new();
+    let r = crate::anchored::placed(&d, &c, &CanvasLayout::new(&d, false), None)[0].canvas_rect;
+    let mut locked = d.clone();
+    let frame = locked.story(sid).unwrap().frames[0];
+    locked.item_mut(frame).unwrap().locked = true;
+    let mut hidden = d.clone();
+    std::sync::Arc::make_mut(&mut hidden.story_mut(sid).unwrap().objects[0]).item.hidden = true;
+    for (what, d) in [("locked frame", &locked), ("hidden object", &hidden)] {
+        let l = CanvasLayout::new(d, false);
+        assert!(crate::anchored::placed(d, &c, &l, None).is_empty(), "{what}");
+        assert!(crate::anchored::at(d, &c, &l, r.center()).is_none(), "{what}");
+    }
+}
+
+/// Review of #1195: Shift on a selected anchored object's handle resizes it proportionally, as
+/// other frames; a Shift-click on an unselected one doesn't select it.
+#[test]
+fn shift_on_an_anchored_handle_resizes_proportionally() {
+    let (d, sid) = inline_box_doc();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let r = crate::anchored::placed(&d, &c, &l, None)[0].canvas_rect;
+    let shift = Mods { shift: true, ..Default::default() };
+    let s = Selection { anchored: Some(designcraft_doc::AnchoredSel { story: sid, index: 0 }), ..Default::default() };
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    // The bottom-right corner, dragged 12 to the right with Shift: 24 × 40 becomes 36 × 60.
+    assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, r.x1, r.y1).with_mods(shift)), vec![Action::Handled]);
+    t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, r.x1 + 12.0, r.y1).with_mods(shift));
+    match t.pointer(&cx, &PointerEvent::new(PointerKind::Up, r.x1 + 12.0, r.y1).with_mods(shift)).as_slice() {
+        [Action::Exec(cmd, p)] => {
+            assert_eq!(cmd, "anchored.resize");
+            let to: Vec<f64> = serde_json::from_value(p["to"].clone()).unwrap();
+            assert!(((to[2] - to[0]) / (to[3] - to[1]) - 24.0 / 40.0).abs() < 1e-6, "proportional: {to:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Unselected, a Shift-click on it doesn't select it on its own.
+    let none = Selection::default();
+    let cx = ctx(&d, &none, &c, &l);
+    let mut t = create("selection");
+    let a = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, r.center().x, r.center().y).with_mods(shift));
+    assert!(!a.iter().any(|a| matches!(a, Action::Exec(c, _) if c == "anchored.select")), "{a:?}");
+}
+
 #[test]
 fn parent_resize_page_tool_targets_the_visible_parent() {
     let d = Document::new(&NewDocument { width: 400.0, height: 600.0, pages: 3, facing_pages: true, ..Default::default() });

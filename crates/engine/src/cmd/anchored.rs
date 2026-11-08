@@ -379,6 +379,49 @@ mod tests {
         (s, sid)
     }
 
+    /// Review of #1195: an anchored selection follows its object through edits of the story. An
+    /// object inserted before it moves it along; resizing it keeps it selected; deleting its
+    /// text deletes it from the selection too, so Delete never takes another object.
+    #[test]
+    fn an_anchored_selection_follows_its_object() {
+        let (mut s, sid) = inline_box();
+        let id = |s: &Session, k: usize| s.doc().unwrap().doc.story(sid).unwrap().objects[k].item.id;
+        s.execute("anchored.select", &json!({"story": sid.0, "index": 0})).unwrap();
+        let selected = id(&s, 0);
+        // Another object anchored at the start of the story, before the selected one.
+        let r = s.execute("frame.create", &json!({"rect": [450, 300, 470, 320]})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [r["id"]], "story": sid.0, "pos": 0})).unwrap();
+        // The selected object is now the second.
+        let st = s.doc_mut().unwrap();
+        st.selection = designcraft_doc::Selection { anchored: Some(AnchoredSel { story: sid, index: 1 }), ..Default::default() };
+        assert_eq!(id(&s, 1), selected);
+        // An edit that inserts an object before it: the selection moves with it.
+        s.edit(|d, _| {
+            let st = d.story_mut(sid).unwrap();
+            let first = (*st.objects[0]).clone();
+            let mut copy = first;
+            copy.item.id = ItemId(9_999);
+            st.insert_object(0, copy);
+            Ok(())
+        })
+        .unwrap();
+        let a = s.doc().unwrap().selection.anchored.unwrap();
+        assert_eq!((a.index, id(&s, a.index)), (2, selected), "follows its object");
+        // Resizing keeps it selected.
+        s.execute("anchored.resize", &json!({"from": [0, 0, 24, 40], "to": [0, 0, 30, 40]})).unwrap();
+        assert_eq!(s.doc().unwrap().selection.anchored.map(|a| a.index), Some(2));
+        // Its text deleted with the object: nothing stays selected, rather than another object.
+        let pos = s.doc().unwrap().doc.story(sid).unwrap().text.match_indices(designcraft_doc::OBJECT_MARK).nth(2).unwrap().0;
+        s.edit(|d, _| {
+            d.story_mut(sid).unwrap().delete(pos..pos + designcraft_doc::OBJECT_MARK.len_utf8());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.doc().unwrap().selection.anchored, None);
+        let _ = s.execute("edit.clear", &json!({}));
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects.len(), 2, "Delete took nothing");
+    }
+
     /// A locked anchored object, one on a locked layer, or one in a locked frame or a frame on a
     /// locked layer can't be selected, resized or deleted: it stays in the text with its marker.
     #[test]

@@ -1307,7 +1307,8 @@ impl Tool for SelectionTool {
         // Anchored objects (inline graphics and the like): a press on a selected one's handle
         // resizes it, a press on one selects it. They flow with the text, so a drag doesn't move
         // them, and a double click selects rather than editing the text around them.
-        if !self.direct && !ev.mods.shift && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick) {
+        if !self.direct && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick) {
+            // A handle resizes, with Shift too (proportionally, as other frames).
             if let Some((pl, h)) = anchored_handle_at(cx, p)
                 && let Some(o) = cx.doc.story(pl.sel.story).and_then(|s| s.objects.get(pl.sel.index))
             {
@@ -1316,7 +1317,9 @@ impl Tool for SelectionTool {
                 self.drag = Drag::AnchoredResize { sel: pl.sel, handle, from: pl.spread_rect, local: o.item.bounds(), spread: pl.spread, to: None };
                 return vec![Action::Handled];
             }
-            if handle_at(cx, p).is_none()
+            // Shift-click adds to an item selection, which an anchored object can't join.
+            if !ev.mods.shift
+                && handle_at(cx, p).is_none()
                 && let Some(pl) = crate::anchored::at(cx.doc, cx.cache, cx.layout, p)
             {
                 self.drag = Drag::None;
@@ -1471,6 +1474,15 @@ impl Tool for SelectionTool {
         // Selected points: Delete and Backspace delete them, not their paths.
         if direct_points && matches!(key, ToolKey::Delete | ToolKey::Backspace) {
             return vec![Action::Exec("path.deletePoints".into(), json!({}))];
+        }
+        // A selected anchored object: Delete and Backspace delete it (with its place in the
+        // text), Escape deselects it. It flows with the text, so the arrows don't move it.
+        if cx.selection.anchored.is_some() && cx.selection.items.is_empty() {
+            return match key {
+                ToolKey::Delete | ToolKey::Backspace => vec![Action::Exec("edit.clear".into(), json!({}))],
+                ToolKey::Escape => vec![Action::Exec("selection.set".into(), json!({"ids": []}))],
+                _ => vec![],
+            };
         }
         if cx.selection.items.is_empty() {
             // Selected ruler guides: the arrows nudge them, Delete deletes them.
