@@ -73,8 +73,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let (a, b) = (p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize, p.get("end").and_then(Value::as_u64).unwrap_or(0) as usize);
             let to = str_param(p, "to").unwrap_or("").to_string();
             s.edit(|d, _| {
-                let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                st.replace(a.min(st.len())..b.min(st.len()), &to);
+                let r = {
+                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    let r = a.min(st.len())..b.min(st.len());
+                    st.replace(r.clone(), &to);
+                    r
+                };
+                d.adjust_text_ranges(sid, r, to.len());
                 Ok(Value::Null)
             })
         }),

@@ -125,12 +125,14 @@ pub(crate) fn check_item(it: &Item) -> Result<()> {
 
 /// Anchor copies of `items` (in spread coordinates) at `pos` of `sid`; returns the end position.
 pub(crate) fn anchor_items(d: &mut Document, sid: StoryId, pos: usize, items: Vec<Item>, position: &AnchorPosition) -> Result<usize> {
+    let count = items.len();
     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
     let mut at = pos.min(st.len());
     for it in items {
         st.insert_object(at, AnchoredObject::new(it, position.clone()));
         at += OBJECT_MARK.len_utf8();
     }
+    d.adjust_text_ranges(sid, pos..pos, count * OBJECT_MARK.len_utf8());
     Ok(at)
 }
 
@@ -229,7 +231,9 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let id = d.insert_item(spread, it, None)?;
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        st.delete(pos..pos + OBJECT_MARK.len_utf8());
+        let len = OBJECT_MARK.len_utf8();
+        st.delete(pos..pos + len);
+        d.adjust_text_ranges(sid, pos..pos + len, 0);
         *sel = designcraft_doc::Selection::items(vec![id]);
         Ok(json!({"id": id.0}))
     })
