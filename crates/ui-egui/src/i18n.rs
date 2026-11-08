@@ -3343,14 +3343,37 @@ mod tests {
     fn lao_catalog_covers_existing_keys_and_preserves_placeholders() {
         let catalog: std::collections::HashMap<_, _> = lo::TABLE.iter().copied().collect();
         assert_eq!(catalog.len(), lo::TABLE.len(), "duplicate Lao keys");
+        
+        // ລວມເອົາ Key ຈາກທຸກພາສາທີ່ມີໃນລະບົບ (ບໍ່ໃຫ້ຕົກຫຼົ່ນ)
         let mut keys = std::collections::HashSet::new();
         keys.extend(TABLE.iter().map(|(key, _)| *key));
         keys.extend(ar::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(de::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(es::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(fr::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(it::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ja::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(ka::TABLE.iter().map(|(key, _)| *key));
         keys.extend(pt_br::TABLE.iter().map(|(key, _)| *key));
+        keys.extend(uk::TABLE.iter().map(|(key, _|| *key));
+
+        // ກວດສອບ Stale keys
         let stale: Vec<_> = catalog.keys().filter(|k| !keys.contains(*k)).collect();
         assert!(stale.is_empty(), "Lao entries for unknown keys: {stale:?}");
-        let placeholders =
-            |s: &str| s.split('{').skip(1).filter_map(|part| part.split_once('}')).map(|(name, _)| name.to_owned()).collect::<Vec<_>>();
+
+        // [ເພີ່ມໃใหม่ຕາມທີ່ Reviewer ขอ] ກວດສອບວ່າ Source keys ຫຼັກທັງໝົດ ຕ້ອງມີຢູ່ໃນ lo::TABLE (ປ້ອງກັນການ Fallback ເປັນອັງກິດ)
+        for (key, _) in TABLE {
+            assert!(catalog.contains_key(key), "missing Lao translation for: {key}");
+        }
+
+        let placeholders = |s: &str| {
+            s.split('{')
+                .skip(1)
+                .filter_map(|part| part.split_once('}'))
+                .map(|(name, _)| name.to_owned())
+                .collect::<Vec<_>>()
+        };
+
         for (key, translation) in lo::TABLE {
             assert!(!translation.trim().is_empty(), "empty {key}");
             let mut source = placeholders(key);
@@ -3359,6 +3382,7 @@ mod tests {
             translated.sort();
             assert_eq!(source, translated, "placeholders: {key}");
         }
+        
         assert_eq!(tr("lo", "File"), "ໄຟລ໌");
         assert_eq!(tr("lo", "Edit"), "ແກ້ໄຂ");
         assert!(!is_rtl("lo"));
