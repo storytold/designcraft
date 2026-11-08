@@ -888,9 +888,12 @@ fn nested_footnotes_are_asides_in_their_parent_in_reading_order() {
         let aside = find(&format!("id=\"fn-{n}\""));
         assert!(aside < find(text), "fn-{n} holds {text}:\n{html}");
     }
-    // The inner asides close before the outer one does: nested, not siblings.
+    // Nested, not siblings: the first close after the outer aside opens ends the deepest one,
+    // so the inner asides open before it.
     let outer_aside = find("id=\"fn-1\"");
     let closes: Vec<usize> = html.match_indices("</aside>").map(|(i, _)| i).collect();
+    let first_close = closes.iter().copied().find(|&c| c > outer_aside).unwrap();
+    assert!(find("id=\"fn-2\"") < first_close && find("id=\"fn-3\"") < first_close, "inner asides open inside the outer one:\n{html}");
     let last_aside = find("id=\"fn-4\"");
     assert!(closes.iter().filter(|&&c| c > outer_aside && c < last_aside).count() == 3, "three asides close before the last note:\n{html}");
 }

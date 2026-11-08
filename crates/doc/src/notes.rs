@@ -43,6 +43,12 @@ pub struct Footnote {
 /// in a file are kept but not shown or numbered.
 pub const MAX_NOTE_DEPTH: usize = 5;
 
+/// The load warning for `folded` footnotes nested past [`MAX_NOTE_DEPTH`] that
+/// [`crate::Document::fold_deep_notes`] wrote into the text of the note holding them.
+pub fn deep_notes_warning(folded: usize) -> String {
+    format!("{folded} footnote(s) nested more than {MAX_NOTE_DEPTH} deep were written into the text of the note holding them")
+}
+
 impl Footnote {
     /// This footnote's text with its nested notes written out as InDesign can hold them, and as
     /// GDT-style layouts do by hand: each nested reference becomes its mark as superscript text,
@@ -321,9 +327,70 @@ impl Story {
         crate::ids::next_local_id(self.note_ids_deep().into_iter())
     }
 
+    /// Whether a note at the deepest level, [`MAX_NOTE_DEPTH`], holds notes of its own (a file
+    /// can; editing can't make one), read without changing anything.
+    pub fn has_notes_too_deep(&self) -> bool {
+        self.has_notes_too_deep_from(1)
+    }
+
+    /// Write the notes nested in a note at the deepest level into that note's text, as IDML
+    /// export writes nested notes ([`Footnote::flattened`], marks numbered 1, 2, … in reading
+    /// order within the note), so a file can't hold notes deeper than [`MAX_NOTE_DEPTH`] that are
+    /// kept but never shown. Like export, it writes at most `MAX_NOTE_DEPTH - 1` levels below
+    /// that note; any deeper are left out. Returns how many notes were written out so.
+    pub fn fold_deep_notes(&mut self, separator: &str) -> usize {
+        fn walk(st: &mut Story, depth: usize, separator: &str) -> usize {
+            let mut folded = 0;
+            for n in &mut st.notes {
+                if depth >= MAX_NOTE_DEPTH && !n.text.notes.is_empty() {
+                    // The notes under it numbered 1, 2, … in reading order, each id its mark:
+                    // ids this deep aren't kept unique, as nothing reaches them.
+                    fn number(st: &mut Story, depth: usize, k: &mut u64) {
+                        for n in &mut st.notes {
+                            let n = Arc::make_mut(n);
+                            *k += 1;
+                            n.id = *k;
+                            if depth < MAX_NOTE_DEPTH {
+                                number(&mut n.text, depth + 1, k);
+                            }
+                        }
+                    }
+                    let mut numbered = (**n).clone();
+                    let mut k = 0;
+                    number(&mut numbered.text, 2, &mut k);
+                    let flat = numbered.flattened(&|id| id.to_string(), separator);
+                    folded += usize::try_from(k).unwrap_or(usize::MAX);
+                    Arc::make_mut(n).text = flat;
+                } else if depth < MAX_NOTE_DEPTH && n.text.has_notes_too_deep_from(depth + 1) {
+                    folded += walk(&mut Arc::make_mut(n).text, depth + 1, separator);
+                }
+            }
+            if folded > 0 {
+                st.rev = st.rev.wrapping_add(1);
+            }
+            folded
+        }
+        walk(self, 1, separator)
+    }
+
+    /// [`Story::has_notes_too_deep`] for a story whose notes are at level `depth`.
+    fn has_notes_too_deep_from(&self, depth: usize) -> bool {
+        self.notes.iter().any(|n| if depth >= MAX_NOTE_DEPTH { !n.text.notes.is_empty() } else { n.text.has_notes_too_deep_from(depth + 1) })
+    }
+
+    /// Whether two footnotes of this story or its nested notes share an id, read without
+    /// changing anything (so a story needing no repair isn't copied).
+    pub fn has_duplicate_note_ids(&self) -> bool {
+        let ids = self.note_ids_deep();
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
+        !ids.into_iter().all(|id| seen.insert(id))
+    }
+
     /// Give each footnote a story-wide unique id again: a footnote pasted into a nested note
     /// gets an id from that note's own text, which another note may already use. Of two notes
     /// with one id, the later in reading order takes a new one. Returns whether any changed.
+    /// A story whose ids are all different is left untouched, its notes not copied (only a
+    /// repair copies them).
     pub fn fix_note_ids(&mut self) -> bool {
         fn walk(st: &mut Story, depth: usize, seen: &mut std::collections::HashSet<u64>, next: &mut u64) -> bool {
             let mut changed = false;
@@ -344,7 +411,7 @@ impl Story {
             }
             changed
         }
-        if !self.notes.iter().any(|n| !n.text.notes.is_empty()) {
+        if !self.has_duplicate_note_ids() {
             return false;
         }
         let mut next = self.next_note_id_deep();
@@ -413,9 +480,24 @@ impl Story {
 }
 
 impl crate::Document {
-    /// [`Story::fix_note_ids`] for every story with nested footnotes (after an edit or a load).
+    /// [`Story::fold_deep_notes`] for every story with notes past [`MAX_NOTE_DEPTH`] (after a
+    /// load), with the document's footnote separator. Returns how many notes were written out.
+    pub fn fold_deep_notes(&mut self) -> usize {
+        let separator = self.footnote_options.separator.clone();
+        let ids: Vec<StoryId> = self.stories.iter().filter(|(_, st)| st.has_notes_too_deep()).map(|(id, _)| *id).collect();
+        let mut folded = 0;
+        for id in ids {
+            if let Some(st) = self.stories.get_mut(&id) {
+                folded += Arc::make_mut(st).fold_deep_notes(&separator);
+            }
+        }
+        folded
+    }
+
+    /// [`Story::fix_note_ids`] for every story whose footnotes repeat an id (after an edit or a
+    /// load); the others aren't copied, so their compositions stay cached.
     pub fn fix_note_ids(&mut self) {
-        let ids: Vec<StoryId> = self.stories.iter().filter(|(_, st)| st.notes.iter().any(|n| !n.text.notes.is_empty())).map(|(id, _)| *id).collect();
+        let ids: Vec<StoryId> = self.stories.iter().filter(|(_, st)| st.has_duplicate_note_ids()).map(|(id, _)| *id).collect();
         for id in ids {
             if let Some(st) = self.stories.get_mut(&id) {
                 Arc::make_mut(st).fix_note_ids();
@@ -604,6 +686,68 @@ mod tests {
         assert_eq!(unique.len(), 5, "{ids:?}");
         assert_eq!(s.note(a).unwrap().text.text, "c\u{E00A} text", "the earlier note keeps its id");
         assert!(!s.fix_note_ids(), "nothing more to repair");
+    }
+
+    /// A story whose footnote ids are all different isn't copied by the id repair (nor its
+    /// notes): an edit leaves its composition cached.
+    #[test]
+    fn stories_without_repeated_ids_are_not_copied() {
+        let (s, _) = nested();
+        assert!(!s.has_duplicate_note_ids());
+        let mut copy = s.clone();
+        assert!(!copy.fix_note_ids());
+        assert!(copy.notes.iter().zip(&s.notes).all(|(a, b)| Arc::ptr_eq(a, b)), "the notes are shared still");
+        let mut d = crate::Document::new(&crate::build::NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) =
+            d.add_text_frame(crate::SpreadRef::Doc(0), crate::geom::Rect::new(36.0, 36.0, 200.0, 100.0), lid, "a", ParaFormat::default()).unwrap();
+        *d.story_mut(sid).unwrap() = Story { id: sid, frames: d.story(sid).unwrap().frames.clone(), ..s };
+        let mut edited = d.clone();
+        edited.fix_note_ids();
+        assert!(Arc::ptr_eq(&d.stories[&sid], &edited.stories[&sid]), "the story is shared still");
+    }
+
+    /// A chain of notes `levels` deep, each note's text `level N` (N from 1).
+    fn chain(levels: usize) -> Story {
+        let mut inner: Option<Story> = None;
+        for level in (1..=levels).rev() {
+            let mut st = Story::with_text(StoryId(1), &format!("level {level}"), ParaFormat::default());
+            if let Some(below) = inner.take() {
+                // Its note's text is the level below; every note's id is 1, as a hand-made file may have.
+                let id = st.insert_note(st.len(), "", ParaFormat::default()).unwrap();
+                Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap()).text = Story { id: StoryId(1), ..below };
+            }
+            inner = Some(st);
+        }
+        let mut top = Story::with_text(StoryId(1), "body", ParaFormat::default());
+        let id = top.insert_note(top.len(), "", ParaFormat::default()).unwrap();
+        Arc::make_mut(top.notes.iter_mut().find(|n| n.id == id).unwrap()).text = inner.unwrap();
+        top
+    }
+
+    /// Notes nested past the depth limit, which only a file can hold, are written into the
+    /// deepest note's text as export writes them (marks numbered in reading order): their text
+    /// stays, shown, and nothing past the limit is left as a note.
+    #[test]
+    fn notes_past_the_depth_limit_are_written_into_the_deepest() {
+        let mut s = chain(MAX_NOTE_DEPTH + 2);
+        assert!(s.has_notes_too_deep());
+        assert_eq!(s.fold_deep_notes("\t"), 2);
+        assert!(!s.has_notes_too_deep());
+        let mut deepest = &s;
+        for _ in 0..MAX_NOTE_DEPTH {
+            deepest = &deepest.notes[0].text;
+        }
+        assert!(deepest.notes.is_empty());
+        let lb = crate::story::FORCED_LINE_BREAK;
+        assert_eq!(deepest.text, format!("level {MAX_NOTE_DEPTH}1{lb}1\tlevel 62{lb}2\tlevel 7"));
+        deepest.check().unwrap();
+        s.check().unwrap();
+        // Within the limit nothing changes.
+        let mut within = chain(MAX_NOTE_DEPTH);
+        let before = within.clone();
+        assert_eq!(within.fold_deep_notes("\t"), 0);
+        assert!(within.notes.iter().zip(&before.notes).all(|(a, b)| Arc::ptr_eq(a, b)));
     }
 
     /// Notes nested past the depth limit are kept but not reached.

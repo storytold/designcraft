@@ -829,6 +829,12 @@ impl<'r> Importer<'r> {
         // typed over it and is kept (needs the destinations, resolved above).
         d.drop_generated_xref_text();
         restore_nested_footnotes(&mut d, root, &self.story_ids);
+        // A label's notes nest at most MAX_NOTE_DEPTH deep: deeper ones go into the deepest
+        // note's text, as export wrote them.
+        let folded = d.fold_deep_notes();
+        if folded > 0 {
+            self.warnings.push(designcraft_doc::notes::deep_notes_warning(folded));
+        }
         Ok((d, std::mem::take(&mut self.warnings)))
     }
 }

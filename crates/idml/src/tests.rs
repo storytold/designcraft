@@ -5484,6 +5484,32 @@ fn rewrite_parts(bytes: &[u8], prefix: &str, from: &str, to: &str) -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
+/// A label holding notes nested deeper than the limit (only a hand-made file can) is read with
+/// them written into the deepest note's text, and the import says so.
+#[test]
+fn nested_footnotes_past_the_limit_are_written_out_on_import() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Body text.", ParaFormat::default()).unwrap();
+    let mut inner: Option<designcraft_doc::Story> = None;
+    for level in (1..=designcraft_doc::MAX_NOTE_DEPTH + 2).rev() {
+        let mut st = designcraft_doc::Story::with_text(sid, &format!("level {level}"), ParaFormat::default());
+        if let Some(below) = inner.take() {
+            let id = st.insert_note(st.len(), "", ParaFormat::default()).unwrap();
+            std::sync::Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap()).text = below;
+        }
+        inner = Some(st);
+    }
+    let st = d.story_mut(sid).unwrap();
+    let id = st.insert_note(4, "", ParaFormat::default()).unwrap();
+    std::sync::Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap()).text = inner.unwrap();
+    let r = crate::import_idml_report(&export_idml(&d), &|_| None).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("nested more than")), "{:?}", r.warnings);
+    let st = r.document.stories.values().find(|s| !s.notes.is_empty()).unwrap();
+    assert!(!st.has_notes_too_deep());
+    assert!(st.nested_notes().iter().any(|n| n.text.text.contains("level 7")), "the deepest level's text stays");
+}
+
 /// Nested footnotes, which InDesign can't hold: its footnotes get them written out (superscript
 /// marks, forced line breaks), the way GDT-style layouts do by hand, and a document label keeps
 /// them whole, so DesignCraft reads them back nested, unless the footnote was edited in InDesign.

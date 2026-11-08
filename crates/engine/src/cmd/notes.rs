@@ -247,6 +247,40 @@ mod tests {
         (s, sid)
     }
 
+    /// A file holding footnotes nested deeper than the limit opens with them written into the
+    /// deepest note's text, and says so: nothing is kept that can't be shown or edited.
+    #[test]
+    fn a_file_with_notes_nested_too_deep_opens_with_them_written_out() {
+        use std::sync::Arc;
+        let (s, sid) = session_with_text();
+        let mut d = (*s.doc().unwrap().doc).clone();
+        // Seven levels: each note's text holds the next (only a hand-made file can).
+        let levels = designcraft_doc::MAX_NOTE_DEPTH + 2;
+        let mut inner: Option<designcraft_doc::Story> = None;
+        for level in (1..=levels).rev() {
+            let mut st = designcraft_doc::Story::with_text(sid, &format!("level {level}"), designcraft_doc::ParaFormat::default());
+            if let Some(below) = inner.take() {
+                let id = st.insert_note(st.len(), "", designcraft_doc::ParaFormat::default()).unwrap();
+                Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap()).text = below;
+            }
+            inner = Some(st);
+        }
+        let st = d.story_mut(sid).unwrap();
+        let id = st.insert_note(st.len(), "", designcraft_doc::ParaFormat::default()).unwrap();
+        Arc::make_mut(st.notes.iter_mut().find(|n| n.id == id).unwrap()).text = inner.unwrap();
+        let bytes = designcraft_format::save(&d).unwrap();
+        let mut s = Session::new();
+        let r = s.execute("file.openBytes", &json!({"name": "Deep.designcraft", "base64": crate::cmd::base64_encode(&bytes)})).unwrap();
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("nested more than")), "{r}");
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert!(!st.has_notes_too_deep());
+        let mut deepest = &st;
+        for _ in 0..designcraft_doc::MAX_NOTE_DEPTH {
+            deepest = &deepest.notes[0].text;
+        }
+        assert!(deepest.text.contains("level 6") && deepest.text.contains("level 7"), "{:?}", deepest.text);
+    }
+
     #[test]
     fn insert_type_and_undo_footnotes() {
         let (mut s, sid) = session_with_text();
